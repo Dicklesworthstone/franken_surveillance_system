@@ -1,13 +1,13 @@
 # Comprehensive Plan for the Design and Implementation of `franken_surveillance_system` (`fss`)
 
-**Document class:** normative architecture and execution plan
-**Initial issue date:** 2026-08-30
-**Status:** Draft 0.1 — public architecture constitution
-**Repository:** `Dicklesworthstone/franken_surveillance_system`
-**Primary audience:** implementers, reviewers, autonomous coding agents, computer-vision and
-geometry researchers, media/network engineers, security/privacy reviewers, and operators
-**Normative companions:** `architecture/*`, `registries/*`, `schemas/*`, `SECURITY.md`,
-`PRIVACY.md`, `IMPLEMENTATION_STATUS.md`, `FRANKENSTACK_DEEP_DIVE.md`
+| Field | Value |
+|---|---|
+| Document class | Normative architecture and execution plan |
+| Initial issue date | 2026-08-30 |
+| Status | Draft 0.1 — public architecture constitution |
+| Repository | `Dicklesworthstone/franken_surveillance_system` |
+| Primary audience | Implementers, reviewers, autonomous coding agents, computer-vision and geometry researchers, media/network engineers, security/privacy reviewers, and operators |
+| Normative companions | `architecture/*`, `registries/*`, `schemas/*`, `SECURITY.md`, `PRIVACY.md`, `IMPLEMENTATION_STATUS.md`, `FRANKENSTACK_DEEP_DIVE.md` |
 
 ---
 
@@ -87,44 +87,43 @@ Published IDs are never renumbered. Superseded entries remain as tombstones.
 
 # Table of contents
 
-0. Reading guide
-1. Executive summary
-2. Discovery and ecosystem findings
-3. Mission, goals, non-goals, and North Star scenarios
-4. Semantic truth model
-5. Identity, generations, anchors, and time
-6. Layered architecture, trust domains, and dependency policy
-7. Runtime, ownership, cancellation, budgets, and obligations
-8. Device discovery, authorization, and adapter protocol
-9. Standards-first camera integrations
-10. Proprietary camera interoperability lab
-11. DJI Flip and drone-capture boundary
-12. Media acquisition, source custody, decoding, and live delivery
-13. Canonical ledger, object storage, encryption, and archive
-14. Digital twin, calibration shuttle, geometry, and coverage
-15. Model-host protocol and model registry
-16. Detection, tracking, cross-camera association, and temporal reasoning
-17. Event semantics, uncertainty, sequential evidence, and policy
-18. Alerts and other effects
-19. Search, graph, memory, and explainability
-20. Agent-native CLI/MCP interfaces
-21. Security architecture
-22. Privacy, identity, retention, export, and deletion
-23. Deterministic replay, fault injection, and formal targets
-24. Dataset, red-team, statistical evaluation, and AUPRC
-25. Performance, energy, storage economics, and cost registry
-26. Observability, doctor, repair, support bundles, and operations
-27. Crate topology and durable formats
-28. Implementation work packages and dependency order
-29. Acceptance gates and release doctrine
-30. Risks and open questions
-Appendix A. Initial canonical data model
-Appendix B. Example end-to-end event flow
-Appendix C. Example calibration flow
-Appendix D. Example agent session
-Appendix E. Operation-cost formulas
-Appendix F. First 100 implementation issues
-
+- 0. Reading guide
+- 1. Executive summary
+- 2. Discovery and ecosystem findings
+- 3. Mission, goals, non-goals, and North Star scenarios
+- 4. Semantic truth model
+- 5. Identity, generations, anchors, and time
+- 6. Layered architecture, trust domains, and dependency policy
+- 7. Runtime, ownership, cancellation, budgets, and obligations
+- 8. Device discovery, authorization, and adapter protocol
+- 9. Standards-first camera integrations
+- 10. Proprietary camera interoperability lab
+- 11. DJI Flip and drone-capture boundary
+- 12. Media acquisition, source custody, decoding, and live delivery
+- 13. Canonical ledger, object storage, encryption, and archive
+- 14. Digital twin, calibration shuttle, geometry, and coverage
+- 15. Model-host protocol and model registry
+- 16. Detection, tracking, cross-camera association, and temporal reasoning
+- 17. Event semantics, uncertainty, sequential evidence, and policy
+- 18. Alerts and other effects
+- 19. Search, graph, memory, and explainability
+- 20. Agent-native CLI/MCP interfaces
+- 21. Security architecture
+- 22. Privacy, identity, retention, export, and deletion
+- 23. Deterministic replay, fault injection, and formal targets
+- 24. Dataset, red-team, statistical evaluation, and AUPRC
+- 25. Performance, energy, storage economics, and cost registry
+- 26. Observability, doctor, repair, support bundles, and operations
+- 27. Crate topology and durable formats
+- 28. Implementation work packages and dependency order
+- 29. Acceptance gates and release doctrine
+- 30. Risks and open questions
+- Appendix A. Initial canonical data model
+- Appendix B. Example end-to-end event flow
+- Appendix C. Example calibration flow
+- Appendix D. Example agent session
+- Appendix E. Operation-cost formulas
+- Appendix F. First 100 implementation issues
 ---
 
 # 0. Reading guide

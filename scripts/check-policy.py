@@ -56,7 +56,7 @@ for path in toml_files:
 stable_ids: set[str] = set()
 pattern = re.compile(
     r"\b(?:INV|GOAL|NONGOAL|CAP|EFFECT|ERR|SCHEMA|ADR|WP|GATE|TEST|SLO|RISK|OPEN|"
-    r"INT|COST|SEC|PRIV|FORMAL|NEG|FSS)-[A-Z0-9-]+\b"
+    r"INT|COST|SEC|PRIV|FORMAL|NEG|FSS|LAB|ADP|MOD)-[A-Z0-9-]+\b"
 )
 for path in source_files(".md"):
     stable_ids.update(pattern.findall(path.read_text(encoding="utf-8")))
