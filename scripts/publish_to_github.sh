@@ -5,7 +5,7 @@ OWNER="${FSS_GITHUB_OWNER:-Dicklesworthstone}"
 REPO="${FSS_GITHUB_REPO:-franken_surveillance_system}"
 VISIBILITY="${FSS_GITHUB_VISIBILITY:-public}"
 
-python3 scripts/check-policy.py
+bash scripts/qualify.sh --lane policy
 if ! command -v gh >/dev/null 2>&1; then
   printf '%s\n' 'GitHub CLI `gh` is required. Install and authenticate it, then rerun.' >&2
   exit 2

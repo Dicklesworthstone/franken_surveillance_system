@@ -1,6 +1,6 @@
 # Device adapter matrix
 
-**Evidence snapshot:** 2026-08-30
+**Evidence snapshot:** 2026-08-31
 **Meaning of this file:** research and admission plan, not a list of working integrations
 
 ## 1. Adapter tiers
@@ -9,7 +9,7 @@
 |---|---|---|
 | `T0 replay` | deterministic fixtures and prerecorded inputs | mandatory oracle; default-safe |
 | `T1 open local` | standards with local owner-controlled transport | preferred production path |
-| `T2 documented vendor` | vendor-supported SDK/API for exact product | sandboxed; version-pinned |
+| `T2 documented vendor` | documented protocol/API for exact product, implemented in first-party Rust | exact tuple; version-pinned; vendor SDK remains a lab oracle |
 | `T3 authorized lab` | interoperability research against owner devices/accounts | non-default; exact firmware/app tuple; no auth bypass |
 | `T4 import` | exported files or SD media | valid historical evidence, not live coverage |
 
@@ -79,7 +79,7 @@ Every adapter row expands into this matrix:
 | events | semantics, duplication, ordering, backfill, vendor false positives |
 | controls | supported PTZ/settings; prepare/commit/idempotency/observation |
 | reconnect | network loss, power cycle, token expiry, app/cloud outage, IP change |
-| cancellation | adapter/process quiescence and descriptor/credential release |
+| cancellation | adapter-region quiescence, obligation closure, and descriptor/credential release |
 | firmware drift | unknown generation behavior and safe downgrade/disable |
 | privacy | masks, audio defaults, log redaction, vendor cloud disclosure |
 | performance | source bitrate, CPU/RAM, reconnect latency, packet loss, energy |
@@ -88,28 +88,31 @@ Every adapter row expands into this matrix:
 
 No aggregate “supported” field replaces the dimensions.
 
-## 5. Adapter process protocol
+## 5. Adapter capability protocol
 
-A proprietary adapter host receives only:
+A production proprietary adapter is first-party safe Rust. It may run in-process under a narrowed
+`Cx` or in a separately supervised **FSS Rust** executable when fault/resource isolation is worth
+the protocol cost. It receives only:
 
-- a one-device capability;
-- a secret handle rather than plaintext in config;
-- network destinations narrowed to registered vendor/device endpoints;
-- resource limits;
-- a typed request;
-- a bounded output channel.
+- a one-device/account capability and exact compatibility tuple;
+- an opaque secret handle rather than plaintext in config or command arguments;
+- network destinations narrowed to registered device/vendor endpoints;
+- explicit CPU, memory, bandwidth, retry, deadline, and output budgets;
+- a typed acquisition/control request and anchor;
+- bounded reserve/commit output subjects.
 
 It emits:
 
-- immutable device/firmware/app identity;
-- stream/control receipts;
-- packet capsules or file handles;
-- health and degradation;
-- sanitized diagnostics;
-- terminal quiescence receipt.
+- immutable device/firmware/app/protocol identity;
+- acquisition and control receipts;
+- packet capsules or imported-file object roots;
+- health, coverage, clock, continuity, and degradation evidence;
+- sanitized diagnostics and a terminal drain certificate.
 
-It cannot open the canonical ledger, archive keyring, model cache, unrelated filesystem, or effect
-capabilities.
+It cannot open the canonical ledger directly, enumerate unrelated secrets/devices, access the
+archive keyring, mutate model/calibration/policy state, or recover effect authority from ambient
+configuration. Vendor SDKs, app automation, browser capture, and foreign helper binaries remain
+fixture-only laboratory tools and cannot become a supported production adapter path.
 
 ## 6. Authorized interoperability workflow
 

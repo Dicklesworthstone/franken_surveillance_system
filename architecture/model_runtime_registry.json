@@ -1,0 +1,78 @@
+{
+  "schema": "fss.model_runtime_registry.v1",
+  "asOf": "2026-08-31",
+  "runtime": {
+    "productionLanguage": "rust-2024",
+    "asyncRuntime": "asupersync",
+    "tensorSubstrate": "frankentorch-after-INT-FT-001",
+    "unsafePolicy": "forbid-without-exceptions",
+    "foreignRuntimePolicy": "laboratory-oracle-only",
+    "activationPrimitive": "PUB-MODEL-001"
+  },
+  "contracts": [
+    {
+      "id": "MODEL-PACKAGE-001",
+      "owner": "fss-model-registry",
+      "schema": "fss.model_package_manifest.v1",
+      "invariant": "One immutable package root binds weights, preprocessing, operator graph, numeric policy, resource envelope, license, and qualification evidence.",
+      "gate": "INT-FT-001",
+      "status": "specified"
+    },
+    {
+      "id": "MODEL-OPERATOR-001",
+      "owner": "fss-model-operator",
+      "schema": "registry-owned",
+      "invariant": "Every operator has typed shape/dtype/layout/alias/numeric semantics, scalar oracle, resource formula, and stable versioned ID.",
+      "gate": "INT-FT-001",
+      "status": "specified"
+    },
+    {
+      "id": "MODEL-PLAN-001",
+      "owner": "fss-model-runtime",
+      "schema": "registry-owned",
+      "invariant": "Execution uses a deterministic shape-specialized graph and memory plan with hard resource and cancellation boundaries.",
+      "gate": "INT-FT-002",
+      "status": "specified"
+    },
+    {
+      "id": "MODEL-RECEIPT-001",
+      "owner": "fss-model-runtime",
+      "schema": "fss.model_execution_receipt.v1",
+      "invariant": "Only a valid output root and execution receipt can become model-derived evidence.",
+      "gate": "INT-FT-002",
+      "status": "specified"
+    },
+    {
+      "id": "MODEL-CPU-001",
+      "owner": "fss-model-kernel",
+      "schema": "same-receipt-contract",
+      "invariant": "Scalar, tiled, SIMD, fused, parallel, and quantized implementations are interchangeable only within their declared numeric envelope.",
+      "gate": "INT-FT-003",
+      "status": "specified"
+    },
+    {
+      "id": "MODEL-QUANT-001",
+      "owner": "fss-model-registry",
+      "schema": "package-generation",
+      "invariant": "Quantization creates a new package generation and requires tensor plus event-level quality evidence.",
+      "gate": "INT-FT-004",
+      "status": "specified"
+    },
+    {
+      "id": "MODEL-ACCEL-001",
+      "owner": "fss-model-accelerator",
+      "schema": "bounded-tensor-job",
+      "invariant": "Accelerators have no credentials, canonical-ledger mutation, or effect authority and cannot be a correctness dependency.",
+      "gate": "INT-FT-005",
+      "status": "specified"
+    },
+    {
+      "id": "MODEL-ORACLE-001",
+      "owner": "fss-model-gauntlet",
+      "schema": "tainted-laboratory-output",
+      "invariant": "Foreign model runtimes are pinned differential oracles absent from production closure and effect paths.",
+      "gate": "QL-MODEL-001",
+      "status": "specified"
+    }
+  ]
+}

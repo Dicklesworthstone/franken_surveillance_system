@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/graph_algorithm_witness.v1.json",
+  "title": "GraphAlgorithmWitness v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "algorithmId",
+    "implementationId",
+    "projectionId",
+    "anchor",
+    "nodeCount",
+    "edgeCount",
+    "inputDigest",
+    "policyId",
+    "dominantOperationCounts",
+    "peakWorkingBytes",
+    "budgetConsumed",
+    "exactness",
+    "errorBound",
+    "stopReason",
+    "decisionPathDigest",
+    "outputDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.graph_algorithm_witness.v1"
+    },
+    "algorithmId": {
+      "type": "string",
+      "pattern": "^ALG-[A-Z0-9-]+$"
+    },
+    "implementationId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "projectionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "nodeCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "edgeCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "inputDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "policyId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "dominantOperationCounts": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "peakWorkingBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "budgetConsumed": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
+    "exactness": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "errorBound": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stopReason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "decisionPathDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "outputDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    }
+  }
+}

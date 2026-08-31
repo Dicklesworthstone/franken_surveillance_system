@@ -1,0 +1,108 @@
+# Example Doodlestein Self-Releaser repository configuration for FSS.
+# Copy into the operator's DSR repos.d directory and fill in exact local paths,
+# sibling revisions, host mappings, signing key policy, and release ruleset IDs.
+
+tool_name: fss
+repo: Dicklesworthstone/franken_surveillance_system
+local_path: /data/projects/franken_surveillance_system
+language: rust
+main_package: fss-cli
+binary_name: fss
+workspace_binaries:
+  - fss
+build_cmd: bash scripts/release_qualify.sh all
+build_profile: release
+workflow: .github/workflows/release.yml
+
+targets:
+  - linux/amd64
+  - linux/arm64
+  - darwin/arm64
+  - windows/amd64
+
+act_job_map:
+  linux/amd64: build-linux-amd64
+  linux/arm64: build-linux-arm64
+  darwin/arm64: build-macos-arm64
+  windows/amd64: build-windows-amd64
+
+checks:
+  - bash scripts/qualify.sh --lane full
+  - bash scripts/release_qualify.sh release-preflight
+
+artifact_naming: "${name}-${version}-${target_triple}"
+target_triples:
+  linux/amd64: x86_64-unknown-linux-gnu
+  linux/arm64: aarch64-unknown-linux-gnu
+  darwin/arm64: aarch64-apple-darwin
+  windows/amd64: x86_64-pc-windows-msvc
+
+archive_format:
+  linux: tar.xz
+  darwin: tar.xz
+  windows: zip
+
+include_files:
+  - README.md
+  - LICENSE
+  - IMPLEMENTATION_STATUS.md
+  - COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md
+  - FRANKENSTACK_DEEP_DIVE.md
+  - DEPENDENCY_CONSTITUTION.md
+  - GRAPH_ANALYTICS_AND_SENSOR_MESH.md
+  - ATP_AND_DISTRIBUTED_EVIDENCE.md
+  - PURE_RUST_MODEL_RUNTIME.md
+  - LOCAL_QUALIFICATION_AND_RELEASE.md
+
+release_contract:
+  checksum_sidecar: sha256
+  # minisign_public_key_file: release/keys/fss.pub
+  exact_primary_assets:
+    linux/amd64: fss-${version}-x86_64-unknown-linux-gnu.tar.xz
+    linux/arm64: fss-${version}-aarch64-unknown-linux-gnu.tar.xz
+    darwin/arm64: fss-${version}-aarch64-apple-darwin.tar.xz
+    windows/amd64: fss-${version}-x86_64-pc-windows-msvc.zip
+  exact_additional_assets:
+    - fss-source.tar.xz
+    - fss-sbom.spdx.json
+    - fss-qualification-root.json
+    - build.json
+    - verification.json
+    - STAGE_SHA256SUMS.txt
+    - SHA256SUMS.txt
+
+# Populate exact clean revisions at release time. DSR must freeze these into
+# the closure manifest and reject dirty or mismatched siblings.
+sibling_crates:
+  - local_path: /data/projects/asupersync
+    relative_path: siblings/asupersync
+    revision: REPLACE_WITH_EXACT_40_HEX_SHA
+  - local_path: /data/projects/frankensqlite
+    relative_path: siblings/frankensqlite
+    revision: REPLACE_WITH_EXACT_40_HEX_SHA
+  - local_path: /data/projects/frankenfs
+    relative_path: siblings/frankenfs
+    revision: REPLACE_WITH_EXACT_40_HEX_SHA
+  - local_path: /data/projects/frankensearch
+    relative_path: siblings/frankensearch
+    revision: REPLACE_WITH_EXACT_40_HEX_SHA
+  - local_path: /data/projects/franken_networkx
+    relative_path: siblings/franken_networkx
+    revision: REPLACE_WITH_EXACT_40_HEX_SHA
+  - local_path: /data/projects/frankengraphdb
+    relative_path: siblings/frankengraphdb
+    revision: REPLACE_WITH_EXACT_40_HEX_SHA
+  - local_path: /data/projects/frankentorch
+    relative_path: siblings/frankentorch
+    revision: REPLACE_WITH_EXACT_40_HEX_SHA
+
+sync_excludes:
+  - target
+  - .codex-target
+  - artifacts/private-lab
+  - models/private
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_OFFLINE: "true"
+  SOURCE_DATE_EPOCH: "REPLACE_AT_RELEASE"

@@ -1,0 +1,93 @@
+schema = "fss.local_qualification.v2"
+as_of = "2026-08-31"
+authority = "local_dsr_receipt"
+repository_entrypoint = "scripts/qualify.sh"
+workflow_yaml_role = "portable_executable_specification_only"
+github_hosted_required = false
+clean_snapshot_required = true
+exact_sibling_revision_closure = true
+locked_resolution = true
+offline_after_provisioning = true
+partial_target_matrix_may_publish = false
+download_and_verify_after_upload = true
+signing_separate_from_build = true
+
+[toolchain]
+pin_file = "rust-toolchain.toml"
+policy = "candidate nightlies are promoted only by local full qualification; release uses the exact accepted pin"
+components = ["rustfmt", "clippy", "rust-src"]
+
+[[lane]]
+id = "QL-POLICY-001"
+name = "policy"
+required_for = ["all"]
+
+[[lane]]
+id = "QL-RUST-001"
+name = "rust"
+required_for = ["all"]
+
+[[lane]]
+id = "QL-LAB-001"
+name = "deterministic-lab"
+required_for = ["release"]
+
+[[lane]]
+id = "QL-ADAPTER-001"
+name = "adapter"
+required_for = ["each-advertised-device-tuple"]
+
+[[lane]]
+id = "QL-MEDIA-001"
+name = "media"
+required_for = ["release-with-media-claims"]
+
+[[lane]]
+id = "QL-ARCHIVE-001"
+name = "archive"
+required_for = ["release-with-archive-claims"]
+
+[[lane]]
+id = "QL-MODEL-001"
+name = "model"
+required_for = ["release-with-model-claims"]
+
+[[lane]]
+id = "QL-GEOMETRY-001"
+name = "geometry"
+required_for = ["release-with-geometry-claims"]
+
+[[lane]]
+id = "QL-THREAT-001"
+name = "threat"
+required_for = ["release-with-threat-claims"]
+
+[[lane]]
+id = "QL-PRIVACY-001"
+name = "privacy"
+required_for = ["release"]
+
+[[lane]]
+id = "QL-LINUX-001"
+name = "linux-native"
+required_for = ["release"]
+
+[[lane]]
+id = "QL-MACOS-001"
+name = "macos-native"
+required_for = ["release"]
+
+[[lane]]
+id = "QL-WINDOWS-001"
+name = "windows-native"
+required_for = ["release"]
+
+[[lane]]
+id = "QL-RELEASE-001"
+name = "aggregate-release"
+required_for = ["release"]
+
+[artifact_contract]
+required_siblings = ["sha256", "signature", "sbom", "provenance", "source_manifest", "qualification_receipt", "license_inventory"]
+root_last = true
+exact_asset_enumeration = true

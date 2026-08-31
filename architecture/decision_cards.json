@@ -1,0 +1,86 @@
+{
+  "schema": "fss.decision_card_registry.v1",
+  "asOf": "2026-08-31",
+  "decisionFamily": [
+    {
+      "id": "DEC-ATP-PATH-001",
+      "purpose": "transfer path and hedge selection",
+      "hardClamp": "integrity/privacy/residency/cost hard clamps",
+      "safeFallback": "single authorized path",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-ATP-REPAIR-001",
+      "purpose": "RaptorQ repair overhead and refresh cadence",
+      "hardClamp": "post-repair digest and minimum durability floor",
+      "safeFallback": "fixed conservative overhead",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-COGNITION-DEPTH-001",
+      "purpose": "cognition cascade refinement depth",
+      "hardClamp": "required verification and recall floor",
+      "safeFallback": "registered static cascade",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-FRAME-SAMPLE-001",
+      "purpose": "analysis frame rate/resolution",
+      "hardClamp": "minimum observability and event recall floor",
+      "safeFallback": "fixed high-recall sampler",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-GRAPH-REFINE-001",
+      "purpose": "witness/algorithm refinement budget",
+      "hardClamp": "refinement cannot create permission; timeout conflicts",
+      "safeFallback": "coarse conservative witness",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-CACHE-ADMIT-001",
+      "purpose": "cache tier and admission",
+      "hardClamp": "canonical truth and privacy never depend on cache",
+      "safeFallback": "no admission",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-ARCHIVE-OBJECT-001",
+      "purpose": "archive chunk/object sizing",
+      "hardClamp": "durability/retrievability/provider limits",
+      "safeFallback": "registered static size",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-CAL-NEXT-VIEW-001",
+      "purpose": "next calibration observation",
+      "hardClamp": "manual flight and geofence/privacy constraints",
+      "safeFallback": "operator-selected view",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-MODEL-ROUTE-001",
+      "purpose": "kernel/device/model specialization routing",
+      "hardClamp": "model/numeric/shape generation compatibility",
+      "safeFallback": "CPU scalar/reference path",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-ALERT-REVIEW-001",
+      "purpose": "request additional verifier or human review",
+      "hardClamp": "cannot waive mandatory verification or physical-effect prohibition",
+      "safeFallback": "always request required review",
+      "promotion": "shadow-first with paired outcome evidence and rollback root",
+      "status": "planned"
+    }
+  ]
+}

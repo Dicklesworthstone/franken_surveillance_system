@@ -1,0 +1,116 @@
+{
+  "schema": "fss.publication_primitives.v1",
+  "asOf": "2026-08-31",
+  "states": [
+    "reserved",
+    "materializing",
+    "verified",
+    "published",
+    "retired",
+    "quarantined",
+    "failed",
+    "indeterminate"
+  ],
+  "primitives": [
+    {
+      "id": "PUB-AUTH-001",
+      "name": "authority_generation",
+      "owner": "fss-publication",
+      "protocol": "reserve → materialize capsules/ledger rows → verify closure → publish root → retire",
+      "invariant": "No reader observes a root whose children are incomplete",
+      "plane": "authority",
+      "gate": "GATE-120",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-OBJECT-001",
+      "name": "archive_object_graph",
+      "owner": "fss-custody",
+      "protocol": "reserve manifest → stage objects/repair symbols → verify identities/closure → publish root → audit retrieval",
+      "invariant": "Remote object existence alone is not publication",
+      "plane": "authority",
+      "gate": "GATE-120",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-SEARCH-001",
+      "name": "search_generation",
+      "owner": "fss-search",
+      "protocol": "build provisional delta → seal immutable segments → continuity check → publish generation → retire",
+      "invariant": "Provisional searchable state is explicitly marked non-durable",
+      "plane": "derived",
+      "gate": "GATE-120",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-GRAPH-001",
+      "name": "graph_projection",
+      "owner": "fss-graph-store",
+      "protocol": "consume capsule frontier → build/advance tiers → compare reference digest → publish projection root",
+      "invariant": "Projection declares consumed authority high-water mark",
+      "plane": "derived",
+      "gate": "GATE-120",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-MODEL-001",
+      "name": "model_activation",
+      "owner": "fss-model-registry",
+      "protocol": "stage artifacts → verify hash/license/profile → shadow qualify → publish activation → retain rollback",
+      "invariant": "Downloaded or merely loadable model is not active",
+      "plane": "policy",
+      "gate": "GATE-120",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-CAL-001",
+      "name": "calibration_activation",
+      "owner": "fss-geometry",
+      "protocol": "solve candidate → held-out validate → privacy reproject → publish certificate → monitor invalidators",
+      "invariant": "Low residual without held-out/coverage checks is insufficient",
+      "plane": "authority",
+      "gate": "GATE-120",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-ADAPTER-001",
+      "name": "adapter_compatibility_profile",
+      "owner": "fss-adapter-registry",
+      "protocol": "probe exact tuple → run fixture/live gates → publish profile → revoke on drift",
+      "invariant": "Device-family success never generalizes across firmware/app tuples",
+      "plane": "policy",
+      "gate": "GATE-120",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-EVIDENCE-001",
+      "name": "evidence_bundle",
+      "owner": "fss-evidence",
+      "protocol": "freeze anchor/ranges → materialize siblings → verify redaction/closure → publish bundle root",
+      "invariant": "Human report and machine manifest publish atomically",
+      "plane": "authority_export",
+      "gate": "GATE-120",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-DELETE-001",
+      "name": "deletion_closure",
+      "owner": "fss-privacy",
+      "protocol": "plan reachable set → seal basis root → revalidate → tombstone/delete → rebuild projections → publish proof",
+      "invariant": "Deletion success requires alternate-index/cache reachability closure",
+      "plane": "effect",
+      "gate": "GATE-120",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-RELEASE-001",
+      "name": "release_root",
+      "owner": "fss-release",
+      "protocol": "clean snapshot → qualify target matrix → assemble exact assets/SBOM/source → sign → publish draft/root → download verify",
+      "invariant": "Partial target success cannot bless an aggregate release",
+      "plane": "release",
+      "gate": "GATE-120",
+      "status": "specified"
+    }
+  ]
+}

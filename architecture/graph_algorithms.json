@@ -1,0 +1,446 @@
+{
+  "schema": "fss.algorithm_registry.v1",
+  "asOf": "2026-08-31",
+  "algorithms": [
+    {
+      "id": "ALG-DYNCONN-001",
+      "name": "dynamic_connectivity",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SensorCoverageGraph",
+        "DeviceFailureGraph",
+        "ArchiveObjectGraph",
+        "PlanObligationGraph"
+      ],
+      "decision": "Exact connectivity under a pinned edge-update batch",
+      "authoritativeness": "derived",
+      "tieBreak": "stable node identity then insertion order",
+      "complexityWitness": "union/find or dynamic-forest operations",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-BRIDGE-001",
+      "name": "articulation_points_and_bridges",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SensorCoverageGraph",
+        "DeviceFailureGraph",
+        "EvidenceClaimGraph"
+      ],
+      "decision": "Single points of failure and separated components",
+      "authoritativeness": "derived",
+      "tieBreak": "stable node and edge identity",
+      "complexityWitness": "DFS visits and low-link updates",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-SCC-001",
+      "name": "strongly_connected_components",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "PlanObligationGraph",
+        "EvidenceClaimGraph",
+        "IncidentCausalGraph"
+      ],
+      "decision": "Cycle condensation and invariant classification",
+      "authoritativeness": "derived",
+      "tieBreak": "stable node identity within topological condensation order",
+      "complexityWitness": "edge scans and stack operations",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-TOPO-001",
+      "name": "topological_order_and_critical_path",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "PlanObligationGraph",
+        "IncidentCausalGraph"
+      ],
+      "decision": "Executable frontier, slack, and latency-controlling obligations",
+      "authoritativeness": "derived",
+      "tieBreak": "stable plan-step identity",
+      "complexityWitness": "in-degree updates and relaxations",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-DOM-001",
+      "name": "dominators_and_postdominators",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "EvidenceClaimGraph",
+        "PlanObligationGraph",
+        "DeviceFailureGraph"
+      ],
+      "decision": "Nodes that lie on every support or completion path",
+      "authoritativeness": "derived",
+      "tieBreak": "stable predecessor and node identity",
+      "complexityWitness": "intersections and frontier updates",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-SP-001",
+      "name": "shortest_path",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SpatioTemporalTrackGraph",
+        "DeviceFailureGraph",
+        "ArchiveObjectGraph"
+      ],
+      "decision": "Minimum typed cost route",
+      "authoritativeness": "derived",
+      "tieBreak": "cost then stable edge/path identity",
+      "complexityWitness": "heap pushes, pops, and relaxations",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-KSP-001",
+      "name": "k_shortest_diverse_paths",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SpatioTemporalTrackGraph",
+        "ArchiveObjectGraph"
+      ],
+      "decision": "Alternative coherent trajectories or routes",
+      "authoritativeness": "derived",
+      "tieBreak": "cost, diversity penalty, then stable path identity",
+      "complexityWitness": "candidate expansions and heap operations",
+      "exactness": "exact_or_bounded",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-TREACH-001",
+      "name": "temporal_reachability",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SpatioTemporalTrackGraph",
+        "DigitalTwinGraph"
+      ],
+      "decision": "Feasible movement under interval time and geometry constraints",
+      "authoritativeness": "derived",
+      "tieBreak": "earliest feasible interval then stable path identity",
+      "complexityWitness": "interval compositions and dominance prunes",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-MSD-001",
+      "name": "multi_source_distance",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SensorCoverageGraph",
+        "ArchiveObjectGraph"
+      ],
+      "decision": "Nearest effective observer, verifier, or replica",
+      "authoritativeness": "derived",
+      "tieBreak": "distance then source identity",
+      "complexityWitness": "heap operations and relaxations",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-FLOW-001",
+      "name": "max_flow_min_cut",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "DeviceFailureGraph",
+        "SensorCoverageGraph",
+        "PlanObligationGraph"
+      ],
+      "decision": "Capacity and minimum failure/cut set",
+      "authoritativeness": "derived",
+      "tieBreak": "stable residual-edge identity",
+      "complexityWitness": "residual scans and augmentations",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-GH-001",
+      "name": "gomory_hu_tree",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "DeviceFailureGraph",
+        "SensorCoverageGraph"
+      ],
+      "decision": "All-pairs undirected resilience summary",
+      "authoritativeness": "derived",
+      "tieBreak": "stable cut partition identity",
+      "complexityWitness": "max-flow invocations",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-MCF-001",
+      "name": "min_cost_flow",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "PlanObligationGraph",
+        "DeviceFailureGraph"
+      ],
+      "decision": "Allocate bounded compute/network/archive capacity",
+      "authoritativeness": "derived",
+      "tieBreak": "cost then stable assignment identity",
+      "complexityWitness": "augmentations and reduced-cost updates",
+      "exactness": "exact_or_verified_candidate",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-MATCH-001",
+      "name": "weighted_bipartite_matching",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SpatioTemporalTrackGraph",
+        "DigitalTwinGraph",
+        "PlanObligationGraph"
+      ],
+      "decision": "Cross-camera association and task/resource assignment",
+      "authoritativeness": "derived",
+      "tieBreak": "weight then stable pair identity",
+      "complexityWitness": "augmentations or primal-dual updates",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-MULTIMATCH-001",
+      "name": "k_best_global_assignment",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SpatioTemporalTrackGraph"
+      ],
+      "decision": "Retain several globally coherent association hypotheses",
+      "authoritativeness": "derived",
+      "tieBreak": "score then canonical assignment tuple",
+      "complexityWitness": "branch nodes and matching solves",
+      "exactness": "bounded_exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-SETCOVER-001",
+      "name": "set_cover",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SensorCoverageGraph",
+        "EvidenceClaimGraph"
+      ],
+      "decision": "Small evidence/camera set covering a domain",
+      "authoritativeness": "derived",
+      "tieBreak": "marginal gain then stable element identity",
+      "complexityWitness": "coverage updates and branch nodes",
+      "exactness": "approximate_or_exact_small",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-SUBMOD-001",
+      "name": "submodular_selection",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SensorCoverageGraph",
+        "EvidenceClaimGraph"
+      ],
+      "decision": "Active perception and verifier selection under budget",
+      "authoritativeness": "derived",
+      "tieBreak": "marginal utility per typed cost then stable action identity",
+      "complexityWitness": "objective evaluations and lazy-heap refreshes",
+      "exactness": "approximate",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-MST-001",
+      "name": "minimum_spanning_forest",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "DeviceFailureGraph",
+        "SensorCoverageGraph",
+        "ArchiveObjectGraph"
+      ],
+      "decision": "Low-cost connected baseline topology",
+      "authoritativeness": "derived",
+      "tieBreak": "weight then stable edge identity",
+      "complexityWitness": "sort comparisons and union/find operations",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-STEINER-001",
+      "name": "steiner_tree_approximation",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "DeviceFailureGraph",
+        "SensorCoverageGraph"
+      ],
+      "decision": "Connect required terminals through optional intermediates",
+      "authoritativeness": "derived",
+      "tieBreak": "approximation score then stable node identity",
+      "complexityWitness": "shortest paths and reductions",
+      "exactness": "approximate",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-PPR-001",
+      "name": "personalized_pagerank",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "EvidenceClaimGraph",
+        "OperationalMemoryGraph"
+      ],
+      "decision": "Incident-seeded advisory ranking",
+      "authoritativeness": "derived",
+      "tieBreak": "score then stable node identity",
+      "complexityWitness": "sparse multiply/add operations",
+      "exactness": "approximate_advisory",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-HITS-001",
+      "name": "hits",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "EvidenceClaimGraph",
+        "OperationalMemoryGraph"
+      ],
+      "decision": "Hub/authority advisory explanation",
+      "authoritativeness": "derived",
+      "tieBreak": "score then stable node identity",
+      "complexityWitness": "sparse multiply/add operations",
+      "exactness": "approximate_advisory",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-CENTRAL-001",
+      "name": "centrality_family",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "DeviceFailureGraph",
+        "SensorCoverageGraph",
+        "OperationalMemoryGraph"
+      ],
+      "decision": "Maintenance and attention prioritization",
+      "authoritativeness": "derived",
+      "tieBreak": "score then stable node identity",
+      "complexityWitness": "family-specific path or matrix operations",
+      "exactness": "exact_or_approximate_advisory",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-COMM-001",
+      "name": "community_detection",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "IncidentCausalGraph",
+        "OperationalMemoryGraph"
+      ],
+      "decision": "Recurring episode/failure-domain hypotheses",
+      "authoritativeness": "derived",
+      "tieBreak": "objective then canonical partition encoding",
+      "complexityWitness": "edge scans and moves",
+      "exactness": "approximate_advisory",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-SPECTRAL-001",
+      "name": "spectral_change_detection",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SpatioTemporalTrackGraph",
+        "DeviceFailureGraph"
+      ],
+      "decision": "Topology or transition-regime anomaly",
+      "authoritativeness": "derived",
+      "tieBreak": "eigen score then stable node identity",
+      "complexityWitness": "matrix-vector products and residual norms",
+      "exactness": "approximate_advisory",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-INTERDICT-001",
+      "name": "network_interdiction_and_robust_placement",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "SensorCoverageGraph",
+        "DeviceFailureGraph"
+      ],
+      "decision": "Adversarial blind-spot and placement analysis",
+      "authoritativeness": "derived",
+      "tieBreak": "loss then canonical removal/placement set",
+      "complexityWitness": "cut/flow solves and branch nodes",
+      "exactness": "bounded_exact_or_approximate",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-RELIABILITY-001",
+      "name": "reliability_bounds",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "DeviceFailureGraph",
+        "ArchiveObjectGraph"
+      ],
+      "decision": "Failure probability bounds under correlated domains",
+      "authoritativeness": "derived",
+      "tieBreak": "bound then stable scenario identity",
+      "complexityWitness": "scenario evaluations and convolution steps",
+      "exactness": "bounded_statistical",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-FACTOR-001",
+      "name": "factorized_free_join",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "EvidenceClaimGraph",
+        "SpatioTemporalTrackGraph"
+      ],
+      "decision": "Multiway pattern queries without explosive intermediates",
+      "authoritativeness": "derived",
+      "tieBreak": "lexicographic stable relation key",
+      "complexityWitness": "iterator seeks, intersections, and emitted factors",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    },
+    {
+      "id": "ALG-ZSET-001",
+      "name": "zset_incremental_maintenance",
+      "owner": "fss-graph-algorithms",
+      "projection": [
+        "All derived projections"
+      ],
+      "decision": "Incremental views/subscriptions/statistics from capsule deltas",
+      "authoritativeness": "derived",
+      "tieBreak": "commit sequence then stable tuple key",
+      "complexityWitness": "delta tuple updates and circuit activations",
+      "exactness": "exact",
+      "gate": "INT-FNX-001",
+      "status": "specified"
+    }
+  ]
+}

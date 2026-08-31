@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/cancellation_drain_certificate.v1.json",
+  "title": "Cancellation drain certificate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "regionId",
+    "requestId",
+    "requestedAt",
+    "reasonChain",
+    "potentialSamples",
+    "completedChildren",
+    "abandonedChildren",
+    "outstandingEffects",
+    "lastAuthorityAnchor",
+    "terminalOutcome",
+    "certificateDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.cancellation_drain_certificate.v1"
+    },
+    "regionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "requestedAt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliestNs",
+        "latestNs",
+        "clockBasis"
+      ],
+      "properties": {
+        "earliestNs": {
+          "type": "integer"
+        },
+        "latestNs": {
+          "type": "integer"
+        },
+        "clockBasis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "uncertaintyReason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "reasonChain": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "maxLength": 1024
+      }
+    },
+    "potentialSamples": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "timeNs",
+          "value",
+          "regime"
+        ],
+        "properties": {
+          "timeNs": {
+            "type": "integer"
+          },
+          "value": {
+            "type": "number",
+            "minimum": 0
+          },
+          "regime": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      },
+      "maxItems": 100000
+    },
+    "completedChildren": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "abandonedChildren": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "outstandingEffects": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "lastAuthorityAnchor": {
+      "anyOf": [
+        {
+          "$ref": "evidence_anchor.v1.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "terminalOutcome": {
+      "enum": [
+        "cancelled",
+        "completed",
+        "failed",
+        "panicked",
+        "indeterminate"
+      ]
+    },
+    "certificateDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    }
+  }
+}

@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/model_execution_receipt.v1.json",
+  "title": "FSS Model Execution Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "jobId",
+    "inputRoots",
+    "modelPackageRoot",
+    "activationGeneration",
+    "preprocessProgram",
+    "postprocessProgram",
+    "operatorRegistryGeneration",
+    "executionPlanDigest",
+    "backend",
+    "numericPolicyDigest",
+    "budget",
+    "usage",
+    "outcome",
+    "decisionPathDigest"
+  ],
+  "properties": {
+    "schema": {"const": "fss.model_execution_receipt.v1"},
+    "jobId": {"type": "string", "minLength": 1, "maxLength": 256},
+    "inputRoots": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {"$ref": "sensor_capsule.v1.json#/$defs/digest"}
+    },
+    "modelPackageRoot": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+    "activationGeneration": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+    "preprocessProgram": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+    "postprocessProgram": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+    "operatorRegistryGeneration": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+    "executionPlanDigest": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+    "backend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "implementation", "hardware", "featureSet"],
+      "properties": {
+        "id": {"type": "string", "maxLength": 128},
+        "implementation": {"type": "string", "maxLength": 256},
+        "hardware": {"type": "string", "maxLength": 512},
+        "featureSet": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 128}}
+      }
+    },
+    "batch": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "class": {"type": "string", "maxLength": 128},
+        "size": {"type": "integer", "minimum": 1},
+        "shapeDigest": {"$ref": "sensor_capsule.v1.json#/$defs/digest"}
+      }
+    },
+    "numericPolicyDigest": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputBytes", "outputBytes", "peakBytes", "workUnits", "wallNs"],
+      "properties": {
+        "inputBytes": {"type": "integer", "minimum": 0},
+        "outputBytes": {"type": "integer", "minimum": 0},
+        "peakBytes": {"type": "integer", "minimum": 0},
+        "workUnits": {"type": "integer", "minimum": 0},
+        "wallNs": {"type": "integer", "minimum": 0}
+      }
+    },
+    "usage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["inputBytes", "outputBytes", "peakBytes", "workUnits", "wallNs"],
+      "properties": {
+        "inputBytes": {"type": "integer", "minimum": 0},
+        "outputBytes": {"type": "integer", "minimum": 0},
+        "peakBytes": {"type": "integer", "minimum": 0},
+        "workUnits": {"type": "integer", "minimum": 0},
+        "wallNs": {"type": "integer", "minimum": 0}
+      }
+    },
+    "outcome": {
+      "type": "string",
+      "enum": ["ok", "error", "cancelled", "panicked", "oom", "budget_exhausted", "indeterminate"]
+    },
+    "cancelReason": {"type": ["string", "null"], "maxLength": 512},
+    "errorId": {"type": ["string", "null"], "maxLength": 128},
+    "outputRoot": {"anyOf": [{"$ref": "sensor_capsule.v1.json#/$defs/digest"}, {"type": "null"}]},
+    "operatorTraceDigest": {"anyOf": [{"$ref": "sensor_capsule.v1.json#/$defs/digest"}, {"type": "null"}]},
+    "decisionPathDigest": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+    "shadowComparison": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "properties": {
+        "oracleIdentity": {"type": "string", "maxLength": 512},
+        "oracleOutputDigest": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+        "divergenceClass": {"type": "string", "maxLength": 256},
+        "metrics": {"type": "object", "additionalProperties": {"type": "number"}}
+      }
+    }
+  }
+}

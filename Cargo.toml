@@ -23,3 +23,11 @@ all = { level = "warn", priority = -1 }
 unwrap_used = "deny"
 expect_used = "deny"
 panic = "deny"
+
+[workspace.metadata.fss]
+production_language = "rust"
+sole_async_runtime = "asupersync"
+dependency_policy = "architecture/dependency_allowlist.toml"
+canonical_history = "EvidenceDeltaBatch"
+release_authority = "local_dsr_receipt"
+foreign_runtime_role = "sealed_laboratory_oracle_only"

@@ -1,14 +1,15 @@
 # Model registry and admission doctrine
 
-**Evidence snapshot:** 2026-08-30
+**Evidence snapshot:** 2026-08-31; architecture revision 2026-08-31
 **Current production models:** none
-**Core rule:** no model is part of the Rust trust root, and no model authorizes an effect
+**Core rule:** model packages execute only through the qualified first-party Rust runtime; model outputs remain derived evidence and never authorize an effect
 
 ## 1. Why a registry instead of “the best model”
 
 The best model changes quickly, licenses differ by checkpoint, preprocessing silently changes
 semantics, and surveillance quality is deployment-specific. FSS therefore admits immutable model
-generations through a gauntlet rather than naming one permanent winner.
+packages through a gauntlet rather than naming one permanent winner. Upstream PyTorch/ONNX code and
+weights are import evidence, not production execution dependencies.
 
 A model generation includes:
 
@@ -16,7 +17,7 @@ A model generation includes:
 - code and weight digests;
 - license and use restrictions;
 - preprocessing/tokenization/frame sampling/audio transform;
-- runtime/container/CUDA/driver/hardware policy;
+- canonical FrankenTorch operator graph, backend/CPU-feature policy, and optional separately qualified accelerator policy;
 - quantization and precision;
 - input/output schema;
 - deterministic settings and known nondeterminism;
@@ -27,15 +28,31 @@ A model generation includes:
 
 Two checkpoints with the same marketing name are different generations if any of these change.
 
+### 1.1 Production runtime contract
+
+The production path is defined by [`architecture/model_runtime_registry.json`](architecture/model_runtime_registry.json)
+and [`docs/PURE_RUST_MODEL_RUNTIME.md`](docs/PURE_RUST_MODEL_RUNTIME.md):
+
+1. import upstream artifacts offline into canonical tensor objects and a frozen first-party operator IR;
+2. reject unknown operators, dynamic code, runtime downloads, unbounded shapes, and ambiguous preprocessing;
+3. execute under Asupersync ownership with a deterministic memory plan and typed resource budget;
+4. preserve scalar reference semantics and exact or tolerance-certified optimized kernels;
+5. publish a model package root last, then emit a receipt for every invocation;
+6. treat quantization, lowering, packing, calibration, prompt vocabulary, and preprocessing as package-generation changes;
+7. keep PyTorch, ONNX Runtime, OpenCV, CUDA framework stacks, and vendor inference services in fixture-only laboratory lanes.
+
+A checkpoint that cannot yet be lowered and executed safely in first-party Rust is **unsupported**.
+It does not acquire a hidden Python/ONNX fallback.
+
 ## 2. Candidate roles
 
 | Registry ID | Candidate | Role in FSS | Public license signal | Initial disposition |
 |---|---|---|---|---|
-| `MOD-RFDETR-001` | RF-DETR Apache-designated models | fast detection/instance segmentation, fine-tuned hard-negative baseline | Apache-2.0 for core package/designated weights; Plus models differ | strong production candidate after local gauntlet |
+| `MOD-RFDETR-001` | RF-DETR Apache-designated models | fast detection/instance segmentation, fine-tuned hard-negative baseline | Apache-2.0 for core package/designated weights; Plus models differ | first-party import target after operator and quality gates |
 | `MOD-GDINO-001` | Grounding DINO | open-vocabulary detector and verifier | upstream/code/weight review required per exact revision | candidate oracle/secondary detector |
 | `MOD-SAM3-001` | Meta SAM 3/3.1 | text/exemplar-conditioned segmentation and video tracking | exact checkpoint license review required | high-value candidate, not pre-approved |
 | `MOD-COTRACKER3-001` | CoTracker3 | point tracking through occlusion; calibration support | exact code/checkpoint review required | geometry/tracking candidate |
-| `MOD-QWEN3VL8B-001` | Qwen3-VL-8B-Instruct | bounded temporal/spatial VLM reasoning | model card reports Apache-2.0 | primary VLM candidate, must be calibrated |
+| `MOD-QWEN3VL8B-001` | Qwen3-VL-8B-Instruct | bounded temporal/spatial VLM reasoning | model card reports Apache-2.0 | high-value import target; unsupported until full operator/resource gates pass |
 | `MOD-INTERNVIDEO25-001` | InternVideo2.5 / InternVideo-Next family | video representation and long-context verifier | repo code Apache-2.0; checkpoint-specific review | research/production candidate by exact model |
 | `MOD-WEMM9B-001` | Tencent WeMM-Embedding-9B | text/image/video retrieval embeddings | model card reports Apache-2.0 | search/association candidate; no audio |
 | `MOD-AVF-001` | NVIDIA Nemotron-Labs Audio-Visual Flamingo | synchronized audio-video research oracle | NVIDIA OneWay noncommercial | research-only; prohibited default product model |
@@ -98,25 +115,36 @@ are not learned online.
 
 ## 4. Admission gates
 
-A production model must pass:
+An upstream checkpoint becomes a production FSS package only after deterministic lowering into the
+admitted pure-Rust operator universe. It must pass:
 
-1. **Identity gate:** immutable artifacts, no runtime “latest” downloads.
-2. **License gate:** code, weights, datasets, dependencies, and deployment use reviewed.
-3. **Schema gate:** bounded typed input/output; malformed output fails closed.
-4. **Isolation gate:** no arbitrary network/filesystem/effect capability; process cleanup proven.
-5. **Resource gate:** worst-case memory, GPU, CPU, input size, and cancellation.
-6. **Determinism gate:** exact nondeterminism characterized; decision fingerprint stable where
-   required.
-7. **Quality gate:** held-out property-security corpus, event metrics, subgroup slices, confidence
+1. **Identity gate:** immutable artifacts, exact digests, and no runtime “latest” downloads.
+2. **License gate:** code, weights, datasets, dependencies, and deployment use reviewed for the
+   exact package generation.
+3. **Schema gate:** bounded typed input/output; unknown shapes, operators, or malformed output fail
+   closed.
+4. **Pure-Rust lowering gate:** every required operator has admitted shape/dtype/layout/alias/numeric
+   semantics and a scalar reference; no Python/ONNX/libtorch/vendor fallback path exists.
+5. **Capability gate:** the executor receives only explicit tensor/object roots, budgets, clocks,
+   and cancellation authority; it has no ambient network, filesystem, credentials, or effect
+   capability.
+6. **Resource gate:** worst-case tensor and scratch memory, CPU/optional admitted accelerator work,
+   input/output size, work units, and cancellation responsiveness are bounded.
+7. **Determinism gate:** exact nondeterminism is characterized and the canonical result/decision
+   fingerprint is stable wherever the package contract requires it.
+8. **Quality gate:** held-out property-security corpus, event metrics, subgroup slices, confidence
    intervals, and negative evidence.
-8. **Calibration gate:** reliability/selective-risk/conformal assumptions tested for the exact
-   generation.
-9. **Adversarial gate:** darkness, black clothing, crawling, partial body, masks, backlighting,
-   weather, foliage, animals, reflections, monitors/replay, camera motion, and corruption.
-10. **Drift gate:** deployment telemetry detects score/input/quality shift without exposing private
-    media.
-11. **Upgrade gate:** shadow evaluation, generation isolation, atomic activation, rollback.
-12. **Removal gate:** indexes/caches can be rebuilt and the generation can be revoked.
+9. **Calibration gate:** reliability, selective-risk, sequential, and conformal assumptions tested
+   for the exact package, deployment class, and policy generation.
+10. **Adversarial gate:** darkness, dark clothing, crawling, partial body, masks, backlighting,
+    weather, foliage, animals, reflections, displays/replay, camera motion, malformed media, and
+    resource pressure.
+11. **Drift gate:** deployment telemetry detects score, input, quality, and observability shift
+    without exposing unnecessary private media.
+12. **Upgrade gate:** shadow evaluation, package-generation isolation, root-last activation,
+    rollback, and index/cache-space separation.
+13. **Removal gate:** package execution can be revoked and every dependent index, embedding, cache,
+    receipt, and active policy reference can be enumerated and rebuilt or retired.
 
 ## 5. Evaluation metrics
 
@@ -131,8 +159,8 @@ Frame mAP is useful for a detector and insufficient for the product. FSS records
 - selective risk versus abstention/extra-evidence rate;
 - cross-camera association precision/recall and ID switches;
 - tamper detection delay;
-- model crash/malformed-output rate;
-- GPU seconds, joules, decoded pixels, and cost per analyzed camera-hour;
+- model executor failure/malformed-output rate;
+- CPU/accelerator work-seconds, joules, decoded pixels, and cost per analyzed camera-hour;
 - sensitivity to time/calibration uncertainty;
 - confidence intervals and raw sample manifests.
 

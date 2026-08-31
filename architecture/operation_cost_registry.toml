@@ -1,56 +1,218 @@
-schema = "fss.operation_cost_registry.v1"
-as_of = "2026-08-30"
+schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
 
 [[operation]]
 id = "COST-ACQUIRE-001"
 name = "ingest one encoded segment"
 unit = "segment"
-semantic_steps = ["adapter_receive", "timestamp_bound", "hash", "ledger_reserve", "object_stage", "root_publish"]
-variable_costs = ["source_bytes", "packet_count", "hash_bytes", "durability_barriers"]
+semantic_steps = ["adapter_receive", "timestamp_bound", "packet_index", "content_digest", "ledger_reserve", "object_stage", "root_publish"]
+variable_costs = ["source_bytes", "packet_count", "loss_reorder", "durability_barriers"]
 slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-RTSP-001"
+name = "maintain one RTSP/RTP stream"
+unit = "stream_second"
+semantic_steps = ["session_keepalive", "packet_receive", "rtcp_update", "continuity_accounting", "bounded_buffer"]
+variable_costs = ["packets", "jitter", "loss", "auth_refresh"]
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-PARSE-001"
+name = "parse one compressed access unit"
+unit = "access_unit"
+semantic_steps = ["framing", "parameter_epoch", "syntax_parse", "bounds_validate", "index_publish"]
+variable_costs = ["bytes", "nal_or_obu_count", "syntax_depth"]
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-DECODE-001"
+name = "decode one video frame"
+unit = "megapixel_frame"
+semantic_steps = ["reference_resolve", "entropy_decode", "inverse_transform", "prediction", "reconstruction", "color_output"]
+variable_costs = ["codec_profile", "bit_depth", "pixels", "reference_count"]
+slo_ids = ["SLO-DETECT-001"]
 status = "model_required"
 
 [[operation]]
 id = "COST-PROXY-001"
 name = "produce low-latency operator proxy"
 unit = "source_second"
-semantic_steps = ["decode_if_required", "scale", "encode", "segment", "publish"]
-variable_costs = ["decoded_pixels", "encoded_pixels", "codec_generation", "gpu_or_cpu_seconds"]
+semantic_steps = ["remux_or_decode", "scale", "encode", "segment", "publish"]
+variable_costs = ["decoded_pixels", "encoded_pixels", "codec_generation", "cpu_or_accelerator_seconds"]
 slo_ids = ["SLO-LIVE-001"]
 status = "model_required"
 
 [[operation]]
-id = "COST-ANALYZE-001"
-name = "run event cognition cascade"
-unit = "candidate_window"
-semantic_steps = ["quality_gate", "motion_gate", "detect", "track", "associate", "temporal_reason", "calibrate", "adjudicate"]
-variable_costs = ["frames", "pixels", "active_tracks", "model_invocations", "gpu_seconds"]
+id = "COST-QUALITY-001"
+name = "evaluate sensor/frame quality"
+unit = "frame"
+semantic_steps = ["health_features", "blur_exposure_occlusion", "tamper_state", "receipt"]
+variable_costs = ["pixels", "history_window"]
+slo_ids = ["SLO-DETECT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-DETECT-001"
+name = "run detector/segmenter"
+unit = "candidate_batch"
+semantic_steps = ["preprocess", "model_execute", "postprocess", "publish_result"]
+variable_costs = ["pixels", "batch", "model_generation", "kernel_plan"]
 slo_ids = ["SLO-DETECT-001", "SLO-COST-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-TRACK-001"
+name = "update within-camera tracks"
+unit = "frame_track_set"
+semantic_steps = ["predict", "gate", "assign", "update", "retire", "publish_delta"]
+variable_costs = ["active_tracks", "detections", "assignment_edges"]
+slo_ids = ["SLO-DETECT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-ASSOC-001"
+name = "associate cross-camera tracklets"
+unit = "association_window"
+semantic_steps = ["transition_candidates", "feature_compare", "temporal_gate", "k_best_assign", "publish_hypotheses"]
+variable_costs = ["tracklets", "candidate_edges", "k", "graph_size"]
+slo_ids = ["SLO-DETECT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-ANALYZE-001"
+name = "run full event cognition cascade"
+unit = "candidate_window"
+semantic_steps = ["quality_gate", "motion_gate", "detect", "track", "associate", "temporal_reason", "independent_verify", "calibrate", "adjudicate"]
+variable_costs = ["frames", "pixels", "active_tracks", "model_invocations", "cpu_or_accelerator_seconds"]
+slo_ids = ["SLO-DETECT-001", "SLO-COST-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-GRAPH-001"
+name = "run one registered graph algorithm"
+unit = "algorithm_run"
+semantic_steps = ["pin_projection", "authorize_projection", "execute_reference_or_optimized", "emit_witness", "shape_output"]
+variable_costs = ["n", "m", "algorithm_operations", "output_size"]
+slo_ids = ["SLO-AGENT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-SEARCH-001"
+name = "serve progressive evidence search"
+unit = "query"
+semantic_steps = ["pin_generation", "exact_filter", "lexical_candidates", "graph_expand", "semantic_refine", "score_ledger", "shape_output"]
+variable_costs = ["documents", "candidate_count", "graph_edges", "model_calls", "tokens"]
+slo_ids = ["SLO-AGENT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-EVENT-001"
+name = "commit one event revision"
+unit = "event_revision"
+semantic_steps = ["collect_witnesses", "revalidate", "policy_evaluate", "reserve", "publish", "notify"]
+variable_costs = ["evidence_edges", "negative_domains", "policy_rules"]
+slo_ids = ["SLO-DETECT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-ALERT-001"
+name = "deliver and verify one alert"
+unit = "alert_attempt"
+semantic_steps = ["prepare", "idempotency_reserve", "dispatch", "observe_receipt", "retry_or_reconcile", "verify"]
+variable_costs = ["channels", "payload_bytes", "retry_count"]
+slo_ids = ["SLO-ALERT-001"]
 status = "model_required"
 
 [[operation]]
 id = "COST-ARCHIVE-001"
 name = "publish one archive object graph"
 unit = "published_gibibyte"
-semantic_steps = ["chunk", "encrypt", "multipart_stage", "verify_children", "publish_root", "retrievability_sample"]
-variable_costs = ["bytes", "objects", "put_operations", "head_operations", "egress", "retrieval"]
+semantic_steps = ["chunk", "encrypt", "repair_encode", "remote_stage", "verify_children", "publish_root", "retrievability_sample"]
+variable_costs = ["bytes", "objects", "repair_ratio", "put_head_operations", "egress", "retrieval"]
 slo_ids = ["SLO-ARCHIVE-001", "SLO-COST-002"]
 status = "model_required"
 
 [[operation]]
-id = "COST-QUERY-001"
-name = "serve one agent event query"
-unit = "query"
-semantic_steps = ["anchor", "lexical_candidates", "semantic_candidates", "graph_projection", "fusion", "evidence_shape"]
-variable_costs = ["candidate_count", "embedding_invocations", "tokens_returned", "ledger_reads"]
-slo_ids = ["SLO-AGENT-001"]
+id = "COST-ATP-001"
+name = "transfer one immutable object graph"
+unit = "transferred_gibibyte"
+semantic_steps = ["plan", "manifest_verify", "fetch", "repair_if_needed", "object_verify", "closure_verify", "root_publish"]
+variable_costs = ["bytes", "objects", "paths", "loss", "repair_symbols"]
+slo_ids = ["SLO-ARCHIVE-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-RETRIEVE-001"
+name = "prove retrievability of retained data"
+unit = "challenge"
+semantic_steps = ["select_samples", "remote_range_get", "verify", "record", "schedule_repair"]
+variable_costs = ["sample_bytes", "objects", "providers", "latency"]
+slo_ids = ["SLO-ARCHIVE-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-DELETE-001"
+name = "execute one deletion closure"
+unit = "deletion_plan"
+semantic_steps = ["authorize", "enumerate_reachability", "delete_children", "verify_absence", "publish_tombstone"]
+variable_costs = ["reachable_objects", "providers", "indexes", "replicas"]
+slo_ids = ["SLO-PRIVACY-001"]
 status = "model_required"
 
 [[operation]]
 id = "COST-CALIBRATE-001"
 name = "qualify one calibration generation"
 unit = "calibration_session"
-semantic_steps = ["ingest", "synchronize", "feature_track", "geometry_infer", "bundle_adjust", "coverage_compute", "certificate_publish"]
-variable_costs = ["frames", "camera_count", "track_count", "optimizer_iterations", "gpu_seconds"]
+semantic_steps = ["ingest", "synchronize", "feature_track", "geometry_infer", "bundle_adjust", "covariance", "coverage_compute", "certificate_publish"]
+variable_costs = ["frames", "camera_count", "track_count", "optimizer_iterations"]
 slo_ids = ["SLO-CAL-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-TWIN-001"
+name = "build one digital-twin generation"
+unit = "mapping_session"
+semantic_steps = ["select_frames", "pose_estimate", "depth_or_gaussian_reconstruct", "fuse", "quality_check", "publish"]
+variable_costs = ["frames", "pixels", "points_or_gaussians", "iterations"]
+slo_ids = ["SLO-CAL-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-MODEL-IMPORT-001"
+name = "import and qualify one model package"
+unit = "model_generation"
+semantic_steps = ["verify_source", "lower_ir", "canonicalize_tensors", "static_analyze", "oracle_compare", "quality_eval", "repair_encode", "publish"]
+variable_costs = ["operators", "tensor_bytes", "corpus_examples", "oracle_runs"]
+slo_ids = ["SLO-MODEL-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-QUERY-001"
+name = "serve one agent investigation query"
+unit = "query"
+semantic_steps = ["anchor", "structured_filter", "search", "graph_projection", "fusion", "memory_pack", "evidence_shape"]
+variable_costs = ["rows", "candidates", "graph_operations", "tokens", "model_calls"]
+slo_ids = ["SLO-AGENT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-CHECKPOINT-001"
+name = "publish one authority checkpoint"
+unit = "checkpoint"
+semantic_steps = ["freeze_anchor", "materialize_state", "seal_replay_tail", "verify", "publish_root"]
+variable_costs = ["state_bytes", "delta_count", "indexes"]
+slo_ids = ["SLO-RECOVERY-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-RELEASE-001"
+name = "qualify and publish one software release"
+unit = "release_matrix"
+semantic_steps = ["clean_snapshot", "resolve_sibling_closure", "run_lanes", "build_targets", "package", "sign", "upload", "download_verify", "publish_root"]
+variable_costs = ["targets", "lanes", "test_time", "artifact_bytes"]
+slo_ids = ["SLO-RELEASE-001"]
 status = "model_required"

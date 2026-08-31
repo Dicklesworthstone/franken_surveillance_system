@@ -15,7 +15,7 @@
 /archive-spool/
 /model-cache/
 /device-fixtures/private/
-/qualification-artifacts/local/
+/qualification-artifacts/
 
 __pycache__/
 *.py[cod]

@@ -4,25 +4,23 @@ This is the compact operational reference. The comprehensive plan owns the full 
 
 ## 1. System boundary
 
-FSS runs primarily on an operator-owned edge node. It may supervise local camera/drone adapters,
-codec processes, GPU model hosts, and encrypted object-store publication. Cloud services are
-optional archives or vendor bridges, not the canonical cognition/control plane.
+FSS runs primarily on an operator-owned edge node. Production acquisition, packet/media parsing, model execution, graph algorithms, policy, and effects are first-party pure Rust under Asupersync. Foreign codec/model/vendor applications are pinned laboratory or migration oracles only. Cloud services are optional archives or owner-authorized vendor bridges, not the canonical cognition/control plane.
 
 ```text
 camera VLAN / USB / owner cloud / drone app
                  │
-       scoped adapter host processes
+      first-party scoped Rust adapters
                  │  packet capsules + receipts
                  ▼
       acquisition and continuity regions
                  │
-        source-object custody ledger
+  EvidenceDeltaBatch + source-object custody
                  │
        ┌─────────┴──────────┐
        ▼                    ▼
  live proxy          analysis/event pipeline
        │                    │
- operator UI        geometry + model hosts
+ operator UI      geometry + Rust model runtime
                             │
                     immutable event revisions
                             │
@@ -59,9 +57,9 @@ revalidation, commit, observation, and verification.
 |---|---|---|
 | safe semantic core | typed values and injected capabilities | ambient network/filesystem/time/secrets |
 | acquisition adapter | one scoped device/account and bounded output channel | canonical DB, unrelated devices, model prompts |
-| codec host | designated media descriptors/bytes and declared transforms | credentials, policy, archive keys |
-| model host | authorized redacted inputs and immutable model files | effects, vendor credentials, arbitrary filesystem/network |
-| archive host | encrypted chunks and scoped bucket credentials | plaintext media unless policy explicitly selects it |
+| media kernel | designated packet/object bytes and declared transforms | credentials, policy, archive keys, unbounded allocation |
+| model runtime | authorized redacted tensors and immutable model packages | effects, vendor credentials, arbitrary filesystem/network |
+| pure-Rust archive service | encrypted chunks and scoped bucket credentials | plaintext media unless policy explicitly selects it |
 | report renderer | typed redacted report model and provided assets | independent data fetch or secret lookup |
 | agent/MCP server | bounded projections and explicitly granted effects | generic shell, raw secret, arbitrary vendor method |
 
@@ -133,13 +131,9 @@ FSS has three distinct media representations:
 
 1. **Source evidence:** original packets/files whenever policy permits. Never silently transcoded.
 2. **Live proxy:** low-latency, disposable, operator-oriented stream.
-3. **Analysis surfaces:** decoded/color-converted/scaled/sampled frames with exact derivation
-   receipts.
+3. **Analysis surfaces:** decoded/color-converted/scaled/sampled frames with exact derivation receipts.
 
-Where possible, source packets are remuxed rather than decoded/re-encoded. FFmpeg or an equivalent
-is a pinned supervised subprocess. Commands are generated from typed plans, not concatenated user
-strings. Output bounds, descriptors, environment, seccomp/sandbox, timeouts, and process groups are
-part of qualification.
+The production media path is first-party Rust: transport, RTP/RTCP, container/timeline, access-unit parsing, source maps, bounded codec kernels, live proxy, and analysis transforms. Remux is preferred to decode/re-encode. Scalar parsers/kernels remain semantic oracles for safe optimized implementations. FFmpeg/ffprobe are differential laboratory tools only and cannot be required by a supported production profile.
 
 ## 9. Cognition path
 
@@ -164,7 +158,7 @@ event revision, abstention, or request for evidence
 ```
 
 Every stage can degrade independently. The policy receives both positive evidence and missing-
-evidence reasons. Model hosts emit structured outputs only; free-form prose is an explanation
+evidence reasons. Model executors emit structured outputs only; free-form prose is an explanation
 projection, not the decision contract.
 
 ## 10. Geometry path
@@ -192,6 +186,19 @@ reserve identities
 Object-store success does not imply ledger publication; ledger commit does not imply remote
 retrievability. Receipts preserve each boundary.
 
+
+## 11.1 One version universe
+
+Every canonical change is an immutable ordered `EvidenceDeltaBatch`. Ledger projections, graph/search generations, subscriptions, checkpoints, replicas, and branches consume the same stream and declare exact high-water marks. Every read pins an `EvidenceAnchor`; every absence claim carries a `CoverageWitness`.
+
+## 11.2 ATP object plane
+
+Large immutable source, checkpoint, model, graph/search, export, proof, and release objects move through ATP manifests with quarantine, per-object verification, graph-closure verification, resumable journals, repair symbols, root-last publication, and retrievability receipts. ATP never carries non-idempotent effect authority.
+
+## 11.3 Certified graph kernel
+
+Graph queries operate on authorized immutable projections. Non-unique results declare CGSE tie policy and output ordering. Planning-relevant calls emit `GraphAlgorithmWitness` with anchor, projection, complexity counts, budget, exactness/error bound, decision-path digest, and output digest.
+
 ## 12. Agent query model
 
 Queries are bounded projections at an anchor. They return:
@@ -213,7 +220,7 @@ the architecture’s owner.
 |---|---|---|
 | `edge-lite` | laptop/SBC/CPU-only | standards acquisition, source custody, cheap motion/detection, remote optional verifier |
 | `edge-gpu` | desktop GPU/Apple Silicon/NVIDIA edge | full local detector/tracker, bounded VLM, geometry |
-| `split-gpu` | edge node + trusted GPU worker | encrypted/authorized evidence capsules over ATP-style transport |
+| `split-gpu` | edge node + trusted pure-Rust GPU executor | encrypted/authorized evidence capsules over ATP-style transport |
 | `archive-only` | NAS/server | restore, scrub, search, report; no live acquisition |
 | `lab` | isolated test network | proprietary adapters, packet capture, firmware matrix, aggressive faults |
 

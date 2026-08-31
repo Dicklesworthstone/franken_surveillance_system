@@ -1,0 +1,35 @@
+{
+  "schema": "fss.dependency_constitution.v1",
+  "asOf": "2026-08-31",
+  "normativePolicy": "architecture/dependency_allowlist.toml",
+  "production": {
+    "language": "rust-2024",
+    "toolchain": "latest-accepted-pinned-nightly",
+    "unsafe": "forbidden-in-all-fss-crates",
+    "asyncRuntime": "asupersync-only",
+    "closedUniverse": true,
+    "lockedOfflineReleaseResolution": true,
+    "runtimeAcquisition": false,
+    "cCppFfi": false,
+    "dynamicLoading": false,
+    "foreignExecutables": false,
+    "serdeDurableFormatAuthority": false
+  },
+  "classes": [
+    {"id": "DEP-CLASS-F0", "name": "rust-language-and-stdlib", "admission": "constitutional"},
+    {"id": "DEP-CLASS-F1", "name": "asupersync", "admission": "INT-AS-001"},
+    {"id": "DEP-CLASS-F2", "name": "franken-suite", "admission": "per-mechanism-import-gate"},
+    {"id": "DEP-CLASS-F3", "name": "fundamental-rust-data-shape", "admission": "DEP-record-and-transitive-audit"},
+    {"id": "DEP-CLASS-F4", "name": "laboratory-oracle", "admission": "non-production-quarantine-only"}
+  ],
+  "releaseEvidence": [
+    "exact source and sibling commits",
+    "Cargo.lock digest and cargo metadata --locked --offline",
+    "enabled feature and target closure",
+    "build-script and proc-macro census",
+    "unsafe/FFI/dynamic-loading/runtime-acquisition scan",
+    "license and source identities",
+    "DSR local lane receipts",
+    "absence of laboratory oracle packages and executables"
+  ]
+}

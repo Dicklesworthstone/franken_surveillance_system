@@ -19,10 +19,9 @@ fixtures, and operational testing.
 - No committed credentials, tokens, device certificates, private packet captures, or household
   footage.
 - No model or device support claim without an exact immutable identity and qualification artifact.
-- No `unsafe` in core crates. A future boundary exception needs an ADR, narrow crate, audit owner,
-  safe facade, fuzz target, and ledger entry.
+- No `unsafe` anywhere in the FSS workspace. A required low-level primitive must be implemented and qualified in an independently owned first-party substrate crate exposing a safe contract; FSS does not create local exceptions.
 - No Tokio ecosystem in the workspace.
-- No detached task or unowned subprocess.
+- No detached task. Production invokes no foreign subprocess; laboratory-oracle processes must be explicitly owned, bounded, drained, and excluded from release closure.
 - No hidden network downloads during build or test.
 - No mutable durable format serialized from an unversioned Rust enum.
 - No benchmark result without raw samples, environment, oracle, variance, and reproduction command.
@@ -31,11 +30,7 @@ fixtures, and operational testing.
 ## Required local checks
 
 ```bash
-python3 scripts/check-policy.py
-cargo fmt --all --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+bash scripts/qualify.sh
 ```
 
 Device, model, archive, and performance changes add their own qualification lanes. Hosted CI is not

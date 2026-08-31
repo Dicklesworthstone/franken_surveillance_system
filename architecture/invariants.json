@@ -1,6 +1,6 @@
 {
-  "schema": "fss.invariants.v1",
-  "asOf": "2026-08-30",
+  "schema": "fss.invariants.v2",
+  "asOf": "2026-08-31",
   "invariants": [
     {
       "id": "INV-001",
@@ -150,6 +150,266 @@
     {
       "id": "INV-030",
       "text": "Any operation whose registered cost cannot satisfy its SLO fails design review before implementation.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-031",
+      "text": "The production dependency universe is closed to FSS, admitted first-party crates, and registered foundational exceptions; convenience is not an exception.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-032",
+      "text": "Foreign codecs, model runtimes, vendor SDKs, vendor applications, and proprietary helpers may appear only in sealed laboratory or one-time migration lanes and are excluded from the production release closure and runtime invocation graph.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-033",
+      "text": "Production neither dynamically loads code nor downloads models, plugins, schemas, tokenizers, or executable artifacts at runtime.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-034",
+      "text": "All canonical history, graph/search updates, subscriptions, branches, and replication derive from one ordered EvidenceDeltaBatch universe.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-035",
+      "text": "Every derived generation names the exact authoritative high-water mark and projection policy it consumed.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-036",
+      "text": "External object identities are stable and never recycled; stale internal handles are rejected by generation.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-037",
+      "text": "Every non-unique graph or planning answer declares a canonical tie-break, output order, numeric policy, and decision-path digest.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-038",
+      "text": "Authorization and privacy scope are compiled before graph/search expansion so counts, degree, reachability, and absence cannot leak hidden state.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-039",
+      "text": "Every planning-relevant graph execution emits a complexity and output witness against a pinned projection and anchor.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-040",
+      "text": "Resource pressure may degrade only through a registered ladder and can never silently drop canonical evidence, committed effects, or required cleanup obligations.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-041",
+      "text": "A zero-copy or shared view pins immutable or versioned backing storage and cannot outlive reuse or reallocation of that storage.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-042",
+      "text": "A zero-copy or performance claim requires semantic-equivalence proof and same-binary measurement showing that the removed copy or cost is actually material.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-043",
+      "text": "Shipping acquisition, media, codec, model, graph, storage, UI, and orchestration paths are first-party Rust and cannot dispatch to a foreign executable or language runtime.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-044",
+      "text": "Model weights and executable graphs are immutable, local, verified object graphs; production model execution performs no network acquisition.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-045",
+      "text": "Every accelerator result identifies device, kernel, numeric, and model generations and satisfies a registered deterministic or tolerance-certified contract.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-046",
+      "text": "ATP publishes a received object graph only after child closure, post-repair canonical digests, and the root identity verify.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-047",
+      "text": "ATP transports immutable state and evidence but never carries mutation authority for alerts, deletion, PTZ, activation, or other consequential effects.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-048",
+      "text": "Archive completion requires the configured replication and retrievability evidence, not merely a successful upload response.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-049",
+      "text": "Every FSS workspace crate, target, example, test, and build helper carries an unconditional unsafe-code prohibition; the FSS repository defines no unsafe exception path.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-050",
+      "text": "Adaptive policies are shadow-first, hard-clamped, reproducible, and paired with a safe fallback and rollback root.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-051",
+      "text": "A release is built from a clean source snapshot with an exact clean Asupersync and Franken-suite sibling revision closure.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-052",
+      "text": "A partial platform or qualification matrix may retain staged artifacts but can never publish or bless a release root.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-053",
+      "text": "Every public claim has a registered class, scope, evidence roots, exclusions, and expiry or revalidation trigger.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-054",
+      "text": "A calibration generation carries covariance or uncertainty, validity regions, residual evidence, and explicit invalidation conditions.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-055",
+      "text": "Claims of corroboration or independence name shared sensors, models, clocks, networks, training data, and other failure domains.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-056",
+      "text": "No search, graph, event, or coverage surface claims absence or completeness without a coverage certificate over the authorized domain and generation.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-057",
+      "text": "A speculative branch cannot commit fabricated state; it may emit only candidate intents that are recompiled and revalidated against live authority.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-058",
+      "text": "Every long-running operation has durable identity, checkpoints, ownership, resume fences, and a terminal or explicitly indeterminate result.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-059",
+      "text": "Canonical durable bytes use hand-written versioned formats with magic, limits, canonical ordering, checksums, and migration fixtures; serde layout is never the format.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-060",
+      "text": "Build scripts and sealed qualification perform no network access and use only pre-provisioned verified inputs with locked offline resolution.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-061",
+      "text": "Asupersync is the only asynchronous runtime; no detached task, second executor, or unowned worker may enter the process.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-062",
+      "text": "A proprietary device is production-supported only through an owned wire protocol, documented local interface, standards surface, or safe admitted first-party substrate; vendor SDKs and app automation remain laboratory-only.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-063",
+      "text": "Every canonical read pins one EvidenceAnchor; a result cannot silently mix device, stream, ledger, graph, search, model, policy, or calibration generations.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-064",
+      "text": "Every negative read carries a CoverageWitness naming the authorized domain, continuity, completeness, exclusions, and stop reason.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-065",
+      "text": "Concurrent plans validate semantic read and write witnesses; raw-byte merge and last-writer-wins are forbidden for canonical security state.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-066",
+      "text": "ATP transports immutable verified object graphs and resumable evidence only; non-idempotent physical or notification effects never ride the bulk transfer plane.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-067",
+      "text": "Staged, visible, durable, replicated, and protected publication states are distinct and cannot be collapsed into a single success flag.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-068",
+      "text": "A searchable in-memory delta is provisional until its durable generation root is verified and published; callers can distinguish both states.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-069",
+      "text": "Graph, search, geometry, memory, and model results are anchor-pinned derived projections and cannot silently redefine canonical evidence.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-070",
+      "text": "Every non-unique algorithmic answer declares a deterministic tie-break policy, output order, and decision-path digest.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-071",
+      "text": "Every planning-relevant graph execution emits a GraphAlgorithmWitness with projection identity, complexity counts, budget, exactness, and output digest.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-072",
+      "text": "Authorization and privacy filtration occur before search, graph expansion, aggregation, absence counting, or model input construction.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-073",
+      "text": "Regime detectors and adaptive policies may tune batching, sampling, caching, and refinement effort but may never lower safety, privacy, freshness, witness, or confirmation requirements.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-074",
+      "text": "Observation history, time travel, replication, subscriptions, derived high-water marks, and speculative branches share one append-only version universe.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-075",
+      "text": "Every advertised archive or evidence root is independently reconstructible from its manifest and is subject to periodic retrievability and repair drills.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-076",
+      "text": "A release begins from a clean source identity and an exact clean sibling-revision closure; mutable developer checkouts are not release inputs.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-077",
+      "text": "The aggregate release manifest is withheld until every required local target and cross-target invariant passes and published bytes are downloaded and reverified.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-078",
+      "text": "The direct dependency universe is closed to std, the pinned nightly, Asupersync, admitted Franken-suite crates, and individually approved fundamental exceptions.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-079",
+      "text": "The production release is executable-language pure Rust; DSR/bootstrap scripts may orchestrate qualification but own no FSS runtime semantics and are not packaged as product dependencies.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-080",
+      "text": "Operational memory, centrality, anomaly scores, and learned household context are advisory and cannot authorize an effect without current canonical evidence and policy.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-081",
+      "text": "Diagnostics, progress certificates, traces, and optional statistical monitors may explain or schedule work but cannot mutate the authoritative result they observe.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-082",
+      "text": "A branch or counterfactual world may emit candidate intents only; fabricated branch state is never merged byte-for-byte into the live deployment.",
       "status": "normative"
     }
   ]

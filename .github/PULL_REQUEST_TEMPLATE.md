@@ -24,7 +24,7 @@ State exactly what this PR proves and what it does **not** qualify.
 
 - [ ] Registries, schemas, plan/status, code, and tests agree.
 - [ ] No credentials, private captures, household PII, or mutable “latest” artifacts are committed.
-- [ ] `python3 scripts/check-policy.py` passes after regenerating `MANIFEST.sha256`.
+- [ ] `bash scripts/qualify.sh --lane policy` passes after regenerating `MANIFEST.sha256`.
 - [ ] Rust formatting/check/Clippy/tests pass on the pinned toolchain where Rust changed.
 - [ ] New dependencies/authority/durable formats have an ADR and failure analysis.
 - [ ] Negative or null results are retained rather than omitted.

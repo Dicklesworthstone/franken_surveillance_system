@@ -1,20 +1,23 @@
-# ADR-0002 — Isolate codecs, vendor integrations, and model runtimes in boundary processes
+# ADR-0002 — Isolate foreign codecs, vendor integrations, and model runtimes in boundary processes
 
-**Status:** Accepted for architecture bootstrap
+**Status:** Superseded by [`ADR-0005`](ADR-0005-pure-rust-production-universe.md) and [`ADR-0010`](ADR-0010-foreign-runtimes-are-lab-oracles.md)
 
-## Decision
+## Historical decision
 
-Native codec stacks, vendor SDK/app automation, Python/CUDA model runtimes, and provider clients do
-not execute inside the authoritative safe-Rust core. They communicate through versioned bounded
-local protocols and publish staged outputs that the core validates before commitment.
+The bootstrap architecture proposed running native codec stacks, vendor SDK/app automation,
+Python/CUDA model runtimes, and broad provider clients outside the authoritative safe-Rust core,
+communicating through versioned bounded local protocols.
 
-## Rationale
+## Why this was insufficient
 
-These ecosystems are necessary but large, mutable, and failure-prone. Process isolation keeps
-crashes, malformed outputs, unsafe code, licenses, and dependency churn outside the semantic and
-security core.
+Process isolation narrows crash and authority propagation, but it does not make the shipping system
+pure Rust or close the semantic/dependency universe. A required foreign service still imports a
+second runtime, memory-safety model, scheduler, parser stack, supply chain, update channel, and
+model/media interpretation into production.
 
-## Consequences
+## Replacement
 
-The project must own supervision, cancellation, transport schemas, resource limits, and copy costs.
-Those costs are measured in the operation-cost registry rather than hidden.
+Production FSS media, model, graph, archive, and orchestration paths are first-party safe Rust.
+Foreign tools can remain pinned, isolated differential oracles in qualification laboratories. A
+missing first-party implementation means the capability remains unsupported or fails closed; it
+does not silently activate a foreign production fallback.

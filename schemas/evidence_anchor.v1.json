@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/evidence_anchor.v1.json",
+  "title": "EvidenceAnchor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "deploymentId",
+    "observationEpoch",
+    "capsuleSequence",
+    "authorityRoot",
+    "deviceGeneration",
+    "streamGeneration",
+    "schemaEpoch",
+    "policyEpoch",
+    "adapterEpoch",
+    "modelGeneration",
+    "calibrationGeneration",
+    "graphGeneration",
+    "searchGeneration"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.evidence_anchor.v1"
+    },
+    "deploymentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "observationEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "capsuleSequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "authorityRoot": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "deviceGeneration": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "streamGeneration": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "schemaEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "policyEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "adapterEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "modelGeneration": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "calibrationGeneration": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "graphGeneration": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "searchGeneration": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

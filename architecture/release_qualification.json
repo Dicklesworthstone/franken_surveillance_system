@@ -1,0 +1,135 @@
+{
+  "schema": "fss.release_qualification.v1",
+  "asOf": "2026-08-31",
+  "releaseAuthority": "local_dsr",
+  "hostedActionsRole": "portable_supplementary_specification",
+  "lanes": [
+    {
+      "id": "QL-POLICY-001",
+      "kind": "policy",
+      "scope": "all",
+      "evidence": "Machine registries, schemas, docs, dependency constitution, links, manifest, stable IDs",
+      "command": "scripts/qualify.sh --lane policy",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-RUST-001",
+      "kind": "rust",
+      "scope": "all",
+      "evidence": "Pinned nightly fmt/check/clippy/test with unsafe and forbidden-dependency scans",
+      "command": "scripts/qualify.sh --lane rust",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-LAB-001",
+      "kind": "deterministic_lab",
+      "scope": "linux-x86_64",
+      "evidence": "Virtual-time replay, schedule exploration, cancellation, obligation, and fault campaigns",
+      "command": "scripts/qualify.sh --lane lab",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-ADAPTER-001",
+      "kind": "adapter",
+      "scope": "device tuple",
+      "evidence": "Protocol fixtures plus owner-authorized live first-frame/continuity/control tests",
+      "command": "scripts/qualify.sh --lane adapter",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-MEDIA-001",
+      "kind": "media",
+      "scope": "platform+codec",
+      "evidence": "Pure-Rust probe/decode/remux/timestamp/malformed-media gauntlet plus pinned lab-oracle differential evidence",
+      "command": "scripts/qualify.sh --lane media",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-ARCHIVE-001",
+      "kind": "archive",
+      "scope": "provider+region",
+      "evidence": "Multipart interruption, root-last, restore, retrievability, deletion, and cost-manifest tests",
+      "command": "scripts/qualify.sh --lane archive",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-MODEL-001",
+      "kind": "model",
+      "scope": "model+hardware",
+      "evidence": "Artifact identity, operator coverage, deterministic receipt, OOM/cancel, quality, and shadow gates",
+      "command": "scripts/qualify.sh --lane model",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-GEOMETRY-001",
+      "kind": "geometry",
+      "scope": "site+camera tuple",
+      "evidence": "Held-out reprojection, covariance, drift, coverage, mask, and rollback tests",
+      "command": "scripts/qualify.sh --lane geometry",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-THREAT-001",
+      "kind": "threat",
+      "scope": "sealed corpus",
+      "evidence": "Event-level hard-negative/threat AUPRC, fixed-alert-budget recall, calibration, and miss ledger",
+      "command": "scripts/qualify.sh --lane threat",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-PRIVACY-001",
+      "kind": "privacy",
+      "scope": "deployment profile",
+      "evidence": "Mask-before-egress, retention, export, deletion closure, and capability noninterference",
+      "command": "scripts/qualify.sh --lane privacy",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-LINUX-001",
+      "kind": "native_release",
+      "scope": "linux-x86_64",
+      "evidence": "Clean snapshot native build, tests, package, SBOM, signatures, smoke, and receipt",
+      "command": "dsr build --target linux/amd64",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-MACOS-001",
+      "kind": "native_release",
+      "scope": "darwin-arm64",
+      "evidence": "Clean snapshot native build, tests, package, SBOM, signatures, smoke, and receipt",
+      "command": "dsr build --target darwin/arm64",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-WINDOWS-001",
+      "kind": "native_release",
+      "scope": "windows-x86_64",
+      "evidence": "Clean snapshot native build, tests, package, SBOM, signatures, smoke, and receipt",
+      "command": "dsr build --target windows/amd64",
+      "authority": "local",
+      "status": "specified"
+    },
+    {
+      "id": "QL-RELEASE-001",
+      "kind": "aggregate_release",
+      "scope": "all required",
+      "evidence": "Verify source/sibling closure, all lane receipts, exact assets, upload, download, and aggregate root",
+      "command": "dsr release verify",
+      "authority": "local",
+      "status": "specified"
+    }
+  ],
+  "aggregateRule": "No aggregate release root until every required lane receipt verifies against the same source, sibling closure, toolchain, and asset manifest."
+}

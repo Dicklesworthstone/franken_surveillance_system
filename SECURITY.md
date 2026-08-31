@@ -8,7 +8,7 @@ platform. Its core security strategy is **authority minimization plus evidence**
 
 - each component receives only the device, bytes, secret handle, filesystem object, model, or
   effect capability required for one operation;
-- unsafe/native/proprietary runtimes are process-isolated;
+- production acquisition/media/model/graph semantics are first-party safe Rust; foreign frameworks and proprietary applications are laboratory or migration oracles only;
 - every consequential operation has an immutable request, idempotency identity, receipt, and
   verification predicate;
 - secrets and private media are excluded from diagnostics by construction;
@@ -70,7 +70,7 @@ Recommended default:
 - edge node has narrowly scoped routes to registered camera endpoints;
 - no inbound internet exposure;
 - vendor-cloud adapters use explicit destination allowlists and independent credentials;
-- model hosts listen only on local authenticated IPC or an encrypted capability transport;
+- pure-Rust model executors use only local authenticated IPC or an encrypted capability transport;
 - remote archive credentials are write/read/delete separated where provider permits;
 - operator UI uses local binding or authenticated reverse proxy with CSRF/session protections;
 - discovery is bounded to configured interfaces/subnets and never an unrestricted scanner.
@@ -89,34 +89,33 @@ module, encrypted local vault, or deployment-specific service. Requirements:
 - a support bundle reports secret *references and scopes*, never values;
 - vendor account credentials are not reused for FSS administration.
 
-## 7. Process isolation
+## 7. Production Rust boundary and laboratory isolation
 
-### Codec host
+### Production media kernel
 
-FFmpeg/equivalent receives designated input/output descriptors, no credentials, no arbitrary path,
-no outbound network, bounded CPU/RAM/time/output, sanitized environment, owned process group, and a
-typed transformation plan. A crash is a media outcome, not a core process compromise.
+Transport, packet/access-unit, container/timeline, source-map, codec, proxy, and analysis-transform semantics are first-party bounded Rust. Parsers and kernels receive typed byte/object capabilities, explicit budgets, and no credentials. Scalar reference implementations remain available for differential and degraded operation.
 
-### Model host
+### Production model runtime
 
-A model host receives immutable model files and authorized redacted input objects. It has no effect
-capability, vendor credentials, archive keys, canonical DB write access, or arbitrary internet.
-Output is schema-validated and bounded. Prompt text from untrusted metadata cannot invoke tools.
+The model runtime receives immutable admitted model packages and authorized redacted tensors. It has no effect capability, vendor credentials, archive keys, ambient canonical-ledger mutation, or arbitrary internet. Operator coverage, shapes, layouts, numeric behavior, memory plans, and output schemas are frozen in the package generation.
 
-### Vendor adapter host
+### Laboratory/migration oracles
 
-A vendor host receives one device/account capability and output channel. It cannot read unrelated
-secrets, media, models, ledger, or filesystem. Mobile-app automation or display capture, when used
-experimentally, runs in a dedicated profile/device and is not conflated with a stable API.
+FFmpeg/ffprobe, Python frameworks, ONNX Runtime, OpenCV, vendor SDKs, and mobile/display automation may run only in isolated laboratory or migration profiles with pinned identities, bounded descriptors/network/filesystem, sanitized environment, owned process group, and explicit non-production receipts. They cannot become a silent fallback or inherit production-readiness claims.
+
+### Proprietary Rust adapter
+
+A production proprietary adapter receives one device/account capability and bounded output subject. It cannot read unrelated secrets, media, models, ledger, or filesystem. Protocol behavior is promoted from redacted fixtures and exact owner-authorized tuples; experimental app automation remains laboratory-only.
 
 ## 8. Supply chain
 
-- pinned Rust toolchain and locked dependencies;
+- exact promoted Rust nightly, clean source tree, exact clean Asupersync/Franken sibling closure, and locked/offline dependency resolution;
 - closed dependency universe with ADR for additions;
 - no build/test runtime downloads without a verified acquisition manifest;
-- model weights and vendor helper binaries checksum/signature pinned;
+- model packages are checksum/signature pinned; laboratory oracle binaries are separately pinned and proven absent from production releases;
 - OCI/container images pinned by digest;
-- release archives carry checksums and provenance where available;
+- DSR/local controlled-host lanes are release authority; release archives carry exact checksums, signatures, SBOM, provenance, source/sibling and qualification manifests;
+- publication is root-last and uploaded artifacts are downloaded and independently reverified;
 - dependency/license/security scans are evidence inputs, not proof by themselves;
 - a compromised or revoked model/device generation can be deactivated atomically.
 
@@ -149,7 +148,7 @@ Effects are classified:
 | `E4 flight/physical` | future drone mission | disabled in v1; separate safety system required |
 | `E5 offensive` | pursuit, weapon, confrontation | forbidden |
 
-A model host receives none of E1–E4. An agent cannot invent a missing capability. Timeouts after
+A model executor receives none of E1–E4. An agent cannot invent a missing capability. Timeouts after
 dispatch create indeterminate receipts and reconciliation obligations.
 
 ## 11. Feed authenticity and tamper

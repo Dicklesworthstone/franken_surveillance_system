@@ -1,50 +1,84 @@
-schema = "fss.dependency_allowlist.v1"
-as_of = "2026-08-30"
+schema = "fss.dependency_allowlist.v3"
+as_of = "2026-08-31"
 
 [policy]
 closed_universe = true
-new_external_dependency_requires_adr = true
-unsafe_requires_boundary_crate_and_ledger = true
-native_or_python_runtime_must_be_out_of_process = true
+direct_crates_must_be_allowlisted = true
+transitive_closure_must_be_censused = true
+new_external_dependency_requires_dep_record_and_adr = true
+fss_crates_must_forbid_unsafe = true
+fss_unsafe_exceptions_allowed = false
+c_or_cpp_ffi_allowed = false
+dynamic_loading_allowed = false
+foreign_runtime_production_boundary_allowed = false
+release_resolution_must_be_locked_and_offline = true
+build_scripts_may_not_use_network = true
+runtime_acquisition_allowed = false
+foreign_executables_allowed_in_production = false
+serde_may_not_define_durable_bytes = true
+hosted_ci_is_not_release_authority = true
+asupersync_is_only_async_runtime = true
 
 [in_house]
-allowed = [
+allowed_families = [
   "asupersync",
-  "frankensqlite",
-  "frankenfs",
-  "frankensearch",
-  "franken_markdown",
-  "frankengraphdb",
-  "fastmcp_rust",
-  "eidetic_engine_cli"
+  "frankensqlite", "fsqlite-*",
+  "frankenfs", "ffs-*",
+  "frankensearch", "frankensearch-*",
+  "franken_markdown", "fmd-*",
+  "frankengraphdb", "fgdb-*",
+  "franken_networkx", "fnx-*",
+  "frankentorch", "ft-*",
+  "fastmcp_rust", "fastmcp-*",
+  "eidetic_engine_cli", "ee-*",
+  "frankentui", "frankentui-*"
 ]
+rule = "Each concrete crate and enabled feature still requires a mechanism owner and import-admission gate; family membership alone is not qualification."
 
 [fundamental]
-allowed_subject_to_audit = [
-  "serde",
-  "serde_json",
-  "blake3",
-  "bytes",
-  "thiserror",
-  "tracing",
-  "zeroize",
-  "rustls",
-  "webpki-roots",
-  "chacha20poly1305",
-  "x25519-dalek",
-  "hkdf",
-  "sha2"
+allowed_subject_to_audit = ["serde", "serde_json"]
+rule = "Fundamental means bounded data-shape plumbing only. It grants no runtime, networking, storage, cryptography, parser, model, device, durable-format, or background-work authority."
+
+[exception_candidates]
+not_admitted_without_dep_record_adr_and_release_evidence = [
+  "blake3", "thiserror", "zeroize", "rustls", "webpki-roots",
+  "chacha20poly1305", "x25519-dalek", "hkdf", "sha2"
 ]
 
-[boundary_processes]
-allowed_when_pinned_and_sandboxed = [
-  "ffmpeg",
-  "model-host-python",
-  "onnxruntime-host",
-  "cuda-model-host",
-  "vendor-interoperability-host"
+[laboratory_oracles]
+excluded_from_production_release_closure = [
+  "ffmpeg", "ffprobe", "networkx", "pytorch", "onnxruntime", "opencv",
+  "cuda-frameworks", "vendor-sdk", "vendor-application", "browser-capture"
+]
+requirements = [
+  "exact_identity_and_license",
+  "fixture_only_inputs",
+  "no_production_credentials",
+  "no_effect_authority",
+  "no_runtime_invocation_path_from_production",
+  "bounded_output_schema",
+  "tainted_provenance",
+  "release_absence_proof"
 ]
 
 [forbidden]
-crates = ["tokio", "async-std", "smol"]
-patterns = ["ambient credential access", "in-process proprietary SDK", "unversioned model download", "runtime network install"]
+crates = [
+  "tokio", "async-std", "smol", "glommio", "monoio", "rayon",
+  "reqwest", "hyper", "rusqlite", "sqlx", "diesel", "rocksdb",
+  "pyo3", "opencv", "ffmpeg-next", "gstreamer", "ort", "tch"
+]
+patterns = [
+  "ambient credential access",
+  "in-process proprietary SDK",
+  "production foreign helper process",
+  "production Python runtime",
+  "production FFmpeg executable",
+  "C or C++ FFI",
+  "dynamic library discovery",
+  "unversioned model download",
+  "runtime network install",
+  "hidden detached thread",
+  "second executor",
+  "serde-derived durable enum",
+  "hosted-runner-only qualification"
+]

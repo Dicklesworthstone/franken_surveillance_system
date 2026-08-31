@@ -1,0 +1,211 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/evidence_delta_batch.v1.json",
+  "title": "FSS Evidence Delta Batch v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "batchId",
+    "basisAnchor",
+    "newAnchor",
+    "deltas",
+    "children",
+    "batchDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.evidence_delta_batch.v1"
+    },
+    "batchId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "basisAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "siteLineage",
+        "ledgerEpoch",
+        "commitSequence",
+        "stateRoot"
+      ],
+      "properties": {
+        "siteLineage": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "ledgerEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "commitSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "adapterRegistryEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "schemaEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "policyEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "privacyEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stateRoot": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "newAnchor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "siteLineage",
+        "ledgerEpoch",
+        "commitSequence",
+        "stateRoot"
+      ],
+      "properties": {
+        "siteLineage": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "ledgerEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "commitSequence": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "adapterRegistryEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "schemaEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "policyEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "privacyEpoch": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stateRoot": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "deltas": {
+      "type": "array",
+      "maxItems": 100000,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deltaId",
+          "family",
+          "objectId",
+          "priorGeneration",
+          "newGeneration",
+          "validity",
+          "payloadDigest"
+        ],
+        "properties": {
+          "deltaId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "family": {
+            "type": "string",
+            "maxLength": 64
+          },
+          "objectId": {
+            "type": "string",
+            "maxLength": 256
+          },
+          "priorGeneration": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "newGeneration": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "validity": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "earliestNs",
+              "latestNs"
+            ],
+            "properties": {
+              "earliestNs": {
+                "type": "integer"
+              },
+              "latestNs": {
+                "type": "integer"
+              }
+            }
+          },
+          "authorityClass": {
+            "enum": [
+              "authority",
+              "cognition",
+              "effect"
+            ]
+          },
+          "payloadDigest": {
+            "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          },
+          "witnessDigest": {
+            "anyOf": [
+              {
+                "$ref": "sensor_capsule.v1.json#/$defs/digest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operationId": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "children": {
+      "type": "array",
+      "maxItems": 1000000,
+      "items": {
+        "$ref": "sensor_capsule.v1.json#/$defs/digest"
+      },
+      "uniqueItems": true
+    },
+    "batchDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "orderingPolicy": {
+      "type": "string",
+      "maxLength": 128
+    }
+  }
+}

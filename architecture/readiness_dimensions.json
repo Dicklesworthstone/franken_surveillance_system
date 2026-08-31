@@ -1,73 +1,97 @@
 {
-  "schema": "fss.readiness_dimensions.v1",
+  "schema": "fss.readiness_dimensions.v2",
+  "asOf": "2026-08-31",
   "dimensions": [
     {
       "id": "R1",
       "name": "contract",
-      "question": "Is the behavior represented by a stable typed contract?"
+      "question": "Is behavior represented by a stable typed contract and semantic owner?"
     },
     {
       "id": "R2",
       "name": "reference",
-      "question": "Does a deterministic reference implementation exist?"
+      "question": "Does a deterministic simple reference implementation exist?"
     },
     {
       "id": "R3",
-      "name": "conformance",
-      "question": "Does differential or standards conformance pass?"
+      "name": "positive_path",
+      "question": "Has the intended success path completed with retained evidence?"
     },
     {
       "id": "R4",
-      "name": "cancellation",
-      "question": "Are cancellation and quiescence behavior qualified?"
+      "name": "conformance",
+      "question": "Does standards/differential conformance pass with divergences classified?"
     },
     {
       "id": "R5",
-      "name": "crash_recovery",
-      "question": "Are kill points and recovery outcomes qualified?"
+      "name": "determinism",
+      "question": "Do replay, tie-break, and output digests reproduce?"
     },
     {
       "id": "R6",
-      "name": "security",
-      "question": "Are authority, secrets, input bounds, and isolation qualified?"
+      "name": "cancellation",
+      "question": "Are cancellation, obligations, drain, and quiescence qualified?"
     },
     {
       "id": "R7",
-      "name": "privacy",
-      "question": "Are masks, retention, redaction, and deletion closure qualified?"
+      "name": "crash_recovery",
+      "question": "Are publication kill points and recovery outcomes qualified?"
     },
     {
       "id": "R8",
-      "name": "performance",
-      "question": "Are pinned same-workload performance artifacts retained?"
+      "name": "security",
+      "question": "Are authority, secrets, input bounds, sandboxing, and supply chain qualified?"
     },
     {
       "id": "R9",
-      "name": "quality",
-      "question": "Are task-quality metrics and confidence intervals retained?"
+      "name": "privacy",
+      "question": "Are filtering, masks, retention, export, and deletion closure qualified?"
     },
     {
       "id": "R10",
-      "name": "compatibility",
-      "question": "Are exact device, firmware, model, and platform generations certified?"
+      "name": "performance",
+      "question": "Are same-binary workload distributions and complexity witnesses retained?"
     },
     {
       "id": "R11",
-      "name": "operability",
-      "question": "Do doctor, support bundle, replay, and repair surfaces work?"
+      "name": "quality",
+      "question": "Are event/task quality, calibration, and statistical confidence retained?"
     },
     {
       "id": "R12",
+      "name": "compatibility",
+      "question": "Are exact device, firmware, app, platform, model, and protocol tuples certified?"
+    },
+    {
+      "id": "R13",
+      "name": "retrievability",
+      "question": "Can advertised roots be independently reconstructed and repaired?"
+    },
+    {
+      "id": "R14",
+      "name": "operability",
+      "question": "Do doctor, replay, support-bundle, repair, migration, and rollback work?"
+    },
+    {
+      "id": "R15",
       "name": "documentation",
-      "question": "Do docs, schemas, registries, and implementation agree?"
+      "question": "Do docs, schemas, registries, code, claims, and receipts agree?"
+    },
+    {
+      "id": "R16",
+      "name": "release_custody",
+      "question": "Did clean-source local target qualification, signing, publication, and download verification pass?"
     }
   ],
   "states": [
     "absent",
     "specified",
+    "reference_implemented",
     "implemented",
+    "positively_verified",
     "qualified",
     "blocked",
+    "revoked",
     "not_applicable"
   ]
 }

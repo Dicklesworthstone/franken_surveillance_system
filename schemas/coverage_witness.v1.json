@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/coverage_witness.v1.json",
+  "title": "CoverageWitness v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "anchor",
+    "authorizedDomain",
+    "observedDomain",
+    "excludedDomain",
+    "continuity",
+    "completeness",
+    "negativePredicate",
+    "stopReason",
+    "witnessDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.coverage_witness.v1"
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "authorizedDomain": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "observedDomain": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "excludedDomain": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "continuity": {
+      "enum": [
+        "continuous",
+        "gapped",
+        "unknown"
+      ]
+    },
+    "completeness": {
+      "enum": [
+        "complete_for_declared_domain",
+        "partial",
+        "uncertified"
+      ]
+    },
+    "negativePredicate": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048
+    },
+    "stopReason": {
+      "enum": [
+        "complete",
+        "budget_exhausted",
+        "cancelled",
+        "source_gap",
+        "authorization_filtered",
+        "unsupported",
+        "error"
+      ]
+    },
+    "witnessDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    }
+  }
+}

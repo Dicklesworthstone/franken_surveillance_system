@@ -111,7 +111,7 @@ are part of closure. A deleted SQL row alone is not success.
 - no household footage is used for general model training by default;
 - deployment-specific fine-tuning requires an explicit dataset root, consent, purpose, license,
   holdout, and removal path;
-- research-only model hosts cannot retain or transmit inputs outside their declared capability;
+- research-only model oracles cannot retain or transmit fixture inputs outside their declared laboratory capability;
 - prompts/outputs are private derived data;
 - human labels and feedback preserve event/evidence provenance;
 - exported benchmarks use synthetic or deliberately consented/de-identified data;

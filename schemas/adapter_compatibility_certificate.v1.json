@@ -1,0 +1,160 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/adapter_compatibility_certificate.v1.json",
+  "title": "Adapter compatibility certificate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "certificateId",
+    "adapterId",
+    "deviceManufacturer",
+    "deviceModel",
+    "hardwareRevision",
+    "firmwareVersion",
+    "applicationVersion",
+    "protocolProfile",
+    "platform",
+    "capabilities",
+    "limitations",
+    "fixtureRoot",
+    "liveEvidenceRoot",
+    "qualificationReceiptRoot",
+    "validFrom",
+    "invalidators",
+    "status"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.adapter_compatibility_certificate.v1"
+    },
+    "certificateId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "adapterId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "deviceManufacturer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "deviceModel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "hardwareRevision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "firmwareVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "applicationVersion": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "protocolProfile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "platform": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "limitations": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 2048
+      }
+    },
+    "fixtureRoot": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "liveEvidenceRoot": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "qualificationReceiptRoot": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "validFrom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliestNs",
+        "latestNs",
+        "clockBasis"
+      ],
+      "properties": {
+        "earliestNs": {
+          "type": "integer"
+        },
+        "latestNs": {
+          "type": "integer"
+        },
+        "clockBasis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "uncertaintyReason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "invalidators": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "status": {
+      "enum": [
+        "qualified",
+        "degraded",
+        "revoked",
+        "lab_only"
+      ]
+    }
+  }
+}

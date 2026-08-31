@@ -1,6 +1,8 @@
 # External references
 
-**Snapshot date:** 2026-08-30. Re-check every source before implementing or making a current claim.
+**External-source snapshot date:** 2026-08-30. The user-owned architecture/source audit was
+revised on 2026-08-31. Re-check every external source before implementing or making a current
+claim.
 
 ## Camera and drone products
 

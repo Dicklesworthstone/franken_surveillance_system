@@ -1,0 +1,111 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/transfer_manifest.v1.json",
+  "title": "ATP-compatible transfer manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "rootId",
+    "manifestId",
+    "objectClass",
+    "children",
+    "totalBytes",
+    "chunkingPolicy",
+    "repairPolicy",
+    "encryptionContext",
+    "sourceAnchor",
+    "closureDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.transfer_manifest.v1"
+    },
+    "rootId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "manifestId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "objectClass": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "children": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "length",
+          "role"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+          },
+          "length": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "role": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "repairGroup": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "maxItems": 1000000
+    },
+    "totalBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "chunkingPolicy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "repairPolicy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "encryptionContext": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "sourceAnchor": {
+      "anyOf": [
+        {
+          "$ref": "evidence_anchor.v1.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "closureDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    }
+  }
+}

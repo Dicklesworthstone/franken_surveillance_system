@@ -2,7 +2,7 @@
 //! Dependency-free semantic contracts for Franken Surveillance System.
 //!
 //! This crate is intentionally small. It establishes the vocabulary and state
-//! machines that every future adapter, ledger, model host, archive backend, and
+//! machines that every future adapter, ledger, model executor, archive backend, and
 //! agent interface must preserve. It does not acquire video or run inference.
 
 use core::fmt;
@@ -337,57 +337,44 @@ fn validate_id(_field: &str, value: &str) -> Result<(), ContractError> {
 mod tests {
     use super::*;
 
-    fn digest(seed: char) -> ContentDigest {
-        let value = format!("blake3:{}", seed.to_string().repeat(64));
-        match ContentDigest::parse(value) {
-            Ok(value) => value,
-            Err(error) => unreachable!("test digest must be valid: {error}"),
-        }
+    fn digest(seed: char) -> Result<ContentDigest, ContractError> {
+        ContentDigest::parse(format!("blake3:{}", seed.to_string().repeat(64)))
     }
 
     #[test]
-    fn capture_intervals_preserve_uncertainty() {
-        let first = match CaptureInterval::new(TimestampNs(10), TimestampNs(20)) {
-            Ok(value) => value,
-            Err(error) => unreachable!("valid interval: {error}"),
-        };
-        let second = match CaptureInterval::new(TimestampNs(19), TimestampNs(30)) {
-            Ok(value) => value,
-            Err(error) => unreachable!("valid interval: {error}"),
-        };
+    fn capture_intervals_preserve_uncertainty() -> Result<(), ContractError> {
+        let first = CaptureInterval::new(TimestampNs(10), TimestampNs(20))?;
+        let second = CaptureInterval::new(TimestampNs(19), TimestampNs(30))?;
         assert_eq!(first.uncertainty_ns(), 10);
         assert!(first.overlaps(second));
+        Ok(())
     }
 
     #[test]
-    fn alert_delivery_requires_corroboration() {
+    fn alert_delivery_requires_corroboration() -> Result<(), ContractError> {
         let event = EventHypothesis {
             event_id: "event:one".to_owned(),
             state: EventState::AlertDelivered,
             kind: EventKind::PerimeterBreach,
-            probability: match ProbabilityInterval::new(0.9, 0.99) {
-                Ok(value) => value,
-                Err(error) => unreachable!("valid probability: {error}"),
-            },
-            evidence: vec![digest('a')],
-            model_generation: Some(digest('b')),
+            probability: ProbabilityInterval::new(0.9, 0.99)?,
+            evidence: vec![digest('a')?],
+            model_generation: Some(digest('b')?),
         };
         assert_eq!(event.validate(), Err(ContractError::CorroborationRequired));
+        Ok(())
     }
 
     #[test]
-    fn witnessed_event_requires_evidence() {
+    fn witnessed_event_requires_evidence() -> Result<(), ContractError> {
         let event = EventHypothesis {
             event_id: "event:two".to_owned(),
             state: EventState::Witnessed,
             kind: EventKind::UnknownPresence,
-            probability: match ProbabilityInterval::new(0.4, 0.8) {
-                Ok(value) => value,
-                Err(error) => unreachable!("valid probability: {error}"),
-            },
+            probability: ProbabilityInterval::new(0.4, 0.8)?,
             evidence: Vec::new(),
             model_generation: None,
         };
         assert_eq!(event.validate(), Err(ContractError::EvidenceRequired));
+        Ok(())
     }
 }

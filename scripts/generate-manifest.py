@@ -9,6 +9,7 @@ OUTPUT = ROOT / "MANIFEST.sha256"
 EXCLUDED_TOP_LEVEL = {
     ".git",
     "target",
+    "dist",
     "secrets",
     "credentials",
     "captures",
@@ -17,12 +18,14 @@ EXCLUDED_TOP_LEVEL = {
 }
 EXCLUDED_PREFIXES = {
     Path("device-fixtures/private"),
-    Path("qualification-artifacts/local"),
+    Path("qualification-artifacts"),
 }
 
 
 def included(path: Path) -> bool:
     relative = path.relative_to(ROOT)
+    if "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
+        return False
     if relative == Path("MANIFEST.sha256"):
         return False
     if relative.parts and relative.parts[0] in EXCLUDED_TOP_LEVEL:

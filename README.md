@@ -2,365 +2,489 @@
 
 # Franken Surveillance System (`fss`)
 
-**An evidence-native, local-first, agent-operable sensor mesh for owner-authorized cameras and drones.**
+**A pure-Rust, evidence-native, local-first sensor fabric for owner-authorized cameras and manually piloted capture drones.**
 
-*Cheap consumer hardware. Explicit uncertainty. Cross-camera geometry. Open-weight cognition. Crash-safe evidence. No ambient authority.*
+*Cheap consumer hardware. One version universe. Certified graph intelligence. Pure-Rust media and models. Crash-safe evidence. No ambient authority.*
 
 ![Status](https://img.shields.io/badge/status-architecture%20constitution-yellow)
-![Rust](https://img.shields.io/badge/Rust-nightly%202026--08--30-orange)
-![Unsafe](https://img.shields.io/badge/core%20unsafe-forbidden-brightgreen)
+![Rust](https://img.shields.io/badge/Rust-accepted%20nightly-orange)
+![Unsafe](https://img.shields.io/badge/FSS%20unsafe-forbidden-brightgreen)
 ![Runtime](https://img.shields.io/badge/runtime-Asupersync-blueviolet)
+![Release](https://img.shields.io/badge/release-local%20DSR%20authority-blue)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
 </div>
 
 > [!IMPORTANT]
-> This repository currently contains the **normative architecture, registries, schemas, and a
-> dependency-free Rust contract skeleton**. It does not yet acquire camera feeds, control a drone,
-> run models, upload archives, or deliver security alerts. The distinction is intentional and
-> machine-readable in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md).
+> This repository currently contains the **normative architecture, deep Franken-suite audits,
+> registries, schemas, and a dependency-free Rust contract skeleton**. It does not yet acquire
+> camera feeds, decode video, run models, reconstruct a property, upload archives, or deliver
+> alerts. The boundary is explicit in [`IMPLEMENTATION_STATUS.md`](IMPLEMENTATION_STATUS.md).
 
 ## The thesis
 
 Consumer security hardware is cheap and increasingly capable, but each product is an island. A
-battery camera may expose only a proprietary mobile app. A USB gimbal camera may be standards-compliant but physically tethered. A drone may provide an excellent moving viewpoint while its
-vendor SDK excludes that exact model. Existing NVRs can record streams, but they generally do not
-create a calibrated, provenance-carrying world model that an autonomous agent can query safely.
+battery camera may expose only a proprietary app. A USB gimbal camera may be standards-compliant but
+physically tethered. A drone may provide a superb moving view while lacking a supported control SDK.
+Conventional NVRs can record streams, but they do not usually create a calibrated,
+provenance-carrying world model that an autonomous agent can query and operate safely.
 
-FSS aims to turn this pile of mismatched devices into one coherent system:
+FSS is intended to turn heterogeneous owner-authorized sensors into one coherent system:
 
 ```text
-owner-authorized cameras, microphones, and drone footage
+cameras / microphones / manually piloted drone captures
                          │
-              bounded adapter processes
+       first-party UVC · RTSP/RTP · ONVIF · focused adapters
                          │
-     original packets + time uncertainty + health receipts
+ packet truth + source bytes + time intervals + health receipts
                          │
-        ┌────────────────┴────────────────┐
-        │                                 │
- low-latency operator path       immutable evidence path
- WebRTC/CMAF proxy               content-addressed objects
-        │                                 │
-        └──────────────┬──────────────────┘
-                       │
-       calibrated tracks + 3D scene + coverage model
-                       │
-    fast detector → tracker → cross-camera association
-         → temporal VLM → independent verifier
-                       │
-       event hypothesis with calibrated uncertainty
-                       │
-       versioned policy, corroboration, and abstention
-                       │
-        human/agent alert with replayable evidence
+              EvidenceDeltaBatch universe
+                         │
+       ┌─────────────────┼──────────────────┐
+       │                 │                  │
+ source custody      live operator      cognition
+ ATP object graphs   Rust proxy/UI      Rust models + graphs
+       │                 │                  │
+       └─────────────────┴─────────┬────────┘
+                                  │
+             calibrated tracks + 3D twin + coverage
+                                  │
+ quality → detect → track → associate → temporal verify
+                                  │
+        event transaction with evidence and uncertainty
+                                  │
+   versioned policy → abstain / request view / alert plan
+                                  │
+       idempotent effect + observed/verified receipt
 ```
 
-The radical part is not “use a VLM on camera footage.” It is the substrate beneath that VLM:
+The radical part is not “run a VLM on camera footage.” It is the substrate beneath every model:
 
-- **Three planes:** authoritative observation, derived cognition, and consequential effects are
-  type-distinct. A model output is never silently promoted to fact or authority.
-- **One evidence universe:** original encoded media, packet continuity, clock uncertainty,
-  transforms, tracks, model receipts, policies, and alerts share stable content identities.
-- **Honest state machines:** “login worked,” “adapter accepted,” “first frame arrived,” “stream is
-  continuous,” “intruder hypothesized,” “event corroborated,” and “alert delivered” are different
-  states.
-- **Digital-twin calibration:** a manually piloted drone can act as a calibration shuttle carrying
-  a known visual/temporal marker, giving the fixed cameras and the drone reconstruction shared
-  observations for joint bundle adjustment.
-- **Event-level epistemology:** quality is measured under realistic class imbalance using event
-  AUPRC, recall at a false-alert budget, time-to-detect, calibration, abstention, and miss upper
-  bounds—not frame accuracy or one successful demo.
-- **Proof-carrying operations:** archives publish root-last, effects use prepare/commit/observe/
-  verify, adapter compatibility is exact to device/firmware/app generations, and public claims are
-  generated from retained qualification artifacts.
-- **Agent-native access:** compact hash-anchored deltas, bounded evidence views, explanations,
-  read-first MCP tools, explicit capabilities, idempotency, budgets, and cancellation-safe work.
+- **Four operational planes.** Packet, authority, cognition, and effect states are type-distinct.
+  A decoded frame is not source continuity; a model score is not physical fact; a provider ACK is
+  not a verified alert.
+- **One version universe.** Canonical history is an ordered immutable `EvidenceDeltaBatch` stream.
+  Graphs, search, subscriptions, replicas, model caches, checkpoints, and branches publish exact
+  high-water marks instead of each inventing “current.”
+- **Semantic MVCC.** Event and effect decisions carry positive and negative witnesses, model/
+  calibration/policy epochs, and revalidate before consequential publication.
+- **Pure-Rust production.** FSS owns packet protocols, codecs, containers, model execution, graph
+  algorithms, archive protocols, and orchestration in first-party safe Rust. FFmpeg, PyTorch/ONNX,
+  NetworkX, C SQLite, Tantivy, browsers, and vendor applications are pinned laboratory oracles only.
+- **ATP object graphs.** Source media, checkpoints, model packages, derived generations, exports,
+  and releases move by verified manifest/chunk/repair graphs with resume, post-repair digest proof,
+  and root-last publication.
+- **Certified graph intelligence.** Cross-camera association, temporal reachability, blind-spot
+  cuts, active perception, deletion closure, and runtime deadlock analysis use registered snapshot-
+  pinned algorithms with canonical tie-breaks and complexity/output witnesses.
+- **Digital-twin calibration.** A manually piloted drone or handheld camera can serve as a
+  calibration shuttle, linking fixed camera views to a metric reconstruction and uncertainty-aware
+  coverage model.
+- **Event-level epistemology.** Quality is measured under realistic class imbalance with event
+  AUPRC, recall at a false-alert budget, calibration, time-to-detect, abstention, observability, and
+  miss bounds—not frame accuracy or a cherry-picked demo.
+- **Proof-carrying operations.** Publication is child-first/root-last; effects use prepare →
+  revalidate → commit → observe → verify; repair is doctor → sealed plan → apply; claims derive from
+  retained proof roots.
+- **Local release authority.** Doodlestein Self-Releaser executes clean-snapshot qualification on
+  controlled local machines. GitHub workflows are portable specifications, not a required trust
+  root.
 
-## What “Franken” means here
+## What “Franken” means
 
-FSS is designed as a composition of the strongest mechanisms in the surrounding Franken stack,
-not as a collection of logos or mandatory coupling:
+The first draft named the sibling projects. The second pass audits them mechanism by mechanism:
+what invariant each idea establishes, which FSS crate owns it, what weaker substitute is forbidden,
+what reference model defines it, how failure degrades, and what evidence admits it.
 
-| Project | Load-bearing import into FSS |
+| Project | Load-bearing FSS inheritance |
 |---|---|
-| [`asupersync`](https://github.com/Dicklesworthstone/asupersync) | `Cx` authority, region ownership, request→drain→finalize cancellation, four-valued outcomes, obligations, deterministic scheduling, ATP |
-| [`frankensqlite`](https://github.com/Dicklesworthstone/frankensqlite) | canonical transactional ledger, MVCC snapshots, crash recovery, typed readiness claims |
-| [`frankenfs`](https://github.com/Dicklesworthstone/frankenfs) | staged/root-last publication, content custody, repair evidence, fault-injected I/O |
-| [`frankensearch`](https://github.com/Dicklesworthstone/frankensearch) | progressive hybrid retrieval, immutable model identity, derived indexes, explanations, pinned-oracle gauntlets |
-| [`franken_markdown`](https://github.com/Dicklesworthstone/franken_markdown) | deterministic evidence reports, exact source spans, taint, staged multi-output rendering |
-| [`frankengraphdb`](https://github.com/Dicklesworthstone/frankengraphdb) | one version universe, typed claims, operation-cost registry, graph certificates, no substitute architecture doctrine |
-| [`dwarf_fortress_mcp`](https://github.com/Dicklesworthstone/dwarf_fortress_mcp) | semantic control plane for a partially observed world, observation anchors, delayed-effect truth, registries, agent token economy |
-| [`fastmcp_rust`](https://github.com/Dicklesworthstone/fastmcp_rust) | capability-scoped tools, budgets, request-owned children, explicit qualification boundaries |
-| [`eidetic_engine_cli`](https://github.com/Dicklesworthstone/eidetic_engine_cli) | provenance-bearing memory for false alarms, misses, drift, operator feedback, anti-patterns, and deterministic context packs |
+| [`asupersync`](https://github.com/Dicklesworthstone/asupersync) | region ownership, `Cx` authority, multidimensional budgets, request→drain→finalize cancellation, obligations, deterministic LabRuntime, ATP, hard-clamped decisions |
+| [`frankensqlite`](https://github.com/Dicklesworthstone/frankensqlite) | multi-version anchors, positive/negative hierarchical witnesses, SSI, deterministic commit combining, semantic merge ladder, crash classification |
+| [`frankenfs`](https://github.com/Dicklesworthstone/frankenfs) | staged/visible/durable/replicated/retrievable custody, root-last publication, unified repair serialization, RaptorQ, retrievability, deletion closure |
+| [`frankensearch`](https://github.com/Dicklesworthstone/frankensearch) | immutable generations, searchable delta versus durable seal, Quill merge=concat, columnar ingest, progressive retrieval, absence certificates, oracle gauntlets |
+| [`franken_markdown`](https://github.com/Dicklesworthstone/franken_markdown) | exact bytes/spans, taint, bounded nonrecursive parsing, one semantic document source, deterministic HTML/PDF reports |
+| [`frankengraphdb`](https://github.com/Dicklesworthstone/frankengraphdb) | one delta universe, temperature tiers, factorized joins, incremental retract/add views, branches, typed claims, operation-cost and decision-card discipline |
+| [`franken_networkx`](https://github.com/Dicklesworthstone/franken_networkx) | canonical graph semantics, immutable O(1) snapshot views, deterministic algorithms, complexity witnesses, adversarial conformance, offline specialization |
+| [`dwarf_fortress_mcp`](https://github.com/Dicklesworthstone/dwarf_fortress_mcp) | honest control of a delayed, externally changing, partially observed world; durable obligations; token-efficient semantic views |
+| [`fastmcp_rust`](https://github.com/Dicklesworthstone/fastmcp_rust) | request-owned capability-scoped MCP presentation, four-valued outcomes, bounded outputs, application-owned durable tasks |
+| [`eidetic_engine_cli`](https://github.com/Dicklesworthstone/eidetic_engine_cli) | typed evidence-backed operational memory, decay/trauma guard, immutable curation, deterministic context packs |
+| [`frankentorch`](https://github.com/Dicklesworthstone/frankentorch) | typed tensors, frozen operator IR, static dispatch, scalar reference and safe optimized kernels, canonical model packages, differential conformance |
+| [`doodlestein_self_releaser`](https://github.com/Dicklesworthstone/doodlestein_self_releaser) | clean source/sibling closure, controlled native hosts, resumable-but-never-partial matrices, signed exact assets, local receipts as authority |
 
-The exact imports, integration gates, and non-imports are documented in
-[`FRANKENSTACK_DEEP_DIVE.md`](FRANKENSTACK_DEEP_DIVE.md).
+Start with [`FRANKENSTACK_DEEP_DIVE.md`](FRANKENSTACK_DEEP_DIVE.md) and the
+[`deep-dive index`](docs/deep-dives/INDEX.md). The machine import ledger is
+[`architecture/franken_imports.json`](architecture/franken_imports.json).
+
+## Pure-Rust and dependency constitution
+
+The production closure is deliberately narrow:
+
+```text
+std/core/alloc
++ FSS workspace crates
++ Asupersync
++ exact admitted Franken-suite revisions
++ a tiny DEP-recorded foundational exception set
+```
+
+Every FSS crate forbids unsafe. Asupersync is the sole runtime. No Tokio, async-std, smol, Rayon-
+owned pool, Python/PyO3, FFmpeg/libav, OpenCV, ONNX Runtime, libtorch, CUDA runtime binding,
+proprietary SDK, browser engine, Node/Electron/Tauri, generic graph/search/database engine, dynamic
+plugin, runtime model download, or networked build script enters production.
+
+The current default external exception candidates are only `serde` and `serde_json`, and only for bounded control/report data-shape roles. Serde never defines canonical durable bytes.
+
+This is stricter than “a safe Rust core with unsafe helpers out of process.” A required foreign
+service is still a foreign production runtime. Missing first-party capability remains unsupported
+or fails closed; it does not silently activate a fallback.
+
+See [`DEPENDENCY_CONSTITUTION.md`](DEPENDENCY_CONSTITUTION.md) and
+[`architecture/dependency_allowlist.toml`](architecture/dependency_allowlist.toml).
 
 ## Device posture
 
-FSS deliberately starts from standards and replay before proprietary adapters:
+FSS starts from replay and standards before proprietary adapters:
 
 | Tier | Surface | Initial examples | Policy |
 |---|---|---|---|
-| 0 | Deterministic replay | synthetic packet/frame/event fixtures | First implementation and oracle |
-| 1 | Open local standards | UVC/UAC, RTSP, ONVIF Profile T; Profile M metadata | Preferred production path |
-| 2 | Documented vendor API | products with supported local/cloud SDKs | Version-pinned and sandboxed |
-| 3 | Authorized interoperability lab | Wyze Cam v4, AOSU P1 Max, DJI Flip capture bridge | Owner devices/accounts only; no auth bypass; compatibility is firmware-specific |
-| 4 | Import-only | SD-card/exported clips when live access is unavailable | Useful but not represented as live coverage |
+| 0 | Deterministic replay | synthetic and consented packet/frame/event fixtures | First implementation and oracle |
+| 1 | Open local standards | UVC/UAC, RTSP/RTP, ONVIF Profile T; optional Profile M metadata | Preferred production path |
+| 2 | Documented vendor API | products with a supported local/cloud protocol | Exact version, authority, and compatibility tuple |
+| 3 | Authorized interoperability lab | Wyze Cam v4, AOSU P1 Max, DJI Flip capture routes | Owner devices/accounts only; no credential bypass; firmware/app/region-specific |
+| 4 | Import-only | SD-card or exported clips | Useful evidence, never represented as live coverage |
 
-Three motivating products illustrate why this tiering matters:
+Insta360 Link is a useful UVC/UAC reference sensor. Wyze Cam v4 and AOSU P1 Max begin as
+interoperability-lab candidates unless a qualified standards/API surface is established. DJI Flip
+begins as manually piloted capture/import; FSS has no autonomous flight authority.
 
-- **Insta360 Link** is a USB UVC/UAC webcam rather than a Wi-Fi security camera, so it is a useful
-  standards-based reference sensor.
-- **Wyze Cam v4** and **AOSU P1 Max** advertise app, local-storage, and/or cloud workflows but do not
-  publish an ONVIF/RTSP contract in their product documentation. They therefore begin in the
-  interoperability lab, not in the README’s list of working integrations.
-- **DJI Flip** provides live view through DJI Fly, but it is absent from the current Mobile SDK
-  supported-product list. FSS treats it as a manually piloted calibration/capture experiment until
-  an exact supported interface is qualified.
-
-See [`DEVICE_ADAPTER_MATRIX.md`](DEVICE_ADAPTER_MATRIX.md) for the evidence and readiness matrix.
+See [`DEVICE_ADAPTER_MATRIX.md`](DEVICE_ADAPTER_MATRIX.md) and
+[`INTEROPERABILITY_LAB.md`](INTEROPERABILITY_LAB.md).
 
 ## Architecture in one page
 
-FSS separates three planes and five trust domains.
+### Four planes
 
-### Three semantic planes
+1. **Packet:** exact transport/source bytes, protocol sequence, compressed access units, time and
+   continuity evidence.
+2. **Authority:** identities, generations, source custody, policy, calibration/coverage, event
+   revisions, effects, obligations, and receipts.
+3. **Cognition:** decoded media, tensors, detections, tracks, associations, graph/search projections,
+   digital twin, operational memory, and explanations.
+4. **Effect:** alerts, PTZ/settings, retention/deletion/export, activation, and repair mutation.
 
-1. **Authority plane** — sensor identities, credentials references, policies, original media
-   identities, clock bounds, receipts, manifests, redaction state, and immutable event revisions.
-2. **Cognition plane** — decoded frames, detections, tracks, embeddings, geometry, hypotheses,
-   rankings, memories, and explanations. Everything here is derived and rebuildable.
-3. **Effect plane** — alerts, PTZ, exports, retention changes, archive deletion, camera settings,
-   and calibration-capture plans. Effects require explicit capabilities and receipts.
+### One ordered version universe
 
-### Five trust domains
-
-1. **Pure safe-Rust semantic core.** No network, filesystem, clock, model runtime, codec, or secret
-   access without an explicit capability.
-2. **Franken substrate.** Asupersync and qualified Franken storage/search/graph components.
-3. **Media boundary.** Pinned FFmpeg or equivalent subprocesses, sandboxed and supervised; never
-   linked into the semantic trust root.
-4. **Model boundary.** Version-pinned model hosts with immutable weights, schemas, resource
-   envelopes, license metadata, and input/output receipts.
-5. **Vendor boundary.** The smallest possible adapter host with scoped credentials and no access to
-   the canonical database, model prompts, or unrelated devices.
-
-### Target crate topology
+An immutable `EvidenceDeltaBatch` is the common source for history, graph/search maintenance,
+subscriptions, checkpoints, replicas, and branches. Every response reports:
 
 ```text
-Foundation:    fss-types  fss-error  fss-schema  fss-crypto
-Runtime:       fss-runtime  fss-capability
-Device:        fss-device-core  fss-device-uvc  fss-device-rtsp
-               fss-device-onvif  fss-device-vendor-lab  fss-drone-capture
-Media:         fss-media-core  fss-media-worker-proto  fss-live
-Storage:       fss-ledger  fss-object  fss-archive  fss-durability
-Geometry:      fss-time  fss-calibration  fss-geometry
-               fss-digital-twin  fss-coverage
-Models:        fss-model-registry  fss-model-host-proto  fss-perception
-               fss-association  fss-temporal
-Events/effects:fss-event-core  fss-policy  fss-effect  fss-alert
-Knowledge:     fss-search  fss-graph  fss-memory
-Interfaces:    fss-api  fss-cli  fss-mcp  fss-web  fss-ops
-Verification:  fss-lab  fss-gauntlet
+authority anchor
+search high-water
+graph high-water
+model-result high-water
+calibration and coverage generations
+staleness or gap
 ```
 
-The checked-in workspace is intentionally much smaller: `fss-core` establishes the first semantic
-contracts and `fss-cli` reports the honest design-only status.
+A caller can demand alignment, accept bounded lag, or receive an explicit stale/degraded result.
+
+See [`docs/ONE_VERSION_UNIVERSE.md`](docs/ONE_VERSION_UNIVERSE.md).
+
+### Target crate families
+
+```text
+Foundation:      fss-types · fss-error · fss-schema · fss-numeric · fss-identity
+Runtime/fabric:  fss-runtime · fss-capability · fss-subject · fss-obligation · fss-lab · fss-decision
+Device:          fss-device-core · fss-device-uvc · fss-device-rtsp · fss-device-onvif
+                 fss-device-vendor · fss-drone-capture
+Media:           fss-packet · fss-container · fss-codec-* · fss-audio · fss-live
+Authority:       fss-ledger · fss-witness · fss-object · fss-publication · fss-checkpoint · fss-privacy
+Transfer:        fss-transfer · fss-archive · fss-provider-s3 · fss-repair · fss-retrievability
+Geometry:        fss-time · fss-calibration · fss-geometry · fss-twin · fss-coverage
+Models:          fss-tensor · fss-operator · fss-kernel-cpu · fss-model-ir/import/runtime/registry
+Cognition:       fss-quality · fss-detect · fss-track · fss-associate · fss-temporal · fss-fusion
+                 fss-event · fss-policy
+Knowledge:       fss-search · fss-graph/query/algorithms · fss-forge · fss-memory · fss-explain
+Effects:         fss-plan · fss-effect · fss-alert · fss-export
+Presentation:    fss-api · fss-cli · fss-mcp · fss-report · fss-ops · optional fss-ui
+Qualification:   fss-reference · fss-fixtures · fss-gauntlet · fss-bench · fss-release
+```
+
+The checked-in workspace is intentionally smaller. Empty crate theater is not implementation.
+
+## Pure-Rust media and streaming
+
+FSS separates source evidence, live delivery, and analysis:
+
+- source bytes and packet/timing maps are immutable custody objects;
+- live derivatives prioritize bounded latency and can reduce quality under pressure;
+- analysis decodes only the frames/regions/resolutions demanded by the cascade;
+- remux is preferred to transcode;
+- H.264/H.265/MJPEG and required audio profiles are admitted incrementally;
+- scalar parser/decoder semantics remain the oracle for safe optimized/SIMD kernels;
+- frame/tensor views pin immutable or generation-leased backing storage;
+- pressure follows a registered degradation ladder and never silently drops canonical evidence or
+  committed obligations.
+
+FFmpeg/ffprobe and browsers compare behavior in the lab. They are absent from the production
+closure. See [`docs/STREAMING_AND_MEDIA_KERNEL.md`](docs/STREAMING_AND_MEDIA_KERNEL.md).
+
+## Pure-Rust model runtime
+
+Open-weight models are imported offline into immutable FSS packages containing a frozen first-party
+operator IR, canonical tensor objects, preprocessing/postprocessing, numeric policy, licenses,
+quality/conformance receipts, and repair metadata.
+
+The runtime is CPU-first and specialized for frozen inference graphs: packed weights, cache-shaped
+tiling, liveness-planned scratch arenas, safe SIMD, fused preprocess/layout/early operators, and
+static shape-specialized dispatch. Every optimized kernel has a scalar reference and exact or
+tolerance-certified contract. Optional accelerators are first-party and receipt-bearing; CPU
+fallback remains qualified.
+
+Python, PyTorch/ONNX Runtime, and accelerator incumbents remain lab oracles. Production does not
+interpret arbitrary framework graphs or download models at runtime.
+
+See [`PURE_RUST_MODEL_RUNTIME.md`](PURE_RUST_MODEL_RUNTIME.md) and
+[`docs/deep-dives/FRANKENTORCH.md`](docs/deep-dives/FRANKENTORCH.md).
 
 ## Detection is a cascade, not a monolith
 
-A frontier VLM is too expensive, too nondeterministic, and too weakly calibrated to inspect every
-frame or authorize alerts alone. The target cognition cascade is:
+A frontier VLM is too expensive, nondeterministic, and weakly calibrated to inspect every frame or
+authorize alerts alone. The target cascade is:
 
-1. sensor health, blur, darkness, obstruction, glare, and replay/tamper checks;
-2. cheap motion/change/audio gates with explicit negative evidence;
-3. fast detector and segmenter specialized on the deployment;
+1. sensor health, blur, darkness, obstruction, glare, replay, and tamper checks;
+2. cheap activity/change/audio gates with explicit coverage state;
+3. fast detector and segmenter;
 4. within-camera tracking and trajectory features;
-5. cross-camera association constrained by calibrated geometry and time intervals;
-6. open-vocabulary search for unusual objects or behavior;
-7. temporal VLM reasoning over a bounded event window;
+5. geometry/time-gated cross-camera association with k-best alternatives;
+6. open-vocabulary unusual-object/behavior retrieval;
+7. bounded temporal multimodal reasoning;
 8. an independent verifier with a different failure profile;
-9. conformal/sequential calibration and policy adjudication;
+9. conformal/sequential calibration and semantic event transaction;
 10. alert, abstain, request another view, or retain silently.
 
-Every stage emits a receipt tied to exact model code, weights, preprocessing, inputs, hardware,
-seeds, and configuration. A later model may disagree with an earlier model; it may not erase it.
+Every stage emits a generation-pinned result. Later models can contradict earlier results; they
+cannot erase source provenance or directly authorize an effect.
 
-The initial candidate registry includes permissively licensed production candidates and clearly
-separated research-only or policy-review candidates. No model is a dependency of the Rust core.
-See [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md).
+## Certified graph intelligence
+
+Graphs are operational kernels, not dashboards. Initial registered families cover:
+
+- dynamic connectivity and temporal reachability;
+- articulation points, bridges, dominators, max-flow/min-cut, and Gomory-Hu failure summaries;
+- shortest/k-shortest trajectories;
+- bipartite matching, k-best assignment, and min-cost flow for association;
+- SCC/condensation/topological critical path for obligations and plans;
+- set cover, facility location, and submodular active perception/coverage;
+- PPR attention, d-separation/shared-failure analysis, factorized joins;
+- canonical deletion reachability and wait-cycle detection.
+
+Every run pins an authorized immutable projection and emits a `GraphAlgorithmWitness` with
+canonical tie-break, output digest, complexity counters, and decision path. Incremental standing
+predicates are checked against full recomputation.
+
+See [`GRAPH_ANALYTICS_AND_SENSOR_MESH.md`](GRAPH_ANALYTICS_AND_SENSOR_MESH.md),
+[`docs/GRAPH_INTELLIGENCE_ARCHITECTURE.md`](docs/GRAPH_INTELLIGENCE_ARCHITECTURE.md), and
+[`registries/GRAPH_ALGORITHMS.md`](registries/GRAPH_ALGORITHMS.md).
 
 ## Digital twin and calibration shuttle
 
-The target setup experience is designed to avoid asking a homeowner to survey their property like
-a photogrammetrist:
+The target setup avoids asking a homeowner to perform a professional survey:
 
-1. place several printable or illuminated calibration markers around the protected area;
-2. start fixed-camera capture and a synchronized calibration session;
-3. manually fly a lightweight drone through each camera’s field of view and through overlap zones;
-4. reconstruct the property and the drone trajectory from drone footage;
-5. detect the shared markers or calibrated marker carried by the drone in fixed-camera footage;
-6. jointly solve camera intrinsics, extrinsics, time offsets, rolling-shutter terms, scale, and
-   trajectory with robust bundle adjustment;
-7. compute coverage, occlusion, blind spots, and expected cross-camera transit intervals;
-8. publish a calibration certificate with residuals, covariance, evidence, validity, and
-   invalidators.
+1. place optional printable/illuminated calibration markers;
+2. start fixed-camera capture and a calibration session;
+3. manually fly or carry a camera through fixed views and overlap zones;
+4. reconstruct the property and moving-camera trajectory;
+5. jointly solve intrinsics, extrinsics, time offset/skew, rolling-shutter terms, scale, and
+   trajectory;
+6. compute covariance, residuals, coverage, occlusion, blind spots, and expected transit intervals;
+7. publish a generation certificate with validity regions and invalidators.
 
-The canonical twin is metric geometry plus uncertainty and semantic zones. NeRF or Gaussian-splat
-renderings are useful derived visualizations, not the source of truth. A moved camera, firmware
-crop change, zoom change, major seasonal scene change, or residual drift invalidates or degrades
-its certificate. See [`DIGITAL_TWIN_AND_CALIBRATION.md`](DIGITAL_TWIN_AND_CALIBRATION.md).
+A moved camera, crop/zoom/firmware change, seasonal occlusion, or residual drift degrades or
+invalidates the certificate. NeRF/Gaussian-splat renderings are useful views, not metric authority.
+
+See [`DIGITAL_TWIN_AND_CALIBRATION.md`](DIGITAL_TWIN_AND_CALIBRATION.md).
+
+## ATP archive, repair, and deletion
+
+Source media, evidence bundles, checkpoints, model packages, graph/search/calibration/twin
+snapshots, replay corpora, and releases move as immutable ATP object graphs. The receiver stages
+children, verifies manifests and canonical digests, repairs only against exact generations,
+verifies closure, and publishes the root last.
+
+“Uploaded” is not “archived.” Completion can require independent replicas and proof-of-
+retrievability samples. Deletion enumerates repair symbols, replicas, indexes, embeddings, caches,
+journals, and staging objects before publishing a tombstone root.
+
+ATP never carries mutation authority. See
+[`ATP_AND_DISTRIBUTED_EVIDENCE.md`](ATP_AND_DISTRIBUTED_EVIDENCE.md) and
+[`docs/ATP_ARCHIVE_AND_REPLICATION.md`](docs/ATP_ARCHIVE_AND_REPLICATION.md).
 
 ## The quality objective
 
-“Never miss a true intruder” is the right motivating aspiration and the wrong release claim. FSS
-turns it into testable obligations:
+“Never miss a true intruder” is the right motivating aspiration and the wrong unqualified claim.
+FSS turns it into:
 
 - event-level AUPRC over a declared threat distribution;
-- recall lower bound at a declared false-alerts-per-property-day budget;
+- recall lower bounds at a declared false-alerts-per-property-day budget;
 - time-to-detect and time-to-deliver distributions;
 - probability calibration and selective-risk curves;
-- distinct results for darkness, occlusion, crawling, black clothing, weather, foliage, wildlife,
-  delivery workers, residents, children, and camera tampering;
-- coverage-conditioned miss accounting, including explicit “not observable” cases;
-- red-team intrusion scenarios with retained negative evidence;
-- conformal or anytime-valid bounds where their assumptions hold;
-- a release-visible ledger of every miss, near miss, false alarm, and broken assumption.
+- distinct slices for darkness, occlusion, crawling/crouching, dark clothing, weather, foliage,
+  wildlife, residents, delivery/service workers, children, and tampering;
+- explicit `NotObservable` accounting for failed/occluded/uncalibrated coverage;
+- property/session-separated held-out evaluation;
+- retained misses, near misses, false alarms, contradictions, and broken assumptions;
+- claims that name shared model/sensor/clock/network/training-data failure domains.
 
-A missing or degraded sensor is not a negative observation. FSS must say “coverage unknown” rather
-than quietly lowering the event score.
+A missing or degraded sensor is not a negative observation. FSS must say “coverage uncertified”
+rather than lower the score silently.
 
-## Archive economics
+## Agent and operator surface
 
-FSS preserves evidence without paying to transcode and upload everything at maximum quality:
-
-- short encrypted local ring buffers retain original encoded packets;
-- low-latency proxies are derived and disposable;
-- analysis frames are sampled according to event demand;
-- event manifests reference immutable source ranges rather than copying clips repeatedly;
-- old non-event footage can be summarized, thinned, or expired under explicit policy;
-- high-value evidence is client-side encrypted and published to S3-compatible B2 or R2 through a
-  root-last object graph;
-- object sizes are selected from a dated provider cost manifest so millions of tiny fragments do
-  not turn cheap storage into expensive operations;
-- periodic retrievability audits prove that manifests, keys, and children still compose.
-
-Provider prices are data, not source constants. The repository records dated reference prices only
-for planning and requires a fresh price manifest before recommending a backend.
-
-## Agent interface
-
-FSS is designed for both humans and agents, but the agent surface is read-first. Representative
-future tools include:
+The surface is read-first and bounded:
 
 ```text
 fss.status
-fss.sensor.list
-fss.sensor.health
+fss.device.list / inspect
+fss.stream.health
 fss.observe.delta
-fss.events.query
-fss.event.explain
-fss.event.evidence
-fss.calibration.status
-fss.coverage.blind_spots
+fss.event.list / inspect / explain
+fss.timeline.query
+fss.search
+fss.graph.query
+fss.coverage.inspect / blind-spots
 fss.archive.verify
+fss.evidence.pack
 fss.doctor.bundle
 
-fss.alert.acknowledge                 # effect
-fss.camera.ptz.prepare / commit       # effect
-fss.retention.prepare / commit        # effect
-fss.evidence.export.prepare / commit  # effect
+fss.alert.prepare / commit        # effect
+fss.camera.ptz.prepare / commit   # effect
+fss.retention.prepare / commit    # effect
+fss.deletion.prepare / commit     # effect
+fss.export.prepare / commit       # effect
 ```
 
-There is no generic shell tool, arbitrary vendor API proxy, or “control everything” capability.
-Each effect has a typed authority, idempotency key, precondition anchor, lease fence, budget,
-cancellation behavior, and later verification predicate.
+There is no generic shell, SQL, vendor-method, codec, model-prompt, object-store, or drone-control
+escape hatch. Requests own their children and budgets; long work is a durable application-owned
+task; MCP is only a presentation adapter.
+
+## Local qualification and release
+
+The release authority is local:
+
+1. create a clean immutable source snapshot;
+2. capture exact clean Asupersync/Franken-suite revisions;
+3. resolve locked and offline after provisioning;
+4. run repository policy, Rust, deterministic lab, crash, ATP, graph, media, model, device,
+   security/privacy, performance, soak, and package lanes as required by claims;
+5. retain partial target artifacts across resume but never bless them;
+6. build exact assets with checksums, minisign/Ed25519 signatures, SBOM, provenance, source/
+   dependency and qualification manifests;
+7. upload, download, and verify;
+8. publish the release manifest root last.
+
+The repository pins the latest nightly that has passed a promotion gauntlet. Releases never build
+against an ambient moving `nightly`. GitHub workflow YAML calls repository scripts and can be
+executed locally by DSR/compatible tooling; GitHub-hosted runners are not required.
+
+See [`LOCAL_QUALIFICATION_AND_RELEASE.md`](LOCAL_QUALIFICATION_AND_RELEASE.md).
 
 ## Repository map
 
 | Path | Purpose |
 |---|---|
-| [`COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md`](COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md) | Normative architecture and execution plan |
-| [`FRANKENSTACK_DEEP_DIVE.md`](FRANKENSTACK_DEEP_DIVE.md) | Project-by-project substrate study and integration gates |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Compact system architecture reference |
-| [`DEVICE_ADAPTER_MATRIX.md`](DEVICE_ADAPTER_MATRIX.md) | Exact device/firmware/interface readiness model |
-| [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md) | Candidate model classes, licenses, roles, and admission gates |
-| [`DIGITAL_TWIN_AND_CALIBRATION.md`](DIGITAL_TWIN_AND_CALIBRATION.md) | Calibration shuttle and geometry doctrine |
-| [`DATA_FORMATS.md`](DATA_FORMATS.md) | Capsules, event revisions, receipts, certificates, and archive roots |
-| [`SECURITY.md`](SECURITY.md) / [`PRIVACY.md`](PRIVACY.md) | Authority, secret, isolation, redaction, retention, and identity boundaries |
+| [`COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md`](COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md) | Normative architecture, execution plan, and first 200 issues |
+| [`FRANKENSTACK_DEEP_DIVE.md`](FRANKENSTACK_DEEP_DIVE.md) | Cross-project synthesis and constitutional imports |
+| [`docs/deep-dives/INDEX.md`](docs/deep-dives/INDEX.md) | One deep mechanism audit per sibling project |
+| [`DEPENDENCY_CONSTITUTION.md`](DEPENDENCY_CONSTITUTION.md) | Canonical pure-Rust closed-universe policy; its byte-identical `docs/` mirror is policy-checked |
+| [`docs/ONE_VERSION_UNIVERSE.md`](docs/ONE_VERSION_UNIVERSE.md) | `EvidenceDeltaBatch`, anchors, high-water marks, branches, and recovery |
+| [`docs/MVCC_EVIDENCE_LEDGER.md`](docs/MVCC_EVIDENCE_LEDGER.md) | Positive/negative witnesses, SSI, commit combining, and reconciliation |
+| [`docs/STREAMING_AND_MEDIA_KERNEL.md`](docs/STREAMING_AND_MEDIA_KERNEL.md) | First-party packet, container, codec, live, and analysis design |
+| [`PURE_RUST_MODEL_RUNTIME.md`](PURE_RUST_MODEL_RUNTIME.md) | Canonical frozen model package and first-party execution constitution; its `docs/` mirror is policy-checked |
+| [`docs/GRAPH_INTELLIGENCE_ARCHITECTURE.md`](docs/GRAPH_INTELLIGENCE_ARCHITECTURE.md) | Projection and certified algorithm architecture |
+| [`docs/GRAPH_ALGORITHM_ATLAS.md`](docs/GRAPH_ALGORITHM_ATLAS.md) | Operational use, ties, complexity, and admission per algorithm |
+| [`GRAPH_ANALYTICS_AND_SENSOR_MESH.md`](GRAPH_ANALYTICS_AND_SENSOR_MESH.md) | Canonical certified graph/sensor-mesh doctrine; its `docs/` mirror is policy-checked |
+| [`ATP_AND_DISTRIBUTED_EVIDENCE.md`](ATP_AND_DISTRIBUTED_EVIDENCE.md) | Canonical ATP object-graph, repair, federation, deletion, and receipt doctrine; its `docs/` mirror is policy-checked |
+| [`docs/ATP_ARCHIVE_AND_REPLICATION.md`](docs/ATP_ARCHIVE_AND_REPLICATION.md) | Object transfer, repair, retrievability, and deletion |
+| [`docs/DECISION_CARDS_AND_EXPERIMENTS.md`](docs/DECISION_CARDS_AND_EXPERIMENTS.md) | Hard-clamped adaptation and same-binary evidence |
+| [`docs/PERFORMANCE_AND_MECHANICAL_SYMPATHY.md`](docs/PERFORMANCE_AND_MECHANICAL_SYMPATHY.md) | Profile-first safe optimization and resource economics |
+| [`LOCAL_QUALIFICATION_AND_RELEASE.md`](LOCAL_QUALIFICATION_AND_RELEASE.md) | Canonical DSR-first qualification and root-last release constitution; its `docs/` mirror is policy-checked |
+| [`docs/LOCAL_QUALIFICATION_WITH_DSR.md`](docs/LOCAL_QUALIFICATION_WITH_DSR.md) | Clean-snapshot native-host DSR execution contract |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Compact architecture reference |
+| [`DEVICE_ADAPTER_MATRIX.md`](DEVICE_ADAPTER_MATRIX.md) | Exact device/firmware/app/region compatibility states |
+| [`MODEL_REGISTRY.md`](MODEL_REGISTRY.md) | Model candidate, package, license, and admission registry |
+| [`DIGITAL_TWIN_AND_CALIBRATION.md`](DIGITAL_TWIN_AND_CALIBRATION.md) | Calibration and coverage doctrine |
+| [`DATA_FORMATS.md`](DATA_FORMATS.md) | Durable identities, object families, and schemas |
+| [`SECURITY.md`](SECURITY.md) / [`PRIVACY.md`](PRIVACY.md) | Authority, secrets, taint, retention, identity, and deletion |
+| [`architecture/`](architecture/) | Machine invariants, imports, dependencies, algorithms, publications, decisions, costs, and release policy |
 | [`registries/`](registries/) | Human-readable stable registries |
-| [`architecture/`](architecture/) | Machine-readable invariants, claims, imports, dependencies, and costs |
-| [`schemas/`](schemas/) | Initial JSON schemas |
-| [`crates/`](crates/) | Dependency-free semantic contract skeleton |
-| [`scripts/qualify.sh`](scripts/qualify.sh) | Local release authority gate |
-| [`scripts/publish_to_github.sh`](scripts/publish_to_github.sh) | Create/push the public GitHub repository with `gh` |
-| [`docs/NEGATIVE_EVIDENCE.md`](docs/NEGATIVE_EVIDENCE.md) / [`docs/PERF_LEDGER.md`](docs/PERF_LEDGER.md) | Failed hypotheses and measured performance evidence |
-| [`docs/adr/`](docs/adr/) | Load-bearing architecture decisions |
-| [`docs/PRICING_REFERENCE_2026-08-30.md`](docs/PRICING_REFERENCE_2026-08-30.md) | Dated object-storage research input |
-| [`MANIFEST.sha256`](MANIFEST.sha256) | SHA-256 integrity manifest for this repository snapshot |
+| [`schemas/`](schemas/) | Draft 2020-12 interchange/evidence schemas |
+| [`scripts/qualify.sh`](scripts/qualify.sh) | Repository-local qualification contract |
+| [`docs/NEGATIVE_EVIDENCE.md`](docs/NEGATIVE_EVIDENCE.md) / [`docs/PERF_LEDGER.md`](docs/PERF_LEDGER.md) | Failed hypotheses and measured wins |
+| [`MANIFEST.sha256`](MANIFEST.sha256) | Snapshot integrity manifest |
 
 ## Inspect the skeleton
 
 ```bash
-python3 scripts/check-policy.py
-cargo fmt --all --check
-cargo check --workspace --all-targets
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+python3 scripts/generate-manifest.py
+bash scripts/qualify.sh --lane policy
+bash scripts/qualify.sh --lane rust
 cargo run -p fss-cli -- capabilities --json
 cargo run -p fss-cli -- doctor --json
 ```
 
-The policy check works without Rust. The Rust commands require the pinned toolchain. A passing
-skeleton build does **not** qualify any camera, model, archive, or alert behavior.
+The current artifact environment may not have the pinned Rust nightly installed; the policy and
+artifact checks are independently executable with Python. A passing skeleton build does **not**
+qualify any camera, codec, model, graph algorithm, archive provider, or alert path.
 
 ## Non-goals
 
 FSS is not:
 
 - a way to access devices, accounts, or footage without the owner’s authorization;
-- a credential bypass toolkit or a collection of vendor exploits;
-- a covert-monitoring product;
+- a credential-bypass, exploit-distribution, or covert-monitoring toolkit;
 - a public face-recognition or cross-property identity network;
 - a guarantee that no intrusion can ever be missed;
-- an autonomous armed or confrontational response system;
-- an autonomous-drone flight controller in its first release;
-- a cloud-required product;
-- a generic smart-home platform;
-- an excuse to place unsafe codec, vendor SDK, or Python model runtimes inside the trust root;
-- a benchmark leaderboard without replayable evidence.
+- an autonomous armed, confrontational, pursuit, or drone-flight system;
+- a cloud-required product or generic smart-home platform;
+- a Rust supervisor around required foreign production runtimes;
+- a generic shell/SQL/vendor/model/codec interface for agents;
+- a benchmark leaderboard without retained semantic and statistical evidence;
+- a release process dependent on GitHub-hosted Actions.
 
 ## Current status
 
-The project is at **Gate GATE-000: architecture constitution**.
+The project remains at **`GATE-000`: architecture constitution**.
 
 Implemented now:
 
-- stable normative plan and registries;
-- machine-readable invariants, claim classes, dependency policy, readiness dimensions, and cost
-  rows;
-- JSON schemas for sensor capsules, event hypotheses, evidence bundles, operation receipts, and
-  calibration certificates;
-- a dependency-free safe-Rust semantic contract skeleton;
-- a policy validator and local qualification wrapper;
-- a publication script for creating the public repository.
+- the comprehensive plan and second-pass Franken-stack constitution;
+- twelve project-specific deep dives plus an adjacent-project census;
+- eighty-two machine-readable hard invariants;
+- rich mechanism-level import, dependency, algorithm, publication, decision, cost, schema, and local
+  qualification registries;
+- JSON Schemas for sensor capsules, event hypotheses, evidence bundles, operation receipts,
+  calibration/coverage certificates, delta batches, graph witnesses, ATP manifests/receipts, model packages/execution receipts, adapter/drain/release certificates, and Decision Cards;
+- a dependency-free safe-Rust semantic skeleton;
+- policy/manifest validation and local qualification wrapper;
+- ADRs for pure Rust, one version universe, ATP separation, graph witnesses, local DSR authority,
+  and oracle-only foreign runtimes.
 
 Not implemented now:
 
-- camera/drone adapters;
-- FFmpeg supervision or live proxying;
-- canonical persistence;
-- model inference;
-- calibration or 3D reconstruction;
-- event fusion or alerts;
-- cloud archive transport;
-- MCP server or UI.
+- real camera/drone acquisition;
+- RTSP/RTP/ONVIF/UVC protocol stacks;
+- codecs, containers, live proxy, or UI;
+- canonical persistence and ATP cloud transport;
+- tensor kernels or model inference;
+- calibration, reconstruction, coverage, graph/search engines;
+- detection, tracking, association, event fusion, alerts, or MCP server;
+- full DSR release matrix.
 
-That gap is not hidden. It is the ordered work described by the comprehensive plan.
+That gap is the ordered work—not hidden capability—described by the plan.
 
 ## License
 
 MIT. Device firmware, vendor applications, model weights, codecs, datasets, and cloud services keep
-their own licenses and terms. FSS’s model and adapter registries treat those identities as part of
-runtime correctness, not paperwork to resolve after implementation.
+their own licenses and terms. FSS treats license, exact bytes, firmware/app/model generations, and
+allowed use as runtime correctness inputs rather than paperwork deferred until release.

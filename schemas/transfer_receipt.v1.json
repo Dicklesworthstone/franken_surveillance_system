@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/transfer_receipt.v1.json",
+  "title": "FSS ATP Transfer Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "transferId",
+    "rootDigest",
+    "state",
+    "source",
+    "destination",
+    "bytes",
+    "objects",
+    "verification",
+    "timestamps"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.transfer_receipt.v1"
+    },
+    "transferId": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "rootDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "state": {
+      "enum": [
+        "planned",
+        "reserved",
+        "manifest_verified",
+        "fetching",
+        "staged",
+        "object_verified",
+        "graph_closed",
+        "root_published",
+        "retrievability_verified",
+        "complete",
+        "cancelled",
+        "failed",
+        "indeterminate"
+      ]
+    },
+    "source": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "destination": {
+      "type": "string",
+      "maxLength": 256
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "objects": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "paths": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "maxLength": 128
+      }
+    },
+    "repair": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbolsUsed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "postRepairDigest": {
+          "anyOf": [
+            {
+              "$ref": "sensor_capsule.v1.json#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "manifest",
+        "objects",
+        "closure",
+        "root"
+      ],
+      "properties": {
+        "manifest": {
+          "type": "boolean"
+        },
+        "objects": {
+          "type": "boolean"
+        },
+        "closure": {
+          "type": "boolean"
+        },
+        "root": {
+          "type": "boolean"
+        },
+        "retrievability": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      }
+    },
+    "journalDigest": {
+      "anyOf": [
+        {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "errorId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 128
+    }
+  }
+}

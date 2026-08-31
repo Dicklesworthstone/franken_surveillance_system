@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/decision_card.v1.json",
+  "title": "DecisionCard v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "decisionId",
+    "decisionClass",
+    "anchor",
+    "policyId",
+    "alternatives",
+    "selectedId",
+    "hardConstraints",
+    "evidenceIds",
+    "decisionPathDigest",
+    "createdAt"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.decision_card.v1"
+    },
+    "decisionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "decisionClass": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "policyId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "alternatives": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "utility",
+          "admissible"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "utility": {
+            "type": "number"
+          },
+          "admissible": {
+            "type": "boolean"
+          },
+          "rejectionReasons": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "maxLength": 1024
+            }
+          }
+        }
+      }
+    },
+    "selectedId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "hardConstraints": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "evidenceIds": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+      }
+    },
+    "decisionPathDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "createdAt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliestNs",
+        "latestNs",
+        "clockBasis"
+      ],
+      "properties": {
+        "earliestNs": {
+          "type": "integer"
+        },
+        "latestNs": {
+          "type": "integer"
+        },
+        "clockBasis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "uncertaintyReason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    }
+  }
+}

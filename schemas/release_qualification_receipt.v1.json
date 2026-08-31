@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/release_qualification_receipt.v1.json",
+  "title": "Local release qualification receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "receiptId",
+    "laneId",
+    "sourceCommit",
+    "sourceTree",
+    "siblingClosureDigest",
+    "cargoLockDigest",
+    "toolchain",
+    "hostIdentity",
+    "target",
+    "features",
+    "commands",
+    "artifactManifestDigest",
+    "startedAt",
+    "finishedAt",
+    "status"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.release_qualification_receipt.v1"
+    },
+    "receiptId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "laneId": {
+      "type": "string",
+      "pattern": "^QL-[A-Z0-9-]+$"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "sourceTree": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "siblingClosureDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "cargoLockDigest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "toolchain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "hostIdentity": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "features": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256
+      }
+    },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "argv",
+          "status",
+          "outputDigest"
+        ],
+        "properties": {
+          "argv": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "status": {
+            "enum": [
+              "passed",
+              "failed",
+              "skipped"
+            ]
+          },
+          "outputDigest": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+          }
+        }
+      }
+    },
+    "artifactManifestDigest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "startedAt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliestNs",
+        "latestNs",
+        "clockBasis"
+      ],
+      "properties": {
+        "earliestNs": {
+          "type": "integer"
+        },
+        "latestNs": {
+          "type": "integer"
+        },
+        "clockBasis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "uncertaintyReason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "finishedAt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliestNs",
+        "latestNs",
+        "clockBasis"
+      ],
+      "properties": {
+        "earliestNs": {
+          "type": "integer"
+        },
+        "latestNs": {
+          "type": "integer"
+        },
+        "clockBasis": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "uncertaintyReason": {
+          "type": "string",
+          "maxLength": 1024
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "passed",
+        "failed",
+        "partial",
+        "interrupted"
+      ]
+    }
+  }
+}

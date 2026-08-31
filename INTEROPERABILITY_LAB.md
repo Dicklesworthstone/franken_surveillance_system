@@ -131,7 +131,7 @@ A lab adapter can leave `lab` only when:
 
 - normal authorization and revocation work;
 - exact compatibility tuple is known;
-- secret and process isolation pass;
+- secret/capability isolation and owned-region/process drain pass;
 - acquisition state/continuity semantics are honest;
 - long soak and reconnect pass;
 - malformed input and cancellation pass;

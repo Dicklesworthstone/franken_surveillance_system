@@ -1,0 +1,84 @@
+# Portable DSR release job graph. Local native DSR receipts are authoritative;
+# hosted execution is supplementary only and cannot publish the aggregate release root.
+name: portable native release specification
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact release version, for example 0.0.1
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release-preflight:
+    name: frozen source preflight
+    runs-on: [self-hosted, fss-linux-amd64]
+    env:
+      FSS_RELEASE_VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Execute repository-owned release preflight
+        run: bash scripts/release_qualify.sh release-preflight
+
+  build-linux-amd64:
+    name: linux x86_64 native artifact
+    needs: release-preflight
+    runs-on: [self-hosted, fss-linux-amd64]
+    env:
+      FSS_RELEASE_VERSION: ${{ inputs.version }}
+      FSS_TARGET_TRIPLE: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build, verify, and package through repository contract
+        run: bash scripts/release_qualify.sh all
+
+  build-linux-arm64:
+    name: linux aarch64 native artifact
+    needs: release-preflight
+    runs-on: [self-hosted, fss-linux-arm64]
+    env:
+      FSS_RELEASE_VERSION: ${{ inputs.version }}
+      FSS_TARGET_TRIPLE: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build, verify, and package through repository contract
+        run: bash scripts/release_qualify.sh all
+
+  build-macos-arm64:
+    name: macOS arm64 native artifact
+    needs: release-preflight
+    runs-on: [self-hosted, fss-macos-arm64]
+    env:
+      FSS_RELEASE_VERSION: ${{ inputs.version }}
+      FSS_TARGET_TRIPLE: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build, verify, and package through repository contract
+        run: bash scripts/release_qualify.sh all
+
+  build-windows-amd64:
+    name: Windows x86_64 native artifact
+    needs: release-preflight
+    runs-on: [self-hosted, fss-windows-amd64]
+    env:
+      FSS_RELEASE_VERSION: ${{ inputs.version }}
+      FSS_TARGET_TRIPLE: x86_64-pc-windows-msvc
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build, verify, and package through repository contract
+        shell: bash
+        run: bash scripts/release_qualify.sh all

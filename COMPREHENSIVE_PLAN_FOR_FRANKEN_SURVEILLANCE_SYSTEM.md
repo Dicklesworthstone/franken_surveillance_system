@@ -4,10 +4,11 @@
 |---|---|
 | Document class | Normative architecture and execution plan |
 | Initial issue date | 2026-08-30 |
-| Status | Draft 0.1 — public architecture constitution |
+| Last substantive revision | 2026-08-31 |
+| Status | Draft 0.3 — mechanism-level Franken substrate, pure-Rust runtime, graph/ATP, and local-release revision |
 | Repository | `Dicklesworthstone/franken_surveillance_system` |
 | Primary audience | Implementers, reviewers, autonomous coding agents, computer-vision and geometry researchers, media/network engineers, security/privacy reviewers, and operators |
-| Normative companions | `architecture/*`, `registries/*`, `schemas/*`, `SECURITY.md`, `PRIVACY.md`, `IMPLEMENTATION_STATUS.md`, `FRANKENSTACK_DEEP_DIVE.md` |
+| Normative companions | `DEPENDENCY_CONSTITUTION.md`, `GRAPH_ANALYTICS_AND_SENSOR_MESH.md`, `ATP_AND_DISTRIBUTED_EVIDENCE.md`, `PURE_RUST_MODEL_RUNTIME.md`, `LOCAL_QUALIFICATION_AND_RELEASE.md`, `FRANKENSTACK_DEEP_DIVE.md`, `architecture/*`, `registries/*`, `schemas/*`, `docs/deep-dives/*`, `SECURITY.md`, `PRIVACY.md`, `IMPLEMENTATION_STATUS.md` |
 
 ---
 
@@ -82,6 +83,14 @@ Published IDs are never renumbered. Superseded entries remain as tombstones.
 | `LAB-` | authorized interoperability experiment |
 | `ADP-` | device adapter generation/family |
 | `MOD-` | model candidate/generation family |
+| `ALG-` | registered graph algorithm family |
+| `PUB-` | coherent publication primitive |
+| `DEC-` | adaptive/optimization decision family |
+| `DEP-` | dependency admission or prohibition record |
+| `REL-` | local qualification/release lane or contract |
+| `FMT-` | canonical durable format |
+| `TRACE-` | deterministic trace/replay contract |
+| `ATP-` | transfer/object-graph protocol contract |
 
 ---
 
@@ -102,7 +111,7 @@ Published IDs are never renumbered. Superseded entries remain as tombstones.
 - 12. Media acquisition, source custody, decoding, and live delivery
 - 13. Canonical ledger, object storage, encryption, and archive
 - 14. Digital twin, calibration shuttle, geometry, and coverage
-- 15. Model-host protocol and model registry
+- 15. Pure-Rust model runtime and model registry
 - 16. Detection, tracking, cross-camera association, and temporal reasoning
 - 17. Event semantics, uncertainty, sequential evidence, and policy
 - 18. Alerts and other effects
@@ -118,12 +127,20 @@ Published IDs are never renumbered. Superseded entries remain as tombstones.
 - 28. Implementation work packages and dependency order
 - 29. Acceptance gates and release doctrine
 - 30. Risks and open questions
+- 31. Closed pure-Rust dependency universe
+- 32. One version universe and semantic transactions
+- 33. Pure-Rust media and streaming kernel
+- 34. Certified graph intelligence
+- 35. Pure-Rust model runtime
+- 36. ATP archive, replication, repair, and deletion
+- 37. Decision cards, adaptive policy, and performance proof
+- 38. Local DSR qualification and release authority
 - Appendix A. Initial canonical data model
 - Appendix B. Example end-to-end event flow
 - Appendix C. Example calibration flow
 - Appendix D. Example agent session
 - Appendix E. Operation-cost formulas
-- Appendix F. First 100 implementation issues
+- Appendix F. First 200 implementation issues
 ---
 
 # 0. Reading guide
@@ -155,11 +172,13 @@ Read in this order:
 
 1. `README.md` for the product thesis.
 2. `IMPLEMENTATION_STATUS.md` for the honest current boundary.
-3. Sections 3–7 for the constitution.
-4. Sections 8–18 for the technical data path.
-5. Sections 21–24 for security/privacy/quality.
-6. Sections 28–29 for execution.
-7. Registries and schemas before implementing a specific surface.
+3. `FRANKENSTACK_DEEP_DIVE.md` and `docs/deep-dives/INDEX.md` for the mechanism-level inheritance.
+4. `docs/DEPENDENCY_CONSTITUTION.md` before adding or proposing any dependency.
+5. Sections 3–7 and 31–38 for the constitution.
+6. Sections 8–20 for the technical and agent data paths.
+7. Sections 21–24 for security/privacy/quality.
+8. Sections 28–29 and 38 for execution and release.
+9. Registries and schemas before implementing a specific surface.
 
 ---
 
@@ -194,29 +213,48 @@ The target product:
 ## 1.2 Anti-goal
 
 FSS is not a covert-access toolkit, an exploit framework, a public biometric network, an autonomous
-weapon or pursuit system, a guarantee of perfect detection, a cloud-required product, a generic
-smart-home platform, or an excuse to embed native codec/vendor/model runtimes in the safe-Rust
-trust root.
+weapon or pursuit system, a guarantee of perfect detection, a cloud-required product, a generic smart-home platform, or an excuse to require foreign codec/vendor/model runtimes anywhere in the shipping process topology.
 
 ## 1.3 Technology posture
 
-**Non-negotiable target stack:**
+**Non-negotiable production stack:**
 
-- Rust 2024 on a pinned current nightly toolchain;
-- `asupersync` for asynchronous orchestration, ownership, cancellation, budgets, obligations,
-  deterministic lab, and transport;
-- `frankensqlite` for the production canonical ledger after integration qualification;
-- `frankenfs` concepts/components for local object custody, staged publication, scrub, and repair;
-- `frankensearch` for derived lexical/semantic retrieval and model-generation discipline;
-- `franken_markdown` for deterministic evidence/report projections;
-- `frankengraphdb` for typed version-universe graph projections after its integration gate;
-- `fastmcp_rust` for the optional agent protocol surface;
-- `eidetic_engine_cli` for provenance-bearing operational memory;
-- no Tokio ecosystem;
-- safe Rust in ordinary workspace crates;
-- FFmpeg, Python/PyTorch, ONNX/CUDA runtimes, and proprietary helpers only as pinned supervised
-  boundary processes;
-- a closed dependency universe with explicit ADRs for fundamental exceptions.
+- Rust 2024 on the latest **accepted** nightly, pinned exactly after a full promotion gauntlet;
+- `#![forbid(unsafe_code)]` in every FSS crate, with no target/feature/test exceptions;
+- `asupersync` as the sole asynchronous runtime, ownership tree, cancellation model, budget system,
+  deterministic laboratory, and ATP transfer substrate;
+- admitted FrankenSQLite mechanisms for the canonical MVCC ledger;
+- admitted FrankenFS mechanisms for custody, coherent publication, repair, retrievability, and
+  deletion closure;
+- Frankensearch/Quill for focused first-party progressive retrieval;
+- FrankenGraphDB plus FrankenNetworkX for versioned graph projections, factorized/incremental
+  queries, deterministic algorithms, and complexity witnesses;
+- Franken Markdown for bounded exact-span knowledge and deterministic evidence reports;
+- FrankenTorch as the basis of a focused pure-Rust tensor/operator/kernel/model runtime;
+- FastMCP Rust as an optional request-owned presentation adapter;
+- Eidetic Engine concepts for provenance-bearing operational memory;
+- Doodlestein Self-Releaser receipts as local qualification and release authority;
+- a closed dependency universe: FSS, Asupersync, admitted Franken-suite crates, and only a tiny
+  machine-registered foundational exception set.
+
+**Explicit production prohibitions:**
+
+- Tokio, async-std, smol, Rayon-owned worker pools, detached threads, or a second cancellation tree;
+- Python/PyO3, FFmpeg/libav, OpenCV, ONNX Runtime, libtorch, CUDA runtime bindings, generic model
+  servers, browser engines, Node/Electron/Tauri, and proprietary vendor SDKs;
+- generic production graph/search/database/message-broker frameworks where a focused first-party
+  substrate owns the semantics;
+- runtime model/plugin/schema/tokenizer downloads, JIT code generation, or dynamic library/plugin
+  loading;
+- build-script network access or unlocked release resolution;
+- serde-derived canonical durable bytes.
+
+Foreign incumbents remain valuable **pinned laboratory oracles**. FFmpeg/ffprobe, PyTorch/ONNX
+Runtime, NetworkX, C SQLite, Tantivy, browsers, and owner-authorized vendor applications can be used
+for differential conformance in isolated fixtures. They do not ship and are not fallbacks.
+
+The complete policy is [`DEPENDENCY_CONSTITUTION.md`](docs/DEPENDENCY_CONSTITUTION.md) and
+[`architecture/dependency_allowlist.toml`](architecture/dependency_allowlist.toml).
 
 ## 1.4 Walking skeleton
 
@@ -226,7 +264,7 @@ The first useful vertical slice is deliberately not a Wyze demo. It is:
 2. dependency-free semantic state machines and in-memory ledger;
 3. source capsule and event schemas;
 4. original-byte object custody;
-5. cheap detector/tracker host protocol with immutable receipts;
+5. cheap pure-Rust detector/tracker reference path with immutable receipts;
 6. event hypothesis, policy abstention, and evidence bundle;
 7. replay producing the same decision fingerprint under injected faults;
 8. UVC camera as first physical sensor.
@@ -309,19 +347,22 @@ cheapest” or “R2 egress is always free” without an as-of identity.
 
 ## 2.6 Franken-stack findings
 
-The detailed source audit is in `FRANKENSTACK_DEEP_DIVE.md`. The decisive imports are:
+The source audit now has three levels: `FRANKENSTACK_DEEP_DIVE.md` for the integrated constitution, `docs/deep-dives/` for one-project-at-a-time investigations, and `architecture/franken_imports.json` for machine-enforced mechanism contracts. The decisive imports are:
 
-- Asupersync: authority contexts, owned work, cancellation/quiescence, outcomes, effects,
-  obligations, deterministic faults.
-- FrankenSQLite: canonical MVCC ledger, crash recovery, layered semantics, honest readiness.
-- FrankenFS: content custody, root-last publication, repair plans, proof bundles.
-- Frankensearch: progressive retrieval, model-generation identity, derived indexes, oracle gauntlet.
-- Franken Markdown: exact spans, taint, deterministic multi-output evidence.
-- FrankenGraphDB: one version universe, typed claims, cost registry, no substitute architecture.
-- Dwarf Fortress MCP: semantic control over delayed/partial/ambiguous outcomes, anchors, deltas,
-  intents, obligations, agent token economy.
-- FastMCP Rust: capability-scoped request boundaries, budgets, owned children, qualification lines.
-- Eidetic Engine: evidence-linked feedback and memory that advise without rewriting truth.
+- Asupersync: region ownership, explicit `Cx` authority, request/drain/finalize cancellation, obligations, deterministic lab/replay, semantic subject service classes, and ATP verified object graphs.
+- FrankenSQLite: multi-version anchors, positive and negative semantic witnesses, SSI dangerous structures, semantic merge, flat combining, and bounded regime monitoring.
+- FrankenFS: rooted capability I/O, staged/visible/durable/protected publication, COW generations, sealed repair plans, RaptorQ custody, and evidence-dimensional readiness.
+- Frankensearch: progressive pinned retrieval, searchable delta versus durable seal, globally ordered ranges and merge=concat, columnar ingest, model-space identity, and pinned-oracle gauntlets.
+- Franken Markdown: exact spans, bounded explicit-stack parsing, taint, one representation for deterministic multi-output evidence, and sibling rollback.
+- FrankenGraphDB: one version universe, temperature-tiered relations, factorized/WCO execution, Z-set incremental maintenance, branch-per-agent speculation, capability-before-expansion, and plan certificates.
+- FrankenNetworkX: CGSE deterministic choices, observable behavior as contract, broad algorithm families, and per-call complexity/decision-path witnesses.
+- Dwarf Fortress MCP: evidence anchors, resumable deltas, witnessed absence, semantic plans, delayed-effect truth, obligations, and agent token economy.
+- FastMCP Rust: bounded capability-scoped presentation, request-owned children, protocol/version qualification, and no generic authority escape hatch.
+- Eidetic Engine: provenance-bearing advisory memory, confidence decay, trauma guard, anti-pattern inversion, and deterministic context packs.
+- FrankenTorch and adjacent inference projects: pure-Rust model IR/kernels, scalar oracles, artifact identity, and hardware specialization without foreign production runtimes.
+- Doodlestein Self-Releaser: workflow-as-portable-spec, clean source/sibling closure, resumable native targets, exact assets, root-last release publication, and download verification.
+
+The rule is not “depend on everything.” Each imported mechanism has a semantic owner, substitute prohibition, deterministic reference model, soundness boundary, and admission gate.
 
 ## 2.7 Synthesis
 
@@ -451,7 +492,7 @@ systems, sensor fusion, calibration, rare-event detection, and robust uncertaint
 - `NONGOAL-007`: autonomous drone flight in v1.
 - `NONGOAL-008`: replacing every NVR, smart-home system, or vendor app immediately.
 - `NONGOAL-009`: cloud dependence for core acquisition/cognition/control.
-- `NONGOAL-010`: in-process FFmpeg/Python/CUDA/proprietary SDK trust.
+- `NONGOAL-010`: any production dependency on FFmpeg/Python/ONNX/CUDA/proprietary SDK runtimes, whether in-process or hidden behind IPC.
 - `NONGOAL-011`: one giant end-to-end neural model as the sole product logic.
 - `NONGOAL-012`: graph/search/model outputs as canonical source of truth.
 - `NONGOAL-013`: benchmark theater or support claims derived from source presence.
@@ -768,103 +809,103 @@ and time-varying uncertainty than local RTP/UVC.
 
 # 6. Layered architecture, trust domains, and dependency policy
 
-## 6.1 Layering
+## 6.1 Four operational planes
+
+FSS refines the original three semantic planes with an explicit packet plane:
+
+1. **Packet plane:** transport bytes, protocol packets, compressed access units, source timing, and
+   continuity. It cannot infer events or authorize effects.
+2. **Authority plane:** identities, generations, source custody, `EvidenceDeltaBatch` history,
+   calibration/coverage certificates, policies, effects, obligations, and receipts.
+3. **Cognition plane:** decoded media, tensors, models, tracks, associations, graph/search
+   projections, digital twins, attention, and operational memory. It is rebuildable from named
+   authority roots.
+4. **Effect plane:** alerts, camera settings/PTZ, retention/deletion/export, activation, repair
+   mutation, and any future physical operation. It is narrow, fenced, idempotent, and
+   reconciliation-first.
 
 ```text
-L0: IDs, schemas, errors, invariants, canonical encodings
-L1: pure reference state machines and algorithms
-L2: capability/effect/runtime/ledger/object/model/adapter contracts
-L3: Asupersync orchestration and qualified Franken adapters
-L4: acquisition, media supervision, storage, geometry, cognition
-L5: event policy, effects, evidence, search, graph, memory
-L6: CLI, MCP, operator products, lab tools
+Packet capsules → Authority deltas → Cognition projections
+       ↑                │                    │
+       └──observed──── Effect plans ←witnesses/intent
 ```
 
-Dependencies point inward. Vendor/model/media crates cannot leak upward authority or downward
-implementation coupling.
+No plane silently redefines another plane's semantics.
 
-## 6.2 Trust domains
+## 6.2 Trust and failure domains
 
-### Core domain
+| Domain | Contains | May do | Must not do |
+|---|---|---|---|
+| FSS semantic core | types, ledger contracts, witnesses, policy, effects, registries | define authority and decisions | parse arbitrary native/plugin code or recover ambient authority |
+| Asupersync runtime | regions, `Cx`, budgets, obligations, LabRuntime, ATP | own and schedule work; move immutable object graphs | become a semantic database or effect shortcut |
+| Device/protocol | UVC, RTSP/RTP, ONVIF, focused proprietary adapters | authenticate authorized devices and emit packet/capability truth | write event/alert truth or expose generic vendor methods |
+| Media | bounded parsers, codecs, containers, live proxy, source maps | preserve/transform media with receipts | replace source evidence or hide discontinuity |
+| Model | first-party tensor/operator/kernel runtime and immutable packages | emit typed derived results | download code/models, mutate authority, compare mixed model spaces |
+| Graph/search | immutable derived generations and registered algorithms | rank, connect, explain, propose | authorize effects or claim absence without coverage |
+| Archive/repair | object graphs, encryption, ATP, replicas, retrievability | stage/verify/publish/repair immutable objects | treat upload ACK as archive completion or carry mutation authority |
+| Presentation | CLI, MCP, TUI/UI, reports | expose bounded public projections and prepared effects | gain administrator authority or leak private counts/absence |
+| Qualification oracle | pinned foreign tools and real-device labs | compare behavior and produce evidence | ship, become fallback, or define production truth |
 
-Safe Rust, no ambient I/O, no unsafe, deterministic kernels, bounded allocations, versioned data.
+Failures are classified at the boundary. A codec/model/graph optimization can fail while source
+custody remains truthful. A search generation can lag while authority stays available. A provider
+can be indeterminate without making the local root indeterminate.
 
-### Franken domain
+## 6.3 Closed dependency universe
 
-Qualified in-house components behind explicit integration gates. Source ownership does not waive
-qualification.
+Production resolution is:
 
-### Media domain
+```text
+std/core/alloc
++ FSS workspace
++ Asupersync
++ exact admitted Franken-suite revisions
++ tiny DEP-recorded foundational exceptions
+```
 
-Pinned native codec processes with descriptor/path/network/resource sandbox. The semantic core
-never trusts decoded output without a receipt and source relation.
+Every exception names purpose, owner, enabled features, transitive closure, unsafe/build-script/
+thread/network behavior, replacement trigger, and evidence. “Widely used,” “fundamental,” and
+“convenient” are not sufficient arguments. Cryptography, hashing, compression, TLS, SIMD, CLI,
+media, and platform crates prefer existing first-party surfaces and otherwise require separate
+admission.
 
-### Model domain
+Release qualification proves the dependency graph resolves locked and offline. First-party path
+work is captured at exact clean revisions so mutable sibling checkouts cannot leak into a binary.
 
-Pinned model processes/containers with immutable inputs/weights, no effects/secrets/arbitrary
-network, bounded output, and process cleanup.
+## 6.4 Pure Rust and memory safety
 
-### Vendor domain
+FSS crates unconditionally forbid unsafe code. Low-level platform or vector primitives, if needed,
+belong in separately reviewed first-party substrate crates exposing safe contracts; the FSS
+workspace never creates a local exception.
 
-One adapter process per scoped device/account/failure domain where feasible. It has no canonical DB
-or unrelated secret access.
+“Out of process” does not turn a foreign runtime into pure Rust. Shipping media, model, graph,
+archive, UI, and orchestration semantics must be first-party Rust or the capability remains
+unsupported. Foreign tools are laboratory oracles only.
 
-### Archive domain
+## 6.5 Durable-format boundary
 
-Receives encrypted chunks/manifests and scoped backend authority. Plaintext and delete authority
-are separated where feasible.
+Control/report JSON may use Serde. Canonical evidence, ledger, media index, tensor/model, graph,
+search, transfer, repair, and release bytes use hand-written versioned formats with magic, explicit
+endianness, hard bounds, canonical ordering, checksums, migration fixtures, and corruption tests.
+Rust layout and derive output are never persistence semantics.
 
-### Agent/product domain
+## 6.6 No-substitute architecture
 
-Receives bounded projections and explicit effect capabilities. Untrusted sensor text remains taint.
+The following are explicitly rejected:
 
-## 6.3 Dependency universe
+- one mutable global “current world” cache;
+- a raw message bus as the semantic architecture;
+- one VLM prompt that subsumes tracking, timing, policy, and effects;
+- a generic graph database as authority;
+- source media discarded after proxy transcode;
+- upload ACK treated as durable/retrievable archive;
+- cache/search miss treated as evidence of absence;
+- generic shell, SQL, vendor, codec, model, or drone-control tool surfaces;
+- foreign services hidden behind IPC and relabeled first-party;
+- a large dependency graph justified by future flexibility;
+- hosted CI as release authority;
+- benchmark wins without same-binary semantic receipts.
 
-The default universe is the nine in-house projects plus fundamental crates declared in
-`architecture/dependency_allowlist.toml`. Additions require `ADR-DEP-*` containing:
-
-- semantic need and alternatives;
-- transitive dependency/unsafe/native/build footprint;
-- maintenance/licensing/security posture;
-- determinism and runtime network behavior;
-- fault/cancellation/shutdown behavior;
-- replacement/removal plan;
-- qualification owner.
-
-## 6.4 Unsafe and native code
-
-Ordinary workspace crates use `#![forbid(unsafe_code)]`. A future unsafe boundary requires:
-
-- named boundary crate excluded from the core trust claim;
-- precise invariant and safe facade;
-- unsafe ledger with line-level purpose;
-- Miri/sanitizer/fuzz/platform tests where applicable;
-- independent audit owner;
-- process isolation preferred over in-process FFI.
-
-FFmpeg/CUDA/vendor SDKs are boundary processes, not Rust dependency exceptions.
-
-## 6.5 No substitute architecture
-
-Forbidden “temporary” paths include:
-
-- global mutable singleton state;
-- detached threads/tasks;
-- unbounded queues/retries;
-- one mutable JSON document as canonical truth;
-- database rows containing opaque unversioned model blobs as the only record;
-- direct shell string construction for codecs/vendor tools;
-- in-process Python embedding;
-- cloud database as required control plane;
-- all-frames frontier VLM;
-- broad vendor adapter with ambient credentials;
-- search/graph as only event store;
-- aggregate `supported: true` without readiness dimensions.
-
-A phased implementation can be incomplete; it cannot establish incompatible semantics and be
-called progress toward the target.
-
----
+The detailed constitution is [`DEPENDENCY_CONSTITUTION.md`](docs/DEPENDENCY_CONSTITUTION.md).
 
 # 7. Runtime, ownership, cancellation, budgets, and obligations
 
@@ -913,8 +954,8 @@ Context cloning narrows or preserves authority; it never broadens it.
 ## 7.3 Cancellation protocol
 
 1. `request`: mark cancellation, stop new work/effects.
-2. `drain`: propagate to children, stop reads, close inputs, terminate/wait subprocess groups,
-   settle channels, persist partial receipts.
+2. `drain`: propagate to children, stop reads, close inputs, settle channels, persist partial
+   receipts, and, only in sealed laboratory profiles, terminate and wait for owned oracle process groups.
 3. `finalize`: abort/commit staged state as contract permits, reconcile ambiguous effects, release
    resources/secrets/leases, emit quiescence proof.
 
@@ -958,8 +999,8 @@ Obligations are durable and resume after crash. A process exit cannot erase them
 ## 7.7 Deterministic reference runtime
 
 Before Asupersync integration, a single-threaded virtual-time runtime models the same state
-transitions. It controls clock, randomness, packet arrival, subprocess results, ledger/object
-faults, model outputs, and alert receipts. This is the semantic oracle for optimized/concurrent
+transitions. It controls clock, randomness, packet arrival, sealed laboratory-oracle results,
+ledger/object faults, model outputs, and alert receipts. This is the semantic oracle for optimized/concurrent
 paths.
 
 ---
@@ -1271,21 +1312,33 @@ Policy options:
 
 Omission is explicit. A downstream model receipt cannot imply unavailable source bytes exist.
 
-## 12.4 Codec boundary
+## 12.4 Pure-Rust packet, codec, and container kernel
 
-FFmpeg or equivalent runs under a typed plan:
+Production owns the narrow media waist in safe Rust:
 
-- exact pinned binary/build/features/digest;
-- input/output descriptors or sandbox paths;
-- no arbitrary shell interpolation;
-- no network unless the media boundary explicitly owns that source;
-- codec/container/dimension/duration/output bounds;
-- CPU/RAM/GPU/time limits;
-- sanitized environment and process group;
-- stdout/stderr caps and structured parsing;
-- cancellation escalation and quiescence receipt.
+```text
+transport bytes
+→ RTSP/RTP/RTCP or UVC packet truth
+→ H.264/H.265/MJPEG/audio access-unit parsers
+→ container/sample timeline
+→ source custody
+→ optional decode surface
+→ live and analysis derivatives
+```
 
-Crashes/hangs/corruption produce media receipts and leave source evidence intact.
+Initial codec priorities follow inexpensive cameras: H.264/AVC, H.265/HEVC, MJPEG/JPEG, and the
+small set of audio codecs required by qualified devices. AV1 becomes an archive/proxy target after
+its first-party kernel passes admission. Parsers and decoders are independently qualified; a parser
+may preserve and index an unsupported profile without claiming decoded-frame support.
+
+Every parser/decoder declares hard byte, nesting, reference-frame, dimensions, bit-depth, memory,
+CPU, and output limits. Decoded surfaces use immutable/frozen storage or generation-leased pools;
+models and UI views cannot observe a buffer after reuse. Scalar semantics remain the oracle for
+safe optimized/SIMD kernels.
+
+FFmpeg/ffprobe and browsers are pinned differential oracles in lab images. They never ship, and
+ordinary operation does not invoke them. See
+[`docs/STREAMING_AND_MEDIA_KERNEL.md`](docs/STREAMING_AND_MEDIA_KERNEL.md).
 
 ## 12.5 Remux before transcode
 
@@ -1616,100 +1669,104 @@ without effect authority.
 
 ---
 
-# 15. Model-host protocol and model registry
+# 15. Pure-Rust model runtime and model registry
 
-## 15.1 Process boundary
+## 15.1 Production model boundary
 
-Each model host starts from an immutable launch manifest:
+Shipping inference executes through an admitted first-party safe-Rust tensor/operator/kernel stack
+based on FrankenTorch mechanisms. There is no required Python environment, ONNX Runtime, libtorch,
+CUDA runtime, external model server, or network model registry. Unsupported operators/models fail
+import or remain oracle-only.
 
-- model-generation digest and local weight paths;
-- runtime/container/interpreter/CUDA/driver identity;
-- hardware allocation and memory limit;
-- no arbitrary network;
-- allowed input object handles and output directory/descriptor;
-- schema and byte/token/frame limits;
-- seed/determinism flags;
-- cancellation/kill policy;
-- privacy class and retention of transient inputs;
-- license/use classification.
+## 15.2 Canonical model package
 
-The core talks a versioned framed protocol over local IPC or an authenticated transport.
+A model generation is an immutable ATP object graph binding:
 
-## 15.2 Requests and receipts
+```text
+source model digest and provenance
+license/use policy
+frozen first-party operator IR
+canonical constant tensor objects
+preprocess and postprocess graphs
+input/output schemas and shape constraints
+numeric and determinism policy
+quantization/calibration contract
+kernel-plan compatibility
+quality and differential receipts
+known divergences/failure slices
+repair manifest
+```
 
-A request contains:
+A mutable model name or repository head is never identity. Activation is a prepared root-last effect
+with rollback to the prior generation.
 
-- operation/model generation;
-- input evidence/derivative digests;
-- task schema and bounded parameters/prompts;
-- preprocessing generation;
-- deadline/resource budget;
-- deterministic seed where applicable;
-- privacy authorization;
-- expected output schema.
+## 15.3 Offline import and lowering
 
-A receipt contains:
+The importer acquires a pinned source package explicitly, verifies it, lowers only supported
+operators to the FSS IR, canonicalizes tensors, performs shape/layout/scratch analysis, and runs
+pinned foreign framework oracles. Production never interprets arbitrary framework graphs or
+executes model-supplied code.
 
-- exact identity and input/output digests;
-- start/end/compute/resource measurements;
-- preprocessing/frame sampling;
-- structured outputs and calibration space;
-- warnings/nondeterminism;
-- completed/error/cancelled/panicked;
-- process cleanup evidence.
+Oracle accounting distinguishes agree, diverge, error-only agreement, unexercised, and intentionally
+unsupported behavior. The oracle can be unavailable without affecting production.
 
-## 15.3 No model downloads at runtime
+## 15.4 Tensor/storage semantics
 
-Model acquisition is a separate privileged workflow that resolves license, downloads, verifies,
-scans, records checksums/size, and activates after gauntlet. An inference request cannot fetch
-“latest” code/weights or execute remote model code unexpectedly.
+Tensor identity includes dtype, shape, stride/layout, storage generation, view/alias identity,
+device, quantization, and numeric policy. Weights are immutable and structurally shared. Scratch is
+invocation-region-owned. A frame/tensor view cannot outlive backing reuse/reallocation.
 
-## 15.4 Candidate routing
+## 15.5 Static dispatch and safe specialization
 
-A router chooses among admitted generations based on task, quality, latency, privacy, hardware,
-health, and budget. Routing is versioned cognition policy. It can degrade to a cheaper path or
-abstain. It cannot substitute an unadmitted model or mix score spaces.
+Kernel selection is a deterministic function of operator × dtype × layout × shape class × device ×
+numeric policy. Every optimized kernel has a scalar reference, a proven input region, a complexity/
+scratch bound, a cancellation discipline, and exact or tolerance-certified output semantics.
+Offline Forge-style code generation may specialize frozen shapes into safe Rust; runtime JIT or
+plugins are forbidden.
 
-## 15.5 Shadow and oracle modes
+## 15.6 CPU-first performance
 
-- **primary:** output may contribute to canonical event revision after calibration/policy.
-- **secondary verifier:** independent corroborating/contradicting cognition.
-- **shadow:** runs without affecting live decision; evaluation only.
-- **research oracle:** restricted/noncommercial candidate used in lab proof bundles only.
-- **quarantined:** generation disabled due to drift/security/license/quality.
+Cheap deployments must work well on CPUs. The runtime uses packed immutable weights, cache-shaped
+tiling, shape specialization, liveness-based scratch arenas, safe SIMD, fused preprocess/layout/
+first operators, and share-nothing partitions under Asupersync ownership. Generic framework
+features that FSS inference graphs do not use are not on the hot path.
 
-## 15.6 Structured output
+## 15.7 Accelerator posture
 
-The model contract uses bounded JSON/flatbuffer-like typed fields, not arbitrary text alone:
+GPU/NPU backends are optional first-party Rust capabilities. They define memory/synchronization,
+allocation and queue budgets, reset/device-loss behavior, kernel/binary identity, thermal feedback,
+and deterministic/tolerance contracts against the CPU reference. Until admitted, CPU remains the
+production path. A foreign accelerator runtime is not a fallback.
 
-- detections/masks/tracks/relations;
-- answer class and score/logits where available;
-- evidence frame/region/time references;
-- abstention/unsupported input;
-- natural-language explanation as optional tainted field.
+## 15.8 Invocation receipt
 
-Schema failure rejects the output. A parser “repairing” malformed model text is a separate derived
-operation with lower evidence class.
+Every invocation pins source evidence, model/preprocess/numeric/kernel/calibration/privacy
+generations; reserves input/scratch/output budgets; validates shape/finiteness; publishes an
+immutable result root; and emits a decision-path receipt. Cancellation before publication leaves no
+visible result; cancellation after publication drains cleanup without retracting the committed
+result.
 
-## 15.7 Licenses
+## 15.9 Quantization and embedding spaces
 
-Code, weights, datasets, and dependencies can differ. A noncommercial/restricted model can be a lab
-oracle but not default. License identity is part of model generation and effect routing. Changing
-use/deployment requires re-admission.
+Every quantized variant is a distinct generation with calibration corpus, operator policy, quality
+deltas, hardware receipts, and rollback. Embeddings/logits from different generations or
+preprocessing spaces never share one unqualified score space.
 
-## 15.8 Upgrade
+## 15.10 Shadow, canary, and activation
 
-1. acquire/verify new generation;
-2. deterministic schema/resource tests;
-3. replay corpus and quality gauntlet;
-4. shadow on live consented traffic without decision effect;
-5. compare calibration, disagreements, misses, cost;
-6. build compatible new indexes;
-7. atomically activate model/index/policy generation;
-8. maintain rollback and monitor drift;
-9. retire old transient caches after retention/deletion policy.
+New packages begin in replay/shadow mode. Paired Decision Cards compare them to the incumbent on
+sealed and live canary data. Promotion requires event-level quality, calibration, performance,
+privacy, and resource gates; rollback is immediate and root-addressed.
 
----
+## 15.11 No runtime acquisition
+
+Model weights, tokenizers, vocabularies, calibration tables, and executable graphs are provisioned
+as verified local object graphs. Build scripts and live processes do no network acquisition.
+
+## 15.12 Detailed contract
+
+See [`PURE_RUST_MODEL_RUNTIME.md`](docs/PURE_RUST_MODEL_RUNTIME.md) and
+[`docs/deep-dives/FRANKENTORCH.md`](docs/deep-dives/FRANKENTORCH.md).
 
 # 16. Detection, tracking, cross-camera association, and temporal reasoning
 
@@ -2061,18 +2118,37 @@ search is property-local and privacy-scoped; it does not assert identity.
 Initial exact/lexical/cheap-vector candidates return quickly. Graph/geometry/high-quality rerank and
 evidence hydration refine later. A refinement failure does not erase the labeled initial result.
 
-## 19.5 Graph projection
+## 19.5 Certified graph projections and algorithms
 
-Initial typed nodes/edges:
+FSS maintains separate immutable projections for sensor/network/power topology, spatial visibility,
+track association, event/evidence causality, object custody/deletion, and runtime obligations. Each
+root names its authority high-water mark, schema, projection/capability policy, and storage
+representation.
 
-- property/sensor/device/stream/zone/coverage cell;
-- source capsule/observation/track/association/event revision;
-- model/policy/calibration/privacy generation;
-- alert/effect/receipt/archive/export/proof/memory;
-- `OBSERVED_BY`, `DERIVED_FROM`, `LOCATED_IN`, `ASSOCIATED_WITH`, `CONTRADICTS`, `CORROBORATES`,
-  `AFFECTS_COVERAGE`, `AUTHORIZED_BY`, `PUBLISHED_AS`, `SUPERSEDES`, `REMEMBERED_AS`.
+Graph storage is temperature-tiered: tiny hot adjacency inline, recent deltas in bounded sorted
+blocks, cold stable relations in sealed runs, and retained historical roots. Standing predicates
+such as active tracks, uncovered cells, likely transition edges, failure cuts, under-replicated
+objects, and unresolved obligations update incrementally from `EvidenceDeltaBatch`; periodic full
+recomputation is the oracle.
 
-Edges carry revision/evidence/failure domain and cannot mix version universes.
+Every planning-relevant algorithm is registered with directedness/multiedge/weight/numeric
+semantics, canonical tie-break/output order, complexity contract, budget, stale policy, and
+reference implementation. Runs emit `GraphAlgorithmWitness` objects with `n`, `m`, observed
+operation counts, decision-path digest, and output digest.
+
+Initial families include dynamic connectivity; articulation/bridge/dominator/cut analysis;
+shortest, k-shortest, and temporal paths; bipartite matching, k-best assignment, min-cost flow;
+max-flow/Gomory-Hu; SCC/condensation/topological critical path; spanning forests; set cover,
+facility location, and submodular active perception; PPR attention; d-separation; canonical graph
+hashing; factorized joins; wait-cycle detection; and deletion reachability.
+
+Authorization and privacy are compiled into the projection before expansion so hidden degree,
+counts, paths, cuts, or absence cannot leak. Optimized/specialized algorithms replace the ordered
+safe-Rust oracle only after adversarial differential, cancellation, snapshot, capability,
+complexity, and same-binary performance gates.
+
+See [`docs/GRAPH_INTELLIGENCE_ARCHITECTURE.md`](docs/GRAPH_INTELLIGENCE_ARCHITECTURE.md) and
+[`registries/GRAPH_ALGORITHMS.md`](registries/GRAPH_ALGORITHMS.md).
 
 ## 19.6 Memory
 
@@ -2172,8 +2248,8 @@ absent.
 
 ## 20.5 Budgets
 
-Request budgets include time, bytes, rows, tokens, evidence hydration, model calls, GPU work, and
-subprocesses. Partial initial results return continuation rather than exceeding budget. Budget
+Request budgets include time, bytes, rows, tokens, evidence hydration, model calls, accelerator
+work, and sealed laboratory-oracle calls when the request runs in a qualification profile. Partial initial results return continuation rather than exceeding budget. Budget
 exhaustion is not a generic timeout and carries what completed.
 
 ## 20.6 Anchors and races
@@ -2233,12 +2309,12 @@ Security is therefore an architectural boundary, not a deployment appendix.
 | ID | Objective | Required interpretation |
 |---|---|---|
 | `SEC-001` | Least authority | Every process, adapter, model, agent, and operator receives the smallest capability needed for one declared operation. |
-| `SEC-002` | Local survivability | Loss of vendor cloud, WAN, object store, or model service does not erase local evidence or silently disable all detection. |
+| `SEC-002` | Local survivability | Loss of vendor cloud, WAN, object store, accelerator, or optional remote sink does not erase local evidence or silently disable all detection. |
 | `SEC-003` | Credential containment | Raw credentials never enter logs, model prompts, event objects, support bundles, or generic agent context. |
 | `SEC-004` | Media isolation | Untrusted packets, bitstreams, metadata, and model files cannot directly mutate canonical state. |
 | `SEC-005` | Effect accountability | Every consequential effect has an authorizing principal, capability, precondition, intent digest, receipt, and terminal/indeterminate state. |
 | `SEC-006` | Tamper evidence | Canonical manifests, evidence roots, model generations, calibration certificates, and policy generations are content-addressed and hash-linked. |
-| `SEC-007` | Bounded attack surface | Parsers, decoders, adapters, and model hosts enforce byte, time, memory, process, recursion, and output bounds before accepting input. |
+| `SEC-007` | Bounded attack surface | Parsers, decoders, adapters, and model runtimes enforce byte, time, memory, task, recursion, and output bounds before accepting input. |
 | `SEC-008` | Fail-closed control | Authentication, authorization, provenance, model identity, or precondition ambiguity prevents mutation rather than degrading into ambient authority. |
 | `SEC-009` | No covert autonomy | FSS does not autonomously pursue, threaten, physically confront, or weaponize against a person. |
 | `SEC-010` | Reproducible security state | A support bundle can reconstruct the active versions, policies, grants, network topology declarations, and relevant audit evidence without exposing secrets. |
@@ -2248,10 +2324,10 @@ Security is therefore an architectural boundary, not a deployment appendix.
 Recommended deployment uses at least four logical zones:
 
 1. **Device zone.** Cameras, doorbells, base stations, and drone-controller bridge endpoints.
-2. **Ingest zone.** Adapter subprocesses and media gateways allowed to initiate narrowly scoped
-   connections to declared devices.
+2. **Ingest zone.** Asupersync-owned adapter/device regions and pure-Rust media gateways allowed
+   to initiate narrowly scoped connections to declared devices.
 3. **Trusted core zone.** Ledger, policy engine, search, graph, calibration authority, and API.
-4. **Model/compute zone.** GPU model workers consuming immutable sensor capsules and publishing
+4. **Model/compute zone.** first-party model execution consuming immutable sensor capsules and publishing
    typed hypotheses.
 
 Default network policy:
@@ -2259,7 +2335,7 @@ Default network policy:
 - device-zone endpoints cannot initiate connections to the trusted core;
 - vendor-cloud access is disabled for standards-native devices unless explicitly required;
 - adapters may access only their declared device tuple and vendor endpoints named by policy;
-- model workers cannot access device credentials or arbitrary network destinations;
+- model execution cannot access device credentials or arbitrary network destinations;
 - object-store uploaders receive write-only, prefix-scoped authority where the provider permits;
 - public inbound ports are absent by default;
 - remote operator access terminates through an explicitly configured authenticated tunnel or
@@ -2272,7 +2348,8 @@ not substitutes for application-layer capabilities.
 ## 21.3 Secret model
 
 A secret is referenced by `SecretHandle`, never copied into normal configuration. Backends MAY
-include OS keyrings, encrypted files, hardware-backed stores, or operator-provided processes.
+include OS keyrings, encrypted files, hardware-backed stores, or an operator-supplied one-shot
+secret channel whose implementation is separately capability-scoped and admitted.
 The core contract is:
 
 ```text
@@ -2296,24 +2373,26 @@ A reverse-engineered vendor adapter MUST NOT ask an agent to paste cookies or pa
 prompt. Onboarding is an operator flow that deposits credentials directly into the selected secret
 backend.
 
-## 21.4 Process and memory isolation
+## 21.4 Pure-Rust process and memory isolation
 
-The trusted semantic core remains safe Rust and forbids native codec, vendor SDK, Python model,
-CUDA, browser, and arbitrary plugin code in-process. Boundary processes communicate through
-versioned, length-delimited, authenticated local protocols.
+The production semantic, protocol, media, codec, model, graph, search, archive, CLI/MCP, and UI
+paths are first-party safe Rust under Asupersync ownership. FSS does not depend on foreign codec,
+Python/model, GPU runtime, browser, or proprietary SDK processes.
 
-| Boundary | Default process | Authority | Failure consequence |
+Isolation still exists **within** the Rust architecture:
+
+| Component | Isolation/ownership unit | Authority | Failure consequence |
 |---|---|---|---|
-| Vendor adapter | One process per account/device group | Declared vendor endpoints and secret handle | Adapter restarts; canonical truth remains intact |
-| Decoder/transcoder | Worker pool with strict media limits | Read capsule bytes, write staged renditions | Rendition fails; source bytes retained according to policy |
-| Model host | One process per model generation or compatible pool | Read immutable tensors/capsules, publish hypotheses | Hypothesis unavailable; no direct canonical mutation |
-| Object uploader | Provider/prefix-scoped worker | Read committed local objects, stage remote objects | Upload obligation retries or becomes indeterminate |
-| Notification provider | Channel-scoped worker | Read prepared alert payload, send once under idempotency key | Receipt reconciled; no duplicate assumed away |
-| Browser/vendor automation | Disposable isolated worker, experimental only | One onboarding/session task | Unsupported on drift; never promoted by default |
+| Device session | region per adapter/device generation | scoped credentials and network/device resource | stream degraded; source history remains truthful |
+| Media stream | region plus bounded packet/decode pools | packet/source objects only | decode/live derivative unavailable; source custody continues where possible |
+| Model invocation | region plus immutable package and scratch arena | authorized tensor/capsule views | derived hypothesis absent/failed; no authority mutation |
+| Graph/search request | request-owned pinned generation | authorized projection only | bounded partial/stale result; no hidden expansion |
+| ATP transfer | transfer region and resumable journal | immutable object roots/destination scope | staged/resumable/failed/indeterminate transfer receipt |
+| Effect | durable operation region/obligation | exact prepared capability and fence | reconcile to verified or indeterminate outcome |
 
-Workers receive bounded shared-memory/file handles instead of arbitrary filesystem roots. A crash
-or kill is a normal tested outcome. Parent regions must drain child ownership and reconcile every
-reserved output.
+Laboratory oracles run in separate pinned, network-restricted environments and consume immutable
+corpora. Their compromise or outage cannot affect production availability or authority. Secret and
+private media capabilities are never granted merely to make differential testing convenient.
 
 ## 21.5 Untrusted media and metadata
 
@@ -2413,7 +2492,7 @@ Security promotion requires retained evidence for:
 
 - secret-redaction corpus;
 - protocol fuzzing and malformed-frame corpus;
-- codec/model worker sandbox escape assumptions and platform manifests;
+- pure-Rust codec/model memory-isolation, resource-limit, malformed-input, and laboratory-oracle separation evidence;
 - capability denial matrix;
 - stale-lease/fence tests;
 - alert replay/idempotency tests;
@@ -2566,7 +2645,7 @@ privacy-minimized derivative: masked crop, downsampled clip, geometry without te
 embedding. The receipt records exactly what bytes left the local trust domain, provider,
 region/endpoint, encryption context, retention expectation, and response artifacts.
 
-A model host must declare whether inputs leave the machine. An “open-weights model” served by a
+A model execution profile must declare whether any inputs leave the machine. An “open-weights model” served by a
 third-party API is still remote processing and must not inherit local-model permissions.
 
 ## 22.9 Evidence export
@@ -2601,7 +2680,7 @@ Required tests include:
 - no cross-property re-identification by default;
 - export transformation reproducibility;
 - policy rollback without orphaned new-generation artifacts;
-- compromised model worker cannot request unredacted source without capability.
+- model execution cannot request unredacted source without capability.
 
 ---
 
@@ -2658,7 +2737,7 @@ new dependency/race shapes rather than enumerating redundant interleavings.
 | Clock | Offset, skew, step, monotonic reset at process boundary, NTP uncertainty, stale time sample |
 | Storage | ENOSPC, torn staging file, fsync failure, permission change, object-store 5xx, partial multipart upload |
 | Database | Kill before/after commit marker, checksum mismatch, migration interruption, stale reader generation |
-| Model | OOM, timeout, malformed tensor, NaN, unsupported operator, worker crash, nondeterministic output |
+| Model | OOM, timeout, malformed tensor, NaN, unsupported operator, executor panic, nondeterministic output |
 | Policy | Missing feature, stale calibration, contradictory evidence, threshold migration failure |
 | Alert | Provider timeout, duplicate ACK, ambiguous HTTP result, callback spoof, channel outage |
 | Privacy | Mask unavailable, deletion blocked, remote sink misconfigured, export transform failure |
@@ -2672,7 +2751,7 @@ but must preserve evidence and not be flattened to success.
 The system uses several oracle classes:
 
 1. **Reference protocol/device oracle.** Real standards-compliant camera or recorded packet trace.
-2. **Incumbent tool oracle.** Pinned FFmpeg/GStreamer/vendor application for decode or behavior
+2. **Incumbent laboratory oracle.** Pinned FFmpeg/browser/vendor application for decode or behavior
    comparison, isolated from the target architecture.
 3. **Independent model oracle.** Larger/research-only model used to label disagreements, never
    presumed correct.
@@ -3066,7 +3145,7 @@ The media path should minimize copies and transcoding:
 - use scatter/gather and bounded buffer pools;
 - cache decoded low-resolution frames only across explicitly compatible consumers;
 - batch tensor preprocessing by shape/model generation while respecting latency;
-- exploit hardware decode/encode only behind qualified boundary workers;
+- exploit hardware decode/encode only through qualified first-party Rust backends with scalar/CPU references;
 - avoid re-encoding merely to change a manifest;
 - separate live low-latency rendition from archival high-compression rendition;
 - publish root manifests last so retries can reuse already durable objects.
@@ -3165,7 +3244,7 @@ The performance ledger records wins. The negative-evidence ledger records losses
 
 ## 26. Observability, diagnostics, repair, installation, and operations
 
-FSS must remain understandable when a camera silently changes firmware at 3 a.m., a model worker
+FSS must remain understandable when a camera silently changes firmware at 3 a.m., a model executor
 starts returning NaNs, storage fills, or an alert result is ambiguous. Operator experience is part
 of correctness.
 
@@ -3194,7 +3273,7 @@ A single green/red status is insufficient. Health reports dimensions:
 - image usefulness/obstruction/exposure;
 - adapter compatibility confidence;
 - calibration freshness and mask validity;
-- model host readiness and generation;
+- model runtime readiness and generation;
 - queue pressure and degraded mode;
 - local durability and free space;
 - remote archive obligations;
@@ -3278,8 +3357,7 @@ The reference distribution aims for:
 - no requirement for a daemon to inspect capabilities/status;
 - rollback to the prior binary/config generation.
 
-Containers MAY be offered for boundary workers and server deployment, but are not allowed to hide
-host camera/GPU/network constraints or become the only supported route.
+Containers MAY package laboratory or deployment tooling, but cannot hide a foreign production runtime, host camera/accelerator constraints, or become the only supported route.
 
 ## 26.7 Configuration
 
@@ -3338,7 +3416,7 @@ Release candidates run:
 - multi-day continuous ingest;
 - planned device and network interruptions;
 - disk pressure and archive backlog;
-- model worker restart/OOM;
+- model invocation cancellation/memory pressure;
 - clock correction;
 - adapter credential expiry;
 - repeated upgrade/rollback;
@@ -3362,169 +3440,86 @@ edited to make the incident disappear.
 
 ## 27. Target crate topology, dependency DAG, and durable formats
 
-The bootstrap repository contains only `fss-core` and `fss-cli`. The target workspace remains a
-strict DAG with one semantic owner per concept.
+The bootstrap repository remains intentionally small. The target workspace is fine-grained enough
+to expose semantic owners, but crates are created only with a real contract and vertical test—not
+as empty architecture theater.
 
-## 27.1 Target crates
+## 27.1 Target crate families
 
-| Layer | Crate | Responsibility |
+| Layer | Crates | Responsibility |
 |---|---|---|
-| Foundation | `fss-types` | Stable IDs, generations, anchors, time intervals, digests, units, bounded collections |
-| Foundation | `fss-error` | Typed errors, retryability, recovery hints, stable machine codes |
-| Foundation | `fss-schema` | Hand-written/versioned durable schema codecs and registry |
-| Foundation | `fss-crypto` | Hashing, authenticated manifests, envelope/key metadata through narrow interfaces |
-| Runtime | `fss-runtime` | Asupersync region patterns, budgets, obligations, subprocess supervision |
-| Runtime | `fss-capability` | Principals, grants, leases, fences, prepared-effect authority |
-| Device | `fss-device-core` | Device descriptor, capability negotiation, adapter protocol, session state |
-| Device | `fss-device-uvc` | UVC/UAC standards adapter |
-| Device | `fss-device-onvif` | ONVIF discovery/Profile T/M/PTZ adapter |
-| Device | `fss-device-rtsp` | RTSP/RTP/transport session and packet evidence |
-| Device | `fss-device-vendor-lab` | Isolated experimental vendor adapters and fixture harness |
-| Device | `fss-drone-capture` | Human-piloted capture bridge, telemetry/media import; no flight autonomy |
-| Media | `fss-media-core` | Packet/frame/capsule contracts, timestamps, rendition plans |
-| Media | `fss-media-worker-proto` | Boundary protocol for probe/decode/encode workers |
-| Media | `fss-live` | Bounded live-preview fan-out and quality adaptation |
-| Storage | `fss-ledger` | Canonical transactional state over FrankenSQLite abstraction |
-| Storage | `fss-object` | Local content-addressed spool, staging, root-last publication |
-| Storage | `fss-archive` | Provider-neutral remote archive planner/uploader/reconciler |
-| Storage | `fss-durability` | Checksums, audit, optional repair/protection objects |
-| Geometry | `fss-time` | Clock models, interval arithmetic, synchronization evidence |
-| Geometry | `fss-calibration` | Intrinsics/extrinsics, certificates, invalidation, uncertainty |
-| Geometry | `fss-geometry` | Coordinate frames, rays, frusta, projection, uncertainty propagation |
-| Geometry | `fss-digital-twin` | Point/voxel/mesh/semantic scene generations and registration |
-| Geometry | `fss-coverage` | Visibility/occlusion/quality map and blind-spot planning |
-| Models | `fss-model-registry` | Immutable manifests, licenses, qualification, activation/rollback |
-| Models | `fss-model-host-proto` | Tensor/job/result boundary protocol |
-| Models | `fss-perception` | Detector/segmenter/tracker cascade orchestration |
-| Models | `fss-association` | Cross-camera identity/track graph with privacy domains |
-| Models | `fss-temporal` | Temporal action/event verification and VLM evidence synthesis |
-| Events | `fss-event-core` | Hypotheses, belief intervals, evidence graph, event revisions |
-| Events | `fss-policy` | Threat/harmless policy, abstention, escalation, household memories |
-| Effects | `fss-effect` | Prepare/commit/reconcile state machine and idempotency |
-| Effects | `fss-alert` | Notification channel adapters and delivery receipts |
-| Knowledge | `fss-search` | Frankensearch-derived event/evidence/document retrieval |
-| Knowledge | `fss-graph` | GraphDB-derived entity/event/coverage relationships |
-| Knowledge | `fss-memory` | Eidetic-style immutable feedback/rule memory with provenance |
-| Interface | `fss-api` | Stable application service facade, no transport assumptions |
-| Interface | `fss-cli` | Human/agent CLI and JSON/JSONL contracts |
-| Interface | `fss-mcp` | FastMCP Rust bounded resource/tool projection |
-| Interface | `fss-web` | Optional operator UI API/static app, derived from same contracts |
-| Verification | `fss-lab` | Virtual devices, replay, fault injection, schedule exploration |
-| Verification | `fss-gauntlet` | Differential, threat, privacy, performance, and release gates |
-| Operations | `fss-ops` | Doctor, support bundles, migration, proof bundle, fleet views |
-
-Crate names may evolve before implementation, but responsibility boundaries require an ADR to
-change.
+| Foundation | `fss-types`, `fss-error`, `fss-schema`, `fss-numeric`, `fss-identity` | stable IDs/generations/anchors, bounded values, exact numerics, canonical formats |
+| Runtime/fabric | `fss-runtime`, `fss-capability`, `fss-subject`, `fss-obligation`, `fss-lab`, `fss-decision` | Asupersync integration, authority/budgets, service classes, obligations, replay, Decision Cards |
+| Device | `fss-device-core`, `fss-device-uvc`, `fss-device-rtsp`, `fss-device-onvif`, `fss-device-vendor`, `fss-drone-capture` | discovery, authentication, packet acquisition, controls, exact compatibility tuples |
+| Media | `fss-packet`, `fss-container`, `fss-codec-core`, `fss-codec-jpeg`, `fss-codec-avc`, `fss-codec-hevc`, `fss-audio`, `fss-live` | packet truth, bounded parsers/decoders/encoders, containers, live derivatives |
+| Authority/storage | `fss-ledger`, `fss-witness`, `fss-object`, `fss-publication`, `fss-checkpoint`, `fss-privacy` | one version universe, semantic transactions, custody, root-last publication, deletion |
+| Transfer/archive | `fss-transfer`, `fss-archive`, `fss-provider-s3`, `fss-repair`, `fss-retrievability` | ATP object graphs, focused provider protocols, RaptorQ, replica/retrieval proof |
+| Geometry | `fss-time`, `fss-calibration`, `fss-geometry`, `fss-twin`, `fss-coverage` | clock intervals, covariance-bearing calibration, reconstruction, visibility/observability |
+| Models | `fss-tensor`, `fss-operator`, `fss-kernel-cpu`, `fss-model-ir`, `fss-model-import`, `fss-model-runtime`, `fss-model-registry`, optional first-party accelerator crates | pure-Rust frozen inference graphs, kernels, packages, conformance, activation |
+| Cognition | `fss-quality`, `fss-detect`, `fss-track`, `fss-associate`, `fss-temporal`, `fss-fusion`, `fss-event`, `fss-policy` | progressive derived perception, uncertainty, event transactions and policy |
+| Knowledge/graph | `fss-search`, `fss-graph`, `fss-graph-query`, `fss-graph-algorithms`, `fss-forge`, `fss-memory`, `fss-explain` | immutable projections, incremental/factorized queries, certified algorithms, context packs |
+| Effects | `fss-plan`, `fss-effect`, `fss-alert`, `fss-export` | prepared/revalidated/idempotent external operations and reconciliation |
+| Presentation | `fss-api`, `fss-cli`, `fss-mcp`, `fss-report`, `fss-ops`, optional `fss-ui` | bounded human/agent views, deterministic reports, pure-Rust UI/TUI |
+| Qualification/release | `fss-reference`, `fss-fixtures`, `fss-gauntlet`, `fss-bench`, `fss-release` | simple oracles, adversarial corpora, same-binary experiments, DSR proof roots |
 
 ## 27.2 Dependency direction
 
-```text
-foundation
-  ↓
-runtime + capability
-  ↓
-device/media/storage/time/geometry/model boundary contracts
-  ↓
-perception + calibration + archive + event core
-  ↓
-policy + effects + search/graph/memory
-  ↓
-api
-  ↓
-cli/mcp/web/ops
+Foundation knows no device/media/model/effect concepts. Runtime/fabric may depend only on foundation
+and Asupersync. Device/media/model/graph/storage foundations are peers and communicate through
+foundation contracts, not cyclic concrete imports. Cognition consumes immutable views and emits
+derived deltas. Effects consume prepared semantic plans; no detector, graph, search, UI, or adapter
+can import alert/deletion authority.
 
-lab/gauntlet may depend downward on all public contracts but production crates never depend on lab.
-```
+Presentation depends downward. Qualification can depend across the workspace but never enters a
+production feature. Oracle-only code and fixtures are excluded from release closure.
 
-Forbidden cycles include:
+## 27.3 Closed dependency doctrine
 
-- policy importing a vendor adapter;
-- model host writing the ledger directly;
-- search becoming canonical state;
-- UI defining event semantics;
-- alert adapter deciding threat belief;
-- archive provider defining retention;
-- calibration reading secrets;
-- proprietary lab code entering a standards crate;
-- Franken dependency importing FSS and creating a workspace cycle.
+The machine policy is [`architecture/dependency_allowlist.toml`](architecture/dependency_allowlist.toml).
+The default external exception set is only Serde/Serde JSON/Thiserror, and only for their declared
+control/report/error roles. Even these are not canonical durable formats. Every first-party sibling
+is pinned to an exact clean revision in a DSR release snapshot.
 
-A CI script derives the Cargo graph and checks the allowed layer matrix.
+## 27.4 Canonical durable formats
 
-## 27.3 Dependency doctrine
+Every format has a `FMT-*` owner and:
 
-Core crates prefer:
+- magic and version;
+- explicit integer/float/numeric policy and endianness;
+- section table or self-delimiting bounded records;
+- canonical ordering and duplicate rules;
+- per-section/object checksum plus root identity;
+- hard counts, sizes, nesting, and allocation bounds;
+- strict and optionally hardened-recovery modes;
+- migration/read compatibility contract;
+- corruption/fuzz/metamorphic fixtures;
+- independent reconstruction command.
 
-- standard library;
-- `asupersync`;
-- audited Franken-suite crates;
-- foundational crates such as `serde` only where a hand-written format is not required;
-- narrowly admitted cryptography/compression/protocol primitives after census.
+No persistent bytes are Rust layout, bincode default, or Serde derive output.
 
-Tokio is forbidden. Native/C/C++/Python/CUDA/vendor dependencies remain boundary-process
-implementation details. No framework dependency is admitted because it saves a small amount of
-boilerplate. Every dependency has an owner, reason, feature set, transitive census, license, and
-removal strategy.
+## 27.5 Core object families
 
-The target is not ideological zero-dependency at all layers; a correct codec/model boundary will
-necessarily rely on external ecosystems. The invariant is that those ecosystems do not become the
-semantic or security core.
+- `EvidenceDeltaBatch` and authority checkpoints;
+- sensor capsules, packet maps, and media segment graphs;
+- effect plans/receipts and durable obligations;
+- graph/search generations and algorithm witnesses;
+- model packages, tensor objects, kernel plans, and invocation receipts;
+- calibration/twin/coverage generations;
+- event/evidence graphs and context packs;
+- ATP transfer journals/receipts and repair/retrievability evidence;
+- export/deletion/proof/release bundles.
 
-## 27.4 Durable encoding doctrine
+## 27.6 Ledger versus object graph
 
-Durable FSS bytes are:
+The ledger stores typed identity, state transitions, indexes, small records, and root references.
+Large immutable media/tensor/graph/index/proof objects live in content-identified object graphs. A
+transaction never embeds arbitrary video bytes, and an object-store listing never substitutes for
+ledger truth.
 
-- magic/version identified;
-- length-delimited and bounds-checkable;
-- canonical where hashes/signatures depend on representation;
-- little-endian fixed width unless explicitly registered;
-- checksummed by section/object;
-- explicit about optional/unknown fields;
-- forward-readable or safely rejectable;
-- independent of Rust memory layout;
-- never serialized from arbitrary internal structs by accident.
+## 27.7 One version universe
 
-JSON is used for human/audit/interchange schemas where canonical binary performance is not
-required. High-volume media/index/geometry formats use registered binary layouts or established
-standards with an FSS manifest wrapper.
-
-## 27.5 Core durable object families
-
-| Object | Required identity/content |
-|---|---|
-| Sensor capsule | Source/device/session IDs, time interval, sequence, source bytes/object references, acquisition evidence, discontinuities |
-| Rendition | Parent capsule/object digests, transform plan/generation, codec/shape/timing, privacy transform |
-| Model manifest | Weights/files digests, source revision, license, runtime, preprocessing, output schema, qualification bundle |
-| Model result | Input digests, model generation, runtime tuple, typed outputs, uncertainty, timing/cost |
-| Calibration certificate | Sensor/geometry generations, evidence set, method, parameters/covariance, residuals, validity/invalidation |
-| Event revision | Prior revision, evidence graph root, belief, policy generation, state transition, explanation |
-| Prepared effect | Principal/grant, anchor, intent digest, preconditions, idempotency, expiry, rollback/compensation |
-| Effect receipt | Provider request/response digests, observed ACK, reconciliation evidence, terminal/indeterminate state |
-| Archive manifest | Ordered objects, encryption/checksum metadata, retention class, publication root, provider receipts |
-| Evidence bundle | Event revision, selected immutable evidence, transforms, redactions, chain of custody, verification instructions |
-| Deletion plan | Reachability graph root, objects, holds, provider actions, guarantees, expiry |
-| Proof bundle | Claim, implementation/corpus/platform identities, commands, artifacts, metrics, negative evidence |
-
-## 27.6 Schema evolution
-
-Each schema has owner, version, compatibility rules, migration/rejection behavior, examples, size
-limits, and fuzz corpus. Unknown versions never fall back to “best effort” for security-relevant
-objects. Readers may preserve unknown fields where the format permits, but cannot infer semantics.
-
-A schema version is not a feature flag. Activation is explicit, and mixed-version deployments are
-qualified through a compatibility matrix.
-
-## 27.7 Ledger versus object store
-
-The ledger stores identities, state machines, manifests, metadata, small evidence, obligations,
-and indexes required for truth/recovery. Large media/model/geometry bytes live in content-addressed
-objects. A transaction may prepare object writes, but canonical publication references only
-verified durable objects. Garbage collection is reachability plus retention/hold policy, never age
-alone.
-
-Derived search/vector/graph indexes can be rebuilt from canonical ledger/object truth. Losing an
-index is an operational incident, not evidence loss.
-
----
+All derived systems consume `EvidenceDeltaBatch` and publish exact high-water marks. See
+[`docs/ONE_VERSION_UNIVERSE.md`](docs/ONE_VERSION_UNIVERSE.md).
 
 ## 28. Implementation work packages
 
@@ -3563,7 +3558,7 @@ real cameras or GPUs.
 - sensor capsule and anchor construction;
 - in-memory canonical ledger and content-addressed object spool;
 - replay bundle reader/writer;
-- virtual model host with scripted hypotheses;
+- virtual pure-Rust model executor with scripted hypotheses;
 - simple event/policy/alert sink state machines;
 - trace canonicalization and reproduction command.
 
@@ -3581,13 +3576,13 @@ state.
 - session/stream/model/effect region hierarchy;
 - budgets and pressure propagation;
 - reserve/commit channels and durable obligations;
-- supervised boundary process protocol;
+- supervised first-party subsystem regions and laboratory-oracle protocol;
 - bounded shutdown and escalation registry;
 - lab-runtime adapters.
 
 **Dependencies:** WP-000, WP-010, compatible Asupersync APIs.
 
-**Exit evidence:** native cancellation suites, parked boundary workers, deadline/pressure tests,
+**Exit evidence:** native cancellation suites, parked subsystem tasks, deadline/pressure tests,
 leak/obligation oracles, deterministic schedule replay.
 
 ## 28.4 WP-030 — Canonical ledger and object spool
@@ -3648,66 +3643,78 @@ artifact in disabled mode, exact capsule replay.
 **Exit evidence:** multiple independent conformant devices, packet-fault suite, vendor quirk
 classification, interoperability evidence without per-device semantic forks.
 
-## 28.7 WP-060 — Media gateway and live plane
+## 28.7 WP-060 — Pure-Rust media and live plane
 
-**Purpose:** turn heterogeneous source streams into canonical, bounded, low-latency consumable
-forms without making decoder code authoritative.
-
-**Deliverables:**
-
-- media probe/decoder/encoder worker protocol;
-- source custody and rendition lineage;
-- keyframe-aware chunker;
-- low-resolution analysis rendition;
-- live preview fan-out with adaptive quality;
-- decoded buffer/tensor pool accounting;
-- malformed media corpus;
-- cancellation and worker crash recovery.
-
-**Dependencies:** WP-040 or WP-050; WP-030.
-
-**Exit evidence:** differential decode/frame/timestamp corpus, live-latency distributions, no
-unbounded queue/allocation, worker compromise assumptions documented.
-
-## 28.8 WP-070 — Archive and retention engine
-
-**Purpose:** publish durable encrypted archives economically and recoverably.
+**Purpose:** own packet, compressed-stream, container, source-custody, decode, live-proxy, and
+analysis semantics without a required foreign runtime.
 
 **Deliverables:**
 
-- provider-neutral object-store trait;
-- local filesystem oracle;
-- S3-compatible Backblaze B2/Cloudflare R2 adapters via isolated network boundary;
-- encryption/key metadata, multipart upload, idempotency, reconciliation;
-- dated provider-price manifest and cost planner;
+- exact packet replay and timing format;
+- RTSP/RTP/RTCP and UVC packet truth;
+- bounded H.264/H.265/MJPEG/audio parsers and configuration epochs;
+- deterministic narrow container/remux writers;
+- first full JPEG/MJPEG decode vertical slice, then admitted AVC/HEVC profiles;
+- immutable/generation-leased frame storage;
+- low-resolution analysis path and bounded live fan-out;
+- safe scalar and optimized/SIMD transform kernels;
+- malformed media gauntlet and FFmpeg/browser oracle comparators;
+- registered pressure-degradation ladder.
+
+**Dependencies:** WP-040 or WP-050; WP-020, WP-030.
+
+**Exit evidence:** parser/decode/container differential reports, cancellation/corruption/pressure
+campaigns, source-to-tensor lineage, live-latency distributions, no foreign runtime in production
+closure.
+
+## 28.8 WP-070 — ATP archive, retention, repair, and retrievability
+
+**Purpose:** publish encrypted immutable object graphs economically and prove they remain
+reconstructable.
+
+**Deliverables:**
+
+- ATP manifest/chunk/journal/receipt integration;
+- local object-store oracle and focused safe-Rust S3-compatible provider protocols;
+- capability-scoped credentials and conditional/multipart operations;
+- RaptorQ repair objects and post-repair digest verification;
+- multipath/hedge scheduler with Decision Cards and safe fallback;
+- dated provider-price manifest and object/chunk planner;
+- replication/retrievability policy and challenge receipts;
 - retention/hold/expiry obligations;
-- incident retrieval and verification;
-- optional repair/protection sidecars.
+- graph-complete deletion including repair/replica/index/cache/journal paths;
+- incident retrieval and independent reconstruction tooling.
 
-**Dependencies:** WP-030, WP-060.
+**Dependencies:** WP-030, WP-060, admitted Asupersync ATP/repair primitives.
 
-**Exit evidence:** root-last fault matrix, provider sandbox tests, restore drill, cost/retrieval
-benchmarks, deletion/hold interactions.
+**Exit evidence:** loss/reorder/corruption/resume/multipath/root-last matrix, remote sandbox/restore,
+retrievability failure-repair loop, deletion closure adversarial corpus, no broad cloud SDK or foreign
+network runtime.
 
-## 28.9 WP-080 — Model registry and host boundary
+## 28.9 WP-080 — Pure-Rust model package and execution runtime
 
-**Purpose:** admit open-weight models without coupling the Rust core to one framework or license.
+**Purpose:** admit current open-weight models through a focused first-party Rust runtime rather than
+coupling production to Python, ONNX, libtorch, CUDA, or a model server.
 
 **Deliverables:**
 
-- immutable model manifests and acquisition receipts;
-- license/use classification;
-- Python/native/CUDA/ONNX boundary worker protocol;
-- shape/type/output schema validation;
-- deterministic mock and CPU reference lane;
-- qualification/shadow/activation/rollback;
-- resource quotas and OOM/crash behavior;
-- model cache verification and offline operation.
+- typed tensor/storage/view/alias/version substrate;
+- frozen first-party operator IR and deterministic importer;
+- canonical tensor/model package formats and ATP publication;
+- scalar reference operators and safe CPU kernel library;
+- shape/layout/liveness planning, fusions, packed weights, safe SIMD, and static specialization;
+- exact/tolerance numeric policy and invocation receipts;
+- pinned foreign framework differential oracle harnesses;
+- quantization as immutable generations;
+- optional first-party accelerator contract, CPU fallback mandatory;
+- license/use policy, event-quality qualification, shadow/canary/activation/rollback;
+- no runtime model acquisition.
 
-**Dependencies:** WP-020, WP-030, WP-060.
+**Dependencies:** WP-020, WP-030, WP-060; admitted FrankenTorch mechanisms.
 
-**Exit evidence:** multiple model classes through one contract, malformed output rejection,
-generation rollback, no network during build, exact manifest binding.
+**Exit evidence:** reproducible model packages, operator/model agree-diverge-error-only-unexercised
+reports, adversarial numeric/shape/alias/cancellation/memory tests, event-level held-out evidence,
+and release dependency proof containing no foreign production runtime.
 
 ## 28.10 WP-090 — Detection, segmentation, and tracking cascade
 
@@ -3873,25 +3880,30 @@ keeping flight manual and acknowledging SDK constraints.
 **Exit evidence:** repeatable capture on exact mobile/controller/firmware tuple or an honest
 negative-evidence report. No autonomous control.
 
-## 28.18 WP-170 — Search, graph, and memory
+## 28.18 WP-170 — One-version search, certified graph intelligence, and operational memory
 
-**Purpose:** make years of evidence, failures, routines, and geometry queryable without changing
-canonical truth.
+**Purpose:** make high-value investigation and planning fast, deterministic, explainable, and
+bounded without turning derived systems into authority.
 
 **Deliverables:**
 
-- event/evidence/document lexical+semantic indexes via Frankensearch;
-- entity/track/event/coverage graph via FrankenGraphDB-compatible boundary;
-- immutable operator feedback and procedural memories via Eidetic concepts;
-- score/provenance explanations;
-- deterministic context packing;
-- rebuild and stale-index behavior;
-- household-specific memory promotion with audit.
+- `EvidenceDeltaBatch` consumer/high-water protocol;
+- Quill immutable generations plus searchable bounded delta;
+- temperature-tiered graph projections and incremental standing predicates;
+- factorized graph-relational planner and full-recompute oracle;
+- registered algorithm families, canonical tie-breaks, and `GraphAlgorithmWitness` receipts;
+- adversarial graph corpus and NetworkX/ordered-Rust differential accounting;
+- capability projection before search/graph expansion;
+- branch-per-agent counterfactual overlays that emit candidate intent only;
+- typed evidence-backed memories, decay/trauma guard, audited curation/revival;
+- deterministic token-budgeted context packs and explanations;
+- optional offline Forge-style safe-Rust specialization.
 
-**Dependencies:** canonical event/geometry/storage schemas.
+**Dependencies:** WP-030, WP-080–130; admitted FrankenSearch/GraphDB/NetworkX/Eidetic mechanisms.
 
-**Exit evidence:** deterministic ranking/pack hashes, rebuild equivalence, provenance/taint tests,
-no derived index required for recovery.
+**Exit evidence:** incremental/full/rebuild equivalence, tie and complexity witness locks, branch and
+capability noninterference, deterministic packs, held-out retrieval quality, and same-binary proof
+before any optimized path replaces reference.
 
 ## 28.19 WP-180 — CLI, MCP, and operator experience
 
@@ -3904,7 +3916,7 @@ no derived index required for recovery.
 - prepared bounded effects;
 - anchor/continuation/budget contracts;
 - live/event/coverage operator UI;
-- mobile-responsive incident review;
+- first-party Rust operator surfaces for terminal, desktop, and constrained mobile incident review;
 - capabilities/doctor/robot docs;
 - session/lease audit.
 
@@ -3913,27 +3925,31 @@ no derived index required for recovery.
 **Exit evidence:** protocol/schema snapshots, cancellation, multi-agent races, token budgets,
 accessibility/mobile tests, no generic command surfaces.
 
-## 28.20 WP-190 — Security, privacy, operations, and release
+## 28.20 WP-190 — Security, privacy, local qualification, and release
 
-**Purpose:** turn a capable lab system into an operable, recoverable distribution.
+**Purpose:** make the system deployable and releasable without weakening the architecture or
+requiring GitHub-hosted capacity.
 
 **Deliverables:**
 
-- network/sandbox deployment profiles;
-- secret backends and rotation;
-- privacy masks/retention/deletion/export;
-- installers/packages, provenance, SBOM;
-- migrations, backup/restore, rollback;
-- support bundles and repair plan/apply;
-- soak/canary and incident-response runbooks;
-- release proof bundle and public status generator.
+- closed dependency, zero-unsafe, build-script, offline-resolution, and runtime-download enforcement;
+- secret store and capability noninterference tests;
+- privacy masks, retention, holds, export, and graph-complete deletion;
+- deterministic doctor/repair/support/proof bundles;
+- latest-nightly probe and accepted-pin promotion lane;
+- repository-local `scripts/qualify.sh` as one qualification contract;
+- DSR clean snapshot, exact sibling closure, native host/lane matrix, disk-backed staging;
+- resumable target builds with no partial release root;
+- exact assets, checksums, minisign/Ed25519 signatures, SBOM, provenance, license inventory;
+- installer clean-install/upgrade/rollback/uninstall canaries;
+- upload followed by download-and-verify;
+- workflow YAML as local portable specification only.
 
-**Dependencies:** all release-critical work packages.
+**Dependencies:** all earlier WPs and DSR integration.
 
-**Exit evidence:** all GATE-120 requirements, disaster-recovery drill, privacy closure, security
-matrix, reproducible release artifacts.
-
----
+**Exit evidence:** security/privacy gauntlets, offline dependency resolution, clean-snapshot
+rebuilds, native platform receipts, interruption/resume tests, exact asset and signing separation,
+GitHub-hosted-runner absence test, and public claims mechanically derived from proof roots.
 
 ## 29. Acceptance gates and release doctrine
 
@@ -3949,7 +3965,7 @@ or pass with exclusions. Later gates do not retroactively widen earlier evidence
 | `GATE-020` | UVC reference acquisition | Real standards device on supported platform; sustained capture; exact replay; disconnect/cancel |
 | `GATE-030` | RTSP/ONVIF reference mesh | Multiple independent devices; discovery/auth/media/events/PTZ boundaries; packet fault suite |
 | `GATE-040` | Media and archive durability | Differential media corpus; live SLO; root-last upload; restore/retrieval/deletion interactions |
-| `GATE-050` | Model host and perception | Immutable model generations; malformed/OOM/rollback; candidate-recall and cost profile |
+| `GATE-050` | Pure-Rust model runtime and perception | Reproducible model packages; operator/model conformance; numeric/memory/cancellation/rollback; candidate-recall and cost profile; no foreign production runtime |
 | `GATE-060` | Event and alert correctness | Evidence graph, calibrated policy, prepare/commit, idempotency, lost-ACK reconciliation |
 | `GATE-070` | Calibration/digital twin | Time/intrinsics/extrinsics certificates; drift invalidation; measured reconstruction and coverage |
 | `GATE-080` | Threat gauntlet | Sealed event-level evaluation, fixed operating points, confidence bounds, hard negatives |
@@ -4066,18 +4082,21 @@ or pass with exclusions. Later gates do not retroactively widen earlier evidence
 
 ## 29.11 GATE-120 release criteria
 
-- every public status line generated from proof/registry state;
-- clean reproducible build and artifact checksum/provenance;
-- SBOM/dependency/model/license inventory;
-- supported platform/device/model matrix;
-- install/upgrade/rollback smoke and migration proof;
-- multi-day soak and canary evidence;
-- backup/restore and disaster-recovery drill;
-- secret rotation and incident-response rehearsal;
-- privacy mask, retention, deletion closure, and export verification;
-- threat/false-alert report with current corpus and generation;
-- known limitations and negative evidence prominent;
-- no release-blocking indeterminate obligations.
+- source snapshot is clean and immutable;
+- every Asupersync/Franken-suite dependency is an exact clean revision in the release closure;
+- resolution is locked and offline after provisioning;
+- every FSS crate forbids unsafe and the dependency report contains only admitted packages;
+- the exact accepted nightly/compiler/components are recorded;
+- required local DSR lanes pass on controlled native hosts;
+- required device/model/media/graph claim-specific lanes pass;
+- completed partial targets may be retained but no release root exists before the full matrix passes;
+- exact asset enumeration, checksums, Ed25519/minisign signatures, SBOM, provenance, source and
+  qualification manifests agree;
+- signing authority is separate from builders;
+- installer/upgrade/rollback/uninstall canaries pass;
+- uploaded artifacts are downloaded and independently verified;
+- workflows contain no unique release logic and GitHub-hosted runner absence is irrelevant;
+- public claims are mechanically derived from retained proof-bundle roots and expiry rules.
 
 ## 29.12 Claim lifecycle
 
@@ -4092,24 +4111,24 @@ A claim expires when any load-bearing generation changes: device firmware, adapt
 preprocessing, policy threshold, calibration method, schema, runtime, platform, or corpus contract.
 Some changes can use delta qualification; the registry must justify it.
 
-## 29.13 Versioning
+## 29.13 Versioning and latest-nightly promotion
 
-FSS versions communicate API/artifact compatibility, not device/model qualification by themselves.
-A release tag does not imply every adapter/model in-tree is supported. The generated compatibility
-matrix and proof bundles are authoritative.
+Software, schemas, durable formats, model packages, adapter tuples, calibration generations, and
+policy generations version independently but are cross-bound in receipts. “Latest nightly” is not
+an ambient mutable input: a probe records the candidate, all required gates run, drift is
+classified, and a dedicated reviewed commit promotes that exact toolchain. Releases use the pin;
+they never auto-upgrade the compiler.
 
 ## 29.14 Release channels
 
-- `source`: main branch, no aggregate qualification assumption;
-- `lab`: experimental adapters/models, opt-in, fixture-oriented;
-- `candidate`: release proof in progress, canary only;
-- `stable`: bounded supported matrix with rollback and current evidence;
-- `lts` (future): security/compatibility maintenance for a narrow profile.
+- **Reference:** deterministic oracles and architecture surfaces; not a deployment claim.
+- **Lab:** replay, oracle, and authorized real-device experimentation; no production safety claim.
+- **Canary:** limited deployments with automatic rollback and exact evidence scope.
+- **Stable:** only dimensions and device/model/platform tuples proven by local DSR receipts.
 
-Research-only or noncommercial model lanes remain visibly separate from distributable default
-profiles.
-
----
+A channel is not aggregate readiness. Every release lists excluded and degraded surfaces.
+GitHub Releases can distribute bytes, but local DSR qualification decides whether a release root is
+publishable. See [`LOCAL_QUALIFICATION_AND_RELEASE.md`](docs/LOCAL_QUALIFICATION_AND_RELEASE.md).
 
 ## 30. Risk register and open questions
 
@@ -4128,7 +4147,7 @@ evidence.
 | `RISK-006` | 3D reconstruction looks convincing but is metrically wrong | Certificates, scale anchors, covariance/residuals, held-out landmarks, fail/abstain states |
 | `RISK-007` | Model cascade misses threats filtered by cheap stage | Candidate-recall gate, periodic sentinel sampling, ensemble/health checks, fixed miss accounting |
 | `RISK-008` | Full-resolution continuous inference is economically impossible | Progressive cascade, hardware profiles, admitted-fraction accounting, load shedding |
-| `RISK-009` | Codec/model native dependencies undermine safe-Rust posture | Boundary processes, narrow protocol, sandbox, crash/fuzz corpus, trusted core remains safe |
+| `RISK-009` | Pure-Rust codec/model scope is large and may delay capabilities | Focused profiles/operators, reference-first sequencing, foreign tools as lab oracles only, explicit unsupported matrices, no silent production fallback |
 | `RISK-010` | Object store outage or pricing changes break operation | Local spool/safety path, provider abstraction, dated prices, bounded backlog and migration |
 | `RISK-011` | Franken dependencies are not API-ready | Qualification gates, traits with in-memory/reference adapters, no semantic substitute architecture |
 | `RISK-012` | Event labels are subjective/rare | Annotation graph, disagreement, staged corpus, deployment-level statistics, field feedback |
@@ -4192,6 +4211,128 @@ An open question becomes an ADR only after:
 - chosen design names conditions under which it should be revisited.
 
 “Latest model looks best” is not a decision rule.
+
+---
+
+# Part IX — Deep Franken-substrate constitution
+
+## 31. Closed pure-Rust dependency universe
+
+FSS's dependency policy is architectural, not packaging hygiene. Every external crate or process can
+introduce hidden threads, alternate cancellation, unbounded parsers, ambient configuration,
+nondeterministic serialization, native code, build-time downloads, and security update channels.
+The production universe is therefore closed and machine-checked.
+
+The only default external exception candidates are Serde and Serde JSON for bounded control/report data-shape boilerplate. They do not define canonical bytes. Cryptography, hashing,
+compression, TLS, SIMD, media, model, graph, UI, CLI, and platform capabilities first use admitted
+first-party substrates; any direct exception requires a `DEP-*` record and ADR.
+
+FSS crates always forbid unsafe. A needed unsafe/platform primitive can exist only in a separately
+audited first-party substrate crate with a safe public contract and its own release evidence. A
+required foreign service is still a foreign production runtime and is forbidden.
+
+See [`DEPENDENCY_CONSTITUTION.md`](docs/DEPENDENCY_CONSTITUTION.md).
+
+## 32. One version universe and semantic transactions
+
+Every canonical change is an immutable ordered `EvidenceDeltaBatch`. Graph/search/model-result
+caches, subscriptions, checkpoints, replicas, and speculative branches consume the same stream and
+publish exact high-water marks. No query can silently combine “latest” rows from unrelated
+versions.
+
+Prepared event/effect/activation/deletion decisions carry positive and negative hierarchical
+witnesses. A narrow deterministic combiner validates fences, semantic conflicts, object closure,
+and policy epochs, then publishes the root. Expensive work never runs at the commit point.
+Refinement may prove disjointness; running out of refinement budget creates a conservative conflict.
+
+Branches apply hypothetical deltas over a pinned anchor. Merge means producing a candidate live
+intent, never copying fabricated branch bytes into authority.
+
+See [`docs/ONE_VERSION_UNIVERSE.md`](docs/ONE_VERSION_UNIVERSE.md) and
+[`schemas/evidence_delta_batch.v1.json`](schemas/evidence_delta_batch.v1.json).
+
+## 33. Pure-Rust media and streaming kernel
+
+Packet truth, compressed stream parsing, containers, source custody, decoding, proxy generation,
+and analysis transforms are first-party Rust. Source bytes and timing/discontinuity evidence are
+preserved independently of live/analysis derivatives. Parsers, decoders, and encoders have separate
+profile matrices and resource limits.
+
+Performance comes from share-nothing stream workers, scatter/gather immutable spans, columnar
+indexes, generation-leased pools, cache-shaped safe kernels, fused transforms, and registered
+pressure degradation—not unsafe shortcuts or hidden native runtimes. Zero-copy is used only when
+backing ownership/lifetime is proven and same-binary evidence shows the copy matters.
+
+See [`docs/STREAMING_AND_MEDIA_KERNEL.md`](docs/STREAMING_AND_MEDIA_KERNEL.md).
+
+## 34. Certified graph intelligence
+
+Graph operations are part of the planning kernel. FSS registers exact semantics and witnesses for
+connectivity, paths, temporal reachability, cuts/dominators, matching/flow, SCC/DAG planning,
+coverage selection, active perception, attention, causal queries, factorized joins, wait cycles,
+and deletion closure.
+
+Every answer pins an authorized immutable projection and emits a decision/complexity witness.
+Equal answers use canonical tie-breaks. Incremental standing predicates are checked against full
+recomputation. Graph storage can migrate among temperature tiers, but the reference semantics remain
+ordered safe-Rust structures.
+
+See [`docs/GRAPH_INTELLIGENCE_ARCHITECTURE.md`](docs/GRAPH_INTELLIGENCE_ARCHITECTURE.md) and
+[`registries/GRAPH_ALGORITHMS.md`](registries/GRAPH_ALGORITHMS.md).
+
+## 35. Pure-Rust model runtime
+
+Open-weight models are imported offline into immutable canonical packages containing a frozen
+first-party operator IR, tensor objects, preprocessing/postprocessing, numeric policy, licenses,
+quality/conformance evidence, and repair metadata. Production executes through safe scalar/reference
+and optimized CPU kernels; optional accelerators remain first-party and receipt-bearing.
+
+A package can be rejected for unsupported operators. FSS does not interpret arbitrary framework
+code or download model assets at runtime. Quantization, preprocessing, and accelerator changes are
+new generations. Foreign frameworks are differential oracles only.
+
+See [`PURE_RUST_MODEL_RUNTIME.md`](docs/PURE_RUST_MODEL_RUNTIME.md).
+
+## 36. ATP archive, replication, repair, and deletion
+
+ATP moves immutable object graphs with manifests, chunks, repair symbols, resumable journals,
+post-repair digest verification, and root-last publication. Path racing/hedging is allowed under
+hard privacy/integrity/cost clamps; losing paths drain.
+
+“Archived” means required replicas and retrievability evidence exist. Repair uses immutable plan,
+lease/fence, staged reconstruction, canonical digest, durable source publication, then parity
+refresh. Deletion traverses the complete declared object/repair/replica/index/cache/journal graph and
+publishes a tombstone root.
+
+ATP never transports mutation authority. See
+[`docs/ATP_ARCHIVE_AND_REPLICATION.md`](docs/ATP_ARCHIVE_AND_REPLICATION.md).
+
+## 37. Decision cards, adaptive policy, and performance proof
+
+Every adaptive choice is a `DecisionCard` naming feasible arms, hard clamps, objective/loss,
+evidence/uncertainty, selected arm, tie-break, safe fallback, rollback, and outcome. New policies run
+shadow-first. Missing/reset/uncertain adaptation uses the safe static arm.
+
+Performance uses same-binary A/A and A/B experiments with identical input root, output digest,
+compiler/host/profile, and receipt. Timing begins only after semantic equivalence. Failed
+optimizations and misleading policies are durable negative evidence.
+
+See [`docs/DECISION_CARDS_AND_EXPERIMENTS.md`](docs/DECISION_CARDS_AND_EXPERIMENTS.md).
+
+## 38. Local DSR qualification and release authority
+
+The release begins from a clean snapshot with exact sibling revisions, accepted nightly, locked
+offline closure, and controlled native host lanes. `scripts/qualify.sh` is the repository semantic
+entrypoint; workflows call it and contain no unique authority.
+
+Partial target artifacts can survive resume but are never blessed. The signed release manifest is
+published only after every required target/lane and cross-target invariant passes. Exact assets,
+checksums, signatures, SBOM, provenance, source/dependency and qualification manifests are uploaded,
+then downloaded and reverified. Signing authority is separate from builders.
+
+The project requires no GitHub-hosted runner. See
+[`LOCAL_QUALIFICATION_AND_RELEASE.md`](docs/LOCAL_QUALIFICATION_AND_RELEASE.md) and
+[`docs/deep-dives/DOODLESTEIN_SELF_RELEASER.md`](docs/deep-dives/DOODLESTEIN_SELF_RELEASER.md).
 
 ---
 
@@ -4407,7 +4548,7 @@ This example illustrates semantic stages without claiming implementation.
 
 1. Camera `rear_yard` negotiates a qualified Profile T stream under adapter generation `A17`.
 2. Adapter session `S42` publishes packet evidence with source-clock uncertainty.
-3. Media worker validates and commits sensor capsule `C1001`; low-resolution rendition `R77` is
+3. Media kernel validates and commits sensor capsule `C1001`; low-resolution rendition `R77` is
    linked to exact source bytes.
 4. Activity gate observes slow low-contrast motion and admits sentinel frames despite weak ordinary
    motion score.
@@ -4565,10 +4706,9 @@ A plan can select fast sparse calibration before optional dense reconstruction.
 
 ---
 
-## Appendix F — First 100 implementation issues
+## Appendix F — First 200 implementation issues
 
-These issue titles are deliberately granular enough to seed Beads/GitHub tracking. Dependencies
-follow the work-package graph.
+These issue titles are deliberately granular enough to seed Beads/GitHub tracking. The second hundred operationalizes the deeper Franken imports, pure-Rust media/model kernels, one-version universe, certified graph layer, ATP, and local DSR release doctrine. Dependencies follow the work-package graph.
 
 1. `FSS-001` Freeze stable ID and generation newtypes.
 2. `FSS-002` Implement canonical digest parsing/formatting.
@@ -4589,11 +4729,11 @@ follow the work-package graph.
 17. `FSS-017` Implement content-addressed staging spool.
 18. `FSS-018` Implement root-last local manifest publication.
 19. `FSS-019` Implement replay bundle v1 reader/writer.
-20. `FSS-020` Implement deterministic mock model host.
+20. `FSS-020` Implement deterministic mock model executor.
 21. `FSS-021` Integrate Asupersync `Cx` and region hierarchy.
 22. `FSS-022` Implement typed budgets and pressure propagation.
 23. `FSS-023` Implement obligation registry and leak oracle.
-24. `FSS-024` Implement boundary-worker supervision protocol.
+24. `FSS-024` Implement sealed laboratory-oracle process ownership, drain, taint, and production-absence proof harness.
 25. `FSS-025` Implement capability grants and resource scopes.
 26. `FSS-026` Implement leases, epochs, and fencing.
 27. `FSS-027` Implement two-phase effect coordinator.
@@ -4621,10 +4761,10 @@ follow the work-package graph.
 49. `FSS-049` Implement transport fallback and reconnect.
 50. `FSS-050` Implement PTZ prepare/commit with leases.
 51. `FSS-051` Build ONVIF/RTSP protocol fixture corpus.
-52. `FSS-052` Define media worker protocol and limits.
-53. `FSS-053` Implement probe worker adapter.
-54. `FSS-054` Implement decode worker adapter.
-55. `FSS-055` Implement encode/rendition worker adapter.
+52. `FSS-052` Define pure-Rust media kernel contracts and limits.
+53. `FSS-053` Implement bounded pure-Rust media probe engine.
+54. `FSS-054` Implement bounded pure-Rust decode engine with scalar reference semantics.
+55. `FSS-055` Implement bounded pure-Rust encode/rendition kernels.
 56. `FSS-056` Implement keyframe-aware chunker.
 57. `FSS-057` Implement live preview bounded fan-out.
 58. `FSS-058` Implement decoded-frame/tensor buffer accounting.
@@ -4632,7 +4772,7 @@ follow the work-package graph.
 60. `FSS-060` Build decode/timestamp differential oracle.
 61. `FSS-061` Define object-store provider trait.
 62. `FSS-062` Implement local object-store oracle.
-63. `FSS-063` Implement S3-compatible staged upload worker.
+63. `FSS-063` Implement Asupersync-owned S3-compatible staged uploader.
 64. `FSS-064` Implement multipart idempotency/reconciliation.
 65. `FSS-065` Implement encryption-context manifest.
 66. `FSS-066` Implement dated provider-pricing manifest.
@@ -4640,9 +4780,9 @@ follow the work-package graph.
 68. `FSS-068` Implement incident retrieval/verification.
 69. `FSS-069` Run remote archive restore/fault matrix.
 70. `FSS-070` Define immutable model manifest v1.
-71. `FSS-071` Implement model acquisition staging/verifier.
-72. `FSS-072` Implement model host job/result protocol.
-73. `FSS-073` Implement model worker quotas/OOM handling.
+71. `FSS-071` Implement offline model-package import, staging, and verifier.
+72. `FSS-072` Implement pure-Rust model invocation/receipt protocol.
+73. `FSS-073` Implement model invocation quotas and memory-pressure handling.
 74. `FSS-074` Implement qualification/shadow/activation/rollback.
 75. `FSS-075` Add model license/profile policy checker.
 76. `FSS-076` Integrate first detector/segmenter candidate.
@@ -4670,6 +4810,106 @@ follow the work-package graph.
 98. `FSS-098` Implement visibility/coverage map and validation.
 99. `FSS-099` Implement geometry/time-gated cross-camera association.
 100. `FSS-100` Build sealed event-level threat/hard-negative release gauntlet.
+101. `FSS-101` Freeze `EvidenceDeltaBatch` v1 canonical ordering and anchor semantics.
+102. `FSS-102` Implement single-thread reference delta ledger and replay cursor.
+103. `FSS-103` Implement positive, negative, and hierarchical witness types.
+104. `FSS-104` Implement deterministic commit combiner and semantic conflict oracle.
+105. `FSS-105` Implement intent-replay/structural/commutative merge certificate ladder.
+106. `FSS-106` Build negative-read phantom and SSI write-skew schedule corpus.
+107. `FSS-107` Implement derived high-water protocol for graph/search/model caches.
+108. `FSS-108` Implement counterfactual branch overlay and live-intent recompilation.
+109. `FSS-109` Implement canonical durable-format framework with magic/limits/checksums.
+110. `FSS-110` Enforce no Serde-derived canonical durable bytes.
+111. `FSS-111` Implement RTSP parser/session state machine in safe Rust.
+112. `FSS-112` Implement RTP/RTCP sequence, wrap, jitter, loss, and sender-report model.
+113. `FSS-113` Implement bounded H.264 access-unit/SPS/PPS parser.
+114. `FSS-114` Implement bounded H.265 access-unit/VPS/SPS/PPS parser.
+115. `FSS-115` Implement deterministic fragmented MP4/CMAF writer and reader.
+116. `FSS-116` Implement canonical packet replay object format.
+117. `FSS-117` Implement safe JPEG/MJPEG reference decoder vertical slice.
+118. `FSS-118` Build FFmpeg/ffprobe lab-only media differential runner.
+119. `FSS-119` Implement generation-leased immutable frame pools.
+120. `FSS-120` Prove source-to-tensor span/transform lineage.
+121. `FSS-121` Implement registered media pressure degradation ladder.
+122. `FSS-122` Implement scalar image resize/color/normalize reference kernels.
+123. `FSS-123` Implement safe SIMD image transform candidates with same-binary gates.
+124. `FSS-124` Implement first admitted H.264 profile decoder subset.
+125. `FSS-125` Add malformed compressed-stream adversarial corpus and minimizer.
+126. `FSS-126` Implement ATP transfer receipt and resumable journal v1.
+127. `FSS-127` Implement ATP object-graph closure verifier.
+128. `FSS-128` Implement RaptorQ post-repair canonical digest gate.
+129. `FSS-129` Implement multipath transfer race and loser-drain protocol.
+130. `FSS-130` Implement focused safe-Rust S3-compatible multipart/conditional protocol.
+131. `FSS-131` Implement archive replication-state and retrievability challenge ledger.
+132. `FSS-132` Build remote eventual-consistency/partial-list provider simulator.
+133. `FSS-133` Implement graph-complete archive deletion traversal.
+134. `FSS-134` Implement archive Decision Cards for path, repair, and object sizing.
+135. `FSS-135` Prove independent reconstruction of archive roots from manifests.
+136. `FSS-136` Implement tensor dtype/shape/stride/storage/view/version core.
+137. `FSS-137` Define frozen first-party model operator IR v1.
+138. `FSS-138` Implement deterministic model package importer and canonical tensors.
+139. `FSS-139` Implement scalar operator executor for first detector graph.
+140. `FSS-140` Implement shape/layout/liveness scratch planner.
+141. `FSS-141` Implement static kernel dispatch and decision-path receipts.
+142. `FSS-142` Implement packed-weight and tiled CPU matrix kernels in safe Rust.
+143. `FSS-143` Implement model preprocess/postprocess fusion laws and reference tests.
+144. `FSS-144` Build PyTorch/ONNX lab-only operator/model differential harness.
+145. `FSS-145` Classify model oracle results as agree/diverge/error-only/unexercised.
+146. `FSS-146` Implement quantized model generation and calibration receipts.
+147. `FSS-147` Add model package RaptorQ protection and ATP activation.
+148. `FSS-148` Implement shadow/canary/rollback Decision Cards for model generations.
+149. `FSS-149` Prove production release closure contains no foreign model runtime.
+150. `FSS-150` Implement CPU thermal/pressure-aware model scheduler with hard floors.
+151. `FSS-151` Define immutable graph projection and generational-handle core.
+152. `FSS-152` Implement O(1) Arc-shared graph snapshot views and invalidation tests.
+153. `FSS-153` Implement canonical graph serialization and hash verification.
+154. `FSS-154` Implement dynamic connectivity reference/optimized lanes.
+155. `FSS-155` Implement articulation, bridge, dominator, and cut-analysis family.
+156. `FSS-156` Implement shortest/k-shortest/temporal path family.
+157. `FSS-157` Implement matching, k-best assignment, and min-cost-flow association.
+158. `FSS-158` Implement max-flow and Gomory-Hu failure-analysis family.
+159. `FSS-159` Implement SCC/condensation/topological/critical-path family.
+160. `FSS-160` Implement set-cover/submodular active-perception family.
+161. `FSS-161` Implement d-separation/shared-failure-domain analysis.
+162. `FSS-162` Implement factorized graph-relational query reference planner.
+163. `FSS-163` Implement incremental retract/add standing predicates.
+164. `FSS-164` Build full-recompute versus incremental graph equivalence fuzzer.
+165. `FSS-165` Implement graph algorithm complexity/output witness v1.
+166. `FSS-166` Build adversarial graph-family generator and NetworkX oracle runner.
+167. `FSS-167` Enforce capability projection before graph/search expansion.
+168. `FSS-168` Implement offline Forge-style safe-Rust specialization proof path.
+169. `FSS-169` Implement Quill absolute doc-range/searchable-delta reference slice.
+170. `FSS-170` Implement search absence/coverage certificates.
+171. `FSS-171` Implement typed operational memory rows and evidence edges.
+172. `FSS-172` Implement memory confidence decay, trauma guard, and anti-pattern inversion.
+173. `FSS-173` Implement immutable curation/supersession/retirement/revival transitions.
+174. `FSS-174` Implement deterministic context pack with score ledger and pack hash.
+175. `FSS-175` Prove memory text cannot grant capabilities or rewrite policy.
+176. `FSS-176` Define MCP/CLI/library operation registry crosswalk.
+177. `FSS-177` Implement request-owned MCP regions and bounded outputs.
+178. `FSS-178` Implement durable application-owned task projection over MCP.
+179. `FSS-179` Implement protocol taint/secret/redaction conformance suite.
+180. `FSS-180` Prohibit generic shell/SQL/vendor/codec/model/drone MCP escape hatches.
+181. `FSS-181` Implement dependency-closure scanner against allowlist v2.
+182. `FSS-182` Enforce FSS unsafe prohibition across targets/features/examples/tests.
+183. `FSS-183` Enforce no network access in build scripts and sealed qualification.
+184. `FSS-184` Implement candidate-latest-nightly probe and promotion report.
+185. `FSS-185` Implement DSR clean-snapshot and exact sibling-closure manifest.
+186. `FSS-186` Implement disk-backed host capacity and quarantine checks.
+187. `FSS-187` Implement local qualification lane receipt schema and aggregator.
+188. `FSS-188` Implement interrupted target-matrix resume without partial blessing.
+189. `FSS-189` Implement exact release asset enumeration and extra-file refusal.
+190. `FSS-190` Implement SBOM/provenance/source/license/qualification cross-check.
+191. `FSS-191` Separate build and minisign/Ed25519 signing authorities.
+192. `FSS-192` Implement upload then download-and-verify release publication.
+193. `FSS-193` Convert workflow YAML to repository-script-only portable specifications.
+194. `FSS-194` Test complete qualification/release with GitHub-hosted runners unavailable.
+195. `FSS-195` Implement public claim scope/evidence/exclusion/expiry evaluator.
+196. `FSS-196` Implement same-binary A/A and A/B experiment receipt framework.
+197. `FSS-197` Implement Decision Card hard-clamp/shadow/fallback/rollback property tests.
+198. `FSS-198` Expand operation cost registry to all hot and consequential paths.
+199. `FSS-199` Build integrated one-version media→model→graph→event→ATP replay scenario.
+200. `FSS-200` Run the first full local DSR release rehearsal and retain negative evidence.
 
 The next tranche begins with search/graph/memory, full CLI/MCP/UI, proprietary adapter candidates,
 privacy deletion/export completion, installers, proof bundles, and GATE-120 operations.
