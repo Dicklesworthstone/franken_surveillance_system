@@ -23,3 +23,18 @@ __pycache__/
 /.beads/
 /.claude/
 /.ntm/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# bv (beads viewer) local config and caches
+.bv/
+
+# bv (beads viewer) local config and caches
+.bv/
