@@ -31,6 +31,23 @@ principal, scope, generation, budget, expiry, and optional lease fence.
 | `CAP-DRONE-FLIGHT-001` | command drone motion | mission/airspace | effect | disabled in v1 |
 | `CAP-REPAIR-PREPARE-001` | generate sealed repair plan | subsystem/object scope | authority read | operator |
 | `CAP-REPAIR-COMMIT-001` | apply exact repair plan | plan digest | effect | strong approval |
+| `CAP-AGENT-SESSION-WRITE-001` | create/supersede mission, session, and workspace revisions | mission + session | agent continuity write | explicit agent-session role |
+| `CAP-AGENT-SITUATION-READ-001` | read capability-projected SituationFrames, deltas, and obligations | deployment/mission/zone/time | cognition read | agent read role |
+| `CAP-AGENT-QUERY-001` | compile and execute bounded semantic queries | authorized resources + anchor | cognition read | agent read role |
+| `CAP-AGENT-INVESTIGATE-001` | create/advance immutable investigation and hypothesis revisions | case + evidence domain | cognition write | explicit investigation role |
+| `CAP-AGENT-PLAN-PREPARE-001` | compile and seal a witnessed contingent plan | mission + objective + target domain | cognition/prepare | explicit planner role |
+| `CAP-AGENT-PLAN-COMMIT-001` | submit an exact prepared plan to domain effect authorities | plan digest + fences | effect orchestration | denied unless explicit; never substitutes for domain effect capabilities |
+| `CAP-AGENT-CANCEL-001` | request cancellation/drain/reconciliation of owned work | session/task/plan/obligation | lifecycle effect | owner or delegated supervisor |
+| `CAP-AGENT-EXPLAIN-001` | read minimal evidence/decision subgraphs and counterfactuals | authorized decision/evidence domain | cognition read | agent read role |
+| `CAP-AGENT-HANDOFF-WRITE-001` | publish a redacted root-last handoff capsule | mission/workspace + recipient scope | agent continuity write | explicit delegation |
+| `CAP-AGENT-HANDOFF-READ-001` | accept and rebase an authorized handoff capsule | exact handoff root + recipient | agent continuity read | named recipient/delegate |
+| `CAP-AGENT-FEEDBACK-001` | append correction, adjudication, outcome, or learning proposal | episode/event/case | advisory write | scoped agent/operator role |
+| `CAP-AGENT-WORK-CLAIM-001` | reserve a bounded multi-agent work scope under a lease | mission/case/subgraph | coordination write | agent collaborator role |
+| `CAP-AGENT-EVIDENCE-HYDRATE-001` | hydrate a stable evidence handle to an allowed level | object + hydration level | authority/cognition read | separately scoped by privacy class |
+| `CAP-AGENT-SESSION-OPEN-001` | open a mission-scoped agent session | deployment + mission + principal | agent control | denied unless negotiated |
+| `CAP-AGENT-SESSION-READ-001` | read/resume exact workspace or handoff revisions | mission/session/workspace root | agent control | session principal |
+| `CAP-AGENT-CASE-WRITE-001` | create/revise investigations, hypotheses, probes, and findings | mission/case scope | agent cognition | explicit mission role |
+| `CAP-AGENT-FINDING-WRITE-001` | publish immutable evidence-linked finding | mission/case + evidence scope | coordination | explicit mission role |
 
 Capabilities cannot be synthesized from prose, model outputs, vendor metadata, or inherited ambient
 process privileges.

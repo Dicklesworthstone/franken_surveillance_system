@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/semantic_compression_receipt.v1.json",
+  "title": "Semantic Compression Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "receiptId",
+    "sourceAnchor",
+    "viewId",
+    "targetTokens",
+    "selectedClasses",
+    "omittedClasses",
+    "transforms",
+    "completeness",
+    "criticalPreservation",
+    "actualTokens",
+    "actualBytes",
+    "stopReason",
+    "outputDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.semantic_compression_receipt.v1"
+    },
+    "receiptId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "sourceAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "viewId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "targetTokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "selectedClasses": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "omittedClasses": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "transforms": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "scope",
+          "lossClass"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "select",
+              "aggregate",
+              "cluster",
+              "deduplicate",
+              "quantize",
+              "truncate",
+              "summarize",
+              "redact"
+            ]
+          },
+          "scope": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "lossClass": {
+            "enum": [
+              "lossless",
+              "decision_preserving",
+              "bounded_loss",
+              "redaction"
+            ]
+          },
+          "details": {
+            "type": "string",
+            "maxLength": 2048
+          }
+        }
+      }
+    },
+    "completeness": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "domain",
+          "state"
+        ],
+        "properties": {
+          "domain": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "state": {
+            "enum": [
+              "complete",
+              "bounded",
+              "partial",
+              "unknown",
+              "not_observable",
+              "unauthorized"
+            ]
+          },
+          "omittedCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "criticalPreservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "knownCriticalItems",
+        "omittedCriticalItems",
+        "omittedInvalidations",
+        "omittedContradictions"
+      ],
+      "properties": {
+        "knownCriticalItems": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omittedCriticalItems": {
+          "const": 0
+        },
+        "omittedInvalidations": {
+          "const": 0
+        },
+        "omittedContradictions": {
+          "const": 0
+        }
+      }
+    },
+    "actualTokens": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "actualBytes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expansionHandles": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "handle",
+          "purpose",
+          "estimatedCost"
+        ],
+        "properties": {
+          "handle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "purpose": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "estimatedCost": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "latencyMs",
+              "tokens",
+              "bytes",
+              "modelCalls",
+              "cpuMillis",
+              "acceleratorMillis",
+              "energyMilliJoules",
+              "networkBytes",
+              "storageOperations",
+              "privacyExposure",
+              "operatorAttentionSeconds"
+            ],
+            "properties": {
+              "latencyMs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "bytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "modelCalls": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "cpuMillis": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "acceleratorMillis": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "energyMilliJoules": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "networkBytes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "storageOperations": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "privacyExposure": {
+                "type": "number",
+                "minimum": 0
+              },
+              "operatorAttentionSeconds": {
+                "type": "number",
+                "minimum": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    "selectionFrontierDigest": {
+      "anyOf": [
+        {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "stopReason": {
+      "enum": [
+        "complete",
+        "target_budget",
+        "hard_budget",
+        "no_more_relevant",
+        "unauthorized",
+        "source_incomplete",
+        "error"
+      ]
+    },
+    "outputDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    }
+  }
+}

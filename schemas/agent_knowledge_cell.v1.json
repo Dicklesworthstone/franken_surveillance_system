@@ -1,0 +1,251 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_knowledge_cell.v1.json",
+  "title": "Agent Knowledge Cell v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "cellId",
+    "subject",
+    "predicate",
+    "knowledgeState",
+    "provenanceClass",
+    "basisAnchor",
+    "validity",
+    "supportingEvidence",
+    "contradictingEvidence",
+    "uncertainty",
+    "completeness",
+    "decisionRelevance"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_knowledge_cell.v1"
+    },
+    "cellId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "predicate": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "value": {},
+    "knowledgeState": {
+      "enum": [
+        "known",
+        "estimated",
+        "unknown",
+        "conflicted",
+        "stale",
+        "not_observable",
+        "redacted",
+        "indeterminate",
+        "not_applicable"
+      ]
+    },
+    "provenanceClass": {
+      "enum": [
+        "observed",
+        "derived",
+        "predicted",
+        "remembered",
+        "operator_asserted",
+        "vendor_claimed",
+        "policy"
+      ]
+    },
+    "basisAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "sourceGeneration": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "temporal",
+        "spatial",
+        "policy",
+        "model",
+        "privacy"
+      ],
+      "properties": {
+        "temporal": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "spatial": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "policy": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "model": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "privacy": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "invalidators": {
+          "type": "array",
+          "maxItems": 1024,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "supportingEvidence": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+      }
+    },
+    "contradictingEvidence": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+      }
+    },
+    "sharedFailureDomains": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "none",
+            "interval",
+            "distribution",
+            "set",
+            "qualitative",
+            "unknown"
+          ]
+        },
+        "lower": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "upper": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "calibrationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "completeness": {
+      "enum": [
+        "complete_for_domain",
+        "bounded_partial",
+        "uncertified",
+        "not_applicable"
+      ]
+    },
+    "decisionRelevance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "missions",
+        "canChangeAction",
+        "priorityClass"
+      ],
+      "properties": {
+        "missions": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "canChangeAction": {
+          "type": "boolean"
+        },
+        "priorityClass": {
+          "enum": [
+            "constitutional",
+            "critical",
+            "high",
+            "normal",
+            "low"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        }
+      }
+    },
+    "explanationHandle": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "expiresAtNs": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    }
+  }
+}

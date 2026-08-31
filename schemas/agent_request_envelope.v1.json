@@ -1,0 +1,324 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_request_envelope.v1.json",
+  "title": "Agent Request Envelope v1",
+  "description": "Universal transport-neutral request envelope for every fss/1 semantic operation. Operation-specific meaning lives in the typed payload named by payloadSchema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "operationId",
+    "requestId",
+    "principalId",
+    "sessionId",
+    "missionId",
+    "inputAnchor",
+    "expectedWorkspaceRevision",
+    "viewId",
+    "targetUris",
+    "payloadSchema",
+    "payload",
+    "budget",
+    "deadlineNs",
+    "requestedCapabilities",
+    "requestedPrivacyProjection",
+    "idempotencyKey",
+    "continuation",
+    "expectedDecisionFingerprint",
+    "maxHydrationLevel",
+    "acceptCompression",
+    "taint",
+    "createdAtNs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_request_envelope.v1"
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^AOP-[0-9]{3}$"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "principalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "sessionId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "missionId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inputAnchor": {
+      "anyOf": [
+        {
+          "$ref": "evidence_anchor.v1.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expectedWorkspaceRevision": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "viewId": {
+      "type": "string",
+      "pattern": "^AVIEW-[0-9]{3}$"
+    },
+    "targetUris": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 2048,
+        "pattern": "^fss://"
+      }
+    },
+    "payloadSchema": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "payload": {
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMilliJoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds"
+      ],
+      "properties": {
+        "latencyMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "modelCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpuMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceleratorMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "energyMilliJoules": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "networkBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "storageOperations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "privacyExposure": {
+          "type": "number",
+          "minimum": 0
+        },
+        "operatorAttentionSeconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "deadlineNs": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "requestedCapabilities": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "pattern": "^CAP-[A-Z0-9-]+-[0-9]{3}$"
+      }
+    },
+    "requestedPrivacyProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "purpose",
+        "policyGenerationId",
+        "allowedDomains",
+        "redactedDomains"
+      ],
+      "properties": {
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "policyGenerationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        "allowedDomains": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "redactedDomains": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        }
+      }
+    },
+    "idempotencyKey": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "continuation": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "expectedDecisionFingerprint": {
+      "anyOf": [
+        {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "maxHydrationLevel": {
+      "enum": [
+        "H0",
+        "H1",
+        "H2",
+        "H3",
+        "H4"
+      ]
+    },
+    "acceptCompression": {
+      "type": "boolean"
+    },
+    "taint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "containsUntrustedControlText",
+        "sources"
+      ],
+      "properties": {
+        "containsUntrustedControlText": {
+          "type": "boolean"
+        },
+        "sources": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        }
+      }
+    },
+    "createdAtNs": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

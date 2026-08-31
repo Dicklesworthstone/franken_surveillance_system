@@ -43,6 +43,28 @@ Edges: owns, waits-for, blocks, must-drain-before.
 
 Each projection has an ID, source high-water mark, authority scope, schema epoch, directedness/multiedge/weight semantics, and stale-result policy.
 
+### Mission, investigation, and decision graph
+
+Nodes: missions/objectives, situation/frame revisions, knowledge cells, cases, hypotheses, probes,
+evidence handles, affordances, plans, effects, obligations, findings, episodes, and learning
+proposals. Edges preserve basis, support, contradiction, invalidation, discrimination, enablement,
+preparation, verification, supersession, and outcome attribution. This projection supports minimal
+why/why-not subgraphs, invalidation propagation, critical path, and evidence-minimality.
+
+### Multi-agent work graph
+
+Nodes: agent sessions, immutable workspace revisions, work claims, private branches, shared
+findings, disagreement records, handoff roots, and obligations. Edges capture owns, claims,
+conflicts-with, depends-on, delegated-to, merged-from, and resumes-from. It is used to prevent
+duplicate work and expose coordination bottlenecks; a work claim never conveys effect authority.
+
+### Context and active-perception hypergraph
+
+Hyperedges connect candidate evidence/probes to the hypotheses, decisions, coverage domains,
+privacy exposures, costs, and deadlines they affect. Set-cover/submodular, matching, and constrained
+flow operators choose bounded context or observations while retaining contradictions, protected
+high-loss hypotheses, active obligations, and hard clamps.
+
 ## 3. Storage tiers
 
 - tiny hot adjacency inline with the entity projection;
@@ -155,6 +177,31 @@ Capability scope is compiled into the projection before traversal. An agent auth
 
 Queries such as “all plausible routes from any perimeter detection to any door supported by any camera overlap” can create enormous intermediates. The planner uses worst-case-aware join ordering and factorized sets; it materializes only when the output contract requires it. Every optimization has a simple relational/graph reference oracle.
 
+## 9.1 Agent-facing graph products
+
+The graph layer does not return an opaque neighborhood dump to an agent. It publishes bounded
+products with ordinary cognitive contracts:
+
+- `SituationCapsule` attention/affordance candidates cite the exact projection and algorithm witness;
+- `WorldEnvelope` alternatives are represented as branch-relative graph deltas over one pinned base,
+  so the system can compute common invariants, world-specific paths/cuts/assignments, and the set of
+  actions robust across every protected material branch without cloning a complete graph per world;
+- `controlEnvelope` construction uses set intersection, dominance, cut/reachability, and sensitivity
+  witnesses to distinguish robust actions from branch-conditional actions and information probes;
+- `explain` returns a minimal sufficient evidence/decision subgraph plus priced expansion handles;
+- `InvestigationCase` probes state which hypotheses and predicted observations each graph action
+  discriminates;
+- context selection records candidate universe, marginal gain, protected items, omissions, and stop
+  reason in the semantic-compression receipt;
+- multi-agent coordination exposes work-claim conflicts, dependency critical paths, and uncovered
+  tasks without revealing unauthorized nodes or counts;
+- handoff validation checks that every referenced case/plan/obligation/evidence node closes under
+  the authorized projection.
+
+Centrality, community, link prediction, and learned graph signals remain advisory. They can rank
+attention or suggest a probe, but cannot turn an `estimated` proposition into `known`, certify
+absence, or authorize an effect.
+
 ## 10. Adversarial graph corpus
 
 Qualification includes:
@@ -189,3 +236,8 @@ No graph algorithm enters a decision path until:
 - incremental/full equivalence passes where applicable;
 - output serialization and repair round-trip;
 - performance benefit is demonstrated before replacing the simple path.
+- agent explanation/context products reproduce from their graph witness and preserve critical items;
+- possible-world graph branches reproduce, share one pinned base, and preserve every protected residual;
+- robust/conditional/probe control classifications replay from the named WorldEnvelope and graph witnesses;
+- work-claim and handoff projections remain non-authoritative and capability-noninterfering;
+- value-of-information/context selection is compared with exhaustive small-instance oracles and held-out task outcomes.

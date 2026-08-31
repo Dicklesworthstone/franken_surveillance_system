@@ -1,0 +1,329 @@
+{
+  "schema": "fss.agent_contracts.v1",
+  "asOf": "2026-08-31",
+  "semanticProtocol": "fss/1",
+  "constitutionalDocument": "AGENT_COGNITION_AND_CONTROL.md",
+  "controlPlaneDocument": "AGENT_COGNITIVE_CONTROL_PLANE.md",
+  "driverDocument": "AGENT_OPERATING_MODEL.md",
+  "registries": {
+    "operations": "architecture/agent_operations.json",
+    "views": "architecture/agent_views.json",
+    "abstractionStack": "architecture/agent_abstraction_stack.json",
+    "operatingModel": "architecture/agent_operating_model.json",
+    "humanContracts": "registries/AGENT_CONTRACTS.md"
+  },
+  "knowledgeStates": [
+    {
+      "id": "KSTATE-001",
+      "name": "known",
+      "meaning": "The proposition is established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition.",
+      "maySupportPlanning": true,
+      "mayAuthorizeIrreversibleEffect": true,
+      "requiresExplicitAssumptions": false
+    },
+    {
+      "id": "KSTATE-002",
+      "name": "estimated",
+      "meaning": "The proposition is supported by a declared derivation or model with explicit uncertainty and operating-envelope limits.",
+      "maySupportPlanning": true,
+      "mayAuthorizeIrreversibleEffect": false,
+      "requiresExplicitAssumptions": true
+    },
+    {
+      "id": "KSTATE-003",
+      "name": "unknown",
+      "meaning": "The authorized evidence acquired so far does not establish the proposition.",
+      "maySupportPlanning": true,
+      "mayAuthorizeIrreversibleEffect": false,
+      "requiresExplicitAssumptions": true
+    },
+    {
+      "id": "KSTATE-004",
+      "name": "conflicted",
+      "meaning": "Material admissible evidence supports incompatible propositions or generations.",
+      "maySupportPlanning": true,
+      "mayAuthorizeIrreversibleEffect": false,
+      "requiresExplicitAssumptions": true
+    },
+    {
+      "id": "KSTATE-005",
+      "name": "stale",
+      "meaning": "The proposition was valid only at an older anchor or generation and has not been revalidated.",
+      "maySupportPlanning": true,
+      "mayAuthorizeIrreversibleEffect": false,
+      "requiresExplicitAssumptions": true
+    },
+    {
+      "id": "KSTATE-006",
+      "name": "not_observable",
+      "meaning": "The declared sensor/authorization/model domain could not have established the proposition for the requested interval.",
+      "maySupportPlanning": true,
+      "mayAuthorizeIrreversibleEffect": false,
+      "requiresExplicitAssumptions": true
+    },
+    {
+      "id": "KSTATE-007",
+      "name": "redacted",
+      "meaning": "The proposition or its evidence exists but is intentionally withheld by the current privacy/capability projection.",
+      "maySupportPlanning": true,
+      "mayAuthorizeIrreversibleEffect": false,
+      "requiresExplicitAssumptions": true
+    },
+    {
+      "id": "KSTATE-008",
+      "name": "indeterminate",
+      "meaning": "A consequential external outcome may have occurred but is not yet proved or safely negated.",
+      "maySupportPlanning": true,
+      "mayAuthorizeIrreversibleEffect": false,
+      "requiresExplicitAssumptions": true
+    },
+    {
+      "id": "KSTATE-009",
+      "name": "not_applicable",
+      "meaning": "The proposition has no meaning for the named object, scope, or lifecycle state.",
+      "maySupportPlanning": false,
+      "mayAuthorizeIrreversibleEffect": false,
+      "requiresExplicitAssumptions": false
+    }
+  ],
+  "provenanceClasses": [
+    {
+      "id": "PROV-001",
+      "name": "observed",
+      "meaning": "Directly supported by canonical sensor, device, operator, or effect evidence."
+    },
+    {
+      "id": "PROV-002",
+      "name": "derived",
+      "meaning": "Deterministically computed from named canonical inputs under a registered algorithm and generation."
+    },
+    {
+      "id": "PROV-003",
+      "name": "predicted",
+      "meaning": "Counterfactual or forward prediction under an explicit branch/model and assumptions."
+    },
+    {
+      "id": "PROV-004",
+      "name": "remembered",
+      "meaning": "Advisory operational memory or prior episode material that must be revalidated against live evidence."
+    },
+    {
+      "id": "PROV-005",
+      "name": "operator_asserted",
+      "meaning": "A human/operator assertion with identity, time, scope, and later corroboration status."
+    },
+    {
+      "id": "PROV-006",
+      "name": "vendor_claimed",
+      "meaning": "Metadata or state asserted by a device/vendor boundary and not treated as independent physical truth."
+    },
+    {
+      "id": "PROV-007",
+      "name": "policy",
+      "meaning": "A rule, threshold, capability, or privacy decision from an exact policy generation."
+    }
+  ],
+  "hypothesisDispositions": [
+    "live",
+    "supported",
+    "disfavored",
+    "refuted",
+    "resolved",
+    "superseded"
+  ],
+  "responsePriority": [
+    "constitutional safety/privacy/authority changes",
+    "possibly occurred or indeterminate effects and overdue obligations",
+    "decision-changing evidence, contradictions, coverage loss, and invalidated assumptions",
+    "mission progress and objective risk",
+    "Pareto-efficient robust/conditional/probe/wait affordances",
+    "optional detail reachable through stable handles and continuations"
+  ],
+  "resourceTemplates": [
+    "fss://deployment/{deployment}/anchor/{anchor}",
+    "fss://deployment/{deployment}/situation/{capsule}",
+    "fss://deployment/{deployment}/sensor/{sensor}",
+    "fss://deployment/{deployment}/zone/{zone}",
+    "fss://deployment/{deployment}/event/{event}/revision/{revision}",
+    "fss://deployment/{deployment}/case/{case}/revision/{revision}",
+    "fss://deployment/{deployment}/hypothesis/{hypothesis}",
+    "fss://deployment/{deployment}/evidence/{digest}",
+    "fss://deployment/{deployment}/plan/{plan}",
+    "fss://deployment/{deployment}/obligation/{obligation}",
+    "fss://mission/{mission}/revision/{revision}",
+    "fss://session/{session}/workspace/{workspace}",
+    "fss://session/{session}/handoff/{root}",
+    "fss://experience/{capsule}",
+    "fss://doctor/{bundle}"
+  ],
+  "semanticObjects": {
+    "MissionContract": "fss.agent_mission.v1",
+    "ObjectiveContract": "fss.agent_objective_contract.v1",
+    "AgentSession": "fss.agent_session.v1",
+    "AgentSessionCapsule": "fss.agent_session_capsule.v1",
+    "KnowledgeCell": "fss.agent_knowledge_cell.v1",
+    "WorldEnvelope": "fss.agent_world_envelope.v1",
+    "SituationCapsule": "fss.situation_capsule.v1",
+    "SituationFrame": "fss.agent_situation_frame.v1",
+    "MeaningfulDelta": "fss.agent_meaningful_delta.v1",
+    "AgentQueryPlan": "fss.agent_query_plan.v1",
+    "InvestigationCase": "fss.investigation_state.v1",
+    "HypothesisWorkspace": "fss.agent_hypothesis_workspace.v1",
+    "ContextPack": "fss.semantic_context_pack.v1",
+    "SemanticCompressionReceipt": "fss.semantic_compression_receipt.v1",
+    "ActionAffordance": "fss.agent_affordance.v1",
+    "ControlPlan": "fss.agent_control_plan.v1",
+    "ExecutionEpisode": "fss.agent_execution_episode.v1",
+    "ExperienceCapsule": "fss.experience_capsule.v1",
+    "WorkClaim": "fss.agent_work_claim.v1",
+    "AgentFinding": "fss.agent_finding.v1",
+    "FeedbackProposal": "fss.agent_feedback_proposal.v1",
+    "LearningProposal": "fss.agent_learning_proposal.v1",
+    "HandoffCapsule": "fss.agent_handoff_capsule.v1",
+    "AgentCognitiveEnvelope": "fss.agent_cognitive_envelope.v1",
+    "AgentResponseEnvelope": "fss.agent_response_envelope.v1",
+    "ContractBasis": "fss.agent_contract_basis.v1",
+    "AgentRequestEnvelope": "fss.agent_request_envelope.v1"
+  },
+  "operationRegistry": "architecture/agent_operations.json",
+  "viewRegistry": "architecture/agent_views.json",
+  "gate": "GATE-115",
+  "qualificationLane": "QL-AGENT-001",
+  "objectComposition": {
+    "MissionContract": "contains one ObjectiveContract and immutable revisions of focus, assumptions, budgets, and terminal criteria",
+    "SituationCapsule": "contains a SituationFrame with a WorldEnvelope, optional MeaningfulDelta, active investigations/plans/obligations, resource state, a categorized control envelope, ContextPack, and SemanticCompressionReceipt",
+    "InvestigationCase": "contains or references a HypothesisWorkspace, discriminating probes, stop rules, findings, and residual uncertainty",
+    "ControlPlan": "contains a witnessed contingent DAG and prepared domain effects; it never confers authority by itself",
+    "ExperienceCapsule": "summarizes one or more ExecutionEpisodes and can produce advisory FeedbackProposal or LearningProposal objects",
+    "HandoffCapsule": "publishes the minimum sufficient mission/workspace/case/plan/obligation state as a root-last portable graph",
+    "AgentResponseEnvelope": "wraps every public operation result with exact contract basis, lifecycle/effect boundary, recovery class, proof, budget, continuation, affordances, and one typed semantic payload",
+    "WorldEnvelope": "separates the nominal world, certified core and absences, material alternative worlds, adversarial residuals, common invariants, unresolved dimensions, and discriminating affordances",
+    "AgentRequestEnvelope": "wraps every public operation request with exact contract basis, lifecycle identity, anchor/workspace preconditions, budgets, requested authority/privacy projection, continuation, taint, and one typed semantic payload",
+    "ContractBasis": "freezes the exact semantic protocol, schema catalog, ontology, operation/view/capability/error/cost registries, and producing release for portable interpretation",
+    "AgentCognitiveEnvelope": "carries generic decision semantics and effective epistemic/coverage/budget/affordance state inside the universal AgentResponseEnvelope"
+  },
+  "primaryReadSurface": "SituationCapsule",
+  "responseComposition": {
+    "semanticPayload": "AgentCognitiveEnvelope",
+    "transportEnvelope": "AgentResponseEnvelope",
+    "boundedMaterialization": "ContextPack + SemanticCompressionReceipt",
+    "rankedNextAction": "ActionAffordance",
+    "rule": "SituationCapsule is the primary orient/resume publication and contains the mission-relative SituationFrame plus meaningful delta, obligations, resource state, affordances, and context/compression proof. AgentCognitiveEnvelope is the general decision-bearing semantic payload. AgentResponseEnvelope adds lifecycle/retry/budget/proof/continuation framing without redefining meaning.",
+    "primaryDriverPublication": "SituationCapsule",
+    "innerWorldProjection": "SituationFrame",
+    "worldModel": "WorldEnvelope",
+    "controlProjection": "SituationCapsule.controlEnvelope",
+    "effectiveProjection": "AgentResponseEnvelope reports effectiveViewId, effectiveCapabilities, effectivePrivacyProjection, taskState, and payloadDigest; requested authority is never presumed effective."
+  },
+  "semanticCompressionRule": "Every lossy ContextPack carries a SemanticCompressionReceipt; contradictions, not-observable domains, effect indeterminacy, hard clamps, and mission-critical obligations are non-droppable.",
+  "publicOperationIds": [
+    "AOP-001",
+    "AOP-002",
+    "AOP-003",
+    "AOP-004",
+    "AOP-005",
+    "AOP-006",
+    "AOP-007",
+    "AOP-008",
+    "AOP-009",
+    "AOP-010",
+    "AOP-011",
+    "AOP-012",
+    "AOP-013",
+    "AOP-014"
+  ],
+  "publicViewIds": [
+    "AVIEW-001",
+    "AVIEW-002",
+    "AVIEW-003",
+    "AVIEW-004",
+    "AVIEW-005",
+    "AVIEW-006",
+    "AVIEW-007",
+    "AVIEW-008"
+  ],
+  "worldEnvelopeDoctrine": {
+    "evidenceEnvelope": "what the named anchor and coverage witnesses positively establish, including certified absences",
+    "possibilityEnvelope": "material alternative and adversarial worlds still compatible with evidence, authorization, and observability limits",
+    "controlEnvelope": "actions robust across the envelope, actions conditional on named worlds, information-gathering actions, wait/watch actions, and blocked actions",
+    "monotonicity": "a successor envelope may shrink, split, or expand as evidence and coverage change; it may not erase a protected high-consequence residual without a named witness or explicit scope/policy decision",
+    "decisionRule": "irreversible or high-consequence effects require robustness across all protected plausible worlds or an explicit policy-authorized branch with current discriminating evidence"
+  },
+  "recoveryClasses": [
+    {
+      "name": "never_unchanged",
+      "meaning": "Do not repeat the same request blindly; inspect or reconcile first."
+    },
+    {
+      "name": "safe_read_retry",
+      "meaning": "The read can be repeated at the same semantic intent, subject to current budget."
+    },
+    {
+      "name": "refresh_and_retry",
+      "meaning": "Refresh the named stale generation or anchor before repeating."
+    },
+    {
+      "name": "rebase_required",
+      "meaning": "Recompile the query, case, or plan against a new workspace/world basis."
+    },
+    {
+      "name": "backoff",
+      "meaning": "Retry only after the supplied pressure/dependency condition or deadline."
+    },
+    {
+      "name": "reconciliation_required",
+      "meaning": "Look up and prove the possibly executed external/durable outcome before any retry."
+    },
+    {
+      "name": "operator_action_required",
+      "meaning": "A human approval, credential, physical step, or policy change is required."
+    },
+    {
+      "name": "resume_from_continuation",
+      "meaning": "Resume from the returned durable cursor/task/capsule rather than restarting."
+    }
+  ],
+  "requestResponseRule": "Every AOP operation accepts AgentRequestEnvelope and returns AgentResponseEnvelope. The server intersects requested authority/privacy/view with current policy and reports the effective projection explicitly. Operation-specific payload schemas and retry classes are declared only in architecture/agent_operations.json.",
+  "contractBasisRoots": [
+    "MissionContract",
+    "AgentSession",
+    "AgentSessionCapsule",
+    "SituationCapsule",
+    "MeaningfulDelta",
+    "InvestigationCase",
+    "HypothesisWorkspace",
+    "ControlPlan",
+    "ExecutionEpisode",
+    "ExperienceCapsule",
+    "WorkClaim",
+    "AgentFinding",
+    "FeedbackProposal",
+    "LearningProposal",
+    "HandoffCapsule",
+    "ContextPack",
+    "AgentCognitiveEnvelope",
+    "AgentRequestEnvelope",
+    "AgentResponseEnvelope"
+  ],
+  "subsystemProjectionContract": {
+    "name": "CognitiveFacet",
+    "owner": "fss-agent-core",
+    "requiredCoordinates": [
+      "facet_identity",
+      "semantic_owner",
+      "basis_anchor_and_high_water",
+      "scope_and_validity",
+      "knowledge_cells",
+      "coverage_and_health",
+      "contradictions_and_unknowns",
+      "evidence_handles",
+      "open_obligations_and_indeterminate_effects",
+      "resource_state_and_cost",
+      "affordance_seeds",
+      "invalidators_and_degradation",
+      "proof_and_continuation"
+    ],
+    "compositionRule": "a SituationCapsule is composed only from capability-projected facets pinned to one compatible version universe; the compositor may select and connect facts but may not redefine a facet owner’s semantics",
+    "forbidden": "subsystem-specific free-form agent replies, hidden ambient reads, unversioned side chronologies, or direct effect authority in a facet"
+  }
+}

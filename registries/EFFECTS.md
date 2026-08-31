@@ -20,3 +20,7 @@ Every effect has prepare, revalidate, commit, observe, verify, cancel, and recon
 | `EFFECT-REPAIR-001` | mutate ledger/object state per sealed plan | potentially irreversible | revalidation, mutation receipts, post-doctor | target |
 | `EFFECT-DRONE-FLIGHT-001` | command drone mission | physically consequential | separate flight-safety system | forbidden in v1 |
 | `EFFECT-OFFENSIVE-001` | pursue, restrain, harm, or deploy weapon | dangerous | none acceptable | forbidden |
+| `EFFECT-AGENT-MISSION-001` | create/supersede mission objective/constraint contract | supersedable; history immutable | published mission revision and affected-workspace invalidation | target |
+| `EFFECT-AGENT-WORK-CLAIM-001` | reserve/release a bounded collaborative work claim | lease-expiring and releasable | claim revision, fence, expiry, and release receipt | target |
+| `EFFECT-AGENT-FEEDBACK-001` | append correction/outcome/learning proposal | additive and supersedable | immutable evidence-linked proposal; no activation side effect | target |
+| `EFFECT-AGENT-HANDOFF-001` | publish/accept a recipient-scoped handoff root | additive; revocable prospectively | closure proof, recipient acceptance/rebase receipt, and expiry | target |

@@ -1,0 +1,412 @@
+{
+  "schema": "fss.agent_operating_model.v1",
+  "asOf": "2026-08-31",
+  "semanticProtocol": "fss/1",
+  "primaryReadSurface": "situation_capsule",
+  "universalLoop": [
+    {
+      "stage": "restore",
+      "operationRefs": [
+        "AOP-001",
+        "AOP-002"
+      ]
+    },
+    {
+      "stage": "orient",
+      "operationRefs": [
+        "AOP-003"
+      ]
+    },
+    {
+      "stage": "observe_change",
+      "operationRefs": [
+        "AOP-004",
+        "AOP-009"
+      ]
+    },
+    {
+      "stage": "inspect_or_investigate",
+      "operationRefs": [
+        "AOP-005",
+        "AOP-006",
+        "AOP-011",
+        "AOP-014"
+      ]
+    },
+    {
+      "stage": "plan",
+      "operationRefs": [
+        "AOP-007"
+      ]
+    },
+    {
+      "stage": "commit_if_authorized",
+      "operationRefs": [
+        "AOP-008"
+      ]
+    },
+    {
+      "stage": "drain_or_cancel",
+      "operationRefs": [
+        "AOP-009",
+        "AOP-010"
+      ]
+    },
+    {
+      "stage": "learn",
+      "operationRefs": [
+        "AOP-013"
+      ]
+    },
+    {
+      "stage": "handoff",
+      "operationRefs": [
+        "AOP-012"
+      ]
+    }
+  ],
+  "knowledgeStateRefs": [
+    "KSTATE-001",
+    "KSTATE-002",
+    "KSTATE-003",
+    "KSTATE-004",
+    "KSTATE-005",
+    "KSTATE-006",
+    "KSTATE-007",
+    "KSTATE-008",
+    "KSTATE-009"
+  ],
+  "provenanceClassRefs": [
+    "PROV-001",
+    "PROV-002",
+    "PROV-003",
+    "PROV-004",
+    "PROV-005",
+    "PROV-006",
+    "PROV-007"
+  ],
+  "semanticTower": [
+    {
+      "level": "L0",
+      "name": "runtime_authority_and_custody",
+      "owner": "asupersync/authority/object owners",
+      "question": "What work, authority, budget, identity, time, and object custody exist?"
+    },
+    {
+      "level": "L1",
+      "name": "source_evidence",
+      "owner": "fss-capture/fss-media/fss-chronicle",
+      "question": "What exact packets, files, measurements, continuity, and capture-time intervals exist?"
+    },
+    {
+      "level": "L2",
+      "name": "world_facts_and_coverage",
+      "owner": "fss-chronicle/fss-coverage",
+      "question": "What did the system authoritatively observe or do at one anchor?"
+    },
+    {
+      "level": "L3",
+      "name": "derived_beliefs",
+      "owner": "fss-perception/fss-association/fss-graph",
+      "question": "What entities, tracks, events, relations, and uncertainties are supported?"
+    },
+    {
+      "level": "L4",
+      "name": "situation_capsule",
+      "owner": "fss-situation/fss-context-pack/fss-affordance",
+      "question": "What is established, what materially different worlds remain possible, what changed, and what is robustly or conditionally safe to do next?"
+    },
+    {
+      "level": "L5",
+      "name": "investigation_and_hypotheses",
+      "owner": "fss-investigation",
+      "question": "Which competing explanations remain viable and how can they be discriminated?"
+    },
+    {
+      "level": "L6",
+      "name": "affordance_frontier",
+      "owner": "fss-attention/fss-affordance",
+      "question": "What can be done next, under current capability and budget, and why is it worth doing?"
+    },
+    {
+      "level": "L7",
+      "name": "plan_and_effect",
+      "owner": "fss-agent-plan/fss-effect",
+      "question": "Which witnessed contingent DAG should run and did each effect happen?"
+    },
+    {
+      "level": "L8",
+      "name": "outcome_and_episode",
+      "owner": "fss-episode",
+      "question": "What was predicted, executed, observed, consumed, and left uncertain?"
+    },
+    {
+      "level": "L9",
+      "name": "learning_and_memory",
+      "owner": "fss-learning",
+      "question": "What reusable rule, anti-pattern, fixture, or runbook improvement should be proposed?"
+    },
+    {
+      "level": "L10",
+      "name": "workspace_and_handoff",
+      "owner": "fss-agent-session/fss-handoff",
+      "question": "How can this mission resume or transfer without rediscovery or hidden staleness?"
+    }
+  ],
+  "firstClassObjects": [
+    {
+      "name": "ContractBasis",
+      "schema": "fss.agent_contract_basis.v1"
+    },
+    {
+      "name": "MissionContract",
+      "schema": "fss.agent_mission.v1"
+    },
+    {
+      "name": "ObjectiveContract",
+      "schema": "fss.agent_objective_contract.v1"
+    },
+    {
+      "name": "AgentSession",
+      "schema": "fss.agent_session.v1"
+    },
+    {
+      "name": "AgentSessionCapsule",
+      "schema": "fss.agent_session_capsule.v1"
+    },
+    {
+      "name": "KnowledgeCell",
+      "schema": "fss.agent_knowledge_cell.v1"
+    },
+    {
+      "name": "WorldEnvelope",
+      "schema": "fss.agent_world_envelope.v1"
+    },
+    {
+      "name": "SituationCapsule",
+      "schema": "fss.situation_capsule.v1"
+    },
+    {
+      "name": "SituationFrame",
+      "schema": "fss.agent_situation_frame.v1"
+    },
+    {
+      "name": "MeaningfulDelta",
+      "schema": "fss.agent_meaningful_delta.v1"
+    },
+    {
+      "name": "AgentQueryPlan",
+      "schema": "fss.agent_query_plan.v1"
+    },
+    {
+      "name": "InvestigationCase",
+      "schema": "fss.investigation_state.v1"
+    },
+    {
+      "name": "HypothesisWorkspace",
+      "schema": "fss.agent_hypothesis_workspace.v1"
+    },
+    {
+      "name": "ContextPack",
+      "schema": "fss.semantic_context_pack.v1"
+    },
+    {
+      "name": "SemanticCompressionReceipt",
+      "schema": "fss.semantic_compression_receipt.v1"
+    },
+    {
+      "name": "ActionAffordance",
+      "schema": "fss.agent_affordance.v1"
+    },
+    {
+      "name": "ControlPlan",
+      "schema": "fss.agent_control_plan.v1"
+    },
+    {
+      "name": "ExecutionEpisode",
+      "schema": "fss.agent_execution_episode.v1"
+    },
+    {
+      "name": "ExperienceCapsule",
+      "schema": "fss.experience_capsule.v1"
+    },
+    {
+      "name": "WorkClaim",
+      "schema": "fss.agent_work_claim.v1"
+    },
+    {
+      "name": "AgentFinding",
+      "schema": "fss.agent_finding.v1"
+    },
+    {
+      "name": "FeedbackProposal",
+      "schema": "fss.agent_feedback_proposal.v1"
+    },
+    {
+      "name": "LearningProposal",
+      "schema": "fss.agent_learning_proposal.v1"
+    },
+    {
+      "name": "HandoffCapsule",
+      "schema": "fss.agent_handoff_capsule.v1"
+    },
+    {
+      "name": "AgentCognitiveEnvelope",
+      "schema": "fss.agent_cognitive_envelope.v1"
+    },
+    {
+      "name": "AgentRequestEnvelope",
+      "schema": "fss.agent_request_envelope.v1"
+    },
+    {
+      "name": "AgentResponseEnvelope",
+      "schema": "fss.agent_response_envelope.v1"
+    }
+  ],
+  "rankingDoctrine": {
+    "hardConstraintsFirst": true,
+    "returnParetoFrontier": true,
+    "opaqueUniversalScoreForbidden": true,
+    "componentVectorRequired": true,
+    "sensitivityRequiredForConsequentialRecommendations": true,
+    "effectAuthorityFromRanking": false
+  },
+  "crossSurfaceDoctrine": {
+    "oneProtocol": "fss/1",
+    "oneRequestEnvelope": "AgentRequestEnvelope",
+    "oneResponseEnvelope": "AgentResponseEnvelope",
+    "oneOperationRegistry": "architecture/agent_operations.json",
+    "oneViewRegistry": "architecture/agent_views.json",
+    "noUniqueBusinessLogic": [
+      "CLI",
+      "MCP",
+      "Rust API",
+      "TUI",
+      "report",
+      "future UI"
+    ],
+    "transcriptEquivalence": "same request envelope, anchor, registries, policy, seed, and available evidence produce the same semantic payload and decision fingerprint across presentations"
+  },
+  "qualificationLane": "QL-AGENT-001",
+  "epistemicStates": [
+    {
+      "id": "KSTATE-001",
+      "name": "known",
+      "meaning": "The proposition is established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition.",
+      "mayAuthorizePremise": true
+    },
+    {
+      "id": "KSTATE-002",
+      "name": "estimated",
+      "meaning": "The proposition is supported by a declared derivation or model with explicit uncertainty and operating-envelope limits.",
+      "mayAuthorizePremise": true
+    },
+    {
+      "id": "KSTATE-003",
+      "name": "unknown",
+      "meaning": "The authorized evidence acquired so far does not establish the proposition.",
+      "mayAuthorizePremise": false
+    },
+    {
+      "id": "KSTATE-004",
+      "name": "conflicted",
+      "meaning": "Material admissible evidence supports incompatible propositions or generations.",
+      "mayAuthorizePremise": false
+    },
+    {
+      "id": "KSTATE-005",
+      "name": "stale",
+      "meaning": "The proposition was valid only at an older anchor or generation and has not been revalidated.",
+      "mayAuthorizePremise": false
+    },
+    {
+      "id": "KSTATE-006",
+      "name": "not_observable",
+      "meaning": "The declared sensor/authorization/model domain could not have established the proposition for the requested interval.",
+      "mayAuthorizePremise": false
+    },
+    {
+      "id": "KSTATE-007",
+      "name": "redacted",
+      "meaning": "The proposition or its evidence exists but is intentionally withheld by the current privacy/capability projection.",
+      "mayAuthorizePremise": false
+    },
+    {
+      "id": "KSTATE-008",
+      "name": "indeterminate",
+      "meaning": "A consequential external outcome may have occurred but is not yet proved or safely negated.",
+      "mayAuthorizePremise": false
+    },
+    {
+      "id": "KSTATE-009",
+      "name": "not_applicable",
+      "meaning": "The proposition has no meaning for the named object, scope, or lifecycle state.",
+      "mayAuthorizePremise": false
+    }
+  ],
+  "epistemicOutcomeSeparation": "knowledge state, provenance class, hypothesis disposition, access transform, and operation/effect outcome are orthogonal fields and may not be collapsed into one confidence value",
+  "objectComposition": {
+    "MissionContract": "contains one ObjectiveContract and immutable revisions of focus, assumptions, budgets, and terminal criteria",
+    "SituationCapsule": "contains a SituationFrame with WorldEnvelope, optional MeaningfulDelta, active investigations/plans/obligations, resource state, categorized control envelope, ContextPack, and SemanticCompressionReceipt",
+    "InvestigationCase": "contains or references a HypothesisWorkspace, discriminating probes, stop rules, findings, and residual uncertainty",
+    "ControlPlan": "contains a witnessed contingent DAG and prepared domain effects; it never confers authority by itself",
+    "ExperienceCapsule": "summarizes one or more ExecutionEpisodes and can produce advisory FeedbackProposal or LearningProposal objects",
+    "HandoffCapsule": "publishes the minimum sufficient mission/workspace/case/plan/obligation state as a root-last portable graph",
+    "AgentResponseEnvelope": "universal lifecycle, basis, effect boundary, recovery, proof, budget, continuation, affordance, and typed-payload wrapper for all AOP results",
+    "WorldEnvelope": "separates nominal, certified, possible, adversarial-residual, common-invariant, and unresolved views of the physical world",
+    "ContractBasis": "pins fss/1 plus every schema/ontology/operation/view/capability/error/cost registry and producer release used to interpret the object",
+    "AgentRequestEnvelope": "universal lifecycle, basis, budget, requested authority/privacy, taint, target, and typed-payload wrapper for all AOP calls"
+  },
+  "operationRefs": [
+    "AOP-001",
+    "AOP-002",
+    "AOP-003",
+    "AOP-004",
+    "AOP-005",
+    "AOP-006",
+    "AOP-007",
+    "AOP-008",
+    "AOP-009",
+    "AOP-010",
+    "AOP-011",
+    "AOP-012",
+    "AOP-013",
+    "AOP-014"
+  ],
+  "viewRefs": [
+    "AVIEW-001",
+    "AVIEW-002",
+    "AVIEW-003",
+    "AVIEW-004",
+    "AVIEW-005",
+    "AVIEW-006",
+    "AVIEW-007",
+    "AVIEW-008"
+  ],
+  "responseComposition": {
+    "primaryDriverPublication": "SituationCapsule",
+    "innerWorldProjection": "SituationFrame",
+    "boundedMaterialization": "ContextPack + SemanticCompressionReceipt",
+    "semanticPayload": "AgentCognitiveEnvelope",
+    "transportEnvelope": "AgentResponseEnvelope",
+    "rule": "SituationCapsule is the orient/resume driver publication; SituationFrame is its mission-relative world projection. ContextPack and SemanticCompressionReceipt describe bounded materialization. AgentCognitiveEnvelope carries generic decision semantics. AgentResponseEnvelope carries lifecycle, budget, retry, proof, and continuation without redefining the payload.",
+    "worldModel": "WorldEnvelope",
+    "controlProjection": "SituationCapsule.controlEnvelope",
+    "effectiveProjection": "AgentResponseEnvelope reports the server-applied view, authority, privacy projection, task state, and payload digest"
+  },
+  "worldEnvelopeDoctrine": {
+    "agentQuestion1": "What is established?",
+    "agentQuestion2": "What materially different worlds remain possible, especially high-consequence adversarial residuals?",
+    "agentQuestion3": "Which actions are robust across those worlds, which are conditional, and which observation most cheaply collapses uncertainty?",
+    "protectedResidualRule": "a high-consequence world compatible with a not-observable or conflicted domain remains visible until a named witness rules it out",
+    "effectRule": "high-consequence effects are robust across the protected envelope or require explicit branch assumptions, approval, and discriminating evidence"
+  },
+  "requestResponseRule": "Every AOP operation accepts AgentRequestEnvelope and returns AgentResponseEnvelope. The server intersects requested authority/privacy/view with current policy and reports the effective projection explicitly. Operation-specific payload schemas and retry classes are declared only in architecture/agent_operations.json.",
+  "requestComposition": {
+    "contractBasis": "ContractBasis",
+    "transportEnvelope": "AgentRequestEnvelope",
+    "typedPayload": "operation-registry requestPayloadSchema",
+    "authorityRule": "requested capabilities/privacy/view are upper bounds only; the server computes and returns the effective intersection",
+    "rule": "No CLI, MCP, Rust API, TUI, report, or future UI may invent a second request lifecycle or interpret free-form prose as a commit-capable payload."
+  }
+}

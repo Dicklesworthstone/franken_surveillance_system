@@ -7,10 +7,11 @@
 This file is the public claim boundary. Source presence, a schema, a type, a CLI command, a passing
 unit test, or a successful one-off device experiment is not aggregate support.
 
-The current constitutional inventory contains **82 unique hard invariants, 38 admitted-or-proposed
-Franken mechanism imports, 27 registered graph algorithms, 10 publication primitives, 14 local
-qualification lanes, and 22 versioned interchange schemas**. Those numbers describe design
-coverage and machine cross-checking, not operational readiness.
+The current constitutional inventory contains **116 unique hard invariants, 47 admitted-or-proposed
+Franken mechanism imports, 27 registered graph algorithms, 13 publication primitives, 11 agent
+abstraction layers, 14 public agent operations, 8 registered agent views, 15 local qualification
+lanes, and 49 JSON Schema files**. Those numbers describe design coverage and machine
+cross-checking, not operational readiness.
 
 ## Dimension matrix
 
@@ -39,7 +40,13 @@ coverage and machine cross-checking, not operational readiness.
 | Certified graph algorithms/complexity witnesses | specified in depth | registry only | no | no | not implemented |
 | Search/memory/graph projections | specified in depth | no | no | no | not implemented |
 | Local DSR qualification/release custody | specified in depth | policy scripts only | partial | no native release receipt | not qualified |
-| MCP/agent surface | specified | no | no | no | not implemented |
+| Agent semantic protocol, operation/view registries, and epistemic types | specified in depth | machine registries + schemas | no | policy cross-check only | architecture artifacts present; not implemented |
+| ContractBasis and universal request/response envelopes | specified in depth | schemas + registry cross-checks | no | policy cross-check only | architecture artifacts present; not implemented |
+| SituationCapsule/Frame, WorldEnvelope, context packs, and semantic compression | specified in depth | schemas only | no | no | not implemented |
+| Evidence–possibility–control and robust/conditional action classification | specified in depth | schemas + decision/test/SLO registries | no | no | not implemented |
+| Investigations, hypotheses, VOI, affordances, and contingent control plans | specified in depth | schemas + decision registries | no | no | not implemented |
+| Multi-agent work claims/findings, handoff/resume, and accretive learning | specified in depth | schemas only | no | no | not implemented |
+| Rust API/CLI/MCP/TUI/report presentation | specified | no | no | no | not implemented |
 | Human operations UI | conceptual | no | no | no | not implemented |
 
 ## Why the skeleton exists
@@ -65,12 +72,22 @@ roots, configuration, seeds, raw measurements, failures, and reproduction comman
 
 ## Known qualification gap in this generated snapshot
 
-The repository policy validator passed in the artifact environment over **34 JSON files, 8 TOML
-files, 814 unique stable identifiers, 82 invariants, 38 mechanism imports, 27 graph algorithms, 10
-publication primitives, and 14 local qualification lanes**. All 22 Draft 2020-12 schemas passed
+The repository policy validator passed in the artifact environment over **66 JSON files, 8 TOML
+files, 1,076 unique stable identifiers, 116 invariants, 47 mechanism imports, 27 graph algorithms,
+13 publication primitives, 11 agent abstraction layers, 14 public agent operations, 8 registered
+agent views, and 15 local qualification lanes**. All 49 JSON Schema files passed Draft 2020-12
 meta-schema validation, all internal schema references resolved, all repository Markdown links
-resolved, the five root constitutional documents matched their `docs/` mirrors byte-for-byte, and
-the static dependency audit reported no policy violations, and the deterministic release-artifact custody test reproduced byte-identical Linux and Windows packages while verifying the single common-asset authority split.
+resolved, the 199-entry repository integrity manifest matched every included file, the eight root
+constitutional documents matched their `docs/` mirrors byte-for-byte, the
+static dependency audit reported no policy violations, and the deterministic release-artifact
+custody test reproduced byte-identical Linux and Windows packages while verifying the single
+common-asset authority split.
+
+Those checks establish internal architectural consistency only. They do not demonstrate that an
+agent can yet orient, investigate, choose an affordance, prepare or commit a plan, reconcile an
+indeterminate effect, hand work to another agent, or improve from an ExperienceCapsule.
+`QL-AGENT-001` and `GATE-115` remain entirely unearned until executable task-level reference,
+fault, compression, capability, handoff, multi-agent, and accretion evidence exists.
 
 A Rust toolchain was not available in that environment, so `cargo metadata`, `cargo fmt`, `cargo
 check`, Clippy, and `cargo test` could not be run there. The code is intentionally dependency-free

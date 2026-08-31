@@ -1,0 +1,386 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/experience_capsule.v1.json",
+  "title": "Experience Capsule v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "experienceId",
+    "missionId",
+    "deploymentScope",
+    "basisAnchor",
+    "situationSignature",
+    "objective",
+    "initialEpistemicMap",
+    "operations",
+    "outcome",
+    "predictiveSignals",
+    "misleadingSignals",
+    "failedAssumptions",
+    "cost",
+    "applicability",
+    "evidenceStrength",
+    "confidence",
+    "decayHalfLifeDays",
+    "privacyClass",
+    "createdAtNs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.experience_capsule.v1"
+    },
+    "experienceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "missionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "deploymentScope": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "basisAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "situationSignature": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "initialEpistemicMap": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "statementId",
+          "text",
+          "epistemicState",
+          "basis"
+        ],
+        "properties": {
+          "statementId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "epistemicState": {
+            "enum": [
+              "known",
+              "estimated",
+              "unknown",
+              "conflicted",
+              "stale",
+              "not_observable",
+              "redacted",
+              "indeterminate",
+              "not_applicable"
+            ]
+          },
+          "basis": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "contradictions": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "validUntilNs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "operations": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "outcome": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "adjudicationId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "predictiveSignals": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "misleadingSignals": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "redundantProbes": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "missingEvidence": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "failedAssumptions": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "cheaperCounterfactual": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 8192
+    },
+    "candidateTemplates": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "kind",
+          "content"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "query",
+              "investigation",
+              "plan",
+              "runbook",
+              "routing",
+              "hard_negative",
+              "policy_proposal"
+            ]
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          }
+        }
+      }
+    },
+    "generations": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMilliJoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds"
+      ],
+      "properties": {
+        "latencyMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "modelCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpuMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceleratorMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "energyMilliJoules": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "networkBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "storageOperations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "privacyExposure": {
+          "type": "number",
+          "minimum": 0
+        },
+        "operatorAttentionSeconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "applicability": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "evidenceStrength": {
+      "enum": [
+        "single_episode",
+        "corroborated",
+        "held_out_validated",
+        "proven"
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "decayHalfLifeDays": {
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "harmfulCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "helpfulCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "revivalPredicates": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "privacyClass": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "createdAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

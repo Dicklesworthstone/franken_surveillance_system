@@ -239,6 +239,15 @@ and release gate:
 - direct camera/model/archive credentials in a third-party library that the capability layer cannot
   confine.
 
+### 3.1 Agent ergonomics is not a dependency exception
+
+A coherent agent interface does not justify importing a general agent framework, orchestration
+framework, browser/server stack, prompt-template runtime, vector database, policy engine, workflow
+engine, or alternate task system. The public `fss/1` operation/view/schema registries and the
+agent-cognition crates own those semantics directly over Asupersync and admitted Franken
+substrates. Natural-language compilation is a bounded typed transform; it is not permission to
+execute arbitrary tools or dynamically acquire plugins.
+
 ## 4. Dependency admission record
 
 Every admitted package or executable has a record containing:

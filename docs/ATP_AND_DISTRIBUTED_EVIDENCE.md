@@ -145,12 +145,47 @@ Contains source snapshot identity, sibling closure, toolchain, configs, model/ad
 seeds, fault schedule, inputs, outputs, logs, measurements, negative evidence, and signatures. These
 bundles are first-class ATP objects and can be repaired/audited like other evidence.
 
+### 2.6 Agent workspace and handoff graph
+
+A durable agent workspace is published as immutable revisions. A portable `HandoffCapsule` root
+may reference the exact mission/objective revision, session/workspace snapshot, `SituationCapsule`,
+its nested `SituationFrame` and `WorldEnvelope`, active investigation and hypothesis revisions,
+findings, work claims, control-plan roots, obligation/effect receipts, `ContractBasis`, budget and
+authority projections, aliases, invalidations, continuations, and currently valid affordances.
+
+The root is published only after every required child verifies. Resume never treats custody of the
+handoff graph as live authority: it rebases the capsule against current policy, privacy, model,
+calibration, anchor, lease, and capability generations and emits stale/invalidated state explicitly.
+ATP can move the immutable continuity graph; it cannot resume or commit an effect by itself.
+
+The `WorldEnvelope` is transferred as a closed factorized graph: certified core claims and
+absences, material alternatives, protected adversarial residuals, common invariants, unresolved
+dimensions, coverage-boundary handles, collapse witnesses, and robust/conditional/unsafe action
+links are children of the envelope root. A receiving agent must be able to reconstruct the same
+envelope digest and protected frontier before accepting the handoff as semantically intact. ATP
+deduplication, delta transfer, repair, or compression may change physical representation but may
+not coalesce distinct decision-relevant worlds or drop a protected residual.
+
+### 2.7 Experience and learning graph
+
+An `ExperienceCapsule` graph links immutable execution episodes to their objective, initial
+epistemic map, selected probes/plans, source evidence and receipts, outcome/adjudication, complete
+resource ledger, failed assumptions, misleading signals, counterexamples, and any advisory
+feedback or learning proposals. The graph preserves original predictions rather than rewriting them
+after outcome.
+
+Experience and learning graphs are privacy-governed derived objects. They participate in retention,
+legal hold, export, graph-complete deletion, repair, and retrievability. Transfer or successful
+reconstruction never promotes a proposal into active model, policy, threshold, capability, identity,
+or retention state.
+
 ## 3. Manifest design
 
 The ATP manifest is versioned, canonical, self-describing, and rejects unknown critical fields.
 It names:
 
 - manifest/protocol generation;
+- semantic `ContractBasis` and producing operation/view registry digests for agent artifacts;
 - domain-separated object and root IDs;
 - canonical child ordering;
 - sizes, chunking policy, and content digests;

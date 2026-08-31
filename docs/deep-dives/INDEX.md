@@ -19,3 +19,18 @@ These documents are normative design inputs for `franken_surveillance_system`. T
 | Adjacent projects | [`ADJACENT_FRANKEN_PROJECTS.md`](ADJACENT_FRANKEN_PROJECTS.md) | UI, audio, OCR, diagrams, simulation candidates |
 
 The cross-project synthesis is [`../../FRANKENSTACK_DEEP_DIVE.md`](../../FRANKENSTACK_DEEP_DIVE.md). Machine-readable imports live in [`../../architecture/franken_imports.json`](../../architecture/franken_imports.json).
+
+## Agent-system synthesis
+
+The per-project mechanisms are composed into one driver-facing system by:
+
+- [`../../AGENT_COGNITION_AND_CONTROL.md`](../../AGENT_COGNITION_AND_CONTROL.md) — public
+  constitution, vocabulary, invariants, and `fss/1` semantic protocol;
+- [`../../AGENT_COGNITIVE_CONTROL_PLANE.md`](../../AGENT_COGNITIVE_CONTROL_PLANE.md) — internal
+  cognitive membrane, linked abstraction tower, evidence hydration, control loop, and crate owners;
+- [`../../AGENT_OPERATING_MODEL.md`](../../AGENT_OPERATING_MODEL.md) — driver workflow, semantic
+  views/zoom, natural-language query compilation, attention/affordances, multi-agent work, handoff,
+  and task-level evaluation.
+
+The machine source is [`../../architecture/agent_contracts.json`](../../architecture/agent_contracts.json),
+which references the specialized operation, view, abstraction, and operating-model registries.

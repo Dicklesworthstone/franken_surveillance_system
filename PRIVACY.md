@@ -152,3 +152,38 @@ Agents receive the minimum projection needed: event summaries, crops, tracks, or
 Raw streams, full geometry, persistent identity profiles, and exports require explicit capability.
 Untrusted text in camera metadata, OCR, audio transcript, or model output is data, not an
 instruction. Agent context packs redact secrets and minimize bystander content.
+
+## 13. Agent workspace, context, and handoff data
+
+`WorldEnvelope` alternatives and adversarial residuals may themselves reveal sensitive routines, blind spots, or inferred occupancy. They inherit the strictest privacy, retention, export, legal-hold, and deletion class of their supporting evidence and cannot be reconstructed for a less-authorized principal through counts, ranking, or omitted-world metadata.
+
+Agent-derived artifacts can be more privacy-sensitive than a single source frame because they
+aggregate identities, routines, locations, hypotheses, uncertainty, and operational conclusions.
+The following are privacy-governed derived data:
+
+- missions, objective contracts, session/workspace capsules, aliases, and cursors;
+- situation capsules/frames, knowledge cells, attention frontiers, and context packs;
+- investigation cases, hypotheses, predictions, findings, contradictions, and counterfactuals;
+- affordance frontiers, plans, work claims, obligations, episodes, feedback, and learning proposals;
+- explanations, semantic-compression receipts, experience capsules, and handoff capsules.
+
+Each object names the privacy generation and authorization projection under which it was produced.
+A later reader receives a newly projected/redacted view; prior broad authority is never inherited
+from the object's existence. Counts, graph topology, aliases, absence, ranking, omissions, and
+continuation tokens are treated as potential side channels.
+
+Context selection minimizes privacy exposure as an explicit budget dimension. The system prefers
+semantic cells and bounded redacted artifacts over raw media when they are decision-equivalent. It
+must not conceal the epistemic cost of masking or redaction: affected claims become `redacted`,
+`unknown`, or `not_observable` as appropriate rather than retaining unearned confidence.
+
+A handoff is published root-last only after child-by-child privacy, retention, legal-hold, and
+capability checks. It carries the minimum sufficient continuity state, an expiry, allowed recipient
+scope, and deletion-closure identity. Handoff, context, episode, and learning graphs participate in
+graph-complete export and deletion, including derived indexes, caches, repair symbols, replicas,
+journals, and stale continuations.
+
+Operational memory is advisory and applicability-scoped. It must not create cross-household or
+cross-property identity linkage, silently preserve deleted personal facts, or make a historical
+observation appear current. Harmful/privacy-violating transfer is part of the trauma-guard and
+`QL-AGENT-001` evaluation.

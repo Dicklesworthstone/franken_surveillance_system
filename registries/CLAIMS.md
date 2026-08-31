@@ -12,6 +12,9 @@ Machine source: `architecture/claims.json`.
 | `benchmark` | comparative performance | pinned same-workload oracle, exact versions, raw samples, variance, command |
 | `compatibility` | exact device/model/provider tuple works | tuple identity, fixture, conformance/soak/crash/security evidence |
 
+| `agent_task` | task-level agent correctness, calibration, safety, and efficiency | sealed task corpus, anchor-aligned transcripts, CognitiveFacet owner/anchor compatibility, WorldEnvelope/control classification, task/evidence/safety metrics, resource cost vector, failures/abstentions/interventions |
+| `agent_accretion` | improvement from retained handoff/experience/procedures across repeated tasks | repeated-task corpus, no-memory baseline, quality non-regression, resource-savings distribution, harmful-transfer/trauma-guard evidence |
+
 ## Forbidden claim promotions
 
 - schema/source presence → feature support;
@@ -26,3 +29,7 @@ Machine source: `architecture/claims.json`.
 - model-card benchmark → FSS security quality;
 - research-only checkpoint → production-eligible model;
 - mutable dashboard number → release evidence.
+- compact output → sufficient context without a semantic compression receipt and omission counterfactual;
+- recommendation score → authority to execute an effect;
+- memory or handoff claim → live canonical truth without revalidation;
+- fewer tool calls → greater agent efficiency without task quality, safety, and full resource cost;

@@ -81,6 +81,16 @@
       "id": "R16",
       "name": "release_custody",
       "question": "Did clean-source local target qualification, signing, publication, and download verification pass?"
+    },
+    {
+      "id": "R17",
+      "name": "agent_legibility",
+      "question": "Can a cold or resumed agent recover the mission, coherent situation, epistemic limits, obligations, resource state, and valid next affordances without hidden conversational state or subsystem reconstruction?"
+    },
+    {
+      "id": "R18",
+      "name": "agent_accretion",
+      "question": "Do evidence-linked handoff, feedback, experience, procedures, anti-patterns, and learning proposals improve repeated-task quality or cost without harmful transfer or silent policy mutation?"
     }
   ],
   "states": [

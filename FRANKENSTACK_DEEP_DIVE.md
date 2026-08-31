@@ -1279,7 +1279,141 @@ Each program has a safe baseline. Failure to improve performance or quality cann
 
 ---
 
-# 20. Final synthesis
+# 20. Agent cognitive operating-system synthesis
+
+The deepest consequence of the repository-by-repository study is that the agent surface must not
+be a final thin API pasted over finished subsystems. The agent operating layer is the place where
+the stack's guarantees become one usable cognitive instrument. Each sibling contributes a
+different necessary dimension:
+
+| Source | Agent-system inheritance | What becomes impossible |
+|---|---|---|
+| Asupersync | region-owned sessions, capability/budget context, durable work, cancellation drain, obligations, continuations | mission work living only for one request; orphan investigations; cancellation reported before cleanup/reconciliation |
+| FrankenSQLite | multi-version workspace/case/finding/plan revisions, witnesses, deterministic publication, time travel and rebase | mutable shared scratchpads, last-writer-wins agent state, silent stale handoff continuation |
+| FrankenFS | root-last context/handoff/experience publication, custody states, doctor/repair, deletion closure | half-published handoffs, context roots pointing at missing children, deleted evidence surviving in derived agent artifacts |
+| Frankensearch/Quill | progressive minimum-sufficient context, immutable generation, searchable delta, score/stop/absence receipts | raw world dumps as the default interface; silent recall gaps; context assembled from mixed generations |
+| Franken Markdown | exact spans, taint, one semantic source and deterministic robot/human documentation | prose/tool/schema drift; prompt text acquiring authority; examples diverging across CLI/MCP/reports |
+| FrankenGraphDB | one delta universe, branches, task/decision graphs, factorized explanation, capability-before-expansion | private speculation merged as truth; agent graphs leaking hidden neighbors/counts; combinatorial explanation materialization |
+| FrankenNetworkX | canonical choices, minimal evidence subgraphs, dominators/cuts/submodularity, complexity witnesses | hash-order recommendations; opaque evidence selection; unpriced graph reasoning |
+| FrankenTorch | typed frozen computation and receipt-bearing model execution | model prose or embeddings becoming unaudited cognition; mixed numeric/model generations inside one decision |
+| Dwarf Fortress MCP | semantic situation views, prepared plans, delayed completion, indeterminate outcomes, obligation cockpit | one-tool-per-command interfaces; dispatch ACK treated as physical success; screenshot-first world reconstruction |
+| FastMCP Rust | request-owned bounded presentation and transport-specific qualification | MCP handler semantics becoming architecture; unqualified cancellation/bidirectional claims; generic privileged escape hatches |
+| Eidetic Engine | resumable orientation, deterministic packs, evidence-linked memory, feedback provenance, decay/trauma guard | prior experience becoming current truth; silent autonomous memory rewrite; harmful procedural transfer persisting unchallenged |
+| DSR | task-level local qualification and root-last release evidence | an agent-facing API being declared usable because schemas compile or hosted CI is green |
+
+## 20.1 The synthetic abstraction tower
+
+The composition yields one tower, not parallel product areas:
+
+```text
+L0 runtime authority, identity, budgets, object custody
+  ↓
+L1 source evidence and continuity
+  ↓
+L2 canonical world facts and coverage at one EvidenceAnchor
+  ↓
+L3 derived beliefs: detections, tracks, events, graph/search results, uncertainty
+  ↓
+L4 SituationCapsule: SituationFrame + WorldEnvelope + delta + context proof + control envelope
+  ↓
+L5 InvestigationCase: competing hypotheses, contradictions, predictions, falsifiers, probes
+  ↓
+L6 Affordance frontier: valid read/wait/explain/repair/control options under hard clamps
+  ↓
+L7 ObjectiveContract + witnessed contingent ControlPlan
+  ↓
+L8 effects and obligations: prepare, commit, observe, verify/reconcile
+  ↓
+L9 ExecutionEpisode and outcome attribution
+  ↓
+L10 Experience/learning proposal and root-last handoff/resume
+```
+
+Every layer has a semantic owner, exact basis root, validity/invalidators, downward evidence handles,
+upward mission relevance, bounded resource cost, deterministic decision fingerprint, and failure
+mode. Higher layers may summarize lower layers but cannot redefine them. Lower layers cannot infer
+mission preference or effect authority.
+
+### 20.1.1 The evidence–possibility–control membrane
+
+The most important addition to the tower is the `WorldEnvelope` carried by every
+`SituationFrame`. A single ranked interpretation is insufficient in a safety system because the
+world that matters most may be the one that is merely still possible. The envelope therefore
+separates three linked projections:
+
+1. **Evidence envelope:** positively supported facts, certified absences, coverage boundaries,
+   continuity, provenance, and the exact assumptions under which those statements hold.
+2. **Possibility envelope:** material alternative and adversarial worlds that remain consistent
+   with the evidence, including low-probability/high-loss residuals protected from ordinary
+   ranking and compression.
+3. **Control envelope:** robust actions valid across the protected world set, conditional branches
+   whose validity is world-specific, information-gathering probes that collapse the frontier,
+   wait/watch choices, and actions that are blocked or unavailable.
+
+This is a belief-space control contract rather than a classifier leaderboard. A model result can
+add or reweight a possible world; graph reasoning can expose shared failure domains; search can
+retrieve analogous evidence; memory can suggest a prior case. None of those may erase a protected
+world without an evidence-linked collapse witness. Every `ControlPlan` binds the exact
+`WorldEnvelope` digest and records the worlds in which each step is valid or unsafe. Revalidation
+must fail closed when the envelope expands, splits, loses certified coverage, or changes in a way
+that invalidates the plan's robustness class.
+
+## 20.2 The universal driver loop
+
+```text
+session.open/resume
+  → session.orient
+  → session.follow/query/investigate/explain
+  → plan
+  → commit
+  → wait/cancel
+  → verify/reconcile
+  → feedback/learning proposal
+  → handoff
+```
+
+This small grammar is more powerful than a large command catalog because each operation receives
+and returns the same session, anchor, epistemic, evidence-handle, budget, obligation, continuation,
+and error/recovery vocabulary. Domain-specific camera, graph, model, archive, calibration, privacy,
+and effect behavior is typed data inside the grammar rather than a new cognitive universe.
+
+Every call is carried by one `AgentRequestEnvelope` and one `AgentResponseEnvelope`. The request
+pins a `ContractBasis` containing the `fss/1` semantic protocol, schema catalog, ontology,
+operation/view/capability/error/cost registry digests, producer release, and accepted nightly.
+It also binds principal, session, mission, input anchor, workspace revision, view, target handles,
+typed operation payload, budgets, requested capabilities/privacy transforms, idempotency,
+continuation, hydration/compression policy, and taint. The operation registry is the sole mapping
+from a public verb to its request and response payload schemas. This prevents CLI, MCP, TUI, Rust
+API, and reports from acquiring rival hidden semantics and makes transcript equivalence a
+mechanical release property rather than a documentation promise.
+
+## 20.3 Cognitive economy as a system property
+
+The resource objective is not minimum tokens in isolation. It is maximum evidence-grounded decision
+quality per complete cost vector:
+
+```text
+(tokens, bytes, rows, graph operations, model work, latency, energy, network, storage,
+ privacy exposure, operator burden, effect risk)
+```
+
+A compact result is valid only with a `SemanticCompressionReceipt`; an empty result is valid only
+with coverage/completeness; a recommendation is valid only as a hard-clamped decomposed affordance;
+a handoff is valid only if a new agent can rebase it and recover critical state without hidden
+conversation. `QL-AGENT-001` measures all of these at task level.
+
+## 20.4 Accretion without epistemic corruption
+
+Resolved work produces immutable episodes and candidate lessons, not silent policy mutation. A
+learning proposal names applicability, evidence, counterexamples, harmful outcomes, expiry,
+validation plan, and promotion authority. Memory remains advisory and must be revalidated against
+live anchors. The trauma guard can demote, retire, or invert harmful procedures into anti-patterns.
+This turns past work into cheaper future decisions without turning accumulated confidence into
+ambient authority.
+
+---
+
+# 21. Final synthesis
 
 FSS should not be understood as a Rust NVR, a camera integration hub, a drone mapper, a graph database, or a multimodal agent. It is a **proof-carrying evidence fabric for a partially observed physical world**.
 

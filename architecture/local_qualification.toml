@@ -63,6 +63,11 @@ name = "threat"
 required_for = ["release-with-threat-claims"]
 
 [[lane]]
+id = "QL-AGENT-001"
+name = "agent-cognitive-control"
+required_for = ["release-with-agent-control-claims"]
+
+[[lane]]
 id = "QL-PRIVACY-001"
 name = "privacy"
 required_for = ["release"]

@@ -1,0 +1,469 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_cognitive_envelope.v1.json",
+  "title": "Agent Cognitive Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "requestId",
+    "responseId",
+    "traceId",
+    "operationId",
+    "semanticVerb",
+    "viewId",
+    "answerClass",
+    "basisAnchor",
+    "epistemic",
+    "coverage",
+    "budget",
+    "evidenceHandles",
+    "nextActions",
+    "continuity",
+    "decisionDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_cognitive_envelope.v1"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "responseId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "traceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^AOP-[0-9]{3}$"
+    },
+    "sessionId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "sessionRevision": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "objectiveId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
+    "semanticVerb": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_.-]{0,63}$"
+    },
+    "viewId": {
+      "type": "string",
+      "pattern": "^AVIEW-[0-9]{3}$"
+    },
+    "answerClass": {
+      "enum": [
+        "direct_fact",
+        "bounded_summary",
+        "hypothesis_set",
+        "recommendation",
+        "plan",
+        "effect_status",
+        "obligation_status",
+        "learning_proposal",
+        "refusal",
+        "indeterminate"
+      ]
+    },
+    "basisAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "resultAnchor": {
+      "anyOf": [
+        {
+          "$ref": "evidence_anchor.v1.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "derivedGenerationRoots": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+      }
+    },
+    "epistemic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "propositions",
+        "assumptions",
+        "invalidators"
+      ],
+      "properties": {
+        "propositions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "statement",
+              "state",
+              "provenance",
+              "evidence"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              "statement": {
+                "type": "string",
+                "maxLength": 16384
+              },
+              "state": {
+                "enum": [
+                  "known",
+                  "estimated",
+                  "unknown",
+                  "conflicted",
+                  "stale",
+                  "not_observable",
+                  "redacted",
+                  "indeterminate",
+                  "not_applicable"
+                ]
+              },
+              "confidence": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "maximum": 1
+              },
+              "evidence": {
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "contradictions": {
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "invalidators": {
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "provenance": {
+                "enum": [
+                  "observed",
+                  "derived",
+                  "predicted",
+                  "remembered",
+                  "operator_asserted",
+                  "vendor_claimed",
+                  "policy"
+                ]
+              }
+            }
+          }
+        },
+        "assumptions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "invalidators": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authorizedDomain",
+        "observedDomain",
+        "omittedCount",
+        "omissionReasons",
+        "stopReason"
+      ],
+      "properties": {
+        "authorizedDomain": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "observedDomain": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "notObservableDomain": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "omittedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omissionReasons": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "stopReason": {
+          "type": "string",
+          "maxLength": 2048
+        }
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested",
+        "consumed",
+        "remaining",
+        "degradedDimensions"
+      ],
+      "properties": {
+        "requested": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "consumed": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "remaining": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "number",
+            "minimum": 0
+          }
+        },
+        "degradedDimensions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "marginalWorkDeclined": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "evidenceHandles": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "handleId",
+          "objectDigest",
+          "kind",
+          "hydration",
+          "allowedHydration",
+          "privacyClass",
+          "availability"
+        ],
+        "properties": {
+          "handleId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "objectDigest": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+          },
+          "kind": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "hydration": {
+            "enum": [
+              "H0",
+              "H1",
+              "H2",
+              "H3",
+              "H4"
+            ]
+          },
+          "allowedHydration": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "enum": [
+                "H0",
+                "H1",
+                "H2",
+                "H3",
+                "H4"
+              ]
+            }
+          },
+          "privacyClass": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "availability": {
+            "enum": [
+              "available",
+              "staged",
+              "remote",
+              "expired",
+              "deleted",
+              "corrupt",
+              "forbidden"
+            ]
+          },
+          "estimatedCost": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "requiredCapability": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "nextActions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "agent_affordance.v1.json"
+      }
+    },
+    "continuity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cursor",
+        "reanchorTriggers",
+        "unresolvedObligations"
+      ],
+      "properties": {
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 4096
+        },
+        "reanchorTriggers": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "sessionCapsuleDigest": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "unresolvedObligations": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "decisionDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

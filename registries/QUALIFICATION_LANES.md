@@ -13,6 +13,7 @@ Machine source: `architecture/release_qualification.json`. Full doctrine: [`docs
 | `QL-MODEL-001` | `model` | `model+hardware` | Artifact identity, operator coverage, deterministic receipt, OOM/cancel, quality, and shadow gates | `local` |
 | `QL-GEOMETRY-001` | `geometry` | `site+camera tuple` | Held-out reprojection, covariance, drift, coverage, mask, and rollback tests | `local` |
 | `QL-THREAT-001` | `threat` | `sealed corpus` | Event-level hard-negative/threat AUPRC, fixed-alert-budget recall, calibration, and miss ledger | `local` |
+| `QL-AGENT-001` | `agent_cognitive_control` | `sealed task and handoff corpus` | CognitiveFacet owner/anchor compatibility, cold/warm orientation, epistemic fidelity, WorldEnvelope retention and robust-control classification, context sufficiency, VOI efficiency, contingent planning, effect closure, handoff, and learning-accretion receipts | `local` |
 | `QL-PRIVACY-001` | `privacy` | `deployment profile` | Mask-before-egress, retention, export, deletion closure, and capability noninterference | `local` |
 | `QL-LINUX-001` | `native_release` | `linux-x86_64` | Clean snapshot native build, tests, package, SBOM, signatures, smoke, and receipt | `local` |
 | `QL-MACOS-001` | `native_release` | `darwin-arm64` | Clean snapshot native build, tests, package, SBOM, signatures, smoke, and receipt | `local` |

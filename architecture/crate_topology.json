@@ -7,7 +7,8 @@
     "production cooperation uses typed Rust traits, Asupersync subjects, or ATP object graphs; foreign executables are laboratory oracles only",
     "no crate may recover ambient credentials, clocks, randomness, filesystem roots, network authority, or runtime authority",
     "every FSS crate and target forbids unsafe code without an exception path",
-    "a listed planned crate is architectural ownership, not an implementation claim"
+    "a listed planned crate is architectural ownership, not an implementation claim",
+    "agent cognitive-control crates compose lower semantic owners through typed anchor-pinned interfaces and never become authority or effect owners"
   ],
   "layers": [
     {
@@ -388,6 +389,61 @@
           "name": "fss-explain",
           "unsafe": "forbid",
           "status": "planned"
+        },
+        {
+          "name": "fss-agent-core",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-attention",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-episode",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-learning",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-knowledge",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-situation",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-context-pack",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-investigation",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-affordance",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-query-plan",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-coordination",
+          "unsafe": "forbid",
+          "status": "planned"
         }
       ]
     },
@@ -449,6 +505,21 @@
           "name": "fss-doctor",
           "unsafe": "forbid",
           "status": "planned"
+        },
+        {
+          "name": "fss-agent-session",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-agent-plan",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-handoff",
+          "unsafe": "forbid",
+          "status": "planned"
         }
       ]
     },
@@ -483,6 +554,11 @@
         },
         {
           "name": "fss-release",
+          "unsafe": "forbid",
+          "status": "planned"
+        },
+        {
+          "name": "fss-agent-eval",
           "unsafe": "forbid",
           "status": "planned"
         }

@@ -192,6 +192,49 @@ and runbooks.
 **Edges:** supported-by, contradicted-by, applies-to, supersedes, harmed, helped, and revived-by.
 **Uses:** retrieval and attention only. Memory cannot mutate authority, policy, or identity.
 
+### 2.11 Agent mission and cognitive-control graph `G_agent`
+
+**Nodes:** mission and objective revisions, agent sessions/workspaces, `SituationCapsule`s and
+`SituationFrame`s, `WorldEnvelope`s and possible-world revisions, knowledge cells, investigation
+cases, hypotheses, probes, evidence handles, affordances, control plans, obligations, findings,
+work claims, execution episodes, learning proposals, and handoff roots.
+**Edges:** based-on, answers, supports, contradicts, invalidates, discriminates, enables, blocks,
+compatible-with-world, unsafe-in-world, collapses-world, invariant-across-worlds, prepares,
+commits, verifies, owns, claims, delegates, supersedes, learned-from, and resumes-from.
+**Uses:** minimal decision/explanation subgraphs, decision-impact deltas, context/evidence set cover,
+plan critical path, duplicate-work prevention, handoff closure, obligation visibility, and
+evidence-linked accretion.
+
+`G_agent` is a capability-projected derived graph. It does not become a new truth store. A work
+claim is not effect authority, a remembered episode is not current evidence, and a plan edge does
+not imply that its effect occurred. Every projection names the mission/workspace revision and the
+authority/cognition high-water marks it consumed.
+
+### 2.12 Possible-world and robust-control factor graph `G_world`
+
+`G_world` is a factorized projection of one `WorldEnvelope`, not an enumeration of every complete
+physical world. Nodes represent certified core claims, certified absences, unresolved dimensions,
+material alternatives, protected adversarial residuals, common invariants, affordances, plan
+steps, probes, and coverage boundaries. Factors encode mutual compatibility, contradiction,
+shared failure domains, required assumptions, observation likelihoods, and action validity.
+
+**Uses:**
+
+- preserve multiple materially distinct explanations without cloning the whole world graph;
+- calculate the intersection of actions valid across all protected worlds;
+- identify branch predicates for conditional plans;
+- find the smallest evidence/probe set that separates decision-relevant worlds;
+- expose claims and invariants shared by every surviving world;
+- prove that ranking, summarization, or capability projection did not silently remove a
+  high-loss residual;
+- revalidate a plan when the possible-world frontier expands, splits, or changes support.
+
+The reference representation is a canonical constraint/factor graph with explicit stable ordering.
+Optimized forms may use decision diagrams, antichains, bitsets, factorized relations, or
+incremental deltas only after differential equivalence against the reference. A possible world is
+never removed merely because its posterior or rank falls below a convenience threshold. Removal
+requires a named evidence-linked collapse witness, scope rule, or policy-authorized stop rule.
+
 ## 3. Algorithm execution contract
 
 Every registered graph algorithm declares:
@@ -453,7 +496,7 @@ VF2/VF2++-class methods and canonical fingerprints can compare:
 - attack/failure motifs in red-team corpora.
 
 Because subgraph isomorphism can explode exponentially, every call has size, degree, label, and time
-budgets. Failure to finish is `Unknown`, not “no match.”
+budgets. Failure to finish is `unknown`, not “no match.”
 
 ### 5.16 k-core, k-truss, and robust support
 
@@ -540,6 +583,30 @@ The result records:
 - evidence that would most reduce ambiguity.
 
 It never emits a permanent biometric identity by default.
+
+## 6.1 Belief-space control and discriminating observation
+
+For a protected `WorldEnvelope` with surviving worlds `W` and candidate affordances `A`, FSS
+classifies each affordance by its validity set rather than by a single expected score:
+
+```text
+robust(a)       iff valid(a, w) for every protected w ∈ W
+conditional(a) iff valid(a, w) for a nonempty proper subset of W and the branch predicate is observable
+unsafe(a)      iff any protected w makes the action violate a hard loss/safety/privacy bound
+probe(a)       iff it acquires evidence expected to partition W and reduce decision loss
+```
+
+The robust frontier is an intersection problem over capability-projected, time-bounded graph
+predicates. Conditional plans use a decision DAG whose branches name exact observable predicates
+and whose leaves carry their own valid/unsafe world sets. Probe selection combines set cover,
+submodular gain, expected decision loss, source independence, latency, and resource cost. A probe
+that repeatedly samples the same shared failure domain does not receive credit as independent
+corroboration.
+
+Every result carries a compact witness naming the `WorldEnvelope` digest, protected world IDs or
+factor clauses, common invariants, invalidating observations, tie-break policy, and exactness class.
+Approximation may conservatively retain extra worlds or reject an otherwise safe action; it may
+not delete a real protected world or upgrade a conditional action to robust.
 
 ## 7. Sensor-mesh resilience analysis
 

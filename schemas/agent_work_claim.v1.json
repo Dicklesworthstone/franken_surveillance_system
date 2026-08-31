@@ -1,0 +1,112 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_work_claim.v1.json",
+  "title": "Agent Work Claim v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "claimId",
+    "caseId",
+    "ownerSessionId",
+    "scope",
+    "basisAnchor",
+    "leaseIncarnation",
+    "createdAtNs",
+    "expiresAtNs",
+    "state",
+    "dependencies",
+    "progress",
+    "resultRoot",
+    "confersEffectAuthority"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_work_claim.v1"
+    },
+    "claimId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "caseId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "ownerSessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "basisAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "leaseIncarnation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "createdAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expiresAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "state": {
+      "enum": [
+        "offered",
+        "claimed",
+        "active",
+        "blocked",
+        "completed",
+        "released",
+        "expired",
+        "superseded"
+      ]
+    },
+    "dependencies": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "progress": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "resultRoot": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "conflicts": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "confersEffectAuthority": {
+      "const": false
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

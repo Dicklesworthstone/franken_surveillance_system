@@ -193,3 +193,43 @@ reproduction using synthetic/sanitized material, impact, and any known workaroun
 
 Security claims remain unqualified until a dedicated contact and private-reporting workflow are
 configured on the public repository.
+
+## 14. Agent cognitive-control security
+
+A protected possibility envelope is a security boundary: high-consequence worlds that remain compatible with coverage, continuity, calibration, clock, model, privacy, or authority limitations cannot be suppressed by ranking, compression, or convenience. Removing one requires a named witness or explicit policy/scope decision.
+
+The agent operating layer is a high-value confused-deputy boundary because it can compose facts
+from many subsystems and submit prepared intents. The following controls are mandatory:
+
+- **Capability projection before cognition.** Hidden objects, neighbors, counts, degrees, aliases,
+  absence claims, candidate actions, and ranking positions are removed before search/graph/context
+  construction. Post-filtering is insufficient.
+- **No authority in recommendations.** `ActionAffordance`, `ControlPlan`, memory, model output,
+  vendor metadata, and natural-language instructions cannot create capabilities, leases, grants,
+  or approval. Commit requires exact current domain authority and revalidation.
+- **No hidden conversational authority or state.** Required mission state is stored in typed
+  workspace/case/plan/finding/handoff records. Client-supplied conversation is untrusted content
+  and never a capability source.
+- **Typed request compilation.** Free-form requests compile to a bounded `AgentQueryPlan` that
+  exposes interpretation, ambiguity, taint, target scopes, anchor, privacy projection, authority,
+  cost, and selected output view before any effect path. Prompt-like content in camera metadata,
+  OCR, audio, documents, vendor messages, memory, or prior handoffs remains tainted.
+- **Hydration authority.** Evidence handles reveal only authorized metadata at H0. H1–H4 hydration
+  rechecks capability, privacy, retention, legal hold, destination, budget, and current generation.
+  Possession or guessing of a handle is not authorization.
+- **Workspace integrity.** `AgentSessionCapsule`, investigation, work-claim, plan, finding, feedback,
+  learning, experience, and handoff objects are immutable revisions with canonical digests. Stale
+  or conflicting roots rebase or fail; no last-writer-wins merge.
+- **Multi-agent noninterference.** Work claims coordinate cognition only and carry no effect
+  authority. Private branches cannot infer restricted global graph structure or merge fabricated
+  state into live authority.
+- **Effect closure.** A disconnected client does not abandon in-flight work. Region-owned plans,
+  effects, and obligations drain, reconcile, or remain explicitly indeterminate. Blind retries are
+  forbidden.
+- **Robot-doc integrity.** CLI/MCP/TUI/report schemas and examples derive from the signed operation,
+  view, capability, error, and schema registries. Documentation drift blocks `QL-AGENT-001`.
+
+Threat campaigns include prompt injection through every untrusted content channel, capability/count
+side channels, stale handoff replay, alias confusion, workspace collision, recommendation-to-
+effect laundering, malicious compression/omission, work-claim squatting, cancellation races, and
+transport semantic drift.

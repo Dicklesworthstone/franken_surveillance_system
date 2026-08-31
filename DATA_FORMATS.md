@@ -307,3 +307,118 @@ Deletion is an effect over a reachability graph. A completion proof covers:
 Where immediate physical deletion is impossible, the record states cryptographic erasure,
 provider retention expiry, legal hold, or a blocked reason and next obligation. “Database row
 deleted” is not closure.
+
+## 21. Agent semantic object graph
+
+The agent operating layer publishes a linked family rather than one untyped context blob. Every
+object carries a schema identity, global durable identity, immutable revision/root, exact evidence
+anchor or basis roots, capability/privacy projection, validity and invalidators, and a canonical
+digest under the durable-format constitution. JSON Schema defines interchange shape; canonical
+durable bytes are owned by first-party encoders and never by serde field order.
+
+Before durable object publication, every lower semantic owner contributes through the internal
+`CognitiveFacet` ABI. A facet is a typed in-process projection with owner/facet identity,
+anchor/high-water, scope/validity, knowledge cells, coverage/health, contradictions/unknowns,
+evidence handles/prices, obligations/effect uncertainty, resource state/cost, affordance seeds,
+invalidators/degradation, and proof/continuation. It is not a free-form JSON extension point and it
+carries no effect authority. Debug/qualification captures may serialize a versioned facet receipt,
+but the durable public objects below remain the interoperability contract.
+
+```text
+AgentMission / ObjectiveContract
+        ↓
+AgentSession
+        ↓ snapshots
+AgentSessionCapsule ───────────────┐
+        │                          │
+        ├─ SituationCapsule        │
+        │    ├─ SituationFrame     │
+        │    │    └─ WorldEnvelope │
+        │    ├─ MeaningfulDelta    │
+        │    ├─ ContextPack        │
+        │    ├─ CompressionReceipt │
+        │    ├─ controlEnvelope    │
+        │    └─ Affordance[]       │
+        ├─ InvestigationState      │
+        │    ├─ HypothesisWorkspace
+        │    └─ AgentFinding[]     │
+        ├─ ControlPlan             │
+        ├─ ExecutionEpisode[]      │
+        └─ WorkClaim[]             │
+                                   ↓ root-last
+                             HandoffCapsule
+```
+
+### 21.1 Epistemic cells
+
+`AgentKnowledgeCell` is the atomic decision-bearing proposition. It stores separately:
+
+- subject/predicate/value or bounded assertion payload;
+- knowledge state: `known`, `estimated`, `unknown`, `conflicted`, `stale`, `not_observable`,
+  `redacted`, `indeterminate`, or `not_applicable`;
+- provenance class: `observed`, `derived`, `predicted`, `remembered`, `operator_asserted`,
+  `vendor_claimed`, or `policy`;
+- evidence handles and derivation/method receipts;
+- uncertainty/calibration, coverage domain, authorization projection, validity interval,
+  assumptions, contradictions, and decision relevance.
+
+Hypothesis disposition is stored on the hypothesis object, not smuggled into the cell's knowledge
+state. Operation/effect outcome is stored on operation/episode objects. Access transforms such as
+redaction are explicit. This prevents one confidence scalar from laundering distinct semantics.
+
+### 21.2 `SituationFrame` versus `SituationCapsule`
+
+- `SituationFrame` is the minimum sufficient mission-relative world model. It contains selected
+  knowledge cells, critical entities/events/coverage, contradictions, unknowns, risks, active
+  obligations, a `WorldEnvelope`, and the selection witness.
+- `WorldEnvelope` separates the nominal estimate, certified core and absences, material alternative
+  worlds, protected adversarial residuals, common invariants, unresolved dimensions, discriminating
+  affordances, and its own possibility-selection witness.
+- `SituationCapsule` is the primary driver publication. It contains the frame plus meaningful
+  delta, active cases/plans/obligations, resource pressure, categorized control envelope, affordance frontier, `ContextPack`,
+  `SemanticCompressionReceipt`, validity/continuation, and decision fingerprint.
+- `AgentSessionCapsule` is an immutable serialized `AgentWorkspace` revision. It preserves mission
+  focus, cases, cursors, aliases, plans, work claims, budgets, authority, and handoff roots.
+
+Those identities are not aliases for one another.
+
+### 21.3 Context and compression
+
+`SemanticContextPack` is a budget-shaped ordered set of typed references/projections.
+`SemanticCompressionReceipt` names candidate universe, protected classes, selected and omitted
+classes, transformations, completeness, stop reason, output digest, and expansion handles with
+expected cost. Omission of any item that can change a consequential action is a contract failure.
+
+### 21.4 Investigations and control
+
+`InvestigationState` and `AgentHypothesisWorkspace` preserve competing hypotheses, support,
+contradiction, predictions, falsifiers, shared failure domains, candidate probes, value-of-
+information estimates, deadline, stop rules, and residual uncertainty. `ControlPlan` is an
+immutable witnessed contingent DAG. It may reference prepared domain effects but never contains
+ambient authority; commit still requires current capabilities, leases, and revalidation.
+
+### 21.5 Episodes, feedback, learning, and handoff
+
+`AgentExecutionEpisode` binds the original prediction/plan to actual receipts, terminal proof,
+resource use, side effects, residual uncertainty, and attribution. `ExperienceCapsule` groups
+episodes into a reusable but advisory pattern. `AgentFeedbackProposal` and
+`AgentLearningProposal` are immutable evidence-linked proposals; activation is a separately
+reviewed publication. `HandoffCapsule` is a root-last object graph that names every child and
+can be resumed only after schema, anchor/generation, authority, validity, and deletion/privacy
+checks.
+
+### 21.6 Request, response, and contract basis
+
+`ContractBasis` pins `fss/1`, schema catalog, ontology, operation/view/capability/error/cost
+registry digests, producer release, accepted nightly, and compatibility notes.
+`AgentRequestEnvelope` carries that basis plus lifecycle identity, anchor/workspace preconditions,
+registered view, targets, typed payload, budgets, requested authority/privacy, idempotency,
+continuation, hydration/compression policy, and taint.
+
+Every public operation returns `AgentResponseEnvelope`, which carries operation identity, session,
+basis/result anchors, four-valued operation outcome, typed payload, stable errors, budget receipt,
+proof/continuation, and safe retry class. `AgentCognitiveEnvelope` is a typed payload for
+decision-oriented results; it is not a competing transport envelope.
+
+The corresponding schemas are listed in [`registries/SCHEMAS.md`](registries/SCHEMAS.md), and the
+canonical relationships are frozen in `architecture/agent_contracts.json`.

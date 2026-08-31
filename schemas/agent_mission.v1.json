@@ -1,0 +1,401 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_mission.v1.json",
+  "title": "Agent Mission v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "missionId",
+    "revision",
+    "deploymentId",
+    "state",
+    "objective",
+    "successCriteria",
+    "failureCriteria",
+    "stopCriteria",
+    "capabilities",
+    "privacyScope",
+    "baselineAnchor",
+    "currentAnchor",
+    "budgets",
+    "decisionDeadlineNs",
+    "createdAtNs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_mission.v1"
+    },
+    "missionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "parentMissionId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "deploymentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "state": {
+      "enum": [
+        "draft",
+        "active",
+        "paused",
+        "awaiting_evidence",
+        "awaiting_approval",
+        "executing",
+        "reconciling",
+        "resolved",
+        "failed",
+        "cancelled",
+        "indeterminate",
+        "closed"
+      ]
+    },
+    "objective": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "successCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "acceptableDegradation": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "failureCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "stopCriteria": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "lossTerms": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "weight",
+          "direction"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          },
+          "weight": {
+            "type": "number"
+          },
+          "direction": {
+            "enum": [
+              "minimize",
+              "maximize"
+            ]
+          },
+          "hard": {
+            "type": "boolean"
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "privacyScope": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "baselineAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "currentAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMilliJoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds"
+      ],
+      "properties": {
+        "latencyMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "modelCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpuMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceleratorMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "energyMilliJoules": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "networkBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "storageOperations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "privacyExposure": {
+          "type": "number",
+          "minimum": 0
+        },
+        "operatorAttentionSeconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "title": "Budget vector"
+    },
+    "decisionDeadlineNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "activeInvestigations": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "activeBranches": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "activePlans": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "activeOperations": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "activeObligations": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "statementId",
+          "text",
+          "epistemicState",
+          "basis"
+        ],
+        "properties": {
+          "statementId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "epistemicState": {
+            "enum": [
+              "known",
+              "estimated",
+              "unknown",
+              "conflicted",
+              "stale",
+              "not_observable",
+              "redacted",
+              "indeterminate",
+              "not_applicable"
+            ]
+          },
+          "basis": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "contradictions": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "validUntilNs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "unresolvedQuestions": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "createdAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "updatedAtNs": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "terminalReceiptId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

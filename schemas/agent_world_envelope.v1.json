@@ -1,0 +1,472 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_world_envelope.v1.json",
+  "title": "Agent World Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "envelopeId",
+    "objectiveId",
+    "anchor",
+    "nominalClaimIds",
+    "certifiedCoreClaimIds",
+    "certifiedAbsences",
+    "materialAlternativeWorlds",
+    "adversarialResiduals",
+    "commonInvariants",
+    "unresolvedDimensions",
+    "collapseAffordanceIds",
+    "coverageBoundaryHandles",
+    "selectionWitness",
+    "digest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_world_envelope.v1"
+    },
+    "envelopeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "objectiveId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "nominalClaimIds": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "certifiedCoreClaimIds": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "certifiedAbsences": {
+      "type": "array",
+      "maxItems": 2048,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "absenceId",
+          "predicate",
+          "domain",
+          "interval",
+          "coverageWitnessIds",
+          "validUntilNs",
+          "completeness"
+        ],
+        "properties": {
+          "absenceId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "predicate": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "domain": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "interval": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "startNs",
+              "endNs"
+            ],
+            "properties": {
+              "startNs": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "endNs": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "coverageWitnessIds": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "validUntilNs": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "completeness": {
+            "enum": [
+              "certified_complete",
+              "bounded_complete",
+              "uncertified"
+            ]
+          }
+        }
+      }
+    },
+    "materialAlternativeWorlds": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "worldId",
+          "summary",
+          "plausibility",
+          "consequenceClass",
+          "compatibleClaimIds",
+          "contradictionIds",
+          "assumptionIds",
+          "evidenceHandles",
+          "discriminatorAffordanceIds",
+          "invalidators"
+        ],
+        "properties": {
+          "worldId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "plausibility": {
+            "enum": [
+              "supported",
+              "possible",
+              "weakly_possible",
+              "adversarial_residual"
+            ]
+          },
+          "consequenceClass": {
+            "enum": [
+              "negligible",
+              "low",
+              "moderate",
+              "high",
+              "critical"
+            ]
+          },
+          "compatibleClaimIds": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "contradictionIds": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "assumptionIds": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "evidenceHandles": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "discriminatorAffordanceIds": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "invalidators": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          }
+        }
+      }
+    },
+    "adversarialResiduals": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "residualId",
+          "summary",
+          "protectedLossClass",
+          "whyNotRuledOut",
+          "affectedScopes",
+          "bestAvailableDiscriminatorIds",
+          "requiredClampIds"
+        ],
+        "properties": {
+          "residualId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "protectedLossClass": {
+            "enum": [
+              "low",
+              "moderate",
+              "high",
+              "critical"
+            ]
+          },
+          "whyNotRuledOut": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096
+            }
+          },
+          "affectedScopes": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "bestAvailableDiscriminatorIds": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "requiredClampIds": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          }
+        }
+      }
+    },
+    "commonInvariants": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096
+      }
+    },
+    "unresolvedDimensions": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dimensionId",
+          "question",
+          "knowledgeState",
+          "decisionImpact",
+          "evidenceHandles",
+          "discriminatorAffordanceIds"
+        ],
+        "properties": {
+          "dimensionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "question": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "knowledgeState": {
+            "enum": [
+              "known",
+              "estimated",
+              "unknown",
+              "conflicted",
+              "stale",
+              "not_observable",
+              "redacted",
+              "indeterminate",
+              "not_applicable"
+            ]
+          },
+          "decisionImpact": {
+            "enum": [
+              "none",
+              "low",
+              "moderate",
+              "high",
+              "critical"
+            ]
+          },
+          "evidenceHandles": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "discriminatorAffordanceIds": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          }
+        }
+      }
+    },
+    "collapseAffordanceIds": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "coverageBoundaryHandles": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "selectionWitness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateWorldCount",
+        "retainedWorldCount",
+        "dominatedWorldCount",
+        "protectedResidualCount",
+        "stopReason",
+        "decisionPathDigest"
+      ],
+      "properties": {
+        "candidateWorldCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "retainedWorldCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "dominatedWorldCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "protectedResidualCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "stopReason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "decisionPathDigest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "digest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    }
+  }
+}

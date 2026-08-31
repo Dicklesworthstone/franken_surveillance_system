@@ -111,6 +111,36 @@
       "plane": "release",
       "gate": "GATE-120",
       "status": "specified"
+    },
+    {
+      "id": "PUB-AGENT-WORKSPACE-001",
+      "name": "agent_workspace_revision",
+      "owner": "fss-agent-session",
+      "protocol": "freeze mission/anchor/authority → materialize workspace children → validate references and invalidations → publish revision root → retire prior active pointer",
+      "invariant": "A resumable workspace never references missing cases, plans, obligations, or evidence handles and never hides invalidated state",
+      "plane": "agent_continuity",
+      "gate": "GATE-115",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-AGENT-HANDOFF-001",
+      "name": "agent_handoff_capsule",
+      "owner": "fss-handoff",
+      "protocol": "select minimum sufficient workspace → materialize redacted object graph → verify authority/privacy/expiry/closure → publish root → recipient accept/rebase",
+      "invariant": "A handoff is not complete until the recipient can reconstruct mission, uncertainty, obligations, continuations, and invalidations without hidden conversational state",
+      "plane": "agent_continuity",
+      "gate": "GATE-115",
+      "status": "specified"
+    },
+    {
+      "id": "PUB-AGENT-EXPERIENCE-001",
+      "name": "agent_experience_capsule",
+      "owner": "fss-episode",
+      "protocol": "freeze original prediction/plan/receipts/outcome → materialize evidence and attribution siblings → verify privacy and replay closure → publish immutable episode root",
+      "invariant": "Learning never rewrites the original episode and no proposal is promoted without its immutable outcome basis",
+      "plane": "derived_memory",
+      "gate": "GATE-115",
+      "status": "specified"
     }
   ]
 }

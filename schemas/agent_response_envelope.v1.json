@@ -1,0 +1,649 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_response_envelope.v1.json",
+  "title": "Agent Response Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "operationId",
+    "requestId",
+    "responseRevision",
+    "principalId",
+    "sessionId",
+    "missionId",
+    "traceId",
+    "inputAnchor",
+    "outputAnchor",
+    "workspaceRevision",
+    "effectiveViewId",
+    "effectiveCapabilities",
+    "effectivePrivacyProjection",
+    "outcome",
+    "taskId",
+    "taskState",
+    "errorId",
+    "payloadSchema",
+    "payload",
+    "payloadDigest",
+    "epistemicState",
+    "completeness",
+    "warnings",
+    "contradictions",
+    "degradation",
+    "budgets",
+    "proofPointers",
+    "affordances",
+    "decisionFingerprint",
+    "compressionReceiptId",
+    "validUntilNs",
+    "continuation",
+    "idempotencyKey",
+    "recoveryClass",
+    "safeRetry",
+    "resnapshotRequired",
+    "executionBoundary",
+    "createdAtNs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_response_envelope.v1"
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^AOP-[0-9]{3}$"
+    },
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "principalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "sessionId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "missionId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "traceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "taskId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inputAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "outputAnchor": {
+      "anyOf": [
+        {
+          "$ref": "evidence_anchor.v1.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outcome": {
+      "enum": [
+        "ok",
+        "error",
+        "cancelled",
+        "panicked",
+        "partial",
+        "indeterminate",
+        "refused"
+      ]
+    },
+    "errorId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^ERR-[A-Z0-9-]+-[0-9]{3}$"
+    },
+    "payloadSchema": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "payload": {
+      "type": [
+        "object",
+        "array",
+        "string",
+        "number",
+        "boolean",
+        "null"
+      ]
+    },
+    "epistemicState": {
+      "enum": [
+        "known",
+        "estimated",
+        "unknown",
+        "conflicted",
+        "stale",
+        "not_observable",
+        "redacted",
+        "indeterminate",
+        "not_applicable"
+      ]
+    },
+    "completeness": {
+      "enum": [
+        "complete",
+        "bounded",
+        "partial",
+        "unknown",
+        "not_observable",
+        "unauthorized",
+        "stale"
+      ]
+    },
+    "validUntilNs": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "warnings": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "degradation": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requested",
+        "consumed",
+        "remaining"
+      ],
+      "properties": {
+        "requested": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latencyMs",
+            "tokens",
+            "bytes",
+            "modelCalls",
+            "cpuMillis",
+            "acceleratorMillis",
+            "energyMilliJoules",
+            "networkBytes",
+            "storageOperations",
+            "privacyExposure",
+            "operatorAttentionSeconds"
+          ],
+          "properties": {
+            "latencyMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "modelCalls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cpuMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "acceleratorMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "energyMilliJoules": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "networkBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "storageOperations": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "privacyExposure": {
+              "type": "number",
+              "minimum": 0
+            },
+            "operatorAttentionSeconds": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "title": "Budget vector"
+        },
+        "consumed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latencyMs",
+            "tokens",
+            "bytes",
+            "modelCalls",
+            "cpuMillis",
+            "acceleratorMillis",
+            "energyMilliJoules",
+            "networkBytes",
+            "storageOperations",
+            "privacyExposure",
+            "operatorAttentionSeconds"
+          ],
+          "properties": {
+            "latencyMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "modelCalls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cpuMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "acceleratorMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "energyMilliJoules": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "networkBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "storageOperations": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "privacyExposure": {
+              "type": "number",
+              "minimum": 0
+            },
+            "operatorAttentionSeconds": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "remaining": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latencyMs",
+            "tokens",
+            "bytes",
+            "modelCalls",
+            "cpuMillis",
+            "acceleratorMillis",
+            "energyMilliJoules",
+            "networkBytes",
+            "storageOperations",
+            "privacyExposure",
+            "operatorAttentionSeconds"
+          ],
+          "properties": {
+            "latencyMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "modelCalls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cpuMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "acceleratorMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "energyMilliJoules": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "networkBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "storageOperations": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "privacyExposure": {
+              "type": "number",
+              "minimum": 0
+            },
+            "operatorAttentionSeconds": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "title": "Budget vector"
+        }
+      }
+    },
+    "compressionReceiptId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "proofPointers": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "continuation": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resnapshotRequired": {
+      "type": "boolean"
+    },
+    "affordances": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "agent_affordance.v1.json"
+      }
+    },
+    "safeRetry": {
+      "enum": [
+        "yes_same_request",
+        "yes_after_refresh",
+        "yes_after_reconcile",
+        "no",
+        "not_applicable"
+      ]
+    },
+    "idempotencyKey": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decisionFingerprint": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "createdAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    },
+    "workspaceRevision": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "recoveryClass": {
+      "enum": [
+        "never_unchanged",
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ]
+    },
+    "executionBoundary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "completed",
+        "notStarted",
+        "possiblyOccurred",
+        "preservedTruth",
+        "invalidated"
+      ],
+      "properties": {
+        "completed": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "notStarted": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "possiblyOccurred": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "preservedTruth": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "invalidated": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        }
+      }
+    },
+    "responseRevision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "effectiveViewId": {
+      "type": "string",
+      "pattern": "^AVIEW-[0-9]{3}$"
+    },
+    "effectiveCapabilities": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "pattern": "^CAP-[A-Z0-9-]+-[0-9]{3}$"
+      }
+    },
+    "effectivePrivacyProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "purpose",
+        "policyGenerationId",
+        "allowedDomains",
+        "redactedDomains"
+      ],
+      "properties": {
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "policyGenerationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        "allowedDomains": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "redactedDomains": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        }
+      }
+    },
+    "taskState": {
+      "enum": [
+        "none",
+        "accepted",
+        "running",
+        "waiting",
+        "blocked",
+        "terminal",
+        "indeterminate"
+      ]
+    },
+    "payloadDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    }
+  }
+}

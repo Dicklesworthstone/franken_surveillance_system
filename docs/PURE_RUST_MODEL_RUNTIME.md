@@ -65,7 +65,10 @@ must declare tolerance/distribution and cannot be the sole qualification oracle.
 ### `MODEL-INV-005` — outputs are derived evidence
 
 Model logits, embeddings, masks, tracks, captions, and classifications are derived records tied to
-exact inputs and model execution receipts. They never become source evidence or effect authority.
+exact inputs and model execution receipts. They never become source evidence or effect authority,
+and they cannot by themselves collapse a protected possible world from an agent `WorldEnvelope`.
+A model result may support, contradict, split, or propose a world; removal requires the ordinary
+evidence-linked collapse witness and stop-rule path.
 
 ### `MODEL-INV-006` — no mixed score spaces
 
@@ -381,6 +384,37 @@ cascade:
 Each stage records candidates retained/dropped, stop reason, cost, and expected uncertainty
 reduction. A cheap stage may reduce compute only if its false-negative bound is demonstrated on the
 release threat distribution.
+
+## 8.1 Agent-facing model-question contract
+
+An agent never sends an unrestricted prompt directly to a model executor. A natural-language or
+structured question is first compiled by the agent query planner into a bounded typed
+`ModelQuestion` naming:
+
+- mission/objective and evidence anchor;
+- authorized, privacy-transformed tensor/evidence handles;
+- exact model/preprocess/postprocess/numeric generations;
+- expected output schema and epistemic/provenance class;
+- required uncertainty, calibration, coverage, and abstention fields;
+- latency, token, memory, energy, and privacy budgets;
+- cache policy and invalidators.
+
+The executor returns typed observations or propositions plus an immutable `ModelExecutionReceipt`.
+A prose explanation is a later rendering of that result. It cannot create facts, hide unsupported
+operators or missing inputs, bind an evidence handle to replacement bytes, rank an affordance
+without the ordinary hard-clamp/decision-card path, or cross an effect boundary.
+
+Model-driven active perception can propose discriminating observations to an
+`InvestigationCase`, but value-of-information selection belongs to the agent cognition owner and
+physical control still requires an independently prepared and authorized plan.
+
+The agent-facing result is inserted into the current `WorldEnvelope` as a typed likelihood,
+proposition, contradiction, or newly material alternative. The envelope records the exact model
+execution receipt, calibration regime, independence/shared-failure-domain class, and the worlds
+whose support changed. A high model score cannot silently replace alternative-world retention.
+Conversely, a model failure, abstention, overload, or unsupported input expands or preserves the
+possibility frontier; it does not become negative evidence. Robust-control classification is
+performed only after the updated envelope is published and independently witnessed.
 
 ## 9. Dynamic batching and deadlines
 

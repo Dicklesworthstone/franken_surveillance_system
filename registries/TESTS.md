@@ -24,3 +24,20 @@
 | `TEST-AGENT-001` | bounded deltas, capability denial, idempotency, token budgets | `GATE-110` |
 | `TEST-PRIVACY-001` | mask-before-boundary, retention, deletion closure, bundle redaction | `GATE-120` |
 | `TEST-RELEASE-001` | install/upgrade/rollback/soak/support bundle/local proof | `GATE-120` |
+| `TEST-AGENT-ORIENT-001` | cold-start one-call orientation, semantic zoom, aliasing, and bounded first-useful answer | `GATE-115` |
+| `TEST-AGENT-EPISTEMIC-001` | knowledge/provenance/hypothesis separation, contradictions, absence/coverage, stale/redacted/indeterminate preservation | `GATE-115` |
+| `TEST-AGENT-COMPRESSION-001` | semantic compression counterfactuals, non-droppable classes, receipts, hydration and continuation | `GATE-115` |
+| `TEST-AGENT-VOI-001` | probe/context/affordance value-of-information selection against static and maximal-context baselines | `GATE-115` |
+| `TEST-AGENT-CONTROL-001` | query→plan→commit→wait/cancel→verify/reconcile under stale anchors, lost ACKs, crashes, and duplicate requests | `GATE-115` |
+| `TEST-AGENT-HANDOFF-001` | root-last handoff/resume under anchor, policy, model, calibration, grant, and obligation drift | `GATE-115` |
+| `TEST-AGENT-MULTI-001` | work-claim fencing, immutable findings, disagreement, merge, duplicate-work reduction, and noninterference | `GATE-115` |
+| `TEST-AGENT-ACCRETION-001` | held-out future-episode benefit, harmful-memory demotion, expiry/revival, and no silent policy mutation | `GATE-115` |
+| `TEST-AGENT-TRANSPORT-001` | Rust API/CLI/MCP/TUI/report semantic transcript and decision-digest equivalence | `GATE-115` |
+| `TEST-AGENT-TAINT-001` | prompt/control-text taint, capability projection before retrieval/count/rank, secret exclusion, confused-deputy attacks | `GATE-115` |
+| `TEST-AGENT-SITUATION-001` | CognitiveFacet anchor/owner compatibility, cold/warm SituationCapsule coherence, minimum sufficiency, omission counterfactual, stable aliases, and deterministic fingerprint | `GATE-115` |
+| `TEST-AGENT-FOLLOW-001` | meaningful-delta coalescing, silence certificates, interruption thresholds, continuation, disconnect, and resume | `GATE-115` |
+| `TEST-AGENT-CASE-001` | competing hypotheses, predictions, falsifiers, shared failures, VOI probe selection, stop rules, and residual uncertainty | `GATE-115` |
+| `TEST-AGENT-AFFORDANCE-001` | hard-clamp filtering, Pareto frontier, component/sensitivity explanation, invalidation, and no authority laundering | `GATE-115` |
+| `TEST-AGENT-WORLD-ENVELOPE-001` | certified-core/absence preservation, material-world frontier, protected adversarial residual retention, robust/conditional action classification, evidence-driven envelope shrink/split/expansion, and unsafe-world revalidation | `GATE-115` |
+| `TEST-AGENT-LEARNING-001` | episode attribution, feedback/learning proposals, trauma guard, harmful transfer, expiry, revival, and no silent activation | `GATE-115` |
+| `TEST-AGENT-RESOURCE-001` | task quality per tokens/bytes/model/graph work/energy/privacy/operator burden across pressure regimes | `GATE-115` |

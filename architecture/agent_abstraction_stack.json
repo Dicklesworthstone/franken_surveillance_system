@@ -1,0 +1,257 @@
+{
+  "schema": "fss.agent_abstraction_stack.v1",
+  "asOf": "2026-08-31",
+  "constitutionalRole": "orthogonal_control_membrane",
+  "truthOwnership": "none; composes authority, cognition, effect, transfer, and presentation owners without redefining them",
+  "rules": [
+    "every decision-bearing presentation is representable as one cognitive envelope",
+    "each abstraction retains stable downward evidence/provenance handles and explicit upward mission relevance",
+    "knowledge state, provenance, coverage, omissions, budget, authority, and affordances survive every transport and compression boundary",
+    "public semantic operations have one registry and identical meaning across CLI, Rust API, MCP, TUI, and reports",
+    "effect commitment is impossible from free-form prose and requires a prepared digest plus current witnesses",
+    "learning remains advisory until explicit evidence-gated promotion",
+    "SituationCapsule is the primary read object; SituationFrame is its inner minimum sufficient world projection; ContextPack is only a budget-shaped materialization and never a rival truth surface",
+    "SituationFrame carries the evidence/possibility WorldEnvelope; SituationCapsule adds the control envelope, so the agent sees what is established, what remains possible, and what is safe to do in one publication",
+    "ContractBasis and AgentRequestEnvelope define one request lifecycle; AgentCognitiveEnvelope contains semantic meaning; AgentResponseEnvelope adds effective authority/privacy/view, task lifecycle, retry, proof, budget, payload integrity, and continuation without redefining meaning"
+  ],
+  "knowledgeStateRefs": [
+    "KSTATE-001",
+    "KSTATE-002",
+    "KSTATE-003",
+    "KSTATE-004",
+    "KSTATE-005",
+    "KSTATE-006",
+    "KSTATE-007",
+    "KSTATE-008",
+    "KSTATE-009"
+  ],
+  "provenanceClassRefs": [
+    "PROV-001",
+    "PROV-002",
+    "PROV-003",
+    "PROV-004",
+    "PROV-005",
+    "PROV-006",
+    "PROV-007"
+  ],
+  "hydrationLevels": [
+    {
+      "id": "H0",
+      "name": "identity",
+      "content": "digest, type, time/spatial bounds, source, availability, cost, and authority"
+    },
+    {
+      "id": "H1",
+      "name": "semantic_synopsis",
+      "content": "typed facts, knowledge states, provenance, contradictions, quality, and omissions"
+    },
+    {
+      "id": "H2",
+      "name": "decision_artifact",
+      "content": "authorized redacted keyframes, crops, trajectories, graph neighborhoods, or audio features"
+    },
+    {
+      "id": "H3",
+      "name": "source_evidence",
+      "content": "authorized original encoded packets, object bytes, exact metadata, or full-resolution media"
+    },
+    {
+      "id": "H4",
+      "name": "laboratory_expansion",
+      "content": "replay bundle, intermediates, alternate decoders/models, and oracle comparisons"
+    }
+  ],
+  "layers": [
+    {
+      "id": "AGT-LAYER-001",
+      "name": "runtime_authority_and_custody",
+      "owner": "asupersync/authority/object owners",
+      "question": "What work, authority, budget, identity, time, and object custody exist?",
+      "output": "Context, grants, regions, obligations, object roots, and receipts.",
+      "prohibition": "Cannot infer mission meaning or physical truth.",
+      "invariant": "INV-006",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-002",
+      "name": "source_evidence",
+      "owner": "fss-capture/fss-media/fss-chronicle",
+      "question": "What exact packets, files, measurements, continuity, and capture-time intervals exist?",
+      "output": "Immutable sensor capsules, source objects, continuity and time evidence.",
+      "prohibition": "Cannot promote decode or model output into source evidence.",
+      "invariant": "INV-003",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-003",
+      "name": "world_facts_and_coverage",
+      "owner": "fss-chronicle/fss-coverage",
+      "question": "What did the system authoritatively observe or do at one anchor?",
+      "output": "Device, geometry, calibration, coverage, policy, archive, and effect facts.",
+      "prohibition": "Cannot include unqualified cognition as fact.",
+      "invariant": "INV-063",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-004",
+      "name": "derived_beliefs",
+      "owner": "fss-perception/fss-association/fss-graph",
+      "question": "What entities, tracks, events, relations, and uncertainties are supported?",
+      "output": "Generation-pinned derived beliefs and graph/search projections with receipts.",
+      "prohibition": "Cannot authorize effects or certify absence beyond coverage.",
+      "invariant": "INV-069",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-005",
+      "name": "situation_capsule",
+      "owner": "fss-situation/fss-context-pack/fss-affordance",
+      "question": "What is the smallest sufficient mission-relative driver view now, what changed, and what can safely be done next?",
+      "output": "SituationCapsule containing SituationFrame with WorldEnvelope, MeaningfulDelta, obligations, resource state, categorized control envelope, ContextPack, compression proof, and affordance frontier.",
+      "prohibition": "Cannot hide decision-changing omissions or rebase evidence identities.",
+      "invariant": "INV-116",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-006",
+      "name": "investigation_and_hypotheses",
+      "owner": "fss-investigation",
+      "question": "Which competing explanations remain viable and how can they be discriminated?",
+      "output": "Case revision, hypotheses, support, contradictions, predicted observations, falsifiers, and stop rule.",
+      "prohibition": "Cannot collapse uncertainty into truth without adjudication.",
+      "invariant": "INV-104",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-007",
+      "name": "affordance_frontier",
+      "owner": "fss-attention/fss-affordance",
+      "question": "What can be done next, under current capability and budget, and why is it worth doing?",
+      "output": "Pareto frontier of read/control affordances with VOI, cost, risk, reversibility, invalidators, and proof.",
+      "prohibition": "Cannot grant authority or use one opaque score.",
+      "invariant": "INV-106",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-008",
+      "name": "plan_and_effect",
+      "owner": "fss-agent-plan/fss-effect",
+      "question": "Which witnessed contingent DAG should run and did each effect happen?",
+      "output": "Prepared plan, commit ticket, effect receipts, obligation states, and reconciliation path.",
+      "prohibition": "Cannot execute prose or count dispatch as success.",
+      "invariant": "INV-088",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-009",
+      "name": "outcome_and_episode",
+      "owner": "fss-episode",
+      "question": "What was predicted, executed, observed, consumed, and left uncertain?",
+      "output": "Immutable execution episode with attribution hypotheses and resource ledger.",
+      "prohibition": "Cannot rewrite original predictions after outcome.",
+      "invariant": "INV-098",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-010",
+      "name": "learning_and_memory",
+      "owner": "fss-learning",
+      "question": "What reusable rule, anti-pattern, fixture, or runbook improvement should be proposed?",
+      "output": "Evidence-linked scoped proposal with counterexamples, harmful outcomes, validation, and expiry.",
+      "prohibition": "Cannot self-promote into active policy or truth.",
+      "invariant": "INV-094",
+      "status": "normative"
+    },
+    {
+      "id": "AGT-LAYER-011",
+      "name": "workspace_and_handoff",
+      "owner": "fss-agent-session/fss-handoff",
+      "question": "How can this mission resume or transfer without rediscovery or hidden staleness?",
+      "output": "Versioned workspace revision and root-last HandoffCapsule.",
+      "prohibition": "Cannot preserve hidden conversational state or confer effect authority through custody.",
+      "invariant": "INV-096",
+      "status": "normative"
+    }
+  ],
+  "operationRefs": [
+    "AOP-001",
+    "AOP-002",
+    "AOP-003",
+    "AOP-004",
+    "AOP-005",
+    "AOP-006",
+    "AOP-007",
+    "AOP-008",
+    "AOP-009",
+    "AOP-010",
+    "AOP-011",
+    "AOP-012",
+    "AOP-013",
+    "AOP-014"
+  ],
+  "gate": "GATE-115",
+  "viewRefs": [
+    "AVIEW-001",
+    "AVIEW-002",
+    "AVIEW-003",
+    "AVIEW-004",
+    "AVIEW-005",
+    "AVIEW-006",
+    "AVIEW-007",
+    "AVIEW-008"
+  ],
+  "semanticObjectSchemas": [
+    "fss.agent_affordance.v1",
+    "fss.agent_cognitive_envelope.v1",
+    "fss.agent_contract_basis.v1",
+    "fss.agent_control_plan.v1",
+    "fss.agent_execution_episode.v1",
+    "fss.agent_feedback_proposal.v1",
+    "fss.agent_finding.v1",
+    "fss.agent_handoff_capsule.v1",
+    "fss.agent_hypothesis_workspace.v1",
+    "fss.agent_knowledge_cell.v1",
+    "fss.agent_learning_proposal.v1",
+    "fss.agent_meaningful_delta.v1",
+    "fss.agent_mission.v1",
+    "fss.agent_objective_contract.v1",
+    "fss.agent_query_plan.v1",
+    "fss.agent_request_envelope.v1",
+    "fss.agent_response_envelope.v1",
+    "fss.agent_session.v1",
+    "fss.agent_session_capsule.v1",
+    "fss.agent_situation_frame.v1",
+    "fss.agent_work_claim.v1",
+    "fss.agent_world_envelope.v1",
+    "fss.experience_capsule.v1",
+    "fss.investigation_state.v1",
+    "fss.semantic_compression_receipt.v1",
+    "fss.semantic_context_pack.v1",
+    "fss.situation_capsule.v1"
+  ],
+  "primaryReadSurface": "SituationCapsule",
+  "responseComposition": {
+    "frame": "SituationFrame",
+    "materialization": "ContextPack + SemanticCompressionReceipt",
+    "semanticEnvelope": "AgentCognitiveEnvelope",
+    "transportEnvelope": "AgentResponseEnvelope",
+    "primaryDriverPublication": "SituationCapsule",
+    "innerWorldProjection": "SituationFrame",
+    "boundedMaterialization": "ContextPack + SemanticCompressionReceipt",
+    "semanticPayload": "AgentCognitiveEnvelope",
+    "rule": "SituationCapsule is the primary orient/resume publication and contains the mission-relative SituationFrame plus meaningful delta, obligations, resource state, affordances, and context/compression proof. AgentCognitiveEnvelope is the general decision-bearing semantic payload. AgentResponseEnvelope adds lifecycle/retry/budget/proof/continuation framing without redefining meaning.",
+    "worldModel": "WorldEnvelope",
+    "controlProjection": "SituationCapsule.controlEnvelope",
+    "robustnessRule": "ranked effect affordances are robust across all protected material worlds or explicitly conditional on named worlds and discriminating evidence",
+    "effectiveProjection": "effective view + capabilities + privacy projection + task state + payload digest"
+  },
+  "requestComposition": {
+    "contractBasis": "ContractBasis",
+    "transportEnvelope": "AgentRequestEnvelope",
+    "typedPayload": "operation-registry requestPayloadSchema",
+    "authorityRule": "requested capabilities/privacy/view are upper bounds only; the server computes and returns the effective intersection",
+    "rule": "No CLI, MCP, Rust API, TUI, report, or future UI may invent a second request lifecycle or interpret free-form prose as a commit-capable payload."
+  },
+  "semanticProtocol": "fss/1",
+  "qualificationLane": "QL-AGENT-001"
+}

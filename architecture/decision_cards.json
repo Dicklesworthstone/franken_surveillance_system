@@ -81,6 +81,78 @@
       "safeFallback": "always request required review",
       "promotion": "shadow-first with paired outcome evidence and rollback root",
       "status": "planned"
+    },
+    {
+      "id": "DEC-AGENT-CONTEXT-001",
+      "purpose": "select SituationFrame/ContextPack content under a resource budget",
+      "hardClamp": "contradictions, not-observable domains, effect indeterminacy, hard clamps, and mission-critical obligations are non-droppable",
+      "safeFallback": "registered deterministic brief with explicit omissions",
+      "promotion": "shadow/held-out validation with explicit approval, rollback identity, and harmful-outcome accounting",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-AGENT-AFFORDANCE-001",
+      "purpose": "construct and rank the capability-valid Pareto frontier of next actions",
+      "hardClamp": "authorization/privacy/safety/freshness/effect boundaries filter before ranking and ranking cannot create authority",
+      "safeFallback": "deterministic registered safe-read and wait affordances",
+      "promotion": "shadow/held-out validation with explicit approval, rollback identity, and harmful-outcome accounting",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-AGENT-PROBE-001",
+      "purpose": "select the next discriminating observation or computation",
+      "hardClamp": "safety/privacy/observability floors and no probe may convert unknown into permission",
+      "safeFallback": "stop/abstain or registered lowest-cost discriminating read",
+      "promotion": "shadow/held-out validation with explicit approval, rollback identity, and harmful-outcome accounting",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-AGENT-STOP-001",
+      "purpose": "decide when an investigation has enough evidence to stop, act, abstain, or escalate",
+      "hardClamp": "mandatory evidence and terminal-proof requirements cannot be waived by marginal-value estimates",
+      "safeFallback": "registered conservative stop rule",
+      "promotion": "shadow/held-out validation with explicit approval, rollback identity, and harmful-outcome accounting",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-AGENT-HANDOFF-001",
+      "purpose": "select the minimum sufficient handoff object graph",
+      "hardClamp": "mission, authority, budgets, contradictions, unknowns, open obligations, continuations, and invalidations are non-droppable",
+      "safeFallback": "full registered handoff profile",
+      "promotion": "shadow/held-out validation with explicit approval, rollback identity, and harmful-outcome accounting",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-AGENT-LEARNING-001",
+      "purpose": "prioritize feedback and learning proposals for validation",
+      "hardClamp": "no proposal mutates truth, active policy, model, thresholds, privacy, retention, or authority without separate promotion",
+      "safeFallback": "retain advisory proposal or no promotion",
+      "promotion": "shadow/held-out validation with explicit approval, rollback identity, and harmful-outcome accounting",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-AGENT-PRESSURE-001",
+      "purpose": "pressure-aware degradation of views, models, graph refinement, and follow cadence",
+      "hardClamp": "degradation cannot erase epistemic loss, preserve stale confidence, drop critical deltas, or weaken effect verification",
+      "safeFallback": "brief/pulse view, reference path, explicit degradation receipt, and operator escalation",
+      "promotion": "same-binary pressure campaigns with task-equivalence, safety, and resource receipts",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-AGENT-INTERRUPT-001",
+      "purpose": "proactive interruption and meaningful-delta delivery",
+      "hardClamp": "terminal transitions, coverage loss, contradictions, plan invalidation, new effect uncertainty, and urgent obligations are non-coalescible",
+      "safeFallback": "deliver deterministic bounded pulse immediately and defer optional detail by continuation",
+      "promotion": "replayable scenario corpus measuring missed-critical-change and interruption burden",
+      "status": "planned"
+    },
+    {
+      "id": "DEC-AGENT-ROBUST-001",
+      "purpose": "choose a robust action, a branch-conditional action, an information-gathering probe, or wait/watch against the protected WorldEnvelope",
+      "hardClamp": "protected high-consequence residual worlds, authority, privacy, safety, observability, and irreversible-effect requirements are filtered before optimization and cannot be removed by probability ranking",
+      "safeFallback": "return the best authorized discriminator or bounded wait/watch policy; otherwise abstain with the protected residuals and blockers explicit",
+      "promotion": "shadow-first with world-envelope retention, counterfactual regret, unsafe-action, miss, privacy, and resource evidence on held-out scenarios",
+      "status": "planned"
     }
   ]
 }

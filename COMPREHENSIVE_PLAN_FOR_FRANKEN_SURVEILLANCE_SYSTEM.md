@@ -5,10 +5,10 @@
 | Document class | Normative architecture and execution plan |
 | Initial issue date | 2026-08-30 |
 | Last substantive revision | 2026-08-31 |
-| Status | Draft 0.3 — mechanism-level Franken substrate, pure-Rust runtime, graph/ATP, and local-release revision |
+| Status | Draft 0.4 — agent-native epistemic control, Situation Capsule, affordance, handoff, and accretion revision |
 | Repository | `Dicklesworthstone/franken_surveillance_system` |
 | Primary audience | Implementers, reviewers, autonomous coding agents, computer-vision and geometry researchers, media/network engineers, security/privacy reviewers, and operators |
-| Normative companions | `DEPENDENCY_CONSTITUTION.md`, `GRAPH_ANALYTICS_AND_SENSOR_MESH.md`, `ATP_AND_DISTRIBUTED_EVIDENCE.md`, `PURE_RUST_MODEL_RUNTIME.md`, `LOCAL_QUALIFICATION_AND_RELEASE.md`, `FRANKENSTACK_DEEP_DIVE.md`, `architecture/*`, `registries/*`, `schemas/*`, `docs/deep-dives/*`, `SECURITY.md`, `PRIVACY.md`, `IMPLEMENTATION_STATUS.md` |
+| Normative companions | `DEPENDENCY_CONSTITUTION.md`, `GRAPH_ANALYTICS_AND_SENSOR_MESH.md`, `ATP_AND_DISTRIBUTED_EVIDENCE.md`, `PURE_RUST_MODEL_RUNTIME.md`, `LOCAL_QUALIFICATION_AND_RELEASE.md`, `AGENT_COGNITION_AND_CONTROL.md`, `AGENT_COGNITIVE_CONTROL_PLANE.md`, `AGENT_OPERATING_MODEL.md`, `FRANKENSTACK_DEEP_DIVE.md`, `architecture/*`, `registries/*`, `schemas/*`, `docs/deep-dives/*`, `SECURITY.md`, `PRIVACY.md`, `IMPLEMENTATION_STATUS.md` |
 
 ---
 
@@ -91,6 +91,12 @@ Published IDs are never renumbered. Superseded entries remain as tombstones.
 | `FMT-` | canonical durable format |
 | `TRACE-` | deterministic trace/replay contract |
 | `ATP-` | transfer/object-graph protocol contract |
+| `AGT-` | agent abstraction/tower contract |
+| `AOP-` | public agent semantic operation |
+| `AVIEW-` | registered agent view |
+| `KSTATE-` | agent knowledge/epistemic state |
+| `PROV-` | provenance class |
+| `QL-` | local qualification lane |
 
 ---
 
@@ -116,7 +122,7 @@ Published IDs are never renumbered. Superseded entries remain as tombstones.
 - 17. Event semantics, uncertainty, sequential evidence, and policy
 - 18. Alerts and other effects
 - 19. Search, graph, memory, and explainability
-- 20. Agent-native CLI/MCP interfaces
+- 20. Agent operating system: Situation Capsules, investigations, affordances, and universal control
 - 21. Security architecture
 - 22. Privacy, identity, retention, export, and deletion
 - 23. Deterministic replay, fault injection, and formal targets
@@ -135,12 +141,13 @@ Published IDs are never renumbered. Superseded entries remain as tombstones.
 - 36. ATP archive, replication, repair, and deletion
 - 37. Decision cards, adaptive policy, and performance proof
 - 38. Local DSR qualification and release authority
+- 39. Agent cognition, control, and accretion
 - Appendix A. Initial canonical data model
 - Appendix B. Example end-to-end event flow
 - Appendix C. Example calibration flow
 - Appendix D. Example agent session
 - Appendix E. Operation-cost formulas
-- Appendix F. First 200 implementation issues
+- Appendix F. First 240 implementation issues
 ---
 
 # 0. Reading guide
@@ -172,13 +179,16 @@ Read in this order:
 
 1. `README.md` for the product thesis.
 2. `IMPLEMENTATION_STATUS.md` for the honest current boundary.
-3. `FRANKENSTACK_DEEP_DIVE.md` and `docs/deep-dives/INDEX.md` for the mechanism-level inheritance.
-4. `docs/DEPENDENCY_CONSTITUTION.md` before adding or proposing any dependency.
-5. Sections 3–7 and 31–38 for the constitution.
-6. Sections 8–20 for the technical and agent data paths.
-7. Sections 21–24 for security/privacy/quality.
-8. Sections 28–29 and 38 for execution and release.
-9. Registries and schemas before implementing a specific surface.
+3. `AGENT_COGNITION_AND_CONTROL.md`, then `AGENT_OPERATING_MODEL.md`, then
+   `AGENT_COGNITIVE_CONTROL_PLANE.md` for the public agent constitution, driver workflow, and
+   internal composition.
+4. `FRANKENSTACK_DEEP_DIVE.md` and `docs/deep-dives/INDEX.md` for mechanism-level inheritance.
+5. `docs/DEPENDENCY_CONSTITUTION.md` before adding or proposing any dependency.
+6. Sections 3–7 and 31–39 for the constitution.
+7. Sections 8–20 for the technical and agent data paths.
+8. Sections 21–24 for security/privacy/quality.
+9. Sections 28–29 and 38 for execution and release.
+10. Registries and schemas before implementing a specific surface.
 
 ---
 
@@ -206,9 +216,9 @@ The target product:
 - publishes event-level evidence, uncertainty, decision path, and negative evidence;
 - archives economically to local storage, Backblaze B2, Cloudflare R2, or compatible backends using
   encrypted content-addressed root-last object graphs;
-- exposes bounded, resumable, capability-scoped CLI and MCP surfaces to agents;
+- exposes a mission-oriented epistemic control system whose primary read object is an anchor-pinned `SituationCapsule`, with a small registered operation grammar shared by CLI, MCP, TUI, reports, desktop, and mobile;
 - recovers after crashes without duplicating effects or inventing completion;
-- improves from operator feedback without silently rewriting truth or safety policy.
+- improves from outcome-attributed `ExperienceCapsule`s and evidence-gated learning proposals without silently rewriting truth or safety policy.
 
 ## 1.2 Anti-goal
 
@@ -253,7 +263,7 @@ Foreign incumbents remain valuable **pinned laboratory oracles**. FFmpeg/ffprobe
 Runtime, NetworkX, C SQLite, Tantivy, browsers, and owner-authorized vendor applications can be used
 for differential conformance in isolated fixtures. They do not ship and are not fallbacks.
 
-The complete policy is [`DEPENDENCY_CONSTITUTION.md`](docs/DEPENDENCY_CONSTITUTION.md) and
+The complete policy is [`DEPENDENCY_CONSTITUTION.md`](DEPENDENCY_CONSTITUTION.md) and
 [`architecture/dependency_allowlist.toml`](architecture/dependency_allowlist.toml).
 
 ## 1.4 Walking skeleton
@@ -267,7 +277,9 @@ The first useful vertical slice is deliberately not a Wyze demo. It is:
 5. cheap pure-Rust detector/tracker reference path with immutable receipts;
 6. event hypothesis, policy abstention, and evidence bundle;
 7. replay producing the same decision fingerprint under injected faults;
-8. UVC camera as first physical sensor.
+8. mission → `SituationCapsule` → investigation → discriminating probe → prepared simulated effect →
+   obligation/reconciliation → resolution → experience candidate → handoff/resume;
+9. UVC camera as first physical sensor.
 
 This proves the architecture without betting the core on a proprietary vendor.
 
@@ -481,6 +493,50 @@ with hosted CI as supplemental evidence.
 Create a realistic benchmark substrate for long-horizon multimodal agents, sequential decision
 systems, sensor fusion, calibration, rare-event detection, and robust uncertainty.
 
+### `GOAL-019` — Agent legibility
+
+Present the deployment as one anchor-pinned situation model whose state, provenance, unknowns,
+contradictions, obligations, controls, and continuation path are visible together. An agent should
+not have to reverse-engineer ontology or state machines from disconnected subsystem calls.
+
+### `GOAL-020` — Cognitive economy
+
+Maximize decision quality per token, byte, model millisecond, graph operation, joule, wall-clock
+second, and human interruption. The system should acquire and present the minimum sufficient
+evidence, not the maximum available data.
+
+### `GOAL-021` — Epistemic and decision discipline
+
+Keep knowledge state, provenance class, coverage, uncertainty, contradiction, shared failure
+domains, and hypothesis disposition explicit through every compression, retrieval, explanation,
+plan, effect, resume, and handoff boundary.
+
+### `GOAL-022` — Accretive continuity
+
+Every resolved investigation, effect, repair, qualification run, and handoff should be able to leave
+behind evidence-linked reusable value—fixtures, hard negatives, procedures, anti-patterns, adapter
+quirks, and runbook improvements—without silently mutating truth or active policy.
+
+### `GOAL-023` — Multi-agent coherence
+
+Allow multiple agents to investigate and operate in parallel using immutable case revisions, private
+branches, bounded work claims, explicit disagreements, leases/fences, and typed handoffs, while
+preventing duplicate work and shared-scratch races.
+
+### `GOAL-019` — Agent epistemic ergonomics
+
+Present one smallest-sufficient, anchor-coherent `SituationCapsule` that tells an agent what matters,
+what changed, why it is believed, what is unknown or unobservable, which assumptions or plans were
+invalidated, which obligations remain live, and which safe next operations are currently available.
+The agent should not reconstruct this by joining subsystem responses in its own context window.
+
+### `GOAL-020` — Agent accretion
+
+Make resolved work produce reusable, evidence-linked experience, hard negatives, failure signatures,
+procedures, adapter/model quirks, and benchmark candidates that improve later missions while
+remaining advisory until explicit validation and promotion. Measure whether later held-out missions
+become more correct, cheaper, faster, safer, and easier to hand off.
+
 ## 3.3 Non-goals
 
 - `NONGOAL-001`: accessing any device/account/footage without owner authorization.
@@ -554,7 +610,64 @@ The operator requests deletion of an event. FSS computes a sealed closure over l
 objects, proxies, thumbnails, indexes, graph edges, model caches, reports, and memories; commits the
 plan; records physical/cryptographic deletion or exact blockers; and produces a proof.
 
+### Scenario NS-9 — Cold-start orientation
+
+A capable agent with no prior conversational context opens a mission and, in one bounded response,
+learns the current material situation, recent decision-impacting changes, coverage limitations,
+active obligations, unresolved contradictions, resource pressure, and a capability-valid Pareto
+frontier of next moves. Every statement has a knowledge state, provenance class, evidence handle,
+and basis anchor.
+
+### Scenario NS-10 — Ambiguous event under a hard budget
+
+The agent receives three viable explanations for a dark, partially occluded trajectory. FSS
+maintains them as competing hypotheses, identifies the evidence that would discriminate them, and
+selects the next crop, camera interval, graph query, or model invocation by expected reduction in
+decision loss per marginal resource. It stops or abstains when further evidence is not worth its
+cost or observability cannot support a safe decision.
+
+### Scenario NS-11 — Resume and handoff after world drift
+
+An investigation is transferred to a fresh agent after cameras, policy, and calibration have
+changed. The handoff capsule reconstructs mission, workspace, cases, plans, obligations, budgets,
+authority, unknowns, and continuations. Resume explicitly marks stale facts, invalidated
+assumptions, expired grants, obsolete plan steps, and new high-priority deltas before allowing
+continued action.
+
+### Scenario NS-12 — Multi-agent incident investigation
+
+Several agents split an incident into coverage analysis, cross-camera association, archive
+verification, and policy review. Work claims reduce duplicate effort but confer no effect authority.
+Private branches retain speculative hypotheses; shared immutable findings expose agreement and
+disagreement. One fenced plan owner commits the consequential action and all collaborators observe
+the same obligation/proof state.
+
+### Scenario NS-13 — Learning without silent adaptation
+
+After a false alarm and a later true positive, the system records immutable execution episodes and
+feedback, proposes a scoped hard-negative fixture and an advisory procedure, includes contrary
+evidence and harmful-outcome weighting, and requires explicit validation/promotion. Replaying the
+original event under the original generations remains unchanged.
+
 ---
+
+### Scenario NS-9 — Cold resume after agent and host loss
+
+An investigation is interrupted after an alert request may have crossed a provider boundary and an
+archive graph has staged children but no published root. A different agent on a restarted host opens
+the root-last handoff/workspace, receives a current `SituationCapsule`, sees the exact stale and
+invalidated assumptions, indeterminate alert effect, unpublished archive obligation, expired leases,
+and remaining budgets, and continues with reconciliation rather than re-sending or re-reading the
+full history. No mission-critical fact existed only in conversation.
+
+### Scenario NS-10 — Cheapest decisive observation
+
+Two explanations remain plausible for a dark crawling shape near a window: a person deliberately
+concealing movement and a raccoon whose track is partially occluded. FSS retains both hypotheses,
+identifies the observation each predicts differently, prices candidate evidence acquisition by
+latency, compute, privacy, battery, and expected decision-loss reduction, and returns a nondominated
+affordance frontier. The agent chooses one bounded high-information probe instead of expanding every
+clip or invoking every model.
 
 # 4. Semantic truth model
 
@@ -616,7 +729,35 @@ Effects MUST be explicit, capability-scoped, idempotent, preconditioned, receipt
 observed/verified. A model output can be an input to a prepared effect; it cannot be the authority
 to commit it.
 
-## 4.2 Evidence classes
+## 4.2 Agent operating layer (not a fourth truth plane)
+
+The agent operating layer is a region-owned, inspectable composition over the three semantic
+planes. It owns mission/session negotiation, `AgentWorkspace` revisions, `SituationFrame`
+construction, investigation cases, context packs, affordance frontiers, handoff capsules, and
+learning proposals. It owns no sensor fact, model truth, policy truth, or external effect outcome.
+
+Its abstraction tower is:
+
+```text
+runtime authority and object custody
+→ source evidence and continuity
+→ world facts and coverage
+→ derived beliefs and projections
+→ SituationFrame
+→ investigation and competing hypotheses
+→ capability-valid affordance frontier
+→ witnessed plan/effect/obligations
+→ execution episode and outcome attribution
+→ advisory learning proposal
+→ workspace revision and root-last handoff
+```
+
+Every upward projection retains stable handles to its basis. Every downward hydration is bounded,
+capability- and privacy-projected, and costed. The canonical public semantic protocol is `fss/1`;
+its small operation set, views, knowledge states, provenance classes, object schemas, and resource
+URIs are machine-owned by `architecture/agent_contracts.json`.
+
+## 4.3 Evidence classes
 
 FSS uses an ordered evidence vocabulary without pretending that higher class means universally
 true:
@@ -632,7 +773,7 @@ true:
 Evidence class is attached to an edge or claim, not globally to an object. A cryptographically
 verified packet may provide weak evidence that the scene is live.
 
-## 4.3 Observations, hypotheses, events, and alerts
+## 4.4 Observations, hypotheses, events, and alerts
 
 An **observation** is a bounded statement directly tied to sensor/source evidence: pixels changed,
 a box/mask exists, a timestamp interval, a camera moved, or packets stopped.
@@ -647,7 +788,7 @@ An **alert** is an effect selected by a versioned policy from an event revision.
 make the hypothesis true; an eventual operator resolution may confirm, reject, or leave it
 indeterminate.
 
-## 4.4 Negative evidence
+## 4.5 Negative evidence
 
 Negative evidence is first-class and must name its observability preconditions. Examples:
 
@@ -663,7 +804,7 @@ The negative-evidence ledger records failed approaches, contradictions, near mis
 and assumptions. It is used in review and release qualification, not hidden to improve headline
 metrics.
 
-## 4.5 Invariants
+## 4.6 Invariants
 
 The machine-readable invariant registry is authoritative. Load-bearing examples:
 
@@ -905,7 +1046,7 @@ The following are explicitly rejected:
 - hosted CI as release authority;
 - benchmark wins without same-binary semantic receipts.
 
-The detailed constitution is [`DEPENDENCY_CONSTITUTION.md`](docs/DEPENDENCY_CONSTITUTION.md).
+The detailed constitution is [`DEPENDENCY_CONSTITUTION.md`](DEPENDENCY_CONSTITUTION.md).
 
 # 7. Runtime, ownership, cancellation, budgets, and obligations
 
@@ -1765,7 +1906,7 @@ as verified local object graphs. Build scripts and live processes do no network 
 
 ## 15.12 Detailed contract
 
-See [`PURE_RUST_MODEL_RUNTIME.md`](docs/PURE_RUST_MODEL_RUNTIME.md) and
+See [`PURE_RUST_MODEL_RUNTIME.md`](PURE_RUST_MODEL_RUNTIME.md) and
 [`docs/deep-dives/FRANKENTORCH.md`](docs/deep-dives/FRANKENTORCH.md).
 
 # 16. Detection, tracking, cross-camera association, and temporal reasoning
@@ -2187,111 +2328,344 @@ Ranking explains component scores and respects token/result budgets.
 
 ---
 
-# 20. Agent-native CLI/MCP interfaces
+# 20. Agent operating system: Situation Capsules, investigations, affordances, and universal control
 
-## 20.1 Product philosophy
+The normative public constitution is `AGENT_COGNITION_AND_CONTROL.md`; the driver workflow is
+`AGENT_OPERATING_MODEL.md`; internal composition is `AGENT_COGNITIVE_CONTROL_PLANE.md`. Machine
+sources are `architecture/agent_contracts.json`, `architecture/agent_abstraction_stack.json`,
+`architecture/agent_operating_model.json`, `architecture/agent_operations.json`, and
+`architecture/agent_views.json`.
 
-The CLI/library is primary; MCP is an adapter. Every machine surface has a versioned JSON schema,
-stable errors, exit codes, bounded output, and continuation. Human prose is not the only contract.
+## 20.1 Product doctrine
 
-## 20.2 Initial CLI
+The agent interface is not a nicer wrapper around subsystem APIs. It is an **epistemic control
+system** over a partially observed physical world. Its job is to make robust judgment inexpensive:
+compose authoritative and derived state once, preserve uncertainty and invalidation, expose the
+smallest useful evidence, and make the safe next move obvious without granting authority.
 
-Design-only skeleton now exposes:
+Every interaction must answer, at the selected registered view:
+
+1. what mission outcome is being pursued;
+2. what the coherent situation is at one evidence anchor;
+3. what changed and what that change invalidated or enabled;
+4. which propositions are `known`, `estimated`, `unknown`, `conflicted`, `stale`,
+   `not_observable`, `redacted`, `indeterminate`, or `not_applicable`;
+5. where each proposition came from and how independent the supporting evidence is;
+6. which unresolved questions or hypotheses control the decision;
+7. which next reads, probes, waits, simulations, plans, effects, repairs, feedback, or handoffs are
+   valid under current capabilities and budgets;
+8. what proof each operation should produce and how completion will be monitored;
+9. what reusable experience can be proposed after resolution.
+
+The operating system is an orthogonal projection/control membrane. It owns no source evidence,
+model truth, event truth, hard policy, credentials, effect authority, or storage durability. It
+composes their typed owners and submits intents to them.
+
+### 20.1.1 `CognitiveFacet` as the semantic narrow waist
+
+Every device, media, time, geometry, model, graph, search, archive, policy, effect, and memory owner
+projects to the agent layer through one internal `CognitiveFacet` ABI. Required coordinates are
+facet/owner identity, anchor and consumed high-water, scope/validity, typed knowledge cells,
+coverage/health, contradictions/unknowns, evidence handles and prices, open obligations and
+indeterminate effects, resource state/full cost, affordance seeds, invalidators/degradation, and
+proof/continuation.
+
+Capability and privacy projection happen before facet composition. `fss-situation` may compose,
+select, factorize, and compress mutually compatible facets; it may not redefine owner semantics,
+strengthen epistemic state, infer hidden structure, or smuggle effect authority. This is the
+system's semantic narrow waist: independently replaceable subsystems above one stable agent grammar.
+
+## 20.2 One nested object tower
+
+The public object model is nested intentionally:
 
 ```text
-fss capabilities --json
-fss doctor --json
-fss status --json
+MissionContract
+  └── ObjectiveContract
+AgentSession
+  └── AgentSessionCapsule (immutable AgentWorkspace revision)
+SituationCapsule                         ← primary read publication
+  ├── SituationFrame                    ← minimum sufficient world projection
+  │    └── WorldEnvelope                ← certified core + material/adversarial worlds
+  ├── MeaningfulDelta                   ← semantic decision-impact change
+  ├── InvestigationCase[] / ControlPlan[] / Obligation[]
+  ├── resource pressure and commitments
+  ├── controlEnvelope                   ← robust/conditional/probe/wait/blocked
+  ├── ActionAffordance[]                ← decomposed nondominated next moves
+  ├── ContextPack                       ← selected authorized material
+  └── SemanticCompressionReceipt        ← omissions, transforms, proof, expansion
+InvestigationCase
+  └── HypothesisWorkspace / AgentFinding[] / discriminating probes / stop rules
+ControlPlan
+  └── witnessed contingent DAG / prepared domain effects / terminal obligations
+ExperienceCapsule
+  └── ExecutionEpisode[] → FeedbackProposal / LearningProposal
+AgentResponseEnvelope                   ← universal transport/lifecycle envelope
+  └── typed payload such as SituationCapsule or AgentCognitiveEnvelope
+HandoffCapsule
+  └── minimum sufficient root-last continuity graph
 ```
 
-Target commands:
+This crosswalk prevents near-synonyms from becoming parallel protocols. `SituationFrame` does not
+compete with `SituationCapsule`; it is the latter's core world projection. `AgentCognitiveEnvelope`
+does not compete with `AgentResponseEnvelope`; it is an optional typed payload.
+
+## 20.3 Mission and session
+
+A durable mission binds objective, hard constraints, protected interests, asymmetric loss,
+capabilities, privacy projection, budgets, baseline/current anchors, success/failure/stop predicates,
+decision deadline, escalation posture, active cases/plans/effects/obligations, and terminal proof.
+Objective changes create explicit revisions and invalidate dependent work; they cannot hide in a
+prompt.
+
+A session owns presentation convenience and runtime continuity, not truth. It binds principal,
+mission, current anchor, registered view, continuation cursors, subscriptions, and a session-local
+symbol table. Compact aliases reduce tokens but are scoped by session, symbol-table generation,
+visible revision, capability projection, expiry, and invalidators. They never replace durable IDs or
+leak hidden objects.
+
+## 20.4 Situation Capsule
+
+`SituationCapsule` is the primary read response for open/resume/orient. It contains:
+
+- the task-relative `SituationFrame`;
+- meaningful change since the acknowledged fingerprint;
+- mission objective, criteria, authority, deadline, and pressure-aware budgets;
+- attention frontier and active hypotheses;
+- coverage, sensor, clock, calibration, model, archive, transfer, and effect degradation together
+  with semantic impact;
+- live plans, preparations, obligations, leases, waits, approvals, and indeterminate effects;
+- invalidated assumptions, plans, aliases, certificates, and absence claims;
+- capability-filtered `ActionAffordance` frontier;
+- selected `ContextPack`, compression receipt, stable handles, continuation, validity, and
+  deterministic decision fingerprint.
+
+The compact representation may omit optional detail but may never omit a mission-critical hard
+clamp, contradiction, unobservable domain, invalidation, active obligation, or unsafe-retry state.
+The compression receipt names selected/omitted classes, transformations, coverage, stop reason,
+critical-preservation checks, output digest, and priced expansion handles.
+### 20.4.1 Evidence–possibility–control envelope
+
+The primary read publication deliberately contains more than a nominal world estimate. Its inner
+`WorldEnvelope` separates:
+
+- the nominal explanation used for compact orientation;
+- a certified core of positive facts and witnessed absences;
+- material alternative worlds still compatible with current evidence;
+- protected adversarial residuals that cannot be ruled out because of coverage, continuity,
+  calibration, clock, model, privacy, or authority limits;
+- facts common to all retained worlds;
+- unresolved dimensions and the cheapest discriminating affordances.
+
+The outer capsule adds a `controlEnvelope` categorizing affordances as robust across the envelope,
+conditional on named worlds, information-gathering, wait/watch, blocked, or unavailable. Plans bind
+the exact WorldEnvelope digest and record the worlds in which each step is valid or unsafe.
+
+This makes closed-loop security reasoning explicit. The system may optimize the representation of
+possible worlds, but it may not eliminate a protected high-consequence residual because it ranks
+poorly. An irreversible or high-consequence effect must be robust across all protected material
+worlds or carry explicit branch assumptions, current discriminating evidence, approval, and
+residual-risk acceptance.
+
+
+## 20.5 Epistemic discipline
+
+Knowledge state, provenance class, hypothesis disposition, access transform, and operation/effect
+outcome are orthogonal axes. In particular:
+
+- `unknown` is not false;
+- `not_observable` is not no detection;
+- `redacted` is not absent;
+- `stale` is not current;
+- `indeterminate` is not failure or success;
+- `estimated` never launders a model output into an observation;
+- a `refuted` hypothesis can contain individual known propositions;
+- an empty result is an absence claim only with authorized-domain, continuity, health, calibration,
+  query-recall, exclusion, budget, and stop certificates.
+
+Every consequential proposition remains addressable as a `KnowledgeCell` with evidence/provenance,
+validity, uncertainty, contradictions, decision relevance, and hydration handles.
+
+## 20.6 Small public operation grammar
+
+The `fss/1` public grammar has exactly fourteen operations:
 
 ```text
-fss property init|show
-fss sensor discover|add|probe|start|stop|health|doctor
-fss observe snapshot|delta
-fss event list|show|explain|evidence|resolve
-fss calibration plan|ingest|solve|verify|activate
-fss coverage show|blind-spots|simulate
-fss archive status|verify|restore|migrate
-fss model list|qualify|shadow|activate|rollback
-fss adapter matrix|qualify|shadow|activate
-fss privacy show|mask-plan|retention-plan|delete-plan
-fss alert prepare|commit|status
-fss evidence export-prepare|export-commit
-fss lab replay|fault|red-team|bundle
+session.open   session.resume   session.orient   session.follow
+query          investigate      plan             commit
+wait           cancel           explain          handoff
+feedback       doctor
 ```
 
-## 20.3 MCP read resources/tools
+The richer control loop—prioritize, inspect, hydrate, hypothesize, acquire, compare, simulate,
+prepare, monitor, reconcile, resolve, coordinate, and learn—is expressed through typed targets,
+intent families, case transitions, plan-step kinds, explain modes, work claims, and payload schemas
+under those operations. This keeps the grammar learnable without sacrificing precision.
 
-- status and capabilities;
-- sensor list/health/coverage;
-- anchored observation delta;
-- event query/show/explain/evidence handles;
-- calibration/geometry/coverage status;
-- archive and obligation status;
-- search and similar incidents;
-- doctor/support bundle plan.
+All public surfaces use the same AOP and AVIEW registries. A transport can omit an unqualified
+operation; it cannot rename, weaken, strengthen, or privately reimplement it.
+### 20.6.1 Contract basis and universal request/response envelopes
 
-## 20.4 MCP effects
+Every registered operation accepts `AgentRequestEnvelope` and returns `AgentResponseEnvelope`.
+`ContractBasis` freezes the `fss/1` protocol, schema catalog, ontology, operation/view/capability/
+error/cost registries, producer release, and accepted nightly used for interpretation. The request
+envelope adds exact session/mission/anchor/workspace preconditions, view, targets, typed payload,
+budget/deadline, requested capability/privacy projection, idempotency, continuation, expected
+decision fingerprint, hydration ceiling, compression policy, and taint.
 
-Prepared effects only:
+The operation registry is the only mapping from an `AOP-*` verb to its typed request payload.
+Transport adapters may omit unsupported operations but cannot reinterpret fields or create a
+parallel parameter surface. Contract-basis mismatch fails closed and returns a discovery or
+upgrade affordance.
 
-- alert acknowledgement/dispatch under grant;
-- PTZ plan/commit;
-- retention/privacy/export/deletion plan/commit;
-- activation/rollback;
-- repair plan/apply.
 
-No generic shell, SQL, filesystem, vendor method, or arbitrary model prompt tool. Drone flight is
-absent.
+## 20.7 Registered views and semantic zoom
 
-## 20.5 Budgets
+The initial views are:
 
-Request budgets include time, bytes, rows, tokens, evidence hydration, model calls, accelerator
-work, and sealed laboratory-oracle calls when the request runs in a qualification profile. Partial initial results return continuation rather than exceeding budget. Budget
-exhaustion is not a generic timeout and carries what completed.
+- `pulse`: tiny meaningful-delta/health/coverage/effect heartbeat;
+- `brief`: the primary Situation Capsule;
+- `case`: hypothesis/evidence/discriminator/stop-rule investigation view;
+- `forensic`: broad exact evidence/receipt/replay view;
+- `operation`: one durable plan/effect/obligation cockpit;
+- `handoff`: minimum sufficient resumption state;
+- `decision_diff`: why a conclusion/priority/plan/affordance changed;
+- `epistemic_map`: domain map of knowledge, ignorance, conflict, redaction, and observability.
 
-## 20.6 Anchors and races
+Semantic handles support progressive hydration from identity (`H0`), through semantic synopsis
+(`H1`) and decision artifact (`H2`), to authorized source evidence (`H3`) and qualification-only
+laboratory expansion (`H4`). Hydration reveals more authorized detail without rebinding identity or
+changing the basis anchor.
 
-Read results carry anchor. Prepared effects bind an anchor/precondition digest. If state changes,
-commit returns stale-precondition and the agent replans. Multi-agent leases/fences prevent two
-controllers from racing PTZ/retention/activation.
+## 20.8 Natural-language compilation
 
-## 20.7 Taint and prompt injection
+Natural language is convenience input only. It compiles into an inspectable `AgentQueryPlan` that
+names interpretation, targets, anchor, view, authority/privacy projection, ambiguity, taint, bounds,
+query stages, expected cost, completion/absence requirements, and output schema.
 
-Camera names, OCR, audio transcripts, vendor metadata, operator notes, model output, imported docs,
-and web content are untrusted data. They cannot create capabilities or tool calls. Explanations
-quote/cite them with taint and source spans.
+Ambiguous low-risk reads may return alternatives or ask for refinement. Ambiguous consequential
+intent cannot cross the effect boundary. Untrusted OCR, audio transcripts, metadata, vendor text,
+model prose, and retrieved documents retain taint and can be quoted as evidence but never treated as
+instructions or capabilities.
 
-## 20.8 Token economy
+## 20.9 Investigations and value of information
 
-The server shapes compact semantic projections:
+An `InvestigationCase` is the durable unit of epistemic work. It contains the question and decision,
+competing hypotheses, knowns/unknowns/assumptions, support and contradiction, predicted
+observations, falsifiers, shared failure domains, discriminating probes, deadline, loss matrix,
+stop rules, findings, residual uncertainty, and next frontier.
 
-- only changed/high-attention entities;
-- quantized/summary geometry with handles;
-- evidence digests and selected crops rather than full media;
-- score components and top contradictions;
-- continuation and suggested next queries;
-- deterministic schema labels.
+Probe selection optimizes expected decision-loss reduction per resource, not information volume.
+Hard safety, privacy, observability, minimum-evidence, deadline, and obligation floors are applied
+before adaptation. Submodular selection and graph coverage can choose a diverse minimum evidence
+set; a cheap probe that separates live hypotheses dominates an expensive generic expansion.
 
-Routine monitoring should require hundreds, not tens of thousands, of tokens.
+## 20.10 Affordance frontier
 
-## 20.9 Agent evaluation
+Every nonterminal response returns capability-valid `ActionAffordance` rows or an explicit
+blocked/waiting/terminal/not-observable reason. Each affordance declares:
 
-FSS becomes an agent benchmark through tasks such as:
+- addressed objective component or uncertainty;
+- expected information and objective gain;
+- latency, token, byte, model, graph, CPU/accelerator, energy, network, storage, privacy, operator,
+  and effect-risk costs;
+- hard preconditions, authority, approvals, leases/fences, and expiry;
+- reversibility, blast radius, failure modes, invalidators, safe fallback, alternatives, and
+  expected terminal evidence.
 
-- diagnose camera coverage failure;
-- investigate ambiguous event under budget;
-- design next observation/calibration path;
-- reconcile archive/alert indeterminacy;
-- reduce false alarms without hurting sealed threat recall;
-- manage multiple agents with leases;
-- recover from firmware/model drift;
-- produce a privacy-minimized evidence export.
+Hard constraints run first. FSS returns a decomposed nondominated frontier and sensitivity rather
+than an opaque universal utility score. Ranking never grants authority.
 
-The agent is scored on semantic correctness, evidence use, cost, time, effects, recovery, and
-calibration—not just final answer.
+Waiting is itself an affordance: it states expected evidence, wake predicate, deadline, opportunity
+cost, fallback, owner, cancellation behavior, and how silence is certified.
+
+## 20.11 Control lifecycle
+
+`plan` produces an immutable contingent DAG whose step types distinguish observation, computation,
+simulation, decision, preparation, commitment, verification, wait, repair, checkpoint, and
+learning. It carries witnesses, assumptions, contingencies, budgets, alternative plans, cost/risk/
+value vector, capabilities, and terminal proof.
+
+`commit` revalidates the exact prepared digest, anchor, witnesses, capabilities, approvals, leases,
+and fences before any effect. `wait`/`session.follow` observe durable progress. `cancel` performs
+request→drain→reconcile/compensate→finalize without erasing the record. `explain` supports why,
+why-not, what-changed, what-if, and reconciliation evidence. Completion means terminal semantic
+postconditions, not dispatch acceptance.
+
+## 20.12 Multi-agent coordination and handoff
+
+Agents speculate in private branches and publish immutable findings with evidence, assumptions,
+coverage, method receipts, epistemic state, confidence/calibration, and withdrawal/supersession
+semantics. Time-bounded work claims reduce duplicate effort but convey no effect authority. Shared
+case boards are revisioned; mutable scratch prose is not truth.
+
+A `HandoffCapsule` is a root-last object graph containing mission/objective, Situation Capsule,
+active cases/hypotheses/findings, plans/preparations/obligations/indeterminate effects, leases and
+claims, assumptions/invalidations, budgets/authority, aliases, continuation, expiry, and safe next
+affordances. Resume rebases it against current authority and world state and explicitly reports
+staleness rather than pretending continuity.
+
+## 20.13 Accretive learning
+
+A resolved mission may publish an `ExperienceCapsule` containing original situation signature,
+objectives, predictions, selected plan, execution episodes, receipts, outcomes, residual
+uncertainty, resource use, failure signatures, applicability, counterexamples, privacy class, and
+expiry. It can emit advisory feedback or learning proposals for:
+
+- hard-negative and red-team fixtures;
+- reusable investigation procedures and stop rules;
+- adapter/model/calibration quirks and compatibility warnings;
+- context-selection or affordance-ranking improvements;
+- runbooks, anti-patterns, and qualification scenarios;
+- policy/model/threshold changes that require separate validation and activation.
+
+No learning silently mutates truth, evidence, capability, privacy, retention, active policy,
+identity, or alert thresholds. Confidence decays; harmful outcomes count asymmetrically; trauma-guard
+logic can demote, retire, or invert a procedure into an anti-pattern. Accretion is measured by
+held-out future mission improvement, not by memory volume.
+
+## 20.14 Agent response and errors
+
+Every public result uses `AgentResponseEnvelope`, carrying operation/session/mission identity,
+input/output anchors, four-valued runtime outcome plus partial/refused/indeterminate classifications,
+typed payload schema, knowledge/completeness summary, warnings/degradation, budget account, proof
+pointers, affordances, retry class, continuation, validity, and decision fingerprint.
+
+Errors preserve valid partial results and state exactly what completed, what did not start, what may
+have happened, which assumptions or artifacts became invalid, whether unchanged retry is safe, and
+which refresh, narrow, repair, rebase, reconcile, approval, or alternative operation is valid.
+
+## 20.15 CLI, MCP, TUI, desktop, mobile, and robot docs
+
+The Rust API is semantic authority. CLI, MCP, TUI, reports, desktop, and constrained mobile review
+are projections of the same operation/view registries and schemas. A button is not a new effect; a
+MCP tool is not a new authority path. Canonical payload and decision digest are identical for fixed
+principal, mission, anchor, input, operation, and view.
+
+Machine discovery exposes capabilities, operations, views, schemas, errors, costs, and robot docs.
+Long work is application-owned durable state, not the lifetime of an MCP request. Transport
+qualification remains separate from semantic qualification.
+
+## 20.16 Token and total-resource economy
+
+FSS minimizes **decision loss per total resource**, not token count alone. Context shaping prefers
+semantic deltas, stable aliases, typed facts, evidence handles, quantized geometry, minimal proof
+subgraphs, and selected crops/keyframes. It accounts for tokens, bytes, rows, graph operations,
+model calls, CPU/accelerator time, energy, network, storage operations, privacy exposure, operator
+burden, and effect risk.
+
+Pressure-aware degradation is explicit: optional refinements disappear before evidence floors,
+coverage facts, contradictions, obligations, or safety/privacy clamps. The response states exactly
+which precision, freshness, model diversity, or completeness was lost.
+
+## 20.17 Qualification
+
+`QL-AGENT-001` and `GATE-115` require deterministic cold orientation; critical-preserving
+compression; accurate decision-impact deltas; knowledge/provenance/disposition separation;
+qualified absence semantics; cross-surface transcripts; ambiguity/taint/capability tests;
+affordance Pareto/value/cost/sensitivity tests; investigation/VOI/stop-rule replay; plan/effect/
+reconciliation fault campaigns; multi-agent branch/claim/finding schedules; handoff/resume under
+drift; learning noninterference and trauma guard; and held-out task correctness per total resource.
 
 ---
 
@@ -2922,11 +3296,11 @@ not encourage harmful intrusion tactics beyond what is necessary for defensive t
 
 Every episode interval is labeled as one of:
 
-- `Observable`: sufficient sensor evidence exists in principle;
-- `PartiallyObservable`: evidence exists but key discriminants are missing;
-- `NotObservable`: the sensor mesh could not perceive the event;
-- `SensorFailed`: expected coverage absent due to failure;
-- `GroundTruthUncertain`.
+- `observable`: sufficient sensor evidence exists in principle;
+- `partially_observable`: evidence exists but key discriminants are missing;
+- `not_observable`: the sensor mesh could not perceive the event;
+- `sensor_failed`: expected coverage absent due to failure;
+- `ground_truth_uncertain`.
 
 “Never miss” is evaluated only with respect to declared observable threat episodes. Not-observable
 cases drive coverage improvement and sensor-health alerts; they are not mislabeled model false
@@ -3905,7 +4279,33 @@ bounded without turning derived systems into authority.
 capability noninterference, deterministic packs, held-out retrieval quality, and same-binary proof
 before any optimized path replaces reference.
 
-## 28.19 WP-180 — CLI, MCP, and operator experience
+## 28.19 WP-175 — Agent cognitive operating layer
+
+**Purpose:** make the complete surveillance fabric legible and efficiently controllable as one
+mission-relative epistemic system rather than a collection of subsystem APIs.
+
+**Deliverables:**
+
+- `fss/1` operation, view, resource, error/retry, and schema registries;
+- mission/session/workspace and root-last handoff protocols;
+- `KnowledgeCell`, `SituationCapsule`, inner `SituationFrame`, `MeaningfulDelta`, `ContextPack`, and semantic-compression receipts;
+- durable investigations, competing hypotheses, predicted observations, falsifiers, and stop rules;
+- value-of-information and submodular context/evidence selection under hard clamps;
+- decomposed Pareto-ranked `ActionAffordance`s;
+- immutable contingent plans, obligation cockpit, and evidence-backed explain modes;
+- immutable work claims/findings/disagreements for multi-agent cooperation;
+- execution episodes, feedback, learning proposals, trauma guard, and held-out accretion tests;
+- robot docs and transport-equivalence transcript corpus.
+
+**Dependencies:** WP-010, WP-030, WP-100, WP-170, and effect/obligation contracts; can begin against
+the deterministic in-memory reference deployment before hardware adapters.
+
+**Exit evidence:** deterministic cold-start orientation, semantic compression counterfactuals,
+coverage/absence honesty, capability/taint noninterference, value-of-information task gains,
+plan/effect/reconciliation correctness, multi-agent no-duplicate-work tests, handoff/resume under
+world drift, and sealed task-level cost/quality receipts.
+
+## 28.20 WP-180 — CLI, MCP, and operator experience
 
 **Purpose:** expose the system efficiently to humans and agents without leaking ambient authority.
 
@@ -3925,7 +4325,7 @@ before any optimized path replaces reference.
 **Exit evidence:** protocol/schema snapshots, cancellation, multi-agent races, token budgets,
 accessibility/mobile tests, no generic command surfaces.
 
-## 28.20 WP-190 — Security, privacy, local qualification, and release
+## 28.21 WP-190 — Security, privacy, local qualification, and release
 
 **Purpose:** make the system deployable and releasable without weakening the architecture or
 requiring GitHub-hosted capacity.
@@ -3971,7 +4371,8 @@ or pass with exclusions. Later gates do not retroactively widen earlier evidence
 | `GATE-080` | Threat gauntlet | Sealed event-level evaluation, fixed operating points, confidence bounds, hard negatives |
 | `GATE-090` | Proprietary adapters | Exact device/firmware/account/region tuples; shadow qualification; drift quarantine |
 | `GATE-100` | DJI Flip capture | Supported repeatable capture/import tuple or explicit unsupported report; manual flight only |
-| `GATE-110` | Agent/operator surface | Stable CLI/MCP schemas, token budgets, leases/fences, capability denial, mobile review |
+| `GATE-110` | Agent/operator presentation | Transport-equivalent CLI/MCP/TUI/report rendering, accessibility/mobile review, stable JSON and robot docs |
+| `GATE-115` | Agent epistemic control and accretion | Exact ContractBasis/request-response envelopes; SituationCapsule/Frame/WorldEnvelope and knowledge/query/affordance/case/plan/handoff/experience schemas; possible-world and task-level gauntlets; cost, robustness, safety, continuity, and accretion receipts |
 | `GATE-120` | Release candidate | Security/privacy/DR/soak/perf/provenance proof bundle and honest generated status |
 
 ## 29.2 GATE-000 detailed criteria
@@ -4080,7 +4481,48 @@ or pass with exclusions. Later gates do not retroactively widen earlier evidence
 - UI exposes uncertainty, degradation, privacy transforms, and evidence provenance;
 - accessibility and mobile incident workflow pass.
 
-## 29.11 GATE-120 release criteria
+## 29.11 GATE-115 agent-cognition criteria
+
+- every lower semantic owner projects through a capability/privacy-filtered `CognitiveFacet` with
+  the canonical coordinates; mixed-anchor facets, owner-semantic drift, hidden side reads, and
+  effect authority in facets fail closed;
+- every operation is carried by the same canonical `AgentRequestEnvelope` and
+  `AgentResponseEnvelope`, with an exact `ContractBasis`; Rust API, CLI, MCP, TUI, report, replay,
+  and handoff transcripts agree on operation-specific typed payload semantics;
+- one cold request produces a coherent bounded `brief` SituationCapsule with an inner SituationFrame with exact anchor, coverage,
+  omissions, contradictions, budgets, evidence handles, and non-dominated next affordances;
+- every SituationFrame carries a reconstructible `WorldEnvelope` whose certified core,
+  certified absences, material alternatives, protected adversarial residuals, common invariants,
+  unresolved dimensions, coverage boundaries, collapse witnesses, and digest agree across
+  presentations and handoff/ATP reconstruction;
+- knowledge state, provenance class, and hypothesis disposition remain distinct through CLI/MCP,
+  context compression, resume, and handoff;
+- `session.follow` never coalesces away terminal transitions, coverage loss, contradictions, plan
+  invalidation, or effect uncertainty;
+- every empty/absence response carries domain, continuity, authorization, model floor, exclusions,
+  and completeness/stop reason;
+- competing-hypothesis cases retain predictions/falsifiers and select probes by measured decision
+  value under safety/privacy/observability clamps;
+- affordance rankings are deterministic, decomposed, sensitivity-tested, capability-filtered before
+  count/ranking, and cannot grant effect authority;
+- every affordance is classified as robust, conditional, information-gathering, wait/watch,
+  blocked, or unavailable against the protected WorldEnvelope; no high-loss residual disappears
+  through ranking, compression, view changes, model reranking, transfer, or handoff without an
+  evidence-linked collapse witness;
+- control plans bind the exact WorldEnvelope digest, name supported and unsafe worlds per step,
+  and fail closed when the frontier expands, splits, loses coverage, or otherwise invalidates the
+  claimed robustness class;
+- plan→commit→wait/cancel→verify/reconcile produces terminal or explicitly indeterminate outcomes
+  under crash/lost-ACK schedules with no duplicate effects;
+- multi-agent work claims reduce duplicate work and do not confer effect authority;
+- handoff/resume under anchor/policy/model/calibration drift explicitly invalidates stale state and
+  beats full-history rediscovery on task success per resource;
+- feedback/learning proposals cannot silently mutate truth, active policy, model, thresholds, or
+  authority and harmful proposals are demoted/retired by the trauma guard;
+- sealed scenario/task reports include correctness, calibration, evidence use, unsafe action rate,
+  tokens/calls/model work/latency, obligation closure, handoff loss, and operator intervention.
+
+## 29.12 GATE-120 release criteria
 
 - source snapshot is clean and immutable;
 - every Asupersync/Franken-suite dependency is an exact clean revision in the release closure;
@@ -4098,7 +4540,7 @@ or pass with exclusions. Later gates do not retroactively widen earlier evidence
 - workflows contain no unique release logic and GitHub-hosted runner absence is irrelevant;
 - public claims are mechanically derived from retained proof-bundle roots and expiry rules.
 
-## 29.12 Claim lifecycle
+## 29.13 Claim lifecycle
 
 Claims move through:
 
@@ -4111,7 +4553,7 @@ A claim expires when any load-bearing generation changes: device firmware, adapt
 preprocessing, policy threshold, calibration method, schema, runtime, platform, or corpus contract.
 Some changes can use delta qualification; the registry must justify it.
 
-## 29.13 Versioning and latest-nightly promotion
+## 29.14 Versioning and latest-nightly promotion
 
 Software, schemas, durable formats, model packages, adapter tuples, calibration generations, and
 policy generations version independently but are cross-bound in receipts. “Latest nightly” is not
@@ -4119,7 +4561,7 @@ an ambient mutable input: a probe records the candidate, all required gates run,
 classified, and a dedicated reviewed commit promotes that exact toolchain. Releases use the pin;
 they never auto-upgrade the compiler.
 
-## 29.14 Release channels
+## 29.15 Release channels
 
 - **Reference:** deterministic oracles and architecture surfaces; not a deployment claim.
 - **Lab:** replay, oracle, and authorized real-device experimentation; no production safety claim.
@@ -4128,7 +4570,7 @@ they never auto-upgrade the compiler.
 
 A channel is not aggregate readiness. Every release lists excluded and degraded surfaces.
 GitHub Releases can distribute bytes, but local DSR qualification decides whether a release root is
-publishable. See [`LOCAL_QUALIFICATION_AND_RELEASE.md`](docs/LOCAL_QUALIFICATION_AND_RELEASE.md).
+publishable. See [`LOCAL_QUALIFICATION_AND_RELEASE.md`](LOCAL_QUALIFICATION_AND_RELEASE.md).
 
 ## 30. Risk register and open questions
 
@@ -4231,7 +4673,7 @@ FSS crates always forbid unsafe. A needed unsafe/platform primitive can exist on
 audited first-party substrate crate with a safe public contract and its own release evidence. A
 required foreign service is still a foreign production runtime and is forbidden.
 
-See [`DEPENDENCY_CONSTITUTION.md`](docs/DEPENDENCY_CONSTITUTION.md).
+See [`DEPENDENCY_CONSTITUTION.md`](DEPENDENCY_CONSTITUTION.md).
 
 ## 32. One version universe and semantic transactions
 
@@ -4291,7 +4733,7 @@ A package can be rejected for unsupported operators. FSS does not interpret arbi
 code or download model assets at runtime. Quantization, preprocessing, and accelerator changes are
 new generations. Foreign frameworks are differential oracles only.
 
-See [`PURE_RUST_MODEL_RUNTIME.md`](docs/PURE_RUST_MODEL_RUNTIME.md).
+See [`PURE_RUST_MODEL_RUNTIME.md`](PURE_RUST_MODEL_RUNTIME.md).
 
 ## 36. ATP archive, replication, repair, and deletion
 
@@ -4331,8 +4773,29 @@ checksums, signatures, SBOM, provenance, source/dependency and qualification man
 then downloaded and reverified. Signing authority is separate from builders.
 
 The project requires no GitHub-hosted runner. See
-[`LOCAL_QUALIFICATION_AND_RELEASE.md`](docs/LOCAL_QUALIFICATION_AND_RELEASE.md) and
+[`LOCAL_QUALIFICATION_AND_RELEASE.md`](LOCAL_QUALIFICATION_AND_RELEASE.md) and
 [`docs/deep-dives/DOODLESTEIN_SELF_RELEASER.md`](docs/deep-dives/DOODLESTEIN_SELF_RELEASER.md).
+
+## 39. Agent cognition, control, and accretion
+
+The agent substrate is an orthogonal control membrane over authority, cognition, effects, and ATP.
+It composes lower owners into mission-relative `SituationCapsule`s with inner `SituationFrame`s, durable investigations,
+value-of-information acquisition, decomposed affordance frontiers, witnessed plans, obligation
+proofs, execution episodes, learning proposals, and root-last handoffs. It is explicitly not a
+fourth truth plane.
+
+The substrate imports the strongest agent-facing ideas of the Franken stack: Asupersync-owned
+sessions and obligations; FrankenSQLite anchors/witnesses; Frankensearch progressive retrieval and
+absence certificates; FrankenGraphDB branches and one-version projections; FrankenNetworkX minimal
+evidence/decision subgraphs and deterministic ties; Dwarf Fortress MCP’s small transactional
+control vocabulary; FastMCP Rust’s bounded request ownership; Eidetic Engine’s deterministic packs,
+outcome attribution, trauma guard, and resumable memory.
+
+Its defining property is **bidirectional legibility**: every upward abstraction keeps evidence and
+validity handles; every downward action states mission relevance, authority, cost, risk,
+invalidators, and terminal proof. This makes the whole system a linked tower rather than an
+assemblage. See `AGENT_COGNITION_AND_CONTROL.md`, `AGENT_COGNITIVE_CONTROL_PLANE.md`,
+`AGENT_OPERATING_MODEL.md`, and `architecture/agent_contracts.json`.
 
 ---
 
@@ -4561,7 +5024,7 @@ This example illustrates semantic stages without claiming implementation.
 9. Temporal verifier finds crawling plus fence interaction; household familiarity evidence is
    absent; weather/animal hypotheses lose support but are not deleted.
 10. Event revision `E9.1` is `Candidate`, threat interval `[0.55, 0.78]`, observability
-    `PartiallyObservable` because one camera is rain-obscured.
+    `partially_observable` because one camera is rain-obscured.
 11. Policy requests a higher-resolution crop and additional frames, not an alert yet.
 12. New evidence shows hand interaction with a locked gate and a face-obscuring hood; sensor-health
     model confirms the dark region is not camera failure.
@@ -4613,34 +5076,60 @@ This example illustrates semantic stages without claiming implementation.
 ## Appendix D — Example agent interaction
 
 ```text
-agent: fss observe attention --deployment home --budget-tokens 900 --json
-fss:   anchor=A19; two items:
-       1. rear-yard camera image usefulness degraded by rain droplets
-       2. event E9.2 high severity, alert delivery indeterminate
+agent: fss session resume --handoff root:overnight-42 --view brief --json
+fss:   AOP-002; mission=M7; capsule=S31; anchor=A19→A27
+       changed: rear-yard observability degraded, alert effect X4 remains indeterminate,
+       archive graph G8 has verified children but no published root
+       invalidated: assumption K12, absence claim N4, plan step P2.3, aliases @e1/@s2
+       affordances: reconcile X4; inspect camera quality; resume archive publication
 
-agent: fss event explain E9.2 --anchor A19 --include contradictions --json
-fss:   returns evidence graph summary, model/policy generations, uncertainty,
-       redacted crop handles, and suggested query for provider reconciliation
+agent: fss investigate --case I9 --transition advance --json
+fss:   AOP-006; live hypotheses:
+       H1 person crawling toward basement window
+       H2 raccoon crossing behind bins
+       H3 replay/freeze artifact from rear camera
+       cheapest nondominated discriminator: hydrate two redacted keyframes plus query
+       side-camera continuity; expected loss reduction 0.61; 420 tokens; no effect authority
 
-agent: fss alert status --event E9.2 --json
-fss:   prepared effect P5; one provider attempt; request transmitted;
-       callback absent; state=Indeterminate; safe next action=reconcile, not resend
+agent: fss query --target evidence-hydration --handles ev:17,ev:22 --view case --json
+fss:   AOP-005; H2 weakened by scale/trajectory; H3 refuted by packet continuity and
+       independent side-camera observation; H1 supported but front-window path remains unknown
+       next affordances: wait 2.0 s for predicted side-gate observation, or prepare resident alert
 
-agent: fss alert reconcile-plan P5 --json
-fss:   sealed read/provider-query plan Q2; cost and expiry; requires AlertReconcile grant
+agent: fss wait --case I9 --predicate side_gate_observation --deadline 2s --json
+fss:   AOP-009; wake=meaningful_delta; person observed at side gate carrying pry-like object;
+       H1 supported; event revision E12.4; alert plan PA7 available
 
-agent: fss alert reconcile-commit Q2 --json
-fss:   provider message ID verified; receipt=VerifiedDelivered; no new notification sent
+agent: fss plan --objective alert_and_preserve_evidence --event E12.4 --json
+fss:   AOP-007; immutable contingent plan PA7; effect step prepared but not authorized;
+       archive/evidence children, required grant, lease/fence, invalidators, cost/risk, and
+       terminal proof are explicit
 
-agent: fss repair plan camera:rear-yard --reason image_usefulness --json
-fss:   proposes lens inspection checklist and temporary coverage degradation;
-       no remote camera mutation; includes blind-region consequences
+agent: fss commit --plan PA7 --grant alert:oncall --json
+fss:   AOP-008; alert request transmitted; provider ACK lost; operation X4=indeterminate;
+       no automatic resend; reconciliation obligation O6 created
+
+agent: fss explain --mode why-not --subject resend:X4 --json
+fss:   AOP-011; resend is unsafe because first delivery may have happened;
+       provider lookup is cheaper and cannot duplicate notification
+
+agent: fss plan --intent reconcile --operation X4 --json
+agent: fss commit --plan PR2 --json
+fss:   provider message ID found; X4=verified_delivered; O6 terminal; no duplicate sent
+
+agent: fss feedback --event E12.4 --signal confirmed_threat --json
+fss:   AOP-013; publishes FeedbackProposal and ExperienceCapsule candidate;
+       proposes hard-negative contrast with prior raccoon cases and a new low-light scale fixture;
+       no active model/policy/threshold changed
+
+agent: fss handoff --mission M7 --view handoff --json
+fss:   AOP-012; root-last HandoffCapsule H44 with mission, SituationCapsule, case resolution,
+       evidence/proof roots, obligations, budgets, aliases, learning proposals, and continuation
 ```
 
-The agent never receives raw credentials, arbitrary SQL, generic vendor methods, or drone flight
-authority. It operates over semantic resources and prepared effects.
-
----
+At every step the agent sees one coherent anchor, explicit ignorance, priced expansion, safe retry
+semantics, and a typed next frontier. It never receives raw credentials, arbitrary SQL, generic
+vendor methods, free-form effect authority, or drone-control capability.
 
 ## Appendix E — Operation-cost examples
 
@@ -4706,7 +5195,7 @@ A plan can select fast sparse calibration before optional dense reconstruction.
 
 ---
 
-## Appendix F — First 200 implementation issues
+## Appendix F — First 240 implementation issues
 
 These issue titles are deliberately granular enough to seed Beads/GitHub tracking. The second hundred operationalizes the deeper Franken imports, pure-Rust media/model kernels, one-version universe, certified graph layer, ATP, and local DSR release doctrine. Dependencies follow the work-package graph.
 
@@ -4910,6 +5399,67 @@ These issue titles are deliberately granular enough to seed Beads/GitHub trackin
 198. `FSS-198` Expand operation cost registry to all hot and consequential paths.
 199. `FSS-199` Build integrated one-version media→model→graph→event→ATP replay scenario.
 200. `FSS-200` Run the first full local DSR release rehearsal and retain negative evidence.
+201. `FSS-201` Freeze the `fss/1` public operation and resource registry.
+202. `FSS-202` Implement mission contract negotiation and immutable revision model.
+203. `FSS-203` Implement Asupersync-owned agent sessions with explicit grants, budgets, and closure receipts.
+204. `FSS-204` Implement versioned `AgentWorkspace` / `AgentSessionCapsule` persistence and rebase.
+205. `FSS-205` Implement `KnowledgeCell` state/provenance/validity/uncertainty core.
+206. `FSS-206` Implement deterministic `SituationCapsule` composition with an inner `SituationFrame` over the reference deployment.
+207. `FSS-207` Implement NOW/CHANGED/WHY/UNKNOWN/AT-RISK/NEXT SituationFrame grammar plus obligation, resource, affordance, context, and compression capsule sections.
+208. `FSS-208` Implement `MeaningfulDelta` classification and protected non-coalescible transitions.
+209. `FSS-209` Implement silence certificates and exact continuation cursors.
+210. `FSS-210` Implement semantic handles and H0–H4 bounded hydration.
+211. `FSS-211` Implement semantic context packs and compression receipts.
+212. `FSS-212` Build omission counterfactual tests proving load-bearing evidence preservation.
+213. `FSS-213` Implement durable investigation case state machine and immutable revisions.
+214. `FSS-214` Implement competing-hypothesis workspace with support, contradiction, missing evidence, and shared failure domains.
+215. `FSS-215` Implement predicted-observation, falsifier, discriminator, and stop-rule contracts.
+216. `FSS-216` Implement expected decision-loss and value-of-information reference scheduler.
+217. `FSS-217` Implement submodular context/evidence selector with hard safety/privacy/coverage inclusions.
+218. `FSS-218` Implement `ActionAffordance` decomposition and Pareto frontier.
+219. `FSS-219` Implement affordance sensitivity and invalidation tests.
+220. `FSS-220` Implement plan-step type system and witnessed contingent DAG compiler.
+221. `FSS-221` Implement agent obligation cockpit and terminal-proof projection.
+222. `FSS-222` Implement `explain` why/why-not/what-changed/what-if modes.
+223. `FSS-223` Implement minimal evidence/decision subgraph selection and expansion handles.
+224. `FSS-224` Implement recovery-rich error envelope and safe-next-operation generator.
+225. `FSS-225` Implement private agent branches and immutable shared case-board revisions.
+226. `FSS-226` Implement bounded `AgentWorkClaim` leases with no-effect-authority proof.
+227. `FSS-227` Implement immutable multi-agent findings, disagreements, and conflict reports.
+228. `FSS-228` Implement root-last ATP `HandoffCapsule` publication and closure verification.
+229. `FSS-229` Implement handoff resume under anchor/policy/model/calibration drift.
+230. `FSS-230` Implement immutable `ExecutionEpisode` and outcome-attribution hypotheses.
+231. `FSS-231` Implement feedback proposals and evidence-linked adjudication/correction flow.
+232. `FSS-232` Implement learning proposal applicability, counterexample, expiry, and promotion states.
+233. `FSS-233` Implement harmful-outcome trauma guard and anti-pattern inversion.
+234. `FSS-234` Implement self-describing robot docs generated from operation/view/schema registries.
+235. `FSS-235` Implement direct Rust API, CLI, and MCP transcript-equivalence harness.
+236. `FSS-236` Build sealed agent scenario corpus for cold orientation, ambiguity, hard budgets, drift, and lost ACKs.
+237. `FSS-237` Implement agent task-quality, calibration, resource, safety, and handoff metrics.
+238. `FSS-238` Implement subsystem-command baseline for controlled agent-efficiency comparison.
+239. `FSS-239` Add `QL-AGENT-001` local qualification lane and proof-bundle schema.
+240. `FSS-240` Run the first end-to-end orient→investigate→plan→commit→verify→learn→handoff rehearsal.
+241. `FSS-241` Freeze `ContractBasis` canonical encoding, registry-digest computation, negotiation,
+     compatibility, and stale-basis refusal semantics.
+242. `FSS-242` Implement universal `AgentRequestEnvelope`/`AgentResponseEnvelope` dispatch with
+     operation-registry-owned typed payload validation and transcript equivalence.
+243. `FSS-243` Implement the deterministic reference `WorldEnvelope` builder over an exact
+     SituationFrame and evidence anchor.
+244. `FSS-244` Implement certified-absence objects with domain, continuity, authorization,
+     coverage, model-floor, exclusions, validity, and invalidation witnesses.
+245. `FSS-245` Implement material-alternative and adversarial-residual generation with protected
+     high-loss retention and shared-failure-domain accounting.
+246. `FSS-246` Implement robust/conditional/probe/wait/blocked affordance classification against a
+     factorized possible-world frontier.
+247. `FSS-247` Implement belief-space contingent-plan validation with per-step supported/unsafe
+     worlds, observable branch predicates, and envelope-digest revalidation.
+248. `FSS-248` Implement semantic possible-world compression receipts proving preserved certified
+     core, alternatives, protected residuals, invariants, and decision-equivalent control classes.
+249. `FSS-249` Build the sealed WorldEnvelope adversarial scenario corpus, including benign top-rank
+     but high-loss residual cases, coverage loss, model abstention, and shared-mode false
+     corroboration.
+250. `FSS-250` Prove ContractBasis, WorldEnvelope digest, knowledge/provenance/hypothesis state,
+     control-envelope classification, and safe-next-step equivalence across every public surface.
 
 The next tranche begins with search/graph/memory, full CLI/MCP/UI, proprietary adapter candidates,
 privacy deletion/export completion, installers, proof bundles, and GATE-120 operations.
@@ -4935,7 +5485,9 @@ inexpensive heterogeneous sensors
 + capability-scoped effects
 + deterministic replay and adversarial qualification
 + honest economic and privacy accounting
-= a trustworthy fused security mesh
++ one mission-oriented Situation Capsule and universal control grammar
++ evidence-gated accretive experience and handoff
+= a trustworthy fused security mesh that agents can drive coherently
 ```
 
 Anything less may make an attractive demo. This plan is designed to make a system that can survive

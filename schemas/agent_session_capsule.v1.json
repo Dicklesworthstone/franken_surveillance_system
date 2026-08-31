@@ -1,0 +1,299 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_session_capsule.v1.json",
+  "title": "Agent Session Capsule v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "sessionId",
+    "revision",
+    "principal",
+    "capabilityProjection",
+    "objectiveDigest",
+    "baseAnchor",
+    "currentAnchor",
+    "situationCapsuleDigest",
+    "activeHypotheses",
+    "assumptions",
+    "unknowns",
+    "notObservableDomains",
+    "epistemicDebt",
+    "openObligations",
+    "budgetLedger",
+    "bookmarkedEvidence",
+    "nextActions",
+    "decisionDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_session_capsule.v1"
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "priorCapsuleDigest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "principal": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "role": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "capabilityProjection": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "objectiveDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "baseAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "currentAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "situationFrameDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$",
+      "description": "Digest of the inner SituationFrame when materialized; SituationCapsule digest is the primary workspace root."
+    },
+    "hypothesisWorkspaceDigest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "activeHypotheses": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "assumptions": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "notObservableDomains": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "epistemicDebt": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "$ref": "#/$defs/epistemicDebtItem"
+      }
+    },
+    "activePlanDigest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "planFrontier": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "openObligations": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "leases": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "approvals": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "budgetLedger": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number"
+      }
+    },
+    "bookmarkedEvidence": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "decisionReceipts": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "effectReceipts": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "learningProposalIds": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "invalidatedItems": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "nextActions": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "reanchorTriggers": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "decisionDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    },
+    "situationCapsuleDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    }
+  },
+  "$defs": {
+    "epistemicDebtItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "debtId",
+        "assumption",
+        "deferredReason",
+        "dependentDecisions",
+        "consequenceIfWrong",
+        "cheapestTest",
+        "reviewTrigger"
+      ],
+      "properties": {
+        "debtId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "assumption": {
+          "type": "string"
+        },
+        "deferredReason": {
+          "type": "string"
+        },
+        "dependentDecisions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "consequenceIfWrong": {
+          "type": "string"
+        },
+        "cheapestTest": {
+          "type": "string"
+        },
+        "reviewTrigger": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

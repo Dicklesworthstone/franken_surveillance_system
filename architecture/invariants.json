@@ -411,6 +411,176 @@
       "id": "INV-082",
       "text": "A branch or counterfactual world may emit candidate intents only; fabricated branch state is never merged byte-for-byte into the live deployment.",
       "status": "normative"
+    },
+    {
+      "id": "INV-083",
+      "text": "Every decision-bearing agent response uses AgentResponseEnvelope, which may carry a typed cognitive envelope or other registered payload and always preserves anchor, epistemic state, completeness, budget, proof, next affordances, and continuity.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-084",
+      "text": "The primary agent read surface is an anchor-pinned SituationCapsule containing a task-relative SituationFrame, decision-impact delta, obligations, resource state, affordances, and a semantic compression receipt.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-085",
+      "text": "`known`, `estimated`, `unknown`, `conflicted`, `stale`, `not_observable`, `redacted`, `indeterminate`, and `not_applicable` remain distinct through retrieval, compression, rendering, resume, and handoff; provenance class and hypothesis disposition remain separate axes.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-086",
+      "text": "An evidence handle denotes one immutable evidence identity; hydration may reveal more authorized detail but may not rebind the handle to replacement evidence.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-087",
+      "text": "Every durable mission contains an immutable ObjectiveContract with hard constraints, budgets, authority, success, failure, stop, and terminal-proof predicates.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-088",
+      "text": "Every ControlPlan is an immutable contingent DAG whose observation, computation, simulation, decision, preparation, commitment, verification, repair, learning, and checkpoint steps are type-distinct.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-089",
+      "text": "Every ranked next action declares expected information gain, expected objective gain, estimated cost, risk, privacy exposure, authority, reversibility, invalidators, and terminal evidence.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-090",
+      "text": "No consequential effect may be committed from free-form prose or an unreviewed recommendation; commitment requires a prepared intent digest and current witness revalidation.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-091",
+      "text": "AgentSession state and its immutable AgentSessionCapsule snapshots are resumable; resume creates a new revision and explicitly records stale facts, invalidated assumptions, expired authority, obsolete aliases, and obsolete plan steps.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-092",
+      "text": "Context selection may remove redundancy but may not omit any contradiction, unobservable domain, active obligation, hard clamp, or evidence item whose removal can change the selected consequential action.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-093",
+      "text": "Agent plan execution is not complete until every consequential obligation is terminal, explicitly delegated, or retained as indeterminate with a named reconciliation path.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-094",
+      "text": "Learning proposals are outcome-attributed, evidence-linked, applicability-scoped, and advisory until explicit review, validation, and promotion.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-095",
+      "text": "Reusable procedures and memories include failure signatures, counterexamples, expiry, and harmful-outcome accounting; harmful evidence can demote, retire, or invert them into anti-patterns.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-096",
+      "text": "Multi-agent handoff uses a typed anchor-pinned HandoffCapsule containing mission, objective, situation, hypotheses, findings, plan frontier, obligations, unknowns, budgets, authority, aliases, invalidations, and next affordances; prose alone is insufficient.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-097",
+      "text": "Attention and value-of-information optimization are bounded by safety, privacy, coverage, and obligation clamps and may never starve protected high-loss hypotheses or urgent obligations.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-098",
+      "text": "Every agent decision replay names the exact objective contract, anchor, situation/context root, hypothesis revision, plan or selected action, policy generations, and decision digest.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-099",
+      "text": "Agent-facing semantic verbs have one registry and identical semantics across the Rust API, CLI, MCP, TUI, reports, and handoff capsules; transports may omit unqualified verbs but may not redefine them.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-100",
+      "text": "Resource reduction must surface the resulting loss of precision, coverage, freshness, model diversity, or terminal certainty and may never preserve confidence by silently doing less work.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-101",
+      "text": "Every agent interaction belongs to one durable mission or declares an explicit stateless read; both forms name principal, capability projection, evidence anchor, budget, and response schema.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-102",
+      "text": "Session-local aliases bind one global object identity and visible revision to a session and symbol-table generation; aliases never replace durable IDs or leak hidden object existence.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-103",
+      "text": "Agent deltas report semantic decision impact, including changed conclusions, invalidated assumptions and plans, changed obligations, restored or lost observability, and newly enabled or expired affordances.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-104",
+      "text": "Every investigation declares its question, decision, competing hypotheses, knowns, unknowns, assumptions, discriminators, probes, deadline, stopping rules, and residual uncertainty.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-105",
+      "text": "Natural-language requests compile into an inspectable typed AgentQueryPlan with ambiguity, taint, authority, privacy, anchor, budget, cost, and output-view decisions; prose cannot directly cross an effect boundary.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-106",
+      "text": "Affordance ranking applies hard constraints before optimization and returns a decomposed nondominated frontier; an opaque aggregate score cannot authorize an effect or hide risk, privacy, cost, or uncertainty.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-107",
+      "text": "Waiting is an explicit bounded affordance with expected evidence, wake predicates, deadline, opportunity cost, fallback, ownership, and cancellation semantics.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-108",
+      "text": "Agent errors and refusals preserve valid partial results and state what failed, what remains true, whether retry is safe, what may have happened, and which refresh, repair, reconcile, narrow, approval, or alternative operations are valid.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-109",
+      "text": "Resolved missions may emit ExperienceCapsules and learning proposals, but experience, memory, and feedback remain advisory until evidence-gated curation and cannot rewrite canonical truth or hard safety, privacy, capability, retention, identity, or alert policy.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-110",
+      "text": "Situation capsules, context packs, findings, handoffs, aliases, explanations, query plans, and experience capsules are privacy-governed derived data and participate in retention, export, legal hold, and graph-complete deletion.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-111",
+      "text": "No mission-critical fact, assumption, obligation, lease, indeterminate effect, or required next step may exist only in conversational context; durable mission, session, investigation, plan, finding, or handoff state is the continuity authority.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-112",
+      "text": "Every nonterminal agent response returns at least one currently valid typed affordance or an explicit blocked, waiting, unauthorized, terminal, or not-observable reason.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-113",
+      "text": "Agent efficiency is evaluated as evidence-grounded decision quality per time, tokens, bytes, model and graph work, energy, network and storage cost, privacy exposure, operator burden, and effect risk rather than raw call count.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-114",
+      "text": "Every compact agent projection carries a SemanticCompressionReceipt naming selected and omitted classes, transformations, completeness, critical-preservation checks, stop reason, output digest, and priced expansion handles.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-115",
+      "text": "The public operation and view registries are the sole agent-facing semantic source for Rust API, CLI, MCP, TUI, desktop, and mobile surfaces; internal protocol combinators must map deterministically to those registered operations.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-116",
+      "text": "Every SituationFrame carries an anchor-pinned WorldEnvelope separating the nominal estimate, certified facts and absences, material alternative worlds, protected adversarial residuals, common invariants, and unresolved dimensions; every SituationCapsule classifies affordances by robustness against that envelope, and ranking or compression cannot remove a protected high-consequence residual.",
+      "status": "normative"
     }
   ]
 }

@@ -16,7 +16,8 @@ earlier one, and passing a gate means retaining the required evidence rather tha
 | `GATE-080` | Threat-quality gauntlet | staged intrusion corpus, benign hard negatives, event AUPRC, recall/false-alert frontier, calibration, misses ledger |
 | `GATE-090` | Proprietary adapter lab | exact firmware/app compatibility for selected Wyze/AOSU workflows; no bypass; revocation and drift handling |
 | `GATE-100` | DJI Flip research bridge | authorized live-view or bounded import path; manual-only; current unsupported-SDK boundary remains explicit |
-| `GATE-110` | Agent-native product surface | bounded queries, evidence explanations, MCP read path, effect prepare/commit, leases, token budgets |
+| `GATE-110` | Transport-equivalent agent/operator presentation | stable JSON, CLI/MCP/TUI/report equivalence, bounded continuations, accessibility/mobile review, robot docs |
+| `GATE-115` | Agent cognitive operating system | CognitiveFacet owner-preserving narrow waist; ContractBasis/request-response equivalence; SituationCapsule/Frame/WorldEnvelope; epistemic/provenance discipline; meaningful follow; investigations/VOI; robust/conditional affordance frontier; contingent control; handoff; accretive-learning gauntlet |
 | `GATE-120` | Operational release candidate | clean sibling closure, DSR native lanes, exact signed assets/SBOM/provenance, download verification, install/rollback, soak, privacy/security proof |
 
 ## Parallel workstreams
@@ -28,8 +29,9 @@ earlier one, and passing a gate means retaining the required evidence rather tha
 - **WS-E Geometry:** clocks, calibration, reconstruction, occupancy, coverage.
 - **WS-F Cognition:** pure-Rust model runtime, detection, tracking, association, temporal models, calibration, policy.
 - **WS-G Evaluation:** threat corpus, hard negatives, red team, statistics, cost and energy.
-- **WS-H Agent/ops:** CLI, MCP, explanations, progressive search, certified graph intelligence, memory, pure-Rust TUI/web observation.
-- **WS-I Security/privacy:** secrets, isolation, masks, retention, deletion, identity controls.
-- **WS-J Packaging:** exact nightly promotion, clean sibling closure, DSR native lanes, installers, migrations, signed root-last releases, support bundles.
+- **WS-H Agent cognition:** `CognitiveFacet` composition ABI, mission/workspace/session, ContractBasis/request-response envelopes, SituationCapsule/Frame/WorldEnvelope, knowledge cells, meaningful deltas, investigations/hypotheses, VOI, robust/conditional/probe affordances, query compilation, belief-space contingent plans, episodes, handoff, and learning proposals.
+- **WS-I Agent presentation/ops:** registry-derived Rust API/CLI/MCP/TUI/reports, progressive hydration, explanations, robot docs, accessibility/mobile incident review, and multi-agent work claims/findings.
+- **WS-J Security/privacy:** secrets, isolation, capability-projected cognition, context/handoff privacy, masks, retention, deletion, identity controls.
+- **WS-K Packaging:** exact nightly promotion, clean sibling closure, DSR native lanes, installers, migrations, signed root-last releases, support bundles.
 
 See the comprehensive plan for dependencies and acceptance tests.

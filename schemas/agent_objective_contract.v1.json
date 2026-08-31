@@ -1,0 +1,255 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_objective_contract.v1.json",
+  "title": "Agent Objective Contract v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "objectiveId",
+    "source",
+    "desiredOutcome",
+    "successPredicates",
+    "failurePredicates",
+    "stopConditions",
+    "hardConstraints",
+    "softPreferences",
+    "scope",
+    "budgets",
+    "allowedActions",
+    "requiredApprovals",
+    "terminalProof",
+    "decisionDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_objective_contract.v1"
+    },
+    "objectiveId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principal",
+        "requestDigest"
+      ],
+      "properties": {
+        "principal": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "requestDigest": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        "naturalLanguage": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 32768
+        }
+      }
+    },
+    "desiredOutcome": {
+      "type": "string",
+      "maxLength": 16384
+    },
+    "successPredicates": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "failurePredicates": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "stopConditions": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "hardConstraints": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "softPreferences": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "weight"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "weight": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deployments",
+        "zones",
+        "subjects",
+        "devices",
+        "timeIntervals",
+        "dataClasses"
+      ],
+      "properties": {
+        "deployments": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "zones": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "subjects": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "devices": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "timeIntervals": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "lowerNs",
+              "upperNs"
+            ],
+            "properties": {
+              "lowerNs": {
+                "type": "integer"
+              },
+              "upperNs": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "dataClasses": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "allowedActions": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "requiredApprovals": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "acceptableUncertainty": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "reversibilityRequirements": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "escalationPolicy": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "learningPolicy": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "terminalProof": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "decisionDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    }
+  }
+}

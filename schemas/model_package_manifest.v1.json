@@ -22,59 +22,142 @@
     "qualification"
   ],
   "properties": {
-    "schema": {"const": "fss.model_package_manifest.v1"},
-    "packageRoot": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
-    "modelId": {"type": "string", "pattern": "^MOD-[A-Z0-9-]+$"},
-    "modelFamily": {"type": "string", "minLength": 1, "maxLength": 256},
+    "schema": {
+      "const": "fss.model_package_manifest.v1"
+    },
+    "packageRoot": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "modelId": {
+      "type": "string",
+      "pattern": "^MOD-[A-Z0-9-]+$"
+    },
+    "modelFamily": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["identity", "artifactDigests"],
+      "required": [
+        "identity",
+        "artifactDigests"
+      ],
       "properties": {
-        "identity": {"type": "string", "minLength": 1, "maxLength": 512},
+        "identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
         "artifactDigests": {
           "type": "array",
           "minItems": 1,
           "maxItems": 65536,
-          "items": {"$ref": "sensor_capsule.v1.json#/$defs/digest"}
+          "items": {
+            "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          }
         },
-        "upstreamRevision": {"type": ["string", "null"], "maxLength": 256}
+        "upstreamRevision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
       }
     },
     "license": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["spdxOrIdentity", "useApproved"],
+      "required": [
+        "spdxOrIdentity",
+        "useApproved"
+      ],
       "properties": {
-        "spdxOrIdentity": {"type": "string", "minLength": 1, "maxLength": 256},
-        "textDigest": {"anyOf": [{"$ref": "sensor_capsule.v1.json#/$defs/digest"}, {"type": "null"}]},
-        "useApproved": {"type": "boolean"},
-        "restrictions": {"type": "array", "maxItems": 128, "items": {"type": "string", "maxLength": 512}}
+        "spdxOrIdentity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "textDigest": {
+          "anyOf": [
+            {
+              "$ref": "sensor_capsule.v1.json#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "useApproved": {
+          "type": "boolean"
+        },
+        "restrictions": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string",
+            "maxLength": 512
+          }
+        }
       }
     },
-    "preprocessProgram": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
-    "postprocessProgram": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+    "preprocessProgram": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "postprocessProgram": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
     "operatorRegistry": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["generation", "requiredOperators"],
+      "required": [
+        "generation",
+        "requiredOperators"
+      ],
       "properties": {
-        "generation": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
+        "generation": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
         "requiredOperators": {
           "type": "array",
           "maxItems": 8192,
-          "items": {"type": "string", "pattern": "^OP-[A-Z0-9-]+$"}
+          "items": {
+            "type": "string",
+            "pattern": "^OP-[A-Z0-9-]+$"
+          }
         }
       }
     },
     "graph": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["graphDigest", "inputNames", "outputNames"],
+      "required": [
+        "graphDigest",
+        "inputNames",
+        "outputNames"
+      ],
       "properties": {
-        "graphDigest": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
-        "inputNames": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 256}},
-        "outputNames": {"type": "array", "maxItems": 256, "items": {"type": "string", "maxLength": 256}}
+        "graphDigest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "inputNames": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        },
+        "outputNames": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "maxLength": 256
+          }
+        }
       }
     },
     "tensors": {
@@ -83,52 +166,167 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["name", "digest", "dtype", "shape", "layout", "byteLength"],
+        "required": [
+          "name",
+          "digest",
+          "dtype",
+          "shape",
+          "layout",
+          "byteLength"
+        ],
         "properties": {
-          "name": {"type": "string", "minLength": 1, "maxLength": 512},
-          "digest": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
-          "dtype": {"type": "string", "enum": ["f32", "f16", "bf16", "i8", "u8", "i16", "i32", "i64", "bool"]},
-          "shape": {"type": "array", "maxItems": 16, "items": {"type": "integer", "minimum": 0}},
-          "layout": {"type": "string", "minLength": 1, "maxLength": 64},
-          "byteLength": {"type": "integer", "minimum": 0},
-          "quantization": {"type": ["object", "null"], "additionalProperties": true}
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "digest": {
+            "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          },
+          "dtype": {
+            "type": "string",
+            "enum": [
+              "f32",
+              "f16",
+              "bf16",
+              "i8",
+              "u8",
+              "i16",
+              "i32",
+              "i64",
+              "bool"
+            ]
+          },
+          "shape": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "layout": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "byteLength": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "quantization": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "additionalProperties": true
+          }
         }
       }
     },
     "numericPolicy": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["rounding", "overflow", "nan", "reductionOrder"],
+      "required": [
+        "rounding",
+        "overflow",
+        "nan",
+        "reductionOrder"
+      ],
       "properties": {
-        "rounding": {"type": "string", "maxLength": 128},
-        "overflow": {"type": "string", "maxLength": 128},
-        "nan": {"type": "string", "maxLength": 128},
-        "reductionOrder": {"type": "string", "maxLength": 128},
-        "quantizationGeneration": {"anyOf": [{"$ref": "sensor_capsule.v1.json#/$defs/digest"}, {"type": "null"}]}
+        "rounding": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "overflow": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "nan": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "reductionOrder": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "quantizationGeneration": {
+          "anyOf": [
+            {
+              "$ref": "sensor_capsule.v1.json#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
       }
     },
     "resourceEnvelope": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxInputBytes", "maxOutputBytes", "maxPeakBytes", "maxWorkUnits", "maxWallNs"],
+      "required": [
+        "maxInputBytes",
+        "maxOutputBytes",
+        "maxPeakBytes",
+        "maxWorkUnits",
+        "maxWallNs"
+      ],
       "properties": {
-        "maxInputBytes": {"type": "integer", "minimum": 0},
-        "maxOutputBytes": {"type": "integer", "minimum": 0},
-        "maxPeakBytes": {"type": "integer", "minimum": 0},
-        "maxWorkUnits": {"type": "integer", "minimum": 0},
-        "maxWallNs": {"type": "integer", "minimum": 0}
+        "maxInputBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxOutputBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxPeakBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxWorkUnits": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "maxWallNs": {
+          "type": "integer",
+          "minimum": 0
+        }
       }
     },
-    "outputSchema": {"type": "string", "minLength": 1, "maxLength": 256},
+    "outputSchema": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
     "qualification": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["referenceVectorRoot", "operatorCoverageRoot", "qualityReceiptRoot", "knownLimitations"],
+      "required": [
+        "referenceVectorRoot",
+        "operatorCoverageRoot",
+        "qualityReceiptRoot",
+        "knownLimitations"
+      ],
       "properties": {
-        "referenceVectorRoot": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
-        "operatorCoverageRoot": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
-        "qualityReceiptRoot": {"$ref": "sensor_capsule.v1.json#/$defs/digest"},
-        "knownLimitations": {"type": "array", "maxItems": 4096, "items": {"type": "string", "maxLength": 1024}}
+        "referenceVectorRoot": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "operatorCoverageRoot": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "qualityReceiptRoot": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "knownLimitations": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 1024
+          }
+        }
       }
     }
   }

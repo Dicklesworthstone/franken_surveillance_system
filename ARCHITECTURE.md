@@ -51,6 +51,50 @@ Owns alert delivery, PTZ, camera settings, exports, archive mutation, retention 
 drone missions. It uses immutable intent, capability, lease fencing, idempotency, precondition
 revalidation, commit, observation, and verification.
 
+### Agent operating membrane — explicitly not a truth plane
+
+The agent layer composes authority, cognition, effect, transfer, and presentation owners into one
+mission-relative cognitive instrument. It owns `AgentSession`/`AgentWorkspace` continuity,
+`SituationCapsule` construction, investigations, context packs, affordance frontiers, control-plan
+composition, explanation, handoff, and advisory learning. It owns no physical fact and no effect
+outcome.
+
+```text
+runtime authority and object custody
+              ↓
+source evidence
+              ↓
+canonical world facts + coverage
+              ↓
+derived beliefs + uncertainty
+              ↓
+SituationCapsule
+  ├─ SituationFrame
+  │    └─ WorldEnvelope: certified core/absence + material/adversarial possibilities
+  ├─ MeaningfulDelta + ContextPack + SemanticCompressionReceipt
+  └─ obligations/resources + robust/conditional/probe/wait/blocked control envelope
+              ↓
+InvestigationCase + HypothesisWorkspace + counterfactual branch
+              ↓
+ObjectiveContract + ControlPlan
+              ↓
+prepared effects → commit → observe → verify/reconcile
+              ↓
+ExecutionEpisode + ExperienceCapsule + reviewed learning proposal
+              ↓
+AgentSessionCapsule / root-last HandoffCapsule
+```
+
+Every upward projection retains stable downward evidence handles. Every downward control request
+retains the mission objective, witnesses, authority, budget, expected proof, and invalidators that
+justify it. Required continuity state may never exist only in conversation.
+
+All lower semantic owners meet the membrane through the internal `CognitiveFacet` narrow waist:
+identity/owner, anchor/high-water, scope/validity, typed knowledge, coverage/health,
+contradictions/unknowns, evidence handles, obligations/effect uncertainty, resource cost,
+affordance seeds, invalidators/degradation, and proof/continuation. This is what makes the crate DAG
+modular without making the product cognitively fragmented.
+
 ## 3. Trust domains
 
 | Domain | May access | Must not access |
@@ -199,20 +243,75 @@ Large immutable source, checkpoint, model, graph/search, export, proof, and rele
 
 Graph queries operate on authorized immutable projections. Non-unique results declare CGSE tie policy and output ordering. Planning-relevant calls emit `GraphAlgorithmWitness` with anchor, projection, complexity counts, budget, exactness/error bound, decision-path digest, and output digest.
 
-## 12. Agent query model
+## 12. Agent operating model
 
-Queries are bounded projections at an anchor. They return:
+The primary driver publication is an immutable, anchor-pinned `SituationCapsule`:
 
-- `schema` and anchor;
-- selected entities/revisions;
-- uncertainty and degradation;
-- evidence handles, not necessarily bytes;
-- score/explanation components;
-- continuation or resnapshot requirement;
-- allowed next commands.
+- inner `SituationFrame`: the minimum sufficient mission-relative world projection;
+- `MeaningfulDelta`: changed conclusions, invalidated assumptions/plans, obligation transitions,
+  coverage changes, and newly enabled/expired affordances;
+- epistemic map: knowledge state, provenance, uncertainty, contradictions, coverage, redactions,
+  and validity;
+- active investigations, plans, obligations, indeterminate effects, and resource pressure;
+- `ContextPack` plus `SemanticCompressionReceipt` naming selected/omitted material and expansion
+  handles;
+- nondominated typed affordances with value, cost, latency, risk, reversibility, prerequisites,
+  invalidators, authority requirements, alternatives, sensitivity, and expected terminal proof.
 
-Effects require separate capability and prepare/commit. MCP is an adapter over core contracts, not
-the architecture’s owner.
+Knowledge state (`known`, `estimated`, `unknown`, `conflicted`, `stale`, `not_observable`,
+`redacted`, `indeterminate`, `not_applicable`), provenance (`observed`, `derived`, `predicted`,
+`remembered`, `operator_asserted`, `vendor_claimed`, `policy`), and hypothesis disposition are
+orthogonal. None is compressed into a single confidence value.
+
+The public `fss/1` operation grammar is:
+
+```text
+session.open · session.resume · session.orient · session.follow
+query · investigate · plan · commit · wait · cancel · explain
+handoff · feedback · doctor
+```
+
+Every operation accepts the same `AgentRequestEnvelope` and returns the same
+`AgentResponseEnvelope`. Their `ContractBasis` pins the semantic protocol plus schema, ontology,
+operation, view, capability, error, cost, producer-release, and nightly identities. The operation
+registry alone selects the typed payload schema. Contract drift is therefore an explicit protocol
+state rather than a hidden interpretation mismatch.
+
+Free-form requests compile into an inspectable `AgentQueryPlan`. Domain behavior is expressed as
+typed targets, query predicates, intent families, views, and evidence handles, not one privileged
+tool per subsystem. Effects require an immutable prepared plan, current witnesses, exact domain
+capabilities, and lease fences; recommendations never grant authority.
+
+All responses use `AgentResponseEnvelope`. Nonterminal responses return a valid affordance or an
+explicit blocked/waiting/unauthorized/redacted/not-observable/indeterminate reason. Errors preserve
+valid partial results and state the next safe refresh, rebase, narrow, approve, wait, cancel,
+reconcile, repair, or alternate operation. CLI, Rust API, MCP, TUI, reports, and future UI surfaces
+share the same operation/view registries; MCP is a presentation adapter rather than the semantic
+owner.
+
+See [`AGENT_COGNITION_AND_CONTROL.md`](AGENT_COGNITION_AND_CONTROL.md),
+[`AGENT_COGNITIVE_CONTROL_PLANE.md`](AGENT_COGNITIVE_CONTROL_PLANE.md), and
+[`AGENT_OPERATING_MODEL.md`](AGENT_OPERATING_MODEL.md).
+### 12.1 Evidence–possibility–control closure
+
+The `SituationFrame` carries a `WorldEnvelope` that distinguishes the nominal estimate, certified
+facts and absences, material alternative worlds, adversarial residuals, common invariants, and
+unresolved dimensions. The outer `SituationCapsule` categorizes the resulting affordance frontier
+into robust, conditional, information-gathering, wait/watch, and blocked actions.
+
+This closes the cognitive-control loop without moving truth or authority into the presentation
+plane:
+
+```text
+canonical evidence → protected possible-world frontier → robust/conditional control envelope
+       ↑                                                         ↓
+       └──────────── successor evidence and terminal proof ──────┘
+```
+
+High-consequence residual possibilities survive token compression and ranking until a witness or
+explicit scope/policy decision removes them. Control plans bind the exact world-envelope digest and
+name worlds in which each step is supported or unsafe.
+
 
 ## 13. Deployment profiles
 

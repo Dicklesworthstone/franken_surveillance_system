@@ -57,7 +57,7 @@ Every derived graph/search generation names the consumed high-water mark. A quer
 
 ## 5. Every negative read is witnessed
 
-The DFMCP principle “no hostile unit exists in this region” maps directly to “no person/event exists in this protected zone.” FSS records the observed domain, coverage, sensor health, time interval, model floor, and exclusions. Absence without domain coverage is `Unknown`, not false.
+The DFMCP principle “no hostile unit exists in this region” maps directly to “no person/event exists in this protected zone.” FSS records the observed domain, coverage, sensor health, time interval, model floor, and exclusions. Absence without domain coverage is `unknown`, not false.
 
 This changes effect safety. A plan to suppress an alert, move a PTZ camera, or delete apparently irrelevant media conflicts when new evidence enters the negative domain or coverage degrades.
 

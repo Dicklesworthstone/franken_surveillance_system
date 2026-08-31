@@ -212,7 +212,60 @@ Each registered operation defines asymptotic and concrete budgets. Examples:
 
 An operation whose cost model cannot meet its registered SLO fails design review before implementation.
 
-## 19. Optimization prohibitions
+## 19. Agent cognitive economy
+
+Agent performance is **decision quality per complete resource vector**, not minimum tool calls or
+minimum tokens in isolation. The measured denominator includes latency, input/output tokens,
+evidence bytes, CPU and accelerator time, model calls, network/storage operations, energy, privacy
+exposure, operator attention, retries, rework after stale reasoning, and handoff loss.
+
+The cognitive path therefore follows these rules:
+
+1. **Delta first, snapshot on demand.** A resumed or following agent receives the smallest
+   decision-relevant `MeaningfulDelta` over a retained `SituationCapsule`, not a repeated world dump.
+   Terminal transitions, contradictions, coverage loss, protected-world changes, plan invalidation,
+   effect uncertainty, and urgent obligations are never coalesced away.
+2. **Stable symbols and handles.** Repeated entities, zones, generations, hypotheses, plans, and
+   evidence roots use a session symbol table and stable handles. The agent pays to hydrate a datum
+   once and may reuse its verified root until an explicit invalidation arrives.
+3. **Semantic compression under hard preservation constraints.** Context selection maximizes
+   expected decision value and diversity subject to token/byte budgets, but must retain every
+   task-critical contradiction, `not_observable` boundary, privacy transformation, hard clamp,
+   protected adversarial world, indeterminate effect, and urgent obligation. The
+   `SemanticCompressionReceipt` names the candidate universe, protected set, selected set,
+   omissions, marginal values, and stop reason.
+4. **Belief-space factorization.** A `WorldEnvelope` stores one shared certified base plus sparse
+   branch deltas. Common graph/model results are computed once; only branch-sensitive operators are
+   recomputed. Robust affordances are the witnessed intersection across protected worlds.
+5. **Value-of-information before expensive certainty.** The system estimates which probe can most
+   change the decision, normalized by full cost and delay. It stops when the best remaining probe
+   cannot alter the safe action frontier enough to justify its cost, while safety floors remain
+   fixed.
+6. **Progressive hydration.** H0 identity/summary, H1 structured facts, H2 evidence snippets, H3
+   media/graph neighborhoods, and H4 forensic object graphs are separately priced and authorized.
+   Large bytes never ride the default cognitive response merely because they exist.
+7. **Reuse derived work by exact identity.** Context packs, graph projections, model results,
+   explanations, and possible-world analyses cache only under exact anchor, authority, privacy,
+   mission, model, policy, and output-contract identity. Reuse never crosses a semantic generation.
+8. **Pressure degrades breadth before truth.** Under pressure, FSS reduces optional candidates,
+   semantic reranking, branch depth, media resolution, or background explanation richness. It does
+   not erase protected worlds, hide gaps, weaken provenance, invent completeness, or lower an
+   effect precondition.
+9. **Speculative work must be cancellable and owned.** Prefetch/hydration/model probes live in the
+   requesting session or investigation region, publish no partial semantic root, and drain on
+   invalidation. Speculation is admitted only when measured reuse exceeds wasted compute and privacy
+   cost.
+10. **Task-level keep gates.** An optimization is retained only when sealed scenarios show
+    non-inferior correctness, calibration, unsafe-action rate, evidence use, and handoff continuity
+    with lower total cost. A token win that increases operator intervention or rediscovery loses.
+
+Mechanically, the hot cognitive structures are compact columns keyed by stable IDs: epistemic state,
+provenance class, validity interval, urgency, evidence handle, branch membership, affordance class,
+and invalidation sequence. Rich prose is rendered last from typed objects. Candidate selection,
+possible-world intersections, Pareto pruning, and omission accounting have deterministic scalar
+oracles and complexity witnesses before optimized kernels are admitted.
+
+## 20. Optimization prohibitions
 
 - dropping source/provenance to reduce storage;
 - mixing generations to avoid rebuild;

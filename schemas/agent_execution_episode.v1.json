@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_execution_episode.v1.json",
+  "title": "Agent Execution Episode v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "episodeId",
+    "sessionId",
+    "objectiveId",
+    "initialAnchor",
+    "terminalAnchor",
+    "planDigest",
+    "predictions",
+    "stepReceipts",
+    "effectReceipts",
+    "obligations",
+    "outcome",
+    "resourceUse",
+    "attributionHypotheses",
+    "residualUncertainty",
+    "decisionDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_execution_episode.v1"
+    },
+    "episodeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "objectiveId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "initialAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "terminalAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "planDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "predictions": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "predictionId",
+          "statement",
+          "expectedState"
+        ],
+        "properties": {
+          "predictionId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "statement": {
+            "type": "string"
+          },
+          "expectedState": {
+            "type": "string"
+          },
+          "observedState": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "error": {
+            "type": [
+              "number",
+              "null"
+            ]
+          }
+        }
+      }
+    },
+    "stepReceipts": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "effectReceipts": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "obligations": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "outcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "successPredicates",
+        "failedPredicates",
+        "indeterminatePredicates"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "succeeded",
+            "partially_succeeded",
+            "failed",
+            "cancelled",
+            "indeterminate"
+          ]
+        },
+        "successPredicates": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "failedPredicates": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "indeterminatePredicates": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "resourceUse": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "attributionHypotheses": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "causeClass",
+          "statement",
+          "supportingEvidence",
+          "contradictingEvidence",
+          "confidence"
+        ],
+        "properties": {
+          "causeClass": {
+            "enum": [
+              "evidence",
+              "hypothesis",
+              "context_selection",
+              "model",
+              "calibration",
+              "adapter",
+              "policy",
+              "execution",
+              "external",
+              "budget",
+              "authority",
+              "memory",
+              "unobservability"
+            ]
+          },
+          "statement": {
+            "type": "string"
+          },
+          "supportingEvidence": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "contradictingEvidence": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "residualUncertainty": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "operatorFeedback": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "learningProposalIds": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "decisionDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

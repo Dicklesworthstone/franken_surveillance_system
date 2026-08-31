@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_session.v1.json",
+  "title": "Agent Session v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "sessionId",
+    "missionId",
+    "principalId",
+    "capabilities",
+    "privacyScope",
+    "currentAnchor",
+    "viewId",
+    "tokenBudget",
+    "symbolTableGeneration",
+    "lastAcknowledgedSituationFingerprint",
+    "createdAtNs",
+    "expiresAtNs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_session.v1"
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "missionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "principalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "capabilities": {
+      "type": "array",
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "privacyScope": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "currentAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "viewId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "tokenBudget": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "symbolTableGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "symbols": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "alias",
+          "objectId",
+          "objectRevision",
+          "anchorFingerprint",
+          "expiresAtNs"
+        ],
+        "properties": {
+          "alias": {
+            "type": "string",
+            "pattern": "^@[a-z][0-9]{1,6}$"
+          },
+          "objectId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "objectRevision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "anchorFingerprint": {
+            "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          },
+          "expiresAtNs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "invalidators": {
+            "type": "array",
+            "maxItems": 64,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 1024
+            }
+          }
+        }
+      }
+    },
+    "continuations": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "subscriptions": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "lastAcknowledgedSituationFingerprint": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "parentHandoffId": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "createdAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "expiresAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

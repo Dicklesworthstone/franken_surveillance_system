@@ -1,0 +1,446 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_affordance.v1.json",
+  "title": "Agent Affordance v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "affordanceId",
+    "operationId",
+    "purpose",
+    "basisAnchor",
+    "worldEnvelopeId",
+    "robustnessClass",
+    "compatibleWorldIds",
+    "unsafeWorldIds",
+    "targets",
+    "requiredCapabilities",
+    "inputSchema",
+    "outputView",
+    "preconditions",
+    "expiresAtNs",
+    "effectClass",
+    "reversibility",
+    "expectedEvidence",
+    "valueVector",
+    "costVector",
+    "riskVector",
+    "reason",
+    "stopCondition"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_affordance.v1"
+    },
+    "affordanceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^AOP-[0-9]{3}$"
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "basisAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "worldEnvelopeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "robustnessClass": {
+      "enum": [
+        "robust_across_envelope",
+        "conditional_on_named_worlds",
+        "information_gathering",
+        "wait_and_watch",
+        "blocked",
+        "unavailable"
+      ]
+    },
+    "compatibleWorldIds": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "unsafeWorldIds": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "targets": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "requiredCapabilities": {
+      "type": "array",
+      "maxItems": 128,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "requiredApprovals": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "requiredLeases": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "inputSchema": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "outputView": {
+      "type": "string",
+      "pattern": "^AVIEW-[0-9]{3}$"
+    },
+    "preconditions": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "statementId",
+          "text",
+          "epistemicState",
+          "basis"
+        ],
+        "properties": {
+          "statementId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "text": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          },
+          "epistemicState": {
+            "enum": [
+              "known",
+              "estimated",
+              "unknown",
+              "conflicted",
+              "stale",
+              "not_observable",
+              "redacted",
+              "indeterminate",
+              "not_applicable"
+            ]
+          },
+          "basis": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "contradictions": {
+            "type": "array",
+            "maxItems": 128,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "validUntilNs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "invalidators": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "expiresAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "idempotencyClass": {
+      "enum": [
+        "read",
+        "replay_safe",
+        "prepared_exact",
+        "reconcile_before_retry",
+        "not_retryable"
+      ]
+    },
+    "effectClass": {
+      "enum": [
+        "none",
+        "cognition",
+        "authority_write",
+        "external_reversible",
+        "external_consequential",
+        "privacy_or_retention",
+        "coordination"
+      ]
+    },
+    "reversibility": {
+      "enum": [
+        "not_applicable",
+        "reversible",
+        "compensatable",
+        "irreversible",
+        "unknown"
+      ]
+    },
+    "compensation": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 2048
+    },
+    "expectedEvidence": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "valueVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "decisionLossReduction",
+        "informationGain",
+        "coverageGain",
+        "obligationReduction"
+      ],
+      "properties": {
+        "decisionLossReduction": {
+          "type": "number"
+        },
+        "informationGain": {
+          "type": "number"
+        },
+        "coverageGain": {
+          "type": "number"
+        },
+        "obligationReduction": {
+          "type": "number"
+        },
+        "uncertainty": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "costVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMilliJoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds"
+      ],
+      "properties": {
+        "latencyMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "tokens": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "modelCalls": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "cpuMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "acceleratorMillis": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "energyMilliJoules": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "networkBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "storageOperations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "privacyExposure": {
+          "type": "number",
+          "minimum": 0
+        },
+        "operatorAttentionSeconds": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "riskVector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "safety",
+        "privacy",
+        "duplication",
+        "irreversibility",
+        "worstCase"
+      ],
+      "properties": {
+        "safety": {
+          "type": "number",
+          "minimum": 0
+        },
+        "privacy": {
+          "type": "number",
+          "minimum": 0
+        },
+        "duplication": {
+          "type": "number",
+          "minimum": 0
+        },
+        "irreversibility": {
+          "type": "number",
+          "minimum": 0
+        },
+        "worstCase": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        }
+      }
+    },
+    "paretoRank": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "dominatedBy": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "sensitivity": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "alternatives": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "stopCondition": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "monitorOperationId": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^AOP-[0-9]{3}$"
+    }
+  }
+}

@@ -302,15 +302,51 @@ excluded from public release if no tuple is qualified.
 - graph-complete deletion;
 - denial of weapon/pursuit/autonomous-flight effects.
 
-### 5.14 `L13-agent-product`
+### 5.14 `L13-agent-cognitive-product`
 
-- bounded anchored CLI/MCP queries;
-- continuation/resnapshot;
-- cache partitioning;
-- request cancellation/quiescence;
-- prepared effects/idempotency;
-- deterministic reports/context packs;
-- install/doctor/support/upgrade/rollback workflows.
+This lane implements `QL-AGENT-001` over a sealed task, interruption, multi-agent, drifted-handoff,
+and repeated-task corpus. It verifies:
+
+- cold/warm orientation from one anchor into a coherent `SituationCapsule`/`SituationFrame`;
+- exact `ContractBasis` and `AgentRequestEnvelope`/`AgentResponseEnvelope` equivalence across Rust
+  API, CLI, MCP, TUI, reports, replay, and handoff resume;
+- knowledge-state, provenance, hypothesis-disposition, coverage, contradiction, redaction, and
+  indeterminacy fidelity across every presentation;
+- `WorldEnvelope` reconstruction, certified-core/absence preservation, material-alternative and
+  protected-adversarial-residual retention, and evidence-linked collapse witnesses;
+- robust/conditional/probe/wait/blocked affordance classification plus plan revalidation when the
+  protected world frontier expands, splits, or loses coverage;
+- semantic-compression receipts and omission counterfactuals proving critical context was retained;
+- meaningful-delta/silence semantics, critical interruption, continuation, disconnect, and resume;
+- durable investigations, competing hypotheses, VOI probe selection, stop rules, and residual
+  uncertainty;
+- hard-clamped nondominated affordance frontiers with component/sensitivity explanations and no
+  authority laundering;
+- objective→plan→prepare→commit→wait/cancel→verify/reconcile closure under stale/crash/lost-ACK
+  schedules;
+- multi-agent work claims/findings, branch isolation, capability noninterference, and duplicate-work
+  reduction;
+- root-last handoff/rebase under anchor, schema, policy, model, calibration, alias, budget, and
+  authority drift;
+- execution episodes, feedback/learning proposals, trauma guard, harmful transfer, expiry/revival,
+  and absence of silent activation;
+- Rust API/CLI/MCP/TUI/report semantic equivalence, stable errors, robot docs, accessibility, and
+  bounded output;
+- task correctness/calibration/evidence use/unsafe-action rate together with tokens, bytes, graph
+  and model work, latency, energy, privacy exposure, operator burden, obligation closure, and
+  handoff/accretion metrics.
+
+The lane compares compact progressive operation against exhaustive/reference task oracles. Lower
+resource use is a win only when task quality, hard constraints, coverage, and terminal-effect truth
+are preserved.
+
+The sealed possible-world gauntlet includes deliberately deceptive scenarios in which the
+highest-ranked explanation is benign but a low-ranked residual remains both physically consistent
+and high loss. A passing implementation must preserve that residual through context shaping,
+handoff, transfer, model reranking, and view changes; refuse or condition actions that are unsafe
+in it; select a discriminating probe when worthwhile; and remove it only with a valid collapse
+witness. A/A and presentation-equivalence runs must produce the same envelope digest and action
+robustness class from the same contract basis.
 
 ### 5.15 `L14-soak-canary`
 

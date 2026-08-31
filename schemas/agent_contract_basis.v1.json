@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_contract_basis.v1.json",
+  "title": "Agent Contract Basis v1",
+  "description": "Exact semantic and registry basis under which an agent request, response, situation, session, or handoff is interpreted.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "semanticProtocol",
+    "schemaCatalogDigest",
+    "ontologyGenerationId",
+    "operationRegistryDigest",
+    "viewRegistryDigest",
+    "capabilityRegistryDigest",
+    "errorRegistryDigest",
+    "costRegistryDigest",
+    "producerReleaseId"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_contract_basis.v1"
+    },
+    "semanticProtocol": {
+      "const": "fss/1"
+    },
+    "schemaCatalogDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "ontologyGenerationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "operationRegistryDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "viewRegistryDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "capabilityRegistryDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "errorRegistryDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "costRegistryDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "producerReleaseId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "acceptedNightly": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 128
+    },
+    "compatibilityNotes": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1024
+      }
+    }
+  }
+}

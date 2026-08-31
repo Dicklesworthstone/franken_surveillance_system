@@ -1,0 +1,395 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_control_plan.v1.json",
+  "title": "Agent Control Plan v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "planId",
+    "objectiveId",
+    "basisAnchor",
+    "situationFrameDigest",
+    "worldEnvelopeDigest",
+    "hypothesisWorkspaceDigest",
+    "capabilityProjection",
+    "budget",
+    "steps",
+    "edges",
+    "entrySteps",
+    "terminalPredicates",
+    "decisionDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_control_plan.v1"
+    },
+    "planId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "objectiveId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "basisAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "situationFrameDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "worldEnvelopeDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "hypothesisWorkspaceDigest": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "capabilityProjection": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "number",
+        "minimum": 0
+      }
+    },
+    "policyGenerations": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+      }
+    },
+    "steps": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "stepId",
+          "kind",
+          "owner",
+          "verb",
+          "robustnessClass",
+          "supportedWorldIds",
+          "unsafeWorldIds",
+          "preconditions",
+          "readWitnesses",
+          "writeWitnesses",
+          "negativeWitnesses",
+          "requiredCapabilities",
+          "budget",
+          "expectedInformationGain",
+          "expectedObjectiveGain",
+          "risk",
+          "privacyExposure",
+          "reversibility",
+          "successTransition",
+          "failureTransition",
+          "cancelTransition",
+          "indeterminateTransition",
+          "terminalProof"
+        ],
+        "properties": {
+          "stepId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "kind": {
+            "enum": [
+              "Observe",
+              "Compute",
+              "Compare",
+              "Simulate",
+              "Decide",
+              "PrepareEffect",
+              "CommitEffect",
+              "WaitFor",
+              "Verify",
+              "Repair",
+              "Learn",
+              "Checkpoint"
+            ]
+          },
+          "owner": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "verb": {
+            "type": "string"
+          },
+          "robustnessClass": {
+            "enum": [
+              "robust_across_envelope",
+              "conditional_on_named_worlds",
+              "information_gathering",
+              "wait_and_watch",
+              "not_applicable"
+            ]
+          },
+          "supportedWorldIds": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "unsafeWorldIds": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+            }
+          },
+          "preconditions": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "invalidators": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "readWitnesses": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "writeWitnesses": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "negativeWitnesses": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "requiredCapabilities": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "grantId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "leaseId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "fence": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "budget": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "number",
+              "minimum": 0
+            }
+          },
+          "deadlineNs": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "expectedInformationGain": {
+            "type": "number"
+          },
+          "expectedObjectiveGain": {
+            "type": "number"
+          },
+          "risk": {
+            "enum": [
+              "none",
+              "low",
+              "moderate",
+              "high",
+              "critical"
+            ]
+          },
+          "privacyExposure": {
+            "type": "number",
+            "minimum": 0
+          },
+          "reversibility": {
+            "enum": [
+              "read_only",
+              "fully_reversible",
+              "compensatable",
+              "irreversible",
+              "unknown"
+            ]
+          },
+          "successTransition": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "failureTransition": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "cancelTransition": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "indeterminateTransition": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "terminalProof": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "preparedIntentDigest": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "maxItems": 16384,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "from",
+          "to",
+          "condition",
+          "priority"
+        ],
+        "properties": {
+          "from": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "to": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "condition": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "priority": {
+            "type": "integer"
+          }
+        }
+      }
+    },
+    "entrySteps": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "terminalPredicates": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "tieBreakPolicy": {
+      "type": "string"
+    },
+    "decisionDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

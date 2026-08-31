@@ -1,0 +1,406 @@
+{
+  "schema": "fss.agent_operations.v1",
+  "asOf": "2026-08-31",
+  "semanticProtocol": "fss/1",
+  "operations": [
+    {
+      "id": "AOP-001",
+      "name": "session.open",
+      "purpose": "negotiate principal, mission, authority, privacy projection, budgets, views, and the initial SituationCapsule",
+      "mode": "session_control",
+      "owner": "fss-agent-session",
+      "defaultView": "AVIEW-002",
+      "effectful": false,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-SESSION-OPEN-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "never_unchanged",
+        "backoff",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_mission.v1",
+      "responsePayloadSchemas": [
+        "fss.situation_capsule.v1"
+      ]
+    },
+    {
+      "id": "AOP-002",
+      "name": "session.resume",
+      "purpose": "restore an explicit workspace/handoff root, compare it with current state, and enumerate stale or invalidated assumptions",
+      "mode": "session_control",
+      "owner": "fss-agent-session",
+      "defaultView": "AVIEW-006",
+      "effectful": false,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-SESSION-READ-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_handoff_capsule.v1",
+      "responsePayloadSchemas": [
+        "fss.situation_capsule.v1"
+      ]
+    },
+    {
+      "id": "AOP-003",
+      "name": "session.orient",
+      "purpose": "return the smallest sufficient current SituationCapsule for the mission, authority, and budget",
+      "mode": "read",
+      "owner": "fss-situation",
+      "defaultView": "AVIEW-002",
+      "effectful": false,
+      "durable": false,
+      "requiredCapabilities": [
+        "CAP-AGENT-SITUATION-READ-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.situation_capsule.v1"
+      ]
+    },
+    {
+      "id": "AOP-004",
+      "name": "session.follow",
+      "purpose": "stream meaningful deltas and obligation progress from an exact continuation cursor",
+      "mode": "read_wait",
+      "owner": "fss-context-pack",
+      "defaultView": "AVIEW-001",
+      "effectful": false,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-SITUATION-READ-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_meaningful_delta.v1",
+        "fss.situation_capsule.v1"
+      ]
+    },
+    {
+      "id": "AOP-005",
+      "name": "query",
+      "purpose": "execute a bounded typed or natural-language-compiled read over one anchor with completeness and cost receipts",
+      "mode": "read_compile",
+      "owner": "fss-query-plan",
+      "defaultView": "AVIEW-003",
+      "effectful": false,
+      "durable": false,
+      "requiredCapabilities": [
+        "CAP-AGENT-QUERY-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1"
+      ]
+    },
+    {
+      "id": "AOP-006",
+      "name": "investigate",
+      "purpose": "create or advance a durable case with competing hypotheses, evidence tasks, work claims, discriminators, and stop rules",
+      "mode": "cognition_write",
+      "owner": "fss-investigation",
+      "defaultView": "AVIEW-003",
+      "effectful": false,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-CASE-WRITE-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.investigation_state.v1",
+      "responsePayloadSchemas": [
+        "fss.investigation_state.v1",
+        "fss.agent_cognitive_envelope.v1"
+      ]
+    },
+    {
+      "id": "AOP-007",
+      "name": "plan",
+      "purpose": "compile a desired outcome or information objective into an immutable witnessed contingent plan without crossing the effect boundary",
+      "mode": "plan_prepare",
+      "owner": "fss-agent-plan",
+      "defaultView": "AVIEW-007",
+      "effectful": false,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-PLAN-PREPARE-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_objective_contract.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_control_plan.v1"
+      ]
+    },
+    {
+      "id": "AOP-008",
+      "name": "commit",
+      "purpose": "revalidate and start the exact prepared plan under idempotency, leases, fencing, approval, and terminal-proof obligations",
+      "mode": "effect_commit",
+      "owner": "fss-effect",
+      "defaultView": "AVIEW-005",
+      "effectful": true,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-PLAN-COMMIT-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "never_unchanged",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_control_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.operation_receipt.v1",
+        "fss.agent_cognitive_envelope.v1"
+      ]
+    },
+    {
+      "id": "AOP-009",
+      "name": "wait",
+      "purpose": "observe cases, plans, effects, transfers, and obligations until a predicate, deadline, or meaningful delta fires",
+      "mode": "read_wait",
+      "owner": "fss-obligation",
+      "defaultView": "AVIEW-005",
+      "effectful": false,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-SITUATION-READ-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "backoff",
+        "reconciliation_required",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1",
+        "fss.operation_receipt.v1"
+      ]
+    },
+    {
+      "id": "AOP-010",
+      "name": "cancel",
+      "purpose": "request, drain, reconcile or compensate, and finalize owned work without erasing its durable record",
+      "mode": "lifecycle_effect",
+      "owner": "fss-obligation",
+      "defaultView": "AVIEW-005",
+      "effectful": true,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-CANCEL-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "never_unchanged",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.operation_receipt.v1",
+        "fss.agent_cognitive_envelope.v1"
+      ]
+    },
+    {
+      "id": "AOP-011",
+      "name": "explain",
+      "purpose": "answer why, why-not, what-changed, or what-if with a minimal evidence/decision subgraph and expansion handles",
+      "mode": "read_compute",
+      "owner": "fss-explain",
+      "defaultView": "AVIEW-007",
+      "effectful": false,
+      "durable": false,
+      "requiredCapabilities": [
+        "CAP-AGENT-EXPLAIN-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1"
+      ]
+    },
+    {
+      "id": "AOP-012",
+      "name": "handoff",
+      "purpose": "publish a root-last portable capsule containing mission, workspace, cases, plans, obligations, budgets, authority, uncertainty, and continuations",
+      "mode": "continuity_publish",
+      "owner": "fss-handoff",
+      "defaultView": "AVIEW-006",
+      "effectful": false,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-HANDOFF-WRITE-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_session_capsule.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_handoff_capsule.v1"
+      ]
+    },
+    {
+      "id": "AOP-013",
+      "name": "feedback",
+      "purpose": "record a correction, outcome signal, adjudication, or evidence-linked learning proposal without silently changing active truth or policy",
+      "mode": "advisory_write",
+      "owner": "fss-learning",
+      "defaultView": "AVIEW-007",
+      "effectful": false,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-AGENT-FEEDBACK-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_feedback_proposal.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_feedback_proposal.v1",
+        "fss.experience_capsule.v1"
+      ]
+    },
+    {
+      "id": "AOP-014",
+      "name": "doctor",
+      "purpose": "diagnose deployment, evidence, cognition, workspace, cases, obligations, and protocol consistency and produce sealed repair affordances",
+      "mode": "diagnostic_prepare",
+      "owner": "fss-doctor",
+      "defaultView": "AVIEW-004",
+      "effectful": false,
+      "durable": true,
+      "requiredCapabilities": [
+        "CAP-REPAIR-PREPARE-001"
+      ],
+      "inputSchema": "fss.agent_request_envelope.v1",
+      "outputSchema": "fss.agent_response_envelope.v1",
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "backoff",
+        "resume_from_continuation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1",
+        "fss.evidence_bundle.v1"
+      ]
+    }
+  ],
+  "worldEnvelopeRule": "read/compute operations may refine the possibility envelope; effect operations consume only affordances whose robustness class and named-world basis remain valid at commit"
+}

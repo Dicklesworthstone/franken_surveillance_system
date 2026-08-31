@@ -66,6 +66,11 @@ The radical part is not “run a VLM on camera footage.” It is the substrate b
 - **One version universe.** Canonical history is an ordered immutable `EvidenceDeltaBatch` stream.
   Graphs, search, subscriptions, replicas, model caches, checkpoints, and branches publish exact
   high-water marks instead of each inventing “current.”
+- **Agent cognitive operating system.** The agent receives an anchor-pinned `SituationCapsule`,
+  not a pile of subsystem replies. Its inner `SituationFrame` states what matters now; meaningful
+  deltas, epistemic state, provenance, contradictions, obligations, resource pressure, and a
+  nondominated affordance frontier make the next safe move legible without hidden conversational
+  state.
 - **Semantic MVCC.** Event and effect decisions carry positive and negative witnesses, model/
   calibration/policy epochs, and revalidate before consequential publication.
 - **Pure-Rust production.** FSS owns packet protocols, codecs, containers, model execution, graph
@@ -162,6 +167,60 @@ See [`DEVICE_ADAPTER_MATRIX.md`](DEVICE_ADAPTER_MATRIX.md) and
 
 ## Architecture in one page
 
+### Agent operating membrane
+
+The packet, authority, cognition, and effect planes remain semantically distinct. Above them, FSS
+provides one **agent operating membrane** that composes their outputs without becoming another
+source of truth. It owns mission/workspace continuity, situation composition, investigations,
+context selection, affordances, contingent plans, explanations, handoffs, and advisory learning.
+
+```text
+Mission + ObjectiveContract
+          ↓
+AgentSession / explicit AgentWorkspace revision
+          ↓
+SituationCapsule
+  ├─ SituationFrame: minimum sufficient mission-relative world model
+  │    └─ WorldEnvelope: certified core + material/adversarial possibilities
+  ├─ MeaningfulDelta: what changed and what that invalidated
+  ├─ ContextPack + SemanticCompressionReceipt
+  ├─ active cases/plans/obligations/resource pressure
+  ├─ categorized control envelope: robust/conditional/probe/wait/blocked
+  └─ nondominated ActionAffordance frontier
+          ↓
+InvestigationCase / HypothesisWorkspace / counterfactual branches
+          ↓
+ControlPlan → prepare → commit → wait/cancel → verify/reconcile
+          ↓
+ExecutionEpisode → ExperienceCapsule → reviewed learning proposal
+          ↓
+root-last HandoffCapsule / resumable AgentSessionCapsule
+```
+
+Every layer retains handles to the evidence and semantic owner below it. No mission-critical fact,
+assumption, obligation, lease, indeterminate effect, or next step may live only in chat history.
+
+The parts meet through one internal `CognitiveFacet` narrow waist. Each subsystem contributes the
+same anchored coordinates—typed knowledge, coverage/health, contradictions/unknowns, evidence
+handles, obligations, complete cost, affordance seeds, invalidators, and recovery—so adding a new
+camera, model, graph algorithm, or archive backend does not add a new agent dialect.
+
+Every public operation uses one `AgentRequestEnvelope` / `AgentResponseEnvelope` pair. Their
+`ContractBasis` pins `fss/1` and the exact schema, ontology, operation, view, capability, error,
+cost, release, and nightly identities, so an agent never has to guess whether a familiar field
+still means the same thing.
+
+The driver model uses an **evidence–possibility–control envelope**. `WorldEnvelope` records what the
+current anchor certifies, which materially different or adversarial worlds remain possible, and
+which unknown dimensions control the decision. The outer capsule categorizes next actions as robust
+across those worlds, conditional on named worlds, information-gathering, wait/watch, blocked, or
+unavailable. A rare high-loss possibility cannot disappear merely because a ranking model assigns
+it a low score.
+
+See [`AGENT_COGNITION_AND_CONTROL.md`](AGENT_COGNITION_AND_CONTROL.md),
+[`AGENT_COGNITIVE_CONTROL_PLANE.md`](AGENT_COGNITIVE_CONTROL_PLANE.md), and
+[`AGENT_OPERATING_MODEL.md`](AGENT_OPERATING_MODEL.md).
+
 ### Four planes
 
 1. **Packet:** exact transport/source bytes, protocol sequence, compressed access units, time and
@@ -205,6 +264,9 @@ Models:          fss-tensor · fss-operator · fss-kernel-cpu · fss-model-ir/im
 Cognition:       fss-quality · fss-detect · fss-track · fss-associate · fss-temporal · fss-fusion
                  fss-event · fss-policy
 Knowledge:       fss-search · fss-graph/query/algorithms · fss-forge · fss-memory · fss-explain
+Agent cognition: fss-agent-core · fss-knowledge · fss-situation · fss-attention · fss-investigation
+                 fss-context-pack · fss-affordance · fss-query-plan · fss-agent-session
+                 fss-agent-plan · fss-episode · fss-learning · fss-handoff
 Effects:         fss-plan · fss-effect · fss-alert · fss-export
 Presentation:    fss-api · fss-cli · fss-mcp · fss-report · fss-ops · optional fss-ui
 Qualification:   fss-reference · fss-fixtures · fss-gauntlet · fss-bench · fss-release
@@ -331,7 +393,7 @@ FSS turns it into:
 - probability calibration and selective-risk curves;
 - distinct slices for darkness, occlusion, crawling/crouching, dark clothing, weather, foliage,
   wildlife, residents, delivery/service workers, children, and tampering;
-- explicit `NotObservable` accounting for failed/occluded/uncalibrated coverage;
+- explicit `not_observable` accounting for failed/occluded/uncalibrated coverage;
 - property/session-separated held-out evaluation;
 - retained misses, near misses, false alarms, contradictions, and broken assumptions;
 - claims that name shared model/sensor/clock/network/training-data failure domains.
@@ -341,32 +403,40 @@ rather than lower the score silently.
 
 ## Agent and operator surface
 
-The surface is read-first and bounded:
+The public semantic protocol is intentionally small. Domain detail is expressed through typed
+queries, targets, intents, views, and evidence handles rather than hundreds of privileged tools:
 
 ```text
-fss.status
-fss.device.list / inspect
-fss.stream.health
-fss.observe.delta
-fss.event.list / inspect / explain
-fss.timeline.query
-fss.search
-fss.graph.query
-fss.coverage.inspect / blind-spots
-fss.archive.verify
-fss.evidence.pack
-fss.doctor.bundle
-
-fss.alert.prepare / commit        # effect
-fss.camera.ptz.prepare / commit   # effect
-fss.retention.prepare / commit    # effect
-fss.deletion.prepare / commit     # effect
-fss.export.prepare / commit       # effect
+session.open      negotiate mission, authority, privacy, budgets, views, and initial workspace
+session.resume    restore a handoff/workspace root and enumerate invalidated assumptions
+session.orient    return the smallest sufficient current SituationCapsule
+session.follow    stream meaningful decision-impact deltas and qualified silence
+query             compile/execute a bounded semantic AgentQueryPlan
+investigate       create or advance a durable competing-hypothesis case
+plan              compile an immutable witnessed contingent ControlPlan
+commit            request execution of the exact prepared plan under current domain authority
+wait              monitor expected evidence and obligations under a bounded wake contract
+cancel            request drain, compensation/reconciliation, and terminalization
+explain           answer why, why-not, what-changed, and what-would-change by proof handles
+handoff           publish a root-last minimum-sufficient continuation graph
+feedback          append evidence-linked correction/outcome proposals without silent activation
+doctor            diagnose system, epistemic, plan, obligation, and continuity failures
 ```
 
+Every nonterminal response contains either a valid typed affordance or an explicit blocked,
+waiting, unauthorized, terminal, redacted, indeterminate, or not-observable reason. Recommendations
+show value, cost, latency, risk, reversibility, prerequisites, invalidators, alternatives, expected
+proof, and sensitivity. They never confer effect authority.
+
+The standard views are `pulse`, `brief`, `case`, `forensic`, `operation`, `handoff`,
+`decision_diff`, and `epistemic_map`. A compact response is accompanied by a
+`SemanticCompressionReceipt` naming what was selected, omitted, transformed, protected from
+omission, and available for priced hydration. CLI, Rust API, MCP, TUI, reports, and future desktop
+or mobile surfaces render the same operation/view registries and may not redefine them.
+
 There is no generic shell, SQL, vendor-method, codec, model-prompt, object-store, or drone-control
-escape hatch. Requests own their children and budgets; long work is a durable application-owned
-task; MCP is only a presentation adapter.
+escape hatch. Free-form language compiles into an inspectable `AgentQueryPlan`; it cannot cross an
+effect boundary.
 
 ## Local qualification and release
 
@@ -376,7 +446,7 @@ The release authority is local:
 2. capture exact clean Asupersync/Franken-suite revisions;
 3. resolve locked and offline after provisioning;
 4. run repository policy, Rust, deterministic lab, crash, ATP, graph, media, model, device,
-   security/privacy, performance, soak, and package lanes as required by claims;
+   agent-cognition, security/privacy, performance, soak, and package lanes as required by claims;
 5. retain partial target artifacts across resume but never bless them;
 6. build exact assets with checksums, minisign/Ed25519 signatures, SBOM, provenance, source/
    dependency and qualification manifests;
@@ -393,8 +463,11 @@ See [`LOCAL_QUALIFICATION_AND_RELEASE.md`](LOCAL_QUALIFICATION_AND_RELEASE.md).
 
 | Path | Purpose |
 |---|---|
-| [`COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md`](COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md) | Normative architecture, execution plan, and first 200 issues |
+| [`COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md`](COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md) | Normative architecture, execution plan, and first 240 issues |
 | [`FRANKENSTACK_DEEP_DIVE.md`](FRANKENSTACK_DEEP_DIVE.md) | Cross-project synthesis and constitutional imports |
+| [`AGENT_COGNITION_AND_CONTROL.md`](AGENT_COGNITION_AND_CONTROL.md) | Canonical agent cognition/control/accretion constitution and public `fss/1` semantic protocol |
+| [`AGENT_COGNITIVE_CONTROL_PLANE.md`](AGENT_COGNITIVE_CONTROL_PLANE.md) | Internal cognitive membrane, evidence hydration, control-loop, and crate-composition design |
+| [`AGENT_OPERATING_MODEL.md`](AGENT_OPERATING_MODEL.md) | Driver-facing operating loop, views, semantic zoom, investigations, handoff, and evaluation |
 | [`docs/deep-dives/INDEX.md`](docs/deep-dives/INDEX.md) | One deep mechanism audit per sibling project |
 | [`DEPENDENCY_CONSTITUTION.md`](DEPENDENCY_CONSTITUTION.md) | Canonical pure-Rust closed-universe policy; its byte-identical `docs/` mirror is policy-checked |
 | [`docs/ONE_VERSION_UNIVERSE.md`](docs/ONE_VERSION_UNIVERSE.md) | `EvidenceDeltaBatch`, anchors, high-water marks, branches, and recovery |
@@ -416,7 +489,7 @@ See [`LOCAL_QUALIFICATION_AND_RELEASE.md`](LOCAL_QUALIFICATION_AND_RELEASE.md).
 | [`DIGITAL_TWIN_AND_CALIBRATION.md`](DIGITAL_TWIN_AND_CALIBRATION.md) | Calibration and coverage doctrine |
 | [`DATA_FORMATS.md`](DATA_FORMATS.md) | Durable identities, object families, and schemas |
 | [`SECURITY.md`](SECURITY.md) / [`PRIVACY.md`](PRIVACY.md) | Authority, secrets, taint, retention, identity, and deletion |
-| [`architecture/`](architecture/) | Machine invariants, imports, dependencies, algorithms, publications, decisions, costs, and release policy |
+| [`architecture/`](architecture/) | Machine invariants, imports, dependencies, algorithms, publications, decisions, costs, agent contracts/operations/views/tower, and release policy |
 | [`registries/`](registries/) | Human-readable stable registries |
 | [`schemas/`](schemas/) | Draft 2020-12 interchange/evidence schemas |
 | [`scripts/qualify.sh`](scripts/qualify.sh) | Repository-local qualification contract |
@@ -460,15 +533,14 @@ Implemented now:
 
 - the comprehensive plan and second-pass Franken-stack constitution;
 - twelve project-specific deep dives plus an adjacent-project census;
-- eighty-two machine-readable hard invariants;
-- rich mechanism-level import, dependency, algorithm, publication, decision, cost, schema, and local
-  qualification registries;
-- JSON Schemas for sensor capsules, event hypotheses, evidence bundles, operation receipts,
-  calibration/coverage certificates, delta batches, graph witnesses, ATP manifests/receipts, model packages/execution receipts, adapter/drain/release certificates, and Decision Cards;
+- the three-document agent operating hierarchy, public `fss/1` operation/view registries, linked
+  abstraction tower, epistemic/provenance/possible-world vocabulary, and 27 agent semantic schemas;
+- machine-readable hard invariants and mechanism-level import, dependency, algorithm, publication,
+  decision, cost, claim, readiness, schema, and local qualification registries;
 - a dependency-free safe-Rust semantic skeleton;
 - policy/manifest validation and local qualification wrapper;
 - ADRs for pure Rust, one version universe, ATP separation, graph witnesses, local DSR authority,
-  and oracle-only foreign runtimes.
+  oracle-only foreign runtimes, and the agent cognitive operating membrane.
 
 Not implemented now:
 
@@ -478,7 +550,7 @@ Not implemented now:
 - canonical persistence and ATP cloud transport;
 - tensor kernels or model inference;
 - calibration, reconstruction, coverage, graph/search engines;
-- detection, tracking, association, event fusion, alerts, or MCP server;
+- detection, tracking, association, event fusion, alerts, or the agent/CLI/MCP operating layer;
 - full DSR release matrix.
 
 That gap is the ordered work—not hidden capability—described by the plan.

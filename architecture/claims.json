@@ -58,6 +58,30 @@
         "fixture_digest",
         "conformance_receipt"
       ]
+    },
+    {
+      "id": "agent_task",
+      "requiredEvidence": [
+        "sealed_task_corpus_manifest",
+        "anchor_aligned_transcripts",
+        "world_envelope_and_control_classification_metrics",
+        "cognitive_facet_owner_anchor_compatibility",
+        "task_correctness_and_calibration",
+        "evidence_use_and_unsafe_action_metrics",
+        "resource_cost_vector",
+        "failures_abstentions_and_operator_interventions"
+      ]
+    },
+    {
+      "id": "agent_accretion",
+      "requiredEvidence": [
+        "sealed_repeated_task_corpus",
+        "baseline_without_prior_experience",
+        "learning_and_handoff_roots",
+        "task_quality_non_regression",
+        "resource_savings_distribution",
+        "harmful_transfer_and_trauma_guard_results"
+      ]
     }
   ],
   "prohibited": [
@@ -65,6 +89,10 @@
     "single_demo_as_readiness",
     "version_string_as_conformance",
     "aggregate_accuracy_as_event_recall",
-    "unbounded_never_miss_claim"
+    "unbounded_never_miss_claim",
+    "compact_output_as_sufficient_context_without_omission_receipt",
+    "recommendation_score_as_effect_authority",
+    "memory_or_prior_handoff_as_live_truth",
+    "lower_call_count_as_agent_efficiency_without_task_quality_and_cost_vector"
   ]
 }

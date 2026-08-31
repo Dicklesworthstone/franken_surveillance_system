@@ -59,10 +59,26 @@
     "registries/DEPENDENCIES.md",
     "registries/QUALIFICATION_LANES.md",
     "registries/OPERATION_COSTS.md",
-    "registries/SCHEMAS.md"
+    "registries/SCHEMAS.md",
+    "AGENT_COGNITIVE_CONTROL_PLANE.md",
+    "docs/AGENT_COGNITIVE_CONTROL_PLANE.md",
+    "architecture/agent_abstraction_stack.json",
+    "registries/AGENT_ABSTRACTIONS.md",
+    "AGENT_COGNITION_AND_CONTROL.md",
+    "AGENT_OPERATING_MODEL.md",
+    "docs/AGENT_COGNITION_AND_CONTROL.md",
+    "docs/AGENT_OPERATING_MODEL.md",
+    "docs/adr/ADR-0011-agent-cognitive-operating-membrane.md",
+    "architecture/agent_contracts.json",
+    "architecture/agent_operating_model.json",
+    "architecture/agent_operations.json",
+    "architecture/agent_views.json",
+    "registries/AGENT_CONTRACTS.md",
+    "registries/AGENT_OPERATIONS.md",
+    "registries/AGENT_VIEWS.md"
   ],
   "generatedIntegrity": "MANIFEST.sha256",
   "releaseAuthority": "local DSR qualification receipts",
   "deepDiveIndex": "docs/deep-dives/INDEX.md",
-  "canonicalMirrorPolicy": "Five root constitutions are byte-identical to their docs/ mirrors and policy-checked."
+  "canonicalMirrorPolicy": "Eight root constitutions are byte-identical to their docs/ mirrors and policy-checked, including the three agent-operating documents."
 }

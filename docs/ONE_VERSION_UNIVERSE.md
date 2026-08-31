@@ -120,6 +120,34 @@ Moves immutable batches and child object graphs. Receiver stages and verifies gr
 
 A branch roots at an anchor and applies hypothetical semantic deltas in an isolated namespace. It can run graph/model/policy analysis. It cannot merge fabricated state into live authority; it emits candidate intents that are recompiled against live state.
 
+### Agent cognition, sessions, and handoff
+
+The agent operating layer consumes the same ordered batches and publishes derived, immutable
+workspace revisions. It does not maintain a conversational side chronology. In particular:
+
+- a `SituationCapsule` names one authority anchor and the exact graph/search/model/calibration/
+  memory high-water marks used by its inner `SituationFrame`;
+- that frame's `WorldEnvelope` names the evidence candidate universe, certified core/absence
+  witnesses, material alternative-world branch roots, protected adversarial residuals, and one
+  canonical digest; the outer `controlEnvelope` is derived from that same digest and cannot mix a
+  newer affordance frontier with an older belief space;
+- a `MeaningfulDelta` is computed between named capsule/frame revisions and reports decision impact,
+  not merely changed rows;
+- an `InvestigationCase`, `HypothesisWorkspace`, finding, affordance frontier, and `ControlPlan`
+  each name the anchor and prior revision on which they depend;
+- a `ContextPack` and `SemanticCompressionReceipt` name the complete candidate universe and the
+  exact selected/omitted classes at that anchor;
+- an `ExecutionEpisode` preserves the objective, prediction, selected plan, consumed evidence,
+  receipts, outcome, and residual uncertainty as they existed;
+- a `HandoffCapsule` is a root-last immutable continuity graph, not a mutable snapshot exported from
+  hidden client state.
+
+Workspace publication follows reserve → materialize children → verify semantic closure → publish
+workspace root. A session resume starts a new workspace revision. It rebases the handoff against the
+current universe and explicitly marks stale knowledge, invalid assumptions, expired grants/leases,
+obsolete aliases, superseded plans, unresolved obligations, and changed affordances. It never
+silently carries an old claim or capability forward.
+
 ## 9. Compaction
 
 Compaction changes representation, not history semantics. A compaction manifest proves equivalence between an input batch interval and a sealed state/checkpoint plus retained audit tail. Tombstones, deletion obligations, and legal retention constraints are preserved.
@@ -151,6 +179,14 @@ graph_high_water
 model_result_high_water
 calibration_generation
 coverage_generation
+mission_revision
+workspace_revision
+situation_capsule_id
+world_envelope_digest
+control_envelope_digest
+context_pack_root
+investigation_and_plan_revisions
+handoff_root_if_any
 staleness_or_gap
 ```
 
@@ -182,3 +218,9 @@ On restart:
 - migration determinism/rollback;
 - ATP replica resume and root-last publication;
 - deletion/tombstone preservation through every derived consumer.
+- deterministic `SituationCapsule`/`MeaningfulDelta` generation from the same mission, anchor, and budget;
+- `WorldEnvelope`/`controlEnvelope` digest alignment, possible-world closure, and protected-residual preservation;
+- semantic-compression critical-preservation and omission-counterfactual tests;
+- session/workspace concurrent revision and stale-rebase tests;
+- handoff root-last closure plus resume under anchor/policy/model/calibration/authority drift;
+- experience/learning publication that cannot mutate active truth or policy.

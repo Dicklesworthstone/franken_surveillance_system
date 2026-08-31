@@ -14,3 +14,6 @@ Machine source: `architecture/publication_primitives.json`. Publication is a sem
 | `PUB-EVIDENCE-001` | `evidence_bundle` | `fss-evidence` | Human report and machine manifest publish atomically | `specified` |
 | `PUB-DELETE-001` | `deletion_closure` | `fss-privacy` | Deletion success requires alternate-index/cache reachability closure | `specified` |
 | `PUB-RELEASE-001` | `release_root` | `fss-release` | Partial target success cannot bless an aggregate release | `specified` |
+| `PUB-AGENT-WORKSPACE-001` | `agent_workspace_revision` | `fss-agent-session` | A resumable workspace never references missing cases, plans, obligations, or evidence handles and never hides invalidated state | `specified` |
+| `PUB-AGENT-HANDOFF-001` | `agent_handoff_capsule` | `fss-handoff` | A handoff is not complete until the recipient can reconstruct mission, uncertainty, obligations, continuations, and invalidations without hidden conversational state | `specified` |
+| `PUB-AGENT-EXPERIENCE-001` | `agent_experience_capsule` | `fss-episode` | Learning never rewrites the original episode and no proposal is promoted without its immutable outcome basis | `specified` |

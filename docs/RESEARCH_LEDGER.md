@@ -228,12 +228,47 @@ Extracted:
 - structured JSON/exit semantics;
 - local-first release authority.
 
+## Agent-system synthesis pass
+
+After the subsystem/dependency pass established the physical and computational substrate, a third
+pass re-read the same projects from the driver's seat. The question changed from “which component
+mechanism should FSS import?” to “which stable cognitive abstraction would let an agent understand
+and control the entire fabric with minimum resource expenditure and maximum epistemic honesty?”
+
+The synthesis combined:
+
+- Asupersync regions, contexts, budgets, obligations, cancellation, and durable transfer roots into
+  owned agent sessions, plans, waits, and handoffs;
+- FrankenSQLite anchors, witnesses, immutable revision history, and rebase semantics into mission,
+  workspace, case, finding, plan, and session state;
+- FrankenGraphDB/NetworkX versioned projections, branches, deterministic algorithms, minimal
+  subgraphs, set cover, flow, and critical path into situations, explanations, affordances, active
+  perception, and multi-agent work graphs;
+- Frankensearch progressive retrieval and Eidetic Engine context packing/feedback/trauma guard into
+  priced evidence hydration, semantic compression, operational memory, and accretive learning;
+- Dwarf Fortress MCP and FastMCP Rust's semantic intent, delayed-effect truth, bounded presentation,
+  and honest indeterminacy into one public `fss/1` operation grammar;
+- FrankenFS and ATP root-last custody into portable `AgentSessionCapsule`, `HandoffCapsule`, and
+  `ExperienceCapsule` object graphs;
+- DSR's task-level qualification into a sealed agent gauntlet measuring decision quality per full
+  resource and operator cost rather than tool-call count.
+
+The resulting canonical hierarchy is `SituationCapsule` as the primary driver publication, with an
+inner mission-relative `SituationFrame`; that frame contains a `WorldEnvelope` separating the
+certified core from material alternatives and protected adversarial residuals; the capsule's
+`controlEnvelope` projects that possibility set into robust, conditional, information-gathering,
+wait/watch, and blocked affordances. `ContextPack` plus `SemanticCompressionReceipt` is the
+budget-shaped materialization; `AgentCognitiveEnvelope` is a generic decision-bearing payload; and
+`AgentResponseEnvelope` is the universal lifecycle/transport wrapper. This closes the previously missing
+evidence → possibilities → control bridge without creating another truth plane.
+
 ## Resulting artifacts
 
 - `FRANKENSTACK_DEEP_DIVE.md`
 - root constitutions `DEPENDENCY_CONSTITUTION.md`, `GRAPH_ANALYTICS_AND_SENSOR_MESH.md`,
-  `ATP_AND_DISTRIBUTED_EVIDENCE.md`, `PURE_RUST_MODEL_RUNTIME.md`, and
-  `LOCAL_QUALIFICATION_AND_RELEASE.md`, with policy-checked `docs/` mirrors;
+  `ATP_AND_DISTRIBUTED_EVIDENCE.md`, `PURE_RUST_MODEL_RUNTIME.md`,
+  `LOCAL_QUALIFICATION_AND_RELEASE.md`, `AGENT_COGNITION_AND_CONTROL.md`,
+  `AGENT_COGNITIVE_CONTROL_PLANE.md`, and `AGENT_OPERATING_MODEL.md`, with policy-checked `docs/` mirrors;
 - `docs/ATP_MEDIA_GRAPH_AND_REPLICATION.md`;
 - `docs/MVCC_EVIDENCE_LEDGER.md`;
 - `docs/GRAPH_ALGORITHM_ATLAS.md`;
@@ -241,3 +276,6 @@ Extracted:
 - `docs/PERFORMANCE_AND_MECHANICAL_SYMPATHY.md`;
 - `docs/LOCAL_QUALIFICATION_WITH_DSR.md`;
 - machine-readable architecture registries and schemas.
+- `architecture/agent_contracts.json` plus operation, view, abstraction, and operating-model registries;
+- agent mission/session/situation/query/investigation/affordance/plan/episode/learning/handoff schemas;
+- `QL-AGENT-001`, agent-specific decision cards, publication primitives, SLOs, costs, errors, and tests.

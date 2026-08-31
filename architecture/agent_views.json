@@ -1,0 +1,158 @@
+{
+  "schema": "fss.agent_views.v1",
+  "asOf": "2026-08-31",
+  "views": [
+    {
+      "id": "AVIEW-001",
+      "name": "pulse",
+      "owner": "fss-context-pack",
+      "purpose": "tiny high-severity meaningful delta, sensor-health, coverage-loss, effect-uncertainty, and obligation heartbeat",
+      "targetTokens": 120,
+      "maximumTokens": 300,
+      "requiredSections": [
+        "criticalChanges",
+        "coverageChanges",
+        "effectUncertainty",
+        "urgentObligations",
+        "continuity"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified"
+    },
+    {
+      "id": "AVIEW-002",
+      "name": "brief",
+      "owner": "fss-situation",
+      "purpose": "primary mission SituationCapsule answering what is established, what materially different worlds remain possible, what changed, why it matters, and what is robustly or conditionally safe to do next",
+      "targetTokens": 800,
+      "maximumTokens": 1600,
+      "requiredSections": [
+        "now",
+        "certified",
+        "possible",
+        "changed",
+        "why",
+        "unknown",
+        "atRisk",
+        "controlEnvelope",
+        "next"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified"
+    },
+    {
+      "id": "AVIEW-003",
+      "name": "case",
+      "owner": "fss-investigation",
+      "purpose": "investigation question, competing hypotheses, evidence, contradictions, unknowns, discriminators, and stop rule",
+      "targetTokens": 3000,
+      "maximumTokens": 5000,
+      "requiredSections": [
+        "question",
+        "hypotheses",
+        "evidence",
+        "contradictions",
+        "unknowns",
+        "discriminators",
+        "stopRule"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified"
+    },
+    {
+      "id": "AVIEW-004",
+      "name": "forensic",
+      "owner": "fss-context-pack",
+      "purpose": "broad exact evidence graph, source spans, receipts, alternative derivations, and replay handles",
+      "targetTokens": 8000,
+      "maximumTokens": 16000,
+      "requiredSections": [
+        "evidenceGraph",
+        "sourceHandles",
+        "receipts",
+        "derivations",
+        "replay"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified"
+    },
+    {
+      "id": "AVIEW-005",
+      "name": "operation",
+      "owner": "fss-obligation",
+      "purpose": "one durable plan/effect/task, progress, expected terminal proof, obligations, and reconciliation",
+      "targetTokens": 600,
+      "maximumTokens": 1200,
+      "requiredSections": [
+        "state",
+        "progress",
+        "proofExpected",
+        "obligations",
+        "reconciliation"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified"
+    },
+    {
+      "id": "AVIEW-006",
+      "name": "handoff",
+      "owner": "fss-handoff",
+      "purpose": "minimum sufficient state for another agent to resume without rediscovery or hidden staleness",
+      "targetTokens": 1800,
+      "maximumTokens": 3200,
+      "requiredSections": [
+        "mission",
+        "situation",
+        "cases",
+        "plans",
+        "obligations",
+        "unknowns",
+        "budgets",
+        "authority",
+        "next"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified"
+    },
+    {
+      "id": "AVIEW-007",
+      "name": "decision_diff",
+      "owner": "fss-explain",
+      "purpose": "why a conclusion, priority, hypothesis, plan, or preferred affordance changed",
+      "targetTokens": 900,
+      "maximumTokens": 1800,
+      "requiredSections": [
+        "basisBefore",
+        "basisAfter",
+        "changedEvidence",
+        "invalidatedAssumptions",
+        "decisionImpact",
+        "whatWouldReverse"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified"
+    },
+    {
+      "id": "AVIEW-008",
+      "name": "epistemic_map",
+      "owner": "fss-knowledge",
+      "purpose": "known/estimated/unknown/conflicted/stale/not-observable/redacted/indeterminate map plus certified core, material alternative worlds, adversarial residuals, and discriminators",
+      "targetTokens": 1500,
+      "maximumTokens": 3000,
+      "requiredSections": [
+        "states",
+        "certifiedCore",
+        "certifiedAbsences",
+        "materialAlternatives",
+        "adversarialResiduals",
+        "coverage",
+        "contradictions",
+        "gaps",
+        "redactions",
+        "nextDiscriminators"
+      ],
+      "gate": "QL-AGENT-001",
+      "status": "specified"
+    }
+  ]
+}

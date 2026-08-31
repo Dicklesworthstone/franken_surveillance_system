@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_hypothesis_workspace.v1.json",
+  "title": "Agent Hypothesis Workspace v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "workspaceId",
+    "objectiveId",
+    "anchor",
+    "revision",
+    "hypotheses",
+    "competitionPolicy",
+    "decisionDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_hypothesis_workspace.v1"
+    },
+    "workspaceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "objectiveId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "hypotheses": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "hypothesisId",
+          "proposition",
+          "status",
+          "supportingEvidence",
+          "contradictingEvidence",
+          "missingEvidence",
+          "assumptions",
+          "invalidators",
+          "predictions",
+          "distinguishingTests",
+          "consequences"
+        ],
+        "properties": {
+          "hypothesisId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "proposition": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "status": {
+            "enum": [
+              "proposed",
+              "viable",
+              "leading",
+              "weakened",
+              "refuted",
+              "merged",
+              "split",
+              "retired"
+            ]
+          },
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          },
+          "calibrationClass": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "supportingEvidence": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "contradictingEvidence": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "missingEvidence": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "assumptions": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "invalidators": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "predictions": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "distinguishingTests": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "consequences": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "accept",
+              "reject",
+              "unresolved"
+            ],
+            "properties": {
+              "accept": {
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "reject": {
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              },
+              "unresolved": {
+                "type": "array",
+                "maxItems": 4096,
+                "items": {
+                  "type": "string",
+                  "maxLength": 4096
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "competitionPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lossModelId",
+        "tieBreakPolicy",
+        "retainHighLossAlternatives"
+      ],
+      "properties": {
+        "lossModelId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "tieBreakPolicy": {
+          "type": "string"
+        },
+        "retainHighLossAlternatives": {
+          "type": "boolean"
+        }
+      }
+    },
+    "decisionDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

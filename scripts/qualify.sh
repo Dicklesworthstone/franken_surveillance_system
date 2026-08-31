@@ -9,7 +9,7 @@ WRITE_RECEIPT=1
 usage() {
   cat >&2 <<'USAGE'
 Usage: scripts/qualify.sh [--lane LANE] [--receipt-dir DIR] [--no-receipt]
-       scripts/qualify.sh [policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|privacy|release-preflight|release]
+       scripts/qualify.sh [policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|release-preflight|release]
 
 The repository-local qualifier is the semantic qualification entrypoint. Doodlestein
 Self-Releaser executes it from clean, exact source/sibling snapshots on controlled native hosts.
@@ -38,7 +38,7 @@ while (($#)); do
       usage
       exit 0
       ;;
-    policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|privacy|release-preflight|release)
+    policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|release-preflight|release)
       LANE="$1"
       shift
       ;;
@@ -234,6 +234,7 @@ lane_ids = {
     "model": "QL-MODEL-001",
     "geometry": "QL-GEOMETRY-001",
     "threat": "QL-THREAT-001",
+    "agent": "QL-AGENT-001",
     "privacy": "QL-PRIVACY-001",
     "release-preflight": "QL-RELEASE-001",
     "release": "QL-RELEASE-001",
@@ -286,7 +287,7 @@ case "$LANE" in
     policy_lane
     rust_lane
     ;;
-  lab|adapter|media|archive|model|geometry|threat|privacy)
+  lab|adapter|media|archive|model|geometry|threat|agent|privacy)
     claim_lane
     ;;
   release-preflight)

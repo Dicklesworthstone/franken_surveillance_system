@@ -110,7 +110,40 @@ This prevents agents from repeatedly rediscovering seductive failures.
 - `DEC-MODEL-ROUTE-001`: CPU/model specialization selection;
 - `DEC-ALERT-REVIEW-001`: request independent verifier/human review, never waive required review.
 
-## 10. Admission tests
+## 10. Agent cognitive decision cards
+
+Agent ergonomics contains adaptive choices that are consequential even when they are not physical
+effects. They therefore use the same hard-clamped decision-card discipline:
+
+- `DEC-AGENT-CONTEXT-001`: select the smallest sufficient context/evidence set under semantic
+  critical-preservation, privacy, coverage, and token/resource constraints;
+- `DEC-AGENT-AFFORDANCE-001`: form a nondominated next-action frontier after authority, safety,
+  privacy, freshness, and observability clamps;
+- `DEC-AGENT-ROBUST-001`: choose among a robust action, a world-conditional branch, an
+  information-gathering probe, wait/watch, or refusal against the protected `WorldEnvelope`, with
+  explicit compatible and unsafe possible worlds and no disappearance of high-loss residuals
+  through ranking or compression;
+- `DEC-AGENT-PROBE-001`: choose the next discriminating observation by expected reduction in
+  decision loss, not raw novelty;
+- `DEC-AGENT-STOP-001`: stop or continue an investigation using residual loss, deadline, evidence
+  cost, and protected-hypothesis floors;
+- `DEC-AGENT-HANDOFF-001`: choose the minimum sufficient portable continuity graph without omitting
+  an assumption, obligation, authority fact, unknown, invalidator, or safe next step needed to
+  resume;
+- `DEC-AGENT-LEARNING-001`: promote, retain as candidate, demote, retire, or invert an experience-
+  derived proposal using evidence strength, held-out transfer, harmful outcomes, scope, and expiry;
+- `DEC-AGENT-PRESSURE-001`: degrade optional context, graph/model refinement, and follow cadence
+  under pressure while preserving epistemic loss, protected worlds, critical deltas, and effect proof;
+- `DEC-AGENT-INTERRUPT-001`: decide when a committed delta justifies interrupting the driver versus
+  coalescing into a later pulse, with terminal/coverage/contradiction/plan/effect/obligation changes
+  permanently non-coalescible.
+
+An agent decision card records both semantic quality and resource use. Lower tokens or latency are
+not wins if they increase unsafe action rate, hide contradictions, create duplicate work, degrade
+calibration, increase operator burden, or leave obligations unresolved. The selected arm and all
+rejected nondominated alternatives remain explainable through `decision_diff`.
+
+## 11. Admission tests
 
 - deterministic card generation and tie-breaks;
 - hard-clamp non-bypass property tests;

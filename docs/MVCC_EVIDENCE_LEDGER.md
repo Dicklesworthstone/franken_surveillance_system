@@ -115,7 +115,7 @@ NegativeWitness {
 }
 ```
 
-The claim is invalidated by new observations in the domain, health/clock/calibration drift, policy/model change, or an expanded authorized projection. Missing coverage yields `Unknown`, never `False`.
+The claim is invalidated by new observations in the domain, health/clock/calibration drift, policy/model change, or an expanded authorized projection. Missing coverage yields `unknown` or `not_observable`, never an asserted false/absent conclusion.
 
 ## 7. Write witnesses
 

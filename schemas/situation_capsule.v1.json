@@ -1,0 +1,636 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/situation_capsule.v1.json",
+  "title": "Situation Capsule v1",
+  "description": "Primary anchor-pinned agent read object: a mission-relative SituationFrame plus meaningful delta, obligations, resource state, affordance frontier, selected context, and semantic-compression proof.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "capsuleId",
+    "revision",
+    "missionId",
+    "missionRevision",
+    "sessionId",
+    "principalId",
+    "anchor",
+    "previousAnchor",
+    "objectiveContract",
+    "effectiveCapabilities",
+    "privacyProjection",
+    "decisionDeadlineNs",
+    "situationFrame",
+    "meaningfulDelta",
+    "attentionFrontier",
+    "activeInvestigations",
+    "activeHypotheses",
+    "activePlans",
+    "obligations",
+    "indeterminateEffects",
+    "epistemicDebt",
+    "resourceState",
+    "affordances",
+    "controlEnvelope",
+    "contextPack",
+    "compressionReceipt",
+    "symbolTableGeneration",
+    "validity",
+    "continuation",
+    "decisionFingerprint",
+    "createdAtNs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.situation_capsule.v1"
+    },
+    "capsuleId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "missionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "principalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "previousAnchor": {
+      "anyOf": [
+        {
+          "$ref": "evidence_anchor.v1.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "situationFrame": {
+      "$ref": "agent_situation_frame.v1.json"
+    },
+    "meaningfulDelta": {
+      "anyOf": [
+        {
+          "$ref": "agent_meaningful_delta.v1.json"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "activeInvestigations": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "activePlans": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "obligations": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "indeterminateEffects": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "resourceState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "reserved",
+        "pressure",
+        "degradedDimensions"
+      ],
+      "properties": {
+        "available": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latencyMs",
+            "tokens",
+            "bytes",
+            "modelCalls",
+            "cpuMillis",
+            "acceleratorMillis",
+            "energyMilliJoules",
+            "networkBytes",
+            "storageOperations",
+            "privacyExposure",
+            "operatorAttentionSeconds"
+          ],
+          "properties": {
+            "latencyMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "modelCalls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cpuMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "acceleratorMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "energyMilliJoules": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "networkBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "storageOperations": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "privacyExposure": {
+              "type": "number",
+              "minimum": 0
+            },
+            "operatorAttentionSeconds": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "reserved": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "latencyMs",
+            "tokens",
+            "bytes",
+            "modelCalls",
+            "cpuMillis",
+            "acceleratorMillis",
+            "energyMilliJoules",
+            "networkBytes",
+            "storageOperations",
+            "privacyExposure",
+            "operatorAttentionSeconds"
+          ],
+          "properties": {
+            "latencyMs": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "tokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "bytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "modelCalls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "cpuMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "acceleratorMillis": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "energyMilliJoules": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "networkBytes": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "storageOperations": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "privacyExposure": {
+              "type": "number",
+              "minimum": 0
+            },
+            "operatorAttentionSeconds": {
+              "type": "number",
+              "minimum": 0
+            }
+          }
+        },
+        "pressure": {
+          "enum": [
+            "nominal",
+            "elevated",
+            "constrained",
+            "critical"
+          ]
+        },
+        "degradedDimensions": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "controlEnvelope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "robustAffordanceIds",
+        "conditionalAffordanceIds",
+        "informationGatheringAffordanceIds",
+        "waitAffordanceIds",
+        "blockedAffordanceIds",
+        "robustInvariants",
+        "branchConditions",
+        "envelopeDigest"
+      ],
+      "properties": {
+        "robustAffordanceIds": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          }
+        },
+        "conditionalAffordanceIds": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          }
+        },
+        "informationGatheringAffordanceIds": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          }
+        },
+        "waitAffordanceIds": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          }
+        },
+        "blockedAffordanceIds": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          }
+        },
+        "robustInvariants": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          }
+        },
+        "branchConditions": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "conditionId",
+              "worldIds",
+              "enabledAffordanceIds",
+              "disabledAffordanceIds"
+            ],
+            "properties": {
+              "conditionId": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+              },
+              "worldIds": {
+                "type": "array",
+                "maxItems": 256,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+                }
+              },
+              "enabledAffordanceIds": {
+                "type": "array",
+                "maxItems": 256,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+                }
+              },
+              "disabledAffordanceIds": {
+                "type": "array",
+                "maxItems": 256,
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256,
+                  "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+                }
+              }
+            }
+          }
+        },
+        "envelopeDigest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "affordances": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "agent_affordance.v1.json"
+      }
+    },
+    "contextPack": {
+      "$ref": "semantic_context_pack.v1.json"
+    },
+    "compressionReceipt": {
+      "$ref": "semantic_compression_receipt.v1.json"
+    },
+    "symbolTableGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "validUntilNs",
+        "invalidators",
+        "reanchorRequiredOn"
+      ],
+      "properties": {
+        "validUntilNs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "invalidators": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "reanchorRequiredOn": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        }
+      }
+    },
+    "continuation": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "decisionFingerprint": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "createdAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    },
+    "missionRevision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "objectiveContract": {
+      "$ref": "agent_objective_contract.v1.json"
+    },
+    "effectiveCapabilities": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "type": "string",
+        "pattern": "^CAP-[A-Z0-9-]+-[0-9]{3}$"
+      }
+    },
+    "privacyProjection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policyGenerationId",
+        "purpose",
+        "visibleDomains",
+        "redactedDomains"
+      ],
+      "properties": {
+        "policyGenerationId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "visibleDomains": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "redactedDomains": {
+          "type": "array",
+          "maxItems": 256,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        }
+      }
+    },
+    "decisionDeadlineNs": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "attentionFrontier": {
+      "type": "array",
+      "maxItems": 128,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "itemId",
+          "kind",
+          "priorityClass",
+          "missionRelevance",
+          "decisionImpact",
+          "reason",
+          "handle"
+        ],
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          },
+          "kind": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "priorityClass": {
+            "enum": [
+              "constitutional",
+              "critical",
+              "high",
+              "normal",
+              "low"
+            ]
+          },
+          "missionRelevance": {
+            "type": "number"
+          },
+          "decisionImpact": {
+            "type": "number"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096
+          },
+          "handle": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          }
+        }
+      }
+    },
+    "activeHypotheses": {
+      "type": "array",
+      "maxItems": 512,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 256,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+      }
+    },
+    "epistemicDebt": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": {
+        "$ref": "agent_session_capsule.v1.json#/$defs/epistemicDebtItem"
+      }
+    }
+  }
+}

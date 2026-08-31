@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_learning_proposal.v1.json",
+  "title": "Agent Learning Proposal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "proposalId",
+    "class",
+    "sourceEpisodeId",
+    "statement",
+    "applicability",
+    "supportingEvidence",
+    "contradictingEvidence",
+    "counterexamples",
+    "confidence",
+    "helpfulOutcomes",
+    "harmfulOutcomes",
+    "requiredValidation",
+    "promotionState",
+    "expiryReview",
+    "decisionDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_learning_proposal.v1"
+    },
+    "proposalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "class": {
+      "enum": [
+        "fact_candidate",
+        "procedure_candidate",
+        "anti_pattern_candidate",
+        "diagnostic_signature",
+        "adapter_quirk",
+        "model_failure_mode",
+        "coverage_geometry_lesson",
+        "cost_model_update",
+        "policy_review_candidate",
+        "benchmark_fixture_candidate"
+      ]
+    },
+    "sourceEpisodeId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "statement": {
+      "type": "string",
+      "maxLength": 32768
+    },
+    "applicability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "deployment",
+        "deviceTuples",
+        "modelGenerations",
+        "calibrationGenerations",
+        "timeConditions",
+        "preconditions",
+        "exclusions"
+      ],
+      "properties": {
+        "deployment": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "deviceTuples": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "modelGenerations": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "calibrationGenerations": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "timeConditions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "preconditions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "exclusions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "supportingEvidence": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "contradictingEvidence": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "counterexamples": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "knownFailureSignatures": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "rollbackOrCompensation": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "helpfulOutcomes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "harmfulOutcomes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "requiredValidation": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "promotionState": {
+      "enum": [
+        "captured",
+        "proposed",
+        "reviewed",
+        "validated",
+        "shadow",
+        "promoted",
+        "demoted",
+        "retired",
+        "revivable"
+      ]
+    },
+    "expiryReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewAfterNs",
+        "expiryNs",
+        "revivalConditions"
+      ],
+      "properties": {
+        "reviewAfterNs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "expiryNs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "revivalConditions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        }
+      }
+    },
+    "decisionDigest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

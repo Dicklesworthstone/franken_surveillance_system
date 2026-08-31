@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_feedback_proposal.v1.json",
+  "title": "Agent Feedback Proposal v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasis",
+    "feedbackId",
+    "principalId",
+    "sessionId",
+    "basisAnchor",
+    "target",
+    "kind",
+    "statement",
+    "supportingEvidence",
+    "contradictingEvidence",
+    "requestedDisposition",
+    "privacyClass",
+    "createdAtNs",
+    "activePolicyMutation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_feedback_proposal.v1"
+    },
+    "feedbackId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "principalId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "sessionId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "basisAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "kind": {
+      "enum": [
+        "correction",
+        "adjudication",
+        "helpful",
+        "harmful",
+        "missing_evidence",
+        "bad_affordance",
+        "bad_summary",
+        "adapter_quirk",
+        "runbook_candidate",
+        "hard_negative_candidate",
+        "policy_candidate",
+        "model_candidate"
+      ]
+    },
+    "statement": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "supportingEvidence": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+      }
+    },
+    "contradictingEvidence": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+      }
+    },
+    "requestedDisposition": {
+      "enum": [
+        "record_only",
+        "create_learning_proposal",
+        "open_case",
+        "requalify",
+        "deprecate",
+        "operator_review"
+      ]
+    },
+    "privacyClass": {
+      "enum": [
+        "public",
+        "operational",
+        "private",
+        "restricted",
+        "secret_reference_only"
+      ]
+    },
+    "createdAtNs": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "activePolicyMutation": {
+      "const": false
+    },
+    "contractBasis": {
+      "$ref": "agent_contract_basis.v1.json"
+    }
+  }
+}

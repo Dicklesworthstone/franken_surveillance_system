@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_situation_frame.v1.json",
+  "title": "Agent Situation Frame v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "frameId",
+    "objectiveId",
+    "anchor",
+    "worldEnvelope",
+    "knowledgeCells",
+    "salientEntities",
+    "changes",
+    "contradictions",
+    "unknowns",
+    "notObservableDomains",
+    "coverage",
+    "obligations",
+    "evidenceHandles",
+    "selectionWitness"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.agent_situation_frame.v1"
+    },
+    "frameId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "objectiveId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "anchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "priorFrameId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "worldEnvelope": {
+      "$ref": "agent_world_envelope.v1.json"
+    },
+    "salientEntities": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "entityId",
+          "kind",
+          "relevance",
+          "state",
+          "provenance"
+        ],
+        "properties": {
+          "entityId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "kind": {
+            "type": "string"
+          },
+          "relevance": {
+            "type": "number"
+          },
+          "state": {
+            "enum": [
+              "known",
+              "estimated",
+              "unknown",
+              "conflicted",
+              "stale",
+              "not_observable",
+              "redacted",
+              "indeterminate",
+              "not_applicable"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "maxLength": 8192
+          },
+          "evidenceHandles": {
+            "type": "array",
+            "maxItems": 4096,
+            "items": {
+              "type": "string",
+              "maxLength": 4096
+            }
+          },
+          "provenance": {
+            "enum": [
+              "observed",
+              "derived",
+              "predicted",
+              "remembered",
+              "operator_asserted",
+              "vendor_claimed",
+              "policy"
+            ]
+          }
+        }
+      }
+    },
+    "changes": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "contradictions": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "notObservableDomains": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "domains",
+        "witnessIds",
+        "gaps",
+        "absenceClaimsCertified"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "complete_for_declared_domain",
+            "bounded_partial",
+            "degraded",
+            "not_observable",
+            "unauthorized",
+            "uncertified"
+          ]
+        },
+        "domains": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1024
+          }
+        },
+        "witnessIds": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+          }
+        },
+        "gaps": {
+          "type": "array",
+          "maxItems": 512,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2048
+          }
+        },
+        "absenceClaimsCertified": {
+          "type": "boolean"
+        }
+      }
+    },
+    "obligations": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "evidenceHandles": {
+      "type": "array",
+      "maxItems": 4096,
+      "items": {
+        "type": "string",
+        "maxLength": 4096
+      }
+    },
+    "selectedHypothesisWorkspaceId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "activePlanId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "selectionWitness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidateCount",
+        "selectedCount",
+        "omittedCount",
+        "hardInclusions",
+        "decisionChangingItems",
+        "stopReason",
+        "outputDigest"
+      ],
+      "properties": {
+        "candidateCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selectedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omittedCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hardInclusions": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "decisionChangingItems": {
+          "type": "array",
+          "maxItems": 4096,
+          "items": {
+            "type": "string",
+            "maxLength": 4096
+          }
+        },
+        "stopReason": {
+          "type": "string"
+        },
+        "outputDigest": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        }
+      }
+    },
+    "knowledgeCells": {
+      "type": "array",
+      "maxItems": 2048,
+      "items": {
+        "$ref": "agent_knowledge_cell.v1.json"
+      }
+    }
+  }
+}

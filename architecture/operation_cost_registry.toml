@@ -216,3 +216,84 @@ semantic_steps = ["clean_snapshot", "resolve_sibling_closure", "run_lanes", "bui
 variable_costs = ["targets", "lanes", "test_time", "artifact_bytes"]
 slo_ids = ["SLO-RELEASE-001"]
 status = "model_required"
+
+[[operation]]
+id = "COST-ORIENT-001"
+name = "produce one mission SituationCapsule"
+unit = "orientation"
+semantic_steps = ["pin_anchor", "restore_or_create_workspace", "construct_situation_frame", "construct_world_envelope", "compute_meaningful_delta", "select_knowledge_cells", "construct_control_envelope", "construct_affordance_frontier", "compress_with_receipt", "emit_situation_capsule"]
+variable_costs = ["ledger_rows", "delta_count", "graph_operations", "search_candidates", "tokens", "evidence_handles"]
+slo_ids = ["SLO-AGENT-ORIENT-001", "SLO-AGENT-COMPRESSION-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-FOLLOW-001"
+name = "serve one meaningful-delta continuation"
+unit = "delta_delivery"
+semantic_steps = ["validate_cursor", "consume_authority_deltas", "classify_decision_impact", "coalesce_safe_updates", "preserve_nondroppable_updates", "emit_continuation"]
+variable_costs = ["delta_count", "subscribers", "classification_work", "output_tokens"]
+slo_ids = ["SLO-AGENT-FOLLOW-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-CONTEXT-001"
+name = "build one semantic ContextPack"
+unit = "context_pack"
+semantic_steps = ["pin_frame", "apply_capability_privacy_projection", "score_decision_relevance", "select_submodular_items", "record_omissions", "emit_compression_receipt", "publish_pack"]
+variable_costs = ["candidate_items", "evidence_edges", "tokens", "hydration_bytes", "graph_operations"]
+slo_ids = ["SLO-AGENT-COMPRESSION-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-INVESTIGATE-001"
+name = "advance one investigation case"
+unit = "case_revision"
+semantic_steps = ["pin_case_and_anchor", "refresh_hypotheses", "attach_support_and_contradiction", "predict_observations", "rank_discriminating_probes", "apply_stop_rule", "publish_revision"]
+variable_costs = ["hypotheses", "evidence_edges", "candidate_probes", "model_calls", "graph_operations", "tokens"]
+slo_ids = ["SLO-AGENT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-AFFORDANCE-001"
+name = "construct one next-action frontier"
+unit = "affordance_frontier"
+semantic_steps = ["enumerate_registered_operations", "filter_authority_privacy_safety", "estimate_value_cost_risk", "remove_dominated", "sensitivity_check", "canonical_order"]
+variable_costs = ["candidate_actions", "preconditions", "policy_rules", "counterfactuals"]
+slo_ids = ["SLO-AGENT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-AGENT-PLAN-001"
+name = "compile one agent ControlPlan"
+unit = "control_plan"
+semantic_steps = ["freeze_objective", "pin_frame_case_generations", "enumerate_steps", "attach_witnesses", "type_effect_boundaries", "add_contingencies_and_stop_rules", "seal_decision_digest"]
+variable_costs = ["steps", "dependencies", "witnesses", "effect_families", "counterfactual_branches"]
+slo_ids = ["SLO-AGENT-OBLIGATION-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-EXPLAIN-001"
+name = "produce one minimal decision explanation"
+unit = "explanation"
+semantic_steps = ["resolve_decision", "collect_provenance", "compute_minimal_support_subgraph", "retain_contradictions_and_omissions", "shape_view", "emit_expansion_handles"]
+variable_costs = ["evidence_edges", "decision_nodes", "counterfactuals", "tokens"]
+slo_ids = ["SLO-AGENT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-HANDOFF-001"
+name = "publish one agent handoff capsule"
+unit = "handoff"
+semantic_steps = ["freeze_workspace", "select_minimum_sufficient_state", "apply_recipient_projection", "materialize_children", "verify_closure_and_expiry", "publish_root", "accept_and_rebase"]
+variable_costs = ["cases", "plans", "obligations", "evidence_handles", "tokens", "object_bytes"]
+slo_ids = ["SLO-AGENT-HANDOFF-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-ACCRETE-001"
+name = "evaluate one learning proposal"
+unit = "learning_proposal"
+semantic_steps = ["freeze_episode_basis", "collect_outcome_attribution", "compare_prediction_to_result", "classify_applicability", "extract_candidate", "collect_counterexamples_and_harm", "run_trauma_guard", "run_held_out_validation", "decide_promote_reject_expire", "publish_advisory_proposal_and_receipt"]
+variable_costs = ["episodes", "evidence_edges", "counterexamples", "historical_candidates", "fixtures", "validation_runs", "tokens", "model_calls", "operator_review_seconds"]
+slo_ids = ["SLO-AGENT-ACCRETION-001"]
+status = "model_required"
