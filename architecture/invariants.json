@@ -1,0 +1,156 @@
+{
+  "schema": "fss.invariants.v1",
+  "asOf": "2026-08-30",
+  "invariants": [
+    {
+      "id": "INV-001",
+      "text": "Authority, cognition, and effect records are type-distinct and stored separately.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-002",
+      "text": "No model output is authoritative evidence and no model directly authorizes an effect.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-003",
+      "text": "Every retained observation names exact source bytes or records why source retention was forbidden.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-004",
+      "text": "Capture time is an interval with a declared clock basis, never an unjustified point timestamp.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-005",
+      "text": "Stream acceptance, first frame, continuity verification, and semantic detection are distinct states.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-006",
+      "text": "Every asynchronous child is owned by an Asupersync region and shutdown drains to a terminal or indeterminate receipt.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-007",
+      "text": "Consequential effects use prepare, revalidate, commit, observe, and verify semantics with idempotency.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-008",
+      "text": "Credentials are scoped to an adapter instance, never included in traces, model prompts, or evidence bundles.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-009",
+      "text": "Proprietary adapters operate only against owner-authorized devices and accounts; credential bypass is out of scope.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-010",
+      "text": "Original encoded media is never silently replaced by a transcoded derivative.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-011",
+      "text": "Published object graphs are root-last; a visible root cannot reference uncommitted children.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-012",
+      "text": "Derived indexes, graphs, embeddings, tracks, and digital-twin renderings are rebuildable from canonical evidence.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-013",
+      "text": "A model generation is immutable; mixed-generation embeddings or logits cannot share one score space.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-014",
+      "text": "Alert thresholds are versioned policy, not mutable model-side constants.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-015",
+      "text": "An alert includes evidence, uncertainty, sensor-health context, and a deterministic decision fingerprint.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-016",
+      "text": "Absence of detection cannot become evidence of absence when coverage, continuity, or calibration is degraded.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-017",
+      "text": "Privacy masks and excluded zones are applied before remote publication and before any model not authorized for unredacted data.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-018",
+      "text": "Face identification, cross-property identity linkage, and biometric enrollment are disabled by default.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-019",
+      "text": "The drone is a manually piloted calibration and observation sensor until a separate flight-safety qualification exists.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-020",
+      "text": "No v1 effect can deploy a weapon, pursue a person, or physically confront a subject.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-021",
+      "text": "Every public readiness claim is derivable from a retained proof bundle and a registered claim class.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-022",
+      "text": "Negative evidence, failed experiments, and known blind spots are retained and release-visible.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-023",
+      "text": "Local qualification is release authority; hosted CI is supplementary evidence.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-024",
+      "text": "A vendor firmware or app generation not in the compatibility registry fails closed or enters an explicit degraded mode.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-025",
+      "text": "A redacted or deleted object cannot remain reachable through an undeclared alternate index or cache.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-026",
+      "text": "Every durable schema is versioned and old versions remain readable or have a deterministic migration.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-027",
+      "text": "Every adaptive policy is bounded by non-adaptive safety invariants and logs its decision basis.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-028",
+      "text": "Detection quality is measured at event level under realistic class imbalance, not inferred from frame accuracy.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-029",
+      "text": "A false-negative claim includes the defined threat distribution and a confidence bound; absolute never-miss claims are forbidden.",
+      "status": "normative"
+    },
+    {
+      "id": "INV-030",
+      "text": "Any operation whose registered cost cannot satisfy its SLO fails design review before implementation.",
+      "status": "normative"
+    }
+  ]
+}

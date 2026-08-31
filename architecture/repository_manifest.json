@@ -1,0 +1,35 @@
+{
+  "schema": "fss.repository_manifest.v1",
+  "name": "franken_surveillance_system",
+  "binary": "fss",
+  "status": "architecture_constitution",
+  "asOf": "2026-08-30",
+  "normative": [
+    "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+    "architecture/invariants.json",
+    "architecture/readiness_dimensions.json",
+    "registries/CLAIMS.md",
+    "registries/EFFECTS.md",
+    "registries/ERRORS.md",
+    "registries/SCHEMAS.md"
+  ],
+  "implemented": [
+    "fss-core semantic contract skeleton",
+    "fss-cli design-status surface",
+    "policy validator"
+  ],
+  "notImplemented": [
+    "device acquisition",
+    "media decode",
+    "model inference",
+    "sensor fusion",
+    "archive transport",
+    "alerts"
+  ],
+  "explicitNonGoals": [
+    "autonomous drone flight or pursuit",
+    "weapons or harmful deterrent control",
+    "cross-property biometric tracking by default",
+    "generic shell, SQL, or vendor-method authority for agents"
+  ]
+}

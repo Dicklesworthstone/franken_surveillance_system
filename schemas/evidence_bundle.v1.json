@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/evidence_bundle.v1.json",
+  "title": "FSS Evidence Bundle v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "bundleId",
+    "createdAtNs",
+    "eventRoot",
+    "objects",
+    "environment",
+    "replay"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.evidence_bundle.v1"
+    },
+    "bundleId": {
+      "type": "string"
+    },
+    "createdAtNs": {
+      "type": "integer"
+    },
+    "eventRoot": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "objects": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "digest",
+          "role",
+          "sizeBytes",
+          "retentionState"
+        ],
+        "properties": {
+          "digest": {
+            "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          },
+          "role": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "sizeBytes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "retentionState": {
+            "enum": [
+              "embedded",
+              "local",
+              "remote",
+              "intentionally_omitted"
+            ]
+          },
+          "uriHint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 1024
+          }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "buildDigest",
+        "configDigest",
+        "deviceRegistryDigest",
+        "modelRegistryDigest"
+      ],
+      "properties": {
+        "buildDigest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "configDigest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "deviceRegistryDigest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "modelRegistryDigest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "command",
+        "expectedDecisionFingerprint"
+      ],
+      "properties": {
+        "command": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "expectedDecisionFingerprint": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "seed": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

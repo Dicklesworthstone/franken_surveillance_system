@@ -1,0 +1,132 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/operation_receipt.v1.json",
+  "title": "FSS Operation Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "operationId",
+    "idempotencyKey",
+    "effectClass",
+    "state",
+    "authority",
+    "requestDigest",
+    "timestamps"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.operation_receipt.v1"
+    },
+    "operationId": {
+      "type": "string"
+    },
+    "idempotencyKey": {
+      "type": "string"
+    },
+    "effectClass": {
+      "type": "string"
+    },
+    "state": {
+      "enum": [
+        "prepared",
+        "committed",
+        "adapter_accepted",
+        "observed",
+        "verified",
+        "cancelled",
+        "failed",
+        "indeterminate"
+      ]
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "principal",
+        "capability",
+        "leaseFence"
+      ],
+      "properties": {
+        "principal": {
+          "type": "string"
+        },
+        "capability": {
+          "type": "string"
+        },
+        "leaseFence": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "requestDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    },
+    "preconditionDigest": {
+      "anyOf": [
+        {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resultDigest": {
+      "anyOf": [
+        {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestedNs"
+      ],
+      "properties": {
+        "requestedNs": {
+          "type": "integer"
+        },
+        "preparedNs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "committedNs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "observedNs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "verifiedNs": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "errorId": {
+      "type": [
+        "string",
+        "null"
+      ]
+    }
+  }
+}

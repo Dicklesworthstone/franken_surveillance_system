@@ -1,0 +1,25 @@
+[workspace]
+resolver = "3"
+members = ["crates/fss-core", "crates/fss-cli"]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.100"
+authors = ["Jeffrey Emanuel"]
+license = "MIT"
+repository = "https://github.com/Dicklesworthstone/franken_surveillance_system"
+homepage = "https://github.com/Dicklesworthstone/franken_surveillance_system"
+keywords = ["surveillance", "computer-vision", "sensor-fusion", "security", "rust"]
+categories = ["computer-vision", "multimedia::video", "command-line-utilities"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"

@@ -1,0 +1,40 @@
+name: Architecture proposal
+about: Propose or challenge a load-bearing FSS design decision
+labels: [architecture]
+body:
+  - type: input
+    id: stable_ids
+    attributes:
+      label: Stable IDs / affected plan sections
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and current failure mode
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed decision and alternatives
+    validations:
+      required: true
+  - type: textarea
+    id: invariants
+    attributes:
+      label: Invariants, authority, privacy, and security effects
+    validations:
+      required: true
+  - type: textarea
+    id: falsification
+    attributes:
+      label: Evidence that would falsify this proposal
+    validations:
+      required: true
+  - type: textarea
+    id: cost
+    attributes:
+      label: Operation-cost and implementation consequences
+    validations:
+      required: true

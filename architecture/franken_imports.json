@@ -1,0 +1,106 @@
+{
+  "schema": "fss.franken_imports.v1",
+  "asOf": "2026-08-30",
+  "projects": [
+    {
+      "project": "asupersync",
+      "imports": [
+        "Cx authority",
+        "region ownership",
+        "request-drain-finalize cancellation",
+        "Outcome",
+        "two-phase effects",
+        "obligations",
+        "LabRuntime",
+        "ATP"
+      ],
+      "gate": "INT-AS-001"
+    },
+    {
+      "project": "frankensqlite",
+      "imports": [
+        "transactional canonical ledger",
+        "MVCC snapshots",
+        "strong types",
+        "crash recovery",
+        "claim discipline"
+      ],
+      "gate": "INT-FSQL-001"
+    },
+    {
+      "project": "frankenfs",
+      "imports": [
+        "content-addressed object custody",
+        "staged/root-last publication",
+        "repair evidence",
+        "fault-injected deterministic I/O"
+      ],
+      "gate": "INT-FFS-001"
+    },
+    {
+      "project": "frankensearch",
+      "imports": [
+        "progressive hybrid retrieval",
+        "model identity",
+        "derived indexes",
+        "explanations",
+        "pinned-oracle gauntlets"
+      ],
+      "gate": "INT-FSEARCH-001"
+    },
+    {
+      "project": "franken_markdown",
+      "imports": [
+        "deterministic documentation projections",
+        "source spans",
+        "taint",
+        "staged multi-output publication"
+      ],
+      "gate": "INT-FMD-001"
+    },
+    {
+      "project": "frankengraphdb",
+      "imports": [
+        "typed claims",
+        "cost registry",
+        "one version universe",
+        "derived graph certificates",
+        "no substitute architecture doctrine"
+      ],
+      "gate": "INT-FGDB-001"
+    },
+    {
+      "project": "dwarf_fortress_mcp",
+      "imports": [
+        "semantic control plane",
+        "observation anchors",
+        "delayed-effect truth model",
+        "stable registries",
+        "agent token economy"
+      ],
+      "gate": "INT-DFMCP-001"
+    },
+    {
+      "project": "fastmcp_rust",
+      "imports": [
+        "capability-scoped agent interface",
+        "budgets",
+        "four-valued outcomes",
+        "request-owned children",
+        "qualification boundaries"
+      ],
+      "gate": "INT-FMCP-001"
+    },
+    {
+      "project": "eidetic_engine_cli",
+      "imports": [
+        "provenance-bearing long-horizon memory",
+        "feedback",
+        "anti-patterns",
+        "immutable curation",
+        "deterministic context packs"
+      ],
+      "gate": "INT-EE-001"
+    }
+  ]
+}

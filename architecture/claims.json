@@ -1,0 +1,70 @@
+{
+  "schema": "fss.claims.v1",
+  "classes": [
+    {
+      "id": "invariant",
+      "requiredEvidence": [
+        "contract",
+        "mechanical_check",
+        "counterexample_suite"
+      ]
+    },
+    {
+      "id": "proof",
+      "requiredEvidence": [
+        "formal_artifact",
+        "toolchain_identity",
+        "proof_check_receipt"
+      ]
+    },
+    {
+      "id": "bounded_model",
+      "requiredEvidence": [
+        "assumptions",
+        "derivation",
+        "sensitivity_analysis"
+      ]
+    },
+    {
+      "id": "statistical",
+      "requiredEvidence": [
+        "dataset_manifest",
+        "sampling_protocol",
+        "confidence_interval",
+        "held_out_results"
+      ]
+    },
+    {
+      "id": "slo",
+      "requiredEvidence": [
+        "operation_cost_row",
+        "measurement_artifact",
+        "environment_manifest"
+      ]
+    },
+    {
+      "id": "benchmark",
+      "requiredEvidence": [
+        "same_workload_oracle",
+        "raw_samples",
+        "variance",
+        "reproduction_command"
+      ]
+    },
+    {
+      "id": "compatibility",
+      "requiredEvidence": [
+        "device_firmware_app_tuple",
+        "fixture_digest",
+        "conformance_receipt"
+      ]
+    }
+  ],
+  "prohibited": [
+    "source_presence_as_support",
+    "single_demo_as_readiness",
+    "version_string_as_conformance",
+    "aggregate_accuracy_as_event_recall",
+    "unbounded_never_miss_claim"
+  ]
+}

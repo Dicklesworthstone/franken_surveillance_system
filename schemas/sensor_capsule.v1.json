@@ -1,0 +1,248 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/sensor_capsule.v1.json",
+  "title": "FSS Sensor Capsule v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "capsuleId",
+    "sensorId",
+    "streamId",
+    "captureInterval",
+    "receiveTimeNs",
+    "media",
+    "integrity",
+    "publication"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.sensor_capsule.v1"
+    },
+    "capsuleId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "sensorId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "streamId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "captureInterval": {
+      "$ref": "#/$defs/timeInterval"
+    },
+    "receiveTimeNs": {
+      "type": "integer"
+    },
+    "clockBasis": {
+      "enum": [
+        "utc_disciplined",
+        "device_monotonic",
+        "host_monotonic",
+        "estimated"
+      ]
+    },
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "codec",
+        "sourceBytes",
+        "frameCount"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "video",
+            "audio",
+            "image",
+            "metadata",
+            "compound"
+          ]
+        },
+        "codec": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "container": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 64
+        },
+        "width": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "height": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1
+        },
+        "sourceBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "frameCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sourceDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "proxyDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "metadataDigest",
+        "continuity",
+        "decode"
+      ],
+      "properties": {
+        "metadataDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "continuity": {
+          "enum": [
+            "unverified",
+            "verified",
+            "gapped",
+            "indeterminate"
+          ]
+        },
+        "decode": {
+          "enum": [
+            "not_attempted",
+            "verified",
+            "concealed_errors",
+            "failed"
+          ]
+        },
+        "firmwareFingerprint": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 256
+        }
+      }
+    },
+    "privacy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maskGeneration": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "redactionState": {
+          "enum": [
+            "not_required",
+            "applied",
+            "deferred",
+            "failed_closed"
+          ]
+        },
+        "retentionClass": {
+          "type": "string",
+          "maxLength": 64
+        }
+      }
+    },
+    "publication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "state",
+        "rootDigest"
+      ],
+      "properties": {
+        "state": {
+          "enum": [
+            "reserved",
+            "materialized",
+            "published",
+            "aborted",
+            "indeterminate"
+          ]
+        },
+        "rootDigest": {
+          "$ref": "#/$defs/digest"
+        },
+        "ledgerRevision": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*:[0-9a-f]{32,}$"
+    },
+    "timeInterval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliestNs",
+        "latestNs",
+        "uncertaintyReason"
+      ],
+      "properties": {
+        "earliestNs": {
+          "type": "integer"
+        },
+        "latestNs": {
+          "type": "integer"
+        },
+        "uncertaintyReason": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    }
+  }
+}

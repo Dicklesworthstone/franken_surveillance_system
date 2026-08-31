@@ -1,0 +1,56 @@
+schema = "fss.operation_cost_registry.v1"
+as_of = "2026-08-30"
+
+[[operation]]
+id = "COST-ACQUIRE-001"
+name = "ingest one encoded segment"
+unit = "segment"
+semantic_steps = ["adapter_receive", "timestamp_bound", "hash", "ledger_reserve", "object_stage", "root_publish"]
+variable_costs = ["source_bytes", "packet_count", "hash_bytes", "durability_barriers"]
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-PROXY-001"
+name = "produce low-latency operator proxy"
+unit = "source_second"
+semantic_steps = ["decode_if_required", "scale", "encode", "segment", "publish"]
+variable_costs = ["decoded_pixels", "encoded_pixels", "codec_generation", "gpu_or_cpu_seconds"]
+slo_ids = ["SLO-LIVE-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-ANALYZE-001"
+name = "run event cognition cascade"
+unit = "candidate_window"
+semantic_steps = ["quality_gate", "motion_gate", "detect", "track", "associate", "temporal_reason", "calibrate", "adjudicate"]
+variable_costs = ["frames", "pixels", "active_tracks", "model_invocations", "gpu_seconds"]
+slo_ids = ["SLO-DETECT-001", "SLO-COST-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-ARCHIVE-001"
+name = "publish one archive object graph"
+unit = "published_gibibyte"
+semantic_steps = ["chunk", "encrypt", "multipart_stage", "verify_children", "publish_root", "retrievability_sample"]
+variable_costs = ["bytes", "objects", "put_operations", "head_operations", "egress", "retrieval"]
+slo_ids = ["SLO-ARCHIVE-001", "SLO-COST-002"]
+status = "model_required"
+
+[[operation]]
+id = "COST-QUERY-001"
+name = "serve one agent event query"
+unit = "query"
+semantic_steps = ["anchor", "lexical_candidates", "semantic_candidates", "graph_projection", "fusion", "evidence_shape"]
+variable_costs = ["candidate_count", "embedding_invocations", "tokens_returned", "ledger_reads"]
+slo_ids = ["SLO-AGENT-001"]
+status = "model_required"
+
+[[operation]]
+id = "COST-CALIBRATE-001"
+name = "qualify one calibration generation"
+unit = "calibration_session"
+semantic_steps = ["ingest", "synchronize", "feature_track", "geometry_infer", "bundle_adjust", "coverage_compute", "certificate_publish"]
+variable_costs = ["frames", "camera_count", "track_count", "optimizer_iterations", "gpu_seconds"]
+slo_ids = ["SLO-CAL-001"]
+status = "model_required"

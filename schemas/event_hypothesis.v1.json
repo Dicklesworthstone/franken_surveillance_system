@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/event_hypothesis.v1.json",
+  "title": "FSS Event Hypothesis v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "eventId",
+    "revision",
+    "state",
+    "kind",
+    "timeInterval",
+    "probability",
+    "evidence",
+    "decisionPath"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.event_hypothesis.v1"
+    },
+    "eventId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "state": {
+      "enum": [
+        "hypothesized",
+        "witnessed",
+        "corroborated",
+        "adjudicated",
+        "alert_delivered",
+        "resolved",
+        "indeterminate",
+        "rejected"
+      ]
+    },
+    "kind": {
+      "enum": [
+        "perimeter_breach",
+        "covert_approach",
+        "sensor_tamper",
+        "unknown_presence",
+        "benign_routine",
+        "unclassified"
+      ]
+    },
+    "timeInterval": {
+      "$ref": "sensor_capsule.v1.json#/$defs/timeInterval"
+    },
+    "zoneIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "trackIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true
+    },
+    "probability": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lower",
+        "upper",
+        "calibrationGeneration"
+      ],
+      "properties": {
+        "lower": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "upper": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "calibrationGeneration": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "digest",
+          "class",
+          "failureDomain"
+        ],
+        "properties": {
+          "digest": {
+            "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          },
+          "class": {
+            "enum": [
+              "assertion",
+              "derived",
+              "observed",
+              "corroborated",
+              "verified"
+            ]
+          },
+          "failureDomain": {
+            "type": "string",
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "modelReceipts": {
+      "type": "array",
+      "items": {
+        "$ref": "sensor_capsule.v1.json#/$defs/digest"
+      }
+    },
+    "decisionPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policyGeneration",
+        "fingerprint",
+        "abstained"
+      ],
+      "properties": {
+        "policyGeneration": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "fingerprint": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "abstained": {
+          "type": "boolean"
+        },
+        "abstentionReason": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 512
+        }
+      }
+    }
+  }
+}

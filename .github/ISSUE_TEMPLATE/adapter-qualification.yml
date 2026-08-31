@@ -1,0 +1,52 @@
+name: Device adapter qualification
+about: Track an owner-authorized device/firmware/app tuple through the adapter gauntlet
+labels: [adapter, qualification]
+body:
+  - type: input
+    id: adapter
+    attributes:
+      label: Adapter registry ID
+    validations:
+      required: true
+  - type: textarea
+    id: tuple
+    attributes:
+      label: Exact device, hardware, firmware, app/SDK, account class, region, and platform tuple
+    validations:
+      required: true
+  - type: dropdown
+    id: authorization
+    attributes:
+      label: Authorization basis
+      options:
+        - Device/account owned by tester
+        - Explicit written authorization from owner
+    validations:
+      required: true
+  - type: textarea
+    id: interface
+    attributes:
+      label: Official/standards interface and current evidence
+    validations:
+      required: true
+  - type: textarea
+    id: fixtures
+    attributes:
+      label: Sanitized fixture/provenance plan
+    validations:
+      required: true
+  - type: textarea
+    id: matrix
+    attributes:
+      label: Readiness dimensions, fault cases, and unsupported behavior
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Safety constraints
+      options:
+        - label: No credential bypass, third-party access, persistence, or broad scanning is involved.
+          required: true
+        - label: No secret or private media will be committed to the repository.
+          required: true

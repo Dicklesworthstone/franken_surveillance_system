@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/calibration_certificate.v1.json",
+  "title": "FSS Calibration Certificate v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "certificateId",
+    "generation",
+    "worldFrame",
+    "sensors",
+    "coverage",
+    "residuals",
+    "validity",
+    "evidenceRoot"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.calibration_certificate.v1"
+    },
+    "certificateId": {
+      "type": "string"
+    },
+    "generation": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "worldFrame": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "sensors": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sensorId",
+          "intrinsicsDigest",
+          "extrinsics",
+          "timeOffsetNs",
+          "uncertainty"
+        ],
+        "properties": {
+          "sensorId": {
+            "type": "string"
+          },
+          "intrinsicsDigest": {
+            "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          },
+          "extrinsics": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 16,
+            "maxItems": 16
+          },
+          "timeOffsetNs": {
+            "type": "number"
+          },
+          "uncertainty": {
+            "type": "array",
+            "items": {
+              "type": "number"
+            },
+            "minItems": 6,
+            "maxItems": 36
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protectedVolumeDigest",
+        "observedFractionLowerBound",
+        "blindSpotDigest"
+      ],
+      "properties": {
+        "protectedVolumeDigest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        },
+        "observedFractionLowerBound": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "blindSpotDigest": {
+          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        }
+      }
+    },
+    "residuals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reprojectionP50Px",
+        "reprojectionP95Px",
+        "timeAlignmentP95Ms"
+      ],
+      "properties": {
+        "reprojectionP50Px": {
+          "type": "number",
+          "minimum": 0
+        },
+        "reprojectionP95Px": {
+          "type": "number",
+          "minimum": 0
+        },
+        "timeAlignmentP95Ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "validity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuedAtNs",
+        "expiresAtNs",
+        "invalidators"
+      ],
+      "properties": {
+        "issuedAtNs": {
+          "type": "integer"
+        },
+        "expiresAtNs": {
+          "type": "integer"
+        },
+        "invalidators": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "evidenceRoot": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    }
+  }
+}

@@ -1,0 +1,19 @@
+[package]
+name = "fss-cli"
+description = "Agent-friendly CLI shell for Franken Surveillance System"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "fss"
+path = "src/main.rs"
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+
+[lints]
+workspace = true

@@ -1,0 +1,73 @@
+{
+  "schema": "fss.readiness_dimensions.v1",
+  "dimensions": [
+    {
+      "id": "R1",
+      "name": "contract",
+      "question": "Is the behavior represented by a stable typed contract?"
+    },
+    {
+      "id": "R2",
+      "name": "reference",
+      "question": "Does a deterministic reference implementation exist?"
+    },
+    {
+      "id": "R3",
+      "name": "conformance",
+      "question": "Does differential or standards conformance pass?"
+    },
+    {
+      "id": "R4",
+      "name": "cancellation",
+      "question": "Are cancellation and quiescence behavior qualified?"
+    },
+    {
+      "id": "R5",
+      "name": "crash_recovery",
+      "question": "Are kill points and recovery outcomes qualified?"
+    },
+    {
+      "id": "R6",
+      "name": "security",
+      "question": "Are authority, secrets, input bounds, and isolation qualified?"
+    },
+    {
+      "id": "R7",
+      "name": "privacy",
+      "question": "Are masks, retention, redaction, and deletion closure qualified?"
+    },
+    {
+      "id": "R8",
+      "name": "performance",
+      "question": "Are pinned same-workload performance artifacts retained?"
+    },
+    {
+      "id": "R9",
+      "name": "quality",
+      "question": "Are task-quality metrics and confidence intervals retained?"
+    },
+    {
+      "id": "R10",
+      "name": "compatibility",
+      "question": "Are exact device, firmware, model, and platform generations certified?"
+    },
+    {
+      "id": "R11",
+      "name": "operability",
+      "question": "Do doctor, support bundle, replay, and repair surfaces work?"
+    },
+    {
+      "id": "R12",
+      "name": "documentation",
+      "question": "Do docs, schemas, registries, and implementation agree?"
+    }
+  ],
+  "states": [
+    "absent",
+    "specified",
+    "implemented",
+    "qualified",
+    "blocked",
+    "not_applicable"
+  ]
+}

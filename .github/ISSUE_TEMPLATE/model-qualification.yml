@@ -1,0 +1,46 @@
+name: Model generation qualification
+about: Evaluate one immutable model generation for a bounded FSS role
+labels: [model, qualification]
+body:
+  - type: input
+    id: model
+    attributes:
+      label: Model registry ID and exact revision
+    validations:
+      required: true
+  - type: textarea
+    id: identity
+    attributes:
+      label: Weight/code/runtime/preprocess/artifact identities
+    validations:
+      required: true
+  - type: textarea
+    id: license
+    attributes:
+      label: License, use restrictions, dependencies, and distribution classification
+    validations:
+      required: true
+  - type: textarea
+    id: role
+    attributes:
+      label: Bounded role, input/output schema, and non-authority boundary
+    validations:
+      required: true
+  - type: textarea
+    id: evaluation
+    attributes:
+      label: Held-out corpus, metrics, operating points, and statistical method
+    validations:
+      required: true
+  - type: textarea
+    id: resources
+    attributes:
+      label: Platform, resource envelope, cancellation, crash, and malformed-output behavior
+    validations:
+      required: true
+  - type: textarea
+    id: negative
+    attributes:
+      label: Known failures, subgroup regressions, and negative evidence
+    validations:
+      required: true

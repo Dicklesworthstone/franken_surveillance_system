@@ -1,0 +1,50 @@
+schema = "fss.dependency_allowlist.v1"
+as_of = "2026-08-30"
+
+[policy]
+closed_universe = true
+new_external_dependency_requires_adr = true
+unsafe_requires_boundary_crate_and_ledger = true
+native_or_python_runtime_must_be_out_of_process = true
+
+[in_house]
+allowed = [
+  "asupersync",
+  "frankensqlite",
+  "frankenfs",
+  "frankensearch",
+  "franken_markdown",
+  "frankengraphdb",
+  "fastmcp_rust",
+  "eidetic_engine_cli"
+]
+
+[fundamental]
+allowed_subject_to_audit = [
+  "serde",
+  "serde_json",
+  "blake3",
+  "bytes",
+  "thiserror",
+  "tracing",
+  "zeroize",
+  "rustls",
+  "webpki-roots",
+  "chacha20poly1305",
+  "x25519-dalek",
+  "hkdf",
+  "sha2"
+]
+
+[boundary_processes]
+allowed_when_pinned_and_sandboxed = [
+  "ffmpeg",
+  "model-host-python",
+  "onnxruntime-host",
+  "cuda-model-host",
+  "vendor-interoperability-host"
+]
+
+[forbidden]
+crates = ["tokio", "async-std", "smol"]
+patterns = ["ambient credential access", "in-process proprietary SDK", "unversioned model download", "runtime network install"]
