@@ -14,6 +14,10 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 EXCLUDED_TOP_LEVEL = {
     ".git",
+    ".ee",
+    ".beads",
+    ".claude",
+    ".ntm",
     "target",
     "dist",
     "secrets",
@@ -37,7 +41,7 @@ def fail(message: str) -> None:
 
 def included(path: Path) -> bool:
     relative = path.relative_to(ROOT)
-    if "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
+    if path.name == ".DS_Store" or "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
         return False
     if relative.parts and relative.parts[0] in EXCLUDED_TOP_LEVEL:
         return False

@@ -11,7 +11,7 @@
 ![Unsafe](https://img.shields.io/badge/FSS%20unsafe-forbidden-brightgreen)
 ![Runtime](https://img.shields.io/badge/runtime-Asupersync-blueviolet)
 ![Release](https://img.shields.io/badge/release-local%20DSR%20authority-blue)
-![License](https://img.shields.io/badge/license-MIT-blue)
+![License](https://img.shields.io/badge/License-MIT%2BOpenAI%2FAnthropic%20Rider-blue.svg)
 
 </div>
 
@@ -557,6 +557,6 @@ That gap is the ordered work—not hidden capability—described by the plan.
 
 ## License
 
-MIT. Device firmware, vendor applications, model weights, codecs, datasets, and cloud services keep
+MIT License (with OpenAI/Anthropic Rider). Device firmware, vendor applications, model weights, codecs, datasets, and cloud services keep
 their own licenses and terms. FSS treats license, exact bytes, firmware/app/model generations, and
 allowed use as runtime correctness inputs rather than paperwork deferred until release.

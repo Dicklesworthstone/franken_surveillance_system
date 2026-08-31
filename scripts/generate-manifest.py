@@ -8,6 +8,10 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "MANIFEST.sha256"
 EXCLUDED_TOP_LEVEL = {
     ".git",
+    ".ee",
+    ".beads",
+    ".claude",
+    ".ntm",
     "target",
     "dist",
     "secrets",
@@ -24,7 +28,7 @@ EXCLUDED_PREFIXES = {
 
 def included(path: Path) -> bool:
     relative = path.relative_to(ROOT)
-    if "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
+    if path.name == ".DS_Store" or "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
         return False
     if relative == Path("MANIFEST.sha256"):
         return False

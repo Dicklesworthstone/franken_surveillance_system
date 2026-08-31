@@ -65,7 +65,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                             "name": "fss-core",
                             "version": "0.0.1",
                             "source": None,
-                            "license": "MIT",
+                            "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
                             "license_file": None,
                         },
                         {
@@ -73,7 +73,7 @@ class ReleaseArtifactTests(unittest.TestCase):
                             "name": "fss-cli",
                             "version": "0.0.1",
                             "source": None,
-                            "license": "MIT",
+                            "license": "LicenseRef-MIT-OpenAI-Anthropic-Rider",
                             "license_file": None,
                         },
                     ]
