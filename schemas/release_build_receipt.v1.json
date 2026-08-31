@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/release_build_receipt.v1.json",
+  "title": "Native release build receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "version",
+    "target",
+    "hostTarget",
+    "toolchain",
+    "sourceCommit",
+    "sourceDateEpoch",
+    "cargoLockSha256",
+    "repositoryManifestSha256",
+    "cargoMetadataSha256",
+    "smokeHelpSha256",
+    "capabilitiesSha256",
+    "claimBoundary"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.release_build_receipt.v1"
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "hostTarget": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "toolchain": {
+      "type": "string",
+      "pattern": "^nightly-\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "sourceCommit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "sourceDateEpoch": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "cargoLockSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "repositoryManifestSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "cargoMetadataSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "smokeHelpSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "capabilitiesSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "claimBoundary": {
+      "enum": [
+        "design_skeleton",
+        "operational_candidate",
+        "qualified_release"
+      ]
+    }
+  }
+}

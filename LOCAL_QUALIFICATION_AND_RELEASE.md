@@ -68,6 +68,13 @@ Each target/profile maps to one exact primary asset name plus required checksum/
 The release contains only the enumerated assets, source snapshot, SBOM, qualification receipts, and
 registered supplemental artifacts. Discovery-based uploads are forbidden.
 
+The checked-in DSR contract uses stable, version-independent basenames because the release tag is
+the version namespace and DSR validates exact names before a run. Target-specific support assets
+carry the native Rust triple. The Linux x86_64 lane is the sole common-asset publisher for the
+deterministic source archive and source manifest; every other lane publishes only uniquely named
+target evidence. DSR therefore never has to guess whether same-named files from different hosts are
+duplicates, and any extra or missing basename remains a hard failure.
+
 ### `REL-INV-008` — publication is root-last
 
 Draft/staged assets may exist. The signed release manifest/root publishes only after all assets are

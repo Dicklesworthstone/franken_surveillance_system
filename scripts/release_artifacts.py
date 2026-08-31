@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import hashlib
 import json
 import lzma
@@ -27,6 +28,18 @@ class Context:
     receipts: Path
     source_date_epoch: int
 
+    @property
+    def target_base(self) -> str:
+        return f"fss-{self.target}"
+
+    @property
+    def source_base(self) -> str:
+        return "fss-source"
+
+    @property
+    def common_asset_authority(self) -> bool:
+        return self.target == "x86_64-unknown-linux-gnu"
+
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -34,6 +47,10 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def iso8601_utc(epoch: int) -> str:
+    return dt.datetime.fromtimestamp(epoch, tz=dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def normalized_files(root: Path) -> list[Path]:
@@ -52,10 +69,14 @@ def write_json(path: Path, value: Any) -> None:
 
 
 def write_checksum_file(paths: Iterable[Path], output: Path, relative_to: Path) -> None:
-    rows = []
-    for path in sorted(paths):
-        rows.append(f"{sha256(path)}  {path.relative_to(relative_to).as_posix()}")
+    rows = [f"{sha256(path)}  {path.relative_to(relative_to).as_posix()}" for path in sorted(paths)]
     output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def write_single_checksum(path: Path) -> Path:
+    output = Path(f"{path}.sha256")
+    output.write_text(f"{sha256(path)}  {path.name}\n", encoding="utf-8")
+    return output
 
 
 def verify_stage(ctx: Context) -> dict[str, Any]:
@@ -87,8 +108,7 @@ def verify_stage(ctx: Context) -> dict[str, Any]:
 def add_tar_file(archive: tarfile.TarFile, source: Path, name: str, epoch: int) -> None:
     info = tarfile.TarInfo(name=name)
     info.size = source.stat().st_size
-    executable = bool(source.stat().st_mode & stat.S_IXUSR)
-    info.mode = 0o755 if executable else 0o644
+    info.mode = 0o755 if source.stat().st_mode & stat.S_IXUSR else 0o644
     info.mtime = epoch
     info.uid = 0
     info.gid = 0
@@ -112,7 +132,7 @@ def deterministic_zip(files: Iterable[tuple[Path, str]], output: Path) -> None:
         for source, name in sorted(files, key=lambda item: item[1]):
             info = zipfile.ZipInfo(name, FIXED_ZIP_DATE)
             executable = bool(source.stat().st_mode & stat.S_IXUSR)
-            info.external_attr = ((0o100755 if executable else 0o100644) << 16)
+            info.external_attr = (0o100755 if executable else 0o100644) << 16
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
             archive.writestr(info, source.read_bytes(), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
@@ -134,10 +154,20 @@ def git_files() -> list[Path]:
     return sorted(result)
 
 
-def cargo_sbom(metadata_path: Path, ctx: Context) -> dict[str, Any]:
-    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+def load_metadata(metadata_path: Path) -> dict[str, Any]:
+    value = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if not isinstance(value, dict) or not isinstance(value.get("packages"), list):
+        raise ValueError(f"invalid Cargo metadata document: {metadata_path}")
+    return value
+
+
+def package_rows(metadata: dict[str, Any]) -> list[dict[str, Any]]:
+    return sorted(metadata["packages"], key=lambda row: (row.get("name", ""), row.get("version", ""), row.get("id", "")))
+
+
+def cargo_sbom(metadata: dict[str, Any], ctx: Context) -> dict[str, Any]:
     packages = []
-    for package in sorted(metadata.get("packages", []), key=lambda row: (row.get("name", ""), row.get("version", ""))):
+    for index, package in enumerate(package_rows(metadata), start=1):
         external_refs = []
         if package.get("source"):
             external_refs.append(
@@ -147,9 +177,11 @@ def cargo_sbom(metadata_path: Path, ctx: Context) -> dict[str, Any]:
                     "referenceLocator": f"pkg:cargo/{package['name']}@{package['version']}",
                 }
             )
+        safe_name = package["name"].replace("_", "-").replace(".", "-")
+        safe_version = package["version"].replace("+", "-").replace(".", "-")
         packages.append(
             {
-                "SPDXID": f"SPDXRef-Package-{package['name'].replace('_', '-').replace('.', '-')}",
+                "SPDXID": f"SPDXRef-Package-{index}-{safe_name}-{safe_version}",
                 "name": package.get("name"),
                 "versionInfo": package.get("version"),
                 "downloadLocation": package.get("source") or "NOASSERTION",
@@ -159,7 +191,8 @@ def cargo_sbom(metadata_path: Path, ctx: Context) -> dict[str, Any]:
                 "externalRefs": external_refs,
             }
         )
-    namespace_seed = f"{ctx.version}:{ctx.target}:{metadata_path.read_bytes()!r}".encode()
+    metadata_digest = hashlib.sha256(json.dumps(metadata, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    namespace_seed = f"{ctx.version}:{ctx.target}:{metadata_digest}".encode()
     namespace = hashlib.sha256(namespace_seed).hexdigest()
     return {
         "spdxVersion": "SPDX-2.3",
@@ -167,59 +200,195 @@ def cargo_sbom(metadata_path: Path, ctx: Context) -> dict[str, Any]:
         "SPDXID": "SPDXRef-DOCUMENT",
         "name": f"franken-surveillance-system-{ctx.version}-{ctx.target}",
         "documentNamespace": f"https://github.com/Dicklesworthstone/franken_surveillance_system/spdx/{namespace}",
-        "creationInfo": {"created": "1970-01-01T00:00:00Z", "creators": ["Tool: fss-release-artifacts-v1"]},
+        "creationInfo": {
+            "created": iso8601_utc(ctx.source_date_epoch),
+            "creators": ["Tool: fss-release-artifacts-v2"],
+        },
         "packages": packages,
     }
 
 
+def license_inventory(metadata: dict[str, Any], ctx: Context) -> dict[str, Any]:
+    return {
+        "schema": "fss.license_inventory.v1",
+        "version": ctx.version,
+        "target": ctx.target,
+        "packages": [
+            {
+                "packageId": package.get("id"),
+                "name": package.get("name"),
+                "version": package.get("version"),
+                "source": package.get("source") or "workspace",
+                "license": package.get("license") or "NOASSERTION",
+                "licenseFile": package.get("license_file"),
+            }
+            for package in package_rows(metadata)
+        ],
+    }
+
+
+def source_manifest(ctx: Context, files: list[Path], source_commit: str) -> dict[str, Any]:
+    return {
+        "schema": "fss.source_manifest.v1",
+        "version": ctx.version,
+        "sourceCommit": source_commit,
+        "sourceDateEpoch": ctx.source_date_epoch,
+        "fileCount": len(files),
+        "files": [
+            {
+                "path": path.relative_to(ROOT).as_posix(),
+                "bytes": path.stat().st_size,
+                "sha256": sha256(path),
+                "executable": bool(path.stat().st_mode & stat.S_IXUSR),
+            }
+            for path in files
+        ],
+    }
+
+
+def slsa_provenance(
+    ctx: Context,
+    primary: Path,
+    build_receipt: Path,
+    metadata_path: Path,
+    source_manifest_path: Path | None,
+    source_commit: str,
+) -> dict[str, Any]:
+    invocation_seed = "\0".join(
+        [ctx.version, ctx.target, source_commit, sha256(primary), sha256(build_receipt), sha256(metadata_path)]
+    ).encode()
+    invocation_id = hashlib.sha256(invocation_seed).hexdigest()
+    resolved_dependencies = [
+        {"uri": "git+https://github.com/Dicklesworthstone/franken_surveillance_system", "digest": {"gitCommit": source_commit}},
+        {"uri": "file:Cargo.lock", "digest": {"sha256": sha256(ROOT / "Cargo.lock")}},
+        {"uri": "file:MANIFEST.sha256", "digest": {"sha256": sha256(ROOT / "MANIFEST.sha256")}},
+        {"uri": metadata_path.name, "digest": {"sha256": sha256(metadata_path)}},
+    ]
+    if source_manifest_path is not None:
+        resolved_dependencies.append(
+            {"uri": source_manifest_path.name, "digest": {"sha256": sha256(source_manifest_path)}}
+        )
+    return {
+        "_type": "https://in-toto.io/Statement/v1",
+        "subject": [{"name": primary.name, "digest": {"sha256": sha256(primary)}}],
+        "predicateType": "https://slsa.dev/provenance/v1",
+        "predicate": {
+            "buildDefinition": {
+                "buildType": "https://github.com/Dicklesworthstone/franken_surveillance_system/buildtypes/dsr-native-v1",
+                "externalParameters": {"version": ctx.version, "target": ctx.target},
+                "internalParameters": {
+                    "sourceDateEpoch": ctx.source_date_epoch,
+                    "lockedOffline": True,
+                    "nativeTargetRequired": True,
+                },
+                "resolvedDependencies": resolved_dependencies,
+            },
+            "runDetails": {
+                "builder": {"id": "https://github.com/Dicklesworthstone/doodlestein_self_releaser"},
+                "metadata": {
+                    "invocationId": invocation_id,
+                    "startedOn": iso8601_utc(ctx.source_date_epoch),
+                    "finishedOn": iso8601_utc(ctx.source_date_epoch),
+                },
+                "byproducts": [
+                    {"name": build_receipt.name, "digest": {"sha256": sha256(build_receipt)}},
+                    *([] if source_manifest_path is None else [
+                        {"name": source_manifest_path.name, "digest": {"sha256": sha256(source_manifest_path)}}
+                    ]),
+                ],
+            },
+        },
+    }
+
+
+def copy_receipt(source: Path, destination: Path) -> Path:
+    if not source.is_file():
+        raise ValueError(f"required receipt missing: {source}")
+    destination.write_bytes(source.read_bytes())
+    return destination
+
+
+def artifact_row(path: Path) -> dict[str, Any]:
+    return {"name": path.name, "bytes": path.stat().st_size, "sha256": sha256(path)}
+
+
 def package(ctx: Context, metadata_path: Path, source_commit: str) -> None:
     verification = verify_stage(ctx)
+    metadata = load_metadata(metadata_path)
     stage_files = [(path, path.relative_to(ctx.stage).as_posix()) for path in normalized_files(ctx.stage)]
-    primary_base = f"fss-{ctx.version}-{ctx.target}"
+
     if "windows" in ctx.target:
-        primary = ctx.artifacts / f"{primary_base}.zip"
+        primary = ctx.artifacts / f"{ctx.target_base}.zip"
         deterministic_zip(stage_files, primary)
     else:
-        primary = ctx.artifacts / f"{primary_base}.tar.xz"
+        primary = ctx.artifacts / f"{ctx.target_base}.tar.xz"
         deterministic_tar_xz(stage_files, primary, ctx.source_date_epoch)
+    primary_checksum = write_single_checksum(primary)
 
-    source_archive = ctx.artifacts / "fss-source.tar.xz"
-    source_files = [(path, path.relative_to(ROOT).as_posix()) for path in git_files()]
-    deterministic_tar_xz(source_files, source_archive, ctx.source_date_epoch)
+    common_support: list[Path] = []
+    source_manifest_path: Path | None = None
+    if ctx.common_asset_authority:
+        tracked_files = git_files()
+        source_archive = ctx.artifacts / f"{ctx.source_base}.tar.xz"
+        deterministic_tar_xz(
+            [(path, path.relative_to(ROOT).as_posix()) for path in tracked_files],
+            source_archive,
+            ctx.source_date_epoch,
+        )
+        source_checksum = write_single_checksum(source_archive)
+        source_manifest_path = ctx.artifacts / f"{ctx.source_base}.manifest.json"
+        write_json(source_manifest_path, source_manifest(ctx, tracked_files, source_commit))
+        common_support.extend([source_archive, source_checksum, source_manifest_path])
 
-    sbom_path = ctx.artifacts / "fss-sbom.spdx.json"
-    write_json(sbom_path, cargo_sbom(metadata_path, ctx))
+    sbom_path = ctx.artifacts / f"{ctx.target_base}.sbom.spdx.json"
+    write_json(sbom_path, cargo_sbom(metadata, ctx))
+    license_path = ctx.artifacts / f"{ctx.target_base}.license-inventory.json"
+    write_json(license_path, license_inventory(metadata, ctx))
 
-    build_receipt_path = ctx.receipts / "build.json"
-    if not build_receipt_path.is_file():
-        raise ValueError(f"build receipt missing: {build_receipt_path}")
-    support = [primary, source_archive, sbom_path]
+    build_source = ctx.receipts / "build.json"
+    build_asset = copy_receipt(build_source, ctx.artifacts / f"{ctx.target_base}.build.json")
+    verification_asset = copy_receipt(
+        ctx.receipts / "verification.json", ctx.artifacts / f"{ctx.target_base}.verification.json"
+    )
+    stage_sums_asset = copy_receipt(
+        ctx.receipts / "STAGE_SHA256SUMS.txt", ctx.artifacts / f"{ctx.target_base}.stage-sha256.txt"
+    )
+
+    provenance_path = ctx.artifacts / f"{ctx.target_base}.provenance.intoto.json"
+    write_json(
+        provenance_path,
+        slsa_provenance(ctx, primary, build_source, metadata_path, source_manifest_path, source_commit),
+    )
+
+    support_paths = [
+        primary_checksum,
+        sbom_path,
+        license_path,
+        provenance_path,
+        build_asset,
+        verification_asset,
+        stage_sums_asset,
+        *common_support,
+    ]
+    qualification_path = ctx.artifacts / f"{ctx.target_base}.qualification.json"
     qualification = {
-        "schema": "fss.qualification_root.v1",
+        "schema": "fss.qualification_root.v2",
         "version": ctx.version,
         "target": ctx.target,
         "sourceCommit": source_commit,
         "sourceDateEpoch": ctx.source_date_epoch,
-        "buildReceipt": {"path": build_receipt_path.name, "sha256": sha256(build_receipt_path)},
-        "stageVerification": {"path": "verification.json", "sha256": sha256(ctx.receipts / "verification.json")},
-        "primaryArtifact": {"name": primary.name, "bytes": primary.stat().st_size, "sha256": sha256(primary)},
-        "supportArtifacts": [
-            {"name": path.name, "bytes": path.stat().st_size, "sha256": sha256(path)} for path in support[1:]
-        ],
+        "primaryArtifact": artifact_row(primary),
+        "supportArtifacts": [artifact_row(path) for path in support_paths],
         "stageFileCount": verification["fileCount"],
+        "commonAssetAuthority": ctx.common_asset_authority,
         "claimBoundary": "implementation-status-design-skeleton",
+        "signatureState": "unsigned-awaiting-separated-dsr-signing-authority",
     }
-    qualification_path = ctx.artifacts / "fss-qualification-root.json"
     write_json(qualification_path, qualification)
 
-    # Copy the receipts needed to independently recompute the qualification root.
-    for name in ("build.json", "verification.json", "STAGE_SHA256SUMS.txt"):
-        source = ctx.receipts / name
-        destination = ctx.artifacts / name
-        destination.write_bytes(source.read_bytes())
-
-    checksum_targets = [path for path in normalized_files(ctx.artifacts) if path.name != "SHA256SUMS.txt"]
-    write_checksum_file(checksum_targets, ctx.artifacts / "SHA256SUMS.txt", ctx.artifacts)
+    target_checksums = ctx.artifacts / f"{ctx.target_base}.sha256sums.txt"
+    checksum_targets = [path for path in normalized_files(ctx.artifacts) if path != target_checksums]
+    write_checksum_file(checksum_targets, target_checksums, ctx.artifacts)
     write_checksum_file(normalized_files(ctx.artifacts), ctx.receipts / "ARTIFACT_SHA256SUMS.txt", ctx.artifacts)
 
 

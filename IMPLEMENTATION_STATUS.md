@@ -9,7 +9,7 @@ unit test, or a successful one-off device experiment is not aggregate support.
 
 The current constitutional inventory contains **82 unique hard invariants, 38 admitted-or-proposed
 Franken mechanism imports, 27 registered graph algorithms, 10 publication primitives, 14 local
-qualification lanes, and 17 versioned interchange schemas**. Those numbers describe design
+qualification lanes, and 22 versioned interchange schemas**. Those numbers describe design
 coverage and machine cross-checking, not operational readiness.
 
 ## Dimension matrix
@@ -65,12 +65,12 @@ roots, configuration, seeds, raw measurements, failures, and reproduction comman
 
 ## Known qualification gap in this generated snapshot
 
-The repository policy validator passed in the artifact environment over **29 JSON files, 8 TOML
-files, 809 unique stable identifiers, 82 invariants, 38 mechanism imports, 27 graph algorithms, 10
-publication primitives, and 14 local qualification lanes**. All 17 Draft 2020-12 schemas passed
+The repository policy validator passed in the artifact environment over **34 JSON files, 8 TOML
+files, 814 unique stable identifiers, 82 invariants, 38 mechanism imports, 27 graph algorithms, 10
+publication primitives, and 14 local qualification lanes**. All 22 Draft 2020-12 schemas passed
 meta-schema validation, all internal schema references resolved, all repository Markdown links
 resolved, the five root constitutional documents matched their `docs/` mirrors byte-for-byte, and
-the static dependency audit reported no policy violations.
+the static dependency audit reported no policy violations, and the deterministic release-artifact custody test reproduced byte-identical Linux and Windows packages while verifying the single common-asset authority split.
 
 A Rust toolchain was not available in that environment, so `cargo metadata`, `cargo fmt`, `cargo
 check`, Clippy, and `cargo test` could not be run there. The code is intentionally dependency-free

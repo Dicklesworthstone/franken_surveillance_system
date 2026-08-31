@@ -30,7 +30,7 @@ checks:
   - bash scripts/qualify.sh --lane full
   - bash scripts/release_qualify.sh release-preflight
 
-artifact_naming: "${name}-${version}-${target_triple}"
+artifact_naming: "${name}-${target_triple}"
 target_triples:
   linux/amd64: x86_64-unknown-linux-gnu
   linux/arm64: aarch64-unknown-linux-gnu
@@ -58,18 +58,46 @@ release_contract:
   checksum_sidecar: sha256
   # minisign_public_key_file: release/keys/fss.pub
   exact_primary_assets:
-    linux/amd64: fss-${version}-x86_64-unknown-linux-gnu.tar.xz
-    linux/arm64: fss-${version}-aarch64-unknown-linux-gnu.tar.xz
-    darwin/arm64: fss-${version}-aarch64-apple-darwin.tar.xz
-    windows/amd64: fss-${version}-x86_64-pc-windows-msvc.zip
+    linux/amd64: fss-x86_64-unknown-linux-gnu.tar.xz
+    linux/arm64: fss-aarch64-unknown-linux-gnu.tar.xz
+    darwin/arm64: fss-aarch64-apple-darwin.tar.xz
+    windows/amd64: fss-x86_64-pc-windows-msvc.zip
   exact_additional_assets:
+    - fss-x86_64-unknown-linux-gnu.build.json
+    - fss-x86_64-unknown-linux-gnu.verification.json
+    - fss-x86_64-unknown-linux-gnu.stage-sha256.txt
+    - fss-x86_64-unknown-linux-gnu.sbom.spdx.json
+    - fss-x86_64-unknown-linux-gnu.license-inventory.json
+    - fss-x86_64-unknown-linux-gnu.provenance.intoto.json
+    - fss-x86_64-unknown-linux-gnu.qualification.json
+    - fss-x86_64-unknown-linux-gnu.sha256sums.txt
+    - fss-aarch64-unknown-linux-gnu.build.json
+    - fss-aarch64-unknown-linux-gnu.verification.json
+    - fss-aarch64-unknown-linux-gnu.stage-sha256.txt
+    - fss-aarch64-unknown-linux-gnu.sbom.spdx.json
+    - fss-aarch64-unknown-linux-gnu.license-inventory.json
+    - fss-aarch64-unknown-linux-gnu.provenance.intoto.json
+    - fss-aarch64-unknown-linux-gnu.qualification.json
+    - fss-aarch64-unknown-linux-gnu.sha256sums.txt
+    - fss-aarch64-apple-darwin.build.json
+    - fss-aarch64-apple-darwin.verification.json
+    - fss-aarch64-apple-darwin.stage-sha256.txt
+    - fss-aarch64-apple-darwin.sbom.spdx.json
+    - fss-aarch64-apple-darwin.license-inventory.json
+    - fss-aarch64-apple-darwin.provenance.intoto.json
+    - fss-aarch64-apple-darwin.qualification.json
+    - fss-aarch64-apple-darwin.sha256sums.txt
+    - fss-x86_64-pc-windows-msvc.build.json
+    - fss-x86_64-pc-windows-msvc.verification.json
+    - fss-x86_64-pc-windows-msvc.stage-sha256.txt
+    - fss-x86_64-pc-windows-msvc.sbom.spdx.json
+    - fss-x86_64-pc-windows-msvc.license-inventory.json
+    - fss-x86_64-pc-windows-msvc.provenance.intoto.json
+    - fss-x86_64-pc-windows-msvc.qualification.json
+    - fss-x86_64-pc-windows-msvc.sha256sums.txt
     - fss-source.tar.xz
-    - fss-sbom.spdx.json
-    - fss-qualification-root.json
-    - build.json
-    - verification.json
-    - STAGE_SHA256SUMS.txt
-    - SHA256SUMS.txt
+    - fss-source.tar.xz.sha256
+    - fss-source.manifest.json
 
 # Populate exact clean revisions at release time. DSR must freeze these into
 # the closure manifest and reject dirty or mismatched siblings.

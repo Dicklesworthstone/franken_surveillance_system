@@ -123,10 +123,12 @@ PY
 policy_lane() {
   run policy python3 scripts/check-policy.py
   run dependency-audit python3 scripts/dependency_audit.py
+  run release-artifact-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_artifacts.py
   run diff-check git diff --check
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh
   run python-syntax env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 -m py_compile \
-    scripts/check-policy.py scripts/dependency_audit.py scripts/generate-manifest.py scripts/release_artifacts.py
+    scripts/check-policy.py scripts/dependency_audit.py scripts/generate-manifest.py scripts/release_artifacts.py \
+    tests/test_release_artifacts.py
 }
 
 docs_lane() {
