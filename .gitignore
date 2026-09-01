@@ -25,16 +25,4 @@ __pycache__/
 /.ntm/
 
 # bv (beads viewer) local config and caches
-.bv/
-
-# bv (beads viewer) local config and caches
-.bv/
-
-# bv (beads viewer) local config and caches
-.bv/
-
-# bv (beads viewer) local config and caches
-.bv/
-
-# bv (beads viewer) local config and caches
-.bv/
+/.bv/
