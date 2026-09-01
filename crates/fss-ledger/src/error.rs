@@ -25,10 +25,31 @@ pub enum CorruptionKind {
     CommitRoot,
 }
 
-/// Journal errors distinguish incomplete tails from verified corruption.
+/// Append or reconciliation phase at which the durable outcome became uncertain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AppendPhase {
+    /// The record body write returned or simulated an error.
+    BodyWrite,
+    /// Synchronizing the record body returned or simulated an error.
+    BodySync,
+    /// The commit-trailer write returned or simulated an error.
+    CommitWrite,
+    /// Synchronizing the commit trailer returned or simulated an error.
+    CommitSync,
+    /// Reading the journal during reconciliation failed.
+    ReconcileRead,
+    /// Truncating a proven incomplete suffix during reconciliation failed.
+    ReconcileTruncate,
+    /// Synchronizing a reconciled commit or truncation failed.
+    ReconcileSync,
+    /// Restoring the file cursor after reconciliation failed.
+    ReconcileSeek,
+}
+
+/// Journal errors distinguish incomplete tails, verified corruption, and uncertain appends.
 #[derive(Debug)]
 pub enum JournalError {
-    /// Host filesystem I/O failed.
+    /// Host filesystem I/O failed before an append could become ambiguous.
     Io(io::Error),
     /// A fully present byte range violates a durable invariant.
     Corrupt {
@@ -51,6 +72,29 @@ pub enum JournalError {
     },
     /// Sequence space is exhausted.
     SequenceExhausted,
+    /// An append may or may not have crossed its durable commit boundary.
+    AppendIndeterminate {
+        /// Sequence assigned to the attempted record.
+        sequence: u64,
+        /// Last phase whose completion is not safely known to the caller.
+        phase: AppendPhase,
+        /// Underlying host I/O or deterministic fault-injection error.
+        source: io::Error,
+    },
+    /// A prior indeterminate append must be reconciled before another operation.
+    ReconciliationRequired {
+        /// Sequence of the unresolved append.
+        sequence: u64,
+    },
+    /// No unresolved append exists on this journal handle.
+    NoPendingAppend,
+    /// The path changed outside the single-writer journal handle.
+    ExternalMutation {
+        /// Byte length owned by the current handle or expected reconciliation state.
+        expected_len: u64,
+        /// Byte length observed on disk.
+        observed_len: u64,
+    },
 }
 
 impl fmt::Display for JournalError {
@@ -67,6 +111,31 @@ impl fmt::Display for JournalError {
                 write!(formatter, "journal payload {length} exceeds maximum {maximum}")
             }
             Self::SequenceExhausted => formatter.write_str("journal sequence space exhausted"),
+            Self::AppendIndeterminate {
+                sequence,
+                phase,
+                source,
+            } => write!(
+                formatter,
+                "journal append {sequence} became indeterminate during {phase:?}: {source}"
+            ),
+            Self::ReconciliationRequired { sequence } => write!(
+                formatter,
+                "journal append {sequence} requires reconciliation before further use"
+            ),
+            Self::NoPendingAppend => {
+                formatter.write_str("journal has no pending append to reconcile")
+            }
+            Self::ExternalMutation {
+                expected_len,
+                observed_len,
+            } => write!(
+                formatter,
+                concat!(
+                    "journal changed outside this writer: expected length {expected_len}, ",
+                    "observed {observed_len}"
+                )
+            ),
         }
     }
 }
@@ -74,7 +143,10 @@ impl fmt::Display for JournalError {
 impl Error for JournalError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io(error) => Some(error),
+            Self::Io(error)
+            | Self::AppendIndeterminate {
+                source: error, ..
+            } => Some(error),
             _ => None,
         }
     }

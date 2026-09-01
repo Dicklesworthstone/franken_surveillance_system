@@ -10,15 +10,19 @@ use fss_core::{
 };
 
 use crate::{
-    BatchCodecError, IncompleteTailPolicy, Journal, JournalError, decode_batch, encode_batch,
+    AppendReconciliation, BatchCodecError, IncompleteTailPolicy, Journal, JournalError,
+    decode_batch, encode_batch,
 };
+
+#[cfg(test)]
+use crate::AppendPhase;
 
 const EVIDENCE_BATCH_RECORD_KIND: u16 = 1;
 
 /// Errors raised by the durable reference ledger.
 #[derive(Debug)]
 pub enum DurableLedgerError {
-    /// Underlying journal I/O or corruption failure.
+    /// Underlying journal I/O, corruption, or reconciliation failure.
     Journal(JournalError),
     /// Durable evidence-batch bytes are malformed or semantically invalid.
     Codec(BatchCodecError),
@@ -76,6 +80,30 @@ impl From<ContractError> for DurableLedgerError {
     }
 }
 
+/// Result of reconciling one indeterminate durable evidence-batch append.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DurableAppendReconciliation {
+    /// The exact prevalidated candidate became canonical exactly once.
+    Committed {
+        /// Durable journal sequence of the committed batch.
+        sequence: u64,
+        /// Stable batch identity now visible in the canonical ledger.
+        batch_id: BatchId,
+    },
+    /// The batch did not commit and its sequence remains reusable.
+    NotCommitted {
+        /// Sequence available for a safe retry.
+        sequence: u64,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct PendingLedgerAppend {
+    candidate: ReferenceLedger,
+    sequence: u64,
+    batch_id: BatchId,
+}
+
 /// Durable wrapper around the deterministic in-memory reference ledger.
 ///
 /// On open, every committed journal record is decoded and replayed through the same
@@ -85,6 +113,7 @@ impl From<ContractError> for DurableLedgerError {
 pub struct DurableReferenceLedger {
     journal: Journal,
     ledger: ReferenceLedger,
+    pending: Option<PendingLedgerAppend>,
 }
 
 impl DurableReferenceLedger {
@@ -107,7 +136,11 @@ impl DurableReferenceLedger {
             let batch = decode_batch(record.payload())?;
             ledger.append(batch)?;
         }
-        Ok(Self { journal, ledger })
+        Ok(Self {
+            journal,
+            ledger,
+            pending: None,
+        })
     }
 
     /// Latest complete canonical evidence snapshot.
@@ -122,10 +155,16 @@ impl DurableReferenceLedger {
         self.ledger.batches()
     }
 
-    /// Root of the durable journal prefix.
+    /// Root of the latest reconciled durable journal prefix.
     #[must_use]
     pub const fn journal_root(&self) -> ContentDigest {
         self.journal.last_root()
+    }
+
+    /// Sequence of an indeterminate append that must be reconciled, if present.
+    #[must_use]
+    pub fn pending_append_sequence(&self) -> Option<u64> {
+        self.pending.as_ref().map(|pending| pending.sequence)
     }
 
     /// Prepares a successor against the current in-memory/durable anchor.
@@ -135,29 +174,88 @@ impl DurableReferenceLedger {
         deltas: Vec<EvidenceDelta>,
         child_roots: impl IntoIterator<Item = ContentDigest>,
     ) -> Result<EvidenceDeltaBatch, DurableLedgerError> {
-        Ok(self.ledger.prepare_batch(batch_id, deltas, child_roots)?)
+        Ok(self
+            .ledger
+            .prepare_batch(batch_id, deltas, child_roots)?)
     }
 
     /// Validates, durably commits, then exposes one evidence batch.
     ///
-    /// All semantic validation and durable-envelope allocation happen before journal I/O.
-    /// A cloned candidate ledger proves the exact successor first. After journal commit, the
-    /// candidate is installed with no remaining fallible semantic transition.
+    /// The exact successor ledger and durable bytes are prepared before journal I/O. If the
+    /// journal returns `AppendIndeterminate`, the candidate remains private and this ledger blocks
+    /// further mutation until `reconcile_pending` proves whether that exact batch committed.
     pub fn append(
         &mut self,
         batch: EvidenceDeltaBatch,
     ) -> Result<&LedgerSnapshot, DurableLedgerError> {
+        if let Some(pending) = &self.pending {
+            return Err(JournalError::ReconciliationRequired {
+                sequence: pending.sequence,
+            }
+            .into());
+        }
+
         let mut candidate = self.ledger.clone();
         candidate.append(batch.clone())?;
         let encoded = encode_batch(&batch)?;
-        let _record = self.journal.append(EVIDENCE_BATCH_RECORD_KIND, &encoded)?;
-        self.ledger = candidate;
-        Ok(self.ledger.current())
+        let batch_id = batch.batch_id.clone();
+        match self.journal.append(EVIDENCE_BATCH_RECORD_KIND, &encoded) {
+            Ok(_record) => {
+                self.ledger = candidate;
+                Ok(self.ledger.current())
+            }
+            Err(error) => {
+                if let JournalError::AppendIndeterminate { sequence, .. } = &error {
+                    self.pending = Some(PendingLedgerAppend {
+                        candidate,
+                        sequence: *sequence,
+                        batch_id,
+                    });
+                }
+                Err(error.into())
+            }
+        }
     }
 
-    /// Re-verifies the durable prefix and journal root.
+    /// Reconciles the exact prevalidated candidate retained after an indeterminate append.
+    ///
+    /// A committed result installs the already validated candidate without replaying a fallible
+    /// semantic transition after the durable decision. A not-committed result discards the private
+    /// candidate and leaves the canonical ledger unchanged.
+    pub fn reconcile_pending(
+        &mut self,
+        tail_policy: IncompleteTailPolicy,
+    ) -> Result<DurableAppendReconciliation, DurableLedgerError> {
+        let pending = self
+            .pending
+            .take()
+            .ok_or(JournalError::NoPendingAppend)?;
+        match self.journal.reconcile_pending(tail_policy) {
+            Ok(AppendReconciliation::Committed(_record)) => {
+                self.ledger = pending.candidate;
+                Ok(DurableAppendReconciliation::Committed {
+                    sequence: pending.sequence,
+                    batch_id: pending.batch_id,
+                })
+            }
+            Ok(AppendReconciliation::NotCommitted { sequence }) => {
+                Ok(DurableAppendReconciliation::NotCommitted { sequence })
+            }
+            Err(error) => {
+                self.pending = Some(pending);
+                Err(error.into())
+            }
+        }
+    }
+
+    /// Re-verifies the reconciled durable prefix and journal root.
     pub fn verify_storage(&mut self) -> Result<ContentDigest, DurableLedgerError> {
         let report = self.journal.verify()?;
         Ok(report.last_root())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fail_journal_after_phase(&mut self, phase: AppendPhase) {
+        self.journal.fail_after_phase(phase);
     }
 }

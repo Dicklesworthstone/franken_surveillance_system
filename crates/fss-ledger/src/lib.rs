@@ -13,12 +13,18 @@ mod journal;
 mod recovery;
 
 #[cfg(test)]
+mod durable_reconciliation_tests;
+#[cfg(test)]
+mod journal_reconciliation_tests;
+#[cfg(test)]
 mod tests;
 
 pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
-pub use durable::{DurableLedgerError, DurableReferenceLedger};
-pub use error::{CorruptionKind, JournalError};
-pub use journal::{IncompleteTailPolicy, Journal};
+pub use durable::{
+    DurableAppendReconciliation, DurableLedgerError, DurableReferenceLedger,
+};
+pub use error::{AppendPhase, CorruptionKind, JournalError};
+pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
 pub use recovery::{JournalRecord, RecoveryReport, inspect};
 
 /// Maximum payload accepted by one reference-journal record.
