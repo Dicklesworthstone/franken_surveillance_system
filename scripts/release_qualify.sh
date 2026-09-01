@@ -79,7 +79,10 @@ release_preflight() {
   git fsck --full
   test -f Cargo.lock
   test -f MANIFEST.sha256
-  python3 scripts/check-policy.py
+  test -f MANIFEST.delta.sha256
+  python3 scripts/check-policy.py --skip-manifest
+  python3 scripts/manifest_audit.py
+  python3 scripts/stable_id_audit.py > /dev/null
   rustup run "$TOOLCHAIN" cargo metadata --locked --offline --format-version 1 > /dev/null
 }
 
@@ -99,7 +102,7 @@ build_release() {
   esac
   [ -f "$source" ] || { printf 'expected binary missing: %s\n' "$source" >&2; exit 6; }
   cp "$source" "$STAGE_DIR/$(basename "$source")"
-  cp README.md LICENSE IMPLEMENTATION_STATUS.md MANIFEST.sha256 "$STAGE_DIR/"
+  cp README.md LICENSE IMPLEMENTATION_STATUS.md MANIFEST.sha256 MANIFEST.delta.sha256 "$STAGE_DIR/"
   cp COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md FRANKENSTACK_DEEP_DIVE.md "$STAGE_DIR/"
   cp DEPENDENCY_CONSTITUTION.md GRAPH_ANALYTICS_AND_SENSOR_MESH.md "$STAGE_DIR/"
   cp ATP_AND_DISTRIBUTED_EVIDENCE.md PURE_RUST_MODEL_RUNTIME.md "$STAGE_DIR/"
@@ -108,16 +111,24 @@ build_release() {
   cp docs/ONE_VERSION_UNIVERSE.md docs/MVCC_EVIDENCE_LEDGER.md "$STAGE_DIR/docs/"
   cp docs/STREAMING_AND_MEDIA_KERNEL.md docs/GRAPH_INTELLIGENCE_ARCHITECTURE.md "$STAGE_DIR/docs/"
   cp docs/GRAPH_ALGORITHM_ATLAS.md docs/ATP_ARCHIVE_AND_REPLICATION.md "$STAGE_DIR/docs/"
-  cp docs/LOCAL_QUALIFICATION_WITH_DSR.md "$STAGE_DIR/docs/"
+  cp docs/LOCAL_QUALIFICATION_WITH_DSR.md docs/PLAN_ERRATA.md "$STAGE_DIR/docs/"
 
   "$STAGE_DIR/$(basename "$source")" --help > "$RECEIPT_DIR/smoke-help.txt" 2>&1
   "$STAGE_DIR/$(basename "$source")" capabilities --json > "$RECEIPT_DIR/capabilities.json"
+  python3 scripts/manifest_audit.py > "$RECEIPT_DIR/repository-manifest-audit.txt"
   python3 - "$RECEIPT_DIR/build.json" <<'PY'
 import hashlib, json, os, subprocess, sys
 from pathlib import Path
 
 def digest(path: str) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+manifest_root = None
+for line in Path(os.path.join(os.environ["RECEIPT_DIR"], "repository-manifest-audit.txt")).read_text(encoding="utf-8").splitlines():
+    if line.startswith("effectiveRoot="):
+        manifest_root = line.split("=", 1)[1]
+if not manifest_root or not manifest_root.startswith("sha256:"):
+    raise SystemExit("effective repository manifest root missing")
 
 receipt = {
     "schema": "fss.release_build_receipt.v1",
@@ -128,7 +139,9 @@ receipt = {
     "sourceCommit": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
     "sourceDateEpoch": int(os.environ["SOURCE_DATE_EPOCH"]),
     "cargoLockSha256": digest("Cargo.lock"),
-    "repositoryManifestSha256": digest("MANIFEST.sha256"),
+    "repositoryManifestBaseSha256": digest("MANIFEST.sha256"),
+    "repositoryManifestDeltaSha256": digest("MANIFEST.delta.sha256"),
+    "repositoryManifestEffectiveRoot": manifest_root,
     "cargoMetadataSha256": digest(os.path.join(os.environ["RECEIPT_DIR"], "cargo-metadata.json")),
     "smokeHelpSha256": digest(os.path.join(os.environ["RECEIPT_DIR"], "smoke-help.txt")),
     "capabilitiesSha256": digest(os.path.join(os.environ["RECEIPT_DIR"], "capabilities.json")),

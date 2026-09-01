@@ -1,0 +1,114 @@
+{
+  "schema": "fss.stable_id_resolution.v1",
+  "asOf": "2026-09-01",
+  "source": "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md",
+  "doctrine": [
+    "Published identifiers are never silently reused for a second semantic meaning.",
+    "Historical collided headings remain byte-stable; every collided occurrence is resolved by exact legacy ID plus title fingerprint.",
+    "Future references use canonicalId, while legacyId remains an audit alias only."
+  ],
+  "expected": {
+    "goalCanonicalIds": [
+      "GOAL-001",
+      "GOAL-002",
+      "GOAL-003",
+      "GOAL-004",
+      "GOAL-005",
+      "GOAL-006",
+      "GOAL-007",
+      "GOAL-008",
+      "GOAL-009",
+      "GOAL-010",
+      "GOAL-011",
+      "GOAL-012",
+      "GOAL-013",
+      "GOAL-014",
+      "GOAL-015",
+      "GOAL-016",
+      "GOAL-017",
+      "GOAL-018",
+      "GOAL-019",
+      "GOAL-020",
+      "GOAL-021",
+      "GOAL-022",
+      "GOAL-023",
+      "GOAL-024",
+      "GOAL-025"
+    ],
+    "northStarCanonicalIds": [
+      "NS-1",
+      "NS-2",
+      "NS-3",
+      "NS-4",
+      "NS-5",
+      "NS-6",
+      "NS-7",
+      "NS-8",
+      "NS-9",
+      "NS-10",
+      "NS-11",
+      "NS-12",
+      "NS-13",
+      "NS-14",
+      "NS-15"
+    ]
+  },
+  "resolutions": [
+    {
+      "legacyId": "GOAL-019",
+      "title": "Agent legibility",
+      "canonicalId": "GOAL-019",
+      "disposition": "retained",
+      "titleDigest": "sha256:e71ef6c5223ee9ee0705c5d63f4f592bf4294109c68d78ea541e34433e1f34aa"
+    },
+    {
+      "legacyId": "GOAL-020",
+      "title": "Cognitive economy",
+      "canonicalId": "GOAL-020",
+      "disposition": "retained",
+      "titleDigest": "sha256:4da9b50b384d638cce45859ed2ded57c4186eb852e3181f55c72a75d3c5b812d"
+    },
+    {
+      "legacyId": "GOAL-019",
+      "title": "Agent epistemic ergonomics",
+      "canonicalId": "GOAL-024",
+      "disposition": "legacy-collision-remapped",
+      "titleDigest": "sha256:7a22003db08cc63dcb674bd8aff7ef74a42faf79f1838ccd395a93362aa1e11f"
+    },
+    {
+      "legacyId": "GOAL-020",
+      "title": "Agent accretion",
+      "canonicalId": "GOAL-025",
+      "disposition": "legacy-collision-remapped",
+      "titleDigest": "sha256:06fb6afacaab85e14cb58bfa55926026d51979cac711efb6976b3e80b2ae9477"
+    },
+    {
+      "legacyId": "NS-9",
+      "title": "Cold-start orientation",
+      "canonicalId": "NS-9",
+      "disposition": "retained",
+      "titleDigest": "sha256:8c4dac9e72a824ded6d74f60b80e44ed65ebbbcaf6a0ccb0d4d6b3477de8b91e"
+    },
+    {
+      "legacyId": "NS-10",
+      "title": "Ambiguous event under a hard budget",
+      "canonicalId": "NS-10",
+      "disposition": "retained",
+      "titleDigest": "sha256:245aab9c01b637f5b63c6b884bc419e9c2d933dc3abbe4281fc6d048914d9998"
+    },
+    {
+      "legacyId": "NS-9",
+      "title": "Cold resume after agent and host loss",
+      "canonicalId": "NS-14",
+      "disposition": "legacy-collision-remapped",
+      "titleDigest": "sha256:57c1dfc367ebd23f00602893d9b9bdc7044e462c05596462966c604795f00a42"
+    },
+    {
+      "legacyId": "NS-10",
+      "title": "Cheapest decisive observation",
+      "canonicalId": "NS-15",
+      "disposition": "legacy-collision-remapped",
+      "titleDigest": "sha256:ffba1895e857fb56e5b3c765837ef36dca2e98734b6fa9ae9cd331043cb7374c"
+    }
+  ]
+}

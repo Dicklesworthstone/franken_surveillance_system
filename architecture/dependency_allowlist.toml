@@ -1,5 +1,5 @@
 schema = "fss.dependency_allowlist.v3"
-as_of = "2026-08-31"
+as_of = "2026-09-01"
 
 [policy]
 closed_universe = true
@@ -44,6 +44,9 @@ not_admitted_without_dep_record_adr_and_release_evidence = [
   "blake3", "thiserror", "zeroize", "rustls", "webpki-roots",
   "chacha20poly1305", "x25519-dalek", "hkdf", "sha2"
 ]
+
+[resolved_drifts]
+thiserror = "not_admitted; an older comprehensive-plan sentence grouped it with the default exception set, but no DEP record, ADR admission, Cargo dependency, or release evidence exists. Machine policy remains authoritative per ADR-0012."
 
 [laboratory_oracles]
 excluded_from_production_release_closure = [

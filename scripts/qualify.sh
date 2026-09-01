@@ -22,31 +22,13 @@ USAGE
 
 while (($#)); do
   case "$1" in
-    --lane)
-      LANE="${2:?missing lane after --lane}"
-      shift 2
-      ;;
-    --receipt-dir)
-      RECEIPT_DIR="${2:?missing directory after --receipt-dir}"
-      shift 2
-      ;;
-    --no-receipt)
-      WRITE_RECEIPT=0
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
+    --lane) LANE="${2:?missing lane after --lane}"; shift 2 ;;
+    --receipt-dir) RECEIPT_DIR="${2:?missing directory after --receipt-dir}"; shift 2 ;;
+    --no-receipt) WRITE_RECEIPT=0; shift ;;
+    -h|--help) usage; exit 0 ;;
     policy|docs|rust|full|lab|adapter|media|archive|model|geometry|threat|agent|privacy|release-preflight|release)
-      LANE="$1"
-      shift
-      ;;
-    *)
-      printf 'unknown argument or lane: %s\n' "$1" >&2
-      usage
-      exit 4
-      ;;
+      LANE="$1"; shift ;;
+    *) printf 'unknown argument or lane: %s\n' "$1" >&2; usage; exit 4 ;;
   esac
 done
 
@@ -73,12 +55,7 @@ import json
 import pathlib
 import sys
 path = pathlib.Path(sys.argv[1])
-record = {
-    "id": sys.argv[2],
-    "status": sys.argv[3],
-    "outputDigest": sys.argv[4],
-    "argv": sys.argv[5:],
-}
+record = {"id": sys.argv[2], "status": sys.argv[3], "outputDigest": sys.argv[4], "argv": sys.argv[5:]}
 with path.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps(record, separators=(",", ":")) + "\n")
 PY
@@ -121,18 +98,25 @@ PY
 }
 
 policy_lane() {
-  run policy python3 scripts/check-policy.py
+  run policy python3 scripts/check-policy.py --skip-manifest
+  run manifest-audit python3 scripts/manifest_audit.py
+  run stable-id-audit python3 scripts/stable_id_audit.py
   run dependency-audit python3 scripts/dependency_audit.py
+  run manifest-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_manifest_audit.py
+  run stable-id-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_stable_id_audit.py
   run release-artifact-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_artifacts.py
   run diff-check git diff --check
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh
   run python-syntax env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 -m py_compile \
-    scripts/check-policy.py scripts/dependency_audit.py scripts/generate-manifest.py scripts/release_artifacts.py \
-    tests/test_release_artifacts.py
+    scripts/check-policy.py scripts/dependency_audit.py scripts/manifest_audit.py scripts/stable_id_audit.py \
+    scripts/generate-manifest.py scripts/release_artifacts.py \
+    tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py
 }
 
 docs_lane() {
-  run docs-policy python3 scripts/check-policy.py
+  run docs-policy python3 scripts/check-policy.py --skip-manifest
+  run docs-manifest-audit python3 scripts/manifest_audit.py
+  run docs-stable-id-audit python3 scripts/stable_id_audit.py
 }
 
 rust_lane() {
@@ -169,7 +153,7 @@ finalize() {
   trap - EXIT
   set +e
   ((rc == 0)) || final_status="failed"
-  local finished_ns source_commit source_tree sibling_digest host_digest toolchain target
+  local finished_ns source_commit source_tree sibling_digest host_digest toolchain target manifest_root
   finished_ns="$(python3 - <<'PY'
 import time
 print(time.time_ns())
@@ -201,43 +185,25 @@ PY
 )"
   toolchain="$(pinned_toolchain 2>/dev/null || printf unavailable)"
   target="${FSS_TARGET_TRIPLE:-${CARGO_BUILD_TARGET:-$(uname -s 2>/dev/null || printf unknown)-$(uname -m 2>/dev/null || printf unknown)}}"
+  manifest_root="$(python3 scripts/manifest_audit.py 2>/dev/null | sed -n 's/^effectiveRoot=//p' | head -1)"
+  [[ -n "$manifest_root" ]] || manifest_root="unavailable"
 
   if ((WRITE_RECEIPT)); then
-    python3 - "$RECEIPT_DIR/qualification-receipt.json" "$records" "$LANE" "$source_commit" "$source_tree" "$sibling_digest" "$host_digest" "$toolchain" "$target" "$started_ns" "$finished_ns" "$final_status" <<'PY'
+    python3 - "$RECEIPT_DIR/qualification-receipt.json" "$records" "$LANE" "$source_commit" "$source_tree" "$sibling_digest" "$host_digest" "$toolchain" "$target" "$started_ns" "$finished_ns" "$final_status" "$manifest_root" <<'PY'
 import hashlib
 import json
 import pathlib
 import sys
 (
-    output_path,
-    records_path,
-    lane,
-    source_commit,
-    source_tree,
-    sibling_digest,
-    host_digest,
-    toolchain,
-    target,
-    started,
-    finished,
-    status,
+    output_path, records_path, lane, source_commit, source_tree, sibling_digest, host_digest,
+    toolchain, target, started, finished, status, manifest_root
 ) = sys.argv[1:]
 lane_ids = {
-    "policy": "QL-POLICY-001",
-    "docs": "QL-POLICY-001",
-    "rust": "QL-RUST-001",
-    "full": "QL-RUST-001",
-    "lab": "QL-LAB-001",
-    "adapter": "QL-ADAPTER-001",
-    "media": "QL-MEDIA-001",
-    "archive": "QL-ARCHIVE-001",
-    "model": "QL-MODEL-001",
-    "geometry": "QL-GEOMETRY-001",
-    "threat": "QL-THREAT-001",
-    "agent": "QL-AGENT-001",
-    "privacy": "QL-PRIVACY-001",
-    "release-preflight": "QL-RELEASE-001",
-    "release": "QL-RELEASE-001",
+    "policy": "QL-POLICY-001", "docs": "QL-POLICY-001", "rust": "QL-RUST-001",
+    "full": "QL-RUST-001", "lab": "QL-LAB-001", "adapter": "QL-ADAPTER-001",
+    "media": "QL-MEDIA-001", "archive": "QL-ARCHIVE-001", "model": "QL-MODEL-001",
+    "geometry": "QL-GEOMETRY-001", "threat": "QL-THREAT-001", "agent": "QL-AGENT-001",
+    "privacy": "QL-PRIVACY-001", "release-preflight": "QL-RELEASE-001", "release": "QL-RELEASE-001",
 }
 commands=[]
 for line in pathlib.Path(records_path).read_text(encoding="utf-8").splitlines():
@@ -259,7 +225,7 @@ receipt={
     "target":target[:256],
     "features":[],
     "commands":commands,
-    "artifactManifestDigest":None,
+    "artifactManifestDigest":manifest_root if manifest_root.startswith("sha256:") else None,
     "startedAt":{"earliestNs":int(started),"latestNs":int(started),"clockBasis":"host-realtime"},
     "finishedAt":{"earliestNs":int(finished),"latestNs":int(finished),"clockBasis":"host-realtime"},
     "status":status,
@@ -273,36 +239,13 @@ PY
 trap finalize EXIT
 
 case "$LANE" in
-  policy)
-    policy_lane
-    ;;
-  docs)
-    docs_lane
-    ;;
-  rust)
-    policy_lane
-    rust_lane
-    ;;
-  full)
-    policy_lane
-    rust_lane
-    ;;
-  lab|adapter|media|archive|model|geometry|threat|agent|privacy)
-    claim_lane
-    ;;
-  release-preflight)
-    policy_lane
-    clean_tree_lane
-    rust_lane
-    ;;
-  release)
-    policy_lane
-    rust_lane
-    clean_tree_lane
-    ;;
-  *)
-    printf 'unknown qualification lane: %s\n' "$LANE" >&2
-    exit 4
-    ;;
+  policy) policy_lane ;;
+  docs) docs_lane ;;
+  rust) policy_lane; rust_lane ;;
+  full) policy_lane; rust_lane ;;
+  lab|adapter|media|archive|model|geometry|threat|agent|privacy) claim_lane ;;
+  release-preflight) policy_lane; clean_tree_lane; rust_lane ;;
+  release) policy_lane; rust_lane; clean_tree_lane ;;
+  *) printf 'unknown qualification lane: %s\n' "$LANE" >&2; exit 4 ;;
 esac
 printf 'qualification lane %s completed\n' "$LANE" >&2
