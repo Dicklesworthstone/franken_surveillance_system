@@ -5,6 +5,8 @@
 //! reference semantics for durable append/recovery. Production Asupersync and FrankenSQLite
 //! adapters must prove observational equivalence to this surface before admission.
 
+mod batch_codec;
+mod durable;
 mod error;
 mod format;
 mod journal;
@@ -13,6 +15,8 @@ mod recovery;
 #[cfg(test)]
 mod tests;
 
+pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
+pub use durable::{DurableLedgerError, DurableReferenceLedger};
 pub use error::{CorruptionKind, JournalError};
 pub use journal::{IncompleteTailPolicy, Journal};
 pub use recovery::{JournalRecord, RecoveryReport, inspect};

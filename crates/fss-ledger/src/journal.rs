@@ -1,7 +1,7 @@
 //! Writable two-phase journal publication.
 
 use std::fs::{File, OpenOptions};
-use std::io::{Seek, SeekFrom, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use fss_core::{ContentDigest, DigestAlgorithm, sha256};
@@ -33,7 +33,7 @@ impl Journal {
     /// Opens or creates a journal after verifying its complete prefix.
     ///
     /// `Truncate` removes only a suffix already classified as incomplete. Corruption is
-    /// never repaired or skipped.
+    /// never repaired or skipped. All validation that can fail happens before truncation.
     pub fn open(
         path: impl AsRef<Path>,
         tail_policy: IncompleteTailPolicy,
@@ -47,8 +47,14 @@ impl Journal {
             .open(&path)?;
         file.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut file, &mut bytes)?;
+        file.read_to_end(&mut bytes)?;
         let recovery = recover_bytes(&bytes)?;
+        let next_sequence = recovery.records.last().map_or(Ok(1_u64), |record| {
+            record
+                .sequence
+                .checked_add(1)
+                .ok_or(JournalError::SequenceExhausted)
+        })?;
         if let Some(offset) = recovery.incomplete_tail {
             match tail_policy {
                 IncompleteTailPolicy::Reject => {
@@ -61,12 +67,6 @@ impl Journal {
             }
         }
         file.seek(SeekFrom::End(0))?;
-        let next_sequence = recovery.records.last().map_or(Ok(1_u64), |record| {
-            record
-                .sequence
-                .checked_add(1)
-                .ok_or(JournalError::SequenceExhausted)
-        })?;
         Ok(Self {
             path,
             file,
@@ -89,8 +89,9 @@ impl Journal {
 
     /// Appends and durably commits one record.
     ///
-    /// The record body is synchronized before the commit trailer. In-memory sequence/root
-    /// advances only after the trailer has itself been synchronized.
+    /// Every fallible semantic check and payload allocation happens before I/O. The record body
+    /// is synchronized before the commit trailer. In-memory sequence/root advances only after
+    /// the trailer has itself been synchronized, and nothing fallible remains after that point.
     pub fn append(&mut self, kind: u16, payload: &[u8]) -> Result<JournalRecord, JournalError> {
         if payload.len() > MAX_RECORD_PAYLOAD_BYTES {
             return Err(JournalError::PayloadTooLarge {
@@ -99,6 +100,10 @@ impl Journal {
             });
         }
         let sequence = self.next_sequence;
+        let next_sequence = sequence
+            .checked_add(1)
+            .ok_or(JournalError::SequenceExhausted)?;
+        let payload_copy = payload.to_vec();
         let payload_len =
             u32::try_from(payload.len()).map_err(|_| JournalError::PayloadTooLarge {
                 length: payload.len(),
@@ -123,14 +128,12 @@ impl Journal {
         self.file.write_all(&root)?;
         self.file.sync_all()?;
 
-        self.next_sequence = sequence
-            .checked_add(1)
-            .ok_or(JournalError::SequenceExhausted)?;
+        self.next_sequence = next_sequence;
         self.last_root = root;
         Ok(JournalRecord {
             sequence,
             kind,
-            payload: payload.to_vec(),
+            payload: payload_copy,
             payload_digest: ContentDigest::new(DigestAlgorithm::Sha256, payload_digest),
             root: ContentDigest::new(DigestAlgorithm::Sha256, root),
         })
@@ -141,7 +144,7 @@ impl Journal {
         self.file.sync_all()?;
         self.file.seek(SeekFrom::Start(0))?;
         let mut bytes = Vec::new();
-        std::io::Read::read_to_end(&mut self.file, &mut bytes)?;
+        self.file.read_to_end(&mut bytes)?;
         let report = recover_bytes(&bytes)?;
         if let Some(offset) = report.incomplete_tail {
             return Err(JournalError::IncompleteTail { offset });
