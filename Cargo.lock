@@ -12,3 +12,10 @@ dependencies = [
 [[package]]
 name = "fss-core"
 version = "0.0.1"
+
+[[package]]
+name = "fss-ledger"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+]

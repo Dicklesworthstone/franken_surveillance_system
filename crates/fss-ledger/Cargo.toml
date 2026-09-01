@@ -1,0 +1,15 @@
+[package]
+name = "fss-ledger"
+description = "Crash-classifying append journal for Franken Surveillance System"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fss-core = { path = "../fss-core" }
