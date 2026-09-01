@@ -1,27 +1,44 @@
 #![forbid(unsafe_code)]
-//! Dependency-free semantic foundation for Franken Surveillance System.
+//! Dependency-free semantic reference contracts for Franken Surveillance System.
 //!
-//! This crate owns canonical identities, deterministic encoding, content
-//! digests, time intervals, budgets, outcome classes, and stable errors. It
-//! intentionally performs no device I/O and has no ambient authority.
+//! This crate owns deterministic identities, canonical encoding, append-only evidence
+//! state, witnessed absence, event semantics, effect reconciliation, and the first
+//! agent-facing situation and handoff objects. It performs no device I/O and invokes
+//! no foreign runtime.
 
-pub mod canonical;
-pub mod contract;
-pub mod digest;
-pub mod ids;
-pub mod time;
+mod agent;
+mod canonical;
+mod contract;
+mod digest;
+mod effect;
+mod event;
+mod evidence;
+mod ids;
+mod time;
 
+pub use agent::{
+    ActionAffordance, AffordanceClass, ContractBasis, HandoffCapsule, KnowledgeCell,
+    PossibleWorld, SituationCapsule, SituationFrame, WorldEnvelope,
+};
 pub use canonical::{CanonicalEncode, CanonicalEncoder};
 pub use contract::{
     BudgetVector, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
     KnowledgeState, Plane, ProvenanceClass, RecoveryClass, RuntimeOutcome,
 };
-pub use digest::{ContentDigest, DigestAlgorithm, Sha256};
+pub use digest::{ContentDigest, DigestAlgorithm, sha256};
+pub use effect::{
+    EffectIntent, EffectJournal, EffectState, Obligation, ObligationState, OperationReceipt,
+};
+pub use event::{
+    EventEvidence, EventHypothesis, EventKind, EventState, ProbabilityInterval,
+};
+pub use evidence::{
+    ClockBasis, CoverageContinuity, CoverageStopReason, CoverageWitness, EvidenceDelta,
+    EvidenceDeltaBatch, LedgerAnchor, LedgerSnapshot, ObjectRevision, ReferenceLedger,
+    SensorCapsule,
+};
 pub use ids::{
     BatchId, CapsuleId, EventId, HandoffId, IdempotencyKey, MissionId, ObjectId, ObligationId,
     OperationId, PrincipalId, SensorId, SessionId, StreamId,
 };
 pub use time::{CaptureInterval, TimestampNs};
-
-/// Semantic protocol identifier implemented by this foundation.
-pub const PROTOCOL_VERSION: &str = "fss/1";

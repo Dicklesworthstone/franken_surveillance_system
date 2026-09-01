@@ -256,6 +256,8 @@ pub enum ContractError {
     InvalidEffectTransition,
     /// An idempotency key was reused with different content.
     IdempotencyConflict,
+    /// An obligation identity was reused by a different operation.
+    ObligationConflict,
     /// An external effect is indeterminate and must be reconciled.
     ReconciliationRequired,
     /// A required child root is absent from a publication graph.
@@ -286,6 +288,7 @@ impl ContractError {
             Self::CoverageUncertified => "coverage_uncertified",
             Self::InvalidEffectTransition => "invalid_effect_transition",
             Self::IdempotencyConflict => "idempotency_conflict",
+            Self::ObligationConflict => "obligation_conflict",
             Self::ReconciliationRequired => "reconciliation_required",
             Self::IncompletePublicationGraph => "incomplete_publication_graph",
             Self::NotFound => "not_found",
