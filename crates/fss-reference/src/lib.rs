@@ -6,14 +6,18 @@
 //! end-to-end helper publishes source/delivery object graphs root-last and then commits one
 //! canonical authority delta through `fss-publication`.
 
+mod bundle;
 mod capture;
 mod delivery;
 mod error;
 mod source;
 
 #[cfg(test)]
+mod bundle_tests;
+#[cfg(test)]
 mod tests;
 
+pub use bundle::{ReplayBundle, ReplayBundleError, ReplayCursor};
 pub use capture::{ReferenceCapture, ReferenceCaptureReceipt, run_reference_capture};
 pub use delivery::{
     DeliveryContinuity, DeliveryDirective, DeliveryMutation, DeliveryPacket, DeliveryPlan,
