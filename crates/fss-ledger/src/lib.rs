@@ -17,6 +17,8 @@ mod durable_reconciliation_tests;
 #[cfg(test)]
 mod journal_reconciliation_tests;
 #[cfg(test)]
+mod open_preflight_tests;
+#[cfg(test)]
 mod tests;
 
 pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};

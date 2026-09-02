@@ -11,7 +11,7 @@ use fss_core::{
 
 use crate::{
     AppendReconciliation, BatchCodecError, IncompleteTailPolicy, Journal, JournalError,
-    decode_batch, encode_batch,
+    RecoveryReport, decode_batch, encode_batch,
 };
 
 #[cfg(test)]
@@ -118,24 +118,43 @@ pub struct DurableReferenceLedger {
 
 impl DurableReferenceLedger {
     /// Opens, verifies, and replays the durable evidence history.
+    ///
+    /// When tail truncation is requested, the complete committed prefix is semantically replayed
+    /// before any repair mutation is allowed. A malformed batch, unsupported record kind, stale
+    /// site lineage, or other semantic failure therefore leaves an incomplete suffix untouched for
+    /// diagnosis. `Journal::open` revalidates the structural prefix before the repair itself.
     pub fn open(
         path: impl AsRef<Path>,
         site_lineage: impl Into<String>,
         tail_policy: IncompleteTailPolicy,
     ) -> Result<Self, DurableLedgerError> {
-        let journal = Journal::open(path, tail_policy)?;
+        let path = path.as_ref().to_path_buf();
+        let site_lineage = site_lineage.into();
+
+        let preflight = if path.exists() {
+            let report = crate::inspect(&path)?;
+            let _ = replay_report(&report, &site_lineage)?;
+            Some(report)
+        } else {
+            None
+        };
+
+        let journal = Journal::open(&path, tail_policy)?;
         let report = crate::inspect(journal.path())?;
-        let mut ledger = ReferenceLedger::new(site_lineage);
-        for record in report.records() {
-            if record.kind() != EVIDENCE_BATCH_RECORD_KIND {
-                return Err(DurableLedgerError::UnexpectedRecordKind {
-                    sequence: record.sequence(),
-                    kind: record.kind(),
-                });
+
+        if let Some(preflight) = preflight {
+            if report.last_root() != preflight.last_root()
+                || report.committed_len() != preflight.committed_len()
+            {
+                return Err(JournalError::ExternalMutation {
+                    expected_len: preflight.committed_len(),
+                    observed_len: report.committed_len(),
+                }
+                .into());
             }
-            let batch = decode_batch(record.payload())?;
-            ledger.append(batch)?;
         }
+
+        let ledger = replay_report(&report, &site_lineage)?;
         Ok(Self {
             journal,
             ledger,
@@ -258,4 +277,22 @@ impl DurableReferenceLedger {
     pub(crate) fn fail_journal_after_phase(&mut self, phase: AppendPhase) {
         self.journal.fail_after_phase(phase);
     }
+}
+
+fn replay_report(
+    report: &RecoveryReport,
+    site_lineage: &str,
+) -> Result<ReferenceLedger, DurableLedgerError> {
+    let mut ledger = ReferenceLedger::new(site_lineage);
+    for record in report.records() {
+        if record.kind() != EVIDENCE_BATCH_RECORD_KIND {
+            return Err(DurableLedgerError::UnexpectedRecordKind {
+                sequence: record.sequence(),
+                kind: record.kind(),
+            });
+        }
+        let batch = decode_batch(record.payload())?;
+        ledger.append(batch)?;
+    }
+    Ok(ledger)
 }
