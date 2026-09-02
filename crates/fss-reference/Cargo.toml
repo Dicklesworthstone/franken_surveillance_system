@@ -1,0 +1,18 @@
+[package]
+name = "fss-reference"
+description = "Deterministic virtual acquisition and replay reference for Franken Surveillance System"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+fss-ledger = { path = "../fss-ledger" }
+fss-object = { path = "../fss-object" }
+fss-publication = { path = "../fss-publication" }
