@@ -11,12 +11,15 @@ mod capture;
 mod delivery;
 mod error;
 mod model;
+mod policy;
 mod source;
 
 #[cfg(test)]
 mod bundle_tests;
 #[cfg(test)]
 mod model_tests;
+#[cfg(test)]
+mod policy_tests;
 #[cfg(test)]
 mod tests;
 
@@ -30,6 +33,10 @@ pub use error::ReferenceError;
 pub use model::{
     MockAbstentionReason, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
     MockSemanticLabel, execute_mock_model,
+};
+pub use policy::{
+    ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
+    ReferencePolicyDecision, evaluate_unknown_presence, publish_reference_event,
 };
 pub use source::{
     MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, generate_source,
