@@ -59,6 +59,27 @@ fn missing_child_prevents_any_root_visibility() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn missing_metadata_object_prevents_root_visibility() -> Result<(), Box<dyn Error>> {
+    let mut store = InMemoryObjectStore::new(ObjectLimits::new(8, 4096));
+    let child = store.put_verified(b"child")?;
+    let metadata = ContentDigest::sha256(b"metadata-not-staged");
+    let manifest = ObjectManifest::new("event", [child], Some(metadata))?;
+    assert!(manifest.children().contains(&metadata));
+    let root = manifest.root();
+
+    assert!(matches!(
+        store.publish_manifest(manifest),
+        Err(ObjectError::Missing(found)) if found == metadata
+    ));
+    assert_eq!(store.published_manifest_count(), 0);
+    assert!(matches!(
+        store.published_manifest(root),
+        Err(ObjectError::ManifestNotPublished(found)) if found == root
+    ));
+    Ok(())
+}
+
+#[test]
 fn byte_quota_failure_has_no_accounting_side_effect() -> Result<(), Box<dyn Error>> {
     let mut store = InMemoryObjectStore::new(ObjectLimits::new(4, 3));
     let first = store.stage(b"abc")?;
@@ -97,15 +118,16 @@ fn verified_corruption_is_detected_on_read_and_closure() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn nested_manifest_closure_is_verified_without_double_counting() -> Result<(), Box<dyn Error>> {
+fn nested_manifest_closure_includes_metadata_without_double_counting() -> Result<(), Box<dyn Error>> {
     let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 8192));
     let leaf = store.put_verified(b"leaf")?;
+    let metadata = store.put_verified(b"meta")?;
     let child_manifest = ObjectManifest::new("clip", [leaf], None)?;
     let child_root = store.publish_manifest(child_manifest)?.root;
-    let root_manifest =
-        ObjectManifest::new("incident", [leaf, child_root], Some(ContentDigest::sha256(b"meta")))?;
+    let root_manifest = ObjectManifest::new("incident", [leaf, child_root], Some(metadata))?;
+    assert_eq!(root_manifest.children().len(), 3);
     let root = store.publish_manifest(root_manifest)?.root;
-    assert_eq!(store.verify_closure(root)?, 3);
+    assert_eq!(store.verify_closure(root)?, 4);
     store.require_verified(root)?;
     Ok(())
 }
@@ -113,11 +135,13 @@ fn nested_manifest_closure_is_verified_without_double_counting() -> Result<(), B
 #[test]
 fn canonical_manifest_bytes_bind_kind_children_and_metadata() -> Result<(), Box<dyn Error>> {
     let child = ContentDigest::sha256(b"child");
+    let metadata = ContentDigest::sha256(b"meta");
     let first = ObjectManifest::new("event", [child], None)?;
     let second = ObjectManifest::new("clip", [child], None)?;
-    let third = ObjectManifest::new("event", [child], Some(ContentDigest::sha256(b"meta")))?;
+    let third = ObjectManifest::new("event", [child], Some(metadata))?;
     assert_ne!(first.canonical_bytes(), second.canonical_bytes());
     assert_ne!(first.root(), second.root());
     assert_ne!(first.root(), third.root());
+    assert!(third.children().contains(&metadata));
     Ok(())
 }

@@ -14,7 +14,11 @@ pub struct ObjectManifest {
 }
 
 impl ObjectManifest {
-    /// Creates a canonical manifest, sorting and deduplicating child roots.
+    /// Creates a canonical manifest, sorting and deduplicating every directly referenced object.
+    ///
+    /// A metadata digest is a custody-bearing reference, not merely an identity decoration, so it
+    /// is also inserted into the canonical child closure. It remains separately encoded to retain
+    /// its typed role.
     pub fn new(
         kind: impl Into<String>,
         children: impl IntoIterator<Item = ContentDigest>,
@@ -25,6 +29,9 @@ impl ObjectManifest {
             return Err(ObjectError::InvalidManifestKind);
         }
         let mut children: Vec<_> = children.into_iter().collect();
+        if let Some(metadata) = metadata_digest {
+            children.push(metadata);
+        }
         children.sort_unstable();
         children.dedup();
         if children.len() > MAX_MANIFEST_CHILDREN {
@@ -49,13 +56,13 @@ impl ObjectManifest {
         &self.kind
     }
 
-    /// Canonically sorted unique child object roots.
+    /// Canonically sorted unique direct object roots, including typed metadata when present.
     #[must_use]
     pub fn children(&self) -> &[ContentDigest] {
         &self.children
     }
 
-    /// Optional content identity for small typed metadata owned elsewhere.
+    /// Optional content identity for the manifest's typed metadata object.
     #[must_use]
     pub const fn metadata_digest(&self) -> Option<ContentDigest> {
         self.metadata_digest
