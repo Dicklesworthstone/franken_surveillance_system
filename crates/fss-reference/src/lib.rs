@@ -6,6 +6,7 @@
 //! end-to-end helper publishes source/delivery object graphs root-last and then commits one
 //! canonical authority delta through `fss-publication`.
 
+mod alert;
 mod bundle;
 mod capture;
 mod delivery;
@@ -15,6 +16,8 @@ mod policy;
 mod source;
 
 #[cfg(test)]
+mod alert_tests;
+#[cfg(test)]
 mod bundle_tests;
 #[cfg(test)]
 mod model_tests;
@@ -23,6 +26,10 @@ mod policy_tests;
 #[cfg(test)]
 mod tests;
 
+pub use alert::{
+    ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior,
+    dispatch_reference_alert, prepare_reference_alert, reconcile_reference_alert,
+};
 pub use bundle::{ReplayBundle, ReplayBundleError, ReplayCursor};
 pub use capture::{ReferenceCapture, ReferenceCaptureReceipt, run_reference_capture};
 pub use delivery::{
