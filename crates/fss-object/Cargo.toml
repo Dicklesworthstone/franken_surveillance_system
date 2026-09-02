@@ -1,0 +1,15 @@
+[package]
+name = "fss-object"
+description = "Root-last immutable object custody for Franken Surveillance System"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fss-core = { path = "../fss-core" }

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/fss-core", "crates/fss-cli", "crates/fss-ledger"]
+members = ["crates/fss-core", "crates/fss-cli", "crates/fss-ledger", "crates/fss-object"]
 
 [workspace.package]
 version = "0.0.1"

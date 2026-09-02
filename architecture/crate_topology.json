@@ -1,6 +1,6 @@
 {
   "schema": "fss.crate_topology.v2",
-  "asOf": "2026-08-31",
+  "asOf": "2026-09-01",
   "rules": [
     "dependencies point downward; sideways calls cross only registered versioned interfaces",
     "authority crates never depend on cognition, presentation, or product policy crates",
@@ -110,12 +110,12 @@
         {
           "name": "fss-ledger",
           "unsafe": "forbid",
-          "status": "planned"
+          "status": "implemented"
         },
         {
           "name": "fss-object",
           "unsafe": "forbid",
-          "status": "planned"
+          "status": "implemented"
         },
         {
           "name": "fss-publication",
