@@ -57,7 +57,10 @@ fn costs(maximum: HydrationLevel) -> BTreeMap<HydrationLevel, BudgetVector> {
         .collect()
 }
 
-fn handle(availability: HandleAvailability, sequence: u64) -> Result<SemanticHandle, HydrationError> {
+fn handle(
+    availability: HandleAvailability,
+    sequence: u64,
+) -> Result<SemanticHandle, HydrationError> {
     SemanticHandle::publish(SemanticHandleSpec {
         contract_basis: basis(),
         anchor: anchor(sequence),
@@ -116,7 +119,8 @@ fn ladders_must_be_contiguous() -> Result<(), HydrationError> {
     };
     for level in spec.levels.iter().copied() {
         spec.required_capabilities.insert(level, BTreeSet::new());
-        spec.estimated_costs.insert(level, BudgetVector::default());
+        spec.estimated_costs
+            .insert(level, BudgetVector::default());
     }
     assert_eq!(
         SemanticHandle::publish(spec),
@@ -169,7 +173,7 @@ fn artifact_tampering_is_detected() -> Result<(), HydrationError> {
         HydrationLevel::H1,
         "application/fss+json",
         b"semantic synopsis".to_vec(),
-        [ContentDigest::sha256(b"proof")],
+        [ContentDigest::sha256(b"evidence proof")],
         Completeness::Complete,
         None,
     )?;
@@ -179,4 +183,19 @@ fn artifact_tampering_is_detected() -> Result<(), HydrationError> {
         Err(HydrationError::Contract(ContractError::DigestMismatch))
     ));
     Ok(())
+}
+
+#[test]
+fn payload_integrity_is_not_sufficient_provenance() {
+    assert_eq!(
+        HydrationArtifact::publish(
+            HydrationLevel::H1,
+            "application/fss+json",
+            b"unproven synopsis".to_vec(),
+            [],
+            Completeness::Complete,
+            None,
+        ),
+        Err(HydrationError::Contract(ContractError::EvidenceRequired))
+    );
 }
