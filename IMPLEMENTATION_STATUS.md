@@ -1,97 +1,137 @@
 # Implementation status
 
-**As of:** 2026-08-31
-**Repository phase:** architecture constitution
-**Aggregate readiness:** design-only; no operational surveillance functionality is qualified
+**As of:** 2026-09-03  
+**Project state:** pre-release deterministic reference implementation; not production-qualified  
+**Release authority:** repository-owned local qualification and retained DSR receipts, not hosted CI
 
-This file is the public claim boundary. Source presence, a schema, a type, a CLI command, a passing
-unit test, or a successful one-off device experiment is not aggregate support.
+## Executive summary
 
-The current constitutional inventory contains **116 unique hard invariants, 47 admitted-or-proposed
-Franken mechanism imports, 27 registered graph algorithms, 13 publication primitives, 11 agent
-abstraction layers, 14 public agent operations, 8 registered agent views, 15 local qualification
-lanes, and 49 JSON Schema files**. Those numbers describe design coverage and machine
-cross-checking, not operational readiness.
+Franken Surveillance System now has a coherent, dependency-light Rust reference spine from immutable source evidence through canonical authority state, guarded external effects, agent situation projection, meaningful deltas, exact continuation, and progressive semantic hydration. The repository is no longer merely an architecture corpus or crate skeleton.
 
-## Dimension matrix
+It is also not a complete surveillance product. Native device adapters, production media/model/graph/storage services, persistent distributed operation, every human and agent surface, complete qualification matrices, and the aggregate release root remain open. Status below distinguishes implemented reference semantics from production completion.
 
-| Surface | Contract | Reference | Implementation | Qualification | Public claim |
-|---|---:|---:|---:|---:|---|
-| Semantic IDs, time intervals, event states | yes | partial Rust skeleton | partial | no | contract skeleton only |
-| Machine-readable registries and schemas | yes | yes | yes | policy parser only | architecture artifacts present |
-| Deterministic replay adapter | specified | no | no | no | not implemented |
-| UVC/UAC acquisition | specified | no | no | no | not implemented |
-| RTSP acquisition | specified | no | no | no | not implemented |
-| ONVIF Profile T/M client | specified | no | no | no | not implemented |
-| Wyze Cam v4 lab adapter | specified | no | no | no | research target only |
-| AOSU P1 Max lab adapter | specified | no | no | no | research target only |
-| DJI Flip capture bridge | specified | no | no | no | research target only |
-| Pure-Rust packet/container/codec/media kernel | specified in depth | no | no | no | not implemented |
-| Live proxy | specified | no | no | no | not implemented |
-| Canonical ledger | specified | no | no | no | not implemented |
-| Local object spool | specified | no | no | no | not implemented |
-| B2/R2 archive | specified | no | no | no | not implemented |
-| Pure-Rust model package/import/runtime | specified in depth | no | no | no | not implemented |
-| Detection/tracking/fusion | specified | no | no | no | not implemented |
-| Calibration/digital twin | specified | no | no | no | not implemented |
-| Alert policy/delivery | specified | no | no | no | not implemented |
-| One version universe and MVCC witness ledger | specified in depth | schema only | no | no | not implemented |
-| ATP transfer/object graph and retrievability | specified in depth | schemas only | no | no | not implemented |
-| Certified graph algorithms/complexity witnesses | specified in depth | registry only | no | no | not implemented |
-| Search/memory/graph projections | specified in depth | no | no | no | not implemented |
-| Local DSR qualification/release custody | specified in depth | policy scripts only | partial | no native release receipt | not qualified |
-| Agent semantic protocol, operation/view registries, and epistemic types | specified in depth | machine registries + schemas | no | policy cross-check only | architecture artifacts present; not implemented |
-| ContractBasis and universal request/response envelopes | specified in depth | schemas + registry cross-checks | no | policy cross-check only | architecture artifacts present; not implemented |
-| SituationCapsule/Frame, WorldEnvelope, context packs, and semantic compression | specified in depth | schemas only | no | no | not implemented |
-| Evidence–possibility–control and robust/conditional action classification | specified in depth | schemas + decision/test/SLO registries | no | no | not implemented |
-| Investigations, hypotheses, VOI, affordances, and contingent control plans | specified in depth | schemas + decision registries | no | no | not implemented |
-| Multi-agent work claims/findings, handoff/resume, and accretive learning | specified in depth | schemas only | no | no | not implemented |
-| Rust API/CLI/MCP/TUI/report presentation | specified | no | no | no | not implemented |
-| Human operations UI | conceptual | no | no | no | not implemented |
+## Implemented deterministic reference spine
 
-## Why the skeleton exists
+### Canonical authority, evidence, and custody
 
-The first code is not a fake camera demo. It freezes load-bearing distinctions that become very
-expensive to recover later:
+- Stable typed identities and canonical encoding.
+- Content digests and root-closed object manifests.
+- Immutable sensor capsules and capture-time uncertainty intervals.
+- Coverage witnesses and explicit negative-evidence boundaries.
+- Ordered `EvidenceDeltaBatch` authority history and exact `LedgerAnchor` succession.
+- Durable reference journal recovery with incomplete-tail policy.
+- Child-first, root-last publication into the reference ledger.
+- Deterministic virtual acquisition, transport mutation, replay bundles, and mock-model execution.
 
-- capture time is uncertain;
-- observations, model hypotheses, and effects have different authority;
-- acquisition acceptance is not frame continuity;
-- event detection is not corroboration;
-- corroboration is not policy adjudication;
-- adjudication is not delivered alert;
-- model scores need a generation and calibration identity;
-- public readiness is multidimensional.
+### Events, policy, and effects
 
-## Promotion rule
+- Evidence-linked event hypotheses with explicit lifecycle state.
+- Reference unknown-presence policy that requires independent failure domains before alert preparation.
+- Separate alert prepare, commit, provider observation, reconciliation, and terminal publication stages.
+- Idempotency identities, operation receipts, obligations, and indeterminate-effect retention.
+- Guarded situation projection: only an exact local `Prepared` receipt preserves commit; missing or later operation state exposes status/reconciliation.
+- Rejection of forged, structurally inconsistent, stale, or mismatched effect receipts.
 
-A row may move from `implemented` to `qualified` only when all applicable readiness dimensions in
-`architecture/readiness_dimensions.json` have retained evidence. The proof bundle must name the
-exact source revision, toolchain, platform, device/firmware/app tuple, model generations, fixture
-roots, configuration, seeds, raw measurements, failures, and reproduction commands.
+### Agent situation and control membrane
 
-## Known qualification gap in this generated snapshot
+- `ContractBasis`, `KnowledgeCell`, `PossibleWorld`, `WorldEnvelope`, `ActionAffordance`, `SituationFrame`, `SituationCapsule`, and root-closed handoff contracts.
+- Conservative distinction among known, estimated, unknown, conflicted, stale, not observable, redacted, indeterminate, and not applicable state.
+- Retention of protected high-consequence worlds rather than rank-only pruning.
+- Categorized control envelope for robust, conditional, information-gathering, wait, blocked, and unavailable affordances.
+- Full multidimensional resource state and action cost, including latency, tokens, bytes, model calls, CPU, accelerator, energy, network, storage operations, privacy exposure, and operator attention.
+- Proof-bearing semantic context packs and compression receipts with critical-preservation checks and priced expansion handles.
+- Deterministic reference situation publications binding situation, control, resources, context, compression, and proof roots.
 
-The repository policy validator passed in the artifact environment over **66 JSON files, 8 TOML
-files, 1,076 unique stable identifiers, 116 invariants, 47 mechanism imports, 27 graph algorithms,
-13 publication primitives, 11 agent abstraction layers, 14 public agent operations, 8 registered
-agent views, and 15 local qualification lanes**. All 49 JSON Schema files passed Draft 2020-12
-meta-schema validation, all internal schema references resolved, all repository Markdown links
-resolved, the 199-entry repository integrity manifest matched every included file, the eight root
-constitutional documents matched their `docs/` mirrors byte-for-byte, the
-static dependency audit reported no policy violations, and the deterministic release-artifact
-custody test reproduced byte-identical Linux and Windows packages while verifying the single
-common-asset authority split.
+### Meaningful change and continuation
 
-Those checks establish internal architectural consistency only. They do not demonstrate that an
-agent can yet orient, investigate, choose an affordance, prepare or commit a plan, reconcile an
-indeterminate effect, hand work to another agent, or improve from an ExperienceCapsule.
-`QL-AGENT-001` and `GATE-115` remain entirely unearned until executable task-level reference,
-fault, compression, capability, handoff, multi-agent, and accretion evidence exists.
+- Deterministic `MeaningfulDelta` comparison between exact situation publications.
+- Protected non-coalescible classes for contradictions, coverage loss, plan invalidation, obligation change, external-effect uncertainty, authority/policy change, and terminal transitions.
+- Explicit tracking of known-premise removal and contradiction resolution.
+- Separation of resource pressure from material world change.
+- Silence certificates proving no decision-relevant change, including across harmless successor commits.
+- Exact continuation streams with content-bound entries, page digests, monotone positions, expiry, stream identity, contract basis, anchor, view, and session checks.
 
-A Rust toolchain was not available in that environment, so `cargo metadata`, `cargo fmt`, `cargo
-check`, Clippy, and `cargo test` could not be run there. The code is intentionally dependency-free
-at this skeleton stage and the repository-owned local/portable qualifiers contain the complete
-locked/offline commands, but Rust build qualification remains pending until those commands pass on
-`nightly-2026-08-31` through a native DSR lane. GitHub-hosted execution is supplementary and is not
-required release evidence.
+### Semantic handles and H0–H4 hydration
+
+The FSS-210 deterministic reference slice is implemented:
+
+- immutable `SemanticHandle` identity over the exact subject;
+- independently versioned descriptor digests for delivery policy and availability;
+- contiguous H0–H4 hydration ladders;
+- exact per-level capability and full-vector cost maps;
+- distinct privacy class and transform identity;
+- typed available, superseded, deleted, expired, corrupt, privacy-transformed, and not-observable states;
+- exact `HydrationRequest`, `HydrationArtifact`, `HydrationReceipt`, and `HydrationResponse` contracts;
+- deterministic reference descriptor/artifact catalog;
+- exact descriptor lookup rather than silent “latest” substitution;
+- capability, privacy, H4-purpose, and resource enforcement;
+- explicit lower-level downgrade only when permitted;
+- proof-root closure and exact progressive continuation;
+- tamper, rebinding, cursor-misuse, deletion, expiry, denial, downgrade, and deterministic-replay tests;
+- external-consumer coverage of the public `fss-core` API.
+
+FSS-210 remains **in progress**, not complete. Machine schemas/registries, persistent custody and retention proofs, every public surface, fault schedules, aggregate qualification, and GATE-115 evidence remain outstanding.
+
+## Qualification currently represented in the repository
+
+The repository contains executable policy, Rust, agent-reference, manifest, dependency, and release-assembly lanes. The implemented Rust contracts include focused unit, integration, adversarial, durability, replay, effect-fault, situation-projection, meaningful-delta, continuation, compression, and hydration tests.
+
+A passing developer run demonstrates the exact checked tree only. It does not by itself establish production claims, hardware interoperability, model quality, privacy compliance under every deployment, or aggregate release qualification. Those require retained lane receipts and the declared qualification roots.
+
+## Work packages still materially open
+
+### Production runtime and boundaries
+
+- Asupersync-owned production service topology, cancellation/drain evidence, and bounded concurrency across all processes.
+- Native camera discovery, transport, codec/media, calibration, archive, drone, notification, and vendor-boundary implementations.
+- Persistent FrankenSQLite/FrankenFS/ATP integration beyond the deterministic in-process reference stores.
+- Production pure-Rust model runtime, package verification, generation management, batching, calibration, and fallback.
+- Certified graph/search kernels and incremental graph intelligence.
+
+### Agent operating system
+
+- Durable mission/objective/session/workspace stores and complete state machines.
+- Session-local symbol tables with stale-alias recovery and non-disclosure.
+- Attention frontier, investigation/hypothesis workspace, information-value acquisition, contingent planning, execution episodes, outcome attribution, and learning promotion.
+- Multi-agent work claims, leases, transfer, duplicate-work prevention, cancellation, and orphan-obligation recovery.
+- First-class binding of every context-pack expansion reference to a published semantic-handle descriptor.
+- Equivalent typed payloads and decision digests across Rust API, CLI, MCP, TUI, reports, subscriptions, and handoffs.
+
+### Security, privacy, retention, and deletion
+
+- End-to-end capability/privacy projection over every hydration, export, retention, and effect path.
+- Persistent retention schedules, legal holds, graph-complete deletion, derivative accounting, and deletion proof.
+- Secret-bearing boundary isolation, key management, audit export, incident response, and recovery drills.
+- Complete stale/rollback/downgrade and one-version-universe enforcement across deployed binaries and stored objects.
+
+### Qualification and release
+
+- Remaining deterministic reference, property, metamorphic, differential, fault, crash, cancellation, lost-acknowledgement, disconnect, multi-agent, pressure, migration, upgrade, rollback, and full mission rehearsals.
+- Complete `TEST-AGENT-*`, adapter, model, graph, storage, security, privacy, and performance families.
+- QL-AGENT aggregate thresholds for correctness, calibration, hazardous-action rate, evidence use, handoff continuity, operator burden, and full resource cost.
+- GATE-115 agent qualification and the later native platform/release gates.
+- Locally produced, root-last GATE-120 release qualification root.
+
+## Requirement-status guidance
+
+- **Implemented reference slice:** deterministic code and focused executable tests exist for the named semantics.
+- **In progress:** important acceptance dimensions remain, such as schemas, other surfaces, persistent integration, fault evidence, or aggregate qualification.
+- **Qualified:** every required lane has retained proof for the exact source, dependency, toolchain, platform, and artifact identity.
+- **Released:** the complete local release root has been published after artifact custody, native matrix, canary, upgrade, rollback, and public verification.
+
+No task should be closed solely because a neighboring type, schema, shared helper, or happy-path demo exists.
+
+## Immediate optimal sequence
+
+1. Finish FSS-210 schema/registry and context-pack binding without weakening immutable-handle semantics.
+2. Implement the next session-oriented contract on top of exact continuation and hydration rather than inventing another cursor or expansion dialect.
+3. Extend the reference mission rehearsal through typed hydration, handoff, stale descriptor, lost acknowledgement, and cancellation outcomes.
+4. Establish cross-surface canonical payload equivalence before multiplying presentation-specific features.
+5. Integrate persistent custody/retention and deletion proofs before claiming H3 source-evidence production readiness.
+6. Accumulate retained QL-AGENT evidence and only then advance GATE-115 status.
+
+## Known status limitations
+
+- Repository integrity manifests must be regenerated whenever tracked source or documentation changes; a stale manifest is a repository-policy failure, not an ignorable cosmetic difference.
+- Hosted workflow results are supplementary and may be queued or cancelled by concurrency. They are not substitutes for local retained receipts.
+- The large bead graph encodes complete program acceptance. This document summarizes implementation state and does not override bead dependencies, registries, schemas, ADRs, or qualification gates.
