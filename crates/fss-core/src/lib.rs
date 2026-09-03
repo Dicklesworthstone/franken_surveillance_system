@@ -14,6 +14,7 @@ mod effect;
 mod event;
 mod evidence;
 mod ids;
+mod projection;
 mod time;
 
 pub use agent::{
@@ -40,5 +41,11 @@ pub use evidence::{
 pub use ids::{
     BatchId, CapsuleId, EventId, HandoffId, IdempotencyKey, MissionId, ObjectId, ObligationId,
     OperationId, PrincipalId, SensorId, SessionId, StreamId,
+};
+pub use projection::{
+    BranchCondition, CompressionCompleteness, CompressionLossClass, CompressionStopReason,
+    CompressionTransform, CompressionTransformKind, ContextItem, ControlEnvelope,
+    CriticalPreservation, ExpansionHandle, ResourcePressure, ResourceState,
+    SemanticCompressionReceipt, SemanticContextPack, reference_token_count,
 };
 pub use time::{CaptureInterval, TimestampNs};
