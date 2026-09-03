@@ -1,3 +1,4 @@
+# Supplementary source-transfer helper only. Local DSR receipts remain release authority.
 name: agent-source-snapshot
 
 on:
@@ -20,12 +21,29 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Create source snapshot
-        run: git archive --format=tar.gz --output=franken-surveillance-system-source.tar.gz HEAD
+      - name: Create self-identifying source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit_sha="$(git rev-parse HEAD)"
+          tree_sha="$(git rev-parse HEAD^{tree})"
+          archive="franken-surveillance-system-source-${commit_sha}.tar.gz"
+          git archive --format=tar.gz --output="${archive}" HEAD
+          archive_sha="$(sha256sum "${archive}" | awk '{print $1}')"
+          printf '%s\n' \
+            "repository=Dicklesworthstone/franken_surveillance_system" \
+            "commit_sha=${commit_sha}" \
+            "tree_sha=${tree_sha}" \
+            "archive=${archive}" \
+            "archive_sha256=${archive_sha}" \
+            > SOURCE_SNAPSHOT.env
+          sha256sum --check < <(printf '%s  %s\n' "${archive_sha}" "${archive}")
       - name: Upload source snapshot
         uses: actions/upload-artifact@v4
         with:
-          name: franken-surveillance-system-source
-          path: franken-surveillance-system-source.tar.gz
+          name: franken-surveillance-system-source-${{ github.sha }}
+          path: |
+            franken-surveillance-system-source-${{ github.sha }}.tar.gz
+            SOURCE_SNAPSHOT.env
           if-no-files-found: error
           retention-days: 1
