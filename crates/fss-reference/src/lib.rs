@@ -25,6 +25,8 @@ mod alert_tests;
 #[cfg(test)]
 mod bundle_tests;
 #[cfg(test)]
+mod meaningful_delta_tests;
+#[cfg(test)]
 mod model_tests;
 #[cfg(test)]
 mod outcome_tests;
