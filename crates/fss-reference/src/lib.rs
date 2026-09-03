@@ -11,6 +11,7 @@ mod bundle;
 mod capture;
 mod delivery;
 mod error;
+mod hydration;
 mod meaningful_delta;
 mod model;
 mod outcome;
@@ -24,6 +25,8 @@ mod source;
 mod alert_tests;
 #[cfg(test)]
 mod bundle_tests;
+#[cfg(test)]
+mod hydration_tests;
 #[cfg(test)]
 mod meaningful_delta_tests;
 #[cfg(test)]
@@ -52,6 +55,7 @@ pub use delivery::{
     MAX_DELIVERY_DIRECTIVES,
 };
 pub use error::ReferenceError;
+pub use hydration::ReferenceHydrationCatalog;
 pub use meaningful_delta::classify_reference_meaningful_delta;
 pub use model::{
     MockAbstentionReason, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
