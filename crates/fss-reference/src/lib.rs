@@ -29,6 +29,8 @@ mod outcome_tests;
 #[cfg(test)]
 mod policy_tests;
 #[cfg(test)]
+mod situation_guard_tests;
+#[cfg(test)]
 mod situation_tests;
 #[cfg(test)]
 mod tests;
