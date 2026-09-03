@@ -204,6 +204,7 @@ pub fn dispatch_reference_alert(
     journal: &mut EffectJournal,
     provider: &mut ReferenceAlertProvider,
 ) -> Result<OperationReceipt, ReferenceError> {
+    validate_reference_alert_plan(plan)?;
     let operation_id = &plan.intent.operation_id;
     let _ = journal.transition(
         operation_id,
@@ -270,6 +271,7 @@ pub fn reconcile_reference_alert(
     journal: &mut EffectJournal,
     provider: &ReferenceAlertProvider,
 ) -> Result<Option<OperationReceipt>, ReferenceError> {
+    validate_reference_alert_plan(plan)?;
     let Some(proof_digest) = provider.lookup(&plan.intent)? else {
         return Ok(None);
     };
@@ -284,12 +286,42 @@ fn alert_request_digest(
     event_receipt: &ReferenceEventReceipt,
     channel: &str,
 ) -> ContentDigest {
+    alert_request_digest_parts(
+        event_receipt.event_root,
+        event_receipt.event_revision_digest,
+        channel,
+    )
+}
+
+fn alert_request_digest_parts(
+    event_root: ContentDigest,
+    event_revision_digest: ContentDigest,
+    channel: &str,
+) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_alert_request.v1");
-    encoder.digest(event_receipt.event_root);
-    encoder.digest(event_receipt.event_revision_digest);
+    encoder.digest(event_root);
+    encoder.digest(event_revision_digest);
     encoder.text(channel);
     ContentDigest::sha256(&encoder.finish())
+}
+
+pub(crate) fn validate_reference_alert_plan(
+    plan: &ReferenceAlertPlan,
+) -> Result<(), ReferenceError> {
+    if plan.channel.is_empty()
+        || plan.channel.len() > MAX_ALERT_CHANNEL_BYTES
+        || plan.intent.effect_class != "alert.dispatch"
+        || plan.intent.request_digest
+            != alert_request_digest_parts(
+                plan.event_root,
+                plan.event_revision_digest,
+                &plan.channel,
+            )
+    {
+        return Err(ReferenceError::InvalidSpec("alert_plan_integrity"));
+    }
+    Ok(())
 }
 
 fn alert_precondition_digest(
@@ -306,18 +338,66 @@ fn alert_precondition_digest(
 }
 
 fn provider_delivery_proof(intent: &EffectIntent) -> ContentDigest {
+    ContentDigest::sha256(&provider_delivery_proof_bytes(intent))
+}
+
+fn provider_failure_proof(intent: &EffectIntent) -> ContentDigest {
+    ContentDigest::sha256(&provider_failure_proof_bytes(intent))
+}
+
+fn provider_delivery_proof_bytes(intent: &EffectIntent) -> Vec<u8> {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_alert_provider_message.v1");
     intent.idempotency_key.encode_canonical(&mut encoder);
     encoder.digest(intent.request_digest);
-    ContentDigest::sha256(&encoder.finish())
+    encoder.finish()
 }
 
-fn provider_failure_proof(intent: &EffectIntent) -> ContentDigest {
+fn provider_failure_proof_bytes(intent: &EffectIntent) -> Vec<u8> {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_alert_provider_failure.v1");
     intent.idempotency_key.encode_canonical(&mut encoder);
     encoder.digest(intent.request_digest);
     encoder.text("failed_before_delivery");
-    ContentDigest::sha256(&encoder.finish())
+    encoder.finish()
+}
+
+pub(crate) fn reference_alert_terminal_proof_bytes(
+    plan: &ReferenceAlertPlan,
+    receipt: &OperationReceipt,
+) -> Result<Option<Vec<u8>>, ReferenceError> {
+    if receipt.intent != plan.intent {
+        return Err(ReferenceError::InvalidSpec("alert_outcome_operation"));
+    }
+    match receipt.state {
+        EffectState::Verified => {
+            if receipt.error_code.is_some() {
+                return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
+            }
+            let bytes = provider_delivery_proof_bytes(&receipt.intent);
+            if receipt.result_digest != Some(ContentDigest::sha256(&bytes)) {
+                return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
+            }
+            Ok(Some(bytes))
+        }
+        EffectState::Failed => {
+            if receipt.error_code.as_deref().is_none_or(str::is_empty) {
+                return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
+            }
+            let bytes = provider_failure_proof_bytes(&receipt.intent);
+            if receipt.result_digest != Some(ContentDigest::sha256(&bytes)) {
+                return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
+            }
+            Ok(Some(bytes))
+        }
+        EffectState::Indeterminate => {
+            if receipt.result_digest.is_some()
+                || receipt.error_code.as_deref().is_none_or(str::is_empty)
+            {
+                return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
+            }
+            Ok(None)
+        }
+        _ => Err(ReferenceError::InvalidSpec("alert_outcome_not_publishable")),
+    }
 }

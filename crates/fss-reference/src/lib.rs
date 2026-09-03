@@ -12,6 +12,7 @@ mod capture;
 mod delivery;
 mod error;
 mod model;
+mod outcome;
 mod policy;
 mod source;
 
@@ -21,6 +22,8 @@ mod alert_tests;
 mod bundle_tests;
 #[cfg(test)]
 mod model_tests;
+#[cfg(test)]
+mod outcome_tests;
 #[cfg(test)]
 mod policy_tests;
 #[cfg(test)]
@@ -40,6 +43,9 @@ pub use error::ReferenceError;
 pub use model::{
     MockAbstentionReason, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
     MockSemanticLabel, execute_mock_model,
+};
+pub use outcome::{
+    ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt, publish_reference_alert_outcome,
 };
 pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
