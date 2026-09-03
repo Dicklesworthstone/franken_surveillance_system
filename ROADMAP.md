@@ -1,37 +1,89 @@
-# Roadmap
+# Franken Surveillance System roadmap
 
-The roadmap is gate-ordered, not date-promised. A later gate does not reduce the scope of an
-earlier one, and passing a gate means retaining the required evidence rather than merging code.
+This roadmap is an implementation-order guide. The bead graph, normative architecture, stable registries, qualification lanes, and release gates remain authoritative. A checked box here means the stated reference capability exists; it does not imply production qualification.
 
-| Gate | Result | Exit evidence |
-|---|---|---|
-| `GATE-000` | Architecture constitution | stable IDs; import/dependency/algorithm/publication/topology/qualification registries; schemas; risk/cost/claim consistency |
-| `GATE-010` | Deterministic reference world | replay adapter, in-memory ledger, synthetic property, golden decisions, fault schedule corpus |
-| `GATE-020` | First authoritative sensor | UVC/UAC acquisition with time intervals, original-byte custody, continuity state machine, cancellation proof |
-| `GATE-030` | Open IP camera baseline | RTSP plus ONVIF Profile T discovery/stream/settings/events; Profile M metadata when present |
-| `GATE-040` | Media and archive substrate | first-party Rust media kernel, ATP object graph, live proxy, local spool, root-last B2/R2 publication, repair/retrievability drill |
-| `GATE-050` | Cognition walking skeleton | pure-Rust model package/runtime, quality gate, detector, tracker, immutable receipts, event revisions, replay equivalence |
-| `GATE-060` | Cross-camera world model | one-version graph/search high-water marks, certified temporal/matching algorithms, time sync, calibration, association, coverage |
-| `GATE-070` | Drone calibration shuttle | manually piloted session, shared marker, reconstruction, joint bundle adjustment, invalidation rules |
-| `GATE-080` | Threat-quality gauntlet | staged intrusion corpus, benign hard negatives, event AUPRC, recall/false-alert frontier, calibration, misses ledger |
-| `GATE-090` | Proprietary adapter lab | exact firmware/app compatibility for selected Wyze/AOSU workflows; no bypass; revocation and drift handling |
-| `GATE-100` | DJI Flip research bridge | authorized live-view or bounded import path; manual-only; current unsupported-SDK boundary remains explicit |
-| `GATE-110` | Transport-equivalent agent/operator presentation | stable JSON, CLI/MCP/TUI/report equivalence, bounded continuations, accessibility/mobile review, robot docs |
-| `GATE-115` | Agent cognitive operating system | CognitiveFacet owner-preserving narrow waist; ContractBasis/request-response equivalence; SituationCapsule/Frame/WorldEnvelope; epistemic/provenance discipline; meaningful follow; investigations/VOI; robust/conditional affordance frontier; contingent control; handoff; accretive-learning gauntlet |
-| `GATE-120` | Operational release candidate | clean sibling closure, DSR native lanes, exact signed assets/SBOM/provenance, download verification, install/rollback, soak, privacy/security proof |
+## Phase 0 — Constitutional repository and deterministic kernel
 
-## Parallel workstreams
+- [x] Rust 2024 workspace on the pinned toolchain.
+- [x] Workspace-level prohibition of memory-unsafe Rust.
+- [x] Stable identity, canonical encoding, digest, time, and error contracts.
+- [x] Layered architecture, dependency, stable-ID, policy, and release registries.
+- [x] Repository-owned policy, dependency, manifest, Rust, agent, and release qualification entrypoints.
+- [ ] Keep layered integrity manifests synchronized with every tracked source revision.
+- [ ] Close all source/registry/schema drift beads with retained before-and-after evidence.
 
-- **WS-A Constitution:** registries, schemas, ADRs, proof targets, doc-code drift checks.
-- **WS-B Acquisition:** replay, UVC, RTSP, ONVIF, vendor hosts, continuity.
-- **WS-C Media:** pure-Rust packet/container/codec kernel, source custody, low-latency proxy, analysis surfaces.
-- **WS-D Ledger/archive:** EvidenceDeltaBatch/MVCC witnesses, local spool, ATP remote object graphs, repair/retrievability.
-- **WS-E Geometry:** clocks, calibration, reconstruction, occupancy, coverage.
-- **WS-F Cognition:** pure-Rust model runtime, detection, tracking, association, temporal models, calibration, policy.
-- **WS-G Evaluation:** threat corpus, hard negatives, red team, statistics, cost and energy.
-- **WS-H Agent cognition:** `CognitiveFacet` composition ABI, mission/workspace/session, ContractBasis/request-response envelopes, SituationCapsule/Frame/WorldEnvelope, knowledge cells, meaningful deltas, investigations/hypotheses, VOI, robust/conditional/probe affordances, query compilation, belief-space contingent plans, episodes, handoff, and learning proposals.
-- **WS-I Agent presentation/ops:** registry-derived Rust API/CLI/MCP/TUI/reports, progressive hydration, explanations, robot docs, accessibility/mobile incident review, and multi-agent work claims/findings.
-- **WS-J Security/privacy:** secrets, isolation, capability-projected cognition, context/handoff privacy, masks, retention, deletion, identity controls.
-- **WS-K Packaging:** exact nightly promotion, clean sibling closure, DSR native lanes, installers, migrations, signed root-last releases, support bundles.
+## Phase 1 — Evidence, custody, and canonical authority
 
-See the comprehensive plan for dependencies and acceptance tests.
+- [x] Immutable sensor capsules and uncertain capture intervals.
+- [x] Coverage witnesses and explicit negative-evidence semantics.
+- [x] Content-addressed in-memory object graph and child-first/root-last publication.
+- [x] Ordered reference `EvidenceDeltaBatch` authority ledger.
+- [x] Durable journal recovery and incomplete-tail policy.
+- [x] Deterministic virtual source, delivery mutation, replay bundle, and mock-model path.
+- [ ] Production object storage, MVCC ledger, rebuild, backup, restore, retention, and graph-complete deletion.
+- [ ] ATP replication with complete custody and availability proofs.
+
+## Phase 2 — Event and external-effect reference path
+
+- [x] Evidence-linked event hypotheses and conservative unknown-presence policy.
+- [x] Independent-failure-domain requirement before alert preparation.
+- [x] Prepare/commit/watch/reconcile/terminal publication grammar.
+- [x] Idempotency, obligations, local operation receipts, and indeterminate outcomes.
+- [x] Guarded situation projection that requires exact `Prepared` state before exposing commit.
+- [x] Verified-delivery, lost-acknowledgement, and proved-failure reference scenarios.
+- [ ] Production notification boundary, adapters, retries, provider lookup, and retained delivery qualification.
+- [ ] Complete cancellation, disconnect, crash, timeout, and compensation campaigns.
+
+## Phase 3 — Agent cognitive operating membrane
+
+- [x] Contract basis and orthogonal epistemic/provenance/hypothesis state.
+- [x] Possible-world envelope with protected adversarial residuals.
+- [x] Capability-valid affordance frontier and categorized control envelope.
+- [x] Situation frame, situation capsule, deterministic publication, and root-closed handoff.
+- [x] Full multidimensional resource state and action costs.
+- [x] Semantic context pack and critical-preserving compression receipt.
+- [x] Meaningful-delta classification with protected non-coalescible transitions.
+- [x] Silence certificates and exact continuation streams.
+- [x] Immutable semantic handles and deterministic H0–H4 hydration reference behavior.
+- [ ] Bind every expansion reference in every registered view to an exact semantic-handle descriptor.
+- [ ] Durable mission, objective, session, symbol-table, workspace, and handoff-resume stores.
+- [ ] Attention frontier, investigations, hypotheses, information-value acquisition, contingent plans, execution episodes, and learning proposals.
+- [ ] Multi-agent work claims, leases, transfer, duplicate prevention, and orphan recovery.
+- [ ] Canonical Rust API/CLI/MCP/TUI/report/subscription payload equivalence.
+
+## Phase 4 — Native sensing, media, models, and graph intelligence
+
+- [ ] Qualified camera discovery, transport, authentication, continuity, and health adapters.
+- [ ] Pure-Rust media ingest, decode/encode, timing, geometry, calibration, and archive path.
+- [ ] Pure-Rust model package verification, execution, batching, calibration, generation transition, and fallback.
+- [ ] Certified graph/search algorithms with witnesses, incremental maintenance, and deterministic fallback.
+- [ ] Owner-authorized drone capture, explicit flight control boundary, geofence, battery, and evidence custody.
+- [ ] Interoperability laboratory campaigns against retained foreign oracles without admitting foreign runtimes into production.
+
+## Phase 5 — Security, privacy, retention, and operations
+
+- [ ] End-to-end capability projection and privacy transforms across all reads and effects.
+- [ ] Key management, secret isolation, audit export, tamper evidence, incident response, and recovery drills.
+- [ ] Retention schedules, legal holds, derivative lineage, deletion completeness, and deletion proof.
+- [ ] One-version-universe upgrade, rollback, stale-generation, and mixed-binary refusal campaigns.
+- [ ] Bounded service topology, cancellation drains, pressure degradation, observability, and resource accounting under Asupersync.
+
+## Phase 6 — Qualification and release
+
+- [ ] Complete every required deterministic reference, property, metamorphic, differential, fault, crash, cancellation, migration, security, privacy, performance, and end-to-end test family.
+- [ ] Meet QL-AGENT task-correctness, calibration, hazardous-action, evidence-use, continuity, operator-burden, and full-resource thresholds.
+- [ ] Pass GATE-115 for the agent cognitive operating membrane.
+- [ ] Pass native adapter, media, model, graph, storage, security, privacy, platform, upgrade, rollback, and canary gates.
+- [ ] Assemble signed artifacts with complete dependency, source, toolchain, platform, and custody receipts.
+- [ ] Publish the complete locally qualified GATE-120 release root child-first and root-last.
+
+## Near-term critical path
+
+The current optimal sequence is:
+
+1. finish FSS-210 schema/registry and context-pack binding;
+2. implement durable session and symbol-table semantics over the existing exact cursor and hydration contracts;
+3. extend real-entrypoint rehearsals through hydration, handoff, stale descriptor, lost acknowledgement, cancellation, and resume;
+4. prove cross-surface canonical equivalence before adding independent presentation logic;
+5. integrate persistent custody, retention, and deletion before treating H3 as production source access;
+6. accumulate retained QL-AGENT evidence and advance GATE-115 only when all required dimensions are terminal.
