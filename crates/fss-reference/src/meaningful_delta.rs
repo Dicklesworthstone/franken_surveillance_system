@@ -55,9 +55,11 @@ pub fn classify_reference_meaningful_delta(
     }) {
         classes.insert(MeaningfulDeltaClass::Hypothesis);
     }
-    if changed_cells.iter().any(|cell| {
-        cell.knowledge_state == KnowledgeState::Conflicted || !cell.contradictions.is_empty()
-    }) {
+    if contradiction_changed(
+        &basis_frame.knowledge_cells,
+        &result_frame.knowledge_cells,
+        &changed_cells,
+    ) {
         classes.insert(MeaningfulDeltaClass::Contradiction);
     }
 
@@ -114,25 +116,32 @@ pub fn classify_reference_meaningful_delta(
         if prior.knowledge_state != KnowledgeState::Known {
             continue;
         }
-        if let Some(current) = result_frame
+        match result_frame
             .knowledge_cells
             .iter()
             .find(|candidate| candidate.claim_id == prior.claim_id)
         {
-            if matches!(
-                current.knowledge_state,
-                KnowledgeState::Unknown
-                    | KnowledgeState::Conflicted
-                    | KnowledgeState::Stale
-                    | KnowledgeState::NotObservable
-                    | KnowledgeState::Indeterminate
-            ) {
+            Some(current)
+                if matches!(
+                    current.knowledge_state,
+                    KnowledgeState::Unknown
+                        | KnowledgeState::Conflicted
+                        | KnowledgeState::Stale
+                        | KnowledgeState::NotObservable
+                        | KnowledgeState::Indeterminate
+                ) =>
+            {
                 invalidated_assumptions.push(format!(
                     "known premise {} became {}",
                     prior.claim_id,
                     current.knowledge_state.as_str()
                 ));
             }
+            None => invalidated_assumptions.push(format!(
+                "known premise {} disappeared from the result frame",
+                prior.claim_id
+            )),
+            Some(_) => {}
         }
     }
     if !invalidated_assumptions.is_empty() {
@@ -164,7 +173,7 @@ pub fn classify_reference_meaningful_delta(
     }
     if basis_indeterminate.iter().any(|claim| {
         result_frame.knowledge_cells.iter().any(|cell| {
-            cell.claim_id == **claim && cell.knowledge_state == KnowledgeState::Known
+            cell.claim_id.as_str() == *claim && cell.knowledge_state == KnowledgeState::Known
         })
     }) {
         classes.insert(MeaningfulDeltaClass::TerminalTransition);
@@ -184,6 +193,10 @@ pub fn classify_reference_meaningful_delta(
     sort_dedup(&mut obligation_changes);
     sort_dedup(&mut effect_uncertainty_changes);
 
+    let is_silence = classes.is_empty();
+    if is_silence {
+        classes.insert(MeaningfulDeltaClass::NoMeaningfulChange);
+    }
     let selection_witness = comparison_witness(
         basis,
         result,
@@ -195,8 +208,7 @@ pub fn classify_reference_meaningful_delta(
         &effect_uncertainty_changes,
     );
     let identity = delta_identity(basis, result, selection_witness);
-    let silence_certificate = if classes.is_empty() {
-        classes.insert(MeaningfulDeltaClass::NoMeaningfulChange);
+    let silence_certificate = if is_silence {
         Some(SilenceCertificate {
             basis_frame_digest: basis_frame.frame_digest(),
             result_frame_digest: result_frame.frame_digest(),
@@ -265,6 +277,24 @@ fn changed_cells(basis: &[KnowledgeCell], result: &[KnowledgeCell]) -> Vec<Knowl
         .collect();
     changed.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
     changed
+}
+
+fn contradiction_changed(
+    basis: &[KnowledgeCell],
+    result: &[KnowledgeCell],
+    changed: &[KnowledgeCell],
+) -> bool {
+    if changed.iter().any(|cell| {
+        cell.knowledge_state == KnowledgeState::Conflicted || !cell.contradictions.is_empty()
+    }) {
+        return true;
+    }
+    basis.iter().any(|prior| {
+        result
+            .iter()
+            .find(|current| current.claim_id == prior.claim_id)
+            .is_some_and(|current| prior.contradictions != current.contradictions)
+    })
 }
 
 fn indeterminate_effect_claims(cells: &[KnowledgeCell]) -> BTreeSet<&str> {
