@@ -3,9 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
-    AffordanceClass, CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest,
-    ContractError, DeltaPriority, KnowledgeCell, KnowledgeState, MeaningfulDelta,
-    MeaningfulDeltaClass, SilenceCertificate,
+    ActionAffordance, AffordanceClass, CanonicalEncode, CanonicalEncoder, Completeness,
+    ContentDigest, ContractError, DeltaPriority, KnowledgeCell, KnowledgeState, MeaningfulDelta,
+    MeaningfulDeltaClass, SilenceCertificate, WorldEnvelope,
 };
 
 use crate::{ReferenceError, ReferenceSituationPublication};
@@ -14,7 +14,8 @@ use crate::{ReferenceError, ReferenceSituationPublication};
 ///
 /// Terminal transitions, coverage loss, contradictions, plan invalidation, obligation changes,
 /// new effect uncertainty, and authority changes are emitted as non-coalescible critical deltas.
-/// Optional presentation detail is never used as a substitute for the typed comparison.
+/// Optional presentation detail and harmless anchor advancement are never substituted for typed
+/// mission-state change.
 pub fn classify_reference_meaningful_delta(
     basis: &ReferenceSituationPublication,
     result: &ReferenceSituationPublication,
@@ -37,8 +38,10 @@ pub fn classify_reference_meaningful_delta(
     if basis_frame.now != result_frame.now
         || basis_frame.at_risk != result_frame.at_risk
         || basis_frame.unknown != result_frame.unknown
-        || basis_frame.world_envelope.envelope_digest()
-            != result_frame.world_envelope.envelope_digest()
+        || world_semantic_digest(&basis_frame.world_envelope)
+            != world_semantic_digest(&result_frame.world_envelope)
+        || affordance_frontier_digest(&basis_capsule.affordances)
+            != affordance_frontier_digest(&result_capsule.affordances)
     {
         classes.insert(MeaningfulDeltaClass::MaterialState);
     }
@@ -329,6 +332,41 @@ fn completeness_rank(value: Completeness) -> u8 {
     }
 }
 
+fn world_semantic_digest(envelope: &WorldEnvelope) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.reference_world_semantics.v1");
+    encoder.text(&envelope.objective_id);
+    encode_text_set(&envelope.nominal_claim_ids, &mut encoder);
+    encode_text_set(&envelope.certified_core_claim_ids, &mut encoder);
+    let mut alternatives = envelope.alternatives.clone();
+    alternatives.sort_by(|left, right| left.world_id.cmp(&right.world_id));
+    encoder.u64(alternatives.len() as u64);
+    for world in &alternatives {
+        world.encode_canonical(&mut encoder);
+    }
+    let mut residuals = envelope.adversarial_residuals.clone();
+    residuals.sort_by(|left, right| left.world_id.cmp(&right.world_id));
+    encoder.u64(residuals.len() as u64);
+    for world in &residuals {
+        world.encode_canonical(&mut encoder);
+    }
+    encode_text_set(&envelope.common_invariants, &mut encoder);
+    encode_text_set(&envelope.coverage_boundary_handles, &mut encoder);
+    ContentDigest::sha256(&encoder.finish())
+}
+
+fn affordance_frontier_digest(affordances: &[ActionAffordance]) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.reference_affordance_frontier.v1");
+    let mut affordances = affordances.to_vec();
+    affordances.sort_by(|left, right| left.affordance_id.cmp(&right.affordance_id));
+    encoder.u64(affordances.len() as u64);
+    for affordance in &affordances {
+        affordance.encode_canonical(&mut encoder);
+    }
+    ContentDigest::sha256(&encoder.finish())
+}
+
 fn delta_priority(classes: &BTreeSet<MeaningfulDeltaClass>) -> DeltaPriority {
     if classes.contains(&MeaningfulDeltaClass::PolicyOrAuthority) {
         DeltaPriority::Constitutional
@@ -392,6 +430,13 @@ fn delta_identity(
     encoder.digest(result.publication_digest);
     encoder.digest(selection_witness);
     ContentDigest::sha256(&encoder.finish())
+}
+
+fn encode_text_set(values: &BTreeSet<String>, encoder: &mut CanonicalEncoder) {
+    encoder.u64(values.len() as u64);
+    for value in values {
+        encoder.text(value);
+    }
 }
 
 fn encode_text(values: &[String], encoder: &mut CanonicalEncoder) {
