@@ -11,7 +11,7 @@ pub struct HydrationArtifact {
     pub payload: Vec<u8>,
     /// Digest of the exact payload.
     pub payload_digest: ContentDigest,
-    /// Retained proof roots supporting the payload.
+    /// Retained provenance roots plus the payload-integrity root.
     pub proof_roots: BTreeSet<ContentDigest>,
     /// Completeness of this artifact at its declared level.
     pub completeness: Completeness,
@@ -33,6 +33,9 @@ impl HydrationArtifact {
     ) -> Result<Self, HydrationError> {
         let payload_digest = ContentDigest::sha256(&payload);
         let mut roots: BTreeSet<_> = proof_roots.into_iter().collect();
+        if roots.is_empty() || roots.iter().all(|root| *root == payload_digest) {
+            return Err(ContractError::EvidenceRequired.into());
+        }
         roots.insert(payload_digest);
         let mut artifact = Self {
             level,
@@ -72,9 +75,15 @@ impl HydrationArtifact {
         if !valid_text(&self.content_type)
             || self.payload.is_empty()
             || self.payload.len() > MAX_ARTIFACT_BYTES
-            || self.proof_roots.is_empty()
             || !self.proof_roots.contains(&self.payload_digest)
-            || self.applied_transform.as_deref().is_some_and(|value| !valid_text(value))
+            || !self
+                .proof_roots
+                .iter()
+                .any(|root| *root != self.payload_digest)
+            || self
+                .applied_transform
+                .as_deref()
+                .is_some_and(|value| !valid_text(value))
             || matches!(
                 self.completeness,
                 Completeness::Unknown
