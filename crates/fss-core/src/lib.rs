@@ -9,6 +9,7 @@
 mod agent;
 mod canonical;
 mod compression;
+mod continuation;
 mod contract;
 mod delta;
 mod digest;
@@ -25,6 +26,10 @@ pub use agent::{
 };
 pub use canonical::{CanonicalEncode, CanonicalEncoder};
 pub use compression::SemanticCompressionReceipt;
+pub use continuation::{
+    ContinuationCursor, ContinuationEntry, ContinuationError, ContinuationPage,
+    ContinuationScope, ContinuationStream,
+};
 pub use contract::{
     BudgetVector, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
     KnowledgeState, Plane, ProvenanceClass, RecoveryClass, RuntimeOutcome,
