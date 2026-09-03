@@ -15,6 +15,7 @@ mod model;
 mod outcome;
 mod policy;
 mod situation;
+mod situation_guard;
 mod source;
 
 #[cfg(test)]
@@ -54,9 +55,9 @@ pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
     ReferencePolicyDecision, evaluate_unknown_presence, publish_reference_event,
 };
-pub use situation::{
+pub use situation_guard::{
     ReferenceSituation, ReferenceSituationRequest, compile_reference_situation,
-    seal_reference_handoff,
+    compile_reference_situation_with_operation_receipt, seal_reference_handoff,
 };
 pub use source::{
     MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, generate_source,
