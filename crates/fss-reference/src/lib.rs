@@ -11,6 +11,7 @@ mod bundle;
 mod capture;
 mod delivery;
 mod error;
+mod meaningful_delta;
 mod model;
 mod outcome;
 mod policy;
@@ -49,6 +50,7 @@ pub use delivery::{
     MAX_DELIVERY_DIRECTIVES,
 };
 pub use error::ReferenceError;
+pub use meaningful_delta::classify_reference_meaningful_delta;
 pub use model::{
     MockAbstentionReason, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
     MockSemanticLabel, execute_mock_model,
