@@ -1,0 +1,23 @@
+name: Agent verification
+
+on:
+  push:
+    branches:
+      - agent/verify-67967c2
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out verification branch
+        uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install nightly-2026-08-31 --profile minimal --component rustfmt --component clippy --component rust-src
+      - name: Run repository qualification
+        run: |
+          rm .github/workflows/agent-verify.yml
+          ./scripts/qualify.sh full
