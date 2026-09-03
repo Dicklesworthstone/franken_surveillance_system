@@ -8,6 +8,7 @@
 
 mod agent;
 mod canonical;
+mod compression;
 mod contract;
 mod delta;
 mod digest;
@@ -23,6 +24,7 @@ pub use agent::{
     PossibleWorld, SituationCapsule, SituationFrame, WorldEnvelope,
 };
 pub use canonical::{CanonicalEncode, CanonicalEncoder};
+pub use compression::SemanticCompressionReceipt;
 pub use contract::{
     BudgetVector, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
     KnowledgeState, Plane, ProvenanceClass, RecoveryClass, RuntimeOutcome,
@@ -50,6 +52,6 @@ pub use projection::{
     BranchCondition, CompressionCompleteness, CompressionLossClass, CompressionStopReason,
     CompressionTransform, CompressionTransformKind, ContextItem, ControlEnvelope,
     CriticalPreservation, ExpansionHandle, ResourcePressure, ResourceState,
-    SemanticCompressionReceipt, SemanticContextPack, reference_token_count,
+    SemanticContextPack, reference_token_count,
 };
 pub use time::{CaptureInterval, TimestampNs};
