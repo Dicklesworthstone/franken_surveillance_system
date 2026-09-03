@@ -39,7 +39,6 @@ pub fn classify_reference_meaningful_delta(
         || basis_frame.unknown != result_frame.unknown
         || basis_frame.world_envelope.envelope_digest()
             != result_frame.world_envelope.envelope_digest()
-        || basis.context_pack.pack_digest != result.context_pack.pack_digest
     {
         classes.insert(MeaningfulDeltaClass::MaterialState);
     }
