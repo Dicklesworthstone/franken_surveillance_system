@@ -16,6 +16,7 @@ mod digest;
 mod effect;
 mod event;
 mod evidence;
+pub mod hydration;
 mod ids;
 mod projection;
 mod time;
@@ -26,10 +27,7 @@ pub use agent::{
 };
 pub use canonical::{CanonicalEncode, CanonicalEncoder};
 pub use compression::SemanticCompressionReceipt;
-pub use continuation::{
-    ContinuationCursor, ContinuationEntry, ContinuationError, ContinuationPage,
-    ContinuationScope, ContinuationStream,
-};
+pub use continuation::*;
 pub use contract::{
     BudgetVector, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
     KnowledgeState, Plane, ProvenanceClass, RecoveryClass, RuntimeOutcome,
