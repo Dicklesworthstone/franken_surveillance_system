@@ -197,6 +197,10 @@ pub struct BudgetVector {
     pub model_calls: u32,
     /// CPU budget in milliseconds.
     pub cpu_millis: u64,
+    /// Accelerator budget in milliseconds.
+    pub accelerator_millis: u64,
+    /// Energy budget in millijoules.
+    pub energy_millijoules: u64,
     /// Network budget in bytes.
     pub network_bytes: u64,
     /// Storage-operation budget.
@@ -208,14 +212,27 @@ pub struct BudgetVector {
 }
 
 impl BudgetVector {
-    /// Returns true when every component fits within another budget.
+    /// Returns true when every component is finite and nonnegative.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.privacy_exposure.is_finite()
+            && self.privacy_exposure >= 0.0
+            && self.operator_attention_seconds.is_finite()
+            && self.operator_attention_seconds >= 0.0
+    }
+
+    /// Returns true when every component fits within another valid budget.
     #[must_use]
     pub fn fits_within(self, limit: Self) -> bool {
-        self.latency_ms <= limit.latency_ms
+        self.is_valid()
+            && limit.is_valid()
+            && self.latency_ms <= limit.latency_ms
             && self.tokens <= limit.tokens
             && self.bytes <= limit.bytes
             && self.model_calls <= limit.model_calls
             && self.cpu_millis <= limit.cpu_millis
+            && self.accelerator_millis <= limit.accelerator_millis
+            && self.energy_millijoules <= limit.energy_millijoules
             && self.network_bytes <= limit.network_bytes
             && self.storage_operations <= limit.storage_operations
             && self.privacy_exposure <= limit.privacy_exposure
