@@ -42,7 +42,7 @@ pub enum ReferenceProviderBehavior {
 enum ProviderDispatch {
     Delivered(ContentDigest),
     LostAck,
-    KnownFailure,
+    KnownFailure(ContentDigest),
     ConflictingIdempotency,
 }
 
@@ -86,10 +86,10 @@ impl ReferenceAlertProvider {
             };
         }
         if behavior == ReferenceProviderBehavior::FailBeforeDelivery {
-            return ProviderDispatch::KnownFailure;
+            return ProviderDispatch::KnownFailure(provider_failure_proof(intent));
         }
 
-        let proof_digest = provider_proof(intent);
+        let proof_digest = provider_delivery_proof(intent);
         self.messages.insert(
             intent.idempotency_key.clone(),
             ProviderMessage {
@@ -100,7 +100,9 @@ impl ReferenceAlertProvider {
         match behavior {
             ReferenceProviderBehavior::Deliver => ProviderDispatch::Delivered(proof_digest),
             ReferenceProviderBehavior::LoseAckAfterDelivery => ProviderDispatch::LostAck,
-            ReferenceProviderBehavior::FailBeforeDelivery => ProviderDispatch::KnownFailure,
+            ReferenceProviderBehavior::FailBeforeDelivery => {
+                ProviderDispatch::KnownFailure(provider_failure_proof(intent))
+            }
         }
     }
 
@@ -239,12 +241,12 @@ pub fn dispatch_reference_alert(
         ProviderDispatch::LostAck => Ok(journal
             .mark_indeterminate(operation_id, outcome_at, "provider_ack_lost")?
             .clone()),
-        ProviderDispatch::KnownFailure => Ok(journal
+        ProviderDispatch::KnownFailure(proof) => Ok(journal
             .transition(
                 operation_id,
                 EffectState::Failed,
                 outcome_at,
-                None,
+                Some(proof),
                 Some("provider_failed_before_delivery".to_owned()),
             )?
             .clone()),
@@ -303,10 +305,19 @@ fn alert_precondition_digest(
     ContentDigest::sha256(&encoder.finish())
 }
 
-fn provider_proof(intent: &EffectIntent) -> ContentDigest {
+fn provider_delivery_proof(intent: &EffectIntent) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_alert_provider_message.v1");
     intent.idempotency_key.encode_canonical(&mut encoder);
     encoder.digest(intent.request_digest);
+    ContentDigest::sha256(&encoder.finish())
+}
+
+fn provider_failure_proof(intent: &EffectIntent) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.reference_alert_provider_failure.v1");
+    intent.idempotency_key.encode_canonical(&mut encoder);
+    encoder.digest(intent.request_digest);
+    encoder.text("failed_before_delivery");
     ContentDigest::sha256(&encoder.finish())
 }

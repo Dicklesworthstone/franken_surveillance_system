@@ -245,6 +245,9 @@ impl EffectJournal {
                 .operations
                 .get_mut(operation_id)
                 .ok_or(ContractError::NotFound)?;
+            if now < receipt.updated_at {
+                return Err(ContractError::InvertedTimeInterval);
+            }
             if !valid_transition(receipt.state, next) {
                 return Err(if receipt.state == EffectState::Indeterminate {
                     ContractError::ReconciliationRequired
@@ -255,7 +258,9 @@ impl EffectJournal {
             if next == EffectState::Verified && result_digest.is_none() {
                 return Err(ContractError::EvidenceRequired);
             }
-            if next == EffectState::Failed && error_code.as_deref().is_none_or(str::is_empty) {
+            if next == EffectState::Failed
+                && (result_digest.is_none() || error_code.as_deref().is_none_or(str::is_empty))
+            {
                 return Err(ContractError::EvidenceRequired);
             }
             if next == EffectState::Committed && receipt.committed_at.is_none() {
@@ -319,13 +324,18 @@ impl EffectJournal {
         proof_digest: ContentDigest,
         now: TimestampNs,
     ) -> Result<&OperationReceipt, ContractError> {
-        let current = self
-            .operations
-            .get(operation_id)
-            .ok_or(ContractError::NotFound)?
-            .state;
-        if current != EffectState::Indeterminate && current != EffectState::Observed {
-            return Err(ContractError::InvalidEffectTransition);
+        {
+            let current = self
+                .operations
+                .get(operation_id)
+                .ok_or(ContractError::NotFound)?;
+            if now < current.updated_at {
+                return Err(ContractError::InvertedTimeInterval);
+            }
+            if current.state != EffectState::Indeterminate && current.state != EffectState::Observed
+            {
+                return Err(ContractError::InvalidEffectTransition);
+            }
         }
         let receipt = self
             .operations
@@ -489,6 +499,118 @@ mod tests {
             journal.operation(&operation_id).map(|receipt| receipt.state),
             Some(EffectState::Verified)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn backward_transition_is_rejected_without_mutation() -> Result<(), ContractError> {
+        let mut journal = EffectJournal::new();
+        let effect = intent(b"ordered")?;
+        let operation_id = effect.operation_id.clone();
+        let _ = journal.prepare(
+            effect,
+            ObligationId::parse("obligation:one")?,
+            "delivery proved",
+            TimestampNs(10),
+        )?;
+        let before = journal
+            .operation(&operation_id)
+            .ok_or(ContractError::NotFound)?
+            .clone();
+        assert_eq!(
+            journal.transition(
+                &operation_id,
+                EffectState::Committed,
+                TimestampNs(9),
+                None,
+                None,
+            ),
+            Err(ContractError::InvertedTimeInterval)
+        );
+        assert_eq!(journal.operation(&operation_id), Some(&before));
+        Ok(())
+    }
+
+    #[test]
+    fn failed_outcome_requires_terminal_proof() -> Result<(), ContractError> {
+        let mut journal = EffectJournal::new();
+        let effect = intent(b"failed")?;
+        let operation_id = effect.operation_id.clone();
+        let obligation_id = ObligationId::parse("obligation:one")?;
+        let _ = journal.prepare(
+            effect,
+            obligation_id.clone(),
+            "known non-delivery proved",
+            TimestampNs(1),
+        )?;
+        let _ = journal.transition(
+            &operation_id,
+            EffectState::Committed,
+            TimestampNs(2),
+            None,
+            None,
+        )?;
+        assert_eq!(
+            journal.transition(
+                &operation_id,
+                EffectState::Failed,
+                TimestampNs(3),
+                None,
+                Some("provider_failed_before_delivery".to_owned()),
+            ),
+            Err(ContractError::EvidenceRequired)
+        );
+
+        let proof = ContentDigest::sha256(b"provider-known-failure");
+        let receipt = journal.transition(
+            &operation_id,
+            EffectState::Failed,
+            TimestampNs(3),
+            Some(proof),
+            Some("provider_failed_before_delivery".to_owned()),
+        )?;
+        assert_eq!(receipt.result_digest, Some(proof));
+        let obligation = journal
+            .obligations()
+            .find(|item| item.obligation_id == obligation_id)
+            .ok_or(ContractError::NotFound)?;
+        assert_eq!(obligation.state, ObligationState::Failed);
+        assert_eq!(obligation.proof_digest, Some(proof));
+        Ok(())
+    }
+
+    #[test]
+    fn backward_reconciliation_is_rejected_without_mutation() -> Result<(), ContractError> {
+        let mut journal = EffectJournal::new();
+        let effect = intent(b"reconcile-order")?;
+        let operation_id = effect.operation_id.clone();
+        let _ = journal.prepare(
+            effect,
+            ObligationId::parse("obligation:one")?,
+            "delivery proved",
+            TimestampNs(1),
+        )?;
+        let _ = journal.transition(
+            &operation_id,
+            EffectState::Committed,
+            TimestampNs(2),
+            None,
+            None,
+        )?;
+        let _ = journal.mark_indeterminate(&operation_id, TimestampNs(4), "lost_ack")?;
+        let before = journal
+            .operation(&operation_id)
+            .ok_or(ContractError::NotFound)?
+            .clone();
+        assert_eq!(
+            journal.reconcile_verified(
+                &operation_id,
+                ContentDigest::sha256(b"provider-delivery"),
+                TimestampNs(3),
+            ),
+            Err(ContractError::InvertedTimeInterval)
+        );
+        assert_eq!(journal.operation(&operation_id), Some(&before));
         Ok(())
     }
 }
