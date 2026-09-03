@@ -9,6 +9,7 @@
 mod agent;
 mod canonical;
 mod contract;
+mod delta;
 mod digest;
 mod effect;
 mod event;
@@ -25,6 +26,9 @@ pub use canonical::{CanonicalEncode, CanonicalEncoder};
 pub use contract::{
     BudgetVector, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
     KnowledgeState, Plane, ProvenanceClass, RecoveryClass, RuntimeOutcome,
+};
+pub use delta::{
+    DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate,
 };
 pub use digest::{ContentDigest, DigestAlgorithm, sha256};
 pub use effect::{
