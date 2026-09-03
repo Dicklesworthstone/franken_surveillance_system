@@ -210,7 +210,7 @@ fn publication(
             target_tokens: 25_000,
         },
     )
-    .map_err(Into::into)
+    .map_err(|error| -> Box<dyn Error> { Box::new(error) })
 }
 
 #[test]
@@ -232,6 +232,26 @@ fn identical_publications_emit_proved_silence() -> Result<(), Box<dyn Error>> {
             .map(|certificate| certificate.selection_witness),
         Some(delta.selection_witness)
     );
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn semantically_identical_successor_commit_emits_proved_silence()
+-> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    let mut successor = Variant::baseline()?;
+    successor.sequence = 2;
+    let result = publication(&successor)?;
+    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+
+    assert_eq!(basis.situation.capsule.anchor.commit_sequence, 1);
+    assert_eq!(result.situation.capsule.anchor.commit_sequence, 2);
+    assert_eq!(
+        delta.classes,
+        BTreeSet::from([MeaningfulDeltaClass::NoMeaningfulChange])
+    );
+    assert_eq!(delta.priority, DeltaPriority::Low);
     delta.validate()?;
     Ok(())
 }
@@ -270,9 +290,7 @@ fn coverage_loss_is_explicit_and_urgent() -> Result<(), Box<dyn Error>> {
     let mut result_variant = Variant::baseline()?;
     result_variant.sequence = 2;
     result_variant.completeness = Completeness::Partial;
-    result_variant
-        .coverage
-        .remove("fss://coverage/beta");
+    result_variant.coverage.remove("fss://coverage/beta");
     let result = publication(&result_variant)?;
     let delta = classify_reference_meaningful_delta(&basis, &result)?;
 
