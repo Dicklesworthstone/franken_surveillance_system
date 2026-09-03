@@ -86,9 +86,9 @@ impl CanonicalEncode for MeaningfulDeltaClass {
 pub enum DeltaPriority {
     /// Authority, policy, privacy, or other constitutional state changed.
     Constitutional,
-    /// Immediate decision-changing or unsafe-retry transition.
+    /// Immediate decision-changing or retry-hazard transition.
     Critical,
-    /// Material but not immediately unsafe change.
+    /// Material but not immediately hazardous change.
     High,
     /// Ordinary mission-relevant change.
     Normal,
