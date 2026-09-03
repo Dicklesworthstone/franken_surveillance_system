@@ -14,7 +14,7 @@ pub enum MeaningfulDeltaClass {
     MaterialState,
     /// A hypothesis or its disposition changed.
     Hypothesis,
-    /// Material admissible evidence became contradictory.
+    /// Material admissible evidence became contradictory or a contradiction was resolved.
     Contradiction,
     /// Observability or certified coverage was lost.
     CoverageLoss,
@@ -244,27 +244,29 @@ impl MeaningfulDelta {
             {
                 return Err(ContractError::EvidenceRequired);
             }
-            self.silence_certificate
+            let certificate = self
+                .silence_certificate
                 .as_ref()
-                .ok_or(ContractError::EvidenceRequired)?
-                .validate()?;
+                .ok_or(ContractError::EvidenceRequired)?;
+            certificate.validate()?;
+            if certificate.selection_witness != self.selection_witness {
+                return Err(ContractError::DigestMismatch);
+            }
         } else if self.silence_certificate.is_some() {
             return Err(ContractError::EvidenceRequired);
         }
 
         if self.classes.contains(&MeaningfulDeltaClass::Contradiction)
-            && !self.changed_cells.iter().any(|cell| {
-                cell.knowledge_state == KnowledgeState::Conflicted
-                    || !cell.contradictions.is_empty()
-            })
+            && self.changed_cells.is_empty()
         {
             return Err(ContractError::EvidenceRequired);
         }
-        if self
-            .classes
-            .iter()
-            .any(|class| matches!(class, MeaningfulDeltaClass::CoverageLoss | MeaningfulDeltaClass::CoverageRecovery))
-            && self.coverage_changes.is_empty()
+        if self.classes.iter().any(|class| {
+            matches!(
+                class,
+                MeaningfulDeltaClass::CoverageLoss | MeaningfulDeltaClass::CoverageRecovery
+            )
+        }) && self.coverage_changes.is_empty()
         {
             return Err(ContractError::EvidenceRequired);
         }
@@ -597,6 +599,17 @@ mod tests {
     }
 
     #[test]
+    fn contradiction_resolution_is_non_coalescible() -> Result<(), ContractError> {
+        let delta = MeaningfulDelta {
+            changed_cells: vec![cell(KnowledgeState::Known)],
+            ..delta(MeaningfulDeltaClass::Contradiction, 1)?
+        };
+        delta.validate()?;
+        assert!(delta.is_non_coalescible());
+        Ok(())
+    }
+
+    #[test]
     fn noncritical_material_deltas_can_coalesce() -> Result<(), ContractError> {
         let first = delta(MeaningfulDeltaClass::MaterialState, 1)?;
         let second = delta(MeaningfulDeltaClass::Hypothesis, 2)?;
@@ -617,6 +630,18 @@ mod tests {
         let delta = delta(MeaningfulDeltaClass::NoMeaningfulChange, 1)?;
         delta.validate()?;
         assert!(delta.silence_certificate.is_some());
+        Ok(())
+    }
+
+    #[test]
+    fn silence_witness_must_match_delta_witness() -> Result<(), ContractError> {
+        let mut delta = delta(MeaningfulDeltaClass::NoMeaningfulChange, 1)?;
+        delta
+            .silence_certificate
+            .as_mut()
+            .ok_or(ContractError::EvidenceRequired)?
+            .selection_witness = ContentDigest::sha256(b"different");
+        assert_eq!(delta.validate(), Err(ContractError::DigestMismatch));
         Ok(())
     }
 }
