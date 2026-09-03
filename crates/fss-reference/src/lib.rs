@@ -16,6 +16,7 @@ mod outcome;
 mod policy;
 mod situation;
 mod situation_guard;
+mod situation_sections;
 mod source;
 
 #[cfg(test)]
@@ -60,6 +61,12 @@ pub use policy::{
 pub use situation_guard::{
     ReferenceSituation, ReferenceSituationRequest, compile_reference_situation,
     compile_reference_situation_with_operation_receipt, seal_reference_handoff,
+};
+pub use situation_sections::{
+    ReferenceProjectionSpec, ReferenceSituationPublication,
+    compile_reference_situation_publication,
+    compile_reference_situation_publication_with_operation_receipt,
+    project_reference_situation, seal_reference_publication_handoff,
 };
 pub use source::{
     MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, generate_source,
