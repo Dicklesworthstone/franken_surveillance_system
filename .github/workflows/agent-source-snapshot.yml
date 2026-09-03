@@ -1,0 +1,31 @@
+name: agent-source-snapshot
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/agent-source-snapshot.yml
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create source snapshot
+        run: git archive --format=tar.gz --output=franken-surveillance-system-source.tar.gz HEAD
+      - name: Upload source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: franken-surveillance-system-source
+          path: franken-surveillance-system-source.tar.gz
+          if-no-files-found: error
+          retention-days: 1
