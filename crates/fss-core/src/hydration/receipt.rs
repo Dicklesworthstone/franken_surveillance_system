@@ -125,6 +125,11 @@ impl HydrationReceipt {
         {
             return Err(ContractError::DigestMismatch.into());
         }
+        let effective_availability = if request.issued_at >= handle.retention_until {
+            HandleAvailability::Expired
+        } else {
+            handle.availability
+        };
         if self.request_digest != request.request_digest
             || self.handle_id != request.handle_id
             || self.handle_id != handle.handle_id
@@ -135,11 +140,18 @@ impl HydrationReceipt {
             || self.anchor != request.anchor
             || self.anchor != handle.anchor
             || self.requested_level != request.requested_level
+            || self.availability != effective_availability
+            || self.issued_at != request.issued_at
             || !self.cost.fits_within(request.budget)
         {
             return Err(ContractError::DigestMismatch.into());
         }
-        match (self.availability, self.delivered_level, self.artifact_digest, artifact) {
+        match (
+            self.availability,
+            self.delivered_level,
+            self.artifact_digest,
+            artifact,
+        ) {
             (HandleAvailability::Available, Some(level), Some(digest), Some(artifact)) => {
                 artifact.verify()?;
                 if level != artifact.level
