@@ -14,6 +14,7 @@ mod error;
 mod model;
 mod outcome;
 mod policy;
+mod situation;
 mod source;
 
 #[cfg(test)]
@@ -26,6 +27,8 @@ mod model_tests;
 mod outcome_tests;
 #[cfg(test)]
 mod policy_tests;
+#[cfg(test)]
+mod situation_tests;
 #[cfg(test)]
 mod tests;
 
@@ -50,6 +53,10 @@ pub use outcome::{
 pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
     ReferencePolicyDecision, evaluate_unknown_presence, publish_reference_event,
+};
+pub use situation::{
+    ReferenceSituation, ReferenceSituationRequest, compile_reference_situation,
+    seal_reference_handoff,
 };
 pub use source::{
     MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, generate_source,
