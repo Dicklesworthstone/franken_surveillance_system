@@ -35,6 +35,15 @@
       "raw_private_media": true
     }
   ],
+  "context_expansion_bindings": {
+    "legacy_slot_rule": "ContextItem.expansionHandles and SemanticCompressionReceipt.expansionHandles[].handle in the v1 wire schemas are stable expansion-slot identities, not self-authenticating semantic handles",
+    "reference_rule": "every slot is resolved by one SemanticHandleReference binding immutable subject digest, exact descriptor digest, ContractBasis digest, descriptor authority anchor, H-level, and ladder-policy digest",
+    "closure_rule": "the ContextExpansionBindingSet must equal the exact union of slots emitted by the ContextPack and SemanticCompressionReceipt; missing, duplicate, and unexpected bindings fail closed",
+    "catalog_rule": "the bound publication carries the exact descriptor revisions it uses and rejects both descriptor substitution and unused ambient descriptors",
+    "price_rule": "receipt-owned expansion slots repeat the descriptor-owned purpose and complete multidimensional cost exactly; a presentation surface cannot advertise a cheaper or semantically different expansion",
+    "anchor_rule": "a descriptor may not come from another site lineage or ledger epoch and may not be newer than the context-pack authority anchor",
+    "handoff_rule": "bound publication, binding-set, binding, reference, subject, descriptor, and ladder-policy digests are retained in the handoff child-root set"
+  },
   "authorization_order": [
     "exact descriptor and subject binding",
     "current descriptor revision",
@@ -83,10 +92,14 @@
     "immutable subject digest",
     "descriptor digest",
     "request digest",
-    "exact continuation cursor when richer material remains"
+    "exact continuation cursor when richer material remains",
+    "context expansion binding-set digest when a context pack exposes expansion slots"
   ],
   "schemas": [
     "schemas/semantic_handle.v1.json",
+    "schemas/semantic_handle_reference.v1.json",
+    "schemas/context_expansion_binding.v1.json",
+    "schemas/context_expansion_binding_set.v1.json",
     "schemas/semantic_hydration_artifact.v1.json",
     "schemas/semantic_hydration_request.v1.json",
     "schemas/semantic_hydration_receipt.v1.json",
@@ -97,7 +110,10 @@
       "immutable handle identity across descriptor revisions",
       "contiguous H-level ladder",
       "payload and descriptor tamper detection",
-      "exact cursor binding"
+      "exact cursor binding",
+      "complete context expansion slot closure",
+      "descriptor substitution and future-anchor rejection",
+      "receipt purpose and price agreement"
     ],
     "reference": [
       "deterministic retry",
@@ -109,7 +125,9 @@
       "expiry and deletion outcomes",
       "stale descriptor rejection",
       "handle-rebinding rejection",
-      "unrooted artifact rejection"
+      "unrooted artifact rejection",
+      "self-contained bound context publication",
+      "descriptor-rooted handoff closure"
     ]
   },
   "release_authority": "local DSR qualification; hosted workflows are supplementary"
