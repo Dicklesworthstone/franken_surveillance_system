@@ -1,0 +1,237 @@
+name: harden-fss-210-receipts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/harden-fss-210-receipts.yml
+
+permissions:
+  contents: write
+
+jobs:
+  harden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Rebase and harden receipt verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "fss-qualification-bot"
+          git config user.email "fss-qualification-bot@users.noreply.github.com"
+          git pull --rebase origin main
+          python3 - <<'PY'
+          from pathlib import Path
+
+          continuation_source = Path("crates/fss-core/src/continuation.rs").read_text()
+          if "pub cursor_digest:" in continuation_source:
+              parent_expr = "request.continuation.as_ref().map(|cursor| cursor.cursor_digest)"
+          elif "fn cursor_digest(" in continuation_source:
+              parent_expr = "request.continuation.as_ref().map(ContinuationCursor::cursor_digest)"
+          else:
+              raise SystemExit("ContinuationCursor exposes no exact digest")
+
+          receipt = Path("crates/fss-core/src/hydration/receipt.rs")
+          text = receipt.read_text()
+          availability_marker = "        match (\n            self.availability,"
+          if "let expected_availability = if request.issued_at >= handle.retention_until" not in text:
+              availability_check = '''        let expected_availability = if request.issued_at >= handle.retention_until {
+              HandleAvailability::Expired
+          } else {
+              handle.availability
+          };
+          if self.availability != expected_availability {
+              return Err(ContractError::DigestMismatch.into());
+          }
+'''
+              text = text.replace(availability_marker, availability_check + availability_marker, 1)
+
+          artifact_needle = "                    || !self.proof_roots.contains(&artifact.artifact_digest)"
+          artifact_checks = '''                    || !self.proof_roots.contains(&artifact.artifact_digest)
+                      || !self.proof_roots.contains(&handle.subject_digest)
+                      || (level < request.requested_level && !request.allow_lower_level)
+                      || (request.continuation.is_some() && level != request.requested_level)'''
+          if "request.continuation.is_some() && level != request.requested_level" not in text:
+              text = text.replace(artifact_needle, artifact_checks, 1)
+
+          cursor_needle = "                || cursor.position != u64::from(delivered.ordinal()) + 1"
+          cursor_checks = f'''                || cursor.position != u64::from(delivered.ordinal()) + 1
+                  || cursor.selection_witness != handle.ladder_policy_digest()
+                  || cursor.source_digest != handle.descriptor_digest
+                  || cursor.high_water_mark
+                      != u64::from(
+                          handle
+                              .maximum_level()
+                              .ok_or(HydrationError::LevelUnavailable)?
+                              .ordinal(),
+                      ) + 1
+                  || cursor.expires_at != handle.retention_until
+                  || cursor.previous_cursor_digest != {parent_expr}'''
+          if "cursor.selection_witness != handle.ladder_policy_digest()" not in text:
+              text = text.replace(cursor_needle, cursor_checks, 1)
+
+          continuation_presence_marker = "        if let Some(cursor) = &self.continuation {"
+          if "let richer_level_remains = self.delivered_level.is_some_and" not in text:
+              presence_check = '''        let richer_level_remains = self.delivered_level.is_some_and(|delivered| {
+              delivered
+                  .successor()
+                  .zip(handle.maximum_level())
+                  .is_some_and(|(next, maximum)| next <= maximum)
+          });
+          if self.availability == HandleAvailability::Available
+              && self.continuation.is_some() != richer_level_remains
+          {
+              return Err(ContractError::EvidenceRequired.into());
+          }
+'''
+              text = text.replace(
+                  continuation_presence_marker,
+                  presence_check + continuation_presence_marker,
+                  1,
+              )
+          receipt.write_text(text)
+
+          tests = Path("crates/fss-reference/src/hydration_tests.rs")
+          text = tests.read_text()
+          marker = "// FSS-210-RECEIPT-FORGERY-TESTS"
+          if marker not in text:
+              text += r'''
+
+          // FSS-210-RECEIPT-FORGERY-TESTS
+          #[test]
+          fn receipt_cannot_claim_available_after_retention_expiry() -> Result<(), Box<dyn Error>> {
+              let handle = make_handle(1, HandleAvailability::Available)?;
+              let artifact = HydrationArtifact::publish(
+                  HydrationLevel::H0,
+                  "application/fss+json",
+                  b"forged available artifact".to_vec(),
+                  [handle.subject_digest],
+                  Completeness::Complete,
+                  None,
+              )?;
+              let expired_request = request(
+                  &handle,
+                  HydrationLevel::H0,
+                  false,
+                  all_capabilities(HydrationLevel::H4),
+                  privacy(),
+                  ample_budget(),
+                  HydrationPurpose::IncidentAdjudication,
+                  None,
+                  handle.retention_until,
+              )?;
+              let forged = fss_core::HydrationReceipt::publish(
+                  fss_core::HydrationReceiptSpec {
+                      request_digest: expired_request.request_digest,
+                      handle_id: handle.handle_id.clone(),
+                      descriptor_digest: handle.descriptor_digest,
+                      subject_digest: handle.subject_digest,
+                      anchor: handle.anchor.clone(),
+                      requested_level: HydrationLevel::H0,
+                      delivered_level: Some(HydrationLevel::H0),
+                      availability: HandleAvailability::Available,
+                      cost: level_cost(HydrationLevel::H0),
+                      completeness: Completeness::Complete,
+                      artifact_digest: Some(artifact.artifact_digest),
+                      proof_roots: BTreeSet::from([
+                          handle.subject_digest,
+                          artifact.payload_digest,
+                          artifact.artifact_digest,
+                      ]),
+                      continuation: None,
+                      invalidators: BTreeSet::from(["invalidator:test".to_owned()]),
+                      issued_at: expired_request.issued_at,
+                  },
+              )?;
+              assert!(matches!(
+                  forged.validate_for(&expired_request, &handle, Some(&artifact)),
+                  Err(HydrationError::Contract(ContractError::DigestMismatch))
+              ));
+              Ok(())
+          }
+
+          #[test]
+          fn receipt_cannot_launder_lower_level_without_fallback_consent()
+          -> Result<(), Box<dyn Error>> {
+              let handle = make_handle(1, HandleAvailability::Available)?;
+              let artifact = HydrationArtifact::publish(
+                  HydrationLevel::H1,
+                  "application/fss+json",
+                  b"lower level artifact".to_vec(),
+                  [handle.subject_digest],
+                  Completeness::Complete,
+                  None,
+              )?;
+              let exact_request = request(
+                  &handle,
+                  HydrationLevel::H3,
+                  false,
+                  all_capabilities(HydrationLevel::H4),
+                  privacy(),
+                  ample_budget(),
+                  HydrationPurpose::IncidentAdjudication,
+                  None,
+                  TimestampNs(100),
+              )?;
+              let forged = fss_core::HydrationReceipt::publish(
+                  fss_core::HydrationReceiptSpec {
+                      request_digest: exact_request.request_digest,
+                      handle_id: handle.handle_id.clone(),
+                      descriptor_digest: handle.descriptor_digest,
+                      subject_digest: handle.subject_digest,
+                      anchor: handle.anchor.clone(),
+                      requested_level: HydrationLevel::H3,
+                      delivered_level: Some(HydrationLevel::H1),
+                      availability: HandleAvailability::Available,
+                      cost: level_cost(HydrationLevel::H1),
+                      completeness: Completeness::Partial,
+                      artifact_digest: Some(artifact.artifact_digest),
+                      proof_roots: BTreeSet::from([
+                          handle.subject_digest,
+                          artifact.payload_digest,
+                          artifact.artifact_digest,
+                      ]),
+                      continuation: None,
+                      invalidators: BTreeSet::from(["invalidator:test".to_owned()]),
+                      issued_at: exact_request.issued_at,
+                  },
+              )?;
+              assert!(matches!(
+                  forged.validate_for(&exact_request, &handle, Some(&artifact)),
+                  Err(HydrationError::Contract(ContractError::DigestMismatch))
+              ));
+              Ok(())
+          }
+          '''
+              tests.write_text(text)
+          PY
+          cargo fmt --all
+      - name: Qualify hardened workspace
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --workspace --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          scripts/qualify.sh --lane policy --no-receipt
+      - name: Commit hardening and remove temporary workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f \
+            .github/workflows/mark-fss-210.yml \
+            .github/workflows/validate-fss-210.yml \
+            .github/workflows/normalize-fss-210-api.yml \
+            .github/workflows/repair-fss-210.yml \
+            .github/workflows/finalize-fss-210-reference.yml \
+            .github/workflows/harden-fss-210-receipts.yml
+          python3 scripts/generate-manifest.py
+          scripts/qualify.sh --lane full --no-receipt
+          git add -A
+          git commit -m "fix(agent): harden semantic hydration receipt proofs"
+          git push origin HEAD:main
