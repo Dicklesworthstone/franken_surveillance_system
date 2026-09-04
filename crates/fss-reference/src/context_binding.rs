@@ -210,6 +210,8 @@ impl BoundReferenceSituationPublication {
             &self.publication.compression_receipt,
             &self.descriptors,
         )?;
+        self.expansion_bindings
+            .validate_receipt_metadata(&self.publication.compression_receipt)?;
 
         let required_descriptors: BTreeSet<_> = self
             .expansion_bindings
