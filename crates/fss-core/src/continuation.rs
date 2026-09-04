@@ -20,6 +20,8 @@ pub enum ContinuationScope {
     HandoffHydration,
     /// A bounded investigation-result stream.
     Investigation,
+    /// Progressive evidence levels for one immutable semantic handle.
+    EvidenceHydration,
 }
 
 impl ContinuationScope {
@@ -32,6 +34,7 @@ impl ContinuationScope {
             Self::FollowStream => "follow_stream",
             Self::HandoffHydration => "handoff_hydration",
             Self::Investigation => "investigation",
+            Self::EvidenceHydration => "evidence_hydration",
         }
     }
 }
@@ -137,7 +140,7 @@ pub struct ContinuationCursor {
     pub predecessor_digest: Option<ContentDigest>,
     /// Deterministic issue time.
     pub issued_at: TimestampNs,
-    /// Expiry time after which rebasing is required.
+    /// Exclusive expiry time at which rebasing becomes required.
     pub expires_at: TimestampNs,
     /// Digest of the complete cursor body.
     pub cursor_digest: ContentDigest,
@@ -205,7 +208,7 @@ impl ContinuationCursor {
         if now < self.issued_at {
             return Err(ContractError::InvertedTimeInterval.into());
         }
-        if now > self.expires_at {
+        if now >= self.expires_at {
             return Err(ContinuationError::Expired);
         }
         Ok(())
@@ -236,9 +239,11 @@ impl ContinuationCursor {
         if new_resume_anchor.site_lineage != self.resume_anchor.site_lineage
             || new_resume_anchor.ledger_epoch != self.resume_anchor.ledger_epoch
             || new_position > self.upper_bound
+            || new_position < self.position
+            || expires_at > self.expires_at
             || new_resume_anchor.commit_sequence < self.resume_anchor.commit_sequence
             || (new_resume_anchor.commit_sequence == self.resume_anchor.commit_sequence
-                && new_position <= self.position)
+                && (new_resume_anchor != self.resume_anchor || new_position == self.position))
         {
             return Err(if new_position > self.upper_bound {
                 ContinuationError::OutOfRange
@@ -272,6 +277,8 @@ impl ContinuationCursor {
             || self.basis_anchor.site_lineage != self.resume_anchor.site_lineage
             || self.basis_anchor.ledger_epoch != self.resume_anchor.ledger_epoch
             || self.resume_anchor.commit_sequence < self.basis_anchor.commit_sequence
+            || (self.resume_anchor.commit_sequence == self.basis_anchor.commit_sequence
+                && self.resume_anchor != self.basis_anchor)
             || self.expires_at <= self.issued_at
         {
             return Err(ContractError::InvalidAnchorSuccessor.into());
@@ -426,7 +433,7 @@ impl ContinuationStream {
 
     /// Returns the exact initial cursor.
     pub fn initial_cursor(&self) -> Result<ContinuationCursor, ContinuationError> {
-        self.validate_body()?;
+        self.verify()?;
         ContinuationCursor::publish(
             self.scope,
             self.stream_id.clone(),
@@ -451,7 +458,7 @@ impl ContinuationStream {
         cursor: &ContinuationCursor,
         now: TimestampNs,
     ) -> Result<ContinuationPage, ContinuationError> {
-        self.validate_body()?;
+        self.verify()?;
         cursor.validate_at(now)?;
         if cursor.scope != self.scope
             || cursor.stream_id != self.stream_id
@@ -463,6 +470,8 @@ impl ContinuationStream {
             || cursor.source_digest != self.source_digest
             || cursor.upper_bound != self.entries.len() as u64
             || cursor.selection_witness != self.selection_witness
+            || cursor.issued_at != self.issued_at
+            || cursor.expires_at != self.expires_at
         {
             return Err(ContinuationError::WrongStream);
         }
@@ -636,7 +645,7 @@ mod tests {
         let replay = stream.read_page(&cursor, TimestampNs(20))?;
         assert_eq!(first, replay);
         assert_eq!(first.entries.len(), 2);
-        let next = first.next_cursor.ok_or(ContinuationError::OutOfRange)?;
+        let next = first.next_cursor.clone().ok_or(ContinuationError::OutOfRange)?;
         assert_eq!(next.predecessor_digest, Some(cursor.cursor_digest));
         let terminal = stream.read_page(&next, TimestampNs(20))?;
         assert_eq!(terminal.entries.len(), 1);
@@ -699,5 +708,84 @@ mod tests {
             RecoveryClass::RebaseRequired
         );
         Ok(())
+    }
+
+    #[test]
+    fn source_mutation_cannot_be_hidden_behind_an_old_root() -> Result<(), ContinuationError> {
+        let mut stream = stream()?;
+        let cursor = stream.initial_cursor()?;
+        stream.entries[0].payload_digest = ContentDigest::sha256(b"substituted");
+        assert_eq!(
+            stream.initial_cursor(),
+            Err(ContinuationError::Contract(ContractError::DigestMismatch))
+        );
+        assert_eq!(
+            stream.read_page(&cursor, TimestampNs(20)),
+            Err(ContinuationError::Contract(ContractError::DigestMismatch))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn expiry_is_exclusive_and_cannot_be_extended() -> Result<(), ContinuationError> {
+        let stream = stream()?;
+        let cursor = stream.initial_cursor()?;
+        assert_eq!(
+            cursor.validate_at(TimestampNs(100)),
+            Err(ContinuationError::Expired)
+        );
+        assert_eq!(
+            cursor.advance(
+                1,
+                cursor.resume_anchor.clone(),
+                cursor.selection_witness,
+                TimestampNs(20),
+                TimestampNs(101),
+            ),
+            Err(ContinuationError::NonMonotone)
+        );
+        let mut forged = cursor;
+        forged.expires_at = TimestampNs(200);
+        forged.cursor_digest = forged.computed_digest();
+        forged.cursor_id = format!("continuation:{}", forged.cursor_digest);
+        assert_eq!(
+            stream.read_page(&forged, TimestampNs(101)),
+            Err(ContinuationError::WrongStream)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn advancing_authority_cannot_rewind_position() -> Result<(), ContinuationError> {
+        let stream = stream()?;
+        let initial = stream.initial_cursor()?;
+        let cursor = initial.advance(
+            2,
+            initial.resume_anchor.clone(),
+            initial.selection_witness,
+            TimestampNs(20),
+            TimestampNs(100),
+        )?;
+        let mut later_anchor = cursor.resume_anchor.clone();
+        later_anchor.commit_sequence += 1;
+        assert_eq!(
+            cursor.advance(
+                1,
+                later_anchor,
+                cursor.selection_witness,
+                TimestampNs(30),
+                TimestampNs(100),
+            ),
+            Err(ContinuationError::NonMonotone)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn hydration_scope_has_its_registered_spelling() {
+        assert_eq!(
+            ContinuationScope::EvidenceHydration.as_str(),
+            "evidence_hydration"
+        );
     }
 }
