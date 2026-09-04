@@ -1,7 +1,7 @@
 //! Deterministic virtual-camera source truth.
 
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, CaptureInterval, CapsuleId, ContentDigest, SensorId,
+    CanonicalEncode, CanonicalEncoder, CapsuleId, CaptureInterval, ContentDigest, SensorId,
     TimestampNs,
 };
 
@@ -80,10 +80,7 @@ struct SourcePacketSummary {
 }
 
 impl SourceTrace {
-    pub(crate) fn from_packets(
-        spec: &VirtualCameraSpec,
-        packets: &[SourcePacket],
-    ) -> Self {
+    pub(crate) fn from_packets(spec: &VirtualCameraSpec, packets: &[SourcePacket]) -> Self {
         Self {
             sensor_id: spec.sensor_id.clone(),
             capture_id: spec.capture_id.clone(),
@@ -120,9 +117,7 @@ pub fn generate_source(spec: &VirtualCameraSpec) -> Result<Vec<SourcePacket>, Re
     let sensor_hash = ContentDigest::sha256(spec.sensor_id.as_str().as_bytes()).bytes();
     let mut prefix = [0_u8; 8];
     prefix.copy_from_slice(&sensor_hash[..8]);
-    let mut state = spec.seed
-        ^ u64::from_be_bytes(prefix)
-        ^ 0x9e37_79b9_7f4a_7c15_u64;
+    let mut state = spec.seed ^ u64::from_be_bytes(prefix) ^ 0x9e37_79b9_7f4a_7c15_u64;
     if state == 0 {
         state = 0xd1b5_4a32_d192_ed03_u64;
     }

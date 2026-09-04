@@ -146,8 +146,11 @@ pub fn publish_reference_alert_outcome(
     if let Some(proof) = proof_object_digest {
         children.push(proof);
     }
-    let outcome_manifest =
-        ObjectManifest::new("alert-effect-outcome", children, Some(outcome_object_digest))?;
+    let outcome_manifest = ObjectManifest::new(
+        "alert-effect-outcome",
+        children,
+        Some(outcome_object_digest),
+    )?;
     let outcome_root = outcome_manifest.root();
     let effect_object_id = ObjectId::parse(format!(
         "object:effect:{}",

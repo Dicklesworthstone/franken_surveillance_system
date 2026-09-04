@@ -138,9 +138,8 @@ impl EvidenceLedger {
         writer.push_u64(sequence);
         writer.push_u64(observed_at);
         writer.push_u8(kind.code());
-        writer.push_u64(
-            u64::try_from(source_digests.len()).map_err(|_| DigestError::FieldTooLarge)?,
-        );
+        writer
+            .push_u64(u64::try_from(source_digests.len()).map_err(|_| DigestError::FieldTooLarge)?);
         for digest in &source_digests {
             writer.push_digest(*digest);
         }
@@ -443,7 +442,8 @@ pub fn assess_event(
         supporting_observations.sort_unstable();
         supporting_observations.dedup();
     }
-    let independent_failure_domains: Vec<String> = domains.keys().map(|value| (*value).to_owned()).collect();
+    let independent_failure_domains: Vec<String> =
+        domains.keys().map(|value| (*value).to_owned()).collect();
     let mut writer = CanonicalWriter::new("fss-event-assessment-v1")?;
     writer.push_u64(window_start);
     writer.push_u64(window_end);
@@ -460,8 +460,7 @@ pub fn assess_event(
         writer.push_digest(*digest);
     }
     writer.push_u64(
-        u64::try_from(independent_failure_domains.len())
-            .map_err(|_| DigestError::FieldTooLarge)?,
+        u64::try_from(independent_failure_domains.len()).map_err(|_| DigestError::FieldTooLarge)?,
     );
     for domain in &independent_failure_domains {
         writer.push_str(domain)?;
@@ -531,16 +530,14 @@ mod tests {
         ];
         let coverage = CoverageCertificate::build(&required, &complete, 0, 10).expect("coverage");
         let anchor = EvidenceLedger::default().anchor();
-        certify_absence(ObservationClass::UnknownPerson, coverage, &[], anchor)
-            .expect("absence");
+        certify_absence(ObservationClass::UnknownPerson, coverage, &[], anchor).expect("absence");
     }
 
     #[test]
     fn observed_presence_blocks_absence_certificate() {
         let required = BTreeSet::from(["cam-a".to_owned()]);
-        let intervals = vec![
-            CoverageInterval::new("cam-a", "power-a", 0, 10, true).expect("interval")
-        ];
+        let intervals =
+            vec![CoverageInterval::new("cam-a", "power-a", 0, 10, true).expect("interval")];
         let coverage = CoverageCertificate::build(&required, &intervals, 0, 10).expect("coverage");
         let observations = vec![observation(
             "cam-a",

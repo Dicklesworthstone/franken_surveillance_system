@@ -22,9 +22,7 @@ mod open_preflight_tests;
 mod tests;
 
 pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
-pub use durable::{
-    DurableAppendReconciliation, DurableLedgerError, DurableReferenceLedger,
-};
+pub use durable::{DurableAppendReconciliation, DurableLedgerError, DurableReferenceLedger};
 pub use error::{AppendPhase, CorruptionKind, JournalError};
 pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
 pub use recovery::{JournalRecord, RecoveryReport, inspect};

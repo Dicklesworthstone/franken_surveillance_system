@@ -3,7 +3,7 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    AffordanceClass, CaptureInterval, CapsuleId, Completeness, ContractBasis, ContractError,
+    AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContractBasis, ContractError,
     EffectJournal, EventId, HandoffId, IdempotencyKey, KnowledgeState, MissionId, ObligationId,
     OperationId, PrincipalId, ProbabilityInterval, SensorId, SessionId, TimestampNs,
 };
@@ -109,8 +109,7 @@ impl SituationHarness {
             EventId::parse(format!("event:situation:{name}"))?,
             observations,
         )?;
-        let receipt =
-            publish_reference_event(&decision, &mut self.objects, &mut self.authority)?;
+        let receipt = publish_reference_event(&decision, &mut self.objects, &mut self.authority)?;
         Ok((decision, receipt))
     }
 
@@ -161,7 +160,8 @@ fn request<'a>(
 }
 
 #[test]
-fn corroborated_projection_is_deterministic_and_capability_explicit() -> Result<(), Box<dyn Error>> {
+fn corroborated_projection_is_deterministic_and_capability_explicit() -> Result<(), Box<dyn Error>>
+{
     let mut harness = SituationHarness::new("deterministic")?;
     let (decision, event_receipt) = harness.publish_decision(
         "deterministic",
@@ -223,10 +223,7 @@ fn rejected_candidate_preserves_uncertified_absence_world() -> Result<(), Box<dy
         request(
             &decision,
             &event_receipt,
-            capabilities(&[
-                "capability:evidence.query",
-                "capability:session.wait",
-            ]),
+            capabilities(&["capability:evidence.query", "capability:session.wait"]),
         )?,
         &harness.authority,
     )?;
@@ -417,17 +414,12 @@ fn canonical_effect_outcome_cannot_be_omitted_from_projection() -> Result<(), Bo
 #[test]
 fn stale_previous_anchor_is_rejected() -> Result<(), Box<dyn Error>> {
     let mut harness = SituationHarness::new("stale")?;
-    let (decision, event_receipt) = harness.publish_decision(
-        "stale",
-        &[(MockSemanticLabel::AnimalLike, "power:alpha")],
-    )?;
+    let (decision, event_receipt) =
+        harness.publish_decision("stale", &[(MockSemanticLabel::AnimalLike, "power:alpha")])?;
     let mut compile_request = request(
         &decision,
         &event_receipt,
-        capabilities(&[
-            "capability:evidence.query",
-            "capability:session.wait",
-        ]),
+        capabilities(&["capability:evidence.query", "capability:session.wait"]),
     )?;
     compile_request.previous_anchor = Some(harness.authority.current().anchor.clone());
     assert!(matches!(

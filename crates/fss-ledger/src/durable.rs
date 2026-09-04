@@ -193,9 +193,7 @@ impl DurableReferenceLedger {
         deltas: Vec<EvidenceDelta>,
         child_roots: impl IntoIterator<Item = ContentDigest>,
     ) -> Result<EvidenceDeltaBatch, DurableLedgerError> {
-        Ok(self
-            .ledger
-            .prepare_batch(batch_id, deltas, child_roots)?)
+        Ok(self.ledger.prepare_batch(batch_id, deltas, child_roots)?)
     }
 
     /// Validates, durably commits, then exposes one evidence batch.
@@ -245,10 +243,7 @@ impl DurableReferenceLedger {
         &mut self,
         tail_policy: IncompleteTailPolicy,
     ) -> Result<DurableAppendReconciliation, DurableLedgerError> {
-        let pending = self
-            .pending
-            .take()
-            .ok_or(JournalError::NoPendingAppend)?;
+        let pending = self.pending.take().ok_or(JournalError::NoPendingAppend)?;
         match self.journal.reconcile_pending(tail_policy) {
             Ok(AppendReconciliation::Committed(_record)) => {
                 self.ledger = pending.candidate;

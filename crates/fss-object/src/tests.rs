@@ -30,7 +30,10 @@ fn manifest_is_order_independent_and_root_last() -> Result<(), Box<dyn Error>> {
     let manifest_b = ObjectManifest::new("event", [first, second], None)?;
     assert_eq!(manifest_a, manifest_b);
     assert_eq!(manifest_a.root(), manifest_b.root());
-    assert_eq!(manifest_a.children(), &[first.min(second), first.max(second)]);
+    assert_eq!(
+        manifest_a.children(),
+        &[first.min(second), first.max(second)]
+    );
 
     let receipt = store.publish_manifest(manifest_a.clone())?;
     assert_eq!(receipt.root, manifest_a.root());
@@ -118,7 +121,8 @@ fn verified_corruption_is_detected_on_read_and_closure() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn nested_manifest_closure_includes_metadata_without_double_counting() -> Result<(), Box<dyn Error>> {
+fn nested_manifest_closure_includes_metadata_without_double_counting() -> Result<(), Box<dyn Error>>
+{
     let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 8192));
     let leaf = store.put_verified(b"leaf")?;
     let metadata = store.put_verified(b"meta")?;

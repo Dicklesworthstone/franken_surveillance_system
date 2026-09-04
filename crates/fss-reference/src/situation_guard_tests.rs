@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    CaptureInterval, CapsuleId, Completeness, ContractBasis, EffectJournal, EffectState, EventId,
+    CapsuleId, CaptureInterval, Completeness, ContractBasis, EffectJournal, EffectState, EventId,
     IdempotencyKey, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
     SensorId, SessionId, TimestampNs,
 };
@@ -51,12 +51,8 @@ impl GuardHarness {
         let mut observations = Vec::new();
         for (index, domain) in ["power:alpha", "power:beta"].iter().enumerate() {
             let spec = VirtualCameraSpec {
-                capture_id: CapsuleId::parse(format!(
-                    "capture:situation-guard:{name}:{index}"
-                ))?,
-                sensor_id: SensorId::parse(format!(
-                    "sensor:situation-guard:{name}:{index}"
-                ))?,
+                capture_id: CapsuleId::parse(format!("capture:situation-guard:{name}:{index}"))?,
+                sensor_id: SensorId::parse(format!("sensor:situation-guard:{name}:{index}"))?,
                 seed: 71 + index as u64,
                 packet_count: 3,
                 packet_bytes: 32,
@@ -99,8 +95,7 @@ impl GuardHarness {
             EventId::parse(format!("event:situation-guard:{name}"))?,
             observations,
         )?;
-        let receipt =
-            publish_reference_event(&decision, &mut self.objects, &mut self.authority)?;
+        let receipt = publish_reference_event(&decision, &mut self.objects, &mut self.authority)?;
         Ok((decision, receipt))
     }
 
@@ -237,7 +232,11 @@ fn exact_prepared_receipt_preserves_commit() -> Result<(), Box<dyn Error>> {
             .iter()
             .any(|affordance| affordance.operation == "commit")
     );
-    assert!(situation.proof_roots.contains(&operation_receipt.receipt_digest()));
+    assert!(
+        situation
+            .proof_roots
+            .contains(&operation_receipt.receipt_digest())
+    );
     harness.cleanup();
     Ok(())
 }

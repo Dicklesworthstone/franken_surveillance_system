@@ -53,10 +53,7 @@ fn identity_capture_links_source_delivery_custody_and_authority() -> Result<(), 
 
     let batch = &ledger.batches()[0];
     assert_eq!(batch.children, vec![capture.receipt.capture_root]);
-    assert_eq!(
-        batch.deltas[0].payload_digest,
-        capture.receipt.capture_root
-    );
+    assert_eq!(batch.deltas[0].payload_digest, capture.receipt.capture_root);
     assert_eq!(
         batch.deltas[0].witness_digest,
         Some(capture.receipt.continuity_digest)
@@ -123,25 +120,20 @@ fn repeated_runs_are_semantically_identical() -> Result<(), Box<dyn Error>> {
     ])?;
 
     let mut first_objects = InMemoryObjectStore::new(ObjectLimits::new(128, 1024 * 1024));
-    let mut first_ledger = DurableReferenceLedger::open(
-        &first_path,
-        "site:reference",
-        IncompleteTailPolicy::Reject,
-    )?;
-    let first =
-        run_reference_capture(&spec, &plan, &mut first_objects, &mut first_ledger)?;
+    let mut first_ledger =
+        DurableReferenceLedger::open(&first_path, "site:reference", IncompleteTailPolicy::Reject)?;
+    let first = run_reference_capture(&spec, &plan, &mut first_objects, &mut first_ledger)?;
 
     let mut second_objects = InMemoryObjectStore::new(ObjectLimits::new(128, 1024 * 1024));
-    let mut second_ledger = DurableReferenceLedger::open(
-        &second_path,
-        "site:reference",
-        IncompleteTailPolicy::Reject,
-    )?;
-    let second =
-        run_reference_capture(&spec, &plan, &mut second_objects, &mut second_ledger)?;
+    let mut second_ledger =
+        DurableReferenceLedger::open(&second_path, "site:reference", IncompleteTailPolicy::Reject)?;
+    let second = run_reference_capture(&spec, &plan, &mut second_objects, &mut second_ledger)?;
 
     assert_eq!(first, second);
-    assert_eq!(first_ledger.current().anchor, second_ledger.current().anchor);
+    assert_eq!(
+        first_ledger.current().anchor,
+        second_ledger.current().anchor
+    );
     assert_eq!(first_ledger.batches(), second_ledger.batches());
 
     let _ = fs::remove_file(first_path);

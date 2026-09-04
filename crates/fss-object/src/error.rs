@@ -59,7 +59,10 @@ impl fmt::Display for ObjectError {
                 write!(formatter, "object size {length} exceeds maximum {maximum}")
             }
             Self::ObjectCountLimit { current, maximum } => {
-                write!(formatter, "object count {current} reached maximum {maximum}")
+                write!(
+                    formatter,
+                    "object count {current} reached maximum {maximum}"
+                )
             }
             Self::ByteQuotaExceeded {
                 current,

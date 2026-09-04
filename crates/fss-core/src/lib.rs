@@ -22,8 +22,8 @@ mod projection;
 mod time;
 
 pub use agent::{
-    ActionAffordance, AffordanceClass, ContractBasis, HandoffCapsule, KnowledgeCell,
-    PossibleWorld, SituationCapsule, SituationFrame, WorldEnvelope,
+    ActionAffordance, AffordanceClass, ContractBasis, HandoffCapsule, KnowledgeCell, PossibleWorld,
+    SituationCapsule, SituationFrame, WorldEnvelope,
 };
 pub use canonical::{CanonicalEncode, CanonicalEncoder};
 pub use compression::SemanticCompressionReceipt;
@@ -32,16 +32,12 @@ pub use contract::{
     BudgetVector, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
     KnowledgeState, Plane, ProvenanceClass, RecoveryClass, RuntimeOutcome,
 };
-pub use delta::{
-    DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate,
-};
+pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, sha256};
 pub use effect::{
     EffectIntent, EffectJournal, EffectState, Obligation, ObligationState, OperationReceipt,
 };
-pub use event::{
-    EventEvidence, EventHypothesis, EventKind, EventState, ProbabilityInterval,
-};
+pub use event::{EventEvidence, EventHypothesis, EventKind, EventState, ProbabilityInterval};
 pub use evidence::{
     ClockBasis, CoverageContinuity, CoverageStopReason, CoverageWitness, EvidenceDelta,
     EvidenceDeltaBatch, LedgerAnchor, LedgerSnapshot, ObjectRevision, ReferenceLedger,
@@ -54,7 +50,7 @@ pub use ids::{
 pub use projection::{
     BranchCondition, CompressionCompleteness, CompressionLossClass, CompressionStopReason,
     CompressionTransform, CompressionTransformKind, ContextItem, ControlEnvelope,
-    CriticalPreservation, ExpansionHandle, ResourcePressure, ResourceState,
-    SemanticContextPack, reference_token_count,
+    CriticalPreservation, ExpansionHandle, ResourcePressure, ResourceState, SemanticContextPack,
+    reference_token_count,
 };
 pub use time::{CaptureInterval, TimestampNs};

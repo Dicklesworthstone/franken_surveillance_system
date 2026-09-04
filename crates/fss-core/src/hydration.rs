@@ -210,8 +210,8 @@ fn validate_contiguous_levels(levels: &BTreeSet<HydrationLevel>) -> Result<(), H
         return Err(HydrationError::LevelUnavailable);
     };
     for ordinal in 0..=maximum.ordinal() {
-        let level = HydrationLevel::from_ordinal(ordinal)
-            .ok_or(HydrationError::LevelUnavailable)?;
+        let level =
+            HydrationLevel::from_ordinal(ordinal).ok_or(HydrationError::LevelUnavailable)?;
         if !levels.contains(&level) {
             return Err(HydrationError::LevelUnavailable);
         }

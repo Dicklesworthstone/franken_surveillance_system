@@ -36,7 +36,10 @@ impl fmt::Display for ReferenceError {
                 write!(formatter, "invalid virtual-camera specification: {field}")
             }
             Self::UnknownSourceSequence(sequence) => {
-                write!(formatter, "delivery plan names unknown source sequence {sequence}")
+                write!(
+                    formatter,
+                    "delivery plan names unknown source sequence {sequence}"
+                )
             }
             Self::ArithmeticOverflow => formatter.write_str("reference arithmetic overflow"),
             Self::DigestMismatch => formatter.write_str("reference object digest mismatch"),

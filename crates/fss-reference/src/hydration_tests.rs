@@ -6,8 +6,8 @@ use fss_core::hydration::{
     HydrationRequest, HydrationRequestSpec, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
 };
 use fss_core::{
-    BudgetVector, Completeness, ContentDigest, ContractBasis, ContractError, LedgerAnchor, SessionId,
-    TimestampNs,
+    BudgetVector, Completeness, ContentDigest, ContractBasis, ContractError, LedgerAnchor,
+    SessionId, TimestampNs,
 };
 
 use crate::ReferenceHydrationCatalog;
@@ -196,7 +196,12 @@ fn exact_level_hydration_is_proof_bearing() -> Result<(), Box<dyn Error>> {
     assert_eq!(response.receipt.delivered_level, Some(HydrationLevel::H2));
     assert_eq!(response.receipt.completeness, Completeness::Complete);
     assert!(response.receipt.continuation.is_some());
-    assert!(response.receipt.proof_roots.contains(&descriptor.subject_digest));
+    assert!(
+        response
+            .receipt
+            .proof_roots
+            .contains(&descriptor.subject_digest)
+    );
     response.validate_for(&request, &descriptor)?;
     Ok(())
 }

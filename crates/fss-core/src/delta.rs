@@ -270,7 +270,9 @@ impl MeaningfulDelta {
         {
             return Err(ContractError::EvidenceRequired);
         }
-        if self.classes.contains(&MeaningfulDeltaClass::PlanInvalidation)
+        if self
+            .classes
+            .contains(&MeaningfulDeltaClass::PlanInvalidation)
             && self.invalidated_assumptions.is_empty()
         {
             return Err(ContractError::EvidenceRequired);
@@ -308,9 +310,7 @@ impl MeaningfulDelta {
     /// Returns true when any represented class is protected from coalescing or omission.
     #[must_use]
     pub fn is_non_coalescible(&self) -> bool {
-        self.classes
-            .iter()
-            .any(|class| class.is_non_coalescible())
+        self.classes.iter().any(|class| class.is_non_coalescible())
     }
 
     /// Returns whether two validated deltas may be combined without violating a hard clamp.

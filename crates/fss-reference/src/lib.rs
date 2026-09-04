@@ -75,8 +75,8 @@ pub use situation_guard::{
 pub use situation_sections::{
     ReferenceProjectionSpec, ReferenceSituationPublication,
     compile_reference_situation_publication,
-    compile_reference_situation_publication_with_operation_receipt,
-    project_reference_situation, seal_reference_publication_handoff,
+    compile_reference_situation_publication_with_operation_receipt, project_reference_situation,
+    seal_reference_publication_handoff,
 };
 pub use source::{
     MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, generate_source,

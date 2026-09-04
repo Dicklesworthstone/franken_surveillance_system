@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    CaptureInterval, CapsuleId, EffectJournal, EffectState, EventId, IdempotencyKey, ObligationId,
+    CapsuleId, CaptureInterval, EffectJournal, EffectState, EventId, IdempotencyKey, ObligationId,
     ObligationState, OperationId, ProbabilityInterval, SensorId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
@@ -192,13 +192,8 @@ fn lost_ack_blocks_resend_until_provider_reconciliation() -> Result<(), Box<dyn 
     ));
     assert_eq!(provider.message_count(), 1);
 
-    let reconciled = reconcile_reference_alert(
-        &plan,
-        TimestampNs(105),
-        &mut journal,
-        &provider,
-    )?
-    .ok_or(ReferenceError::InvalidSpec("missing_provider_proof"))?;
+    let reconciled = reconcile_reference_alert(&plan, TimestampNs(105), &mut journal, &provider)?
+        .ok_or(ReferenceError::InvalidSpec("missing_provider_proof"))?;
     assert_eq!(reconciled.state, EffectState::Verified);
     assert_eq!(provider.message_count(), 1);
 

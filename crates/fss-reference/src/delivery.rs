@@ -113,8 +113,10 @@ impl DeliveryPlan {
         &self,
         source: &[SourcePacket],
     ) -> Result<(Vec<DeliveryPacket>, DeliveryContinuity), ReferenceError> {
-        let source_by_sequence: BTreeMap<_, _> =
-            source.iter().map(|packet| (packet.sequence, packet)).collect();
+        let source_by_sequence: BTreeMap<_, _> = source
+            .iter()
+            .map(|packet| (packet.sequence, packet))
+            .collect();
         let mut deliveries = Vec::with_capacity(self.directives.len());
         let mut counts = BTreeMap::<u64, u64>::new();
         let mut first_seen = BTreeSet::new();
@@ -165,9 +167,7 @@ impl DeliveryPlan {
             .filter_map(|(sequence, count)| (*count > 1).then_some(*sequence))
             .collect();
         let corrupted_sequences: Vec<_> = corrupted.into_iter().collect();
-        let reordered = first_seen_order
-            .windows(2)
-            .any(|pair| pair[0] >= pair[1]);
+        let reordered = first_seen_order.windows(2).any(|pair| pair[0] >= pair[1]);
         let delivered_count =
             u64::try_from(deliveries.len()).map_err(|_| ReferenceError::ArithmeticOverflow)?;
         let exact_once_ordered = missing_sequences.is_empty()

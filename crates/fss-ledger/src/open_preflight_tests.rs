@@ -13,10 +13,7 @@ use crate::{
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "fss-ledger-{}-{name}.journal",
-        std::process::id()
-    ))
+    std::env::temp_dir().join(format!("fss-ledger-{}-{name}.journal", std::process::id()))
 }
 
 fn append_torn_suffix(path: &std::path::Path) -> Result<u64, Box<dyn Error>> {

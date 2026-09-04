@@ -108,7 +108,10 @@ impl fmt::Display for JournalError {
                 write!(formatter, "journal has incomplete tail at byte {offset}")
             }
             Self::PayloadTooLarge { length, maximum } => {
-                write!(formatter, "journal payload {length} exceeds maximum {maximum}")
+                write!(
+                    formatter,
+                    "journal payload {length} exceeds maximum {maximum}"
+                )
             }
             Self::SequenceExhausted => formatter.write_str("journal sequence space exhausted"),
             Self::AppendIndeterminate {
@@ -143,10 +146,7 @@ impl fmt::Display for JournalError {
 impl Error for JournalError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Io(error)
-            | Self::AppendIndeterminate {
-                source: error, ..
-            } => Some(error),
+            Self::Io(error) | Self::AppendIndeterminate { source: error, .. } => Some(error),
             _ => None,
         }
     }

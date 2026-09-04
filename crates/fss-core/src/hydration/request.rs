@@ -120,8 +120,14 @@ impl HydrationRequest {
         if self.contract_basis.semantic_protocol != "fss/1"
             || !valid_text(&self.handle_id)
             || !self.budget.is_valid()
-            || self.available_capabilities.iter().any(|value| !valid_text(value))
-            || self.authorized_privacy_classes.iter().any(|value| !valid_text(value))
+            || self
+                .available_capabilities
+                .iter()
+                .any(|value| !valid_text(value))
+            || self
+                .authorized_privacy_classes
+                .iter()
+                .any(|value| !valid_text(value))
         {
             return Err(ContractError::EvidenceRequired.into());
         }

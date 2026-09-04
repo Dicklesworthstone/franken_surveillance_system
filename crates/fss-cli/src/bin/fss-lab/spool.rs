@@ -274,7 +274,9 @@ mod tests {
     fn corruption_prevents_verification_and_reads() {
         let mut spool = SourceSpool::default();
         let staged = SourceKey::new("cam-a", 1);
-        spool.stage(staged.clone(), b"frame".to_vec()).expect("stage");
+        spool
+            .stage(staged.clone(), b"frame".to_vec())
+            .expect("stage");
         spool.inject_corruption(&staged).expect("corrupt");
         assert!(matches!(spool.verify(&staged), Err(SpoolError::Corrupt(_))));
 
@@ -283,7 +285,10 @@ mod tests {
             .ingest(published.clone(), b"frame-two".to_vec())
             .expect("ingest");
         spool.inject_corruption(&published).expect("corrupt");
-        assert!(matches!(spool.read(&published), Err(SpoolError::Corrupt(_))));
+        assert!(matches!(
+            spool.read(&published),
+            Err(SpoolError::Corrupt(_))
+        ));
     }
 
     #[test]

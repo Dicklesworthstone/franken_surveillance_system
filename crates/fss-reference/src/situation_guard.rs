@@ -70,9 +70,10 @@ pub fn compile_reference_situation_with_operation_receipt(
         .cloned()
         .ok_or(ReferenceError::InvalidSpec("situation_effect_basis"))?;
     validate_operation_receipt(operation_receipt, &plan)?;
-    if request.alert_outcome.is_some_and(|outcome| {
-        operation_receipt != &outcome.outcome.operation_receipt
-    }) {
+    if request
+        .alert_outcome
+        .is_some_and(|outcome| operation_receipt != &outcome.outcome.operation_receipt)
+    {
         return Err(ReferenceError::InvalidSpec(
             "situation_operation_receipt_mismatch",
         ));

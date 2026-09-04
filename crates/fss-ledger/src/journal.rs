@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 
 use fss_core::{ContentDigest, DigestAlgorithm, sha256};
 
+use crate::MAX_RECORD_PAYLOAD_BYTES;
 use crate::error::{AppendPhase, JournalError};
 use crate::format::{
     COMMIT_MAGIC, FORMAT_VERSION, HEADER_LEN, RECORD_MAGIC, TRAILER_LEN, record_root,
 };
 use crate::recovery::{JournalRecord, RecoveryReport, recover_bytes};
-use crate::MAX_RECORD_PAYLOAD_BYTES;
 
 /// Explicit policy for a validated incomplete final record.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -126,9 +126,7 @@ impl Journal {
     /// Sequence requiring reconciliation, if an append outcome is unresolved.
     #[must_use]
     pub fn pending_sequence(&self) -> Option<u64> {
-        self.pending
-            .as_ref()
-            .map(|pending| pending.record.sequence)
+        self.pending.as_ref().map(|pending| pending.record.sequence)
     }
 
     /// Appends and durably commits one record.
@@ -168,13 +166,7 @@ impl Journal {
                 maximum: MAX_RECORD_PAYLOAD_BYTES,
             })?;
         let payload_digest = sha256(payload);
-        let root = record_root(
-            sequence,
-            kind,
-            payload_len,
-            self.last_root,
-            payload_digest,
-        );
+        let root = record_root(sequence, kind, payload_len, self.last_root, payload_digest);
 
         let mut body = Vec::with_capacity(HEADER_LEN + payload.len());
         body.extend_from_slice(&RECORD_MAGIC);
@@ -190,13 +182,13 @@ impl Journal {
         trailer.extend_from_slice(&COMMIT_MAGIC);
         trailer.extend_from_slice(&root);
 
-        let encoded_len = body
-            .len()
-            .checked_add(trailer.len())
-            .ok_or(JournalError::PayloadTooLarge {
-                length: payload.len(),
-                maximum: MAX_RECORD_PAYLOAD_BYTES,
-            })?;
+        let encoded_len =
+            body.len()
+                .checked_add(trailer.len())
+                .ok_or(JournalError::PayloadTooLarge {
+                    length: payload.len(),
+                    maximum: MAX_RECORD_PAYLOAD_BYTES,
+                })?;
         let encoded_len =
             u64::try_from(encoded_len).map_err(|_| JournalError::PayloadTooLarge {
                 length: payload.len(),
@@ -265,10 +257,7 @@ impl Journal {
         &mut self,
         tail_policy: IncompleteTailPolicy,
     ) -> Result<AppendReconciliation, JournalError> {
-        let pending = self
-            .pending
-            .clone()
-            .ok_or(JournalError::NoPendingAppend)?;
+        let pending = self.pending.clone().ok_or(JournalError::NoPendingAppend)?;
 
         if let Err(source) = self.file.seek(SeekFrom::Start(0)) {
             return Err(self.indeterminate(AppendPhase::ReconcileRead, source));
@@ -307,10 +296,7 @@ impl Journal {
                 if let Err(source) = self.file.sync_all() {
                     return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
                 }
-                if let Err(source) = self
-                    .file
-                    .seek(SeekFrom::Start(pending.base_committed_len))
-                {
+                if let Err(source) = self.file.seek(SeekFrom::Start(pending.base_committed_len)) {
                     return Err(self.indeterminate(AppendPhase::ReconcileSeek, source));
                 }
                 self.pending = None;
@@ -347,8 +333,7 @@ impl Journal {
         if let Some(offset) = report.incomplete_tail {
             return Err(JournalError::IncompleteTail { offset });
         }
-        if report.last_root.bytes() != self.last_root
-            || report.committed_len != self.committed_len
+        if report.last_root.bytes() != self.last_root || report.committed_len != self.committed_len
         {
             return Err(JournalError::ExternalMutation {
                 expected_len: self.committed_len,

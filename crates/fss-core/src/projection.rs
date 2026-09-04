@@ -79,7 +79,10 @@ impl ResourceState {
         if !self.available.is_valid()
             || !self.reserved.is_valid()
             || !self.reserved.fits_within(self.available)
-            || self.degraded_dimensions.iter().any(|value| value.is_empty())
+            || self
+                .degraded_dimensions
+                .iter()
+                .any(|value| value.is_empty())
         {
             return Err(ContractError::BudgetExhausted);
         }
@@ -162,8 +165,7 @@ impl ControlEnvelope {
 
         for affordance in affordances {
             affordance.validate_against(worlds)?;
-            if affordance.affordance_id.is_empty()
-                || !seen.insert(affordance.affordance_id.clone())
+            if affordance.affordance_id.is_empty() || !seen.insert(affordance.affordance_id.clone())
             {
                 return Err(ContractError::NonCanonicalOrdering);
             }
@@ -177,18 +179,17 @@ impl ControlEnvelope {
                         .branch_predicate
                         .as_deref()
                         .ok_or(ContractError::EvidenceRequired)?;
-                    let condition_id = format!(
-                        "condition:{}",
-                        ContentDigest::sha256(predicate.as_bytes())
-                    );
-                    let branch = branches.entry(condition_id.clone()).or_insert_with(|| {
-                        BranchCondition {
-                            condition_id,
-                            world_ids: BTreeSet::new(),
-                            enabled_affordance_ids: BTreeSet::new(),
-                            disabled_affordance_ids: BTreeSet::new(),
-                        }
-                    });
+                    let condition_id =
+                        format!("condition:{}", ContentDigest::sha256(predicate.as_bytes()));
+                    let branch =
+                        branches
+                            .entry(condition_id.clone())
+                            .or_insert_with(|| BranchCondition {
+                                condition_id,
+                                world_ids: BTreeSet::new(),
+                                enabled_affordance_ids: BTreeSet::new(),
+                                disabled_affordance_ids: BTreeSet::new(),
+                            });
                     branch
                         .world_ids
                         .extend(affordance.supported_worlds.iter().cloned());
@@ -205,8 +206,7 @@ impl ControlEnvelope {
                     }
                 }
                 AffordanceClass::Probe => {
-                    information_gathering_affordance_ids
-                        .insert(affordance.affordance_id.clone());
+                    information_gathering_affordance_ids.insert(affordance.affordance_id.clone());
                 }
                 AffordanceClass::Wait => {
                     wait_affordance_ids.insert(affordance.affordance_id.clone());
@@ -264,8 +264,7 @@ impl ControlEnvelope {
 
         for affordance in affordances {
             affordance.validate_against(worlds)?;
-            if affordance.affordance_id.is_empty()
-                || !seen.insert(affordance.affordance_id.clone())
+            if affordance.affordance_id.is_empty() || !seen.insert(affordance.affordance_id.clone())
             {
                 return Err(ContractError::NonCanonicalOrdering);
             }
@@ -279,18 +278,17 @@ impl ControlEnvelope {
                         .branch_predicate
                         .as_deref()
                         .ok_or(ContractError::EvidenceRequired)?;
-                    let condition_id = format!(
-                        "condition:{}",
-                        ContentDigest::sha256(predicate.as_bytes())
-                    );
-                    let branch = branches.entry(condition_id.clone()).or_insert_with(|| {
-                        BranchCondition {
-                            condition_id,
-                            world_ids: BTreeSet::new(),
-                            enabled_affordance_ids: BTreeSet::new(),
-                            disabled_affordance_ids: BTreeSet::new(),
-                        }
-                    });
+                    let condition_id =
+                        format!("condition:{}", ContentDigest::sha256(predicate.as_bytes()));
+                    let branch =
+                        branches
+                            .entry(condition_id.clone())
+                            .or_insert_with(|| BranchCondition {
+                                condition_id,
+                                world_ids: BTreeSet::new(),
+                                enabled_affordance_ids: BTreeSet::new(),
+                                disabled_affordance_ids: BTreeSet::new(),
+                            });
                     branch
                         .world_ids
                         .extend(affordance.supported_worlds.iter().cloned());
@@ -307,8 +305,7 @@ impl ControlEnvelope {
                     }
                 }
                 AffordanceClass::Probe => {
-                    information_gathering_affordance_ids
-                        .insert(affordance.affordance_id.clone());
+                    information_gathering_affordance_ids.insert(affordance.affordance_id.clone());
                 }
                 AffordanceClass::Wait => {
                     wait_affordance_ids.insert(affordance.affordance_id.clone());
@@ -494,10 +491,7 @@ impl SemanticContextPack {
             || self.contract_basis.semantic_protocol != "fss/1"
             || self.items.is_empty()
             || self.items.len() > MAX_CONTEXT_ITEMS
-            || self
-                .continuation
-                .as_deref()
-                .is_some_and(str::is_empty)
+            || self.continuation.as_deref().is_some_and(str::is_empty)
             || self.token_count != reference_token_count(&self.items)
         {
             return Err(ContractError::EvidenceRequired);
@@ -817,11 +811,7 @@ impl SemanticCompressionReceipt {
             }
         }
         for transform in &self.transforms {
-            if transform.scope.is_empty()
-                || transform
-                    .details
-                    .as_deref()
-                    .is_some_and(str::is_empty)
+            if transform.scope.is_empty() || transform.details.as_deref().is_some_and(str::is_empty)
             {
                 return Err(ContractError::EvidenceRequired);
             }

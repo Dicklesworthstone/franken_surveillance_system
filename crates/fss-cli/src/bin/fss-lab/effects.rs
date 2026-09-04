@@ -113,7 +113,9 @@ impl fmt::Display for EffectError {
         match self {
             Self::Digest(error) => write!(formatter, "digest failure: {error}"),
             Self::EmptyIdentity(field) => write!(formatter, "{field} cannot be empty"),
-            Self::MissingOperation(key) => write!(formatter, "no effect uses idempotency key {key}"),
+            Self::MissingOperation(key) => {
+                write!(formatter, "no effect uses idempotency key {key}")
+            }
             Self::IdempotencyConflict(key) => write!(
                 formatter,
                 "idempotency key {key} was reused for a different effect"
@@ -139,7 +141,10 @@ impl fmt::Display for EffectError {
                 "effect {operation_id} is indeterminate and requires reconciliation before retry"
             ),
             Self::AttemptOverflow(operation_id) => {
-                write!(formatter, "effect {operation_id} exhausted its attempt counter")
+                write!(
+                    formatter,
+                    "effect {operation_id} exhausted its attempt counter"
+                )
             }
         }
     }

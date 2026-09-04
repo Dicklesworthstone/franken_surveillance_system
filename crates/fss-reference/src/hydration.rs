@@ -8,8 +8,8 @@ use fss_core::hydration::{
     LaboratoryAccess, SemanticHandle,
 };
 use fss_core::{
-    BudgetVector, Completeness, ContentDigest, ContinuationCursor, ContinuationScope, ContractError,
-    TimestampNs,
+    BudgetVector, Completeness, ContentDigest, ContinuationCursor, ContinuationScope,
+    ContractError, TimestampNs,
 };
 
 /// In-memory deterministic oracle for exact descriptor revisions and hydration artifacts.
@@ -42,10 +42,7 @@ impl ReferenceHydrationCatalog {
                 return Err(HydrationError::HandleRebound);
             }
         }
-        let key = (
-            descriptor.handle_id.clone(),
-            descriptor.descriptor_digest,
-        );
+        let key = (descriptor.handle_id.clone(), descriptor.descriptor_digest);
         match self.descriptors.get(&key) {
             Some(existing) if existing == &descriptor => return Ok(()),
             Some(_) => return Err(ContractError::DigestMismatch.into()),
@@ -67,17 +64,16 @@ impl ReferenceHydrationCatalog {
             .descriptors
             .get(&(handle_id.to_owned(), descriptor_digest))
             .ok_or(HydrationError::DescriptorNotFound)?;
-        if artifact.level > descriptor.maximum_level().ok_or(HydrationError::LevelUnavailable)?
+        if artifact.level
+            > descriptor
+                .maximum_level()
+                .ok_or(HydrationError::LevelUnavailable)?
             || !descriptor.levels.contains(&artifact.level)
             || !artifact.proof_roots.contains(&descriptor.subject_digest)
         {
             return Err(ContractError::EvidenceRequired.into());
         }
-        let key = (
-            handle_id.to_owned(),
-            descriptor_digest,
-            artifact.level,
-        );
+        let key = (handle_id.to_owned(), descriptor_digest, artifact.level);
         match self.artifacts.get(&key) {
             Some(existing) if existing == &artifact => return Ok(()),
             Some(_) => return Err(ContractError::DigestMismatch.into()),
@@ -136,8 +132,8 @@ impl ReferenceHydrationCatalog {
         };
         let mut selected = None;
         for ordinal in (minimum..=request.requested_level.ordinal()).rev() {
-            let level = HydrationLevel::from_ordinal(ordinal)
-                .ok_or(HydrationError::LevelUnavailable)?;
+            let level =
+                HydrationLevel::from_ordinal(ordinal).ok_or(HydrationError::LevelUnavailable)?;
             if !descriptor.levels.contains(&level) {
                 continue;
             }
@@ -150,9 +146,7 @@ impl ReferenceHydrationCatalog {
                 continue;
             };
             saw_level = true;
-            if level == HydrationLevel::H4
-                && !laboratory_access_permits(descriptor, request)
-            {
+            if level == HydrationLevel::H4 && !laboratory_access_permits(descriptor, request) {
                 saw_laboratory_denial = true;
                 continue;
             }
@@ -188,7 +182,8 @@ impl ReferenceHydrationCatalog {
             });
         };
 
-        let continuation = self.next_cursor(request, descriptor, &artifact, delivered_level, now)?;
+        let continuation =
+            self.next_cursor(request, descriptor, &artifact, delivered_level, now)?;
         let mut proof_roots = artifact.proof_roots.clone();
         proof_roots.insert(artifact.payload_digest);
         proof_roots.insert(artifact.artifact_digest);
@@ -285,10 +280,7 @@ fn validate_request_basis(
     Ok(())
 }
 
-fn effective_availability(
-    descriptor: &SemanticHandle,
-    now: TimestampNs,
-) -> HandleAvailability {
+fn effective_availability(descriptor: &SemanticHandle, now: TimestampNs) -> HandleAvailability {
     if now > descriptor.retention_until {
         HandleAvailability::Expired
     } else {
@@ -314,10 +306,7 @@ fn unavailable_response(
         cost: BudgetVector::default(),
         completeness: availability.unavailable_completeness(),
         artifact_digest: None,
-        proof_roots: BTreeSet::from([
-            descriptor.subject_digest,
-            descriptor.descriptor_digest,
-        ]),
+        proof_roots: BTreeSet::from([descriptor.subject_digest, descriptor.descriptor_digest]),
         continuation: None,
         invalidators: invalidators(descriptor, HydrationLevel::H0, request.requested_level),
         issued_at: now,
@@ -330,21 +319,19 @@ fn unavailable_response(
     Ok(response)
 }
 
-fn laboratory_access_permits(
-    descriptor: &SemanticHandle,
-    request: &HydrationRequest,
-) -> bool {
+fn laboratory_access_permits(descriptor: &SemanticHandle, request: &HydrationRequest) -> bool {
     match descriptor.laboratory_access {
         LaboratoryAccess::Unavailable => false,
-        LaboratoryAccess::QualificationOnly => {
-            request.purpose == HydrationPurpose::Qualification
-        }
+        LaboratoryAccess::QualificationOnly => request.purpose == HydrationPurpose::Qualification,
         LaboratoryAccess::QualificationOrDebugGrant => {
             request.purpose == HydrationPurpose::Qualification
                 || (request.purpose == HydrationPurpose::Debugging
-                    && descriptor.debug_capability.as_ref().is_some_and(|capability| {
-                        request.available_capabilities.contains(capability)
-                    }))
+                    && descriptor
+                        .debug_capability
+                        .as_ref()
+                        .is_some_and(|capability| {
+                            request.available_capabilities.contains(capability)
+                        }))
         }
     }
 }

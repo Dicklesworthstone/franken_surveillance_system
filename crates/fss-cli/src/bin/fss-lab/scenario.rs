@@ -224,8 +224,18 @@ impl ScenarioReport {
         push_json_field(&mut output, "scenario", self.scenario.as_str(), false);
         push_json_u64(&mut output, "anchor_sequence", self.anchor.sequence);
         push_json_u64(&mut output, "anchor_time", self.anchor.observed_at);
-        push_json_field(&mut output, "anchor_root", &self.anchor.root.to_hex(), false);
-        push_json_field(&mut output, "source_root", &self.source_root.to_hex(), false);
+        push_json_field(
+            &mut output,
+            "anchor_root",
+            &self.anchor.root.to_hex(),
+            false,
+        );
+        push_json_field(
+            &mut output,
+            "source_root",
+            &self.source_root.to_hex(),
+            false,
+        );
         push_json_field(&mut output, "envelope", self.envelope.as_str(), false);
         push_json_field(
             &mut output,
@@ -234,7 +244,11 @@ impl ScenarioReport {
             false,
         );
         output.push_str(",\"absence_certified\":");
-        output.push_str(if self.absence.is_some() { "true" } else { "false" });
+        output.push_str(if self.absence.is_some() {
+            "true"
+        } else {
+            "false"
+        });
         output.push_str(",\"transient_indeterminate\":");
         output.push_str(if self.transient_indeterminate {
             "true"
@@ -361,10 +375,8 @@ pub fn run_scenario(kind: ScenarioKind) -> Result<ScenarioReport, ScenarioError>
         }
     }
 
-    let required_sensors: BTreeSet<String> = cameras
-        .iter()
-        .map(|camera| camera.sensor.clone())
-        .collect();
+    let required_sensors: BTreeSet<String> =
+        cameras.iter().map(|camera| camera.sensor.clone()).collect();
     let coverage = match CoverageCertificate::build(
         &required_sensors,
         &coverage_intervals,
@@ -588,8 +600,7 @@ fn class_for(kind: ScenarioKind, sensor: &str, tick: u64) -> ObservationClass {
     match kind {
         ScenarioKind::Raccoon if tick == 2 || tick == 3 => ObservationClass::Raccoon,
         ScenarioKind::Intrusion | ScenarioKind::LostAcknowledgement
-            if (sensor == "cam-front" && tick == 2)
-                || (sensor == "cam-side" && tick == 3) =>
+            if (sensor == "cam-front" && tick == 2) || (sensor == "cam-side" && tick == 3) =>
         {
             ObservationClass::UnknownPerson
         }
@@ -697,7 +708,9 @@ fn seal_handoff(
     absence_digest: Option<Digest>,
     effect_root: Digest,
 ) -> Result<Digest, ScenarioError> {
-    if source_root == Digest::ZERO || situation_digest == Digest::ZERO || event_digest == Digest::ZERO
+    if source_root == Digest::ZERO
+        || situation_digest == Digest::ZERO
+        || event_digest == Digest::ZERO
     {
         return Err(ScenarioError::Packet(
             "handoff children must publish before the handoff root",
@@ -729,9 +742,7 @@ fn encode_packet(
         .map_err(|_| ScenarioError::Packet("sensor identity is too long"))?;
     let domain_length = u16::try_from(failure_domain.len())
         .map_err(|_| ScenarioError::Packet("failure domain is too long"))?;
-    let mut bytes = Vec::with_capacity(
-        4 + 2 + sensor.len() + 2 + failure_domain.len() + 8 + 1 + 2,
-    );
+    let mut bytes = Vec::with_capacity(4 + 2 + sensor.len() + 2 + failure_domain.len() + 8 + 1 + 2);
     bytes.extend_from_slice(b"FSS1");
     bytes.extend_from_slice(&sensor_length.to_be_bytes());
     bytes.extend_from_slice(sensor.as_bytes());
@@ -765,7 +776,9 @@ fn decode_packet(bytes: &[u8]) -> Result<DecodedPacket, ScenarioError> {
     };
     let confidence_basis_points = read_u16(bytes, &mut cursor)?;
     if confidence_basis_points > 10_000 {
-        return Err(ScenarioError::Packet("confidence exceeds 10000 basis points"));
+        return Err(ScenarioError::Packet(
+            "confidence exceeds 10000 basis points",
+        ));
     }
     if cursor != bytes.len() {
         return Err(ScenarioError::Packet("trailing bytes"));
@@ -926,10 +939,12 @@ mod tests {
         let report = run_scenario(ScenarioKind::Sneaky).expect("sneaky");
         assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
         assert!(report.absence.is_none());
-        assert!(report
-            .affordances
-            .iter()
-            .any(|affordance| affordance.operation.starts_with("investigate.")));
+        assert!(
+            report
+                .affordances
+                .iter()
+                .any(|affordance| affordance.operation.starts_with("investigate."))
+        );
     }
 
     #[test]
@@ -945,10 +960,12 @@ mod tests {
         let report = run_scenario(ScenarioKind::CorruptSource).expect("corrupt source");
         assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
         assert!(report.absence.is_none());
-        assert!(report
-            .warnings
-            .iter()
-            .any(|warning| warning.starts_with("source_corrupt:")));
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.starts_with("source_corrupt:"))
+        );
     }
 
     #[test]

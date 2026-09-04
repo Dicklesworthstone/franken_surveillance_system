@@ -5,9 +5,7 @@ use fss_core::{CapsuleId, SensorId};
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 
-use crate::{
-    DeliveryDirective, DeliveryPlan, ReplayBundle, ReplayBundleError, VirtualCameraSpec,
-};
+use crate::{DeliveryDirective, DeliveryPlan, ReplayBundle, ReplayBundleError, VirtualCameraSpec};
 
 fn bundle() -> Result<ReplayBundle, Box<dyn Error>> {
     let spec = VirtualCameraSpec {
@@ -75,11 +73,7 @@ fn cursors_are_bundle_bound_and_prefix_verified() -> Result<(), Box<dyn Error>> 
 
     let mut changed_spec = bundle.spec().clone();
     changed_spec.seed ^= 1;
-    let changed = ReplayBundle::new(
-        bundle.site_lineage(),
-        changed_spec,
-        bundle.plan().clone(),
-    )?;
+    let changed = ReplayBundle::new(bundle.site_lineage(), changed_spec, bundle.plan().clone())?;
     assert!(matches!(
         middle.validate(&changed),
         Err(ReplayBundleError::CursorMismatch)
@@ -118,7 +112,10 @@ fn identical_bundle_replays_produce_identical_semantic_outputs() -> Result<(), B
 
     assert_eq!(first, second);
     assert_eq!(first_ledger.batches(), second_ledger.batches());
-    assert_eq!(first_ledger.current().anchor, second_ledger.current().anchor);
+    assert_eq!(
+        first_ledger.current().anchor,
+        second_ledger.current().anchor
+    );
 
     let _ = fs::remove_file(first_path);
     let _ = fs::remove_file(second_path);
@@ -131,11 +128,8 @@ fn replay_refuses_to_append_into_non_genesis_authority() -> Result<(), Box<dyn E
     let path = temp_journal("non-genesis");
     let _ = fs::remove_file(&path);
     let mut objects = InMemoryObjectStore::new(ObjectLimits::new(256, 2 * 1024 * 1024));
-    let mut ledger = DurableReferenceLedger::open(
-        &path,
-        bundle.site_lineage(),
-        IncompleteTailPolicy::Reject,
-    )?;
+    let mut ledger =
+        DurableReferenceLedger::open(&path, bundle.site_lineage(), IncompleteTailPolicy::Reject)?;
     let _ = bundle.replay(&mut objects, &mut ledger)?;
     assert!(matches!(
         bundle.replay(&mut objects, &mut ledger),

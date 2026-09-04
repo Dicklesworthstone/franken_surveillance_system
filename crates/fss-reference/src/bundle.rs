@@ -69,7 +69,9 @@ impl fmt::Display for ReplayBundleError {
             Self::NonGenesisAuthority => {
                 formatter.write_str("replay requires a fresh authority ledger")
             }
-            Self::CursorMismatch => formatter.write_str("replay cursor does not match bundle prefix"),
+            Self::CursorMismatch => {
+                formatter.write_str("replay cursor does not match bundle prefix")
+            }
             Self::CursorOutOfRange => formatter.write_str("replay cursor is out of range"),
             Self::Contract(error) => write!(formatter, "replay bundle contract error: {error}"),
             Self::Reference(error) => write!(formatter, "replay execution error: {error}"),
@@ -232,10 +234,7 @@ impl ReplayBundle {
             return Err(ReplayBundleError::NonGenesisAuthority);
         }
         Ok(run_reference_capture(
-            &self.spec,
-            &self.plan,
-            objects,
-            ledger,
+            &self.spec, &self.plan, objects, ledger,
         )?)
     }
 
@@ -321,9 +320,7 @@ impl ReplayCursor {
         next_directive: usize,
     ) -> Result<Self, ReplayBundleError> {
         self.validate(bundle)?;
-        if next_directive < self.next_directive
-            || next_directive > bundle.plan.directives().len()
-        {
+        if next_directive < self.next_directive || next_directive > bundle.plan.directives().len() {
             return Err(ReplayBundleError::CursorOutOfRange);
         }
         Ok(Self::at(bundle, next_directive))
@@ -424,8 +421,8 @@ impl<'a> Reader<'a> {
         if length > MAX_TEXT_BYTES {
             return Err(ReplayBundleError::BoundExceeded("text"));
         }
-        let value = std::str::from_utf8(self.take(length)?)
-            .map_err(|_| ReplayBundleError::InvalidUtf8)?;
+        let value =
+            std::str::from_utf8(self.take(length)?).map_err(|_| ReplayBundleError::InvalidUtf8)?;
         Ok(value.to_owned())
     }
 

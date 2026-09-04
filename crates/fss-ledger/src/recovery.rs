@@ -6,12 +6,12 @@ use std::path::Path;
 
 use fss_core::{ContentDigest, DigestAlgorithm, sha256};
 
+use crate::MAX_RECORD_PAYLOAD_BYTES;
 use crate::error::{CorruptionKind, JournalError};
 use crate::format::{
     COMMIT_MAGIC, FORMAT_VERSION, HEADER_LEN, RECORD_MAGIC, TRAILER_LEN, read_u16, read_u32,
     read_u64, record_root,
 };
-use crate::MAX_RECORD_PAYLOAD_BYTES;
 
 /// One committed journal record.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -125,8 +125,8 @@ pub(crate) fn recover_bytes(bytes: &[u8]) -> Result<RecoveryReport, JournalError
         }
         let kind = read_u16(bytes, &mut offset);
         let payload_len = read_u32(bytes, &mut offset);
-        let payload_len_usize =
-            usize::try_from(payload_len).map_err(|_| corrupt(start, CorruptionKind::PayloadLength))?;
+        let payload_len_usize = usize::try_from(payload_len)
+            .map_err(|_| corrupt(start, CorruptionKind::PayloadLength))?;
         if payload_len_usize > MAX_RECORD_PAYLOAD_BYTES {
             return Err(corrupt(start, CorruptionKind::PayloadLength));
         }

@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     BudgetVector, CanonicalEncode, Completeness, ContentDigest, ContinuationCursor,
-    ContinuationScope, ContractBasis, HandleAvailability, HydrationArtifact, HydrationError,
-    HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
-    HydrationRequestSpec, LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec,
-    SessionId, TimestampNs, HYDRATION_VIEW_ID,
+    ContinuationScope, ContractBasis, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact,
+    HydrationError, HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec,
+    HydrationRequest, HydrationRequestSpec, LaboratoryAccess, LedgerAnchor, SemanticHandle,
+    SemanticHandleSpec, SessionId, TimestampNs,
 };
 
 fn basis() -> ContractBasis {
@@ -22,11 +22,7 @@ fn basis() -> ContractBasis {
 }
 
 fn handle() -> Result<SemanticHandle, HydrationError> {
-    let levels = BTreeSet::from([
-        HydrationLevel::H0,
-        HydrationLevel::H1,
-        HydrationLevel::H2,
-    ]);
+    let levels = BTreeSet::from([HydrationLevel::H0, HydrationLevel::H1, HydrationLevel::H2]);
     SemanticHandle::publish(SemanticHandleSpec {
         contract_basis: basis(),
         anchor: LedgerAnchor::genesis("site:hydration-cursor"),

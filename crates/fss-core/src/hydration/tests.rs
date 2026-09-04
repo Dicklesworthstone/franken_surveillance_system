@@ -119,8 +119,7 @@ fn ladders_must_be_contiguous() -> Result<(), HydrationError> {
     };
     for level in spec.levels.iter().copied() {
         spec.required_capabilities.insert(level, BTreeSet::new());
-        spec.estimated_costs
-            .insert(level, BudgetVector::default());
+        spec.estimated_costs.insert(level, BudgetVector::default());
     }
     assert_eq!(
         SemanticHandle::publish(spec),

@@ -8,7 +8,9 @@ use fss_core::{
 };
 use fss_ledger::DurableReferenceLedger;
 
-use crate::{ReferenceError, ReferenceEventReceipt, ReferencePolicyAction, ReferencePolicyDecision};
+use crate::{
+    ReferenceError, ReferenceEventReceipt, ReferencePolicyAction, ReferencePolicyDecision,
+};
 
 const MAX_ALERT_CHANNEL_BYTES: usize = 256;
 
@@ -111,9 +113,7 @@ impl ReferenceAlertProvider {
             Some(message) if message.request_digest == intent.request_digest => {
                 Ok(Some(message.proof_digest))
             }
-            Some(_) => Err(ReferenceError::InvalidSpec(
-                "provider_idempotency_conflict",
-            )),
+            Some(_) => Err(ReferenceError::InvalidSpec("provider_idempotency_conflict")),
             None => Ok(None),
         }
     }
@@ -206,13 +206,7 @@ pub fn dispatch_reference_alert(
 ) -> Result<OperationReceipt, ReferenceError> {
     validate_reference_alert_plan(plan)?;
     let operation_id = &plan.intent.operation_id;
-    let _ = journal.transition(
-        operation_id,
-        EffectState::Committed,
-        commit_at,
-        None,
-        None,
-    )?;
+    let _ = journal.transition(operation_id, EffectState::Committed, commit_at, None, None)?;
 
     match provider.dispatch(&plan.intent, behavior) {
         ProviderDispatch::Delivered(proof) => {
@@ -252,11 +246,7 @@ pub fn dispatch_reference_alert(
             )?
             .clone()),
         ProviderDispatch::ConflictingIdempotency => Ok(journal
-            .mark_indeterminate(
-                operation_id,
-                outcome_at,
-                "provider_idempotency_conflict",
-            )?
+            .mark_indeterminate(operation_id, outcome_at, "provider_idempotency_conflict")?
             .clone()),
     }
 }
@@ -282,10 +272,7 @@ pub fn reconcile_reference_alert(
     ))
 }
 
-fn alert_request_digest(
-    event_receipt: &ReferenceEventReceipt,
-    channel: &str,
-) -> ContentDigest {
+fn alert_request_digest(event_receipt: &ReferenceEventReceipt, channel: &str) -> ContentDigest {
     alert_request_digest_parts(
         event_receipt.event_root,
         event_receipt.event_revision_digest,
@@ -331,7 +318,9 @@ fn alert_precondition_digest(
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_alert_precondition.v1");
     encoder.digest(event_receipt.event_revision_digest);
-    event_receipt.authority_anchor.encode_canonical(&mut encoder);
+    event_receipt
+        .authority_anchor
+        .encode_canonical(&mut encoder);
     encoder.text(decision.event.state.as_str());
     encoder.digest(decision.event.decision_path);
     ContentDigest::sha256(&encoder.finish())

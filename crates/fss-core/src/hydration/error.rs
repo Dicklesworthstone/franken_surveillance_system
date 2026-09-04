@@ -51,9 +51,9 @@ impl HydrationError {
             | Self::PrivacyDenied
             | Self::LaboratoryGrantRequired
             | Self::BudgetExceeded => RecoveryClass::OperatorActionRequired,
-            Self::Contract(_)
-            | Self::HandleRebound
-            | Self::LevelUnavailable => RecoveryClass::NeverUnchanged,
+            Self::Contract(_) | Self::HandleRebound | Self::LevelUnavailable => {
+                RecoveryClass::NeverUnchanged
+            }
         }
     }
 }

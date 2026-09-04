@@ -181,7 +181,8 @@ impl FromStr for ContentDigest {
         for (index, slot) in bytes.iter_mut().enumerate() {
             let offset = index * 2;
             let high = decode_nibble(hex.as_bytes()[offset]).ok_or(ContractError::InvalidDigest)?;
-            let low = decode_nibble(hex.as_bytes()[offset + 1]).ok_or(ContractError::InvalidDigest)?;
+            let low =
+                decode_nibble(hex.as_bytes()[offset + 1]).ok_or(ContractError::InvalidDigest)?;
             *slot = (high << 4) | low;
         }
         Ok(Self::new(algorithm, bytes))

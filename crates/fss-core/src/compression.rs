@@ -117,11 +117,7 @@ impl SemanticCompressionReceipt {
             }
         }
         for transform in &self.transforms {
-            if transform.scope.is_empty()
-                || transform
-                    .details
-                    .as_deref()
-                    .is_some_and(str::is_empty)
+            if transform.scope.is_empty() || transform.details.as_deref().is_some_and(str::is_empty)
             {
                 return Err(ContractError::EvidenceRequired);
             }

@@ -39,14 +39,29 @@ macro_rules! stable_id {
     };
 }
 
-stable_id!(SensorId, "A stable opaque identifier for a configured sensor.");
-stable_id!(StreamId, "A stable opaque identifier for one logical stream generation.");
-stable_id!(CapsuleId, "A stable identifier for one immutable sensor capsule.");
+stable_id!(
+    SensorId,
+    "A stable opaque identifier for a configured sensor."
+);
+stable_id!(
+    StreamId,
+    "A stable opaque identifier for one logical stream generation."
+);
+stable_id!(
+    CapsuleId,
+    "A stable identifier for one immutable sensor capsule."
+);
 stable_id!(BatchId, "A stable identifier for one evidence delta batch.");
 stable_id!(EventId, "A stable identifier for one event lineage.");
 stable_id!(OperationId, "A stable identifier for one effect operation.");
-stable_id!(IdempotencyKey, "A stable idempotency identity for replay-safe effects.");
-stable_id!(ObligationId, "A stable identifier for a terminal-proof obligation.");
+stable_id!(
+    IdempotencyKey,
+    "A stable idempotency identity for replay-safe effects."
+);
+stable_id!(
+    ObligationId,
+    "A stable identifier for a terminal-proof obligation."
+);
 stable_id!(PrincipalId, "A stable principal identity.");
 stable_id!(SessionId, "A stable agent session identity.");
 stable_id!(MissionId, "A stable mission identity.");

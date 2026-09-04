@@ -104,8 +104,7 @@ impl ReferenceSituationPublication {
             &self.situation.capsule.affordances,
         )?;
         self.context_pack.verify()?;
-        self.compression_receipt
-            .validate_for(&self.context_pack)?;
+        self.compression_receipt.validate_for(&self.context_pack)?;
         if self.context_pack.contract_basis != self.situation.capsule.contract_basis
             || self.context_pack.mission_id != self.situation.capsule.mission_id
             || self.context_pack.session_id != self.situation.capsule.session_id
@@ -123,7 +122,10 @@ impl ReferenceSituationPublication {
             .map(|item| item.item_id.clone())
             .collect();
         if !required.is_subset(&selected)
-            || self.compression_receipt.critical_preservation.known_critical_items
+            || self
+                .compression_receipt
+                .critical_preservation
+                .known_critical_items
                 != required.len() as u64
         {
             return Err(ContractError::EvidenceRequired.into());
@@ -245,7 +247,9 @@ pub fn project_reference_situation(
             kind: CompressionTransformKind::Truncate,
             scope: "optional context beyond target token budget".to_owned(),
             loss_class: CompressionLossClass::BoundedLoss,
-            details: Some("omitted classes remain available through priced expansion handles".to_owned()),
+            details: Some(
+                "omitted classes remain available through priced expansion handles".to_owned(),
+            ),
         });
     }
     let expansion_handles = expansion_handles(&context_pack.pack_id, &omitted_classes);
@@ -278,7 +282,9 @@ pub fn project_reference_situation(
     compression_receipt.validate_for(&context_pack)?;
 
     situation.proof_roots.insert(resource_state.state_digest());
-    situation.proof_roots.insert(control_envelope.control_digest());
+    situation
+        .proof_roots
+        .insert(control_envelope.control_digest());
     situation.proof_roots.insert(context_pack.pack_digest);
     situation
         .proof_roots
@@ -365,7 +371,10 @@ fn select_context(
         return Err(ContractError::BudgetExhausted.into());
     }
     let mut omitted = Vec::new();
-    for candidate in candidates.into_iter().filter(|candidate| !candidate.critical) {
+    for candidate in candidates
+        .into_iter()
+        .filter(|candidate| !candidate.critical)
+    {
         let mut trial = selected.clone();
         trial.push(candidate.item.clone());
         if reference_token_count(&trial) <= target_tokens {
@@ -390,11 +399,12 @@ fn context_candidates(
     let capsule = &situation.capsule;
     let frame = &capsule.frame;
     let mut candidates: BTreeMap<String, ContextCandidate> = BTreeMap::new();
-    let summary = frame
-        .now
-        .first()
-        .cloned()
-        .unwrap_or_else(|| format!("Situation at authority commit {}.", capsule.anchor.commit_sequence));
+    let summary = frame.now.first().cloned().unwrap_or_else(|| {
+        format!(
+            "Situation at authority commit {}.",
+            capsule.anchor.commit_sequence
+        )
+    });
     insert_candidate(
         &mut candidates,
         ContextCandidate {
@@ -485,10 +495,7 @@ fn context_candidates(
                     item_id: format!("context:affordance:{}", affordance.affordance_id),
                     kind: "next_affordance".to_owned(),
                     epistemic_state: KnowledgeState::Known,
-                    content: format!(
-                        "{}: {}",
-                        affordance.operation, affordance.rationale
-                    ),
+                    content: format!("{}: {}", affordance.operation, affordance.rationale),
                     basis,
                     expansion_handles: BTreeSet::new(),
                 },
@@ -596,7 +603,10 @@ fn context_candidates(
         )?;
     }
     for cell in &frame.knowledge_cells {
-        if matches!(cell.knowledge_state, KnowledgeState::Known | KnowledgeState::Estimated) {
+        if matches!(
+            cell.knowledge_state,
+            KnowledgeState::Known | KnowledgeState::Estimated
+        ) {
             let mut basis = BTreeSet::from([cell.claim_id.clone()]);
             basis.extend(cell.evidence.iter().map(ToString::to_string));
             insert_candidate(
@@ -750,22 +760,21 @@ fn compression_completeness(
     }
     counts
         .into_iter()
-        .map(|(domain, (_selected, omitted_count))| CompressionCompleteness {
-            domain,
-            state: if omitted_count == 0 {
-                Completeness::Complete
-            } else {
-                Completeness::Bounded
+        .map(
+            |(domain, (_selected, omitted_count))| CompressionCompleteness {
+                domain,
+                state: if omitted_count == 0 {
+                    Completeness::Complete
+                } else {
+                    Completeness::Bounded
+                },
+                omitted_count,
             },
-            omitted_count,
-        })
+        )
         .collect()
 }
 
-fn expansion_handles(
-    pack_id: &str,
-    omitted_classes: &BTreeSet<String>,
-) -> Vec<ExpansionHandle> {
+fn expansion_handles(pack_id: &str, omitted_classes: &BTreeSet<String>) -> Vec<ExpansionHandle> {
     omitted_classes
         .iter()
         .map(|class| ExpansionHandle {

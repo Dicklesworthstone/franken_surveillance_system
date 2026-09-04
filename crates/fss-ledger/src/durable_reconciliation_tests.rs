@@ -68,13 +68,10 @@ fn lost_ack_installs_prevalidated_candidate_once() -> Result<(), Box<dyn Error>>
     assert_eq!(durable.pending_append_sequence(), None);
     assert!(matches!(
         durable.reconcile_pending(IncompleteTailPolicy::Reject),
-        Err(DurableLedgerError::Journal(
-            JournalError::NoPendingAppend
-        ))
+        Err(DurableLedgerError::Journal(JournalError::NoPendingAppend))
     ));
     drop(durable);
-    let reopened =
-        DurableReferenceLedger::open(&path, "test-site", IncompleteTailPolicy::Reject)?;
+    let reopened = DurableReferenceLedger::open(&path, "test-site", IncompleteTailPolicy::Reject)?;
     assert_eq!(reopened.batches().len(), 1);
     drop(reopened);
     let _ = fs::remove_file(path);

@@ -36,10 +36,7 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
         retention_until: TimestampNs(1_000),
         levels: BTreeSet::from([HydrationLevel::H0]),
         required_capabilities: BTreeMap::from([(HydrationLevel::H0, BTreeSet::new())]),
-        estimated_costs: BTreeMap::from([(
-            HydrationLevel::H0,
-            BudgetVector::default(),
-        )]),
+        estimated_costs: BTreeMap::from([(HydrationLevel::H0, BudgetVector::default())]),
         laboratory_access: LaboratoryAccess::Unavailable,
         debug_capability: None,
         derivative_handles: BTreeSet::new(),

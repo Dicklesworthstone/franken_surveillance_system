@@ -94,10 +94,8 @@ pub fn evaluate_unknown_presence(
 
     let mut observations = observations;
     observations.sort_by(|left, right| {
-        (left.failure_domain.as_str(), left.result.object_digest()).cmp(&(
-            right.failure_domain.as_str(),
-            right.result.object_digest(),
-        ))
+        (left.failure_domain.as_str(), left.result.object_digest())
+            .cmp(&(right.failure_domain.as_str(), right.result.object_digest()))
     });
     let mut seen_results = BTreeSet::new();
     let mut support_domains = BTreeSet::new();

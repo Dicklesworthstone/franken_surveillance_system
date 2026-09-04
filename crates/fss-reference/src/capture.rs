@@ -1,8 +1,8 @@
 //! End-to-end deterministic virtual capture through custody and authority publication.
 
 use fss_core::{
-    BatchId, CanonicalEncode, CaptureInterval, ContentDigest, EvidenceDelta, LedgerAnchor, ObjectId,
-    Plane,
+    BatchId, CanonicalEncode, CaptureInterval, ContentDigest, EvidenceDelta, LedgerAnchor,
+    ObjectId, Plane,
 };
 use fss_ledger::DurableReferenceLedger;
 use fss_object::{InMemoryObjectStore, ObjectManifest};

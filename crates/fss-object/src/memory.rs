@@ -115,11 +115,10 @@ impl InMemoryObjectStore {
                 maximum: self.limits.max_objects,
             });
         }
-        let requested =
-            u64::try_from(bytes.len()).map_err(|_| ObjectError::ObjectTooLarge {
-                length: bytes.len(),
-                maximum: crate::MAX_OBJECT_BYTES,
-            })?;
+        let requested = u64::try_from(bytes.len()).map_err(|_| ObjectError::ObjectTooLarge {
+            length: bytes.len(),
+            maximum: crate::MAX_OBJECT_BYTES,
+        })?;
         let next_total =
             self.total_bytes
                 .checked_add(requested)
@@ -237,10 +236,7 @@ impl InMemoryObjectStore {
     }
 
     /// Returns a published manifest by exact root.
-    pub fn published_manifest(
-        &self,
-        root: ContentDigest,
-    ) -> Result<&ObjectManifest, ObjectError> {
+    pub fn published_manifest(&self, root: ContentDigest) -> Result<&ObjectManifest, ObjectError> {
         self.visible_manifests
             .get(&root)
             .ok_or(ObjectError::ManifestNotPublished(root))

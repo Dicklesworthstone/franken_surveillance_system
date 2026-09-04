@@ -3,9 +3,7 @@ use std::fs;
 use std::fs::OpenOptions;
 use std::io::Write;
 
-use crate::{
-    AppendPhase, AppendReconciliation, IncompleteTailPolicy, Journal, JournalError,
-};
+use crate::{AppendPhase, AppendReconciliation, IncompleteTailPolicy, Journal, JournalError};
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
     std::env::temp_dir().join(format!("fss-ledger-{}-{name}.journal", std::process::id()))

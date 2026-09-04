@@ -60,9 +60,7 @@ fn basis() -> ContractBasis {
     )
 }
 
-fn publication(
-    variant: &Variant,
-) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
     let mut anchor = LedgerAnchor::genesis("site:meaningful-delta");
     anchor.commit_sequence = variant.sequence;
     let evidence = ContentDigest::sha256(b"meaningful-delta-evidence");
@@ -129,9 +127,7 @@ fn publication(
                 KnowledgeState::Indeterminate => {
                     "The external effect may have happened and requires reconciliation."
                 }
-                KnowledgeState::Known => {
-                    "The external effect reached a retained terminal outcome."
-                }
+                KnowledgeState::Known => "The external effect reached a retained terminal outcome.",
                 _ => "The external effect has another explicit typed state.",
             }
             .to_owned(),
@@ -237,8 +233,7 @@ fn identical_publications_emit_proved_silence() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn semantically_identical_successor_commit_emits_proved_silence()
--> Result<(), Box<dyn Error>> {
+fn semantically_identical_successor_commit_emits_proved_silence() -> Result<(), Box<dyn Error>> {
     let basis = publication(&Variant::baseline()?)?;
     let mut successor = Variant::baseline()?;
     successor.sequence = 2;
@@ -257,8 +252,7 @@ fn semantically_identical_successor_commit_emits_proved_silence()
 }
 
 #[test]
-fn contradiction_invalidation_and_obligation_are_non_coalescible()
--> Result<(), Box<dyn Error>> {
+fn contradiction_invalidation_and_obligation_are_non_coalescible() -> Result<(), Box<dyn Error>> {
     let basis = publication(&Variant::baseline()?)?;
     let mut result_variant = Variant::baseline()?;
     result_variant.sequence = 2;
@@ -342,8 +336,7 @@ fn effect_terminalization_preserves_uncertainty_transition() -> Result<(), Box<d
 }
 
 #[test]
-fn resource_only_change_is_not_laundered_into_material_world_state()
--> Result<(), Box<dyn Error>> {
+fn resource_only_change_is_not_laundered_into_material_world_state() -> Result<(), Box<dyn Error>> {
     let basis = publication(&Variant::baseline()?)?;
     let mut result_variant = Variant::baseline()?;
     result_variant.pressure = ResourcePressure::Elevated;

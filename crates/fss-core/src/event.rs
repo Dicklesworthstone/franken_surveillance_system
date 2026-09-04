@@ -1,6 +1,8 @@
 //! Event hypotheses that retain evidence and distinguish adjudication from effects.
 
-use crate::{CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContractError, EventId};
+use crate::{
+    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContractError, EventId,
+};
 
 /// Event lifecycle. Detection, corroboration, and alerting are separate.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]

@@ -249,18 +249,13 @@ fn text(out: &mut Vec<u8>, value: &str) -> Result<(), BatchCodecError> {
     if value.len() > MAX_TEXT_BYTES {
         return Err(BatchCodecError::BoundExceeded("text"));
     }
-    let length =
-        u32::try_from(value.len()).map_err(|_| BatchCodecError::BoundExceeded("text"))?;
+    let length = u32::try_from(value.len()).map_err(|_| BatchCodecError::BoundExceeded("text"))?;
     out.extend_from_slice(&length.to_be_bytes());
     out.extend_from_slice(value.as_bytes());
     Ok(())
 }
 
-fn u32_count(
-    out: &mut Vec<u8>,
-    value: usize,
-    field: &'static str,
-) -> Result<(), BatchCodecError> {
+fn u32_count(out: &mut Vec<u8>, value: usize, field: &'static str) -> Result<(), BatchCodecError> {
     let value = u32::try_from(value).map_err(|_| BatchCodecError::BoundExceeded(field))?;
     out.extend_from_slice(&value.to_be_bytes());
     Ok(())
@@ -320,8 +315,8 @@ impl<'a> Reader<'a> {
     }
 
     fn text(&mut self) -> Result<String, BatchCodecError> {
-        let length = usize::try_from(self.u32()?)
-            .map_err(|_| BatchCodecError::BoundExceeded("text"))?;
+        let length =
+            usize::try_from(self.u32()?).map_err(|_| BatchCodecError::BoundExceeded("text"))?;
         if length > MAX_TEXT_BYTES {
             return Err(BatchCodecError::BoundExceeded("text"));
         }
@@ -337,13 +332,9 @@ impl<'a> Reader<'a> {
         String::from_utf8(slice.to_vec()).map_err(|_| BatchCodecError::InvalidUtf8)
     }
 
-    fn count(
-        &mut self,
-        maximum: usize,
-        field: &'static str,
-    ) -> Result<usize, BatchCodecError> {
-        let count = usize::try_from(self.u32()?)
-            .map_err(|_| BatchCodecError::BoundExceeded(field))?;
+    fn count(&mut self, maximum: usize, field: &'static str) -> Result<usize, BatchCodecError> {
+        let count =
+            usize::try_from(self.u32()?).map_err(|_| BatchCodecError::BoundExceeded(field))?;
         if count > maximum {
             return Err(BatchCodecError::BoundExceeded(field));
         }

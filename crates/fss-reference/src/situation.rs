@@ -13,8 +13,7 @@ use fss_ledger::DurableReferenceLedger;
 
 use crate::{
     ReferenceAlertOutcomeReceipt, ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt,
-    ReferencePolicyAction, ReferencePolicyDecision,
-    alert::validate_reference_alert_plan,
+    ReferencePolicyAction, ReferencePolicyDecision, alert::validate_reference_alert_plan,
 };
 
 const MAX_OBJECTIVE_BYTES: usize = 512;
@@ -117,7 +116,14 @@ pub fn compile_reference_situation(
         event_revision_digest,
     ]);
     proof_roots.extend(request.decision.event.model_receipts.iter().copied());
-    proof_roots.extend(request.decision.event.evidence.iter().map(|edge| edge.digest));
+    proof_roots.extend(
+        request
+            .decision
+            .event
+            .evidence
+            .iter()
+            .map(|edge| edge.digest),
+    );
     if let Some(plan) = request.alert_plan {
         proof_roots.insert(plan.event_root);
         proof_roots.insert(plan.event_revision_digest);
@@ -270,7 +276,12 @@ pub fn compile_reference_situation(
                     unknown.push("The provider-side alert outcome is unresolved; delivery and non-delivery both remain live until independently reconciled.".to_owned());
                     at_risk.push(format!(
                         "Operation {} is indeterminate and must not be blindly resent.",
-                        outcome.outcome.operation_receipt.intent.operation_id.as_str()
+                        outcome
+                            .outcome
+                            .operation_receipt
+                            .intent
+                            .operation_id
+                            .as_str()
                     ));
                     affordances.push(project_affordance(
                         "affordance:alert:reconcile",
@@ -557,7 +568,9 @@ fn validate_request(
                     }
                 }
                 None if authority.current().objects.contains_key(&effect_object_id) => {
-                    return Err(ReferenceError::InvalidSpec("situation_effect_outcome_omitted"));
+                    return Err(ReferenceError::InvalidSpec(
+                        "situation_effect_outcome_omitted",
+                    ));
                 }
                 None => {}
             }
@@ -577,8 +590,16 @@ fn compile_worlds(
     absence_claim_id: &str,
 ) -> (WorldEnvelope, Vec<String>, Vec<String>) {
     let event_name = decision.event.event_id.as_str();
-    let event_evidence: Vec<_> = decision.event.evidence.iter().map(|edge| edge.digest).collect();
-    let policy_evidence = vec![event_receipt.event_root, event_receipt.event_revision_digest];
+    let event_evidence: Vec<_> = decision
+        .event
+        .evidence
+        .iter()
+        .map(|edge| edge.digest)
+        .collect();
+    let policy_evidence = vec![
+        event_receipt.event_root,
+        event_receipt.event_revision_digest,
+    ];
     let mut alternatives = Vec::new();
     let mut residuals = Vec::new();
     let mut nominal_claim_ids = BTreeSet::from([policy_claim_id.to_owned()]);
@@ -679,7 +700,10 @@ fn compile_worlds(
                 consequence_severity: 3,
                 protected: true,
             });
-            unknown.push("The event lifecycle state has no stronger reference-world interpretation.".to_owned());
+            unknown.push(
+                "The event lifecycle state has no stronger reference-world interpretation."
+                    .to_owned(),
+            );
         }
     }
 
@@ -835,7 +859,9 @@ fn policy_statement(decision: &ReferencePolicyDecision) -> &'static str {
         (EventState::Rejected, ReferencePolicyAction::Hold) => {
             "The reference policy rejected this event candidate without asserting complete physical absence."
         }
-        _ => "The reference policy retained the event lifecycle state without granting effect authority.",
+        _ => {
+            "The reference policy retained the event lifecycle state without granting effect authority."
+        }
     }
 }
 

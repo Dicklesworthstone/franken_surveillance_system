@@ -1,7 +1,7 @@
 use std::error::Error;
 use std::fs;
 
-use fss_core::{CaptureInterval, CapsuleId, EventId, EventState, ProbabilityInterval, SensorId};
+use fss_core::{CapsuleId, CaptureInterval, EventId, EventState, ProbabilityInterval, SensorId};
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectError, ObjectLimits};
 
@@ -51,12 +51,14 @@ fn capture_and_model(
         },
     )?;
     let result = execute_mock_model(&model, &capture, objects)?;
-    let first = capture.source_packets.first().ok_or(ReferenceError::InvalidSpec(
-        "source_packet_count",
-    ))?;
-    let last = capture.source_packets.last().ok_or(ReferenceError::InvalidSpec(
-        "source_packet_count",
-    ))?;
+    let first = capture
+        .source_packets
+        .first()
+        .ok_or(ReferenceError::InvalidSpec("source_packet_count"))?;
+    let last = capture
+        .source_packets
+        .last()
+        .ok_or(ReferenceError::InvalidSpec("source_packet_count"))?;
     let interval = CaptureInterval::new(first.capture.earliest, last.capture.latest)?;
     Ok(ReferenceModelObservation::new(
         result,
@@ -104,7 +106,10 @@ fn independent_person_findings_enable_alert_preparation_only() -> Result<(), Box
     let receipt = publish_reference_event(&decision, &mut objects, &mut ledger)?;
     assert_eq!(receipt.authority_anchor.commit_sequence, 3);
     assert_eq!(ledger.batches().len(), 3);
-    assert_eq!(ledger.batches()[2].deltas[0].payload_digest, receipt.event_root);
+    assert_eq!(
+        ledger.batches()[2].deltas[0].payload_digest,
+        receipt.event_root
+    );
     assert_eq!(
         ledger.batches()[2].deltas[0].witness_digest,
         Some(receipt.event_revision_digest)
@@ -205,11 +210,8 @@ fn same_model_receipt_cannot_be_laundered_into_two_domains() -> Result<(), Box<d
         &mut objects,
         &mut ledger,
     )?;
-    let second = ReferenceModelObservation::new(
-        first.result.clone(),
-        "domain:two",
-        first.interval,
-    )?;
+    let second =
+        ReferenceModelObservation::new(first.result.clone(), "domain:two", first.interval)?;
 
     assert!(matches!(
         evaluate_unknown_presence(
@@ -239,10 +241,8 @@ fn event_publication_requires_retained_model_objects() -> Result<(), Box<dyn Err
         &mut source_objects,
         &mut ledger,
     )?;
-    let decision = evaluate_unknown_presence(
-        EventId::parse("event:unknown-person:5")?,
-        vec![first],
-    )?;
+    let decision =
+        evaluate_unknown_presence(EventId::parse("event:unknown-person:5")?, vec![first])?;
     let mut empty_objects = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
 
     assert!(matches!(

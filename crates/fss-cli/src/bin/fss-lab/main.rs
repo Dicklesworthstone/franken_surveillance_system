@@ -150,9 +150,20 @@ mod tests {
 
     #[test]
     fn public_commands_are_deterministic() {
-        assert_eq!(render_matrix().expect("first"), render_matrix().expect("second"));
-        assert!(self_test().expect("self-test").contains("\"status\":\"pass\""));
-        assert!(replay("intrusion", 10).expect("replay").contains("\"deterministic\":true"));
+        assert_eq!(
+            render_matrix().expect("first"),
+            render_matrix().expect("second")
+        );
+        assert!(
+            self_test()
+                .expect("self-test")
+                .contains("\"status\":\"pass\"")
+        );
+        assert!(
+            replay("intrusion", 10)
+                .expect("replay")
+                .contains("\"deterministic\":true")
+        );
     }
 
     #[test]
@@ -164,6 +175,14 @@ mod tests {
     #[test]
     fn malformed_cli_is_rejected() {
         assert!(run(vec!["run".to_owned(), "unknown".to_owned()]).is_err());
-        assert!(run(vec!["replay".to_owned(), "quiet".to_owned(), "--repeat".to_owned(), "x".to_owned()]).is_err());
+        assert!(
+            run(vec![
+                "replay".to_owned(),
+                "quiet".to_owned(),
+                "--repeat".to_owned(),
+                "x".to_owned()
+            ])
+            .is_err()
+        );
     }
 }

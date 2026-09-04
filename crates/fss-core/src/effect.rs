@@ -191,7 +191,10 @@ impl EffectJournal {
         now: TimestampNs,
     ) -> Result<&OperationReceipt, ContractError> {
         if let Some(existing_id) = self.idempotency.get(&intent.idempotency_key) {
-            let existing = self.operations.get(existing_id).ok_or(ContractError::NotFound)?;
+            let existing = self
+                .operations
+                .get(existing_id)
+                .ok_or(ContractError::NotFound)?;
             if existing.intent == intent {
                 return Ok(existing);
             }
@@ -217,7 +220,8 @@ impl EffectJournal {
                 error_code: None,
             },
         );
-        self.idempotency.insert(idempotency_key, operation_id.clone());
+        self.idempotency
+            .insert(idempotency_key, operation_id.clone());
         self.obligations.insert(
             obligation_id.clone(),
             Obligation {
@@ -228,7 +232,9 @@ impl EffectJournal {
                 proof_digest: None,
             },
         );
-        self.operations.get(&operation_id).ok_or(ContractError::NotFound)
+        self.operations
+            .get(&operation_id)
+            .ok_or(ContractError::NotFound)
     }
 
     /// Advances an operation through a valid lifecycle transition.
@@ -294,7 +300,9 @@ impl EffectJournal {
                 }
             }
         }
-        self.operations.get(operation_id).ok_or(ContractError::NotFound)
+        self.operations
+            .get(operation_id)
+            .ok_or(ContractError::NotFound)
     }
 
     /// Marks an operation indeterminate after dispatch without a trustworthy terminal result.
@@ -353,7 +361,9 @@ impl EffectJournal {
             obligation.state = ObligationState::Verified;
             obligation.proof_digest = Some(proof_digest);
         }
-        self.operations.get(operation_id).ok_or(ContractError::NotFound)
+        self.operations
+            .get(operation_id)
+            .ok_or(ContractError::NotFound)
     }
 
     /// Returns one operation receipt.
@@ -496,7 +506,9 @@ mod tests {
             TimestampNs(5),
         )?;
         assert_eq!(
-            journal.operation(&operation_id).map(|receipt| receipt.state),
+            journal
+                .operation(&operation_id)
+                .map(|receipt| receipt.state),
             Some(EffectState::Verified)
         );
         Ok(())

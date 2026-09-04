@@ -207,19 +207,19 @@ fn hard_budget_cannot_omit_critical_semantics() -> Result<(), Box<dyn Error>> {
 fn optional_omission_is_receipted_and_hydratable() -> Result<(), Box<dyn Error>> {
     let publication = project_reference_situation(situation(true)?, &spec(2_000))?;
 
-    assert!(publication.compression_receipt.omitted_classes.contains("why"));
+    assert!(
+        publication
+            .compression_receipt
+            .omitted_classes
+            .contains("why")
+    );
     assert!(
         publication
             .compression_receipt
             .critical_preservation
             .is_lossless()
     );
-    assert!(
-        !publication
-            .compression_receipt
-            .expansion_handles
-            .is_empty()
-    );
+    assert!(!publication.compression_receipt.expansion_handles.is_empty());
     assert!(publication.context_pack.continuation.is_some());
     assert!(
         publication
@@ -253,7 +253,11 @@ fn handoff_root_covers_the_complete_publication() -> Result<(), Box<dyn Error>> 
         handoff.situation_capsule_root,
         publication.publication_digest
     );
-    assert!(handoff.child_roots.contains(&publication.context_pack.pack_digest));
+    assert!(
+        handoff
+            .child_roots
+            .contains(&publication.context_pack.pack_digest)
+    );
     assert!(
         handoff
             .child_roots

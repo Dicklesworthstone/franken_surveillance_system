@@ -196,18 +196,44 @@ impl SemanticHandle {
             || !valid_text(&self.semantic_type)
             || !valid_text(&self.source_id)
             || !valid_text(&self.privacy_class)
-            || self.spatial_scope.as_deref().is_some_and(|value| !valid_text(value))
-            || self.applied_transform.as_deref().is_some_and(|value| !valid_text(value))
-            || self.debug_capability.as_deref().is_some_and(|value| !valid_text(value))
+            || self
+                .spatial_scope
+                .as_deref()
+                .is_some_and(|value| !valid_text(value))
+            || self
+                .applied_transform
+                .as_deref()
+                .is_some_and(|value| !valid_text(value))
+            || self
+                .debug_capability
+                .as_deref()
+                .is_some_and(|value| !valid_text(value))
             || self.retention_until <= self.published_at
-            || self.derivative_handles.iter().any(|value| !valid_text(value))
+            || self
+                .derivative_handles
+                .iter()
+                .any(|value| !valid_text(value))
         {
             return Err(ContractError::EvidenceRequired.into());
         }
         validate_contiguous_levels(&self.levels)?;
-        if self.required_capabilities.keys().copied().collect::<BTreeSet<_>>() != self.levels
-            || self.estimated_costs.keys().copied().collect::<BTreeSet<_>>() != self.levels
-            || self.required_capabilities.values().flatten().any(|value| !valid_text(value))
+        if self
+            .required_capabilities
+            .keys()
+            .copied()
+            .collect::<BTreeSet<_>>()
+            != self.levels
+            || self
+                .estimated_costs
+                .keys()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                != self.levels
+            || self
+                .required_capabilities
+                .values()
+                .flatten()
+                .any(|value| !valid_text(value))
             || self.estimated_costs.values().any(|cost| !cost.is_valid())
         {
             return Err(ContractError::NonCanonicalOrdering.into());

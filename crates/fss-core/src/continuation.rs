@@ -466,8 +466,7 @@ impl ContinuationStream {
         {
             return Err(ContinuationError::WrongStream);
         }
-        let start = usize::try_from(cursor.position)
-            .map_err(|_| ContinuationError::OutOfRange)?;
+        let start = usize::try_from(cursor.position).map_err(|_| ContinuationError::OutOfRange)?;
         if start > self.entries.len() {
             return Err(ContinuationError::OutOfRange);
         }
@@ -695,7 +694,10 @@ mod tests {
             ),
             Err(ContinuationError::NonMonotone)
         );
-        assert_eq!(ContinuationError::Expired.recovery(), RecoveryClass::RebaseRequired);
+        assert_eq!(
+            ContinuationError::Expired.recovery(),
+            RecoveryClass::RebaseRequired
+        );
         Ok(())
     }
 }

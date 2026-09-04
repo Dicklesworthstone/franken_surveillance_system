@@ -7,10 +7,10 @@ use std::fmt::Write as _;
 
 use fss_core::{
     BudgetVector, CanonicalEncode, Completeness, ContentDigest, ContinuationCursor,
-    ContinuationScope, ContractBasis, HandleAvailability, HydrationArtifact, HydrationLevel,
-    HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
+    ContinuationScope, ContractBasis, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact,
+    HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
     HydrationRequestSpec, HydrationResponse, LaboratoryAccess, LedgerAnchor, SemanticHandle,
-    SemanticHandleSpec, SessionId, TimestampNs, HYDRATION_VIEW_ID,
+    SemanticHandleSpec, SessionId, TimestampNs,
 };
 
 fn main() {
@@ -102,7 +102,10 @@ fn success_record() -> Result<String, Box<dyn Error>> {
         &handle,
         &request,
         &response.receipt,
-        response.artifact.as_ref().map(|value| value.artifact_digest),
+        response
+            .artifact
+            .as_ref()
+            .map(|value| value.artifact_digest),
         Some(cursor_digest),
     ))
 }
@@ -144,11 +147,7 @@ fn expired_record() -> Result<String, Box<dyn Error>> {
 }
 
 fn handle(retention_until: TimestampNs) -> Result<SemanticHandle, Box<dyn Error>> {
-    let levels = BTreeSet::from([
-        HydrationLevel::H0,
-        HydrationLevel::H1,
-        HydrationLevel::H2,
-    ]);
+    let levels = BTreeSet::from([HydrationLevel::H0, HydrationLevel::H1, HydrationLevel::H2]);
     let required_capabilities = BTreeMap::from([
         (
             HydrationLevel::H0,
@@ -306,10 +305,7 @@ fn optional_level(level: Option<HydrationLevel>) -> String {
 }
 
 fn optional_digest(digest: Option<ContentDigest>) -> String {
-    digest.map_or_else(
-        || "null".to_owned(),
-        |value| format!("\"{value}\""),
-    )
+    digest.map_or_else(|| "null".to_owned(), |value| format!("\"{value}\""))
 }
 
 fn json_escape(value: &str) -> String {

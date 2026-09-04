@@ -6,9 +6,7 @@ use fss_core::{
     BatchId, CaptureInterval, ContentDigest, EvidenceDelta, ObjectId, Plane, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
-use fss_object::{
-    InMemoryObjectStore, ObjectError, ObjectLimits, VerifiedObjectCatalog,
-};
+use fss_object::{InMemoryObjectStore, ObjectError, ObjectLimits, VerifiedObjectCatalog};
 
 use crate::{AuthorityPublisher, PublicationError};
 
@@ -39,8 +37,7 @@ fn missing_child_blocks_prepare_without_advancing_authority() -> Result<(), Box<
     let path = temp_journal("missing-child");
     let _ = fs::remove_file(&path);
     let store = InMemoryObjectStore::new(ObjectLimits::new(8, 4096));
-    let mut ledger =
-        DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
+    let mut ledger = DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
     let missing = ContentDigest::sha256(b"missing");
     {
         let publisher = AuthorityPublisher::new(&store, &mut ledger);
@@ -65,8 +62,7 @@ fn staged_child_blocks_prepare_until_verified() -> Result<(), Box<dyn Error>> {
     let _ = fs::remove_file(&path);
     let mut store = InMemoryObjectStore::new(ObjectLimits::new(8, 4096));
     let child = store.stage(b"source-bytes")?;
-    let mut ledger =
-        DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
+    let mut ledger = DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
     {
         let publisher = AuthorityPublisher::new(&store, &mut ledger);
         assert!(matches!(
@@ -118,8 +114,7 @@ fn append_revalidates_children_after_preparation() -> Result<(), Box<dyn Error>>
     let child = ContentDigest::sha256(b"child");
     let mut catalog = SwitchingCatalog::default();
     catalog.verified.insert(child);
-    let mut ledger =
-        DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
+    let mut ledger = DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
 
     let batch = {
         let publisher = AuthorityPublisher::new(&catalog, &mut ledger);
@@ -174,8 +169,7 @@ fn verified_children_publish_and_restart_with_exact_roots() -> Result<(), Box<dy
         });
     }
 
-    let reopened =
-        DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
+    let reopened = DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
     assert_eq!(reopened.current().anchor, expected_anchor);
     assert_eq!(reopened.batches().len(), 1);
     assert_eq!(reopened.batches()[0].children.len(), 2);

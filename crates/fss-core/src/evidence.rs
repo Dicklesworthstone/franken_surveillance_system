@@ -396,8 +396,7 @@ impl ReferenceLedger {
         if batch.new_anchor.site_lineage != batch.basis_anchor.site_lineage
             || batch.new_anchor.ledger_epoch != batch.basis_anchor.ledger_epoch
             || batch.new_anchor.commit_sequence != expected_sequence
-            || batch.new_anchor.adapter_registry_epoch
-                != batch.basis_anchor.adapter_registry_epoch
+            || batch.new_anchor.adapter_registry_epoch != batch.basis_anchor.adapter_registry_epoch
             || batch.new_anchor.schema_epoch != batch.basis_anchor.schema_epoch
             || batch.new_anchor.policy_epoch != batch.basis_anchor.policy_epoch
             || batch.new_anchor.privacy_epoch != batch.basis_anchor.privacy_epoch
@@ -615,7 +614,12 @@ mod tests {
         CaptureInterval::new(TimestampNs(10), TimestampNs(20))
     }
 
-    fn delta(id: &str, object: &str, prior: Option<u64>, generation: u64) -> Result<EvidenceDelta, ContractError> {
+    fn delta(
+        id: &str,
+        object: &str,
+        prior: Option<u64>,
+        generation: u64,
+    ) -> Result<EvidenceDelta, ContractError> {
         Ok(EvidenceDelta {
             delta_id: id.to_owned(),
             family: "sensor_capsule".to_owned(),
@@ -635,7 +639,10 @@ mod tests {
         let mut ledger = ReferenceLedger::new("site:one");
         let batch = ledger.prepare_batch(
             BatchId::parse("batch:one")?,
-            vec![delta("delta:b", "object:b", None, 1)?, delta("delta:a", "object:a", None, 1)?],
+            vec![
+                delta("delta:b", "object:b", None, 1)?,
+                delta("delta:a", "object:a", None, 1)?,
+            ],
             [],
         )?;
         let terminal = ledger.append(batch.clone())?.anchor.clone();

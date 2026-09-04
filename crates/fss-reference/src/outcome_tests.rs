@@ -2,7 +2,7 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    CaptureInterval, CapsuleId, EffectJournal, EffectState, EventId, IdempotencyKey, ObjectId,
+    CapsuleId, CaptureInterval, EffectJournal, EffectState, EventId, IdempotencyKey, ObjectId,
     ObligationId, OperationId, Plane, ProbabilityInterval, SensorId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
@@ -26,17 +26,13 @@ struct OutcomeHarness {
 }
 
 impl OutcomeHarness {
-    fn new(
-        name: &str,
-        behavior: ReferenceProviderBehavior,
-    ) -> Result<Self, Box<dyn Error>> {
+    fn new(name: &str, behavior: ReferenceProviderBehavior) -> Result<Self, Box<dyn Error>> {
         let path = std::env::temp_dir().join(format!(
             "fss-reference-outcome-{}-{name}.journal",
             std::process::id()
         ));
         let _ = fs::remove_file(&path);
-        let mut objects =
-            InMemoryObjectStore::new(ObjectLimits::new(1024, 16 * 1024 * 1024));
+        let mut objects = InMemoryObjectStore::new(ObjectLimits::new(1024, 16 * 1024 * 1024));
         let mut authority =
             DurableReferenceLedger::open(&path, "site:outcome", IncompleteTailPolicy::Reject)?;
 
@@ -228,7 +224,11 @@ fn indeterminate_outcome_preserves_event_and_does_not_invent_proof() -> Result<(
     assert_eq!(receipt.outcome.operation_receipt.result_digest, None);
     assert_eq!(receipt.outcome.proof_object_digest, None);
     assert_eq!(
-        harness.authority.current().objects.get(&harness.event_object_id),
+        harness
+            .authority
+            .current()
+            .objects
+            .get(&harness.event_object_id),
         Some(&event_before)
     );
 
@@ -238,10 +238,7 @@ fn indeterminate_outcome_preserves_event_and_does_not_invent_proof() -> Result<(
 
 #[test]
 fn known_failure_retains_non_delivery_proof() -> Result<(), Box<dyn Error>> {
-    let mut harness = OutcomeHarness::new(
-        "failed",
-        ReferenceProviderBehavior::FailBeforeDelivery,
-    )?;
+    let mut harness = OutcomeHarness::new("failed", ReferenceProviderBehavior::FailBeforeDelivery)?;
 
     let receipt = publish_reference_alert_outcome(
         &harness.plan,

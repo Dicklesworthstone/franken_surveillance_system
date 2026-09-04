@@ -2,10 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     BudgetVector, Completeness, ContentDigest, ContinuationCursor, ContinuationScope,
-    ContractBasis, ContractError, HandleAvailability, HydrationArtifact, HydrationError,
-    HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
-    HydrationRequestSpec, LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec,
-    SessionId, TimestampNs, HYDRATION_VIEW_ID,
+    ContractBasis, ContractError, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact,
+    HydrationError, HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec,
+    HydrationRequest, HydrationRequestSpec, LaboratoryAccess, LedgerAnchor, SemanticHandle,
+    SemanticHandleSpec, SessionId, TimestampNs,
 };
 
 fn basis() -> ContractBasis {
@@ -28,11 +28,7 @@ fn anchor() -> LedgerAnchor {
 }
 
 fn levels() -> BTreeSet<HydrationLevel> {
-    BTreeSet::from([
-        HydrationLevel::H0,
-        HydrationLevel::H1,
-        HydrationLevel::H2,
-    ])
+    BTreeSet::from([HydrationLevel::H0, HydrationLevel::H1, HydrationLevel::H2])
 }
 
 fn capabilities() -> BTreeMap<HydrationLevel, BTreeSet<String>> {
@@ -127,10 +123,7 @@ fn request(
         anchor: handle.anchor.clone(),
         requested_level: level,
         allow_lower_level: false,
-        available_capabilities: capabilities()
-            .into_values()
-            .flatten()
-            .collect(),
+        available_capabilities: capabilities().into_values().flatten().collect(),
         authorized_privacy_classes: BTreeSet::from(["private:property".to_owned()]),
         budget: costs()
             .get(&level)

@@ -1,9 +1,7 @@
 //! Child-first authority publisher.
 
 use fss_core::{BatchId, ContentDigest, EvidenceDelta, EvidenceDeltaBatch, LedgerAnchor};
-use fss_ledger::{
-    DurableAppendReconciliation, DurableReferenceLedger, IncompleteTailPolicy,
-};
+use fss_ledger::{DurableAppendReconciliation, DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::VerifiedObjectCatalog;
 
 use crate::PublicationError;
@@ -50,10 +48,7 @@ impl<'a, C: VerifiedObjectCatalog> AuthorityPublisher<'a, C> {
     /// Missing, merely staged, or corrupt children fail before journal I/O and leave the authority
     /// sequence unchanged. An indeterminate journal outcome remains owned by `fss-ledger` and must
     /// be reconciled rather than retried blindly.
-    pub fn append(
-        &mut self,
-        batch: EvidenceDeltaBatch,
-    ) -> Result<LedgerAnchor, PublicationError> {
+    pub fn append(&mut self, batch: EvidenceDeltaBatch) -> Result<LedgerAnchor, PublicationError> {
         self.objects.require_all_verified(&batch.children)?;
         let anchor = self.ledger.append(batch)?.anchor.clone();
         Ok(anchor)
