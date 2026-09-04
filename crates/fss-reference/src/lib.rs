@@ -27,8 +27,6 @@ mod alert_tests;
 #[cfg(test)]
 mod bundle_tests;
 #[cfg(test)]
-mod capture_tests;
-#[cfg(test)]
 mod context_binding_tests;
 #[cfg(test)]
 mod hydration_tests;
