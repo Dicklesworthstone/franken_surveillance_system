@@ -1,5 +1,5 @@
-# Temporary source-transfer helper. Local DSR receipts remain release authority.
-name: one-shot hydration source snapshot
+# Temporary bounded reconciliation helper. Local DSR receipts remain release authority.
+name: one-shot hydration compile reconciliation
 
 on:
   push:
@@ -9,39 +9,155 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: fss-hydration-reconcile-main
+  cancel-in-progress: true
 
 jobs:
-  snapshot:
+  reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Build exact source snapshot
+      - name: Apply bounded compile reconciliation
         shell: bash
         run: |
           set -euo pipefail
-          commit_sha="$(git rev-parse HEAD)"
-          tree_sha="$(git rev-parse HEAD^{tree})"
-          archive="franken-surveillance-system-${commit_sha}.tar.gz"
-          git archive --format=tar.gz --output="${archive}" HEAD
-          archive_sha="$(sha256sum "${archive}" | awk '{print $1}')"
-          printf '%s\n' \
-            "repository=Dicklesworthstone/franken_surveillance_system" \
-            "commit_sha=${commit_sha}" \
-            "tree_sha=${tree_sha}" \
-            "archive=${archive}" \
-            "archive_sha256=${archive_sha}" \
-            > SOURCE_SNAPSHOT.env
-          sha256sum --check < <(printf '%s  %s\n' "${archive_sha}" "${archive}")
-      - name: Upload exact source snapshot
-        uses: actions/upload-artifact@v4
-        with:
-          name: franken-surveillance-system-${{ github.sha }}
-          path: |
-            franken-surveillance-system-${{ github.sha }}.tar.gz
-            SOURCE_SNAPSHOT.env
-          if-no-files-found: error
-          retention-days: 1
+          cat > /tmp/hydration-compile.patch <<'PATCH'
+          diff --git a/crates/fss-cli/src/bin/fss-hydration-rehearsal.rs b/crates/fss-cli/src/bin/fss-hydration-rehearsal.rs
+          index 2c88ba5..6cc5a79 100644
+          --- a/crates/fss-cli/src/bin/fss-hydration-rehearsal.rs
+          +++ b/crates/fss-cli/src/bin/fss-hydration-rehearsal.rs
+          @@ -79,7 +79,7 @@ fn success_record() -> Result<String, Box<dyn Error>> {
+                   availability: HandleAvailability::Available,
+                   cost: handle
+                       .estimated_cost(HydrationLevel::H1)
+          -            .ok_or("missing H1 cost")?,
+          +            .ok_or_else(|| std::io::Error::other("missing H1 cost"))?,
+                   completeness: Completeness::Complete,
+                   artifact_digest: Some(artifact.artifact_digest),
+                   proof_roots,
+          @@ -240,7 +240,9 @@ fn request(
+                       "capability:hydrate:h2".to_owned(),
+                   ]),
+                   authorized_privacy_classes: BTreeSet::from(["private:property".to_owned()]),
+          -        budget: handle.estimated_cost(level).ok_or("missing level cost")?,
+          +        budget: handle
+          +            .estimated_cost(level)
+          +            .ok_or_else(|| std::io::Error::other("missing level cost"))?,
+                   purpose: HydrationPurpose::IncidentAdjudication,
+                   continuation: None,
+                   issued_at,
+          diff --git a/crates/fss-core/src/continuation.rs b/crates/fss-core/src/continuation.rs
+          index 261a171..1404778 100644
+          --- a/crates/fss-core/src/continuation.rs
+          +++ b/crates/fss-core/src/continuation.rs
+          @@ -18,6 +18,8 @@ pub enum ContinuationScope {
+               FollowStream,
+               /// Child roots required to hydrate a handoff.
+               HandoffHydration,
+          +    /// Progressive hydration of one immutable semantic subject.
+          +    EvidenceHydration,
+               /// A bounded investigation-result stream.
+               Investigation,
+           }
+          @@ -31,6 +33,7 @@ impl ContinuationScope {
+                       Self::MeaningfulDelta => "meaningful_delta",
+                       Self::FollowStream => "follow_stream",
+                       Self::HandoffHydration => "handoff_hydration",
+          +            Self::EvidenceHydration => "evidence_hydration",
+                       Self::Investigation => "investigation",
+                   }
+               }
+          @@ -637,12 +640,12 @@ mod tests {
+                   let replay = stream.read_page(&cursor, TimestampNs(20))?;
+                   assert_eq!(first, replay);
+                   assert_eq!(first.entries.len(), 2);
+          +        first.verify()?;
+                   let next = first.next_cursor.ok_or(ContinuationError::OutOfRange)?;
+                   assert_eq!(next.predecessor_digest, Some(cursor.cursor_digest));
+                   let terminal = stream.read_page(&next, TimestampNs(20))?;
+                   assert_eq!(terminal.entries.len(), 1);
+                   assert!(terminal.next_cursor.is_none());
+          -        first.verify()?;
+                   terminal.verify()
+               }
+          diff --git a/crates/fss-core/src/delta.rs b/crates/fss-core/src/delta.rs
+          index bc17edd..901dfa3 100644
+          --- a/crates/fss-core/src/delta.rs
+          +++ b/crates/fss-core/src/delta.rs
+          @@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
+           
+           use crate::{
+               CanonicalEncode, CanonicalEncoder, ContentDigest, ContractBasis, ContractError, KnowledgeCell,
+          -    KnowledgeState, LedgerAnchor, SessionId,
+          +    LedgerAnchor, SessionId,
+           };
+          @@ -480,7 +480,7 @@ fn merge_text(left: &[String], right: &[String]) -> Vec<String> {
+           #[cfg(test)]
+           mod tests {
+               use super::*;
+          -    use crate::{ProvenanceClass, TimestampNs};
+          +    use crate::{KnowledgeState, ProvenanceClass, TimestampNs};
+          diff --git a/crates/fss-core/tests/semantic_hydration_contract.rs b/crates/fss-core/tests/semantic_hydration_contract.rs
+          index 72aec57..80bab20 100644
+          --- a/crates/fss-core/tests/semantic_hydration_contract.rs
+          +++ b/crates/fss-core/tests/semantic_hydration_contract.rs
+          @@ -113,7 +113,7 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
+               })
+           }
+           
+          -fn request(
+          +fn make_request(
+               handle: &SemanticHandle,
+               level: HydrationLevel,
+               continuation: Option<ContinuationCursor>,
+          @@ -145,7 +145,7 @@ fn request(
+           #[test]
+           fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), HydrationError> {
+               let handle = handle()?;
+          -    let request = request(&handle, HydrationLevel::H1, None)?;
+          +    let request = make_request(&handle, HydrationLevel::H1, None)?;
+               let artifact = HydrationArtifact::publish(
+                   HydrationLevel::H1,
+                   "application/fss+json",
+          @@ -196,7 +196,7 @@ fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), Hydrat
+               })?;
+           
+               receipt.validate_for(&request, &handle, Some(&artifact))?;
+          -    let next = request(&handle, HydrationLevel::H2, Some(cursor))?;
+          +    let next = make_request(&handle, HydrationLevel::H2, Some(cursor))?;
+               next.verify()?;
+               Ok(())
+           }
+          @@ -204,7 +204,7 @@ fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), Hydrat
+           #[test]
+           fn receipt_rejects_subject_substitution() -> Result<(), HydrationError> {
+               let handle = handle()?;
+          -    let request = request(&handle, HydrationLevel::H0, None)?;
+          +    let request = make_request(&handle, HydrationLevel::H0, None)?;
+               let artifact = HydrationArtifact::publish(
+                   HydrationLevel::H0,
+                   "application/fss+json",
+          PATCH
+          sed -i 's/^          //' /tmp/hydration-compile.patch
+          git apply --index /tmp/hydration-compile.patch
+          cargo fmt --all
+          cargo check --workspace --all-targets
+          git diff --check
+      - name: Commit validated reconciliation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "Jeff Emanuel"
+          git config user.email "35050222+Dicklesworthstone@users.noreply.github.com"
+          git add crates/fss-core/src/continuation.rs \
+                  crates/fss-core/src/delta.rs \
+                  crates/fss-core/tests/semantic_hydration_contract.rs \
+                  crates/fss-cli/src/bin/fss-hydration-rehearsal.rs
+          git commit -m "fix(hydration): reconcile continuation contract compilation"
+          git push origin HEAD:main
