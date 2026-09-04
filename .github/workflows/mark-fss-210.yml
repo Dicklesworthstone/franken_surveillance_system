@@ -1,0 +1,36 @@
+name: mark-fss-210
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/mark-fss-210.yml
+
+permissions:
+  contents: write
+
+jobs:
+  mark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify bead updater
+        run: python3 -m unittest tests.test_beads_mark
+      - name: Mark FSS-210 in progress
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "fss-beads-bot"
+          git config user.email "fss-beads-bot@users.noreply.github.com"
+          git pull --rebase origin main
+          python3 scripts/beads_mark.py \
+            --external-ref FSS-210 \
+            --status in_progress \
+            --author repository-agent \
+            --comment "Implementation started: immutable semantic handles, H0-H4 progressive hydration contracts, exact continuation binding, reference privacy/capability/budget selection, and deterministic qualification are being landed incrementally on main. Completion remains gated on schemas, registry alignment, full qualification, documentation, and retained proof." 
+          git add .beads/issues.jsonl
+          git commit -m "beads: mark FSS-210 in progress"
+          git push origin HEAD:main
