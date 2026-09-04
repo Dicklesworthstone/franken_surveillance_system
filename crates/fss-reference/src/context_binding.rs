@@ -74,7 +74,7 @@ pub struct ReferenceExpansionBindingSpec {
     pub descriptor: SemanticHandle,
     /// Exact hydration level exposed by this slot.
     pub hydration_level: HydrationLevel,
-    /// Bounded description of the additional context.
+    /// Bounded item-local purpose. Receipt-owned slots use the receipt's canonical purpose.
     pub purpose: String,
 }
 
@@ -98,14 +98,24 @@ impl BoundReferenceSituationPublication {
         specs: Vec<ReferenceExpansionBindingSpec>,
     ) -> Result<Self, ReferenceContextBindingError> {
         publication.verify()?;
+        let receipt_purposes: BTreeMap<_, _> = publication
+            .compression_receipt
+            .expansion_handles
+            .iter()
+            .map(|expansion| (expansion.handle.clone(), expansion.purpose.clone()))
+            .collect();
         let mut bindings = Vec::with_capacity(specs.len());
         let mut descriptors = Vec::with_capacity(specs.len());
         for spec in specs {
+            let purpose = receipt_purposes
+                .get(&spec.slot_id)
+                .cloned()
+                .unwrap_or(spec.purpose);
             bindings.push(ContextExpansionBinding::publish(
                 spec.slot_id,
                 &spec.descriptor,
                 spec.hydration_level,
-                spec.purpose,
+                purpose,
             )?);
             descriptors.push(spec.descriptor);
         }
