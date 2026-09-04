@@ -9,6 +9,7 @@
 mod alert;
 mod bundle;
 mod capture;
+mod context_binding;
 mod delivery;
 mod error;
 mod hydration;
@@ -25,6 +26,10 @@ mod source;
 mod alert_tests;
 #[cfg(test)]
 mod bundle_tests;
+#[cfg(test)]
+mod capture_tests;
+#[cfg(test)]
+mod context_binding_tests;
 #[cfg(test)]
 mod hydration_tests;
 #[cfg(test)]
@@ -50,6 +55,10 @@ pub use alert::{
 };
 pub use bundle::{ReplayBundle, ReplayBundleError, ReplayCursor};
 pub use capture::{ReferenceCapture, ReferenceCaptureReceipt, run_reference_capture};
+pub use context_binding::{
+    BoundReferenceSituationPublication, ReferenceContextBindingError,
+    ReferenceExpansionBindingSpec, seal_bound_reference_publication_handoff,
+};
 pub use delivery::{
     DeliveryContinuity, DeliveryDirective, DeliveryMutation, DeliveryPacket, DeliveryPlan,
     MAX_DELIVERY_DIRECTIVES,
