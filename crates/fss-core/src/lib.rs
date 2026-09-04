@@ -9,6 +9,7 @@
 mod agent;
 mod canonical;
 mod compression;
+mod context_binding;
 mod continuation;
 mod contract;
 mod delta;
@@ -27,6 +28,10 @@ pub use agent::{
 };
 pub use canonical::{CanonicalEncode, CanonicalEncoder};
 pub use compression::SemanticCompressionReceipt;
+pub use context_binding::{
+    ContextBindingError, ContextExpansionBinding, ContextExpansionBindingSet,
+    SemanticHandleReference,
+};
 pub use continuation::*;
 pub use contract::{
     BudgetVector, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
