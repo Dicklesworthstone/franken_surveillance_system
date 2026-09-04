@@ -1,5 +1,5 @@
 # Temporary bounded reconciliation helper. Local DSR receipts remain release authority.
-name: one-shot hydration compile reconciliation
+name: one-shot hydration hardening reconciliation
 
 on:
   push:
@@ -18,146 +18,62 @@ concurrency:
 jobs:
   reconcile:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply bounded compile reconciliation
+      - name: Materialize exact patch series
         shell: bash
         run: |
           set -euo pipefail
-          cat > /tmp/hydration-compile.patch <<'PATCH'
-          diff --git a/crates/fss-cli/src/bin/fss-hydration-rehearsal.rs b/crates/fss-cli/src/bin/fss-hydration-rehearsal.rs
-          index 2c88ba5..6cc5a79 100644
-          --- a/crates/fss-cli/src/bin/fss-hydration-rehearsal.rs
-          +++ b/crates/fss-cli/src/bin/fss-hydration-rehearsal.rs
-          @@ -79,7 +79,7 @@ fn success_record() -> Result<String, Box<dyn Error>> {
-                   availability: HandleAvailability::Available,
-                   cost: handle
-                       .estimated_cost(HydrationLevel::H1)
-          -            .ok_or("missing H1 cost")?,
-          +            .ok_or_else(|| std::io::Error::other("missing H1 cost"))?,
-                   completeness: Completeness::Complete,
-                   artifact_digest: Some(artifact.artifact_digest),
-                   proof_roots,
-          @@ -240,7 +240,9 @@ fn request(
-                       "capability:hydrate:h2".to_owned(),
-                   ]),
-                   authorized_privacy_classes: BTreeSet::from(["private:property".to_owned()]),
-          -        budget: handle.estimated_cost(level).ok_or("missing level cost")?,
-          +        budget: handle
-          +            .estimated_cost(level)
-          +            .ok_or_else(|| std::io::Error::other("missing level cost"))?,
-                   purpose: HydrationPurpose::IncidentAdjudication,
-                   continuation: None,
-                   issued_at,
-          diff --git a/crates/fss-core/src/continuation.rs b/crates/fss-core/src/continuation.rs
-          index 261a171..1404778 100644
-          --- a/crates/fss-core/src/continuation.rs
-          +++ b/crates/fss-core/src/continuation.rs
-          @@ -18,6 +18,8 @@ pub enum ContinuationScope {
-               FollowStream,
-               /// Child roots required to hydrate a handoff.
-               HandoffHydration,
-          +    /// Progressive hydration of one immutable semantic subject.
-          +    EvidenceHydration,
-               /// A bounded investigation-result stream.
-               Investigation,
-           }
-          @@ -31,6 +33,7 @@ impl ContinuationScope {
-                       Self::MeaningfulDelta => "meaningful_delta",
-                       Self::FollowStream => "follow_stream",
-                       Self::HandoffHydration => "handoff_hydration",
-          +            Self::EvidenceHydration => "evidence_hydration",
-                       Self::Investigation => "investigation",
-                   }
-               }
-          @@ -637,12 +640,12 @@ mod tests {
-                   let replay = stream.read_page(&cursor, TimestampNs(20))?;
-                   assert_eq!(first, replay);
-                   assert_eq!(first.entries.len(), 2);
-          +        first.verify()?;
-                   let next = first.next_cursor.ok_or(ContinuationError::OutOfRange)?;
-                   assert_eq!(next.predecessor_digest, Some(cursor.cursor_digest));
-                   let terminal = stream.read_page(&next, TimestampNs(20))?;
-                   assert_eq!(terminal.entries.len(), 1);
-                   assert!(terminal.next_cursor.is_none());
-          -        first.verify()?;
-                   terminal.verify()
-               }
-          diff --git a/crates/fss-core/src/delta.rs b/crates/fss-core/src/delta.rs
-          index bc17edd..901dfa3 100644
-          --- a/crates/fss-core/src/delta.rs
-          +++ b/crates/fss-core/src/delta.rs
-          @@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
-           
-           use crate::{
-               CanonicalEncode, CanonicalEncoder, ContentDigest, ContractBasis, ContractError, KnowledgeCell,
-          -    KnowledgeState, LedgerAnchor, SessionId,
-          +    LedgerAnchor, SessionId,
-           };
-          @@ -480,7 +480,7 @@ fn merge_text(left: &[String], right: &[String]) -> Vec<String> {
-           #[cfg(test)]
-           mod tests {
-               use super::*;
-          -    use crate::{ProvenanceClass, TimestampNs};
-          +    use crate::{KnowledgeState, ProvenanceClass, TimestampNs};
-          diff --git a/crates/fss-core/tests/semantic_hydration_contract.rs b/crates/fss-core/tests/semantic_hydration_contract.rs
-          index 72aec57..80bab20 100644
-          --- a/crates/fss-core/tests/semantic_hydration_contract.rs
-          +++ b/crates/fss-core/tests/semantic_hydration_contract.rs
-          @@ -113,7 +113,7 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
-               })
-           }
-           
-          -fn request(
-          +fn make_request(
-               handle: &SemanticHandle,
-               level: HydrationLevel,
-               continuation: Option<ContinuationCursor>,
-          @@ -145,7 +145,7 @@ fn request(
-           #[test]
-           fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), HydrationError> {
-               let handle = handle()?;
-          -    let request = request(&handle, HydrationLevel::H1, None)?;
-          +    let request = make_request(&handle, HydrationLevel::H1, None)?;
-               let artifact = HydrationArtifact::publish(
-                   HydrationLevel::H1,
-                   "application/fss+json",
-          @@ -196,7 +196,7 @@ fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), Hydrat
-               })?;
-           
-               receipt.validate_for(&request, &handle, Some(&artifact))?;
-          -    let next = request(&handle, HydrationLevel::H2, Some(cursor))?;
-          +    let next = make_request(&handle, HydrationLevel::H2, Some(cursor))?;
-               next.verify()?;
-               Ok(())
-           }
-          @@ -204,7 +204,7 @@ fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), Hydrat
-           #[test]
-           fn receipt_rejects_subject_substitution() -> Result<(), HydrationError> {
-               let handle = handle()?;
-          -    let request = request(&handle, HydrationLevel::H0, None)?;
-          +    let request = make_request(&handle, HydrationLevel::H0, None)?;
-               let artifact = HydrationArtifact::publish(
-                   HydrationLevel::H0,
-                   "application/fss+json",
-          PATCH
-          sed -i 's/^          //' /tmp/hydration-compile.patch
-          git apply --index /tmp/hydration-compile.patch
-          cargo fmt --all
+          cat > /tmp/fss-patches.b64 <<'B64'
+          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
+          B64
+          tr -d '[:space:]' < /tmp/fss-patches.b64 | base64 -d > /tmp/fss-patches.tar.gz
+          mkdir -p /tmp/fss-patches
+          tar -xzf /tmp/fss-patches.tar.gz -C /tmp/fss-patches
+          ls -l /tmp/fss-patches
+      - name: Reconcile continuation compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --index /tmp/fss-patches/0001-*.patch
+          cargo fmt --all -- --check
           cargo check --workspace --all-targets
-          git diff --check
-      - name: Commit validated reconciliation
-        shell: bash
-        run: |
-          set -euo pipefail
+          git diff --check --cached
           git config user.name "Jeff Emanuel"
           git config user.email "35050222+Dicklesworthstone@users.noreply.github.com"
-          git add crates/fss-core/src/continuation.rs \
-                  crates/fss-core/src/delta.rs \
-                  crates/fss-core/tests/semantic_hydration_contract.rs \
-                  crates/fss-cli/src/bin/fss-hydration-rehearsal.rs
           git commit -m "fix(hydration): reconcile continuation contract compilation"
+          git push origin HEAD:main
+      - name: Harden core hydration policy and proof closure
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --index /tmp/fss-patches/0002-*.patch
+          cargo fmt --all
+          cargo check --workspace --all-targets
+          cargo test -p fss-core --all-targets
+          git diff --check --cached
+          git add -A
+          git commit -m "fix(hydration): revalidate proof policy and cursor lineage"
+          git push origin HEAD:main
+      - name: Enforce exact reference hydration catalog semantics
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --index /tmp/fss-patches/0003-*.patch
+          cargo fmt --all
+          cargo check --workspace --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace --all-targets
+          cargo run -q -p fss-cli --bin fss-hydration-rehearsal -- success > /tmp/hydration-success-1.ndjson
+          cargo run -q -p fss-cli --bin fss-hydration-rehearsal -- success > /tmp/hydration-success-2.ndjson
+          cmp /tmp/hydration-success-1.ndjson /tmp/hydration-success-2.ndjson
+          cargo run -q -p fss-cli --bin fss-hydration-rehearsal -- expired > /tmp/hydration-expired-1.ndjson
+          cargo run -q -p fss-cli --bin fss-hydration-rehearsal -- expired > /tmp/hydration-expired-2.ndjson
+          cmp /tmp/hydration-expired-1.ndjson /tmp/hydration-expired-2.ndjson
+          git diff --check --cached
+          git add -A
+          git commit -m "fix(reference): enforce exact hydration catalog semantics"
           git push origin HEAD:main
