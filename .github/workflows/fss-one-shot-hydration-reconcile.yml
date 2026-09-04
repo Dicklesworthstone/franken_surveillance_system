@@ -1,4 +1,5 @@
-name: one-shot hydration reconciliation
+# Temporary source-transfer helper. Local DSR receipts remain release authority.
+name: one-shot hydration source snapshot
 
 on:
   push:
@@ -8,19 +9,39 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
-
-concurrency:
-  group: fss-one-shot-hydration-reconcile
-  cancel-in-progress: false
+  contents: read
 
 jobs:
-  reconcile:
+  snapshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Execute repository-owned reconciliation
-        run: python3 scripts/fss_one_shot_hydration_reconcile.py
+      - name: Build exact source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          commit_sha="$(git rev-parse HEAD)"
+          tree_sha="$(git rev-parse HEAD^{tree})"
+          archive="franken-surveillance-system-${commit_sha}.tar.gz"
+          git archive --format=tar.gz --output="${archive}" HEAD
+          archive_sha="$(sha256sum "${archive}" | awk '{print $1}')"
+          printf '%s\n' \
+            "repository=Dicklesworthstone/franken_surveillance_system" \
+            "commit_sha=${commit_sha}" \
+            "tree_sha=${tree_sha}" \
+            "archive=${archive}" \
+            "archive_sha256=${archive_sha}" \
+            > SOURCE_SNAPSHOT.env
+          sha256sum --check < <(printf '%s  %s\n' "${archive_sha}" "${archive}")
+      - name: Upload exact source snapshot
+        uses: actions/upload-artifact@v4
+        with:
+          name: franken-surveillance-system-${{ github.sha }}
+          path: |
+            franken-surveillance-system-${{ github.sha }}.tar.gz
+            SOURCE_SNAPSHOT.env
+          if-no-files-found: error
+          retention-days: 1
