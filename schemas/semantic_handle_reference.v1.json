@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/semantic_handle_reference.v1.json",
+  "title": "Semantic Handle Reference v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "handleId",
+    "descriptorDigest",
+    "subjectDigest",
+    "contractBasisDigest",
+    "descriptorAnchor",
+    "hydrationLevel",
+    "ladderPolicyDigest",
+    "referenceDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.semantic_handle_reference.v1"
+    },
+    "handleId": {
+      "$ref": "semantic_handle.v1.json#/$defs/stableId"
+    },
+    "descriptorDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    },
+    "subjectDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    },
+    "contractBasisDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    },
+    "descriptorAnchor": {
+      "$ref": "evidence_anchor.v1.json"
+    },
+    "hydrationLevel": {
+      "$ref": "semantic_handle.v1.json#/$defs/level"
+    },
+    "ladderPolicyDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    },
+    "referenceDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    }
+  }
+}
