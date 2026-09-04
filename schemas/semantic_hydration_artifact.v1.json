@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/semantic_hydration_artifact.v1.json",
+  "title": "Semantic Hydration Artifact v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "level",
+    "contentType",
+    "payloadBase64",
+    "payloadDigest",
+    "proofRoots",
+    "completeness",
+    "artifactDigest"
+  ],
+  "properties": {
+    "schema": {"const": "fss.semantic_hydration_artifact.v1"},
+    "level": {"enum": ["H0", "H1", "H2", "H3", "H4"]},
+    "contentType": {"type": "string", "minLength": 1, "maxLength": 4096},
+    "payloadBase64": {
+      "type": "string",
+      "contentEncoding": "base64",
+      "maxLength": 89478488
+    },
+    "payloadDigest": {"$ref": "#/$defs/digest"},
+    "proofRoots": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/digest"}
+    },
+    "completeness": {"enum": ["complete", "bounded", "partial"]},
+    "appliedTransform": {"type": ["string", "null"], "maxLength": 4096},
+    "artifactDigest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
