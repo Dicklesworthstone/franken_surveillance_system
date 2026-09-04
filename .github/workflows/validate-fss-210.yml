@@ -1,0 +1,71 @@
+name: validate-fss-210
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/validate-fss-210.yml
+
+permissions:
+  contents: write
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Configure repository writer
+        run: |
+          git config user.name "fss-qualification-bot"
+          git config user.email "fss-qualification-bot@users.noreply.github.com"
+          git pull --rebase origin main
+      - name: Normalize source and integrity manifests
+        run: |
+          cargo fmt --all
+          python3 scripts/generate-manifest.py
+          if ! git diff --quiet; then
+            git add -A
+            git commit -m "style(agent): normalize hydration slice"
+            git push origin HEAD:main
+          fi
+      - name: Compile every target
+        run: cargo check --workspace --all-targets
+      - name: Deny Clippy warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Run Rust tests
+        run: cargo test --workspace
+      - name: Run Python tests
+        run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Run policy qualification
+        run: scripts/qualify.sh --lane policy --no-receipt
+      - name: Publish retained qualification proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p proofs/dev
+          commit_sha="$(git rev-parse HEAD)"
+          tree_sha="$(git rev-parse HEAD^{tree})"
+          cat > proofs/dev/FSS-210-reference-qualification.json <<JSON
+          {
+            "schema": "fss.development_qualification.v1",
+            "task": "FSS-210",
+            "commit_sha": "${commit_sha}",
+            "tree_sha": "${tree_sha}",
+            "checks": [
+              "cargo fmt --all",
+              "cargo check --workspace --all-targets",
+              "cargo clippy --workspace --all-targets -- -D warnings",
+              "cargo test --workspace",
+              "python3 -m unittest discover -s tests -p test_*.py",
+              "scripts/qualify.sh --lane policy --no-receipt"
+            ],
+            "authority": "supplementary development proof; local DSR remains release authority"
+          }
+          JSON
+          python3 scripts/generate-manifest.py
+          git add proofs/dev/FSS-210-reference-qualification.json MANIFEST.sha256 MANIFEST.delta.sha256
+          git commit -m "proof(agent): retain FSS-210 reference qualification"
+          git push origin HEAD:main
