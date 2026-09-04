@@ -1,0 +1,92 @@
+name: qualify-fss-hydration-cli
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/qualify-fss-hydration-cli.yml
+
+permissions:
+  contents: write
+
+jobs:
+  qualify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Rebase and normalize executable surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "fss-qualification-bot"
+          git config user.email "fss-qualification-bot@users.noreply.github.com"
+          git pull --rebase origin main
+          chmod +x scripts/qualify-hydration.sh scripts/beads_mark.py
+          cargo fmt --all
+      - name: Compile and qualify deterministic transcripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo check --workspace --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          scripts/qualify-hydration.sh
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          scripts/qualify.sh --lane policy --no-receipt
+      - name: Reconcile documentation and proof scope
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def append_once(path: str, marker: str, block: str) -> None:
+              file = Path(path)
+              text = file.read_text()
+              if marker not in text:
+                  file.write_text(text.rstrip() + "\n\n" + block.strip() + "\n")
+
+          append_once(
+              "README.md",
+              "<!-- FSS-HYDRATION-CLI -->",
+              '''<!-- FSS-HYDRATION-CLI -->
+          ### Deterministic hydration rehearsal
+
+          `cargo run -p fss-cli --bin fss-hydration-rehearsal -- --scenario <name>` exposes the reference hydration contract through a real NDJSON-producing entrypoint. Supported scenarios are `success`, `budget-fallback`, `privacy-denied`, `expired`, `h4-denied`, and `h4-qualified`. `scripts/qualify-hydration.sh` runs every scenario twice, requires byte-identical transcripts, parses each record, and asserts the exact typed outcome, level, availability, completeness, continuation, and error semantics.
+          ''',
+          )
+          append_once(
+              "CHANGELOG.md",
+              "<!-- FSS-HYDRATION-CLI-CHANGELOG -->",
+              '''<!-- FSS-HYDRATION-CLI-CHANGELOG -->
+          - Added `fss-hydration-rehearsal` and `scripts/qualify-hydration.sh`, providing byte-stable NDJSON evidence for successful H2 expansion, H3-to-H1 budget fallback, privacy denial, retention expiry, H4 denial, and qualified H4 access.
+          ''',
+          )
+          append_once(
+              "IMPLEMENTATION_STATUS.md",
+              "<!-- FSS-HYDRATION-CLI-STATUS -->",
+              '''<!-- FSS-HYDRATION-CLI-STATUS -->
+          ### FSS-210 executable reference surface
+
+          The reference hydration operation now has a real CLI entrypoint and deterministic transcript qualification across six representative success and safe-failure schedules. This improves Rust API/CLI parity, but MCP, TUI, report, and handoff transcript equivalence remain open and therefore do not justify closing FSS-210.
+          ''',
+          )
+          PY
+          rm -f \
+            .github/workflows/mark-fss-210.yml \
+            .github/workflows/validate-fss-210.yml \
+            .github/workflows/normalize-fss-210-api.yml \
+            .github/workflows/repair-fss-210.yml \
+            .github/workflows/finalize-fss-210-reference.yml \
+            .github/workflows/harden-fss-210-receipts.yml \
+            .github/workflows/qualify-fss-hydration-cli.yml
+          python3 scripts/generate-manifest.py
+          cargo fmt --all --check
+          scripts/qualify-hydration.sh
+          scripts/qualify.sh --lane full --no-receipt
+          git add -A
+          git commit -m "agent: qualify semantic hydration CLI transcripts"
+          git push origin HEAD:main
