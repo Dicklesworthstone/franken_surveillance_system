@@ -1,0 +1,213 @@
+name: agent-hydration-finalize
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/agent-hydration-finalize.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: agent-hydration-finalize
+  cancel-in-progress: false
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out exact main revision
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Patch documentation and beads atomically
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          root = Path.cwd()
+          marker = "<!-- semantic-hydration-reference-2026-09-03 -->"
+
+          def insert_after_heading(path: Path, heading: str, block: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              if marker in text:
+                  return
+              needle = heading + "\n"
+              index = text.find(needle)
+              if index < 0:
+                  raise RuntimeError(f"heading {heading!r} not found in {path}")
+              insert_at = index + len(needle)
+              path.write_text(
+                  text[:insert_at] + "\n" + block.rstrip() + "\n\n" + text[insert_at:].lstrip("\n"),
+                  encoding="utf-8",
+              )
+
+          def append_section(path: Path, block: str) -> None:
+              text = path.read_text(encoding="utf-8")
+              if marker in text:
+                  return
+              path.write_text(text.rstrip() + "\n\n" + block.rstrip() + "\n", encoding="utf-8")
+
+          insert_after_heading(
+              root / "CHANGELOG.md",
+              "# Changelog",
+              f"""{marker}
+          ## 2026-09-03 — Agent semantic hydration reference
+
+          ### Added
+
+          - Immutable `SemanticHandle` descriptors whose stable identity is derived from the exact subject while availability, retention, cost, and policy remain versioned descriptor state.
+          - A bounded H0→H4 hydration ladder with exact capability, privacy, budget, purpose, proof-root, transform, and continuation semantics.
+          - Deterministic reference hydration that selects the richest permitted level, returns explicit deleted/expired/corrupt/superseded states, and never silently rebinds an old handle to newer evidence.
+          - Regression coverage for binary-content disclosure at H0/H1, mandatory H2 transforms, budget downgrade, capability and privacy denial, H4 qualification/debug grants, progressive cursors, expiry, supersession, and deterministic retry.
+
+          ### Fixed
+
+          - Hydration receipts now bind the exact descriptor, immutable subject, authority anchor, observed availability at receipt time, full resource cost, artifact digest, proof roots, invalidators, and next continuation.
+          """,
+          )
+
+          insert_after_heading(
+              root / "IMPLEMENTATION_STATUS.md",
+              "# Implementation Status",
+              f"""{marker}
+          ## 2026-09-03 — Semantic hydration reference
+
+          **State:** deterministic reference implementation complete; production integration and release proof remain incomplete.
+
+          Implemented in `fss-core` and `fss-reference`:
+
+          - immutable, content-derived `SemanticHandle` identities with separately versioned descriptor state;
+          - exact descriptor, subject, ContractBasis, authority-anchor, retention, availability, privacy, capability, and multidimensional-cost binding;
+          - the bounded H0→H4 hydration ladder, with H0/H1 restricted to typed semantic payloads, H2 requiring an explicit transform, and H4 restricted to qualification or an explicit debugging grant;
+          - deterministic richest-permitted selection, explicit lower-level fallback, proof-bearing artifacts and receipts, exact progressive continuation cursors, and stable recovery-rich failures;
+          - explicit superseded, deleted, expired, corrupt, privacy-transformed, and not-observable outcomes that never silently resolve to a newer subject;
+          - focused deterministic, tamper, disclosure-boundary, budget, authorization, expiry, supersession, and cursor regressions.
+
+          `FSS-207` is marked **in progress**, not complete. Remaining closure work includes authoritative capability-grant verification at the production boundary, registered wire schemas and cross-surface CLI/MCP/TUI/report transcript equivalence, durable object-store integration, cancellation/disconnect and multi-agent qualification families, `QL-AGENT-001`, `GATE-115`, and aggregate DSR release proof.
+          """,
+          )
+
+          append_section(
+              root / "README.md",
+              f"""{marker}
+          ## Semantic handles and progressive hydration
+
+          The deterministic reference now exposes immutable semantic handles rather than opaque “fetch more” hints. A `SemanticHandle` names one exact subject forever; availability, retention, policy, and cost changes create a new descriptor revision without rebinding the handle.
+
+          Hydration proceeds through a bounded H0→H4 ladder. Every request is bound to an exact `ContractBasis`, session, authority anchor, descriptor digest, subject digest, privacy class, capability set, multidimensional budget, declared purpose, and optional exact continuation cursor. The reference returns the richest permitted level, or a lower level only when the caller explicitly permits fallback.
+
+          H0 and H1 carry typed semantic payloads rather than arbitrary binary media. H2 requires an explicit redaction or derivation transform. H3 exposes authorized source evidence. H4 is restricted to qualification or an explicitly granted debugging path. Every successful response carries the exact artifact digest, retained proof roots, cost, completeness, invalidators, and next cursor.
+
+          Expired, deleted, corrupt, superseded, privacy-transformed, and not-observable subjects remain explicit typed outcomes. The implementation never silently resolves an old handle to “latest” evidence and never treats a descriptor as effect authority.
+
+          This is a deterministic reference substrate, not a production-completion claim. Production grant verification, durable custody integration, registered wire schemas, cross-surface parity, cancellation campaigns, and aggregate qualification remain tracked work.
+          """,
+          )
+
+          append_section(
+              root / "ROADMAP.md",
+              f"""{marker}
+          ## Agent membrane continuation: production hydration
+
+          The next coherent vertical slice after the deterministic semantic-hydration reference is production authority and custody integration. It must resolve current principal grants independently of caller-supplied capability claims, hydrate only from durable content-addressed custody, preserve exact descriptor revisions across retention and deletion transitions, and maintain cancellation/disconnect-safe continuations.
+
+          Closure of `FSS-207` additionally requires registered wire schemas; equivalent Rust API, CLI, MCP, TUI, report, and handoff transcripts; multi-agent and fault campaigns; retained `QL-AGENT-001` evidence; `GATE-115`; and aggregate DSR release proof. Until those proofs exist, the bead remains in progress.
+          """,
+          )
+
+          issues_path = root / ".beads" / "issues.jsonl"
+          raw_lines = issues_path.read_text(encoding="utf-8").splitlines()
+          rows = [json.loads(line) for line in raw_lines if line.strip()]
+          matches = [row for row in rows if row.get("external_ref") == "FSS-207"]
+          if len(matches) != 1:
+              raise RuntimeError(f"expected exactly one FSS-207 row, found {len(matches)}")
+          issue = matches[0]
+          issue["status"] = "in_progress"
+          issue["updated_at"] = "2026-09-03T21:30:00Z"
+
+          progress_key = "Semantic hydration deterministic reference progress — 2026-09-03"
+          comments = issue.setdefault("comments", [])
+          if not any(progress_key in str(comment.get("text", "")) for comment in comments):
+              max_comment_id = max(
+                  (
+                      int(comment.get("id", 0))
+                      for row in rows
+                      for comment in row.get("comments", [])
+                      if isinstance(comment, dict)
+                  ),
+                  default=0,
+              )
+              comments.append(
+                  {
+                      "id": max_comment_id + 1,
+                      "issue_id": issue["id"],
+                      "author": "gpt-5.6-pro",
+                      "text": (
+                          f"{progress_key}\n\n"
+                          "Landed immutable content-derived SemanticHandle identity with separately "
+                          "versioned descriptors, the bounded H0-H4 ladder, proof-bearing hydration "
+                          "requests/artifacts/receipts, exact progressive cursors, richest-permitted "
+                          "selection, explicit unavailable states, H4 qualification/debug gating, and "
+                          "deterministic authorization/budget/expiry/supersession/disclosure regressions. "
+                          "Hydration never silently resolves an older handle to newer evidence and does "
+                          "not confer effect authority.\n\n"
+                          "Validation on the exact implementation revision passed cargo formatting, "
+                          "workspace/all-target compilation, focused core/reference hydration tests, "
+                          "the policy qualification lane, and the full qualification lane.\n\n"
+                          "FSS-207 remains in progress. Closure still requires production current-grant "
+                          "verification, durable custody integration, registered wire schemas and "
+                          "Rust/CLI/MCP/TUI/report/handoff equivalence, cancellation/disconnect and "
+                          "multi-agent campaigns, QL-AGENT-001, GATE-115, and aggregate DSR proof."
+                      ),
+                      "created_at": "2026-09-03T21:30:00Z",
+                  }
+              )
+
+          issues_path.write_text(
+              "".join(
+                  json.dumps(row, separators=(",", ":"), ensure_ascii=False) + "\n"
+                  for row in rows
+              ),
+              encoding="utf-8",
+          )
+          PY
+          rm -f .github/workflows/agent-hydration-finalize.yml
+
+      - name: Regenerate repository integrity manifests
+        run: python3 scripts/generate-manifest.py
+
+      - name: Validate exact patched tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo fmt --all -- --check
+          cargo check --workspace --all-targets
+          cargo test -p fss-core hydration
+          cargo test -p fss-reference hydration
+          scripts/qualify.sh --lane full --no-receipt
+
+      - name: Commit validated documentation and tracker state
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          if git diff --cached --quiet; then
+            echo "No finalization changes remain."
+            exit 0
+          fi
+          git commit -m "docs(agent): record semantic hydration reference progress"
+          git push origin HEAD:main
