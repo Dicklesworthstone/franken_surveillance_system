@@ -1,0 +1,74 @@
+name: fss-210-post-merge-verify
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/fss-210-post-merge-verify.yml
+
+concurrency:
+  group: fss-210-post-merge-verify
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify the settled merged tree
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "fss-qualification-bot"
+          git config user.email "fss-qualification-bot@users.noreply.github.com"
+          sleep 30
+          git pull --rebase origin main
+          cargo fmt --all --check
+          cargo check --workspace --all-targets
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+          python3 -m unittest discover -s tests -p 'test_*.py'
+          scripts/qualify-hydration.sh
+          scripts/qualify.sh --lane policy --no-receipt
+          scripts/qualify.sh --lane full --no-receipt
+          test -z "$(find .github/workflows -maxdepth 1 -type f \( -name '*fss-210*' -o -name '*hydration-cli*' \) ! -name 'fss-210-post-merge-verify.yml' -print)"
+      - name: Publish post-merge proof and self-delete
+        shell: bash
+        run: |
+          set -euo pipefail
+          basis_commit="$(git rev-parse HEAD)"
+          basis_tree="$(git rev-parse HEAD^{tree})"
+          mkdir -p proofs/dev
+          cat > proofs/dev/FSS-210-post-merge-verification.json <<JSON
+          {
+            "schema": "fss.post_merge_verification.v1",
+            "task": "FSS-210",
+            "verified_commit_sha": "${basis_commit}",
+            "verified_tree_sha": "${basis_tree}",
+            "checks": [
+              "cargo fmt --all --check",
+              "cargo check --workspace --all-targets",
+              "cargo clippy --workspace --all-targets -- -D warnings",
+              "cargo test --workspace",
+              "python3 -m unittest discover -s tests -p test_*.py",
+              "scripts/qualify-hydration.sh",
+              "scripts/qualify.sh --lane policy --no-receipt",
+              "scripts/qualify.sh --lane full --no-receipt",
+              "temporary workflow cleanup"
+            ],
+            "result": "pass",
+            "release_authority": "none; local DSR remains authoritative"
+          }
+          JSON
+          rm .github/workflows/fss-210-post-merge-verify.yml
+          python3 scripts/generate-manifest.py
+          scripts/qualify.sh --lane policy --no-receipt
+          git add -A
+          git commit -m "proof(agent): verify merged FSS-210 reference slice"
+          git push origin HEAD:main
