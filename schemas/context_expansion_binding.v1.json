@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/context_expansion_binding.v1.json",
+  "title": "Context Expansion Binding v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "slotId",
+    "reference",
+    "purpose",
+    "estimatedCost",
+    "bindingDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.context_expansion_binding.v1"
+    },
+    "slotId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:._+/-]*$"
+    },
+    "reference": {
+      "$ref": "semantic_handle_reference.v1.json"
+    },
+    "purpose": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "estimatedCost": {
+      "$ref": "semantic_handle.v1.json#/$defs/budget"
+    },
+    "bindingDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    }
+  }
+}
