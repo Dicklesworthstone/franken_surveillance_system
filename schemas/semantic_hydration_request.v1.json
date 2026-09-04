@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/semantic_hydration_request.v1.json",
+  "title": "Semantic Hydration Request v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "requestId",
+    "requestDigest",
+    "contractBasis",
+    "sessionId",
+    "handleId",
+    "expectedDescriptorDigest",
+    "expectedSubjectDigest",
+    "anchor",
+    "requestedLevel",
+    "allowLowerLevel",
+    "availableCapabilities",
+    "authorizedPrivacyClasses",
+    "budget",
+    "purpose",
+    "issuedAtNs"
+  ],
+  "properties": {
+    "schema": {"const": "fss.semantic_hydration_request.v1"},
+    "requestId": {"$ref": "#/$defs/stableId"},
+    "requestDigest": {"$ref": "#/$defs/digest"},
+    "contractBasis": {"$ref": "agent_contract_basis.v1.json"},
+    "sessionId": {"$ref": "#/$defs/stableId"},
+    "handleId": {"$ref": "#/$defs/stableId"},
+    "expectedDescriptorDigest": {"$ref": "#/$defs/digest"},
+    "expectedSubjectDigest": {"$ref": "#/$defs/digest"},
+    "anchor": {"$ref": "evidence_anchor.v1.json"},
+    "requestedLevel": {"enum": ["H0", "H1", "H2", "H3", "H4"]},
+    "allowLowerLevel": {"type": "boolean"},
+    "availableCapabilities": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"$ref": "#/$defs/stableId"}
+    },
+    "authorizedPrivacyClasses": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1, "maxLength": 256}
+    },
+    "budget": {"$ref": "#/$defs/budget"},
+    "purpose": {
+      "enum": ["routine", "incident_adjudication", "qualification", "debugging"]
+    },
+    "continuation": {
+      "oneOf": [
+        {"$ref": "agent_continuation_cursor.v1.json"},
+        {"type": "null"}
+      ]
+    },
+    "issuedAtNs": {"type": "integer"}
+  },
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:+._/-]{1,511}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "latencyMs",
+        "tokens",
+        "bytes",
+        "modelCalls",
+        "cpuMillis",
+        "acceleratorMillis",
+        "energyMillijoules",
+        "networkBytes",
+        "storageOperations",
+        "privacyExposure",
+        "operatorAttentionSeconds"
+      ],
+      "properties": {
+        "latencyMs": {"type": "integer", "minimum": 0},
+        "tokens": {"type": "integer", "minimum": 0},
+        "bytes": {"type": "integer", "minimum": 0},
+        "modelCalls": {"type": "integer", "minimum": 0},
+        "cpuMillis": {"type": "integer", "minimum": 0},
+        "acceleratorMillis": {"type": "integer", "minimum": 0},
+        "energyMillijoules": {"type": "integer", "minimum": 0},
+        "networkBytes": {"type": "integer", "minimum": 0},
+        "storageOperations": {"type": "integer", "minimum": 0},
+        "privacyExposure": {"type": "number", "minimum": 0},
+        "operatorAttentionSeconds": {"type": "number", "minimum": 0}
+      }
+    }
+  }
+}
