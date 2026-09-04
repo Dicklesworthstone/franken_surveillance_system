@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/context_expansion_binding_set.v1.json",
+  "title": "Context Expansion Binding Set v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "contractBasisDigest",
+    "packDigest",
+    "compressionReceiptDigest",
+    "bindings",
+    "bindingSetDigest"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.context_expansion_binding_set.v1"
+    },
+    "contractBasisDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    },
+    "packDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    },
+    "compressionReceiptDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    },
+    "bindings": {
+      "type": "array",
+      "maxItems": 4096,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "context_expansion_binding.v1.json"
+      }
+    },
+    "bindingSetDigest": {
+      "$ref": "semantic_handle.v1.json#/$defs/digest"
+    }
+  }
+}
