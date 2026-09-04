@@ -10,6 +10,7 @@ mod agent;
 mod canonical;
 mod compression;
 mod context_binding;
+mod context_binding_metadata;
 mod continuation;
 mod contract;
 mod delta;
