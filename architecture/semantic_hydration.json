@@ -1,0 +1,116 @@
+{
+  "schema": "fss.semantic_hydration_registry.v1",
+  "contract_id": "FSS-210",
+  "semantic_owner": "fss-agent-core",
+  "reference_owner": "fss-reference",
+  "identity": {
+    "handle_rule": "handle_id is derived only from immutable subject identity, subject digest, semantic type, source identity, capture interval, spatial scope, and applied transform",
+    "descriptor_rule": "availability, retention, capabilities, privacy class, costs, contract basis, and authority anchor are versioned descriptor state and never rebind the handle",
+    "collision_rule": "one handle_id presented with a different immutable identity is semantic_handle_rebound"
+  },
+  "levels": [
+    {
+      "id": "H0",
+      "meaning": "identity, source, bounds, authority, availability, privacy class, level inventory, and priced expansion metadata",
+      "raw_private_media": false
+    },
+    {
+      "id": "H1",
+      "meaning": "typed semantic synopsis, provenance, contradictions, quality, completeness, and omissions",
+      "raw_private_media": false
+    },
+    {
+      "id": "H2",
+      "meaning": "privacy-transformed decision artifact such as a crop, keyframe, trajectory, or graph neighborhood",
+      "raw_private_media": false
+    },
+    {
+      "id": "H3",
+      "meaning": "authorized exact source evidence such as packets, immutable object bytes, or full-resolution media",
+      "raw_private_media": true
+    },
+    {
+      "id": "H4",
+      "meaning": "qualification or explicitly granted debugging expansion",
+      "raw_private_media": true
+    }
+  ],
+  "authorization_order": [
+    "exact descriptor and subject binding",
+    "current descriptor revision",
+    "retention and availability",
+    "published level and exact artifact",
+    "privacy class",
+    "level capabilities",
+    "H4 purpose and debugging grant",
+    "full multidimensional budget"
+  ],
+  "fallback": {
+    "direct_request": "when allow_lower_level is true, select the richest published lower level satisfying every clamp",
+    "continuation_request": "fallback is forbidden; a cursor names one exact next level",
+    "completeness": "a lower-level response is partial relative to the requested level",
+    "failure_precedence": "the first failure at the requested level is retained when no lower level succeeds"
+  },
+  "continuation": {
+    "scope": "evidence_hydration",
+    "view_id": "AVIEW-HYDRATION",
+    "stream_id": "semantic handle identity",
+    "basis": "exact contract basis and descriptor authority anchor",
+    "source": "exact descriptor digest",
+    "position": "ordinal of the next H-level",
+    "high_water_mark": "one past the maximum published H-level",
+    "expiry": "descriptor retention horizon"
+  },
+  "availability": [
+    "available",
+    "superseded",
+    "deleted",
+    "expired",
+    "corrupt",
+    "privacy_transformed",
+    "not_observable"
+  ],
+  "invalidators": [
+    "descriptor revision",
+    "authority anchor",
+    "retention horizon",
+    "capability scope",
+    "privacy scope"
+  ],
+  "proof_obligations": [
+    "artifact payload digest",
+    "artifact digest",
+    "immutable subject digest",
+    "descriptor digest",
+    "request digest",
+    "exact continuation cursor when richer material remains"
+  ],
+  "schemas": [
+    "schemas/semantic_handle.v1.json",
+    "schemas/semantic_hydration_artifact.v1.json",
+    "schemas/semantic_hydration_request.v1.json",
+    "schemas/semantic_hydration_receipt.v1.json",
+    "schemas/agent_continuation_cursor.v1.json"
+  ],
+  "qualification": {
+    "unit": [
+      "immutable handle identity across descriptor revisions",
+      "contiguous H-level ladder",
+      "payload and descriptor tamper detection",
+      "exact cursor binding"
+    ],
+    "reference": [
+      "deterministic retry",
+      "progressive H-level continuation",
+      "richest permitted budget fallback",
+      "privacy denial",
+      "capability denial",
+      "H4 grant denial and qualification success",
+      "expiry and deletion outcomes",
+      "stale descriptor rejection",
+      "handle-rebinding rejection",
+      "unrooted artifact rejection"
+    ]
+  },
+  "release_authority": "local DSR qualification; hosted workflows are supplementary"
+}
