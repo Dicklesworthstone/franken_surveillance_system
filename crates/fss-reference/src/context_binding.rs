@@ -3,7 +3,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
-use fss_core::hydration::{HydrationLevel, SemanticHandle};
+use fss_core::hydration::{HydrationError, HydrationLevel, SemanticHandle};
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, ContextBindingError,
     ContextExpansionBinding, ContextExpansionBindingSet, ContractError, HandoffCapsule, HandoffId,
@@ -24,7 +24,9 @@ pub enum ReferenceContextBindingError {
 impl fmt::Display for ReferenceContextBindingError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Reference(error) => write!(formatter, "reference context publication error: {error}"),
+            Self::Reference(error) => {
+                write!(formatter, "reference context publication error: {error}")
+            }
             Self::Binding(error) => write!(formatter, "reference context binding error: {error}"),
         }
     }
@@ -48,6 +50,12 @@ impl From<ReferenceError> for ReferenceContextBindingError {
 impl From<ContextBindingError> for ReferenceContextBindingError {
     fn from(value: ContextBindingError) -> Self {
         Self::Binding(value)
+    }
+}
+
+impl From<HydrationError> for ReferenceContextBindingError {
+    fn from(value: HydrationError) -> Self {
+        Self::Binding(ContextBindingError::Hydration(value))
     }
 }
 
