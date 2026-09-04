@@ -126,6 +126,9 @@ impl HydrationRequest {
             return Err(ContractError::EvidenceRequired.into());
         }
         if let Some(cursor) = &self.continuation {
+            if self.allow_lower_level {
+                return Err(HydrationError::WrongContinuation);
+            }
             cursor.validate_at(self.issued_at)?;
             if cursor.scope != ContinuationScope::EvidenceHydration
                 || cursor.stream_id != self.handle_id
