@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/agent_continuation_cursor.v1.json",
+  "title": "Agent Continuation Cursor v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "cursorId",
+    "scope",
+    "streamId",
+    "contractBasis",
+    "sessionId",
+    "viewId",
+    "basisAnchor",
+    "resumeAnchor",
+    "selectionWitness",
+    "position",
+    "highWaterMark",
+    "sourceDigest",
+    "issuedAtNs",
+    "expiresAtNs",
+    "cursorDigest"
+  ],
+  "properties": {
+    "schema": {"const": "fss.agent_continuation_cursor.v1"},
+    "cursorId": {"$ref": "#/$defs/stableId"},
+    "scope": {
+      "enum": [
+        "situation_delta",
+        "context_expansion",
+        "evidence_hydration",
+        "object_graph",
+        "audit_log"
+      ]
+    },
+    "streamId": {"$ref": "#/$defs/stableId"},
+    "contractBasis": {"$ref": "agent_contract_basis.v1.json"},
+    "sessionId": {"$ref": "#/$defs/stableId"},
+    "viewId": {"$ref": "#/$defs/stableId"},
+    "basisAnchor": {"$ref": "evidence_anchor.v1.json"},
+    "resumeAnchor": {"$ref": "evidence_anchor.v1.json"},
+    "selectionWitness": {"$ref": "#/$defs/digest"},
+    "position": {"type": "integer", "minimum": 0},
+    "highWaterMark": {"type": "integer", "minimum": 0},
+    "sourceDigest": {"$ref": "#/$defs/digest"},
+    "previousCursorDigest": {
+      "oneOf": [
+        {"$ref": "#/$defs/digest"},
+        {"type": "null"}
+      ]
+    },
+    "issuedAtNs": {"type": "integer"},
+    "expiresAtNs": {"type": "integer"},
+    "cursorDigest": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "stableId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:+._/-]{1,511}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
