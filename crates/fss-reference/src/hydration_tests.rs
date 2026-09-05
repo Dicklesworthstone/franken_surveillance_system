@@ -220,7 +220,7 @@ fn lower_level_delivery_is_explicit_and_bounded() -> Result<(), Box<dyn Error>> 
     let response = catalog.hydrate(&request, TimestampNs(101))?;
 
     assert_eq!(response.receipt.delivered_level, Some(HydrationLevel::H1));
-    assert_eq!(response.receipt.completeness, Completeness::Bounded);
+    assert_eq!(response.receipt.completeness, Completeness::Partial);
     assert!(
         response
             .receipt

@@ -62,7 +62,7 @@ pub use delivery::{
     MAX_DELIVERY_DIRECTIVES,
 };
 pub use error::ReferenceError;
-pub use hydration::ReferenceHydrationCatalog;
+pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use meaningful_delta::classify_reference_meaningful_delta;
 pub use model::{
     MockAbstentionReason, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,

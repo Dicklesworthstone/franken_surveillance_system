@@ -110,7 +110,10 @@ impl HydrationReceipt {
         ContentDigest::sha256(&encoder.finish())
     }
 
-    /// Cross-checks this receipt against the exact request, handle descriptor, and artifact.
+    /// Cross-checks exact inputs, disclosure policy, quoted cost, and service-time availability.
+    ///
+    /// This verifies a historical receipt at its declared issue time, not current availability.
+    /// Live reads must still resolve the current descriptor through the authority-owning catalog.
     pub fn validate_for(
         &self,
         request: &HydrationRequest,
@@ -118,18 +121,13 @@ impl HydrationReceipt {
         artifact: Option<&HydrationArtifact>,
     ) -> Result<(), HydrationError> {
         self.validate_body()?;
-        request.verify()?;
-        handle.verify()?;
+        request.validate_for(handle, self.issued_at)?;
         if self.receipt_digest != self.computed_digest()
             || self.receipt_id != format!("hydration-receipt:{}", self.receipt_digest)
         {
             return Err(ContractError::DigestMismatch.into());
         }
-        let effective_availability = if request.issued_at >= handle.retention_until {
-            HandleAvailability::Expired
-        } else {
-            handle.availability
-        };
+        let effective_availability = handle.availability_at(self.issued_at);
         if self.request_digest != request.request_digest
             || self.handle_id != request.handle_id
             || self.handle_id != handle.handle_id
@@ -141,8 +139,10 @@ impl HydrationReceipt {
             || self.anchor != handle.anchor
             || self.requested_level != request.requested_level
             || self.availability != effective_availability
-            || self.issued_at != request.issued_at
             || !self.cost.fits_within(request.budget)
+            || !self.proof_roots.contains(&request.request_digest)
+            || !self.proof_roots.contains(&handle.descriptor_digest)
+            || !self.proof_roots.contains(&handle.subject_digest)
         {
             return Err(ContractError::DigestMismatch.into());
         }
@@ -153,12 +153,12 @@ impl HydrationReceipt {
             artifact,
         ) {
             (HandleAvailability::Available, Some(level), Some(digest), Some(artifact)) => {
-                artifact.verify()?;
+                let expected_cost = request.validate_delivery(handle, artifact, self.issued_at)?;
                 if level != artifact.level
                     || digest != artifact.artifact_digest
-                    || level > request.requested_level
-                    || !handle.levels.contains(&level)
-                    || !self.proof_roots.contains(&artifact.payload_digest)
+                    || self.cost != expected_cost
+                    || self.completeness != artifact.completeness_for(request.requested_level)
+                    || !artifact.proof_roots.is_subset(&self.proof_roots)
                     || !self.proof_roots.contains(&artifact.artifact_digest)
                 {
                     return Err(ContractError::DigestMismatch.into());
@@ -175,6 +175,12 @@ impl HydrationReceipt {
             let Some(delivered) = self.delivered_level else {
                 return Err(ContractError::EvidenceRequired.into());
             };
+            let maximum = handle.maximum_level().ok_or(HydrationError::LevelUnavailable)?;
+            let predecessor = request.continuation.as_ref().map(|prior| prior.cursor_digest);
+            let expiry_ceiling = request.continuation.as_ref().map_or(
+                handle.retention_until,
+                |prior| prior.expires_at.min(handle.retention_until),
+            );
             if cursor.scope != ContinuationScope::EvidenceHydration
                 || cursor.stream_id != self.handle_id
                 || cursor.contract_basis != request.contract_basis
@@ -183,6 +189,13 @@ impl HydrationReceipt {
                 || cursor.basis_anchor != self.anchor
                 || cursor.resume_anchor != self.anchor
                 || cursor.position != u64::from(delivered.ordinal()) + 1
+                || cursor.position > u64::from(maximum.ordinal())
+                || cursor.upper_bound != u64::from(maximum.ordinal()) + 1
+                || cursor.source_digest != handle.ladder_policy_digest()
+                || Some(cursor.selection_witness) != self.artifact_digest
+                || cursor.predecessor_digest != predecessor
+                || cursor.issued_at != self.issued_at
+                || cursor.expires_at > expiry_ceiling
             {
                 return Err(HydrationError::WrongContinuation);
             }

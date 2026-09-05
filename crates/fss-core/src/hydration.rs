@@ -14,6 +14,7 @@ const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
 /// Registered hydration view used by exact continuation cursors.
 pub const HYDRATION_VIEW_ID: &str = "AVIEW-HYDRATION";
 
+mod admission;
 mod artifact;
 mod error;
 mod handle;

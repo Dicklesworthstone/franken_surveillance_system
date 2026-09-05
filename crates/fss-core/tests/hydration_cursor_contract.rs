@@ -1,4 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+#![forbid(unsafe_code)]
+
+use std::collections::BTreeSet;
 
 use fss_core::{
     BudgetVector, CanonicalEncode, Completeness, ContentDigest, ContinuationCursor,
@@ -45,7 +47,7 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
         estimated_costs: levels
             .iter()
             .copied()
-            .map(|level| (level, BudgetVector::default()))
+            .map(|level| (level, BudgetVector { bytes: 1_024, ..BudgetVector::default() }))
             .collect(),
         laboratory_access: LaboratoryAccess::Unavailable,
         debug_capability: None,
@@ -66,7 +68,7 @@ fn request(handle: &SemanticHandle) -> Result<HydrationRequest, HydrationError> 
         allow_lower_level: false,
         available_capabilities: BTreeSet::new(),
         authorized_privacy_classes: BTreeSet::from(["private:property".to_owned()]),
-        budget: BudgetVector::default(),
+        budget: BudgetVector { bytes: 1_024, ..BudgetVector::default() },
         purpose: HydrationPurpose::IncidentAdjudication,
         continuation: None,
         issued_at: TimestampNs(20),
@@ -87,7 +89,7 @@ fn artifact(handle: &SemanticHandle) -> Result<HydrationArtifact, HydrationError
 fn cursor(
     handle: &SemanticHandle,
     request: &HydrationRequest,
-    artifact: &HydrationArtifact,
+    _artifact: &HydrationArtifact,
     stream_digest: ContentDigest,
     page_digest: ContentDigest,
     expires_at: TimestampNs,
@@ -118,6 +120,8 @@ fn receipt(
 ) -> Result<HydrationReceipt, HydrationError> {
     let mut proof_roots = artifact.proof_roots.clone();
     proof_roots.insert(artifact.artifact_digest);
+    proof_roots.insert(handle.descriptor_digest);
+    proof_roots.insert(request.request_digest);
     HydrationReceipt::publish(HydrationReceiptSpec {
         request_digest: request.request_digest,
         handle_id: handle.handle_id.clone(),
@@ -127,7 +131,7 @@ fn receipt(
         requested_level: HydrationLevel::H1,
         delivered_level: Some(HydrationLevel::H1),
         availability: HandleAvailability::Available,
-        cost: BudgetVector::default(),
+        cost: BudgetVector { bytes: 1_024, ..BudgetVector::default() },
         completeness: Completeness::Complete,
         artifact_digest: Some(artifact.artifact_digest),
         proof_roots,

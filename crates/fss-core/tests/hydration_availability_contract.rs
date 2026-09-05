@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
@@ -83,7 +85,11 @@ fn unavailable_receipt(
         cost: BudgetVector::default(),
         completeness: availability.unavailable_completeness(),
         artifact_digest: None,
-        proof_roots: BTreeSet::from([handle.descriptor_digest]),
+        proof_roots: BTreeSet::from([
+            handle.descriptor_digest,
+            handle.subject_digest,
+            request.request_digest,
+        ]),
         continuation: None,
         invalidators: BTreeSet::from(["descriptor-or-retention-change".to_owned()]),
         issued_at: request.issued_at,

@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
@@ -109,7 +111,7 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
     })
 }
 
-fn request(
+fn make_request(
     handle: &SemanticHandle,
     level: HydrationLevel,
     continuation: Option<ContinuationCursor>,
@@ -138,7 +140,7 @@ fn request(
 #[test]
 fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), HydrationError> {
     let handle = handle()?;
-    let request = request(&handle, HydrationLevel::H1, None)?;
+    let request = make_request(&handle, HydrationLevel::H1, None)?;
     let artifact = HydrationArtifact::publish(
         HydrationLevel::H1,
         "application/fss+json",
@@ -165,6 +167,8 @@ fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), Hydrat
     )?;
     let mut proof_roots = artifact.proof_roots.clone();
     proof_roots.insert(artifact.artifact_digest);
+    proof_roots.insert(handle.descriptor_digest);
+    proof_roots.insert(request.request_digest);
     let receipt = HydrationReceipt::publish(HydrationReceiptSpec {
         request_digest: request.request_digest,
         handle_id: handle.handle_id.clone(),
@@ -189,7 +193,7 @@ fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), Hydrat
     })?;
 
     receipt.validate_for(&request, &handle, Some(&artifact))?;
-    let next = request(&handle, HydrationLevel::H2, Some(cursor))?;
+    let next = make_request(&handle, HydrationLevel::H2, Some(cursor))?;
     next.verify()?;
     Ok(())
 }
@@ -197,7 +201,7 @@ fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), Hydrat
 #[test]
 fn receipt_rejects_subject_substitution() -> Result<(), HydrationError> {
     let handle = handle()?;
-    let request = request(&handle, HydrationLevel::H0, None)?;
+    let request = make_request(&handle, HydrationLevel::H0, None)?;
     let artifact = HydrationArtifact::publish(
         HydrationLevel::H0,
         "application/fss+json",
@@ -208,6 +212,8 @@ fn receipt_rejects_subject_substitution() -> Result<(), HydrationError> {
     )?;
     let mut proof_roots = artifact.proof_roots.clone();
     proof_roots.insert(artifact.artifact_digest);
+    proof_roots.insert(handle.descriptor_digest);
+    proof_roots.insert(request.request_digest);
     let mut receipt = HydrationReceipt::publish(HydrationReceiptSpec {
         request_digest: request.request_digest,
         handle_id: handle.handle_id.clone(),

@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
@@ -36,7 +38,7 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
         retention_until: TimestampNs(1_000),
         levels: BTreeSet::from([HydrationLevel::H0]),
         required_capabilities: BTreeMap::from([(HydrationLevel::H0, BTreeSet::new())]),
-        estimated_costs: BTreeMap::from([(HydrationLevel::H0, BudgetVector::default())]),
+        estimated_costs: BTreeMap::from([(HydrationLevel::H0, BudgetVector { bytes: 1_024, ..BudgetVector::default() })]),
         laboratory_access: LaboratoryAccess::Unavailable,
         debug_capability: None,
         derivative_handles: BTreeSet::new(),
@@ -59,7 +61,7 @@ fn request(
         allow_lower_level: false,
         available_capabilities: BTreeSet::new(),
         authorized_privacy_classes: BTreeSet::from(["private:redacted".to_owned()]),
-        budget: BudgetVector::default(),
+        budget: BudgetVector { bytes: 1_024, ..BudgetVector::default() },
         purpose: HydrationPurpose::IncidentAdjudication,
         continuation: None,
         issued_at,
@@ -73,6 +75,8 @@ fn receipt(
 ) -> Result<HydrationReceipt, HydrationError> {
     let mut proof_roots = artifact.proof_roots.clone();
     proof_roots.insert(artifact.artifact_digest);
+    proof_roots.insert(handle.descriptor_digest);
+    proof_roots.insert(request.request_digest);
     HydrationReceipt::publish(HydrationReceiptSpec {
         request_digest: request.request_digest,
         handle_id: handle.handle_id.clone(),
@@ -82,7 +86,7 @@ fn receipt(
         requested_level: HydrationLevel::H0,
         delivered_level: Some(HydrationLevel::H0),
         availability: HandleAvailability::Available,
-        cost: BudgetVector::default(),
+        cost: BudgetVector { bytes: 1_024, ..BudgetVector::default() },
         completeness: Completeness::Complete,
         artifact_digest: Some(artifact.artifact_digest),
         proof_roots,

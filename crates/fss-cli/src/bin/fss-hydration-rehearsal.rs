@@ -1,17 +1,27 @@
 #![forbid(unsafe_code)]
+//! Deterministic process-level rehearsal of the reference hydration catalog.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::env;
 use std::error::Error;
-use std::fmt::Write as _;
+use std::io::{self, Write};
 
 use fss_core::{
-    BudgetVector, CanonicalEncode, Completeness, ContentDigest, ContinuationCursor,
-    ContinuationScope, ContractBasis, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact,
-    HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
-    HydrationRequestSpec, HydrationResponse, LaboratoryAccess, LedgerAnchor, SemanticHandle,
-    SemanticHandleSpec, SessionId, TimestampNs,
+    BudgetVector, Completeness, ContentDigest, ContractBasis, HandleAvailability, HydrationArtifact,
+    HydrationError, HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec,
+    HydrationResponse, LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec,
+    SessionId, TimestampNs,
 };
+use fss_reference::ReferenceHydrationCatalog;
+
+const SCENARIOS: [&str; 6] = [
+    "success",
+    "budget-fallback",
+    "privacy-denied",
+    "expired",
+    "h4-denied",
+    "h4-qualified",
+];
 
 fn main() {
     if let Err(error) = run() {
@@ -21,210 +31,39 @@ fn main() {
 }
 
 fn run() -> Result<(), Box<dyn Error>> {
-    let scenario = env::args().nth(1).unwrap_or_else(|| "all".to_owned());
-    match scenario.as_str() {
-        "success" => println!("{}", success_record()?),
-        "expired" => println!("{}", expired_record()?),
-        "all" => {
-            println!("{}", success_record()?);
-            println!("{}", expired_record()?);
-        }
-        _ => {
-            return Err(format!(
-                "unknown scenario {scenario:?}; expected success, expired, or all"
-            )
-            .into());
-        }
+    let mut args = env::args().skip(1);
+    let scenario = match args.next().as_deref() {
+        None => "all".to_owned(),
+        Some("--scenario") => args.next().ok_or("--scenario requires a value")?,
+        Some(value) => value.to_owned(),
+    };
+    if args.next().is_some() {
+        return Err("unexpected trailing arguments".into());
+    }
+    let selected: Vec<&str> = if scenario == "all" {
+        SCENARIOS.to_vec()
+    } else if SCENARIOS.contains(&scenario.as_str()) {
+        vec![scenario.as_str()]
+    } else {
+        return Err("unknown scenario; expected success, budget-fallback, privacy-denied, expired, h4-denied, h4-qualified, or all".into());
+    };
+    let records = selected.into_iter().map(rehearse).collect::<Result<Vec<_>, _>>()?;
+    let mut stdout = io::stdout().lock();
+    for record in records {
+        writeln!(stdout, "{record}")?;
     }
     Ok(())
 }
 
-fn success_record() -> Result<String, Box<dyn Error>> {
-    let handle = handle(TimestampNs(10_000))?;
-    let request = request(&handle, HydrationLevel::H1, TimestampNs(20))?;
-    let artifact = HydrationArtifact::publish(
-        HydrationLevel::H1,
-        "application/fss+json",
-        b"bounded semantic synopsis".to_vec(),
-        [handle.subject_digest],
-        Completeness::Complete,
-        None,
-    )?;
-    let continuation = ContinuationCursor::publish(
-        ContinuationScope::EvidenceHydration,
-        handle.handle_id.clone(),
-        handle.contract_basis.clone(),
-        request.session_id.clone(),
-        HYDRATION_VIEW_ID,
-        handle.anchor.clone(),
-        handle.anchor.clone(),
-        handle.ladder_policy_digest(),
-        2,
-        3,
-        artifact.artifact_digest,
-        None,
-        request.issued_at,
-        TimestampNs(1_000),
-    )?;
-    let mut proof_roots = artifact.proof_roots.clone();
-    proof_roots.insert(artifact.artifact_digest);
-    let receipt = HydrationReceipt::publish(HydrationReceiptSpec {
-        request_digest: request.request_digest,
-        handle_id: handle.handle_id.clone(),
-        descriptor_digest: handle.descriptor_digest,
-        subject_digest: handle.subject_digest,
-        anchor: handle.anchor.clone(),
-        requested_level: request.requested_level,
-        delivered_level: Some(HydrationLevel::H1),
-        availability: HandleAvailability::Available,
-        cost: handle
-            .estimated_cost(HydrationLevel::H1)
-            .ok_or("missing H1 cost")?,
-        completeness: Completeness::Complete,
-        artifact_digest: Some(artifact.artifact_digest),
-        proof_roots,
-        continuation: Some(continuation.clone()),
-        invalidators: BTreeSet::from([
-            format!("descriptor:{}", handle.descriptor_digest),
-            "retention-expiry".to_owned(),
-        ]),
-        issued_at: request.issued_at,
-    })?;
-    let response = HydrationResponse {
-        artifact: Some(artifact),
-        receipt,
+fn rehearse(scenario: &str) -> Result<String, Box<dyn Error>> {
+    let (catalog, handle) = fixture()?;
+    let level = match scenario {
+        "success" => HydrationLevel::H2,
+        "budget-fallback" => HydrationLevel::H3,
+        "h4-denied" | "h4-qualified" => HydrationLevel::H4,
+        _ => HydrationLevel::H1,
     };
-    response.validate_for(&request, &handle)?;
-    let cursor_digest = continuation.canonical_digest("fss.hydration_rehearsal_cursor.v1");
-    Ok(record(
-        "success",
-        "ok",
-        &handle,
-        &request,
-        &response.receipt,
-        response
-            .artifact
-            .as_ref()
-            .map(|value| value.artifact_digest),
-        Some(cursor_digest),
-    ))
-}
-
-fn expired_record() -> Result<String, Box<dyn Error>> {
-    let handle = handle(TimestampNs(100))?;
-    let request = request(&handle, HydrationLevel::H1, TimestampNs(101))?;
-    let receipt = HydrationReceipt::publish(HydrationReceiptSpec {
-        request_digest: request.request_digest,
-        handle_id: handle.handle_id.clone(),
-        descriptor_digest: handle.descriptor_digest,
-        subject_digest: handle.subject_digest,
-        anchor: handle.anchor.clone(),
-        requested_level: request.requested_level,
-        delivered_level: None,
-        availability: HandleAvailability::Expired,
-        cost: BudgetVector::default(),
-        completeness: Completeness::Stale,
-        artifact_digest: None,
-        proof_roots: BTreeSet::from([handle.descriptor_digest]),
-        continuation: None,
-        invalidators: BTreeSet::from(["retention-expired".to_owned()]),
-        issued_at: request.issued_at,
-    })?;
-    let response = HydrationResponse {
-        artifact: None,
-        receipt,
-    };
-    response.validate_for(&request, &handle)?;
-    Ok(record(
-        "expired",
-        "typed_unavailable",
-        &handle,
-        &request,
-        &response.receipt,
-        None,
-        None,
-    ))
-}
-
-fn handle(retention_until: TimestampNs) -> Result<SemanticHandle, Box<dyn Error>> {
-    let levels = BTreeSet::from([HydrationLevel::H0, HydrationLevel::H1, HydrationLevel::H2]);
-    let required_capabilities = BTreeMap::from([
-        (
-            HydrationLevel::H0,
-            BTreeSet::from(["capability:hydrate:h0".to_owned()]),
-        ),
-        (
-            HydrationLevel::H1,
-            BTreeSet::from(["capability:hydrate:h1".to_owned()]),
-        ),
-        (
-            HydrationLevel::H2,
-            BTreeSet::from(["capability:hydrate:h2".to_owned()]),
-        ),
-    ]);
-    let estimated_costs = BTreeMap::from([
-        (
-            HydrationLevel::H0,
-            BudgetVector {
-                latency_ms: 5,
-                tokens: 32,
-                bytes: 256,
-                cpu_millis: 1,
-                ..BudgetVector::default()
-            },
-        ),
-        (
-            HydrationLevel::H1,
-            BudgetVector {
-                latency_ms: 10,
-                tokens: 128,
-                bytes: 1_024,
-                cpu_millis: 2,
-                privacy_exposure: 0.1,
-                ..BudgetVector::default()
-            },
-        ),
-        (
-            HydrationLevel::H2,
-            BudgetVector {
-                latency_ms: 20,
-                tokens: 256,
-                bytes: 4_096,
-                cpu_millis: 4,
-                privacy_exposure: 0.2,
-                ..BudgetVector::default()
-            },
-        ),
-    ]);
-    Ok(SemanticHandle::publish(SemanticHandleSpec {
-        contract_basis: basis(),
-        anchor: anchor(),
-        subject_id: "evidence:hydration-rehearsal".to_owned(),
-        subject_digest: ContentDigest::sha256(b"hydration rehearsal subject"),
-        semantic_type: "evidence_bundle".to_owned(),
-        source_id: "sensor:hydration-rehearsal".to_owned(),
-        capture_interval: None,
-        spatial_scope: Some("zone:rear".to_owned()),
-        privacy_class: "private:property".to_owned(),
-        applied_transform: None,
-        availability: HandleAvailability::Available,
-        retention_until,
-        levels,
-        required_capabilities,
-        estimated_costs,
-        laboratory_access: LaboratoryAccess::Unavailable,
-        debug_capability: None,
-        derivative_handles: BTreeSet::new(),
-        published_at: TimestampNs(1),
-    })?)
-}
-
-fn request(
-    handle: &SemanticHandle,
-    level: HydrationLevel,
-    issued_at: TimestampNs,
-) -> Result<HydrationRequest, Box<dyn Error>> {
-    Ok(HydrationRequest::publish(HydrationRequestSpec {
+    let request = HydrationRequest::publish(HydrationRequestSpec {
         contract_basis: handle.contract_basis.clone(),
         session_id: SessionId::parse("session:hydration-rehearsal")?,
         handle_id: handle.handle_id.clone(),
@@ -232,75 +71,146 @@ fn request(
         expected_subject_digest: handle.subject_digest,
         anchor: handle.anchor.clone(),
         requested_level: level,
-        allow_lower_level: false,
-        available_capabilities: BTreeSet::from([
-            "capability:hydrate:h0".to_owned(),
-            "capability:hydrate:h1".to_owned(),
-            "capability:hydrate:h2".to_owned(),
-        ]),
-        authorized_privacy_classes: BTreeSet::from(["private:property".to_owned()]),
-        budget: handle.estimated_cost(level).ok_or("missing level cost")?,
-        purpose: HydrationPurpose::IncidentAdjudication,
+        allow_lower_level: scenario == "budget-fallback",
+        available_capabilities: handle.required_capabilities.values().flatten().cloned().collect(),
+        authorized_privacy_classes: if scenario == "privacy-denied" {
+            BTreeSet::new()
+        } else {
+            BTreeSet::from([handle.privacy_class.clone()])
+        },
+        budget: cost(if scenario == "budget-fallback" { HydrationLevel::H1 } else { level }),
+        purpose: if scenario == "h4-qualified" {
+            HydrationPurpose::Qualification
+        } else {
+            HydrationPurpose::Routine
+        },
         continuation: None,
-        issued_at,
-    })?)
+        issued_at: TimestampNs(10),
+    })?;
+    let now = if scenario == "expired" { TimestampNs(100) } else { TimestampNs(20) };
+    let result = catalog.hydrate(&request, now);
+    let expected_error = match scenario {
+        "privacy-denied" => Some(HydrationError::PrivacyDenied),
+        "h4-denied" => Some(HydrationError::LaboratoryGrantRequired),
+        _ => None,
+    };
+    match (result, expected_error) {
+        (Err(error), Some(expected)) if error == expected => {
+            Ok(denied_record(scenario, &handle, &request, &error))
+        }
+        (Err(error), _) => Err(error.into()),
+        (Ok(_), Some(_)) => Err("expected disclosure refusal did not occur".into()),
+        (Ok(response), None) => {
+            response.validate_for(&request, &handle)?;
+            let expected_level = match scenario {
+                "expired" => None,
+                "budget-fallback" => Some(HydrationLevel::H1),
+                _ => Some(level),
+            };
+            if response.receipt.delivered_level != expected_level {
+                return Err("unexpected delivered hydration level".into());
+            }
+            Ok(success_record(scenario, &handle, &request, &response))
+        }
+    }
 }
 
-fn basis() -> ContractBasis {
-    ContractBasis::from_registry_bytes(
-        b"schemas",
-        b"operations",
-        b"views",
-        b"capabilities",
-        b"errors",
-        b"costs",
-        "fss-hydration-rehearsal:1",
-        None,
-    )
-}
-
-fn anchor() -> LedgerAnchor {
+fn fixture() -> Result<(ReferenceHydrationCatalog, SemanticHandle), HydrationError> {
+    let levels = BTreeSet::from([
+        HydrationLevel::H0,
+        HydrationLevel::H1,
+        HydrationLevel::H2,
+        HydrationLevel::H3,
+        HydrationLevel::H4,
+    ]);
     let mut anchor = LedgerAnchor::genesis("site:hydration-rehearsal");
     anchor.commit_sequence = 1;
-    anchor
+    let handle = SemanticHandle::publish(SemanticHandleSpec {
+        contract_basis: ContractBasis::from_registry_bytes(
+            b"schemas", b"operations", b"views", b"capabilities", b"errors", b"costs",
+            "fss-hydration-rehearsal:2", None,
+        ),
+        anchor,
+        subject_id: "evidence:hydration-rehearsal".to_owned(),
+        subject_digest: ContentDigest::sha256(b"synthetic redacted rehearsal subject"),
+        semantic_type: "evidence_bundle".to_owned(),
+        source_id: "sensor:hydration-rehearsal".to_owned(),
+        capture_interval: None,
+        spatial_scope: Some("zone:reference".to_owned()),
+        privacy_class: "private:property".to_owned(),
+        applied_transform: Some("redaction:reference:v1".to_owned()),
+        availability: HandleAvailability::Available,
+        retention_until: TimestampNs(100),
+        required_capabilities: levels.iter().map(|level| {
+            (*level, BTreeSet::from([format!("capability:hydrate:h{}", level.ordinal())]))
+        }).collect(),
+        estimated_costs: levels.iter().map(|level| (*level, cost(*level))).collect(),
+        levels,
+        laboratory_access: LaboratoryAccess::QualificationOrDebugGrant,
+        debug_capability: Some("capability:hydrate:debug".to_owned()),
+        derivative_handles: BTreeSet::new(),
+        published_at: TimestampNs(1),
+    })?;
+    let mut catalog = ReferenceHydrationCatalog::new();
+    catalog.register_descriptor(handle.clone())?;
+    for level in &handle.levels {
+        let artifact = HydrationArtifact::publish(
+            *level,
+            "application/fss+json",
+            format!("synthetic {} evidence", level.as_str()).into_bytes(),
+            [handle.subject_digest],
+            Completeness::Complete,
+            handle.applied_transform.clone(),
+        )?;
+        catalog.register_artifact(&handle.handle_id, handle.descriptor_digest, artifact)?;
+    }
+    Ok((catalog, handle))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn record(
+fn cost(level: HydrationLevel) -> BudgetVector {
+    let scale = 1_u64 << level.ordinal();
+    BudgetVector {
+        latency_ms: 5 * scale,
+        tokens: 32 * scale,
+        bytes: 256 * scale,
+        cpu_millis: scale,
+        storage_operations: 1,
+        privacy_exposure: f64::from(level.ordinal()) / 10.0,
+        ..BudgetVector::default()
+    }
+}
+
+fn success_record(
     scenario: &str,
-    outcome: &str,
     handle: &SemanticHandle,
     request: &HydrationRequest,
-    receipt: &HydrationReceipt,
-    artifact_digest: Option<ContentDigest>,
-    continuation_digest: Option<ContentDigest>,
+    response: &HydrationResponse,
 ) -> String {
-    let mut output = String::new();
-    write!(
-        output,
-        "{{\"schema\":\"fss.hydration_rehearsal.v1\",\"scenario\":\"{}\",\"outcome\":\"{}\",\"handleId\":\"{}\",\"descriptorDigest\":\"{}\",\"subjectDigest\":\"{}\",\"requestDigest\":\"{}\",\"receiptDigest\":\"{}\",\"availability\":\"{}\",\"requestedLevel\":\"{}\",\"deliveredLevel\":{},\"artifactDigest\":{},\"continuationDigest\":{},\"reproduction\":\"cargo run -q -p fss-cli --bin fss-hydration-rehearsal -- {}\"}}",
-        json_escape(scenario),
-        json_escape(outcome),
-        json_escape(&handle.handle_id),
-        handle.descriptor_digest,
-        handle.subject_digest,
-        request.request_digest,
-        receipt.receipt_digest,
-        receipt.availability.as_str(),
-        receipt.requested_level.as_str(),
-        optional_level(receipt.delivered_level),
-        optional_digest(artifact_digest),
-        optional_digest(continuation_digest),
-        json_escape(scenario),
+    let receipt = &response.receipt;
+    let outcome = if response.artifact.is_some() { "ok" } else { "typed_unavailable" };
+    // All text values below come from the closed scenario set and fixed portable fixture IDs.
+    format!(
+        "{{\"schema\":\"fss.hydration_rehearsal.v1\",\"scenario\":\"{scenario}\",\"outcome\":\"{outcome}\",\"handleId\":\"{}\",\"descriptorDigest\":\"{}\",\"subjectDigest\":\"{}\",\"requestDigest\":\"{}\",\"receiptDigest\":\"{}\",\"availability\":\"{}\",\"requestedLevel\":\"{}\",\"deliveredLevel\":{},\"artifactDigest\":{},\"continuationDigest\":{},\"completeness\":\"{}\",\"serviceTimeNs\":{},\"reproduction\":\"cargo run -q -p fss-cli --bin fss-hydration-rehearsal -- --scenario {scenario}\"}}",
+        handle.handle_id, handle.descriptor_digest, handle.subject_digest,
+        request.request_digest, receipt.receipt_digest, receipt.availability.as_str(),
+        request.requested_level.as_str(),
+        receipt.delivered_level.map_or_else(|| "null".to_owned(), |value| format!("\"{}\"", value.as_str())),
+        optional_digest(receipt.artifact_digest),
+        optional_digest(receipt.continuation.as_ref().map(|cursor| cursor.cursor_digest)),
+        completeness(receipt.completeness), receipt.issued_at.0,
     )
-    .expect("writing to String cannot fail");
-    output
 }
 
-fn optional_level(level: Option<HydrationLevel>) -> String {
-    level.map_or_else(
-        || "null".to_owned(),
-        |value| format!("\"{}\"", value.as_str()),
+fn denied_record(
+    scenario: &str,
+    handle: &SemanticHandle,
+    request: &HydrationRequest,
+    error: &HydrationError,
+) -> String {
+    format!(
+        "{{\"schema\":\"fss.hydration_rehearsal.v1\",\"scenario\":\"{scenario}\",\"outcome\":\"denied\",\"handleId\":\"{}\",\"descriptorDigest\":\"{}\",\"requestDigest\":\"{}\",\"requestedLevel\":\"{}\",\"error\":\"{}\",\"artifactDigest\":null,\"continuationDigest\":null}}",
+        handle.handle_id, handle.descriptor_digest, request.request_digest,
+        request.requested_level.as_str(), error.code(),
     )
 }
 
@@ -308,21 +218,14 @@ fn optional_digest(digest: Option<ContentDigest>) -> String {
     digest.map_or_else(|| "null".to_owned(), |value| format!("\"{value}\""))
 }
 
-fn json_escape(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character.is_control() => {
-                write!(escaped, "\\u{:04x}", u32::from(character))
-                    .expect("writing to String cannot fail");
-            }
-            character => escaped.push(character),
-        }
+fn completeness(value: Completeness) -> &'static str {
+    match value {
+        Completeness::Complete => "complete",
+        Completeness::Bounded => "bounded",
+        Completeness::Partial => "partial",
+        Completeness::Unknown => "unknown",
+        Completeness::NotObservable => "not_observable",
+        Completeness::Unauthorized => "unauthorized",
+        Completeness::Stale => "stale",
     }
-    escaped
 }
