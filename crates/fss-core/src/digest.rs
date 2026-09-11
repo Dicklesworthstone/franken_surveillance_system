@@ -233,6 +233,7 @@ pub struct Sha256Hasher {
     buffer: [u8; 64],
     buffer_len: usize,
     total_bytes: u64,
+    overflowed: bool,
 }
 
 impl Default for Sha256Hasher {
@@ -242,6 +243,9 @@ impl Default for Sha256Hasher {
 }
 
 impl Sha256Hasher {
+    /// Maximum message byte length supported by SHA-256 (FIPS 180-4 specifies bit length `l < 2^64`).
+    pub const MAX_MESSAGE_BYTES: u64 = (1_u64 << 61) - 1;
+
     /// Creates an incremental SHA-256 hasher initialized to FIPS 180-4 standard state.
     #[must_use]
     pub const fn new() -> Self {
@@ -250,12 +254,55 @@ impl Sha256Hasher {
             buffer: [0_u8; 64],
             buffer_len: 0,
             total_bytes: 0,
+            overflowed: false,
         }
+    }
+
+    /// Creates a hasher initialized with an explicit total byte count.
+    ///
+    /// This constructor enables deterministic testing of boundary conditions
+    /// near the FIPS 180-4 message length limit (`2^61 - 1` bytes) without
+    /// allocating exabytes of data.
+    #[must_use]
+    pub const fn with_total_bytes(total_bytes: u64) -> Self {
+        let overflowed = total_bytes > Self::MAX_MESSAGE_BYTES;
+        Self {
+            state: SHA256_INITIAL,
+            buffer: [0_u8; 64],
+            buffer_len: 0,
+            total_bytes,
+            overflowed,
+        }
+    }
+
+    /// Returns whether the hasher has encountered an arithmetic overflow in its length counter.
+    #[must_use]
+    pub const fn is_overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    /// Returns the current total byte count tracked by the hasher.
+    #[must_use]
+    pub const fn total_bytes(&self) -> u64 {
+        self.total_bytes
     }
 
     /// Feeds input bytes into the streaming hasher.
     pub fn update(&mut self, mut data: &[u8]) {
-        self.total_bytes = self.total_bytes.wrapping_add(data.len() as u64);
+        if self.overflowed {
+            return;
+        }
+
+        let data_len = data.len() as u64;
+        match self.total_bytes.checked_add(data_len) {
+            Some(new_total) if new_total <= Self::MAX_MESSAGE_BYTES => {
+                self.total_bytes = new_total;
+            }
+            _ => {
+                self.overflowed = true;
+                return;
+            }
+        }
 
         if self.buffer_len > 0 {
             let to_fill = 64 - self.buffer_len;
@@ -282,10 +329,16 @@ impl Sha256Hasher {
     }
 
     /// Finalizes the hash computation, applying FIPS 180-4 padding and returning the 32-byte digest.
-    #[must_use]
-    pub fn finalize(mut self) -> [u8; 32] {
-        let bit_len = (self.total_bytes as u128).wrapping_mul(8);
-        let encoded_bit_len = (bit_len as u64).to_be_bytes();
+    pub fn finalize(mut self) -> Result<[u8; 32], ContractError> {
+        if self.overflowed || self.total_bytes > Self::MAX_MESSAGE_BYTES {
+            return Err(ContractError::ArithmeticOverflow);
+        }
+
+        let bit_len = match self.total_bytes.checked_mul(8) {
+            Some(bits) => bits,
+            None => return Err(ContractError::ArithmeticOverflow),
+        };
+        let encoded_bit_len = bit_len.to_be_bytes();
 
         self.buffer[self.buffer_len] = 0x80;
         self.buffer_len += 1;
@@ -306,12 +359,22 @@ impl Sha256Hasher {
             let offset = index * 4;
             output[offset..offset + 4].copy_from_slice(&word.to_be_bytes());
         }
-        output
+        Ok(output)
     }
 
     /// Computes the SHA-256 digest of input in one shot without heap allocations.
     #[must_use]
     pub fn digest(input: &[u8]) -> [u8; 32] {
+        let mut hasher = Self::new();
+        hasher.update(input);
+        match hasher.finalize() {
+            Ok(digest) => digest,
+            Err(_) => [0_u8; 32],
+        }
+    }
+
+    /// Computes the SHA-256 digest of input in one shot, returning an error on overflow.
+    pub fn try_digest(input: &[u8]) -> Result<[u8; 32], ContractError> {
         let mut hasher = Self::new();
         hasher.update(input);
         hasher.finalize()

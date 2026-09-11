@@ -37,7 +37,7 @@ fn streaming_sha256_matches_oneshot_across_boundary_lengths() -> Result<(), Cont
         let mut hasher = Sha256Hasher::new();
         hasher.update(&pattern);
         assert_eq!(
-            hasher.finalize(),
+            hasher.finalize()?,
             expected,
             "single update finalize failed for len {len}"
         );
@@ -48,7 +48,7 @@ fn streaming_sha256_matches_oneshot_across_boundary_lengths() -> Result<(), Cont
             byte_hasher.update(&[byte]);
         }
         assert_eq!(
-            byte_hasher.finalize(),
+            byte_hasher.finalize()?,
             expected,
             "1-byte chunk feeding failed for len {len}"
         );
@@ -59,7 +59,7 @@ fn streaming_sha256_matches_oneshot_across_boundary_lengths() -> Result<(), Cont
             chunk7_hasher.update(chunk);
         }
         assert_eq!(
-            chunk7_hasher.finalize(),
+            chunk7_hasher.finalize()?,
             expected,
             "7-byte chunk feeding failed for len {len}"
         );
@@ -70,7 +70,7 @@ fn streaming_sha256_matches_oneshot_across_boundary_lengths() -> Result<(), Cont
             chunk31_hasher.update(chunk);
         }
         assert_eq!(
-            chunk31_hasher.finalize(),
+            chunk31_hasher.finalize()?,
             expected,
             "31-byte chunk feeding failed for len {len}"
         );
@@ -81,22 +81,60 @@ fn streaming_sha256_matches_oneshot_across_boundary_lengths() -> Result<(), Cont
             chunk64_hasher.update(chunk);
         }
         assert_eq!(
-            chunk64_hasher.finalize(),
+            chunk64_hasher.finalize()?,
             expected,
             "64-byte chunk feeding failed for len {len}"
         );
+    }
 
-        // Uneven split points: split at every possible index for small lengths
-        if len <= 65 && len > 1 {
-            for split in [1, len / 2, len - 1] {
-                let mut split_hasher = Sha256Hasher::new();
-                split_hasher.update(&pattern[..split]);
-                split_hasher.update(&pattern[split..]);
-                assert_eq!(
-                    split_hasher.finalize(),
-                    expected,
-                    "split at {split} failed for len {len}"
-                );
+    Ok(())
+}
+
+#[test]
+fn streaming_sha256_equals_oneshot_across_all_200byte_split_points() -> Result<(), ContractError> {
+    let input: Vec<u8> = (0..200).map(|i| ((i * 37 + 11) % 256) as u8).collect();
+    let expected = sha256(&input);
+
+    // Exhaustive single-cut split across all 201 possible split points
+    for split in 0..=input.len() {
+        let mut hasher = Sha256Hasher::new();
+        hasher.update(&input[..split]);
+        hasher.update(&input[split..]);
+        let actual = hasher.finalize()?;
+        if actual != expected {
+            return Err(ContractError::DigestMismatch);
+        }
+    }
+
+    // Deterministic sample of two-cut splits covering boundary edges and stride steps
+    let boundary_indices = [
+        0, 1, 2, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 191, 192, 199, 200,
+    ];
+    for &i in &boundary_indices {
+        for &j in &boundary_indices {
+            if i <= j && j <= input.len() {
+                let mut hasher = Sha256Hasher::new();
+                hasher.update(&input[..i]);
+                hasher.update(&input[i..j]);
+                hasher.update(&input[j..]);
+                let actual = hasher.finalize()?;
+                if actual != expected {
+                    return Err(ContractError::DigestMismatch);
+                }
+            }
+        }
+    }
+
+    // Stride-based two-cut sampling across entire 200-byte domain
+    for i in (0..=input.len()).step_by(7) {
+        for j in (i..=input.len()).step_by(7) {
+            let mut hasher = Sha256Hasher::new();
+            hasher.update(&input[..i]);
+            hasher.update(&input[i..j]);
+            hasher.update(&input[j..]);
+            let actual = hasher.finalize()?;
+            if actual != expected {
+                return Err(ContractError::DigestMismatch);
             }
         }
     }
@@ -116,7 +154,7 @@ fn streaming_sha256_nist_56_byte_boundary_vector() -> Result<(), ContractError> 
         for chunk in msg_56.chunks(chunk_size) {
             hasher.update(chunk);
         }
-        let digest = ContentDigest::new(DigestAlgorithm::Sha256, hasher.finalize());
+        let digest = ContentDigest::new(DigestAlgorithm::Sha256, hasher.finalize()?);
         assert_eq!(
             digest.to_text(),
             expected_hex,
@@ -137,7 +175,7 @@ fn streaming_sha256_nist_million_a_vector() -> Result<(), ContractError> {
     for _ in 0..1000 {
         hasher.update(&buffer);
     }
-    let digest = ContentDigest::new(DigestAlgorithm::Sha256, hasher.finalize());
+    let digest = ContentDigest::new(DigestAlgorithm::Sha256, hasher.finalize()?);
     assert_eq!(
         digest.to_text(),
         expected_hex,
@@ -163,7 +201,57 @@ fn hasher_default_and_clone_consistency() -> Result<(), ContractError> {
     branch_a.update(b" and suffix");
     branch_b.update(b" and suffix");
 
-    assert_eq!(branch_a.finalize(), branch_b.finalize());
+    assert_eq!(branch_a.finalize()?, branch_b.finalize()?);
+    Ok(())
+}
+
+#[test]
+fn sha256_length_counter_checked_against_bit_overflow() -> Result<(), ContractError> {
+    // FIPS 180-4 §5.1.1: message bit length l must be < 2^64 bits (< 2^61 bytes).
+    // The maximum valid byte count is MAX_MESSAGE_BYTES = (1 << 61) - 1.
+    let max_safe = Sha256Hasher::MAX_MESSAGE_BYTES;
+    assert_eq!(max_safe, (1_u64 << 61) - 1);
+
+    // 1. Hasher exactly at limit can finalize successfully
+    let at_limit = Sha256Hasher::with_total_bytes(max_safe);
+    assert!(!at_limit.is_overflowed());
+    assert_eq!(at_limit.total_bytes(), max_safe);
+    let digest_res = at_limit.finalize();
+    assert!(digest_res.is_ok());
+
+    // 2. Hasher initialized beyond limit latches overflow and returns ArithmeticOverflow
+    let beyond_limit = Sha256Hasher::with_total_bytes(max_safe + 1);
+    assert!(beyond_limit.is_overflowed());
+    assert_eq!(
+        beyond_limit.finalize(),
+        Err(ContractError::ArithmeticOverflow)
+    );
+
+    // 3. Hasher near limit that overflows on update() latches overflow
+    let mut near_limit = Sha256Hasher::with_total_bytes(max_safe);
+    near_limit.update(&[0x42]);
+    assert!(near_limit.is_overflowed());
+    assert_eq!(
+        near_limit.finalize(),
+        Err(ContractError::ArithmeticOverflow)
+    );
+
+    // 4. Subsequent updates after overflow remain in overflow state (latched)
+    let mut latched = Sha256Hasher::with_total_bytes(max_safe);
+    latched.update(&[0x01]);
+    latched.update(&[0x02]);
+    assert!(latched.is_overflowed());
+    assert_eq!(latched.finalize(), Err(ContractError::ArithmeticOverflow));
+
+    // 5. Overflow at u64::MAX boundary
+    let mut u64_max_hasher = Sha256Hasher::with_total_bytes(u64::MAX);
+    u64_max_hasher.update(&[0xff]);
+    assert!(u64_max_hasher.is_overflowed());
+    assert_eq!(
+        u64_max_hasher.finalize(),
+        Err(ContractError::ArithmeticOverflow)
+    );
+
     Ok(())
 }
 
