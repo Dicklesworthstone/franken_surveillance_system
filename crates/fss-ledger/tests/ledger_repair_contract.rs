@@ -156,29 +156,30 @@ fn test_audited_doctor_plan_apply_workflow_positive() -> Result<(), Box<dyn Erro
     assert_eq!(report.foreign_digest(), Some(expected_foreign_digest));
 
     // 5. Generate sealed repair plan
+    let canonical_path = fs::canonicalize(&path)?;
     let plan = plan(&path, &report)?;
-    assert_eq!(plan.journal_path(), &path);
+    assert_eq!(plan.journal_path(), &canonical_path);
     assert_eq!(plan.committed_len(), committed_len);
     assert_eq!(plan.last_root(), last_root);
     assert_eq!(plan.foreign_offset(), committed_len);
     assert_eq!(plan.foreign_length(), foreign_bytes.len() as u64);
     assert_eq!(plan.foreign_digest(), expected_foreign_digest);
     assert_eq!(plan.cut_offset(), committed_len);
-    plan.verify_seal()?;
+    plan.verify_plan_digest()?;
 
     // 6. Apply repair: quarantine foreign bytes and truncate
     let receipt = apply(&plan)?;
-    assert_eq!(receipt.journal_path(), &path);
+    assert_eq!(receipt.journal_path(), &canonical_path);
     assert_eq!(receipt.committed_len(), committed_len);
     assert_eq!(receipt.last_root(), last_root);
     assert_eq!(receipt.quarantined_offset(), committed_len);
     assert_eq!(receipt.quarantined_length(), foreign_bytes.len() as u64);
     assert_eq!(receipt.quarantined_digest(), expected_foreign_digest);
     assert_eq!(receipt.truncated_to(), committed_len);
-    assert_eq!(receipt.plan_seal(), plan.seal());
+    assert_eq!(receipt.plan_digest(), plan.plan_digest());
 
     // Verify sidecar file exists, is named by digest, and contains foreign bytes
-    let expected_sidecar_path = quarantine_path_for(&path, expected_foreign_digest);
+    let expected_sidecar_path = quarantine_path_for(plan.journal_path(), expected_foreign_digest);
     assert_eq!(receipt.quarantine_path(), &expected_sidecar_path);
     assert!(
         expected_sidecar_path.exists(),
@@ -248,8 +249,10 @@ fn test_planted_negative_digest_mismatch_refused() -> Result<(), Box<dyn Error>>
 
     let report = doctor_path(&path)?;
     let plan = plan(&path, &report)?;
-    let expected_quarantine_v1 =
-        quarantine_path_for(&path, report.foreign_digest().ok_or("digest")?);
+    let expected_quarantine_v1 = quarantine_path_for(
+        plan.journal_path(),
+        report.foreign_digest().ok_or("digest")?,
+    );
 
     // Tamper with the trailing bytes on disk before apply
     let committed_len = report.committed_len();
@@ -415,7 +418,7 @@ fn test_planted_negative_truncate_policy_alone_refuses_foreign_bytes() -> Result
     Ok(())
 }
 
-/// Plan seal tampering: a sealed plan with modified parameters or seal must be refused.
+/// Plan digest tampering: a repair plan with modified parameters or digest must be refused.
 #[test]
 fn test_plan_seal_tampering_refused() -> Result<(), Box<dyn Error>> {
     let path = temp_path("seal-tamper");
@@ -433,17 +436,17 @@ fn test_plan_seal_tampering_refused() -> Result<(), Box<dyn Error>> {
 
     let report = doctor_path(&path)?;
     let plan = plan(&path, &report)?;
-    assert!(plan.verify_seal().is_ok());
+    assert!(plan.verify_plan_digest().is_ok());
 
-    // Tamper with plan seal
-    let tampered_plan = plan.with_seal_for_test(ContentDigest::sha256(b"fake-seal"));
+    // Tamper with plan digest
+    let tampered_plan = plan.with_plan_digest_for_test(ContentDigest::sha256(b"fake-seal"));
     assert!(matches!(
-        tampered_plan.verify_seal(),
-        Err(RepairError::InvalidSeal { .. })
+        tampered_plan.verify_plan_digest(),
+        Err(RepairError::InvalidPlanDigest { .. })
     ));
     assert!(matches!(
         apply(&tampered_plan),
-        Err(RepairError::InvalidSeal { .. })
+        Err(RepairError::InvalidPlanDigest { .. })
     ));
 
     let _ = fs::remove_file(&path);
@@ -520,5 +523,205 @@ fn test_empty_journal_with_foreign_junk_repaired_to_clean_empty() -> Result<(), 
 
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(sidecar_path);
+    Ok(())
+}
+
+fn setup_journal_with_foreign_tail(
+    path: &std::path::Path,
+    foreign: &[u8],
+) -> Result<(u64, ContentDigest), Box<dyn Error>> {
+    let mut ledger =
+        DurableReferenceLedger::open(path, "site-alpha", IncompleteTailPolicy::Reject)?;
+    let delta = sample_delta("1", "alpha", 1)?;
+    let batch = ledger.prepare_batch(
+        BatchId::parse("batch:1")?,
+        vec![delta],
+        [ContentDigest::sha256(b"child-1")],
+    )?;
+    ledger.append(batch)?;
+    let root = ledger.journal_root();
+    drop(ledger);
+    let committed_len = fs::metadata(path)?.len();
+
+    let mut raw = OpenOptions::new().append(true).open(path)?;
+    raw.write_all(foreign)?;
+    raw.sync_all()?;
+
+    Ok((committed_len, root))
+}
+
+/// Adversarial Finding 2: Cut offset past EOF is rejected rather than extending file.
+#[test]
+fn test_plan_cut_offset_past_eof_is_rejected() -> Result<(), Box<dyn Error>> {
+    let path = temp_path("cut-past-eof");
+    let _ = fs::remove_file(&path);
+    let foreign = b"FOREIGN_TAIL_BYTES";
+    setup_journal_with_foreign_tail(&path, foreign)?;
+
+    let report = doctor_path(&path)?;
+    let eof_plus_1000 = (report.committed_len() + foreign.len() as u64) + 1000;
+
+    let plan_res = plan_with_cut(&path, &report, eof_plus_1000);
+    assert!(
+        matches!(plan_res, Err(RepairError::CutPastCommittedLen { .. })),
+        "plan_with_cut past EOF must be rejected with CutPastCommittedLen, got: {plan_res:?}"
+    );
+
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+/// Adversarial Finding 7: Partial cut leaving foreign corruption in journal is rejected.
+#[test]
+fn test_partial_cut_leaving_foreign_bytes_is_rejected() -> Result<(), Box<dyn Error>> {
+    let path = temp_path("partial-cut");
+    let _ = fs::remove_file(&path);
+    let foreign = b"FOREIGN_TAIL_20_BYTES";
+    setup_journal_with_foreign_tail(&path, foreign)?;
+
+    let report = doctor_path(&path)?;
+    let partial_cut = report.committed_len() + 10;
+
+    let plan_res = plan_with_cut(&path, &report, partial_cut);
+    assert!(
+        matches!(plan_res, Err(RepairError::CutPastCommittedLen { .. })),
+        "plan_with_cut with partial cut must be rejected, got: {plan_res:?}"
+    );
+
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+/// Adversarial Finding 4: Existing quarantine file with conflicting content is not clobbered.
+#[test]
+fn test_existing_quarantine_file_with_conflicting_content_is_not_clobbered()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_path("clobber-test");
+    let _ = fs::remove_file(&path);
+    let foreign = b"FOREIGN_TAIL_TO_QUARANTINE";
+    setup_journal_with_foreign_tail(&path, foreign)?;
+
+    let report = doctor_path(&path)?;
+    let plan = plan(&path, &report)?;
+    let expected_qpath = quarantine_path_for(
+        plan.journal_path(),
+        report.foreign_digest().ok_or("foreign digest")?,
+    );
+
+    let precious = b"PREEXISTING_PRECIOUS_DATA_DO_NOT_OVERWRITE";
+    fs::write(&expected_qpath, precious)?;
+
+    let receipt = apply(&plan);
+    assert!(
+        matches!(receipt, Err(RepairError::QuarantineFileConflict { .. })),
+        "apply() must refuse to clobber conflicting quarantine file, got: {receipt:?}"
+    );
+
+    let contents = fs::read(&expected_qpath)?;
+    assert_eq!(
+        contents, precious,
+        "pre-existing quarantine file content must be preserved"
+    );
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&expected_qpath);
+    Ok(())
+}
+
+/// Adversarial Finding 4 (reuse): Existing quarantine file with identical content is reused.
+#[test]
+fn test_existing_quarantine_file_with_identical_content_is_reused() -> Result<(), Box<dyn Error>> {
+    let path = temp_path("reuse-test");
+    let _ = fs::remove_file(&path);
+    let foreign = b"FOREIGN_TAIL_FOR_REUSE_TEST";
+    setup_journal_with_foreign_tail(&path, foreign)?;
+
+    let report = doctor_path(&path)?;
+    let plan = plan(&path, &report)?;
+    let expected_qpath = quarantine_path_for(
+        plan.journal_path(),
+        report.foreign_digest().ok_or("foreign digest")?,
+    );
+
+    // Pre-create identical file
+    fs::write(&expected_qpath, foreign)?;
+
+    let receipt = apply(&plan)?;
+    assert_eq!(receipt.quarantine_path(), &expected_qpath);
+    assert_eq!(fs::read(&expected_qpath)?, foreign);
+
+    // Journal was safely truncated
+    assert_eq!(fs::metadata(&path)?.len(), report.committed_len());
+
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site-alpha", IncompleteTailPolicy::Reject)?;
+    ledger.verify_storage()?;
+
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&expected_qpath);
+    Ok(())
+}
+
+/// Adversarial Finding 5: Concurrent append or modification during apply is detected and refused.
+#[test]
+fn test_concurrent_modification_during_apply_is_detected_and_refused() -> Result<(), Box<dyn Error>>
+{
+    let path = temp_path("toctou-append");
+    let _ = fs::remove_file(&path);
+    let foreign = b"FOREIGN_BYTES_TOCTOU";
+    setup_journal_with_foreign_tail(&path, foreign)?;
+
+    let report = doctor_path(&path)?;
+    let plan = plan(&path, &report)?;
+
+    // Concurrently append data to the journal after planning
+    {
+        let mut raw = OpenOptions::new().append(true).open(&path)?;
+        raw.write_all(b"_CONCURRENT_EXTRA_DATA")?;
+        raw.sync_all()?;
+    }
+
+    let apply_res = apply(&plan);
+    assert!(
+        matches!(
+            apply_res,
+            Err(RepairError::FileLengthMismatch { .. } | RepairError::ConcurrentModification { .. })
+        ),
+        "concurrent append must be detected and refused, got: {apply_res:?}"
+    );
+
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+/// Adversarial Finding 6: Path is canonicalized and device + inode are bound into the plan.
+#[test]
+fn test_plan_canonicalizes_path_and_binds_device_and_inode() -> Result<(), Box<dyn Error>> {
+    let path = temp_path("canonical-dev-ino");
+    let _ = fs::remove_file(&path);
+    let foreign = b"FOREIGN_TAIL_CANONICAL";
+    setup_journal_with_foreign_tail(&path, foreign)?;
+
+    let report = doctor_path(&path)?;
+    let plan = plan(&path, &report)?;
+
+    assert!(plan.journal_path().is_absolute());
+    let canonical = fs::canonicalize(&path)?;
+    assert_eq!(plan.journal_path(), &canonical);
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = fs::metadata(&canonical)?;
+        assert_eq!(plan.journal_dev(), meta.dev());
+        assert_eq!(plan.journal_ino(), meta.ino());
+    }
+
+    let _ = fs::remove_file(&path);
+    let expected_qpath = quarantine_path_for(
+        plan.journal_path(),
+        report.foreign_digest().ok_or("foreign digest")?,
+    );
+    let _ = fs::remove_file(&expected_qpath);
     Ok(())
 }

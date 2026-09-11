@@ -1,4 +1,4 @@
-//! Audited doctor, sealed repair plan, and quarantine apply for foreign trailing bytes.
+//! Audited doctor, repair plan, and quarantine apply for foreign trailing bytes.
 //!
 //! Ref: fss-x4a.9.21 / LEDGER-REPAIR-001
 
@@ -7,6 +7,10 @@ use std::fmt::{self, Write as _};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 use fss_core::{ContentDigest, DigestAlgorithm, sha256};
 
@@ -18,7 +22,9 @@ use crate::format::{
 };
 use crate::recovery::recover_bytes;
 
-const PLAN_SEAL_DOMAIN: &[u8] = b"FSS-LEDGER-SEALED-REPAIR-PLAN-V1\0";
+static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+const PLAN_DIGEST_DOMAIN: &[u8] = b"FSS-LEDGER-REPAIR-PLAN-DIGEST-V1\0";
 
 /// Byte range and cryptographic digest of foreign trailing bytes in a journal.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -374,18 +380,22 @@ pub fn doctor_path(path: impl AsRef<Path>) -> Result<RepairDoctorReport, RepairE
     doctor(&bytes)
 }
 
-fn compute_plan_seal(
+fn compute_plan_digest(
     journal_path: &Path,
+    journal_dev: u64,
+    journal_ino: u64,
     committed_len: u64,
     last_root: ContentDigest,
     foreign_range: &ForeignRange,
     cut_offset: u64,
 ) -> ContentDigest {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(PLAN_SEAL_DOMAIN);
+    bytes.extend_from_slice(PLAN_DIGEST_DOMAIN);
     let path_str = journal_path.to_string_lossy();
     bytes.extend_from_slice(&(path_str.len() as u64).to_be_bytes());
     bytes.extend_from_slice(path_str.as_bytes());
+    bytes.extend_from_slice(&journal_dev.to_be_bytes());
+    bytes.extend_from_slice(&journal_ino.to_be_bytes());
     bytes.extend_from_slice(&committed_len.to_be_bytes());
     bytes.extend_from_slice(&last_root.bytes());
     bytes.extend_from_slice(&foreign_range.offset.to_be_bytes());
@@ -395,15 +405,21 @@ fn compute_plan_seal(
     ContentDigest::new(DigestAlgorithm::Sha256, sha256(&bytes))
 }
 
-/// Immutable, sealed plan binding journal identity, committed prefix, foreign range, and seal.
+/// Immutable repair plan binding journal identity, committed prefix, foreign range, and digest.
+///
+/// The plan digest detects accidental modification of plan parameters between planning and apply.
+/// Operator authority is not modelled here; this is an unkeyed integrity checksum, not an
+/// authenticity signature.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SealedRepairPlan {
     pub(crate) journal_path: PathBuf,
+    pub(crate) journal_dev: u64,
+    pub(crate) journal_ino: u64,
     pub(crate) committed_len: u64,
     pub(crate) last_root: ContentDigest,
     pub(crate) foreign_range: ForeignRange,
     pub(crate) cut_offset: u64,
-    pub(crate) seal: ContentDigest,
+    pub(crate) plan_digest: ContentDigest,
 }
 
 impl SealedRepairPlan {
@@ -415,9 +431,9 @@ impl SealedRepairPlan {
         Self::create_with_cut(journal_path, report, report.committed_len)
     }
 
-    /// Creates a sealed repair plan with an explicit cut offset.
+    /// Creates a repair plan with an explicit cut offset.
     ///
-    /// Refuses any cut offset before `report.committed_len()`.
+    /// The only legal cut is exactly `report.committed_len()`; arbitrary cut offsets are refused.
     pub fn create_with_cut(
         journal_path: impl AsRef<Path>,
         report: &RepairDoctorReport,
@@ -434,10 +450,24 @@ impl SealedRepairPlan {
                 committed_len: report.committed_len,
             });
         }
+        if cut_offset > report.committed_len {
+            return Err(RepairError::CutPastCommittedLen {
+                cut: cut_offset,
+                committed_len: report.committed_len,
+            });
+        }
 
-        let journal_path = journal_path.as_ref().to_path_buf();
-        let seal = compute_plan_seal(
-            &journal_path,
+        let canonical_path = fs::canonicalize(journal_path.as_ref())?;
+        let metadata = fs::metadata(&canonical_path)?;
+        #[cfg(unix)]
+        let (journal_dev, journal_ino) = (metadata.dev(), metadata.ino());
+        #[cfg(not(unix))]
+        let (journal_dev, journal_ino) = (0_u64, 0_u64);
+
+        let plan_digest = compute_plan_digest(
+            &canonical_path,
+            journal_dev,
+            journal_ino,
             report.committed_len,
             report.last_root,
             &foreign_range,
@@ -445,28 +475,34 @@ impl SealedRepairPlan {
         );
 
         Ok(Self {
-            journal_path,
+            journal_path: canonical_path,
+            journal_dev,
+            journal_ino,
             committed_len: report.committed_len,
             last_root: report.last_root,
             foreign_range,
             cut_offset,
-            seal,
+            plan_digest,
         })
     }
 
-    /// Verifies that the internal seal and invariants are intact.
-    pub fn verify_seal(&self) -> Result<(), RepairError> {
-        let expected = compute_plan_seal(
+    /// Verifies that the internal plan digest and invariants are intact.
+    ///
+    /// Detects accidental modification of plan parameters, not intentional tampering.
+    pub fn verify_plan_digest(&self) -> Result<(), RepairError> {
+        let expected = compute_plan_digest(
             &self.journal_path,
+            self.journal_dev,
+            self.journal_ino,
             self.committed_len,
             self.last_root,
             &self.foreign_range,
             self.cut_offset,
         );
-        if self.seal != expected {
-            return Err(RepairError::InvalidSeal {
+        if self.plan_digest != expected {
+            return Err(RepairError::InvalidPlanDigest {
                 expected,
-                actual: self.seal,
+                actual: self.plan_digest,
             });
         }
         if self.cut_offset < self.committed_len {
@@ -475,13 +511,36 @@ impl SealedRepairPlan {
                 committed_len: self.committed_len,
             });
         }
+        if self.cut_offset > self.committed_len {
+            return Err(RepairError::CutPastCommittedLen {
+                cut: self.cut_offset,
+                committed_len: self.committed_len,
+            });
+        }
         Ok(())
     }
 
-    /// Bound path to the journal file.
+    /// Alias for [`verify_plan_digest`].
+    pub fn verify_seal(&self) -> Result<(), RepairError> {
+        self.verify_plan_digest()
+    }
+
+    /// Bound canonical path to the journal file.
     #[must_use]
     pub fn journal_path(&self) -> &Path {
         &self.journal_path
+    }
+
+    /// Bound filesystem device identifier.
+    #[must_use]
+    pub const fn journal_dev(&self) -> u64 {
+        self.journal_dev
+    }
+
+    /// Bound filesystem inode identifier.
+    #[must_use]
+    pub const fn journal_ino(&self) -> u64 {
+        self.journal_ino
     }
 
     /// Bound committed prefix length.
@@ -520,29 +579,44 @@ impl SealedRepairPlan {
         self.foreign_range.digest
     }
 
-    /// Planned cut offset (where file will be truncated).
+    /// Planned cut offset (where file will be truncated). Must equal `committed_len`.
     #[must_use]
     pub const fn cut_offset(&self) -> u64 {
         self.cut_offset
     }
 
-    /// Cryptographic seal over the plan parameters.
+    /// Integrity digest over the plan parameters.
+    ///
+    /// Detects accidental modification, not tampering.
     #[must_use]
-    pub const fn seal(&self) -> ContentDigest {
-        self.seal
+    pub const fn plan_digest(&self) -> ContentDigest {
+        self.plan_digest
     }
 
-    /// Executes this sealed repair plan.
+    /// Alias for [`plan_digest`].
+    #[must_use]
+    pub const fn seal(&self) -> ContentDigest {
+        self.plan_digest
+    }
+
+    /// Executes this repair plan.
     pub fn apply(&self) -> Result<RepairReceipt, RepairError> {
         apply(self)
     }
 
-    /// Overrides the seal for negative testing.
+    /// Overrides the plan digest for negative testing.
     #[doc(hidden)]
     #[must_use]
-    pub const fn with_seal_for_test(mut self, seal: ContentDigest) -> Self {
-        self.seal = seal;
+    pub const fn with_plan_digest_for_test(mut self, digest: ContentDigest) -> Self {
+        self.plan_digest = digest;
         self
+    }
+
+    /// Alias for [`with_plan_digest_for_test`].
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn with_seal_for_test(self, seal: ContentDigest) -> Self {
+        self.with_plan_digest_for_test(seal)
     }
 }
 
@@ -558,6 +632,8 @@ pub fn plan(
 }
 
 /// Creates a sealed repair plan with an explicit cut offset.
+///
+/// Only `cut_offset == report.committed_len()` is accepted.
 pub fn plan_with_cut(
     journal_path: impl AsRef<Path>,
     report: &RepairDoctorReport,
@@ -592,7 +668,7 @@ pub struct RepairReceipt {
     pub(crate) quarantined_digest: ContentDigest,
     pub(crate) quarantine_path: PathBuf,
     pub(crate) truncated_to: u64,
-    pub(crate) plan_seal: ContentDigest,
+    pub(crate) plan_digest: ContentDigest,
 }
 
 impl RepairReceipt {
@@ -644,10 +720,16 @@ impl RepairReceipt {
         self.truncated_to
     }
 
-    /// Cryptographic seal of the repair plan that was executed.
+    /// Integrity digest of the repair plan that was executed.
+    #[must_use]
+    pub const fn plan_digest(&self) -> ContentDigest {
+        self.plan_digest
+    }
+
+    /// Alias for [`plan_digest`].
     #[must_use]
     pub const fn plan_seal(&self) -> ContentDigest {
-        self.plan_seal
+        self.plan_digest
     }
 
     /// Alias for `quarantined_digest`.
@@ -669,24 +751,48 @@ impl RepairReceipt {
     }
 }
 
-/// Applies a sealed repair plan: re-reads the file, re-verifies prefix and foreign digest,
-/// quarantines foreign bytes to a sidecar file named by digest next to the journal, truncates,
-/// and emits a typed receipt.
+/// Applies a repair plan: locks the journal file exclusively, re-reads and re-verifies
+/// prefix and foreign digest, quarantines foreign bytes to a sidecar file named by digest,
+/// fsyncs parent directory, re-verifies tail immediately before truncate, and emits a receipt.
 pub fn apply(plan: &SealedRepairPlan) -> Result<RepairReceipt, RepairError> {
-    // 1. Verify seal and cut invariant
-    plan.verify_seal()?;
+    // 1. Verify plan digest and cut invariant
+    plan.verify_plan_digest()?;
 
-    // 2. Open file for read + write
+    if plan.cut_offset != plan.committed_len {
+        return Err(RepairError::CutPastCommittedLen {
+            cut: plan.cut_offset,
+            committed_len: plan.committed_len,
+        });
+    }
+
+    // 2. Open file for read + write and acquire exclusive lock for the whole apply
     let mut file = OpenOptions::new()
         .read(true)
         .write(true)
         .open(&plan.journal_path)?;
 
+    file.lock()?;
+
+    // 3. Verify device and inode match the plan
+    let file_meta = file.metadata()?;
+    #[cfg(unix)]
+    {
+        if file_meta.dev() != plan.journal_dev || file_meta.ino() != plan.journal_ino {
+            return Err(RepairError::FileIdentityMismatch {
+                expected_dev: plan.journal_dev,
+                expected_ino: plan.journal_ino,
+                actual_dev: file_meta.dev(),
+                actual_ino: file_meta.ino(),
+            });
+        }
+    }
+
+    // 4. Read bytes into memory
     file.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)?;
 
-    // 3. Re-verify committed prefix
+    // 5. Re-verify committed prefix
     if (bytes.len() as u64) < plan.committed_len {
         return Err(RepairError::FileShorterThanCommittedLen {
             file_len: bytes.len() as u64,
@@ -710,7 +816,7 @@ pub fn apply(plan: &SealedRepairPlan) -> Result<RepairReceipt, RepairError> {
         });
     }
 
-    // 4. Re-verify foreign range and digest
+    // 6. Re-verify foreign range and digest
     let foreign_start =
         usize::try_from(plan.foreign_range.offset).map_err(|_| RepairError::LengthOverflow)?;
     let foreign_len =
@@ -736,25 +842,91 @@ pub fn apply(plan: &SealedRepairPlan) -> Result<RepairReceipt, RepairError> {
         });
     }
 
-    // 5. Quarantine foreign bytes to sidecar file named by digest next to the journal
+    // 7. Quarantine foreign bytes to sidecar file named by digest next to the journal
     let quarantine_path = quarantine_path_for(&plan.journal_path, actual_digest);
-    let tmp_quarantine_path = quarantine_path.with_extension("tmp");
-    {
-        let mut qfile = OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&tmp_quarantine_path)?;
-        qfile.write_all(actual_foreign)?;
-        qfile.sync_all()?;
-    }
-    fs::rename(&tmp_quarantine_path, &quarantine_path)?;
+    let parent = quarantine_path.parent().unwrap_or_else(|| Path::new("."));
+    let parent_to_open = if parent.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        parent
+    };
 
-    // 6. Truncate journal file
+    if quarantine_path.exists() {
+        let existing_bytes = fs::read(&quarantine_path)?;
+        if existing_bytes == actual_foreign {
+            // Identical content already safely quarantined; reuse it.
+            let parent_dir = fs::File::open(parent_to_open)?;
+            parent_dir.sync_all()?;
+        } else {
+            return Err(RepairError::QuarantineFileConflict {
+                path: quarantine_path,
+                expected_digest: actual_digest,
+            });
+        }
+    } else {
+        let mut hex = String::with_capacity(64);
+        for byte in actual_digest.bytes() {
+            let _ = write!(&mut hex, "{byte:02x}");
+        }
+        let attempt = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let tmp_file_name = format!("{hex}.tmp.{}.{attempt}", std::process::id());
+        let tmp_quarantine_path = if parent.as_os_str().is_empty() {
+            PathBuf::from(tmp_file_name)
+        } else {
+            parent.join(tmp_file_name)
+        };
+
+        let write_res = (|| -> io::Result<()> {
+            let mut qfile = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&tmp_quarantine_path)?;
+            qfile.write_all(actual_foreign)?;
+            qfile.sync_all()?;
+            Ok(())
+        })();
+
+        if let Err(err) = write_res {
+            let _ = fs::remove_file(&tmp_quarantine_path);
+            return Err(RepairError::Io(err));
+        }
+
+        if let Err(err) = fs::rename(&tmp_quarantine_path, &quarantine_path) {
+            let _ = fs::remove_file(&tmp_quarantine_path);
+            return Err(RepairError::Io(err));
+        }
+
+        // F3: fsync parent directory after rename and BEFORE truncating journal
+        let parent_dir = fs::File::open(parent_to_open)?;
+        parent_dir.sync_all()?;
+    }
+
+    // 8. Re-check file length and tail match plan immediately before set_len
+    let pre_truncate_meta = file.metadata()?;
+    if pre_truncate_meta.len() != expected_end as u64 {
+        return Err(RepairError::ConcurrentModification {
+            expected_len: expected_end as u64,
+            actual_len: pre_truncate_meta.len(),
+        });
+    }
+
+    file.seek(SeekFrom::Start(plan.foreign_range.offset))?;
+    let mut tail_check = vec![0u8; foreign_len];
+    file.read_exact(&mut tail_check)?;
+    let tail_digest = ContentDigest::new(DigestAlgorithm::Sha256, sha256(&tail_check));
+    if tail_digest != plan.foreign_range.digest {
+        return Err(RepairError::PlanDigestMismatch {
+            expected: plan.foreign_range.digest,
+            actual: tail_digest,
+        });
+    }
+
+    // 9. Truncate journal file and fsync
     file.set_len(plan.cut_offset)?;
     file.sync_all()?;
+    let _ = file.unlock();
 
-    // 7. Emit typed receipt
+    // 10. Emit typed receipt
     Ok(RepairReceipt {
         journal_path: plan.journal_path.clone(),
         committed_len: plan.committed_len,
@@ -764,7 +936,7 @@ pub fn apply(plan: &SealedRepairPlan) -> Result<RepairReceipt, RepairError> {
         quarantined_digest: actual_digest,
         quarantine_path,
         truncated_to: plan.cut_offset,
-        plan_seal: plan.seal,
+        plan_digest: plan.plan_digest,
     })
 }
 
@@ -784,11 +956,18 @@ pub enum RepairError {
         /// Minimum safe committed length.
         committed_len: u64,
     },
-    /// Sealed repair plan cryptographic seal is invalid or was tampered with.
-    InvalidSeal {
-        /// Expected seal digest.
+    /// Cut offset was after committed length; arbitrary cuts leaving foreign bytes or extending past EOF are refused.
+    CutPastCommittedLen {
+        /// Attempted cut offset.
+        cut: u64,
+        /// Required committed length.
+        committed_len: u64,
+    },
+    /// Repair plan digest mismatch: detects accidental modification of plan parameters, not intentional tampering.
+    InvalidPlanDigest {
+        /// Expected plan digest.
         expected: ContentDigest,
-        /// Actual seal digest found on plan.
+        /// Actual plan digest found on plan.
         actual: ContentDigest,
     },
     /// Actual file length does not match expected foreign range.
@@ -823,6 +1002,31 @@ pub enum RepairError {
         /// Actual foreign digest computed from file bytes.
         actual: ContentDigest,
     },
+    /// File device or inode changed between planning and apply.
+    FileIdentityMismatch {
+        /// Expected device number.
+        expected_dev: u64,
+        /// Expected inode number.
+        expected_ino: u64,
+        /// Actual device number observed.
+        actual_dev: u64,
+        /// Actual inode number observed.
+        actual_ino: u64,
+    },
+    /// Pre-existing quarantine sidecar file exists with conflicting content.
+    QuarantineFileConflict {
+        /// Path to conflicting quarantine sidecar file.
+        path: PathBuf,
+        /// Expected content digest.
+        expected_digest: ContentDigest,
+    },
+    /// Concurrent append or modification detected immediately before truncate.
+    ConcurrentModification {
+        /// Expected file length.
+        expected_len: u64,
+        /// Actual file length observed.
+        actual_len: u64,
+    },
     /// Sequence space exhausted during inspection.
     SequenceExhausted,
     /// Length calculation overflowed 64 bits.
@@ -839,9 +1043,13 @@ impl fmt::Display for RepairError {
                 formatter,
                 "repair plan cut offset {cut} precedes committed length {committed_len}"
             ),
-            Self::InvalidSeal { expected, actual } => write!(
+            Self::CutPastCommittedLen { cut, committed_len } => write!(
                 formatter,
-                "repair plan seal mismatch: expected {expected}, got {actual}"
+                "repair plan cut offset {cut} exceeds committed length {committed_len}; only exact cut at committed length is permitted"
+            ),
+            Self::InvalidPlanDigest { expected, actual } => write!(
+                formatter,
+                "repair plan digest mismatch (accidental modification detected): expected {expected}, got {actual}"
             ),
             Self::FileLengthMismatch { expected, actual } => write!(
                 formatter,
@@ -866,6 +1074,30 @@ impl fmt::Display for RepairError {
             Self::PlanDigestMismatch { expected, actual } => write!(
                 formatter,
                 "foreign trailing bytes digest mismatch at apply: expected {expected}, got {actual}"
+            ),
+            Self::FileIdentityMismatch {
+                expected_dev,
+                expected_ino,
+                actual_dev,
+                actual_ino,
+            } => write!(
+                formatter,
+                "journal file identity changed between plan and apply: expected (dev={expected_dev}, ino={expected_ino}), got (dev={actual_dev}, ino={actual_ino})"
+            ),
+            Self::QuarantineFileConflict {
+                path,
+                expected_digest,
+            } => write!(
+                formatter,
+                "quarantine sidecar file exists with conflicting content: path {}, expected digest {expected_digest}",
+                path.display()
+            ),
+            Self::ConcurrentModification {
+                expected_len,
+                actual_len,
+            } => write!(
+                formatter,
+                "concurrent modification detected before truncate: expected length {expected_len}, got {actual_len}"
             ),
             Self::SequenceExhausted => formatter.write_str("journal sequence space exhausted"),
             Self::LengthOverflow => {
