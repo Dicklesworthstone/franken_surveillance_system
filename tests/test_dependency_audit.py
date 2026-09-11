@@ -508,6 +508,41 @@ members = ["crates/crate-a"]
         codes = [f["code"] for f in report["findings"] if f["severity"] == "error"]
         self.assertIn("DEP-AUD-022", codes)
 
+    def test_foreign_production_command_src_rejected_tests_admitted(self) -> None:
+        """Planted-negative test: Command::new("ffmpeg") in src/ rejected with DEP-AUD-022;
+
+        Command::new(env!("CARGO_BIN_EXE_x")) and oracle commands in tests/ admitted.
+        """
+        root_cargo = """[workspace]
+resolver = "3"
+members = ["crates/crate-a"]
+"""
+        (self.root / "Cargo.toml").write_text(root_cargo, encoding="utf-8")
+        make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
+
+        # In tests/, Command::new(env!("CARGO_BIN_EXE_crate-a")) and oracle commands are admitted
+        (self.root / "crates" / "crate-a" / "tests").mkdir(parents=True, exist_ok=True)
+        test_file = self.root / "crates" / "crate-a" / "tests" / "test_bin.rs"
+        test_file.write_text(
+            '#![forbid(unsafe_code)]\nuse std::process::Command;\nfn test() {\n    let _ = Command::new(env!("CARGO_BIN_EXE_crate-a"));\n    let _ = Command::new("python3");\n}\n',
+            encoding="utf-8",
+        )
+        report_ok, rc_ok = dependency_audit.audit_workspace(self.root, self.policy_path)
+        self.assertEqual(rc_ok, 0, f"Expected clean audit with tests/ Command::new, got {report_ok.get('findings')}")
+
+        # In src/, Command::new("ffmpeg") is rejected with DEP-AUD-022
+        bad_src = self.root / "crates" / "crate-a" / "src" / "foreign.rs"
+        bad_src.write_text(
+            '#![forbid(unsafe_code)]\nuse std::process::Command;\npub fn run_ffmpeg() {\n    let _ = Command::new("ffmpeg");\n}\n',
+            encoding="utf-8",
+        )
+        report_bad, rc_bad = dependency_audit.audit_workspace(self.root, self.policy_path)
+        self.assertEqual(rc_bad, 1)
+        codes = [f["code"] for f in report_bad["findings"] if f["severity"] == "error"]
+        self.assertIn("DEP-AUD-022", codes)
+        bad_findings = [f for f in report_bad["findings"] if f["code"] == "DEP-AUD-022"]
+        self.assertTrue(any("foreign production command" in f.get("message", "") for f in bad_findings))
+
     def test_property_monotonic_violation(self) -> None:
         root_cargo = """[workspace]
 resolver = "3"

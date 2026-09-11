@@ -361,6 +361,32 @@ edition = "2024"
         self.assertEqual(f022[0].params["label"], "C ABI")
         self.assertEqual(f022[0].remediation, DIAGNOSTIC_REGISTRY["DEP-AUD-022"].remediation)
 
+        # Planted-negative test: Command::new("ffmpeg") in src/ is rejected
+        (self.root / "crates" / "fss-a" / "src" / "lib.rs").write_text(
+            '#![forbid(unsafe_code)]\nuse std::process::Command;\npub fn run() { let _ = Command::new("ffmpeg"); }\n',
+            encoding="utf-8",
+        )
+        findings_src: list[Finding] = []
+        dependency_audit.rust_source_audit(findings_src, root=self.root)
+        f022_src = [f for f in findings_src if f.code == "DEP-AUD-022"]
+        self.assertTrue(len(f022_src) >= 1)
+        self.assertEqual(f022_src[0].params["label"], "foreign production command")
+
+        # In tests/, Command::new(env!("...")) and oracle commands are admitted
+        (self.root / "crates" / "fss-a" / "src" / "lib.rs").write_text(
+            '#![forbid(unsafe_code)]\npub fn clean() {}\n', encoding="utf-8"
+        )
+        tests_dir = self.root / "crates" / "fss-a" / "tests"
+        tests_dir.mkdir(parents=True, exist_ok=True)
+        (tests_dir / "integration_test.rs").write_text(
+            '#![forbid(unsafe_code)]\nuse std::process::Command;\nfn test() {\n    let _ = Command::new(env!("CARGO_BIN_EXE_fss-lab"));\n    let _ = Command::new("python3");\n}\n',
+            encoding="utf-8",
+        )
+        findings_tests: list[Finding] = []
+        dependency_audit.rust_source_audit(findings_tests, root=self.root)
+        f022_tests = [f for f in findings_tests if f.code == "DEP-AUD-022"]
+        self.assertEqual(len(f022_tests), 0)
+
     def test_dep_aud_030_forbidden_package_in_resolved_metadata(self) -> None:
         """fss-x4a.1.33.14: DEP-AUD-030 forbidden package reachable in resolved Cargo metadata."""
         findings: list[Finding] = []
