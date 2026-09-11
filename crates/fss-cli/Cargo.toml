@@ -8,6 +8,9 @@ authors.workspace = true
 license-file.workspace = true
 repository.workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "fss"
 path = "src/main.rs"

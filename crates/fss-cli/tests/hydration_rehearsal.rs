@@ -1,4 +1,5 @@
 #![forbid(unsafe_code)]
+//! Integration tests for reference hydration rehearsal CLI and catalog.
 
 use std::error::Error;
 use std::process::{Command, Output};

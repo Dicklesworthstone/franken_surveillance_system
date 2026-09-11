@@ -1,4 +1,6 @@
 #![forbid(unsafe_code)]
+#![allow(dead_code)]
+//! Deterministic reference surveillance laboratory CLI.
 
 mod digest;
 mod effects;
@@ -9,6 +11,9 @@ mod spool;
 use std::env;
 use std::process::ExitCode;
 
+#[cfg(test)]
+use fss_cli::{ArgToken, parse_lab_tokens};
+use fss_cli::{LabAction, emit_diagnostic, parse_lab_args};
 use scenario::{ScenarioKind, run_scenario};
 
 const ALL_SCENARIOS: [ScenarioKind; 6] = [
@@ -21,44 +26,50 @@ const ALL_SCENARIOS: [ScenarioKind; 6] = [
 ];
 
 fn main() -> ExitCode {
-    match run(env::args().skip(1).collect()) {
-        Ok(output) => {
-            println!("{output}");
-            ExitCode::SUCCESS
-        }
+    match parse_lab_args(env::args_os().skip(1)) {
+        Ok(action) => match run_action(action) {
+            Ok(output) => {
+                println!("{output}");
+                ExitCode::SUCCESS
+            }
+            Err(error) => {
+                eprintln!("fss-lab: {error}");
+                ExitCode::from(2)
+            }
+        },
         Err(error) => {
             eprintln!("fss-lab: {error}");
-            ExitCode::from(2)
+            emit_diagnostic(&error, "fss-lab", None);
+            ExitCode::from(error.exit_identity().code)
         }
     }
 }
 
-fn run(arguments: Vec<String>) -> Result<String, String> {
-    match arguments.as_slice() {
-        [] => Ok(help_text().to_owned()),
-        [value] if value == "help" || value == "--help" || value == "-h" => {
-            Ok(help_text().to_owned())
-        }
-        [command] if command == "list" => Ok(render_scenario_list()),
-        [command] if command == "matrix" => render_matrix(),
-        [command] if command == "self-test" => self_test(),
-        [command, scenario] if command == "run" => {
-            let scenario = ScenarioKind::parse(scenario).map_err(|error| error.to_string())?;
+fn run_action(action: LabAction) -> Result<String, String> {
+    match action {
+        LabAction::Help => Ok(help_text().to_owned()),
+        LabAction::List => Ok(render_scenario_list()),
+        LabAction::Matrix => render_matrix(),
+        LabAction::SelfTest => self_test(),
+        LabAction::Run { scenario } => {
+            let scenario = ScenarioKind::parse(&scenario).map_err(|error| error.to_string())?;
             run_scenario(scenario)
                 .map(|report| report.render_json())
                 .map_err(|error| error.to_string())
         }
-        [command, scenario] if command == "replay" => replay(scenario, 2),
-        [command, scenario, repeat_flag, repeat]
-            if command == "replay" && repeat_flag == "--repeat" =>
-        {
-            let repeat = repeat
-                .parse::<usize>()
-                .map_err(|_| "--repeat requires a positive integer".to_owned())?;
-            replay(scenario, repeat)
-        }
-        _ => Err(format!("invalid arguments\n\n{}", help_text())),
+        LabAction::Replay { scenario, repeat } => replay(&scenario, repeat),
     }
+}
+
+#[cfg(test)]
+fn run(arguments: Vec<String>) -> Result<String, String> {
+    let tokens: Vec<ArgToken> = arguments
+        .into_iter()
+        .enumerate()
+        .map(|(index, raw)| ArgToken::new(index, raw))
+        .collect();
+    let action = parse_lab_tokens(&tokens).map_err(|error| error.to_string())?;
+    run_action(action)
 }
 
 fn render_scenario_list() -> String {
@@ -151,20 +162,23 @@ mod tests {
 
     #[test]
     fn public_commands_are_deterministic() {
-        assert_eq!(
-            render_matrix().expect("first"),
-            render_matrix().expect("second")
-        );
-        assert!(
-            self_test()
-                .expect("self-test")
-                .contains("\"status\":\"pass\"")
-        );
-        assert!(
-            replay("intrusion", 10)
-                .expect("replay")
-                .contains("\"deterministic\":true")
-        );
+        let first = render_matrix();
+        let second = render_matrix();
+        assert!(first.is_ok());
+        assert!(second.is_ok());
+        if let (Ok(f), Ok(s)) = (first, second) {
+            assert_eq!(f, s);
+        }
+        let st = self_test();
+        assert!(st.is_ok());
+        if let Ok(text) = st {
+            assert!(text.contains("\"status\":\"pass\""));
+        }
+        let rep = replay("intrusion", 10);
+        assert!(rep.is_ok());
+        if let Ok(text) = rep {
+            assert!(text.contains("\"deterministic\":true"));
+        }
     }
 
     #[test]

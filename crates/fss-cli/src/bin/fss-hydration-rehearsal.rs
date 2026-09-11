@@ -7,12 +7,14 @@ use std::error::Error;
 use std::io::{self, Write};
 
 use fss_core::{
-    BudgetVector, Completeness, ContentDigest, ContractBasis, HandleAvailability,
-    HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose, HydrationRequest,
-    HydrationRequestSpec, HydrationResponse, LaboratoryAccess, LedgerAnchor, SemanticHandle,
-    SemanticHandleSpec, SessionId, TimestampNs,
+    BudgetVector, Completeness, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
+    HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
+    HydrationRequest, HydrationRequestSpec, HydrationResponse, LaboratoryAccess, LedgerAnchor,
+    SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
 };
 use fss_reference::ReferenceHydrationCatalog;
+
+use fss_cli::{HydrationAction, emit_diagnostic, parse_hydration_args};
 
 const SCENARIOS: [&str; 6] = [
     "success",
@@ -24,22 +26,25 @@ const SCENARIOS: [&str; 6] = [
 ];
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("fss-hydration-rehearsal: {error}");
-        std::process::exit(1);
+    match parse_hydration_args(env::args_os().skip(1)) {
+        Ok(HydrationAction::Help) => {
+            println!("{}", fss_cli::hydration_help_text());
+        }
+        Ok(HydrationAction::Run { scenario }) => {
+            if let Err(error) = run(scenario) {
+                eprintln!("fss-hydration-rehearsal: {error}");
+                std::process::exit(1);
+            }
+        }
+        Err(error) => {
+            eprintln!("fss-hydration-rehearsal: {error}");
+            emit_diagnostic(&error, "fss-hydration-rehearsal", None);
+            std::process::exit(error.exit_identity().code as i32);
+        }
     }
 }
 
-fn run() -> Result<(), Box<dyn Error>> {
-    let mut args = env::args().skip(1);
-    let scenario = match args.next().as_deref() {
-        None => "all".to_owned(),
-        Some("--scenario") => args.next().ok_or("--scenario requires a value")?,
-        Some(value) => value.to_owned(),
-    };
-    if args.next().is_some() {
-        return Err("unexpected trailing arguments".into());
-    }
+fn run(scenario: String) -> Result<(), Box<dyn Error>> {
     let selected: Vec<&str> = if scenario == "all" {
         SCENARIOS.to_vec()
     } else if SCENARIOS.contains(&scenario.as_str()) {
@@ -142,7 +147,7 @@ fn fixture() -> Result<(ReferenceHydrationCatalog, SemanticHandle), HydrationErr
     let mut anchor = LedgerAnchor::genesis("site:hydration-rehearsal");
     anchor.commit_sequence = 1;
     let handle = SemanticHandle::publish(SemanticHandleSpec {
-        contract_basis: ContractBasis::from_registry_bytes(
+        contract_basis: ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
             b"schemas",
             b"operations",
             b"views",
@@ -150,8 +155,7 @@ fn fixture() -> Result<(ReferenceHydrationCatalog, SemanticHandle), HydrationErr
             b"errors",
             b"costs",
             "fss-hydration-rehearsal:2",
-            None,
-        ),
+        )),
         anchor,
         subject_id: "evidence:hydration-rehearsal".to_owned(),
         subject_digest: ContentDigest::sha256(b"synthetic redacted rehearsal subject"),
