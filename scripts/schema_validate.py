@@ -21,6 +21,10 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCHEMAS_DIR = ROOT / "schemas"
+DEFAULT_REGISTRIES_DIR = ROOT / "registries"
+DEFAULT_SCHEMAS_MD = DEFAULT_REGISTRIES_DIR / "SCHEMAS.md"
+DEFAULT_ARCHITECTURE_DIR = ROOT / "architecture"
+DEFAULT_CRATES_DIR = ROOT / "crates"
 
 DRAFT_2020_12_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 DRAFT_2020_12_CORE_VOCAB = "https://json-schema.org/draft/2020-12/vocab/core"
@@ -42,6 +46,8 @@ SUPPORTED_VOCABULARIES = {
 }
 
 ANCHOR_PATTERN = re.compile(r"^[A-Za-z_][-A-Za-z0-9._]*$")
+STABLE_ID_PATTERN = re.compile(r"^SCHEMA-[A-Z0-9]+(?:-[A-Z0-9]+)*$")
+SCHEMA_NAME_PATTERN = re.compile(r"^fss\.[a-z0-9_.]+\.v\d+$")
 VALID_SIMPLE_TYPES = frozenset({"null", "boolean", "object", "array", "number", "string", "integer"})
 
 DEFAULT_MAX_DEPTH = 64
@@ -51,7 +57,7 @@ DEFAULT_BUDGET_WALL_NS = 30_000_000_000     # 30 seconds
 DEFAULT_BUDGET_PEAK_BYTES = 256 * 1024 * 1024  # 256 MB
 DEFAULT_BUDGET_WORK_UNITS = 1000
 
-# Diagnostic Codes
+# Diagnostic Codes - Meta-Schema and References
 CODE_INVALID_DIALECT = "invalid_dialect"
 CODE_UNSUPPORTED_VOCABULARY = "unsupported_vocabulary"
 CODE_INVALID_KEYWORD_SHAPE = "invalid_keyword_shape"
@@ -74,6 +80,35 @@ CODE_MALFORMED_JSON = "malformed_json"
 CODE_UNGUARDED_CYCLE = "unguarded_cycle"
 CODE_CASE_FOLD_COLLISION = "case_fold_collision"
 
+# Diagnostic Codes - Schema Constitution & Implementation
+CODE_DUPLICATE_STABLE_ID = "duplicate_stable_id"
+CODE_DUPLICATE_SCHEMA_NAME = "duplicate_schema_name"
+CODE_INVALID_STABLE_ID = "invalid_stable_id"
+CODE_INVALID_SCHEMA_NAME = "invalid_schema_name"
+CODE_MISSING_SCHEMA_FILE = "missing_schema_file"
+CODE_UNREGISTERED_SCHEMA_FILE = "unregistered_schema_file"
+CODE_SCHEMA_CONST_MISMATCH = "schema_const_mismatch"
+CODE_SCHEMA_ID_MISMATCH = "schema_id_mismatch"
+CODE_UNDECLARED_SCHEMA_REFERENCE = "undeclared_schema_reference"
+CODE_UNOWNED_IMPLEMENTED_SCHEMA = "unowned_implemented_schema"
+CODE_INVALID_IMPLEMENTATION_OWNER = "invalid_implementation_owner"
+CODE_MALFORMED_REGISTRY_ROW = "malformed_registry_row"
+
+CONSTITUTION_CODES = frozenset({
+    CODE_DUPLICATE_STABLE_ID,
+    CODE_DUPLICATE_SCHEMA_NAME,
+    CODE_INVALID_STABLE_ID,
+    CODE_INVALID_SCHEMA_NAME,
+    CODE_MISSING_SCHEMA_FILE,
+    CODE_UNREGISTERED_SCHEMA_FILE,
+    CODE_SCHEMA_CONST_MISMATCH,
+    CODE_SCHEMA_ID_MISMATCH,
+    CODE_UNDECLARED_SCHEMA_REFERENCE,
+    CODE_UNOWNED_IMPLEMENTED_SCHEMA,
+    CODE_INVALID_IMPLEMENTATION_OWNER,
+    CODE_MALFORMED_REGISTRY_ROW,
+})
+
 
 class SchemaValidationError(Exception):
     """Base exception for schema validation errors."""
@@ -82,6 +117,44 @@ class SchemaValidationError(Exception):
 
 class ValidatorUnavailableError(SchemaValidationError):
     pass
+
+
+@dataclass(frozen=True)
+class RustOwner:
+    crate: str
+    file: str
+    type_name: str
+    line: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "crate": self.crate,
+            "file": self.file,
+            "type": self.type_name,
+            "line": self.line,
+        }
+
+
+@dataclass(frozen=True)
+class SchemaDeclaration:
+    stable_id: str
+    schema_name: str
+    file_path: str
+    authority: str
+    compatibility_rule: str
+    status: str  # "implemented" | "declared"
+    owner: RustOwner | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "stableId": self.stable_id,
+            "name": self.schema_name,
+            "file": self.file_path,
+            "authority": self.authority,
+            "compatibilityRule": self.compatibility_rule,
+            "status": self.status,
+            "owner": self.owner.to_dict() if self.owner else None,
+        }
 
 
 @dataclass(frozen=True)
@@ -167,14 +240,22 @@ class Validator:
             return catalog
 
         if target_file is not None:
-            schema_files = [target_file]
+            resolved_tf = target_file.resolve()
+            resolved_sd = schemas_dir.resolve()
+            if not resolved_tf.is_relative_to(resolved_sd):
+                if (resolved_sd / target_file.name).is_file():
+                    resolved_tf = (resolved_sd / target_file.name).resolve()
+            schema_files = [resolved_tf]
         else:
             schema_files = sorted(schemas_dir.glob("*.json"))
 
         case_fold_map: dict[str, str] = {}
 
         for file_path in schema_files:
-            relative = file_path.relative_to(schemas_dir).as_posix()
+            try:
+                relative = file_path.resolve().relative_to(schemas_dir.resolve()).as_posix()
+            except ValueError:
+                relative = file_path.name
             lowered = relative.lower()
             if lowered in case_fold_map:
                 self.emit(
@@ -927,21 +1008,428 @@ class Validator:
             dst = cycle[i + 1]
             doc = catalog.schemas_by_relative.get(src)
             if isinstance(doc, dict):
-                ref = doc.get("$ref") or doc.get("$dynamicRef")
-                if isinstance(ref, str):
-                    # Top-level direct ref
-                    if src == dst or ref.startswith(f"{dst}#") or ref == dst:
-                        self.emit(
-                            CODE_UNGUARDED_CYCLE,
-                            src,
-                            "#/$ref",
-                            f"unguarded direct reference cycle: {' -> '.join(cycle)}",
-                        )
+                    ref = doc.get("$ref") or doc.get("$dynamicRef")
+                    if isinstance(ref, str):
+                        # Top-level direct ref
+                        if src == dst or ref.startswith(f"{dst}#") or ref == dst:
+                            self.emit(
+                                CODE_UNGUARDED_CYCLE,
+                                src,
+                                "#/$ref",
+                                f"unguarded direct reference cycle: {' -> '.join(cycle)}",
+                            )
+
+
+def scan_rust_schema_owners(crates_dir: Path) -> dict[str, RustOwner]:
+    """Scan crates/fss-core/src (or crates directory) to discover Rust types encoding schemas."""
+    owners: dict[str, RustOwner] = {}
+    fss_core_src = crates_dir / "fss-core" / "src"
+    if not fss_core_src.is_dir():
+        if (crates_dir / "src").is_dir():
+            fss_core_src = crates_dir / "src"
+        else:
+            return owners
+
+    for rs_path in sorted(fss_core_src.rglob("*.rs")):
+        try:
+            text = rs_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        lines = text.splitlines()
+        rel_path = rs_path.as_posix()
+        if "crates/" in rel_path:
+            rel_path = rel_path[rel_path.index("crates/"):]
+
+        current_type = None
+        brace_depth = 0
+
+        for line_no, line in enumerate(lines, 1):
+            stripped = line.strip()
+            if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+                continue
+
+            if brace_depth == 0:
+                m_impl_trait = re.match(r'^\s*impl(?:<[^>]+>)?\s+[A-Za-z0-9_:]+(?:<[^>]+>)?\s+for\s+([A-Za-z0-9_]+)\b', line)
+                m_impl = re.match(r'^\s*impl(?:<[^>]+>)?\s+([A-Za-z0-9_]+)(?:<[^>]+>)?\s*(?:where\b|\{)', line)
+                m_struct = re.match(r'^\s*(?:pub(?:\([^)]+\))?\s+)?(?:struct|enum)\s+([A-Za-z0-9_]+)\b', line)
+
+                if m_impl_trait:
+                    current_type = m_impl_trait.group(1)
+                elif m_impl:
+                    current_type = m_impl.group(1)
+                elif m_struct:
+                    current_type = m_struct.group(1)
+
+            for match in re.finditer(r'"(fss\.[a-z0-9_.]+\.v\d+)"', line):
+                schema_name = match.group(1)
+                resolved_type = current_type
+                if not resolved_type:
+                    for b_idx in range(line_no - 1, max(0, line_no - 80), -1):
+                        b_line = lines[b_idx]
+                        m1 = re.match(r'^\s*impl(?:<[^>]+>)?\s+[A-Za-z0-9_:]+(?:<[^>]+>)?\s+for\s+([A-Za-z0-9_]+)\b', b_line)
+                        m2 = re.match(r'^\s*impl(?:<[^>]+>)?\s+([A-Za-z0-9_]+)(?:<[^>]+>)?\s*(?:where\b|\{)', b_line)
+                        m3 = re.match(r'^\s*(?:pub(?:\([^)]+\))?\s+)?(?:struct|enum)\s+([A-Za-z0-9_]+)\b', b_line)
+                        m = m1 or m2 or m3
+                        if m:
+                            resolved_type = m.group(1)
+                            break
+
+                if schema_name not in owners:
+                    owners[schema_name] = RustOwner(
+                        crate="fss-core",
+                        file=rel_path,
+                        type_name=resolved_type or "Unknown",
+                        line=line_no,
+                    )
+
+            open_b = line.count("{")
+            close_b = line.count("}")
+            brace_depth += open_b - close_b
+            if brace_depth <= 0:
+                brace_depth = 0
+                current_type = None
+
+    return owners
+
+
+def parse_schemas_md(schemas_md_path: Path) -> list[dict[str, str]]:
+    """Parse table rows from registries/SCHEMAS.md."""
+    if not schemas_md_path.is_file():
+        raise SchemaValidationError(f"schemas registry not found: {schemas_md_path}")
+
+    text = schemas_md_path.read_text(encoding="utf-8")
+    rows: list[dict[str, str]] = []
+    for line_no, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped.startswith("|") or stripped.startswith("|---"):
+            continue
+        parts = [p.strip().strip("`") for p in stripped.split("|")[1:-1]]
+        if len(parts) >= 5 and parts[0] != "ID":
+            rows.append({
+                "id": parts[0],
+                "schema": parts[1],
+                "file": parts[2],
+                "authority": parts[3],
+                "rule": parts[4],
+                "line": str(line_no),
+            })
+    return rows
+
+
+def extract_architecture_schema_references(architecture_dir: Path) -> list[tuple[str, str, str]]:
+    """Extract schema references from architecture/*.json documents.
+    
+    Returns list of tuples: (arch_relative_path, json_pointer_path, schema_name).
+    """
+    references: list[tuple[str, str, str]] = []
+    if not architecture_dir.is_dir():
+        return references
+
+    for arch_path in sorted(architecture_dir.glob("*.json")):
+        try:
+            data = json.loads(arch_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        rel = f"architecture/{arch_path.name}"
+
+        def walk(val: Any, ptr: str) -> None:
+            if isinstance(val, dict):
+                for k, v in val.items():
+                    walk(v, f"{ptr}/{k}")
+            elif isinstance(val, list):
+                for idx, item in enumerate(val):
+                    walk(item, f"{ptr}/{idx}")
+            elif isinstance(val, str):
+                if ptr != "#/schema" and SCHEMA_NAME_PATTERN.match(val):
+                    references.append((rel, ptr, val))
+
+        walk(data, "#")
+    return references
+
+
+def validate_schema_constitution(
+    repo_root: Path = ROOT,
+    schemas_dir: Path = DEFAULT_SCHEMAS_DIR,
+    schemas_md_path: Path = DEFAULT_SCHEMAS_MD,
+    architecture_dir: Path = DEFAULT_ARCHITECTURE_DIR,
+    crates_dir: Path = DEFAULT_CRATES_DIR,
+    validator: Validator | None = None,
+    claimed_statuses: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Validate complete schema constitution, uniqueness, references, and declaration vs implementation.
+    
+    Enforces that:
+    1. Every schema declared in registries/SCHEMAS.md has a valid, unique stable ID and schema name.
+    2. Every registered schema file exists on disk, declares matching schema const and valid $id.
+    3. Every schema file in schemas/*.json is registered in SCHEMAS.md (no unregistered schema files).
+    4. Every schema referenced in architecture/*.json is declared in SCHEMAS.md (no dangling references).
+    5. 'declared' vs 'implemented' is machine-checked from fss-core Rust types; no schema may be
+       reported as implemented without a verified named Rust owner.
+    """
+    if validator is None:
+        validator = Validator()
+
+    if not schemas_md_path.is_file():
+        validator.emit(
+            CODE_INCOMPLETE_CATALOG,
+            schemas_md_path.as_posix(),
+            "#",
+            f"schemas registry markdown file not found: {schemas_md_path}",
+        )
+        return {
+            "status": "failed",
+            "totalDeclared": 0,
+            "implementedCount": 0,
+            "declaredOnlyCount": 0,
+            "architectureReferenceCount": 0,
+            "constitutionDigest": "",
+            "schemas": [],
+        }
+
+    try:
+        raw_rows = parse_schemas_md(schemas_md_path)
+    except Exception as exc:
+        validator.emit(CODE_MALFORMED_REGISTRY_ROW, schemas_md_path.as_posix(), "#", str(exc))
+        return {
+            "status": "failed",
+            "totalDeclared": 0,
+            "implementedCount": 0,
+            "declaredOnlyCount": 0,
+            "architectureReferenceCount": 0,
+            "constitutionDigest": "",
+            "schemas": [],
+        }
+
+    seen_ids: dict[str, str] = {}
+    seen_names: dict[str, str] = {}
+    seen_files: set[str] = set()
+
+    # Step 1: Parse rows & check syntax, uniqueness, file existence, and property constraints
+    for row in raw_rows:
+        sid = row["id"]
+        sname = row["schema"]
+        fpath = row["file"]
+        lno = row["line"]
+
+        if not STABLE_ID_PATTERN.match(sid):
+            validator.emit(
+                CODE_INVALID_STABLE_ID,
+                schemas_md_path.as_posix(),
+                f"#{lno}/ID",
+                f"invalid stable ID syntax: '{sid}' (must match {STABLE_ID_PATTERN.pattern})",
+            )
+        if not SCHEMA_NAME_PATTERN.match(sname):
+            validator.emit(
+                CODE_INVALID_SCHEMA_NAME,
+                schemas_md_path.as_posix(),
+                f"#{lno}/Schema",
+                f"invalid schema name syntax: '{sname}' (must match {SCHEMA_NAME_PATTERN.pattern})",
+            )
+
+        if sid in seen_ids:
+            validator.emit(
+                CODE_DUPLICATE_STABLE_ID,
+                schemas_md_path.as_posix(),
+                f"#{lno}/ID",
+                f"duplicate stable ID '{sid}' (previously defined at line {seen_ids[sid]})",
+            )
+        else:
+            seen_ids[sid] = lno
+
+        if sname in seen_names:
+            validator.emit(
+                CODE_DUPLICATE_SCHEMA_NAME,
+                schemas_md_path.as_posix(),
+                f"#{lno}/Schema",
+                f"duplicate schema name '{sname}' (previously defined at line {seen_names[sname]})",
+            )
+        else:
+            seen_names[sname] = lno
+
+        if fpath != "CLI output":
+            if fpath in seen_files:
+                validator.emit(
+                    CODE_MALFORMED_REGISTRY_ROW,
+                    schemas_md_path.as_posix(),
+                    f"#{lno}/File",
+                    f"duplicate schema file path in registry: '{fpath}'",
+                )
+            seen_files.add(fpath)
+
+            disk_path = repo_root / fpath
+            if not disk_path.is_file():
+                validator.emit(
+                    CODE_MISSING_SCHEMA_FILE,
+                    schemas_md_path.as_posix(),
+                    f"#{lno}/File",
+                    f"registered schema file does not exist: '{fpath}'",
+                )
+            else:
+                try:
+                    doc = json.loads(disk_path.read_text(encoding="utf-8"))
+                    if isinstance(doc, dict):
+                        const_val = doc.get("properties", {}).get("schema", {}).get("const")
+                        if const_val != sname:
+                            validator.emit(
+                                CODE_SCHEMA_CONST_MISMATCH,
+                                fpath,
+                                "#/properties/schema/const",
+                                f"schema const mismatch: expected '{sname}', found '{const_val}'",
+                            )
+                        doc_id = str(doc.get("$id", ""))
+                        if not doc_id.endswith("/" + disk_path.name):
+                            validator.emit(
+                                CODE_SCHEMA_ID_MISMATCH,
+                                fpath,
+                                "#/$id",
+                                f"schema $id '{doc_id}' does not match filename '/{disk_path.name}'",
+                            )
+                except Exception as exc:
+                    validator.emit(CODE_MALFORMED_JSON, fpath, "#", f"cannot parse schema json: {exc}")
+
+    # Step 2: Check for unregistered schema files on disk
+    if schemas_dir.is_dir():
+        for sf in sorted(schemas_dir.glob("*.json")):
+            try:
+                rel_sf = sf.resolve().relative_to(repo_root.resolve()).as_posix()
+            except ValueError:
+                rel_sf = f"schemas/{sf.name}"
+            if rel_sf not in seen_files:
+                validator.emit(
+                    CODE_UNREGISTERED_SCHEMA_FILE,
+                    rel_sf,
+                    "#",
+                    f"schema file '{rel_sf}' exists on disk but is not declared in registry {schemas_md_path.name}",
+                )
+
+    # Step 3: Check architecture schema references
+    arch_refs = extract_architecture_schema_references(architecture_dir)
+    for arch_file, ptr, ref_sname in arch_refs:
+        if ref_sname not in seen_names:
+            validator.emit(
+                CODE_UNDECLARED_SCHEMA_REFERENCE,
+                arch_file,
+                ptr,
+                f"referenced schema '{ref_sname}' is not declared in registry {schemas_md_path.name}",
+            )
+
+    # Step 4: Scan Rust owners in crates/fss-core and classify declared vs implemented
+    rust_owners = scan_rust_schema_owners(crates_dir)
+
+    declarations: list[SchemaDeclaration] = []
+    for row in raw_rows:
+        sid = row["id"]
+        sname = row["schema"]
+        fpath = row["file"]
+        auth = row["authority"]
+        rule = row["rule"]
+
+        owner = rust_owners.get(sname)
+        if owner is not None:
+            owner_file = repo_root / owner.file
+            if not owner_file.is_file():
+                validator.emit(
+                    CODE_INVALID_IMPLEMENTATION_OWNER,
+                    schemas_md_path.as_posix(),
+                    f"#{sname}",
+                    f"Rust owner file does not exist: {owner.file}",
+                )
+            elif owner.type_name == "Unknown":
+                validator.emit(
+                    CODE_UNOWNED_IMPLEMENTED_SCHEMA,
+                    schemas_md_path.as_posix(),
+                    f"#{sname}",
+                    f"schema '{sname}' has unknown Rust owner type in {owner.file}",
+                )
+            status = "implemented"
+        else:
+            status = "declared"
+
+        decl = SchemaDeclaration(
+            stable_id=sid,
+            schema_name=sname,
+            file_path=fpath,
+            authority=auth,
+            compatibility_rule=rule,
+            status=status,
+            owner=owner if status == "implemented" else None,
+        )
+
+        # Invariant: no schema may be reported as implemented without a named Rust owner
+        if decl.status == "implemented" and decl.owner is None:
+            validator.emit(
+                CODE_UNOWNED_IMPLEMENTED_SCHEMA,
+                schemas_md_path.as_posix(),
+                f"#{sname}",
+                f"schema '{sname}' reported as implemented without a named Rust owner",
+            )
+
+        declarations.append(decl)
+
+    # Step 5: Validate external / claimed statuses if provided
+    if claimed_statuses is not None:
+        for claim_sname, claim_val in claimed_statuses.items():
+            if isinstance(claim_val, dict):
+                claim_status = claim_val.get("status")
+                claim_owner = claim_val.get("owner")
+            else:
+                claim_status = str(claim_val)
+                claim_owner = None
+
+            actual_owner = rust_owners.get(claim_sname)
+            if claim_status == "implemented":
+                if actual_owner is None:
+                    validator.emit(
+                        CODE_UNOWNED_IMPLEMENTED_SCHEMA,
+                        schemas_md_path.as_posix(),
+                        f"#{claim_sname}",
+                        f"schema '{claim_sname}' claimed as implemented but has no named Rust owner in fss-core",
+                    )
+                elif claim_owner is not None:
+                    if isinstance(claim_owner, dict):
+                        claimed_type = claim_owner.get("type")
+                        if claimed_type and claimed_type != actual_owner.type_name:
+                            validator.emit(
+                                CODE_INVALID_IMPLEMENTATION_OWNER,
+                                schemas_md_path.as_posix(),
+                                f"#{claim_sname}",
+                                f"schema '{claim_sname}' claimed owner type '{claimed_type}' does not match actual Rust owner '{actual_owner.type_name}'",
+                            )
+
+    # Step 6: Compute deterministic constitution digest
+    sorted_decls = sorted(declarations, key=lambda d: d.stable_id)
+    schemas_md_raw = schemas_md_path.read_bytes() if schemas_md_path.is_file() else b""
+    schemas_md_digest = "sha256:" + hashlib.sha256(schemas_md_raw).hexdigest()
+    const_payload = {
+        "schemasMdDigest": schemas_md_digest,
+        "declarations": [d.to_dict() for d in sorted_decls],
+    }
+    constitution_digest = "sha256:" + hashlib.sha256(canonical_json_bytes(const_payload)).hexdigest()
+
+    has_const_error = any(f.code in CONSTITUTION_CODES for f in validator.findings)
+    const_status = "failed" if has_const_error else "passed"
+
+    return {
+        "status": const_status,
+        "totalDeclared": len(declarations),
+        "implementedCount": sum(1 for d in declarations if d.status == "implemented"),
+        "declaredOnlyCount": sum(1 for d in declarations if d.status == "declared"),
+        "architectureReferenceCount": len(arch_refs),
+        "constitutionDigest": constitution_digest,
+        "schemas": [d.to_dict() for d in sorted_decls],
+    }
 
 
 def audit(
     schemas_dir: Path = DEFAULT_SCHEMAS_DIR,
     target_file: Path | None = None,
+    registries_dir: Path = DEFAULT_REGISTRIES_DIR,
+    schemas_md_path: Path | None = None,
+    architecture_dir: Path = DEFAULT_ARCHITECTURE_DIR,
+    crates_dir: Path = DEFAULT_CRATES_DIR,
+    check_constitution: bool = True,
+    constitution_only: bool = False,
+    claimed_statuses: dict[str, Any] | None = None,
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_errors: int = DEFAULT_MAX_ERRORS,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
@@ -949,7 +1437,7 @@ def audit(
     budget_peak_bytes: int = DEFAULT_BUDGET_PEAK_BYTES,
     budget_work_units: int = DEFAULT_BUDGET_WORK_UNITS,
 ) -> dict[str, Any]:
-    """Execute complete deterministic Draft 2020-12 meta-schema and reference validation."""
+    """Execute complete deterministic Draft 2020-12 meta-schema, reference, and constitution validation."""
     start_wall_ns = time.perf_counter_ns()
     times_start = os.times()
 
@@ -960,17 +1448,37 @@ def audit(
         require_object_root=True,
     )
 
-    catalog = validator.load_catalog(schemas_dir, target_file)
+    catalog = SchemaCatalog(schemas_dir)
+    if not constitution_only:
+        catalog = validator.load_catalog(schemas_dir, target_file)
+        if not catalog.schemas_by_relative and target_file is None:
+            validator.emit(
+                CODE_INCOMPLETE_CATALOG,
+                schemas_dir.as_posix(),
+                "#",
+                f"no JSON schema files found in {schemas_dir}",
+            )
+        else:
+            validator.validate_catalog(catalog)
 
-    if not catalog.schemas_by_relative and target_file is None:
-        validator.emit(
-            CODE_INCOMPLETE_CATALOG,
-            schemas_dir.as_posix(),
-            "#",
-            f"no JSON schema files found in {schemas_dir}",
+    # Validate schema constitution when not scoped to a single target file
+    effective_check_constitution = (
+        check_constitution
+        and (target_file is None or constitution_only)
+        and (schemas_dir.resolve() == DEFAULT_SCHEMAS_DIR.resolve() or schemas_md_path is not None or constitution_only)
+    )
+    constitution_report: dict[str, Any] | None = None
+    if effective_check_constitution:
+        s_md = schemas_md_path or (registries_dir / "SCHEMAS.md")
+        constitution_report = validate_schema_constitution(
+            repo_root=ROOT,
+            schemas_dir=schemas_dir,
+            schemas_md_path=s_md,
+            architecture_dir=architecture_dir,
+            crates_dir=crates_dir,
+            validator=validator,
+            claimed_statuses=claimed_statuses,
         )
-    else:
-        validator.validate_catalog(catalog)
 
     end_wall_ns = time.perf_counter_ns()
     times_end = os.times()
@@ -1005,8 +1513,10 @@ def audit(
 
     schema_count = len(catalog.schemas_by_relative)
     used_work_units = schema_count + validator.reference_count
+    if constitution_report is not None:
+        used_work_units += constitution_report.get("totalDeclared", 0)
 
-    report = {
+    report: dict[str, Any] = {
         "schema": "fss.schema_validation_receipt.v1",
         "status": status,
         "schemaCount": schema_count,
@@ -1054,16 +1564,26 @@ def audit(
         "reproductionCommand": f"python3 scripts/schema_validate.py{' --schemas-dir ' + str(schemas_dir) if schemas_dir != DEFAULT_SCHEMAS_DIR else ''}",
     }
 
+    if constitution_report is not None:
+        report["constitution"] = constitution_report
+        report["constitutionDigest"] = constitution_report.get("constitutionDigest", "")
+
     report["proofHash"] = "sha256:" + hashlib.sha256(canonical_json_bytes(report)).hexdigest()
     return report
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Deterministic offline Draft 2020-12 meta-schema and local reference validator"
+        description="Deterministic offline Draft 2020-12 meta-schema, reference, and schema constitution validator"
     )
     parser.add_argument("--schemas-dir", type=Path, default=DEFAULT_SCHEMAS_DIR, help="Path to schemas directory")
+    parser.add_argument("--registries-dir", type=Path, default=DEFAULT_REGISTRIES_DIR, help="Path to registries directory")
+    parser.add_argument("--schemas-md", type=Path, default=None, help="Path to SCHEMAS.md registry file")
+    parser.add_argument("--architecture-dir", type=Path, default=DEFAULT_ARCHITECTURE_DIR, help="Path to architecture directory")
+    parser.add_argument("--crates-dir", type=Path, default=DEFAULT_CRATES_DIR, help="Path to crates directory")
     parser.add_argument("--schema", type=Path, default=None, help="Validate specific schema file")
+    parser.add_argument("--skip-constitution", action="store_true", help="Skip schema constitution validation")
+    parser.add_argument("--constitution-only", action="store_true", help="Only validate schema constitution and declaration vs implementation")
     parser.add_argument("--json", action="store_true", help="Output full structured JSON report")
     parser.add_argument("--report", type=Path, default=None, help="Save structured JSON report to file")
     parser.add_argument("--max-depth", type=int, default=DEFAULT_MAX_DEPTH, help="Maximum recursion depth")
@@ -1075,6 +1595,12 @@ def main() -> int:
         report = audit(
             schemas_dir=args.schemas_dir,
             target_file=args.schema,
+            registries_dir=args.registries_dir,
+            schemas_md_path=args.schemas_md,
+            architecture_dir=args.architecture_dir,
+            crates_dir=args.crates_dir,
+            check_constitution=not args.skip_constitution,
+            constitution_only=args.constitution_only,
             max_depth=args.max_depth,
             max_errors=args.max_errors,
             max_file_bytes=args.max_file_bytes,
@@ -1108,6 +1634,17 @@ def main() -> int:
 
         if status == "passed":
             print(f"schema validation passed: {schema_count} schemas evaluated, 0 errors, {ref_count} refs resolved")
+            if "constitution" in report:
+                const = report["constitution"]
+                c_dec = const.get("totalDeclared", 0)
+                c_imp = const.get("implementedCount", 0)
+                c_only = const.get("declaredOnlyCount", 0)
+                print(f"constitution: {c_dec} declared ({c_imp} implemented, {c_only} declared-only), 0 unowned")
+                print(f"constitutionDeclared={c_dec}")
+                print(f"constitutionImplemented={c_imp}")
+                print(f"constitutionDeclaredOnly={c_only}")
+                if "constitutionDigest" in report:
+                    print(f"constitutionDigest={report['constitutionDigest']}")
             print(f"schemaCount={schema_count}")
             print(f"referenceCount={ref_count}")
             print(f"cycleCount={cycle_count}")

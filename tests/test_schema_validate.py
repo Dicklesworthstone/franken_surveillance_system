@@ -788,5 +788,362 @@ class TestSubprocessCleanEnvironment(unittest.TestCase):
             self.assertIn(schema_validate.CODE_INVALID_DIALECT, result.stderr)
 
 
+class TestSchemaConstitution(unittest.TestCase):
+    def test_authoritative_constitution(self) -> None:
+        validator = schema_validate.Validator()
+        result = schema_validate.validate_schema_constitution(
+            repo_root=ROOT,
+            schemas_dir=ROOT / "schemas",
+            schemas_md_path=ROOT / "registries" / "SCHEMAS.md",
+            architecture_dir=ROOT / "architecture",
+            crates_dir=ROOT / "crates",
+            validator=validator,
+        )
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["totalDeclared"], 60)
+        self.assertEqual(result["implementedCount"], 17)
+        self.assertEqual(result["declaredOnlyCount"], 43)
+        self.assertGreaterEqual(result["architectureReferenceCount"], 140)
+        self.assertTrue(result["constitutionDigest"].startswith("sha256:"))
+        self.assertEqual(len(validator.findings), 0)
+
+        # Check implemented vs declared invariants
+        for item in result["schemas"]:
+            if item["status"] == "implemented":
+                self.assertIsNotNone(item["owner"])
+                self.assertEqual(item["owner"]["crate"], "fss-core")
+                self.assertNotEqual(item["owner"]["type"], "Unknown")
+                self.assertTrue((ROOT / item["owner"]["file"]).is_file())
+            else:
+                self.assertEqual(item["status"], "declared")
+                self.assertIsNone(item["owner"])
+
+    def test_duplicate_stable_id_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            td = Path(temp_dir)
+            fake_md = td / "SCHEMAS.md"
+            fake_md.write_text(
+                "# Schema registry\n\n"
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `SCHEMA-FOO-001` | `fss.foo.v1` | `CLI output` | auth | rule |\n"
+                "| `SCHEMA-FOO-001` | `fss.bar.v1` | `CLI output` | auth | rule |\n"
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=td,
+                schemas_dir=td / "schemas",
+                schemas_md_path=fake_md,
+                architecture_dir=td / "architecture",
+                crates_dir=td / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "failed")
+            codes = [f.code for f in validator.findings]
+            self.assertIn(schema_validate.CODE_DUPLICATE_STABLE_ID, codes)
+
+    def test_duplicate_schema_name_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            td = Path(temp_dir)
+            fake_md = td / "SCHEMAS.md"
+            fake_md.write_text(
+                "# Schema registry\n\n"
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `SCHEMA-FOO-001` | `fss.foo.v1` | `CLI output` | auth | rule |\n"
+                "| `SCHEMA-FOO-002` | `fss.foo.v1` | `CLI output` | auth | rule |\n"
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=td,
+                schemas_dir=td / "schemas",
+                schemas_md_path=fake_md,
+                architecture_dir=td / "architecture",
+                crates_dir=td / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "failed")
+            codes = [f.code for f in validator.findings]
+            self.assertIn(schema_validate.CODE_DUPLICATE_SCHEMA_NAME, codes)
+
+    def test_invalid_stable_id_syntax_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            td = Path(temp_dir)
+            fake_md = td / "SCHEMAS.md"
+            fake_md.write_text(
+                "# Schema registry\n\n"
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `INVALID_ID_001` | `fss.foo.v1` | `CLI output` | auth | rule |\n"
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=td,
+                schemas_dir=td / "schemas",
+                schemas_md_path=fake_md,
+                architecture_dir=td / "architecture",
+                crates_dir=td / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "failed")
+            codes = [f.code for f in validator.findings]
+            self.assertIn(schema_validate.CODE_INVALID_STABLE_ID, codes)
+
+    def test_invalid_schema_name_syntax_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            td = Path(temp_dir)
+            fake_md = td / "SCHEMAS.md"
+            fake_md.write_text(
+                "# Schema registry\n\n"
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `SCHEMA-FOO-001` | `bad_schema_name` | `CLI output` | auth | rule |\n"
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=td,
+                schemas_dir=td / "schemas",
+                schemas_md_path=fake_md,
+                architecture_dir=td / "architecture",
+                crates_dir=td / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "failed")
+            codes = [f.code for f in validator.findings]
+            self.assertIn(schema_validate.CODE_INVALID_SCHEMA_NAME, codes)
+
+    def test_missing_schema_file_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            td = Path(temp_dir)
+            fake_md = td / "SCHEMAS.md"
+            fake_md.write_text(
+                "# Schema registry\n\n"
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `SCHEMA-FOO-001` | `fss.foo.v1` | `schemas/nonexistent.v1.json` | auth | rule |\n"
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=td,
+                schemas_dir=td / "schemas",
+                schemas_md_path=fake_md,
+                architecture_dir=td / "architecture",
+                crates_dir=td / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "failed")
+            codes = [f.code for f in validator.findings]
+            self.assertIn(schema_validate.CODE_MISSING_SCHEMA_FILE, codes)
+
+    def test_unregistered_schema_file_on_disk_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            td = Path(temp_dir)
+            schemas_d = td / "schemas"
+            schemas_d.mkdir()
+            (schemas_d / "orphan.v1.json").write_text(json.dumps(make_valid_schema("orphan.v1")))
+            fake_md = td / "SCHEMAS.md"
+            fake_md.write_text(
+                "# Schema registry\n\n"
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `SCHEMA-FOO-001` | `fss.foo.v1` | `CLI output` | auth | rule |\n"
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=td,
+                schemas_dir=schemas_d,
+                schemas_md_path=fake_md,
+                architecture_dir=td / "architecture",
+                crates_dir=td / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "failed")
+            codes = [f.code for f in validator.findings]
+            self.assertIn(schema_validate.CODE_UNREGISTERED_SCHEMA_FILE, codes)
+
+    def test_schema_const_mismatch_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            td = Path(temp_dir)
+            schemas_d = td / "schemas"
+            schemas_d.mkdir()
+            schema_obj = make_valid_schema("foo.v1")
+            schema_obj["properties"]["schema"]["const"] = "fss.bar.v1"
+            (schemas_d / "foo.v1.json").write_text(json.dumps(schema_obj))
+
+            fake_md = td / "SCHEMAS.md"
+            fake_md.write_text(
+                "# Schema registry\n\n"
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `SCHEMA-FOO-001` | `fss.foo.v1` | `schemas/foo.v1.json` | auth | rule |\n"
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=td,
+                schemas_dir=schemas_d,
+                schemas_md_path=fake_md,
+                architecture_dir=td / "architecture",
+                crates_dir=td / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "failed")
+            codes = [f.code for f in validator.findings]
+            self.assertIn(schema_validate.CODE_SCHEMA_CONST_MISMATCH, codes)
+
+    def test_schema_id_mismatch_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            td = Path(temp_dir)
+            schemas_d = td / "schemas"
+            schemas_d.mkdir()
+            schema_obj = make_valid_schema("foo.v1", schema_id="https://invalid.example/wrong_filename.json")
+            (schemas_d / "foo.v1.json").write_text(json.dumps(schema_obj))
+
+            fake_md = td / "SCHEMAS.md"
+            fake_md.write_text(
+                "# Schema registry\n\n"
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `SCHEMA-FOO-001` | `fss.foo.v1` | `schemas/foo.v1.json` | auth | rule |\n"
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=td,
+                schemas_dir=schemas_d,
+                schemas_md_path=fake_md,
+                architecture_dir=td / "architecture",
+                crates_dir=td / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "failed")
+            codes = [f.code for f in validator.findings]
+            self.assertIn(schema_validate.CODE_SCHEMA_ID_MISMATCH, codes)
+
+    def test_undeclared_schema_reference_in_architecture_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            td = Path(temp_dir)
+            arch_d = td / "architecture"
+            arch_d.mkdir()
+            (arch_d / "test_arch.json").write_text(json.dumps({
+                "schema": "fss.test_arch.v1",
+                "semanticObjects": {
+                    "Phantom": "fss.phantom_schema.v1"
+                }
+            }))
+            fake_md = td / "SCHEMAS.md"
+            fake_md.write_text(
+                "# Schema registry\n\n"
+                "| ID | Schema | File | Authority | Compatibility rule |\n"
+                "|---|---|---|---|---|\n"
+                "| `SCHEMA-FOO-001` | `fss.foo.v1` | `CLI output` | auth | rule |\n"
+            )
+            validator = schema_validate.Validator()
+            result = schema_validate.validate_schema_constitution(
+                repo_root=td,
+                schemas_dir=td / "schemas",
+                schemas_md_path=fake_md,
+                architecture_dir=arch_d,
+                crates_dir=td / "crates",
+                validator=validator,
+            )
+            self.assertEqual(result["status"], "failed")
+            codes = [f.code for f in validator.findings]
+            self.assertIn(schema_validate.CODE_UNDECLARED_SCHEMA_REFERENCE, codes)
+
+    def test_unowned_implemented_schema_claim_fails_closed(self) -> None:
+        validator = schema_validate.Validator()
+        claimed = {
+            "fss.agent_mission.v1": "implemented"  # declared-only; has no Rust owner in fss-core
+        }
+        result = schema_validate.validate_schema_constitution(
+            repo_root=ROOT,
+            schemas_dir=ROOT / "schemas",
+            schemas_md_path=ROOT / "registries" / "SCHEMAS.md",
+            architecture_dir=ROOT / "architecture",
+            crates_dir=ROOT / "crates",
+            validator=validator,
+            claimed_statuses=claimed,
+        )
+        self.assertEqual(result["status"], "failed")
+        codes = [f.code for f in validator.findings]
+        self.assertIn(schema_validate.CODE_UNOWNED_IMPLEMENTED_SCHEMA, codes)
+
+    def test_invalid_implementation_owner_claim_fails_closed(self) -> None:
+        validator = schema_validate.Validator()
+        claimed = {
+            "fss.agent_contract_basis.v1": {
+                "status": "implemented",
+                "owner": {"type": "WrongType"}
+            }
+        }
+        result = schema_validate.validate_schema_constitution(
+            repo_root=ROOT,
+            schemas_dir=ROOT / "schemas",
+            schemas_md_path=ROOT / "registries" / "SCHEMAS.md",
+            architecture_dir=ROOT / "architecture",
+            crates_dir=ROOT / "crates",
+            validator=validator,
+            claimed_statuses=claimed,
+        )
+        self.assertEqual(result["status"], "failed")
+        codes = [f.code for f in validator.findings]
+        self.assertIn(schema_validate.CODE_INVALID_IMPLEMENTATION_OWNER, codes)
+
+    def test_constitution_determinism(self) -> None:
+        r1 = schema_validate.validate_schema_constitution(
+            repo_root=ROOT,
+            schemas_dir=ROOT / "schemas",
+            schemas_md_path=ROOT / "registries" / "SCHEMAS.md",
+            architecture_dir=ROOT / "architecture",
+            crates_dir=ROOT / "crates",
+        )
+        r2 = schema_validate.validate_schema_constitution(
+            repo_root=ROOT,
+            schemas_dir=ROOT / "schemas",
+            schemas_md_path=ROOT / "registries" / "SCHEMAS.md",
+            architecture_dir=ROOT / "architecture",
+            crates_dir=ROOT / "crates",
+        )
+        self.assertEqual(r1["constitutionDigest"], r2["constitutionDigest"])
+        self.assertEqual(r1["totalDeclared"], r2["totalDeclared"])
+        self.assertEqual(r1["implementedCount"], r2["implementedCount"])
+        self.assertEqual(r1["declaredOnlyCount"], r2["declaredOnlyCount"])
+        self.assertEqual(r1["schemas"], r2["schemas"])
+
+    def test_cli_subprocess_constitution_receipt(self) -> None:
+        env = dict(os.environ)
+        env["PYTHONPATH"] = ""
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--json"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0)
+        data = json.loads(result.stdout)
+        self.assertEqual(data["status"], "passed")
+        self.assertIn("constitution", data)
+        const = data["constitution"]
+        self.assertEqual(const["totalDeclared"], 60)
+        self.assertEqual(const["implementedCount"], 17)
+        self.assertEqual(const["declaredOnlyCount"], 43)
+        self.assertIn("constitutionDigest", data)
+        self.assertTrue(data["constitutionDigest"].startswith("sha256:"))
+
+    def test_cli_subprocess_constitution_only(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT_PATH), "--constitution-only"],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("constitution: 60 declared (17 implemented, 43 declared-only), 0 unowned", result.stdout)
+        self.assertIn("constitutionDeclared=60", result.stdout)
+        self.assertIn("constitutionImplemented=17", result.stdout)
+        self.assertIn("constitutionDeclaredOnly=43", result.stdout)
+        self.assertIn("status=passed", result.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
