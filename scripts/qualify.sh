@@ -99,9 +99,11 @@ PY
 
 policy_lane() {
   run policy python3 scripts/check-policy.py --skip-manifest
+  run schema-validate python3 scripts/schema_validate.py
   run manifest-audit python3 scripts/manifest_audit.py
   run stable-id-audit python3 scripts/stable_id_audit.py
   run dependency-audit python3 scripts/dependency_audit.py
+  run schema-validate-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_schema_validate.py
   run manifest-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_manifest_audit.py
   run stable-id-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_stable_id_audit.py
   run release-artifact-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_artifacts.py
@@ -109,8 +111,10 @@ policy_lane() {
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh
   run python-syntax env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 -m py_compile \
     scripts/check-policy.py scripts/dependency_audit.py scripts/manifest_audit.py scripts/stable_id_audit.py \
+    scripts/schema_validate.py \
     scripts/generate-manifest.py scripts/release_artifacts.py \
-    tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py
+    tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py \
+    tests/test_schema_validate.py
 }
 
 docs_lane() {
