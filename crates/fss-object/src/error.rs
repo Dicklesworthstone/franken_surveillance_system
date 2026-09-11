@@ -48,6 +48,8 @@ pub enum ObjectError {
         /// Maximum admitted child roots.
         maximum: usize,
     },
+    /// A manifest child digest is duplicated.
+    DuplicateChild(ContentDigest),
     /// A requested manifest root has not been published.
     ManifestNotPublished(ContentDigest),
 }
@@ -83,6 +85,9 @@ impl fmt::Display for ObjectError {
                 formatter,
                 "manifest child count {count} exceeds maximum {maximum}"
             ),
+            Self::DuplicateChild(digest) => {
+                write!(formatter, "manifest child digest is duplicated: {digest}")
+            }
             Self::ManifestNotPublished(digest) => {
                 write!(formatter, "manifest root is not published: {digest}")
             }

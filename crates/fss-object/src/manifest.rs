@@ -1,6 +1,8 @@
 //! Canonical root-manifest representation.
 
-use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest};
+use std::collections::BTreeSet;
+
+use fss_core::{CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest};
 
 use crate::{MAX_MANIFEST_CHILDREN, MAX_MANIFEST_KIND_BYTES, ObjectError};
 
@@ -14,11 +16,11 @@ pub struct ObjectManifest {
 }
 
 impl ObjectManifest {
-    /// Creates a canonical manifest, sorting and deduplicating every directly referenced object.
+    /// Creates a canonical manifest with validated unique children and canonical sorting.
     ///
     /// A metadata digest is a custody-bearing reference, not merely an identity decoration, so it
     /// is also inserted into the canonical child closure. It remains separately encoded to retain
-    /// its typed role.
+    /// its typed role. Duplicate children are rejected with [`ObjectError::DuplicateChild`].
     pub fn new(
         kind: impl Into<String>,
         children: impl IntoIterator<Item = ContentDigest>,
@@ -28,18 +30,30 @@ impl ObjectManifest {
         if kind.is_empty() || kind.len() > MAX_MANIFEST_KIND_BYTES {
             return Err(ObjectError::InvalidManifestKind);
         }
-        let mut children: Vec<_> = children.into_iter().collect();
+        let input_children: Vec<_> = children.into_iter().collect();
+        let total_input_count = input_children.len() + usize::from(metadata_digest.is_some());
+        if total_input_count > MAX_MANIFEST_CHILDREN {
+            return Err(ObjectError::ManifestChildren {
+                count: total_input_count,
+                maximum: MAX_MANIFEST_CHILDREN,
+            });
+        }
+        let mut seen = BTreeSet::new();
+        for child in &input_children {
+            if !seen.insert(*child) {
+                return Err(ObjectError::DuplicateChild(*child));
+            }
+        }
+        if let Some(metadata) = metadata_digest {
+            if !seen.insert(metadata) {
+                return Err(ObjectError::DuplicateChild(metadata));
+            }
+        }
+        let mut children = input_children;
         if let Some(metadata) = metadata_digest {
             children.push(metadata);
         }
         children.sort_unstable();
-        children.dedup();
-        if children.len() > MAX_MANIFEST_CHILDREN {
-            return Err(ObjectError::ManifestChildren {
-                count: children.len(),
-                maximum: MAX_MANIFEST_CHILDREN,
-            });
-        }
         let mut manifest = Self {
             kind,
             children,
@@ -47,6 +61,76 @@ impl ObjectManifest {
             root: ContentDigest::sha256(b"unpublished-manifest"),
         };
         manifest.root = ContentDigest::sha256(&manifest.canonical_bytes());
+        Ok(manifest)
+    }
+
+    /// Decodes a canonical object manifest from its exact canonical byte serialization.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ObjectError> {
+        let mut decoder = CanonicalDecoder::new(bytes);
+        let tag = decoder
+            .text()
+            .map_err(|_| ObjectError::InvalidManifestKind)?;
+        if tag != "fss.object_manifest.v1" {
+            return Err(ObjectError::InvalidManifestKind);
+        }
+        let kind = decoder
+            .text()
+            .map_err(|_| ObjectError::InvalidManifestKind)?
+            .to_owned();
+        if kind.is_empty() || kind.len() > MAX_MANIFEST_KIND_BYTES {
+            return Err(ObjectError::InvalidManifestKind);
+        }
+        let child_count = decoder
+            .u64()
+            .map_err(|_| ObjectError::InvalidManifestKind)?;
+        let child_count_usize =
+            usize::try_from(child_count).map_err(|_| ObjectError::ManifestChildren {
+                count: usize::MAX,
+                maximum: MAX_MANIFEST_CHILDREN,
+            })?;
+        if child_count_usize > MAX_MANIFEST_CHILDREN {
+            return Err(ObjectError::ManifestChildren {
+                count: child_count_usize,
+                maximum: MAX_MANIFEST_CHILDREN,
+            });
+        }
+        let mut children = Vec::with_capacity(child_count_usize);
+        for _ in 0..child_count_usize {
+            let digest = decoder
+                .digest()
+                .map_err(|_| ObjectError::Corrupt(ContentDigest::sha256(bytes)))?;
+            children.push(digest);
+        }
+        if !children.windows(2).all(|pair| pair[0] < pair[1]) {
+            return Err(ObjectError::Corrupt(ContentDigest::sha256(bytes)));
+        }
+        let has_metadata = decoder
+            .bool()
+            .map_err(|_| ObjectError::InvalidManifestKind)?;
+        let metadata_digest = if has_metadata {
+            let meta = decoder
+                .digest()
+                .map_err(|_| ObjectError::Corrupt(ContentDigest::sha256(bytes)))?;
+            if !children.contains(&meta) {
+                return Err(ObjectError::Corrupt(ContentDigest::sha256(bytes)));
+            }
+            Some(meta)
+        } else {
+            None
+        };
+        decoder
+            .ensure_finished()
+            .map_err(|_| ObjectError::InvalidManifestKind)?;
+
+        let manifest = Self {
+            kind,
+            children,
+            metadata_digest,
+            root: ContentDigest::sha256(bytes),
+        };
+        if manifest.computed_root() != manifest.root {
+            return Err(ObjectError::Corrupt(manifest.root));
+        }
         Ok(manifest)
     }
 

@@ -40,6 +40,12 @@ impl<'a, C: VerifiedObjectCatalog> AuthorityPublisher<'a, C> {
     ) -> Result<EvidenceDeltaBatch, PublicationError> {
         let children: Vec<_> = child_roots.into_iter().collect();
         self.objects.require_all_verified(&children)?;
+        for delta in &deltas {
+            self.objects.require_verified(delta.payload_digest)?;
+            if let Some(witness) = delta.witness_digest {
+                self.objects.require_verified(witness)?;
+            }
+        }
         Ok(self.ledger.prepare_batch(batch_id, deltas, children)?)
     }
 
@@ -47,9 +53,35 @@ impl<'a, C: VerifiedObjectCatalog> AuthorityPublisher<'a, C> {
     ///
     /// Missing, merely staged, or corrupt children fail before journal I/O and leave the authority
     /// sequence unchanged. An indeterminate journal outcome remains owned by `fss-ledger` and must
-    /// be reconciled rather than retried blindly.
+    /// be reconciled rather than retried blindly. Retrying an already-committed identical batch
+    /// is idempotent and returns the committed anchor.
     pub fn append(&mut self, batch: EvidenceDeltaBatch) -> Result<LedgerAnchor, PublicationError> {
         self.objects.require_all_verified(&batch.children)?;
+        for delta in &batch.deltas {
+            self.objects.require_verified(delta.payload_digest)?;
+            if let Some(witness) = delta.witness_digest {
+                self.objects.require_verified(witness)?;
+            }
+        }
+
+        if let Some(sequence) = self.ledger.pending_append_sequence() {
+            return Err(fss_ledger::DurableLedgerError::Journal(
+                fss_ledger::JournalError::ReconciliationRequired { sequence },
+            )
+            .into());
+        }
+
+        if let Some(committed) = self
+            .ledger
+            .batches()
+            .iter()
+            .find(|b| b.batch_id == batch.batch_id)
+        {
+            if committed == &batch {
+                return Ok(committed.new_anchor.clone());
+            }
+        }
+
         let anchor = self.ledger.append(batch)?.anchor.clone();
         Ok(anchor)
     }

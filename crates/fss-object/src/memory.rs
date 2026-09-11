@@ -127,7 +127,12 @@ impl InMemoryObjectStore {
                     requested,
                     maximum: self.limits.max_total_bytes,
                 })?;
-        if next_total > self.limits.max_total_bytes {
+        let quota_exceeded = if self.limits.max_total_bytes == 0 {
+            next_total >= self.limits.max_total_bytes
+        } else {
+            next_total > self.limits.max_total_bytes
+        };
+        if quota_exceeded {
             return Err(ObjectError::ByteQuotaExceeded {
                 current: self.total_bytes,
                 requested,
@@ -191,6 +196,8 @@ impl InMemoryObjectStore {
     ///
     /// The manifest object is staged and verified before its root enters `visible_manifests`.
     /// Re-publication of the same canonical manifest is idempotent.
+    /// On failure during closure verification, the staged manifest object and consumed quota
+    /// are rolled back cleanly.
     pub fn publish_manifest(
         &mut self,
         manifest: ObjectManifest,
@@ -200,6 +207,7 @@ impl InMemoryObjectStore {
         }
         self.require_all_verified(manifest.children())?;
         let manifest_bytes = manifest.canonical_bytes();
+        let was_present = self.objects.contains_key(&manifest.root());
         let root = self.stage(&manifest_bytes)?;
         if root != manifest.root() {
             return Err(ObjectError::Corrupt(manifest.root()));
@@ -222,6 +230,10 @@ impl InMemoryObjectStore {
             Ok(count) => count,
             Err(error) => {
                 self.visible_manifests.remove(&root);
+                if !was_present {
+                    self.objects.remove(&root);
+                    self.total_bytes = self.total_bytes.saturating_sub(manifest_bytes.len() as u64);
+                }
                 return Err(error);
             }
         };
@@ -235,14 +247,20 @@ impl InMemoryObjectStore {
         })
     }
 
-    /// Returns a published manifest by exact root.
+    /// Returns a published manifest by exact root, re-verifying content identity and custody.
     pub fn published_manifest(&self, root: ContentDigest) -> Result<&ObjectManifest, ObjectError> {
-        self.visible_manifests
+        let manifest = self
+            .visible_manifests
             .get(&root)
-            .ok_or(ObjectError::ManifestNotPublished(root))
+            .ok_or(ObjectError::ManifestNotPublished(root))?;
+        if manifest.computed_root() != root {
+            return Err(ObjectError::Corrupt(root));
+        }
+        self.require_verified(root)?;
+        Ok(manifest)
     }
 
-    /// Verifies the complete reachable closure and returns unique object count including roots.
+    /// Verifies the complete reachable closure, descending into every manifest-shaped child.
     pub fn verify_closure(&self, root: ContentDigest) -> Result<usize, ObjectError> {
         if !self.visible_manifests.contains_key(&root) {
             return Err(ObjectError::ManifestNotPublished(root));
@@ -259,13 +277,20 @@ impl InMemoryObjectStore {
                     self.require_verified(*child)?;
                     pending.push(*child);
                 }
+            } else if let Ok(bytes) = self.read_verified(digest) {
+                if let Ok(manifest) = ObjectManifest::from_canonical_bytes(bytes) {
+                    for child in manifest.children().iter().rev() {
+                        self.require_verified(*child)?;
+                        pending.push(*child);
+                    }
+                }
             }
         }
         Ok(seen.len())
     }
 
-    #[cfg(test)]
-    pub(crate) fn corrupt_for_test(&mut self, digest: ContentDigest) -> Result<(), ObjectError> {
+    /// Corrupts an object's stored bytes for fault-injection testing.
+    pub fn corrupt_for_test(&mut self, digest: ContentDigest) -> Result<(), ObjectError> {
         let object = self
             .objects
             .get_mut(&digest)

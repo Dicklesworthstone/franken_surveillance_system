@@ -26,7 +26,7 @@ fn manifest_is_order_independent_and_root_last() -> Result<(), Box<dyn Error>> {
     let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 4096));
     let first = store.put_verified(b"first-child")?;
     let second = store.put_verified(b"second-child")?;
-    let manifest_a = ObjectManifest::new("event", [second, first, first], None)?;
+    let manifest_a = ObjectManifest::new("event", [second, first], None)?;
     let manifest_b = ObjectManifest::new("event", [first, second], None)?;
     assert_eq!(manifest_a, manifest_b);
     assert_eq!(manifest_a.root(), manifest_b.root());
@@ -34,6 +34,10 @@ fn manifest_is_order_independent_and_root_last() -> Result<(), Box<dyn Error>> {
         manifest_a.children(),
         &[first.min(second), first.max(second)]
     );
+    assert!(matches!(
+        ObjectManifest::new("event", [second, first, first], None),
+        Err(ObjectError::DuplicateChild(dup)) if dup == first
+    ));
 
     let receipt = store.publish_manifest(manifest_a.clone())?;
     assert_eq!(receipt.root, manifest_a.root());
