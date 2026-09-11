@@ -130,36 +130,113 @@ fn batch_codec_round_trips_canonical_state() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn file_append_reopen_and_explicit_tail_repair() -> Result<(), Box<dyn Error>> {
-    let path = std::env::temp_dir().join(format!(
-        "fss-ledger-{}-{}.journal",
-        std::process::id(),
-        sha256(b"file_append_reopen_and_explicit_tail_repair")[0]
-    ));
-    let _ = fs::remove_file(&path);
-    {
-        let mut journal = Journal::open(&path, IncompleteTailPolicy::Reject)?;
-        let first = journal.append(11, b"one")?;
-        let second = journal.append(12, b"two")?;
-        assert_ne!(first.root(), second.root());
-        assert_eq!(journal.verify()?.records().len(), 2);
+    let real_bytes = {
+        let scratch_path = std::env::temp_dir().join(format!(
+            "fss-ledger-scratch-{}-{}.journal",
+            std::process::id(),
+            sha256(b"scratch_record_bytes")[0]
+        ));
+        let _ = fs::remove_file(&scratch_path);
+        let mut journal = Journal::open(&scratch_path, IncompleteTailPolicy::Reject)?;
+        journal.append(
+            1,
+            b"scratch record payload that easily exceeds header length",
+        )?;
+        let bytes = fs::read(&scratch_path)?;
+        let _ = fs::remove_file(&scratch_path);
+        bytes
+    };
+
+    for &k in &[1, 4, 8, HEADER_LEN - 1] {
+        let path = std::env::temp_dir().join(format!(
+            "fss-ledger-{}-{}-{k}.journal",
+            std::process::id(),
+            sha256(b"file_append_reopen_and_explicit_tail_repair")[0]
+        ));
+        let _ = fs::remove_file(&path);
+        {
+            let mut journal = Journal::open(&path, IncompleteTailPolicy::Reject)?;
+            let first = journal.append(11, b"one")?;
+            let second = journal.append(12, b"two")?;
+            assert_ne!(first.root(), second.root());
+            assert_eq!(journal.verify()?.records().len(), 2);
+        }
+        {
+            let mut raw = OpenOptions::new().append(true).open(&path)?;
+            raw.write_all(&real_bytes[..k])?;
+            raw.sync_all()?;
+        }
+        let inspected = inspect(&path)?;
+        assert_eq!(inspected.records().len(), 2);
+        assert!(inspected.incomplete_tail().is_some());
+        assert!(matches!(
+            Journal::open(&path, IncompleteTailPolicy::Reject),
+            Err(JournalError::IncompleteTail { .. })
+        ));
+        let mut repaired = Journal::open(&path, IncompleteTailPolicy::Truncate)?;
+        let third = repaired.append(13, b"three")?;
+        assert_eq!(third.sequence(), 3);
+        assert_eq!(repaired.verify()?.records().len(), 3);
+        let _ = fs::remove_file(path);
     }
-    {
-        let mut raw = OpenOptions::new().append(true).open(&path)?;
-        raw.write_all(b"torn")?;
-        raw.sync_all()?;
+    Ok(())
+}
+
+#[test]
+fn arbitrary_non_magic_junk_after_commit_trailer_is_corrupt_under_both_policies()
+-> Result<(), Box<dyn Error>> {
+    let junk_samples: &[&[u8]] = &[
+        b"torn",                          // 4 bytes non-magic
+        b"arbitrary non-magic junk data", // 30 bytes non-magic
+        &[0xFF, 0xFF, 0xFF, 0xFF],        // 4 non-magic bytes
+        &[0x00; 16],                      // 16 zeroes
+    ];
+
+    for (i, &junk) in junk_samples.iter().enumerate() {
+        let path = std::env::temp_dir().join(format!(
+            "fss-ledger-junk-{}-{i}.journal",
+            std::process::id()
+        ));
+        let _ = fs::remove_file(&path);
+        {
+            let mut journal = Journal::open(&path, IncompleteTailPolicy::Reject)?;
+            journal.append(1, b"committed record")?;
+        }
+        {
+            let mut raw = OpenOptions::new().append(true).open(&path)?;
+            raw.write_all(junk)?;
+            raw.sync_all()?;
+        }
+
+        // Under IncompleteTailPolicy::Reject, must be Corrupt(RecordMagic)
+        let reject_res = Journal::open(&path, IncompleteTailPolicy::Reject);
+        assert!(
+            matches!(
+                reject_res,
+                Err(JournalError::Corrupt {
+                    kind: CorruptionKind::RecordMagic,
+                    ..
+                })
+            ),
+            "junk sample {i} under Reject must be Corrupt(RecordMagic), got: {reject_res:?}"
+        );
+
+        // Under IncompleteTailPolicy::Truncate, must ALSO be Corrupt(RecordMagic)
+        // (Truncate must never discard bytes this writer could not have produced)
+        let truncate_res = Journal::open(&path, IncompleteTailPolicy::Truncate);
+        assert!(
+            matches!(
+                truncate_res,
+                Err(JournalError::Corrupt {
+                    kind: CorruptionKind::RecordMagic,
+                    ..
+                })
+            ),
+            "junk sample {i} under Truncate must be Corrupt(RecordMagic), got: {truncate_res:?}"
+        );
+
+        let _ = fs::remove_file(path);
     }
-    let inspected = inspect(&path)?;
-    assert_eq!(inspected.records().len(), 2);
-    assert!(inspected.incomplete_tail().is_some());
-    assert!(matches!(
-        Journal::open(&path, IncompleteTailPolicy::Reject),
-        Err(JournalError::IncompleteTail { .. })
-    ));
-    let mut repaired = Journal::open(&path, IncompleteTailPolicy::Truncate)?;
-    let third = repaired.append(13, b"three")?;
-    assert_eq!(third.sequence(), 3);
-    assert_eq!(repaired.verify()?.records().len(), 3);
-    let _ = fs::remove_file(path);
     Ok(())
 }
 

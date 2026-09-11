@@ -63,60 +63,180 @@ fn test_same_length_overwrite_detected_as_external_mutation() -> Result<(), Box<
     Ok(())
 }
 
-/// F2: reconcile_pending must honor IncompleteTailPolicy under both Reject and Truncate.
+fn scratch_record_bytes() -> Result<Vec<u8>, Box<dyn Error>> {
+    let scratch_path = temp_journal("scratch-record");
+    let _ = fs::remove_file(&scratch_path);
+    let mut journal = Journal::open(&scratch_path, IncompleteTailPolicy::Reject)?;
+    journal.append(
+        1,
+        b"scratch record payload that easily exceeds header length",
+    )?;
+    let bytes = fs::read(&scratch_path)?;
+    let _ = fs::remove_file(&scratch_path);
+    Ok(bytes)
+}
+
+/// F2: reconcile_pending must honor IncompleteTailPolicy under both Reject and Truncate
+/// for realistic torn writes (k in {1, 4, 8, HEADER_LEN - 1}).
 #[test]
 fn test_reconcile_pending_with_trailing_tail_honors_tail_policy() -> Result<(), Box<dyn Error>> {
-    let path = temp_journal("reconcile-tail-policy");
-    let _ = fs::remove_file(&path);
-    let mut journal = Journal::open(&path, IncompleteTailPolicy::Reject)?;
-    journal.fail_after_phase(AppendPhase::CommitSync);
+    const HEADER_LEN: usize = 8 + 2 + 8 + 2 + 4 + 32 + 32;
+    let real_bytes = scratch_record_bytes()?;
 
-    // Append succeeds through CommitWrite, but CommitSync fails -> AppendIndeterminate
-    let err = journal.append(1, b"committed body");
-    match err {
-        Err(JournalError::AppendIndeterminate { .. }) => {}
-        other => {
-            let _ = fs::remove_file(&path);
-            return Err(format!("expected AppendIndeterminate, got {other:?}").into());
-        }
-    }
+    for &k in &[1, 4, 8, HEADER_LEN - 1] {
+        let path = temp_journal(&format!("reconcile-tail-policy-{k}"));
+        let _ = fs::remove_file(&path);
+        let mut journal = Journal::open(&path, IncompleteTailPolicy::Reject)?;
+        journal.fail_after_phase(AppendPhase::CommitSync);
 
-    // Extra torn bytes appended after the committed record (starts with RECORD_MAGIC, but truncated header)
-    {
-        let mut raw = OpenOptions::new().append(true).open(&path)?;
-        raw.write_all(b"FSS_JRN1_extra")?;
-        raw.sync_all()?;
-    }
-
-    // Under IncompleteTailPolicy::Reject, reconcile_pending should reject with IncompleteTail
-    let reject_result = journal.reconcile_pending(IncompleteTailPolicy::Reject);
-    match reject_result {
-        Err(JournalError::IncompleteTail { .. }) => {}
-        other => {
-            let _ = fs::remove_file(&path);
-            return Err(format!(
-                "expected IncompleteTail error under Reject policy, got: {other:?}"
-            )
-            .into());
-        }
-    }
-
-    // Under IncompleteTailPolicy::Truncate, reconcile_pending must truncate the trailing tail and commit the pending record
-    let truncate_result = journal.reconcile_pending(IncompleteTailPolicy::Truncate)?;
-    match truncate_result {
-        AppendReconciliation::Committed(record) => {
-            if record.sequence() != 1 || record.payload() != b"committed body" {
+        // Append succeeds through CommitWrite, but CommitSync fails -> AppendIndeterminate
+        let err = journal.append(1, b"committed body");
+        match err {
+            Err(JournalError::AppendIndeterminate { .. }) => {}
+            other => {
                 let _ = fs::remove_file(&path);
-                return Err("reconciled record mismatch".into());
+                return Err(format!("expected AppendIndeterminate, got {other:?}").into());
             }
         }
-        other => {
-            let _ = fs::remove_file(&path);
-            return Err(format!("expected Committed, got {other:?}").into());
-        }
-    }
 
-    let _ = fs::remove_file(path);
+        // Extra torn bytes appended after the committed record using real record prefix bytes
+        {
+            let mut raw = OpenOptions::new().append(true).open(&path)?;
+            raw.write_all(&real_bytes[..k])?;
+            raw.sync_all()?;
+        }
+
+        // Under IncompleteTailPolicy::Reject, reconcile_pending should reject with IncompleteTail
+        let reject_result = journal.reconcile_pending(IncompleteTailPolicy::Reject);
+        match reject_result {
+            Err(JournalError::IncompleteTail { .. }) => {}
+            other => {
+                let _ = fs::remove_file(&path);
+                return Err(format!(
+                    "expected IncompleteTail error under Reject policy for k={k}, got: {other:?}"
+                )
+                .into());
+            }
+        }
+
+        // Under IncompleteTailPolicy::Truncate, reconcile_pending must truncate the trailing tail and commit the pending record
+        let truncate_result = journal.reconcile_pending(IncompleteTailPolicy::Truncate)?;
+        match truncate_result {
+            AppendReconciliation::Committed(record) => {
+                if record.sequence() != 1 || record.payload() != b"committed body" {
+                    let _ = fs::remove_file(&path);
+                    return Err("reconciled record mismatch".into());
+                }
+            }
+            other => {
+                let _ = fs::remove_file(&path);
+                return Err(format!("expected Committed for k={k}, got {other:?}").into());
+            }
+        }
+
+        let _ = fs::remove_file(path);
+    }
+    Ok(())
+}
+
+/// Arbitrary non-magic junk after the last commit trailer is Corrupt(RecordMagic) under BOTH
+/// Reject and Truncate (Truncate must never discard bytes this writer could not have produced).
+#[test]
+fn test_arbitrary_non_magic_junk_after_commit_trailer_is_corrupt_under_both_policies()
+-> Result<(), Box<dyn Error>> {
+    let junk_samples: &[(&str, &[u8])] = &[
+        ("short-4-bytes", b"junk"),
+        ("non-magic-prefix", b"FSS_JRN1_wrong_magic"),
+        ("arbitrary-ascii", b"arbitrary non-magic trailing junk"),
+        ("raw-bytes-4", &[0xFF, 0xFF, 0xFF, 0xFF]),
+        ("zeroes-16", &[0x00; 16]),
+    ];
+
+    for &(label, junk) in junk_samples {
+        let path = temp_journal(&format!("junk-{label}"));
+        let _ = fs::remove_file(&path);
+        {
+            let mut journal = Journal::open(&path, IncompleteTailPolicy::Reject)?;
+            journal.append(1, b"valid committed record")?;
+        }
+        {
+            let mut raw = OpenOptions::new().append(true).open(&path)?;
+            raw.write_all(junk)?;
+            raw.sync_all()?;
+        }
+
+        // Under IncompleteTailPolicy::Reject, must be Corrupt(RecordMagic)
+        let reject_res = Journal::open(&path, IncompleteTailPolicy::Reject);
+        match reject_res {
+            Err(JournalError::Corrupt {
+                kind: CorruptionKind::RecordMagic,
+                ..
+            }) => {}
+            other => {
+                let _ = fs::remove_file(&path);
+                return Err(format!(
+                    "junk `{label}` under Reject must be Corrupt(RecordMagic), got: {other:?}"
+                )
+                .into());
+            }
+        }
+
+        // Under IncompleteTailPolicy::Truncate, must ALSO be Corrupt(RecordMagic)
+        // (Truncate must never discard bytes this writer could not have produced)
+        let truncate_res = Journal::open(&path, IncompleteTailPolicy::Truncate);
+        match truncate_res {
+            Err(JournalError::Corrupt {
+                kind: CorruptionKind::RecordMagic,
+                ..
+            }) => {}
+            other => {
+                let _ = fs::remove_file(&path);
+                return Err(format!(
+                    "junk `{label}` under Truncate must be Corrupt(RecordMagic), got: {other:?}"
+                )
+                .into());
+            }
+        }
+
+        // Also test reconcile_pending with indeterminate append followed by non-magic junk
+        let rpath = temp_journal(&format!("reconcile-junk-{label}"));
+        let _ = fs::remove_file(&rpath);
+        let mut rjournal = Journal::open(&rpath, IncompleteTailPolicy::Reject)?;
+        rjournal.fail_after_phase(AppendPhase::CommitSync);
+        let _ = rjournal.append(1, b"pending record");
+        {
+            let mut raw = OpenOptions::new().append(true).open(&rpath)?;
+            raw.write_all(junk)?;
+            raw.sync_all()?;
+        }
+
+        let r_reject = rjournal.reconcile_pending(IncompleteTailPolicy::Reject);
+        assert!(
+            matches!(
+                r_reject,
+                Err(JournalError::Corrupt {
+                    kind: CorruptionKind::RecordMagic,
+                    ..
+                })
+            ),
+            "reconcile_pending under Reject on junk `{label}` must be Corrupt(RecordMagic), got: {r_reject:?}"
+        );
+
+        let r_truncate = rjournal.reconcile_pending(IncompleteTailPolicy::Truncate);
+        assert!(
+            matches!(
+                r_truncate,
+                Err(JournalError::Corrupt {
+                    kind: CorruptionKind::RecordMagic,
+                    ..
+                })
+            ),
+            "reconcile_pending under Truncate on junk `{label}` must be Corrupt(RecordMagic), got: {r_truncate:?}"
+        );
+
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(rpath);
+    }
     Ok(())
 }
 
