@@ -106,6 +106,11 @@ def parse_slos_markdown(markdown_text: str) -> dict[str, dict[str, Any]]:
             is_tombstone = tombstone_match is not None or status == "tombstone"
             superseded_by = tombstone_match.group(1) if tombstone_match else None
 
+            if is_tombstone and status != "tombstone":
+                raise InvalidSloStatusError(
+                    f"Tombstone SLO {slo_id} must have status 'tombstone' (found '{status}')"
+                )
+
             slos[slo_id] = {
                 "id": slo_id,
                 "target": target,
@@ -209,18 +214,15 @@ def audit_slo_references(
                 })
             else:
                 slo_info = slos[ref_slo_id]
-                canonical_target = slo_info["id"]
                 if slo_info["is_tombstone"]:
-                    # Trace to terminal successor
-                    curr = slo_info["superseded_by"]
-                    while curr in slos and slos[curr]["is_tombstone"]:
-                        curr = slos[curr]["superseded_by"]
-                    canonical_target = curr
+                    raise InvalidTombstoneError(
+                        f"Operation {cost_id} directly references tombstoned SLO '{ref_slo_id}'; must cite canonical successor '{slo_info['superseded_by']}'"
+                    )
                 resolutions.append({
                     "cost_id": cost_id,
                     "referenced_slo_id": ref_slo_id,
-                    "resolved_canonical_id": canonical_target,
-                    "is_tombstone": slo_info["is_tombstone"],
+                    "resolved_canonical_id": slo_info["id"],
+                    "is_tombstone": False,
                 })
     
     report = {
@@ -307,20 +309,20 @@ class SloOperationCostConsistencyTests(unittest.TestCase):
         self.assertIn("SLO-RECOVERY-001", err_msg)
         self.assertIn("SLO-RELEASE-001", err_msg)
 
-    def test_tombstone_resolution_through_crosswalk(self) -> None:
-        """If an operation references a tombstoned SLO, it resolves to canonical successor."""
+    def test_planted_operation_referencing_tombstone_fails(self) -> None:
+        """Active operation referencing a tombstone directly must fail per F5."""
         costs_with_tombstone = self.real_costs_text.replace(
             'slo_ids = ["SLO-DELETE-001"]',
             'slo_ids = ["SLO-PRIVACY-001"]',
         )
-        report = audit_slo_references(costs_with_tombstone, self.real_slos_text)
-        self.assertEqual(report["status"], "pass")
-        # Find resolution for COST-DELETE-001
-        delete_resolutions = [r for r in report["resolutions"] if r["cost_id"] == "COST-DELETE-001"]
-        self.assertEqual(len(delete_resolutions), 1)
-        self.assertEqual(delete_resolutions[0]["referenced_slo_id"], "SLO-PRIVACY-001")
-        self.assertEqual(delete_resolutions[0]["resolved_canonical_id"], "SLO-DELETE-001")
-        self.assertTrue(delete_resolutions[0]["is_tombstone"])
+        with self.assertRaises(InvalidTombstoneError):
+            audit_slo_references(costs_with_tombstone, self.real_slos_text)
+
+    def test_planted_tombstone_with_non_tombstone_status_fails(self) -> None:
+        """Tombstone row marked as target or achieved must fail validation."""
+        planted = self.real_slos_text + "\n| `SLO-OLD-001` | tombstone: superseded by `SLO-DELETE-001` | surface | target | - |\n"
+        with self.assertRaises(InvalidSloStatusError):
+            parse_slos_markdown(planted)
 
     def test_planted_malformed_slo_id_fails(self) -> None:
         """Planted malformed SLO ID fails validation."""

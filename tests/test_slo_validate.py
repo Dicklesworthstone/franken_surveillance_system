@@ -170,10 +170,18 @@ class SloValidatePlantedFaultTests(unittest.TestCase):
 
     # Positive test: Achieved with real existing proof file passes
     def test_achieved_with_real_proof_file_passes(self) -> None:
-        real_proof_root = "architecture/operation_cost_registry.toml"
-        planted = self.real_slos_text + f"\n| `SLO-TEST-001` | target desc | measurement surface | achieved | {real_proof_root} |\n"
-        is_valid, findings = self._validate_with_planted_slos(planted)
-        self.assertTrue(is_valid, f"Expected success with valid proof root, got findings: {[f.message for f in findings]}")
+        proof_dir = ROOT / "qualification-artifacts"
+        proof_dir.mkdir(parents=True, exist_ok=True)
+        proof_file = proof_dir / "SLO-TEST-001-proof.receipt"
+        proof_file.write_text("retained proof evidence\n", encoding="utf-8")
+        try:
+            real_proof_root = "qualification-artifacts/SLO-TEST-001-proof.receipt"
+            planted = self.real_slos_text + f"\n| `SLO-TEST-001` | latency <= 5 ms | edge-GPU | achieved | {real_proof_root} |\n"
+            is_valid, findings = self._validate_with_planted_slos(planted)
+            self.assertTrue(is_valid, f"Expected success with valid proof root, got findings: {[f.message for f in findings]}")
+        finally:
+            if proof_file.exists():
+                proof_file.unlink()
 
     # SLO-VAL-006: Missing target
     def test_planted_missing_target_fails(self) -> None:
@@ -259,5 +267,85 @@ class SloValidatePlantedFaultTests(unittest.TestCase):
         self.assertIn(slo_validate.CODE_MALFORMED_TABLE, codes)
 
 
+class CrimsonWillowAdversarialPlantedNegativeTests(unittest.TestCase):
+    """6 adversarial planted negative tests from CrimsonWillow's review."""
+
+    def setUp(self) -> None:
+        self.real_slos_text = SLOS_PATH.read_text(encoding="utf-8")
+        self.real_costs_text = COSTS_PATH.read_text(encoding="utf-8")
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_path = Path(self.temp_dir.name)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    # 1. Achieved with proof path escaping qualification artifacts or pointing to non-proof repo file/dir
+    def test_1_achieved_with_escaped_or_directory_proof_path(self) -> None:
+        planted = self.real_slos_text + "\n| `SLO-TEST-001` | latency <= 5ms | edge-GPU | achieved | qualification-artifacts/../Cargo.toml |\n"
+        sf = self.temp_path / "SLOS.md"
+        sf.write_text(planted, encoding="utf-8")
+        is_valid, findings, _ = slo_validate.validate_slos(root=ROOT, slos_path=sf, costs_path=COSTS_PATH)
+        self.assertFalse(is_valid, "Defect 1: Achieved SLO with proof escaping to Cargo.toml wrongly passed!")
+
+    # 2. Renumbered SLO ID
+    def test_2_renumbered_slo_id(self) -> None:
+        planted = self.real_slos_text + "\n| `SLO-TEST-001` (renumbered from `SLO-OLD-001`) | latency <= 5ms | edge-GPU | target | - |\n"
+        sf = self.temp_path / "SLOS.md"
+        sf.write_text(planted, encoding="utf-8")
+        is_valid, findings, _ = slo_validate.validate_slos(root=ROOT, slos_path=sf, costs_path=COSTS_PATH)
+        self.assertFalse(is_valid, "Defect 2: Renumbered SLO ID in ID cell wrongly passed!")
+
+    # 3. Target with no unit or ambiguous unit
+    def test_3_target_with_ambiguous_or_no_unit(self) -> None:
+        planted = self.real_slos_text + "\n| `SLO-TEST-001` | latency <= 5 | edge-GPU | target | - |\n"
+        sf = self.temp_path / "SLOS.md"
+        sf.write_text(planted, encoding="utf-8")
+        is_valid, findings, _ = slo_validate.validate_slos(root=ROOT, slos_path=sf, costs_path=COSTS_PATH)
+        self.assertFalse(is_valid, "Defect 3: Target with ambiguous unit (latency <= 5) wrongly passed!")
+
+    # 4. Operation cost referencing missing SLO (via singular slo_id)
+    def test_4_operation_cost_referencing_missing_slo_singular(self) -> None:
+        planted_costs = self.real_costs_text + """
+[[operation]]
+id = "COST-UNREGISTERED-001"
+name = "operation referencing missing SLO"
+unit = "frame"
+slo_id = "SLO-NONEXISTENT-001"
+"""
+        cf = self.temp_path / "operation_cost_registry.toml"
+        cf.write_text(planted_costs, encoding="utf-8")
+        is_valid, findings, _ = slo_validate.validate_slos(root=ROOT, slos_path=SLOS_PATH, costs_path=cf)
+        self.assertFalse(is_valid, "Defect 4: Operation cost referencing missing SLO via singular slo_id wrongly passed!")
+
+    # 5. Tombstone row referenced as active
+    def test_5_tombstone_row_referenced_as_active_in_costs(self) -> None:
+        planted_costs = self.real_costs_text + """
+[[operation]]
+id = "COST-ACTIVE-TOMB-001"
+name = "operation referencing tombstone directly"
+unit = "operation"
+slo_ids = ["SLO-PRIVACY-001"]
+"""
+        cf = self.temp_path / "operation_cost_registry.toml"
+        cf.write_text(planted_costs, encoding="utf-8")
+        is_valid, findings, _ = slo_validate.validate_slos(root=ROOT, slos_path=SLOS_PATH, costs_path=cf)
+        self.assertFalse(is_valid, "Defect 5: Active operation referencing tombstone SLO-PRIVACY-001 directly wrongly passed!")
+
+    # 6. Target promoted to public claim
+    def test_6_target_promoted_to_public_claim(self) -> None:
+        planted_claims = (ROOT / "registries/CLAIMS.md").read_text(encoding="utf-8") + (
+            "\n| `slo` | operational latency target achieved | `SLO-INGEST-001` achieved in lab |\n"
+        )
+        cf = self.temp_path / "CLAIMS.md"
+        cf.write_text(planted_claims, encoding="utf-8")
+        is_valid, findings, _ = slo_validate.validate_slos(
+            root=ROOT, slos_path=SLOS_PATH, costs_path=COSTS_PATH, claims_path=cf
+        )
+        self.assertFalse(is_valid, "Defect 6: Target promoted to public claim wrongly passed!")
+        codes = [f.code for f in findings]
+        self.assertIn("SLO-VAL-012", codes, "Defect 6: SLO-VAL-012 (CODE_TARGET_CLAIM_PROMOTION) is not emitted!")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
