@@ -81,10 +81,10 @@ fn test_reconcile_pending_with_trailing_tail_honors_tail_policy() -> Result<(), 
         }
     }
 
-    // Extra torn bytes appended after the committed record
+    // Extra torn bytes appended after the committed record (starts with RECORD_MAGIC, but truncated header)
     {
         let mut raw = OpenOptions::new().append(true).open(&path)?;
-        raw.write_all(b"extra-torn-bytes")?;
+        raw.write_all(b"FSS_JRN1_extra")?;
         raw.sync_all()?;
     }
 
@@ -161,7 +161,7 @@ fn test_verify_storage_detects_corrupt_batch_semantics() -> Result<(), Box<dyn E
     Ok(())
 }
 
-/// F4: Suffix >= 8 bytes with invalid magic must be classified as Corrupt(RecordMagic), not IncompleteTail.
+/// F4: Suffix >= 8 bytes or < 8 bytes with invalid magic must be classified as Corrupt(RecordMagic), not IncompleteTail.
 #[test]
 fn test_incomplete_tail_requires_record_magic_when_bytes_present() -> Result<(), Box<dyn Error>> {
     let garbage = vec![0xEE; 16]; // 16 bytes, >= 8 bytes, invalid magic (< 88 bytes HEADER_LEN)
@@ -178,6 +178,23 @@ fn test_incomplete_tail_requires_record_magic_when_bytes_present() -> Result<(),
             .into());
         }
     }
+
+    // Short tail (< 8 bytes) with non-matching magic prefix must also be rejected as Corrupt(RecordMagic)
+    let short_garbage = vec![0xFF; 4];
+    let short_report = recover_bytes(&short_garbage);
+    match short_report {
+        Err(JournalError::Corrupt {
+            kind: CorruptionKind::RecordMagic,
+            ..
+        }) => {}
+        other => {
+            return Err(format!(
+                "4 bytes of garbage with invalid magic prefix should be Corrupt(RecordMagic), got: {other:?}"
+            )
+            .into());
+        }
+    }
+
     Ok(())
 }
 

@@ -111,7 +111,8 @@ pub fn recover_bytes(bytes: &[u8]) -> Result<RecoveryReport, JournalError> {
     while offset < bytes.len() {
         let start = offset;
         let remaining = bytes.len() - offset;
-        if remaining >= 8 && bytes[offset..offset + 8] != RECORD_MAGIC {
+        let check_len = remaining.min(8);
+        if bytes[offset..offset + check_len] != RECORD_MAGIC[..check_len] {
             return Err(corrupt(start, CorruptionKind::RecordMagic));
         }
         if remaining < HEADER_LEN {

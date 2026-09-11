@@ -139,6 +139,13 @@ impl Journal {
     /// synchronized before the commit trailer. Any I/O error after writing begins returns
     /// `AppendIndeterminate` and blocks append/verify until `reconcile_pending` classifies the
     /// exact attempted record as committed or not committed.
+    ///
+    /// # Crash & Mutation Guarantees
+    ///
+    /// `append()` performs an O(1) integrity check on the *last committed record's trailer*
+    /// (`COMMIT_MAGIC` and `last_root`), ensuring no concurrent truncation or tail-record mutation
+    /// has occurred since this handle was opened. Full historical integrity across all records
+    /// is verified via [`DurableLedger::verify_storage`].
     pub fn append(&mut self, kind: u16, payload: &[u8]) -> Result<JournalRecord, JournalError> {
         if let Some(pending) = &self.pending {
             return Err(JournalError::ReconciliationRequired {
