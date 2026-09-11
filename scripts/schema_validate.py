@@ -93,6 +93,7 @@ CODE_UNDECLARED_SCHEMA_REFERENCE = "undeclared_schema_reference"
 CODE_UNOWNED_IMPLEMENTED_SCHEMA = "unowned_implemented_schema"
 CODE_INVALID_IMPLEMENTATION_OWNER = "invalid_implementation_owner"
 CODE_MALFORMED_REGISTRY_ROW = "malformed_registry_row"
+CODE_UNREGISTERED_IMPLEMENTED_SCHEMA = "unregistered_implemented_schema"
 
 CONSTITUTION_CODES = frozenset({
     CODE_DUPLICATE_STABLE_ID,
@@ -107,6 +108,7 @@ CONSTITUTION_CODES = frozenset({
     CODE_UNOWNED_IMPLEMENTED_SCHEMA,
     CODE_INVALID_IMPLEMENTATION_OWNER,
     CODE_MALFORMED_REGISTRY_ROW,
+    CODE_UNREGISTERED_IMPLEMENTED_SCHEMA,
 })
 
 
@@ -1050,17 +1052,21 @@ def strip_rust_comments(source: str) -> str:
             result.append(source[start:i])
             continue
         if source[i] == "'":
-            start = i
-            i += 1
-            while i < n and i < start + 5:
-                if source[i] == '\\':
-                    i += 2
-                elif source[i] == "'":
-                    i += 1
+            next_nl = source.find('\n', i)
+            limit = min(n, i + 12) if next_nl == -1 else min(n, i + 12, next_nl)
+            is_char = False
+            for j in range(i + 1, limit):
+                if source[j] == '\\':
+                    continue
+                if source[j] == "'":
+                    is_char = True
+                    result.append(source[i : j + 1])
+                    i = j + 1
                     break
-                else:
-                    i += 1
-            result.append(source[start:i])
+            if is_char:
+                continue
+            result.append(source[i])
+            i += 1
             continue
         if source[i:i+2] == '//':
             nl_idx = source.find('\n', i)
@@ -1120,6 +1126,7 @@ def scan_rust_schema_owners(crates_dir: Path) -> dict[str, RustOwner]:
         current_type = None
         brace_depth = 0
         in_test_cfg = False
+        waiting_for_test_brace = False
         test_cfg_depth = 0
 
         for line_no, line in enumerate(lines, 1):
@@ -1128,8 +1135,21 @@ def scan_rust_schema_owners(crates_dir: Path) -> dict[str, RustOwner]:
                 continue
 
             if "#[cfg(test)]" in stripped:
-                in_test_cfg = True
+                waiting_for_test_brace = True
                 test_cfg_depth = brace_depth
+
+            if waiting_for_test_brace:
+                open_b = line.count("{")
+                close_b = line.count("}")
+                brace_depth += open_b - close_b
+                if "{" in line:
+                    waiting_for_test_brace = False
+                    in_test_cfg = True
+                    if brace_depth <= test_cfg_depth:
+                        in_test_cfg = False
+                elif ";" in line:
+                    waiting_for_test_brace = False
+                continue
 
             if in_test_cfg:
                 open_b = line.count("{")
@@ -1504,6 +1524,22 @@ def validate_schema_constitution(
                                 f"schema '{claim_sname}' claimed owner type '{claimed_type}' does not match actual Rust owner '{actual_owner.type_name}'",
                             )
 
+    # Step 5.5: Detect drift - schemas implemented in Rust but not registered in SCHEMAS.md
+    unregistered_decls: list[dict[str, Any]] = []
+    for unreg_sname, unreg_owner in sorted(rust_owners.items()):
+        if unreg_sname not in seen_names:
+            validator.emit(
+                CODE_UNREGISTERED_IMPLEMENTED_SCHEMA,
+                unreg_owner.file,
+                f"#{unreg_sname}",
+                f"schema '{unreg_sname}' is implemented in Rust ({unreg_owner.file}:{unreg_owner.line}) but not declared in registry {schemas_md_path.name}",
+                severity="warning",
+            )
+            unregistered_decls.append({
+                "name": unreg_sname,
+                "owner": unreg_owner.to_dict(),
+            })
+
     # Step 6: Compute deterministic constitution digest
     sorted_decls = sorted(declarations, key=lambda d: d.stable_id)
     schemas_md_raw = schemas_md_path.read_bytes() if schemas_md_path.is_file() else b""
@@ -1514,7 +1550,7 @@ def validate_schema_constitution(
     }
     constitution_digest = "sha256:" + hashlib.sha256(canonical_json_bytes(const_payload)).hexdigest()
 
-    has_const_error = any(f.code in CONSTITUTION_CODES for f in validator.findings)
+    has_const_error = any(f.code in CONSTITUTION_CODES and f.severity == "error" for f in validator.findings)
     const_status = "failed" if has_const_error else "passed"
 
     return {
@@ -1523,6 +1559,8 @@ def validate_schema_constitution(
         "implementedCount": sum(1 for d in declarations if d.status == "implemented"),
         "declaredOnlyCount": sum(1 for d in declarations if d.status == "declared"),
         "architectureReferenceCount": len(arch_refs),
+        "unregisteredImplementedCount": len(unregistered_decls),
+        "unregisteredImplementedSchemas": unregistered_decls,
         "constitutionDigest": constitution_digest,
         "schemas": [d.to_dict() for d in sorted_decls],
     }
@@ -1604,7 +1642,8 @@ def audit(
         key=lambda f: (f.schema_path, f.code, f.json_path, f.message),
     )
 
-    status = "passed" if not findings_sorted else "failed"
+    error_findings = [f for f in findings_sorted if f.severity == "error"]
+    status = "passed" if not error_findings else "failed"
 
     # Catalog digest: canonical ordered hashes of relative paths and contents
     hasher = hashlib.sha256()
@@ -1632,6 +1671,8 @@ def audit(
         "cycleCount": len(getattr(validator, "cycles", [])),
         "cycles": sorted(getattr(validator, "cycles", [])),
         "diagnosticCardinality": len(findings_sorted),
+        "errorCount": len(error_findings),
+        "warningCount": sum(1 for f in findings_sorted if f.severity == "warning"),
         "diagnosticsTruncated": validator.truncated,
         "findings": [f.to_dict() for f in findings_sorted],
         "cost": {

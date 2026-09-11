@@ -66,8 +66,8 @@ class TestValidRepositoryCatalog(unittest.TestCase):
     def test_repository_schemas_pass(self) -> None:
         report = schema_validate.audit(schemas_dir=ROOT / "schemas")
         self.assertEqual(report["status"], "passed")
-        self.assertEqual(report["diagnosticCardinality"], 0)
-        self.assertEqual(len(report["findings"]), 0)
+        self.assertEqual(report["errorCount"], 0)
+        self.assertEqual(len([f for f in report["findings"] if f.get("severity") == "error"]), 0)
         self.assertGreaterEqual(report["schemaCount"], 57)
         self.assertGreaterEqual(report["referenceCount"], 200)
         self.assertTrue(report["catalogDigest"].startswith("sha256:"))
@@ -806,7 +806,66 @@ class TestSchemaConstitution(unittest.TestCase):
         self.assertGreaterEqual(result["implementedCount"], 17)
         self.assertGreaterEqual(result["architectureReferenceCount"], 140)
         self.assertTrue(result["constitutionDigest"].startswith("sha256:"))
-        self.assertEqual(len(validator.findings), 0)
+
+        # No error findings
+        error_findings = [f for f in validator.findings if f.severity == "error"]
+        self.assertEqual(len(error_findings), 0)
+
+        # Identity and explicit set of expected declared-only schemas
+        expected_declared_only = {
+            "fss.adapter_compatibility_certificate.v1",
+            "fss.agent_affordance.v1",
+            "fss.agent_cognitive_envelope.v1",
+            "fss.agent_continuation_cursor.v1",
+            "fss.agent_control_plan.v1",
+            "fss.agent_execution_episode.v1",
+            "fss.agent_feedback_proposal.v1",
+            "fss.agent_finding.v1",
+            "fss.agent_handoff_capsule.v1",
+            "fss.agent_hypothesis_workspace.v1",
+            "fss.agent_learning_proposal.v1",
+            "fss.agent_mission.v1",
+            "fss.agent_objective_contract.v1",
+            "fss.agent_query_plan.v1",
+            "fss.agent_request_envelope.v1",
+            "fss.agent_response_envelope.v1",
+            "fss.agent_session.v1",
+            "fss.agent_session_capsule.v1",
+            "fss.agent_work_claim.v1",
+            "fss.calibration_certificate.v1",
+            "fss.cancellation_drain_certificate.v1",
+            "fss.capabilities.v1",
+            "fss.decision_card.v1",
+            "fss.doctor.v1",
+            "fss.evidence_anchor.v1",
+            "fss.evidence_bundle.v1",
+            "fss.evidence_delta_batch.v1",
+            "fss.experience_capsule.v1",
+            "fss.graph_algorithm_witness.v1",
+            "fss.investigation_state.v1",
+            "fss.license_inventory.v1",
+            "fss.model_execution_receipt.v1",
+            "fss.model_package_manifest.v1",
+            "fss.qualification_root.v2",
+            "fss.release_build_receipt.v1",
+            "fss.release_qualification_receipt.v1",
+            "fss.release_stage_verification.v1",
+            "fss.semantic_handle.v1",
+            "fss.sensor_capsule.v1",
+            "fss.source_manifest.v1",
+            "fss.status.v1",
+            "fss.transfer_manifest.v1",
+            "fss.transfer_receipt.v1",
+        }
+        actual_declared_only = {s["name"] for s in result["schemas"] if s["status"] == "declared"}
+        self.assertTrue(expected_declared_only.issubset(actual_declared_only))
+
+        # Drift detection: misnamed or missing implemented schemas must be findings, not silence
+        unreg_findings = [f for f in validator.findings if f.code == schema_validate.CODE_UNREGISTERED_IMPLEMENTED_SCHEMA]
+        unreg_names = {f.json_path.lstrip("#") for f in unreg_findings}
+        self.assertIn("fss.continuation_cursor.v1", unreg_names)
+        self.assertIn("fss.agent_resource_state.v1", unreg_names)
+        self.assertIn("fss.tombstone.v1", unreg_names)
 
         # Check implemented vs declared invariants
         for item in result["schemas"]:
@@ -1275,6 +1334,35 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
             self.assertEqual(res["schemas"][0]["status"], "declared")
             self.assertIsNone(res["schemas"][0]["owner"])
             self.assertTrue(any(f.code == schema_validate.CODE_UNOWNED_IMPLEMENTED_SCHEMA for f in v.findings))
+
+    def test_unregistered_implemented_schemas_drift_detection(self) -> None:
+        """Finding 6: Implemented but unregistered schemas must be detected as drift findings, not silence."""
+        validator = schema_validate.Validator()
+        result = schema_validate.validate_schema_constitution(
+            repo_root=ROOT,
+            schemas_dir=ROOT / "schemas",
+            schemas_md_path=ROOT / "registries" / "SCHEMAS.md",
+            architecture_dir=ROOT / "architecture",
+            crates_dir=ROOT / "crates",
+            validator=validator,
+        )
+        self.assertGreater(result["unregisteredImplementedCount"], 0)
+        unreg_names = {s["name"] for s in result["unregisteredImplementedSchemas"]}
+
+        # Must catch the three misnamed/missing schemas highlighted in review:
+        self.assertIn("fss.continuation_cursor.v1", unreg_names)
+        self.assertIn("fss.agent_resource_state.v1", unreg_names)
+        self.assertIn("fss.tombstone.v1", unreg_names)
+
+        # Must be recorded as typed diagnostic findings on validator, not silence:
+        unreg_finding_codes = {
+            f.json_path.lstrip("#"): f.code
+            for f in validator.findings
+            if f.code == schema_validate.CODE_UNREGISTERED_IMPLEMENTED_SCHEMA
+        }
+        self.assertIn("fss.continuation_cursor.v1", unreg_finding_codes)
+        self.assertIn("fss.agent_resource_state.v1", unreg_finding_codes)
+        self.assertIn("fss.tombstone.v1", unreg_finding_codes)
 
 
 if __name__ == "__main__":
