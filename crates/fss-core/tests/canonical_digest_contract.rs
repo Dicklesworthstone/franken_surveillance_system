@@ -318,7 +318,7 @@ fn exact_rejection_matrix_invalid_digest() {
         "sha256:e3b0c44298fc1c149afbf4c8996fb924-7ae41e4649b934ca495991b7852b855".to_string(),
         "sha256:e3b0c44298fc1c149afbf4c8996fb924 7ae41e4649b934ca495991b7852b855".to_string(),
         "sha256:e3b0c44298fc1c149afbf4c8996fb924\n7ae41e4649b934ca495991b7852b855".to_string(),
-        "sha256:e3b0c44298fc1c149afbf4c8996fb924\07ae41e4649b934ca495991b7852b855".to_string(),
+        "sha256:e3b0c44298fc1c149afbf4c8996fb924\x007ae41e4649b934ca495991b7852b855".to_string(),
         // Hex too short
         "sha256:".to_string(),
         "sha256:a".to_string(),
