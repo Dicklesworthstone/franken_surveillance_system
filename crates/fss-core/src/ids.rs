@@ -235,13 +235,13 @@ impl Generation {
     /// Returns true when `self` is the direct successor (`prior + 1`) of `prior`.
     #[must_use]
     pub fn is_successor_of(self, prior: Self) -> bool {
-        self.0 == prior.0.saturating_add(1) && prior.0 < u64::MAX
+        prior.0 > 0 && self.0 == prior.0.saturating_add(1) && prior.0 < u64::MAX
     }
 
     /// Validates an MVCC transition from an optional prior generation to this generation.
     ///
     /// Creation requires `prior == None` and `self == GENESIS`.
-    /// Modification requires `prior == Some(p)` and `self == p.next()?`.
+    /// Modification requires `prior == Some(p)` with `p > 0` and `self == p.next()?`.
     pub fn validate_transition(prior: Option<Self>, current: Self) -> Result<(), ContractError> {
         match prior {
             None => {
@@ -250,7 +250,7 @@ impl Generation {
                 }
             }
             Some(p) => {
-                if !current.is_successor_of(p) {
+                if p.0 == 0 || !current.is_successor_of(p) {
                     return Err(ContractError::GenerationConflict);
                 }
             }
@@ -489,7 +489,7 @@ subsystem_generation!(
 ///
 /// Handles unknown tags gracefully via [`TombstoneReason::Unknown`], preserving
 /// forward compatibility without panicking.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum TombstoneReason {
     /// Object was deleted by owner authorization or retention expiry.
     Deleted,
@@ -506,6 +506,16 @@ pub enum TombstoneReason {
 }
 
 impl TombstoneReason {
+    /// Constructs a forward-compatible unknown tombstone reason tag.
+    ///
+    /// Rejects tags corresponding to known variants (`1..=5`) with [`ContractError::InvalidIdentifier`].
+    pub fn unknown(tag: u8) -> Result<Self, ContractError> {
+        if (1..=5).contains(&tag) {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        Ok(Self::Unknown(tag))
+    }
+
     /// Returns the stable discriminant tag.
     #[must_use]
     pub const fn tag(self) -> u8 {
@@ -558,6 +568,18 @@ impl TombstoneReason {
     }
 }
 
+impl Ord for TombstoneReason {
+    fn cmp(&self, other: &Self) -> core::cmp::Ordering {
+        self.tag().cmp(&other.tag())
+    }
+}
+
+impl PartialOrd for TombstoneReason {
+    fn partial_cmp(&self, other: &Self) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 impl fmt::Display for TombstoneReason {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(self.as_str())
@@ -604,8 +626,9 @@ impl TombstoneRecord {
 
     /// Constructs and validates a new tombstone record.
     ///
-    /// Requires `tombstone_generation == prior_generation.next()?`.
-    /// If `tombstone_generation <= prior_generation`, fails with [`ContractError::GenerationConflict`].
+    /// Requires `prior_generation > 0` and `tombstone_generation == prior_generation.next()?`.
+    /// If `tombstone_generation <= prior_generation` or `prior_generation == 0`,
+    /// fails with [`ContractError::GenerationConflict`].
     pub fn new(
         id: ObjectId,
         tombstone_generation: Generation,
@@ -614,7 +637,7 @@ impl TombstoneRecord {
         witness_digest: Option<ContentDigest>,
         payload_digest: ContentDigest,
     ) -> Result<Self, ContractError> {
-        if !tombstone_generation.is_successor_of(prior_generation) {
+        if prior_generation.0 == 0 || !tombstone_generation.is_successor_of(prior_generation) {
             return Err(ContractError::GenerationConflict);
         }
         Ok(Self {
@@ -636,10 +659,7 @@ impl TombstoneRecord {
     /// Computes the canonical domain-separated digest of this tombstone record.
     #[must_use]
     pub fn canonical_digest(&self) -> ContentDigest {
-        let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.tombstone.v1");
-        self.encode_canonical(&mut encoder);
-        ContentDigest::sha256(&encoder.finish())
+        CanonicalEncode::canonical_digest(self, "fss.tombstone.v1")
     }
 }
 

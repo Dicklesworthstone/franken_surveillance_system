@@ -18,58 +18,135 @@ pub const CANONICAL_VERSION_1: u16 = 1;
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct CanonicalEncoder {
     bytes: Vec<u8>,
+    error: Option<ContractError>,
 }
 
 impl CanonicalEncoder {
     /// Creates an empty encoder.
     #[must_use]
     pub const fn new() -> Self {
-        Self { bytes: Vec::new() }
+        Self {
+            bytes: Vec::new(),
+            error: None,
+        }
+    }
+
+    /// Returns true if an error has occurred during encoding (e.g. text/bytes over-bound).
+    #[must_use]
+    pub const fn has_error(&self) -> bool {
+        self.error.is_some()
+    }
+
+    /// Returns the recorded encoding error if any.
+    #[must_use]
+    pub const fn error(&self) -> Option<&ContractError> {
+        match self.error {
+            Some(ref err) => Some(err),
+            None => None,
+        }
     }
 
     /// Appends a one-byte field discriminator.
     pub fn tag(&mut self, value: u8) {
+        if self.error.is_some() {
+            return;
+        }
         self.bytes.push(value);
     }
 
     /// Appends an unsigned 8-bit value.
     pub fn u8(&mut self, value: u8) {
-        self.bytes.push(value);
+        self.tag(value);
     }
 
     /// Appends an unsigned 32-bit value in network byte order.
     pub fn u32(&mut self, value: u32) {
+        if self.error.is_some() {
+            return;
+        }
         self.bytes.extend_from_slice(&value.to_be_bytes());
     }
 
     /// Appends an unsigned 64-bit value in network byte order.
     pub fn u64(&mut self, value: u64) {
+        if self.error.is_some() {
+            return;
+        }
         self.bytes.extend_from_slice(&value.to_be_bytes());
     }
 
-    /// Appends a signed 128-bit value in network byte order.
+    /// Appends a signed 128-bit value in network byte order (standard two's complement big-endian).
+    ///
+    /// NOTE: Standard two's complement big-endian does NOT preserve lexicographical byte order
+    /// across negative and positive values (e.g. `-1` encodes as `0xFF...FF` which is byte-wise
+    /// greater than `+1` as `0x00...01`). Do NOT rely on raw canonical byte sorting for signed values;
+    /// sort using typed `TimestampNs` or `i128` values before encoding.
     pub fn i128(&mut self, value: i128) {
+        if self.error.is_some() {
+            return;
+        }
         self.bytes.extend_from_slice(&value.to_be_bytes());
     }
 
     /// Appends a Boolean value.
     pub fn bool(&mut self, value: bool) {
-        self.bytes.push(u8::from(value));
+        self.tag(u8::from(value));
     }
 
     /// Appends bytes with a 64-bit length prefix.
+    ///
+    /// Fails closed if `value.len() > MAX_CANONICAL_BYTES_LEN`.
     pub fn bytes(&mut self, value: &[u8]) {
+        if self.error.is_some() {
+            return;
+        }
+        if value.len() > MAX_CANONICAL_BYTES_LEN {
+            self.error = Some(ContractError::InvalidDigest);
+            return;
+        }
         self.u64(value.len() as u64);
         self.bytes.extend_from_slice(value);
     }
 
     /// Appends UTF-8 text with a 64-bit byte-length prefix.
+    ///
+    /// Fails closed if `value.len() > MAX_CANONICAL_TEXT_BYTES`.
     pub fn text(&mut self, value: &str) {
+        if self.error.is_some() {
+            return;
+        }
+        if value.len() > MAX_CANONICAL_TEXT_BYTES {
+            self.error = Some(ContractError::InvalidIdentifier);
+            return;
+        }
         self.bytes(value.as_bytes());
+    }
+
+    /// Attempts to append bytes with a 64-bit length prefix, returning an error if over bound.
+    pub fn try_bytes(&mut self, value: &[u8]) -> Result<(), ContractError> {
+        if value.len() > MAX_CANONICAL_BYTES_LEN {
+            self.error = Some(ContractError::InvalidDigest);
+            return Err(ContractError::InvalidDigest);
+        }
+        self.bytes(value);
+        Ok(())
+    }
+
+    /// Attempts to append UTF-8 text with a 64-bit length prefix, returning an error if over bound.
+    pub fn try_text(&mut self, value: &str) -> Result<(), ContractError> {
+        if value.len() > MAX_CANONICAL_TEXT_BYTES {
+            self.error = Some(ContractError::InvalidIdentifier);
+            return Err(ContractError::InvalidIdentifier);
+        }
+        self.text(value);
+        Ok(())
     }
 
     /// Appends a digest with an explicit algorithm discriminator.
     pub fn digest(&mut self, value: ContentDigest) {
+        if self.error.is_some() {
+            return;
+        }
         self.tag(match value.algorithm() {
             crate::DigestAlgorithm::Sha256 => 1,
             crate::DigestAlgorithm::Blake3 => 2,
@@ -77,10 +154,23 @@ impl CanonicalEncoder {
         self.bytes.extend_from_slice(&value.bytes());
     }
 
-    /// Returns the accumulated canonical bytes.
+    /// Returns the accumulated canonical bytes, failing closed to an empty vector if an error occurred.
     #[must_use]
     pub fn finish(self) -> Vec<u8> {
-        self.bytes
+        if self.error.is_some() {
+            Vec::new()
+        } else {
+            self.bytes
+        }
+    }
+
+    /// Returns the accumulated canonical bytes or the error that occurred during encoding.
+    pub fn finish_checked(self) -> Result<Vec<u8>, ContractError> {
+        if let Some(err) = self.error {
+            Err(err)
+        } else {
+            Ok(self.bytes)
+        }
     }
 }
 
@@ -141,8 +231,7 @@ impl<'a> CanonicalDecoder<'a> {
     }
 
     /// Decodes an unsigned 32-bit value in network byte order.
-    pub fn u32(&mut self, value: u32) -> Result<u32, ContractError> {
-        let _ = value;
+    pub fn u32(&mut self) -> Result<u32, ContractError> {
         self.read_u32()
     }
 
@@ -236,12 +325,18 @@ pub trait CanonicalEncode {
     /// Appends this value's canonical representation.
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder);
 
-    /// Returns this value's canonical bytes.
-    #[must_use]
+    /// Serializes self to canonical bytes.
     fn canonical_bytes(&self) -> Vec<u8> {
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical(&mut encoder);
         encoder.finish()
+    }
+
+    /// Serializes self to canonical bytes, verifying encoder limits.
+    fn try_canonical_bytes(&self) -> Result<Vec<u8>, ContractError> {
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        encoder.finish_checked()
     }
 
     /// Computes a domain-separated SHA-256 semantic fingerprint.
@@ -319,7 +414,7 @@ impl CanonicalEncode for u32 {
 
 impl CanonicalDecode for u32 {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        decoder.read_u32()
+        decoder.u32()
     }
 }
 

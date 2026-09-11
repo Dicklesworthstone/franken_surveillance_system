@@ -754,3 +754,154 @@ fn constants_and_lifecycle_state_direct_coverage() -> Result<(), ContractError> 
     assert!(map.contains_key(&obj));
     Ok(())
 }
+
+#[test]
+fn finding_1_and_2_tombstone_reason_tags_and_ordering() -> Result<(), ContractError> {
+    // Finding 1: overlapping tags must be rejected on construction
+    assert_eq!(
+        TombstoneReason::unknown(1),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        TombstoneReason::unknown(5),
+        Err(ContractError::InvalidIdentifier)
+    );
+    let unk6 = TombstoneReason::unknown(6)?;
+    assert_eq!(unk6.tag(), 6);
+    let unk0 = TombstoneReason::unknown(0)?;
+    assert_eq!(unk0.tag(), 0);
+
+    // from_tag maps known tags to known variants, not Unknown
+    assert_eq!(TombstoneReason::from_tag(1), TombstoneReason::Deleted);
+    assert_eq!(TombstoneReason::from_tag(5), TombstoneReason::Expired);
+    assert_eq!(TombstoneReason::from_tag(6), unk6);
+
+    // Finding 2: Ord must agree with canonical tag order
+    assert!(unk0 < TombstoneReason::Deleted);
+    assert!(TombstoneReason::Deleted < TombstoneReason::Superseded);
+    assert!(TombstoneReason::Superseded < TombstoneReason::Revoked);
+    assert!(TombstoneReason::Revoked < TombstoneReason::Invalidated);
+    assert!(TombstoneReason::Invalidated < TombstoneReason::Expired);
+    assert!(TombstoneReason::Expired < unk6);
+
+    let unk255 = TombstoneReason::unknown(255)?;
+    assert!(unk6 < unk255);
+    assert_eq!(unk0.cmp(&TombstoneReason::Deleted), 0.cmp(&1));
+    Ok(())
+}
+
+#[test]
+fn finding_4_tombstone_record_canonical_digest_delegation() -> Result<(), ContractError> {
+    let obj = ObjectId::parse("obj-tombstone-digest-01")?;
+    let payload = ContentDigest::sha256(b"deletion manifest");
+    let record = TombstoneRecord::new(
+        obj,
+        Generation(2),
+        Generation(1),
+        TombstoneReason::Deleted,
+        None,
+        payload,
+    )?;
+
+    // Must delegate to CanonicalEncode::canonical_digest with domain "fss.tombstone.v1"
+    let direct_digest = record.canonical_digest();
+    let trait_digest = CanonicalEncode::canonical_digest(&record, "fss.tombstone.v1");
+    assert_eq!(direct_digest, trait_digest);
+    Ok(())
+}
+
+#[test]
+fn finding_5_canonical_decoder_u32_no_phantom_param() -> Result<(), ContractError> {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(0x12345678);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    // u32 must not take a phantom parameter
+    let val = decoder.u32()?;
+    assert_eq!(val, 0x12345678);
+    decoder.ensure_finished()?;
+    Ok(())
+}
+
+#[test]
+fn finding_6_and_7_encoder_fail_closed_and_real_text_bound() -> Result<(), ContractError> {
+    // Finding 6: Encoder fails closed on over-bound text/bytes
+    let mut enc_over_text = CanonicalEncoder::new();
+    let huge_str = "a".repeat(MAX_CANONICAL_TEXT_BYTES + 1);
+    enc_over_text.text(&huge_str);
+    assert!(enc_over_text.has_error());
+    assert_eq!(
+        enc_over_text.finish_checked(),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    let mut enc_over_bytes = CanonicalEncoder::new();
+    // try_bytes over limit
+    assert_eq!(
+        enc_over_bytes.try_bytes(&vec![0u8; MAX_CANONICAL_BYTES_LEN + 1]),
+        Err(ContractError::InvalidDigest)
+    );
+
+    // Finding 7: Fix the tautological text-bound test so it exercises text() with a real over-bound payload
+    let mut raw_buf = Vec::new();
+    // 8-byte big-endian length prefix = MAX_CANONICAL_TEXT_BYTES + 1
+    raw_buf.extend_from_slice(&((MAX_CANONICAL_TEXT_BYTES + 1) as u64).to_be_bytes());
+    // Actual payload of MAX_CANONICAL_TEXT_BYTES + 1 valid ASCII bytes
+    raw_buf.extend(std::iter::repeat(b'x').take(MAX_CANONICAL_TEXT_BYTES + 1));
+
+    let mut dec = CanonicalDecoder::new(&raw_buf);
+    // Must return InvalidIdentifier because length exceeds MAX_CANONICAL_TEXT_BYTES,
+    // NOT InvalidDigest from EOF truncation!
+    assert_eq!(dec.text(), Err(ContractError::InvalidIdentifier));
+    Ok(())
+}
+
+#[test]
+fn finding_8_reject_generation_0_as_prior() -> Result<(), ContractError> {
+    // Generation 0 cannot be prior in validate_transition
+    assert_eq!(
+        Generation::validate_transition(Some(Generation(0)), Generation(1)),
+        Err(ContractError::GenerationConflict)
+    );
+    assert_eq!(
+        Generation::validate_transition(Some(Generation::UNVERSIONED), Generation::GENESIS),
+        Err(ContractError::GenerationConflict)
+    );
+
+    // Generation 1 is not a valid successor of Generation 0
+    assert!(!Generation(1).is_successor_of(Generation(0)));
+    assert!(!Generation::GENESIS.is_successor_of(Generation::UNVERSIONED));
+
+    // TombstoneRecord::new rejects prior_generation == 0
+    let obj = ObjectId::parse("obj-tombstone-gen0")?;
+    let payload = ContentDigest::sha256(b"payload");
+    assert_eq!(
+        TombstoneRecord::new(
+            obj,
+            Generation(1),
+            Generation(0),
+            TombstoneReason::Deleted,
+            None,
+            payload
+        ),
+        Err(ContractError::GenerationConflict)
+    );
+    Ok(())
+}
+
+#[test]
+fn finding_3_signed_i128_byte_order_property_pinned() {
+    let mut enc_neg = CanonicalEncoder::new();
+    enc_neg.i128(-1);
+    let bytes_neg = enc_neg.finish();
+
+    let mut enc_pos = CanonicalEncoder::new();
+    enc_pos.i128(1);
+    let bytes_pos = enc_pos.finish();
+
+    // Pin the property: two's complement -1 has leading 0xFF bytes,
+    // so in lexicographical byte comparison bytes_neg > bytes_pos.
+    // Callers MUST sort using typed i128 / TimestampNs rather than raw canonical bytes.
+    assert!(bytes_neg > bytes_pos);
+}
