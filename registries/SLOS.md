@@ -21,6 +21,10 @@ with an ADR and operation-cost derivation; revisions preserve the old ID as hist
 | `SLO-FALSE-ALERT-001` | release-specific upper bound on false alerts/property-day | defined benign exposure distribution; value set at `GATE-080` |
 | `SLO-QUIESCENCE-001` | zero owned tasks/processes/descriptors after bounded shutdown | all qualified adapters/model/codec hosts |
 | `SLO-DELETE-001` | deletion closure reaches terminal proof or explicit blocker by policy deadline | exact backend/hold class |
+| `SLO-MODEL-001` | model package import and qualification meet registered operator, conformance, and repair bounds | frozen model package and target platform tuple; oracle comparison verified |
+| `SLO-RECOVERY-001` | authority checkpoint published and verified within bounded replay tail and recovery time | clean anchor and declared delta backlog; excludes uncommitted transaction tail |
+| `SLO-RELEASE-001` | complete release matrix qualified and published root-last with clean sibling closure | controlled native host with full qualification lane pass; excludes unverified targets |
+| `SLO-PRIVACY-001` | tombstone: superseded by `SLO-DELETE-001` | historical deletion-closure reference preserved for audit; canonical target is `SLO-DELETE-001` |
 | `SLO-AGENT-ORIENT-001` | p95 cold mission orientation reaches a useful `SituationCapsule` in ≤ 2 semantic calls and ≤ 1,600 output tokens | warm local authority/projections; exclusions and degraded dimensions remain explicit |
 | `SLO-AGENT-FOLLOW-001` | p95 material committed delta available to a subscribed local agent ≤ 250 ms | excludes source capture latency; terminal/coverage/contradiction/effect-uncertainty deltas never coalesced away |
 | `SLO-AGENT-COMPRESSION-001` | zero task-critical contradiction, not-observable domain, hard clamp, effect indeterminacy, or urgent obligation omitted in qualified context packs | sealed agent scenario corpus and declared view/token budget |

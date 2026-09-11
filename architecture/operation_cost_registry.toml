@@ -160,7 +160,7 @@ name = "execute one deletion closure"
 unit = "deletion_plan"
 semantic_steps = ["authorize", "enumerate_reachability", "delete_children", "verify_absence", "publish_tombstone"]
 variable_costs = ["reachable_objects", "providers", "indexes", "replicas"]
-slo_ids = ["SLO-PRIVACY-001"]
+slo_ids = ["SLO-DELETE-001"]
 status = "model_required"
 
 [[operation]]
