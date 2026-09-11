@@ -2,7 +2,7 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     BudgetVector, Completeness, ContentDigest, ContinuationCursor, ContinuationScope,
@@ -50,19 +50,20 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
                 )
             })
             .collect(),
-        estimated_costs: levels
-            .iter()
-            .map(|level| {
-                (
-                    *level,
+        estimated_costs: {
+            let mut costs = BTreeMap::new();
+            for &level in &levels {
+                costs.insert(
+                    level,
                     BudgetVector::builder()
                         .bytes(1_024)
                         .tokens(256)
                         .build()
-                        .expect("valid cost"),
-                )
-            })
-            .collect(),
+                        .map_err(ContractError::from)?,
+                );
+            }
+            costs
+        },
         levels,
         laboratory_access: LaboratoryAccess::QualificationOrDebugGrant,
         debug_capability: Some("capability:hydrate:debug".to_owned()),
@@ -95,7 +96,7 @@ fn request(
             .bytes(2_048)
             .tokens(512)
             .build()
-            .expect("valid budget"),
+            .map_err(ContractError::from)?,
         purpose: HydrationPurpose::Qualification,
         continuation: None,
         issued_at: TimestampNs(10),

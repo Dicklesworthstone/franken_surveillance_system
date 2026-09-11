@@ -51,8 +51,8 @@ fn capabilities() -> BTreeMap<HydrationLevel, BTreeSet<String>> {
     ])
 }
 
-fn costs() -> BTreeMap<HydrationLevel, BudgetVector> {
-    BTreeMap::from([
+fn costs() -> Result<BTreeMap<HydrationLevel, BudgetVector>, ContractError> {
+    Ok(BTreeMap::from([
         (
             HydrationLevel::H0,
             BudgetVector::builder()
@@ -60,8 +60,7 @@ fn costs() -> BTreeMap<HydrationLevel, BudgetVector> {
                 .tokens(32)
                 .bytes(256)
                 .cpu_millis(1)
-                .build()
-                .expect("valid budget"),
+                .build()?,
         ),
         (
             HydrationLevel::H1,
@@ -71,8 +70,7 @@ fn costs() -> BTreeMap<HydrationLevel, BudgetVector> {
                 .bytes(1_024)
                 .cpu_millis(2)
                 .privacy_exposure(0.1)
-                .build()
-                .expect("valid budget"),
+                .build()?,
         ),
         (
             HydrationLevel::H2,
@@ -82,10 +80,9 @@ fn costs() -> BTreeMap<HydrationLevel, BudgetVector> {
                 .bytes(4_096)
                 .cpu_millis(4)
                 .privacy_exposure(0.2)
-                .build()
-                .expect("valid budget"),
+                .build()?,
         ),
-    ])
+    ]))
 }
 
 fn handle() -> Result<SemanticHandle, HydrationError> {
@@ -104,7 +101,7 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
         retention_until: TimestampNs(10_000),
         levels: levels(),
         required_capabilities: capabilities(),
-        estimated_costs: costs(),
+        estimated_costs: costs()?,
         laboratory_access: LaboratoryAccess::Unavailable,
         debug_capability: None,
         derivative_handles: BTreeSet::new(),

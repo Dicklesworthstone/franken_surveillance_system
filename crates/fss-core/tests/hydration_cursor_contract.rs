@@ -2,11 +2,11 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     BudgetVector, CanonicalEncode, Completeness, ContentDigest, ContinuationCursor,
-    ContinuationScope, ContractBasis, ContractBasisRegistryBytes, HYDRATION_VIEW_ID,
+    ContinuationScope, ContractBasis, ContractBasisRegistryBytes, ContractError, HYDRATION_VIEW_ID,
     HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
     HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec,
     LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
@@ -45,19 +45,19 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
             .copied()
             .map(|level| (level, BTreeSet::new()))
             .collect(),
-        estimated_costs: levels
-            .iter()
-            .copied()
-            .map(|level| {
-                (
+        estimated_costs: {
+            let mut costs = BTreeMap::new();
+            for &level in &levels {
+                costs.insert(
                     level,
                     BudgetVector::builder()
                         .bytes(1_024)
                         .build()
-                        .expect("valid cost"),
-                )
-            })
-            .collect(),
+                        .map_err(ContractError::from)?,
+                );
+            }
+            costs
+        },
         laboratory_access: LaboratoryAccess::Unavailable,
         debug_capability: None,
         derivative_handles: BTreeSet::new(),
@@ -80,7 +80,7 @@ fn request(handle: &SemanticHandle) -> Result<HydrationRequest, HydrationError> 
         budget: BudgetVector::builder()
             .bytes(1_024)
             .build()
-            .expect("valid budget"),
+            .map_err(ContractError::from)?,
         purpose: HydrationPurpose::IncidentAdjudication,
         continuation: None,
         issued_at: TimestampNs(20),
@@ -146,7 +146,7 @@ fn receipt(
         cost: BudgetVector::builder()
             .bytes(1_024)
             .build()
-            .expect("valid cost"),
+            .map_err(ContractError::from)?,
         completeness: Completeness::Complete,
         artifact_digest: Some(artifact.artifact_digest),
         proof_roots,

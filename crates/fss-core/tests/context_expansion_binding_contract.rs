@@ -57,7 +57,7 @@ fn handle(subject: &str, sequence: u64) -> Result<SemanticHandle, HydrationError
                 .bytes(256)
                 .storage_operations(1)
                 .build()
-                .expect("valid budget"),
+                .map_err(ContractError::from)?,
         ),
         (
             HydrationLevel::H1,
@@ -69,7 +69,7 @@ fn handle(subject: &str, sequence: u64) -> Result<SemanticHandle, HydrationError
                 .storage_operations(1)
                 .privacy_exposure(0.1)
                 .build()
-                .expect("valid budget"),
+                .map_err(ContractError::from)?,
         ),
     ]);
     SemanticHandle::publish(SemanticHandleSpec {
@@ -145,11 +145,7 @@ fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt
         expansion_handles: vec![ExpansionHandle {
             handle: "slot:receipt:knowledge".to_owned(),
             purpose: "Hydrate omitted knowledge context.".to_owned(),
-            estimated_cost: BudgetVector::builder()
-                .tokens(128)
-                .bytes(1_024)
-                .build()
-                .expect("valid budget"),
+            estimated_cost: BudgetVector::builder().tokens(128).bytes(1_024).build()?,
         }],
         selection_frontier_digest: Some(ContentDigest::sha256(b"selection-frontier")),
         stop_reason: CompressionStopReason::TargetBudget,
