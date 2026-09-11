@@ -437,14 +437,14 @@ fn canonical_binary_encoding_digest_algorithm_contract() -> Result<(), ContractE
     // Sha256 tag = 1
     let sha_algo = DigestAlgorithm::Sha256;
     let sha_bytes = sha_algo.canonical_bytes();
-    assert_eq!(sha_bytes, vec![0x01]);
+    assert_eq!(sha_bytes, [0x01]);
     let decoded_sha = DigestAlgorithm::from_canonical_bytes(&sha_bytes)?;
     assert_eq!(decoded_sha, sha_algo);
 
     // Blake3 tag = 2
     let blake_algo = DigestAlgorithm::Blake3;
     let blake_bytes = blake_algo.canonical_bytes();
-    assert_eq!(blake_bytes, vec![0x02]);
+    assert_eq!(blake_bytes, [0x02]);
     let decoded_blake = DigestAlgorithm::from_canonical_bytes(&blake_bytes)?;
     assert_eq!(decoded_blake, blake_algo);
 
