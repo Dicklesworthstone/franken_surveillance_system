@@ -39,11 +39,8 @@ impl CanonicalEncoder {
 
     /// Returns the recorded encoding error if any.
     #[must_use]
-    pub const fn error(&self) -> Option<&ContractError> {
-        match self.error {
-            Some(ref err) => Some(err),
-            None => None,
-        }
+    pub fn error(&self) -> Option<&ContractError> {
+        self.error.as_ref()
     }
 
     /// Appends a one-byte field discriminator.
