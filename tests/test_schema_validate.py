@@ -816,7 +816,6 @@ class TestSchemaConstitution(unittest.TestCase):
             "fss.adapter_compatibility_certificate.v1",
             "fss.agent_affordance.v1",
             "fss.agent_cognitive_envelope.v1",
-            "fss.agent_continuation_cursor.v1",
             "fss.agent_control_plan.v1",
             "fss.agent_execution_episode.v1",
             "fss.agent_feedback_proposal.v1",
@@ -860,12 +859,15 @@ class TestSchemaConstitution(unittest.TestCase):
         actual_declared_only = {s["name"] for s in result["schemas"] if s["status"] == "declared"}
         self.assertTrue(expected_declared_only.issubset(actual_declared_only))
 
-        # Drift detection: misnamed or missing implemented schemas must be findings, not silence
+        # Reconciled canonical-digest domains and continuation cursor: zero unregistered drift
         unreg_findings = [f for f in validator.findings if f.code == schema_validate.CODE_UNREGISTERED_IMPLEMENTED_SCHEMA]
-        unreg_names = {f.json_path.lstrip("#") for f in unreg_findings}
-        self.assertIn("fss.continuation_cursor.v1", unreg_names)
-        self.assertIn("fss.agent_resource_state.v1", unreg_names)
-        self.assertIn("fss.tombstone.v1", unreg_names)
+        self.assertEqual(len(unreg_findings), 0)
+        self.assertEqual(result["unregisteredImplementedCount"], 0)
+        self.assertEqual(result["digestDomainCount"], 13)
+
+        # Continuation cursor is verified implemented
+        implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
+        self.assertIn("fss.agent_continuation_cursor.v1", implemented_names)
 
         # Check implemented vs declared invariants
         for item in result["schemas"]:
@@ -1336,33 +1338,125 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
             self.assertTrue(any(f.code == schema_validate.CODE_UNOWNED_IMPLEMENTED_SCHEMA for f in v.findings))
 
     def test_unregistered_implemented_schemas_drift_detection(self) -> None:
-        """Finding 6: Implemented but unregistered schemas must be detected as drift findings, not silence."""
+        """Finding 6 & bead fss-x4a.6.24: Implemented schemas must be registered; zero unregistered drift in tree."""
         validator = schema_validate.Validator()
         result = schema_validate.validate_schema_constitution(
             repo_root=ROOT,
             schemas_dir=ROOT / "schemas",
             schemas_md_path=ROOT / "registries" / "SCHEMAS.md",
+            digest_domains_path=ROOT / "registries" / "DIGEST_DOMAINS.md",
             architecture_dir=ROOT / "architecture",
             crates_dir=ROOT / "crates",
             validator=validator,
         )
-        self.assertGreater(result["unregisteredImplementedCount"], 0)
-        unreg_names = {s["name"] for s in result["unregisteredImplementedSchemas"]}
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["unregisteredImplementedCount"], 0)
+        self.assertEqual(result["digestDomainCount"], 13)
+        self.assertEqual(result["implementedCount"], 18)
 
-        # Must catch the three misnamed/missing schemas highlighted in review:
-        self.assertIn("fss.continuation_cursor.v1", unreg_names)
-        self.assertIn("fss.agent_resource_state.v1", unreg_names)
-        self.assertIn("fss.tombstone.v1", unreg_names)
-
-        # Must be recorded as typed diagnostic findings on validator, not silence:
-        unreg_finding_codes = {
-            f.json_path.lstrip("#"): f.code
-            for f in validator.findings
+        unreg_findings = [
+            f for f in validator.findings
             if f.code == schema_validate.CODE_UNREGISTERED_IMPLEMENTED_SCHEMA
-        }
-        self.assertIn("fss.continuation_cursor.v1", unreg_finding_codes)
-        self.assertIn("fss.agent_resource_state.v1", unreg_finding_codes)
-        self.assertIn("fss.tombstone.v1", unreg_finding_codes)
+        ]
+        self.assertEqual(len(unreg_findings), 0)
+
+    def test_planted_unregistered_domain_literal_fails(self) -> None:
+        """Planted negative: an unregistered fss.x.v1 literal in Rust code causes validator to fail."""
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            schemas_d = tdp / "schemas"
+            schemas_d.mkdir()
+            reg_d = tdp / "registries"
+            reg_d.mkdir()
+            crates_d = tdp / "crates" / "fss-core" / "src"
+            crates_d.mkdir(parents=True)
+            arch_d = tdp / "architecture"
+            arch_d.mkdir()
+
+            # Create minimal valid schema and registry
+            sf = schemas_d / "sensor_capsule.v1.json"
+            sf.write_text(json.dumps({
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": "https://schemas.fss.org/schemas/sensor_capsule.v1.json",
+                "type": "object",
+                "properties": {"schema": {"const": "fss.sensor_capsule.v1"}},
+                "required": ["schema"],
+            }), encoding="utf-8")
+
+            md = reg_d / "SCHEMAS.md"
+            md.write_text("# Schemas\n| ID | Schema | File | Authority | Compatibility rule |\n|---|---|---|---|---|\n| `SCHEMA-SENSOR-CAPSULE-001` | `fss.sensor_capsule.v1` | `schemas/sensor_capsule.v1.json` | authority | rule |\n", encoding="utf-8")
+
+            # DIGEST_DOMAINS.md with valid domain
+            dd = reg_d / "DIGEST_DOMAINS.md"
+            dd.write_text("# Domains\n| ID | Domain | Scope | Authority | Invariant rule |\n|---|---|---|---|---|\n| `SCHEMA-DOMAIN-CANONICAL-001` | `fss.canonical.v1` | Core | authority | rule |\n", encoding="utf-8")
+
+            # Plant an unregistered fss.*.v1 literal in Rust code
+            rust_file = crates_d / "lib.rs"
+            rust_file.write_text('pub const ROGUE_DOMAIN: &str = "fss.rogue_unregistered_domain.v1";\n', encoding="utf-8")
+
+            v = schema_validate.Validator()
+            res = schema_validate.validate_schema_constitution(
+                repo_root=tdp,
+                schemas_dir=schemas_d,
+                schemas_md_path=md,
+                digest_domains_path=dd,
+                architecture_dir=arch_d,
+                crates_dir=tdp / "crates",
+                validator=v,
+            )
+            self.assertEqual(res["status"], "failed")
+            self.assertEqual(res["unregisteredImplementedCount"], 1)
+            self.assertEqual(res["unregisteredImplementedSchemas"][0]["name"], "fss.rogue_unregistered_domain.v1")
+
+            unreg_errors = [
+                f for f in v.findings
+                if f.code == schema_validate.CODE_UNREGISTERED_IMPLEMENTED_SCHEMA and f.severity == "error"
+            ]
+            self.assertEqual(len(unreg_errors), 1)
+            self.assertIn("fss.rogue_unregistered_domain.v1", unreg_errors[0].message)
+
+    def test_digest_domains_validation_errors(self) -> None:
+        """Verify that duplicate or invalid stable IDs / domain names in DIGEST_DOMAINS.md fail."""
+        with tempfile.TemporaryDirectory() as td:
+            tdp = Path(td)
+            schemas_d = tdp / "schemas"
+            schemas_d.mkdir()
+            reg_d = tdp / "registries"
+            reg_d.mkdir()
+            crates_d = tdp / "crates"
+            crates_d.mkdir()
+            arch_d = tdp / "architecture"
+            arch_d.mkdir()
+
+            md = reg_d / "SCHEMAS.md"
+            md.write_text("# Schemas\n| ID | Schema | File | Authority | Compatibility rule |\n|---|---|---|---|---|\n", encoding="utf-8")
+
+            # Duplicate domain ID and invalid domain name
+            dd = reg_d / "DIGEST_DOMAINS.md"
+            dd.write_text(
+                "# Domains\n| ID | Domain | Scope | Authority | Invariant rule |\n|---|---|---|---|---|\n"
+                "| `INVALID_ID` | `fss.canonical.v1` | Core | auth | rule |\n"
+                "| `SCHEMA-DOMAIN-001` | `invalid-name-shape` | Core | auth | rule |\n"
+                "| `SCHEMA-DOMAIN-002` | `fss.dup.v1` | Core | auth | rule |\n"
+                "| `SCHEMA-DOMAIN-002` | `fss.dup2.v1` | Core | auth | rule |\n",
+                encoding="utf-8",
+            )
+
+            v = schema_validate.Validator()
+            res = schema_validate.validate_schema_constitution(
+                repo_root=tdp,
+                schemas_dir=schemas_d,
+                schemas_md_path=md,
+                digest_domains_path=dd,
+                architecture_dir=arch_d,
+                crates_dir=crates_d,
+                validator=v,
+            )
+            self.assertEqual(res["status"], "failed")
+            codes = {f.code for f in v.findings}
+            self.assertIn(schema_validate.CODE_INVALID_STABLE_ID, codes)
+            self.assertIn(schema_validate.CODE_INVALID_SCHEMA_NAME, codes)
+            self.assertIn(schema_validate.CODE_DUPLICATE_STABLE_ID, codes)
 
 
 if __name__ == "__main__":

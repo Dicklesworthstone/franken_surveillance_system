@@ -23,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SCHEMAS_DIR = ROOT / "schemas"
 DEFAULT_REGISTRIES_DIR = ROOT / "registries"
 DEFAULT_SCHEMAS_MD = DEFAULT_REGISTRIES_DIR / "SCHEMAS.md"
+DEFAULT_DIGEST_DOMAINS_MD = DEFAULT_REGISTRIES_DIR / "DIGEST_DOMAINS.md"
 DEFAULT_ARCHITECTURE_DIR = ROOT / "architecture"
 DEFAULT_CRATES_DIR = ROOT / "crates"
 
@@ -156,6 +157,24 @@ class SchemaDeclaration:
             "compatibilityRule": self.compatibility_rule,
             "status": self.status,
             "owner": self.owner.to_dict() if self.owner else None,
+        }
+
+
+@dataclass(frozen=True)
+class DigestDomainDeclaration:
+    stable_id: str
+    domain_name: str
+    scope: str
+    authority: str
+    invariant_rule: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "stableId": self.stable_id,
+            "domain": self.domain_name,
+            "scope": self.scope,
+            "authority": self.authority,
+            "invariantRule": self.invariant_rule,
         }
 
 
@@ -1227,6 +1246,39 @@ def parse_schemas_md(schemas_md_path: Path) -> list[dict[str, str]]:
     return rows
 
 
+def parse_digest_domains_md(digest_domains_path: Path) -> list[DigestDomainDeclaration]:
+    """Parse table rows from registries/DIGEST_DOMAINS.md."""
+    if not digest_domains_path.is_file():
+        return []
+
+    text = digest_domains_path.read_text(encoding="utf-8")
+    domains: list[DigestDomainDeclaration] = []
+    seen_ids: set[str] = set()
+    seen_domains: set[str] = set()
+
+    for line_no, line in enumerate(text.splitlines(), 1):
+        stripped = line.strip()
+        if not stripped.startswith("|") or stripped.startswith("|---"):
+            continue
+        parts = [p.strip().strip("`") for p in stripped.split("|")[1:-1]]
+        if len(parts) >= 5 and parts[0] != "ID":
+            sid, dname, scope, auth, rule = parts[0], parts[1], parts[2], parts[3], parts[4]
+            if sid in seen_ids or dname in seen_domains:
+                continue
+            seen_ids.add(sid)
+            seen_domains.add(dname)
+            domains.append(
+                DigestDomainDeclaration(
+                    stable_id=sid,
+                    domain_name=dname,
+                    scope=scope,
+                    authority=auth,
+                    invariant_rule=rule,
+                )
+            )
+    return domains
+
+
 def extract_architecture_schema_references(architecture_dir: Path) -> list[tuple[str, str, str]]:
     """Extract schema references from architecture/*.json documents.
     
@@ -1265,6 +1317,7 @@ def validate_schema_constitution(
     architecture_dir: Path = DEFAULT_ARCHITECTURE_DIR,
     crates_dir: Path = DEFAULT_CRATES_DIR,
     validator: Validator | None = None,
+    digest_domains_path: Path | None = None,
     claimed_statuses: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Validate complete schema constitution, uniqueness, references, and declaration vs implementation.
@@ -1405,6 +1458,67 @@ def validate_schema_constitution(
                 except Exception as exc:
                     validator.emit(CODE_MALFORMED_JSON, fpath, "#", f"cannot parse schema json: {exc}")
 
+    # Step 1.5: Parse & validate canonical digest domains from DIGEST_DOMAINS.md
+    d_path = digest_domains_path or (schemas_md_path.parent / "DIGEST_DOMAINS.md")
+    registered_domains: list[DigestDomainDeclaration] = []
+    seen_domain_ids: dict[str, str] = {}
+    seen_domain_names: dict[str, str] = {}
+
+    if d_path.is_file():
+        text = d_path.read_text(encoding="utf-8")
+        for line_no, line in enumerate(text.splitlines(), 1):
+            stripped = line.strip()
+            if not stripped.startswith("|") or stripped.startswith("|---"):
+                continue
+            parts = [p.strip().strip("`") for p in stripped.split("|")[1:-1]]
+            if len(parts) >= 5 and parts[0] != "ID":
+                sid, dname, scope, auth, rule = parts[0], parts[1], parts[2], parts[3], parts[4]
+                if not STABLE_ID_PATTERN.match(sid):
+                    validator.emit(
+                        CODE_INVALID_STABLE_ID,
+                        d_path.as_posix(),
+                        f"#{line_no}/ID",
+                        f"invalid stable ID syntax: '{sid}' (must match {STABLE_ID_PATTERN.pattern})",
+                    )
+                if not SCHEMA_NAME_PATTERN.match(dname):
+                    validator.emit(
+                        CODE_INVALID_SCHEMA_NAME,
+                        d_path.as_posix(),
+                        f"#{line_no}/Domain",
+                        f"invalid domain name syntax: '{dname}' (must match {SCHEMA_NAME_PATTERN.pattern})",
+                    )
+                if sid in seen_ids or sid in seen_domain_ids:
+                    validator.emit(
+                        CODE_DUPLICATE_STABLE_ID,
+                        d_path.as_posix(),
+                        f"#{line_no}/ID",
+                        f"duplicate stable ID '{sid}' in {d_path.name}",
+                    )
+                else:
+                    seen_domain_ids[sid] = str(line_no)
+
+                if dname in seen_names or dname in seen_domain_names:
+                    validator.emit(
+                        CODE_DUPLICATE_SCHEMA_NAME,
+                        d_path.as_posix(),
+                        f"#{line_no}/Domain",
+                        f"duplicate domain name '{dname}' in {d_path.name}",
+                    )
+                else:
+                    seen_domain_names[dname] = str(line_no)
+
+                registered_domains.append(
+                    DigestDomainDeclaration(
+                        stable_id=sid,
+                        domain_name=dname,
+                        scope=scope,
+                        authority=auth,
+                        invariant_rule=rule,
+                    )
+                )
+
+    all_registered_names = set(seen_names) | set(seen_domain_names)
+
     # Step 2: Check for unregistered schema files on disk
     if schemas_dir.is_dir():
         for sf in sorted(schemas_dir.glob("*.json")):
@@ -1423,7 +1537,7 @@ def validate_schema_constitution(
     # Step 3: Check architecture schema references
     arch_refs = extract_architecture_schema_references(architecture_dir)
     for arch_file, ptr, ref_sname in arch_refs:
-        if ref_sname not in seen_names:
+        if ref_sname not in all_registered_names:
             validator.emit(
                 CODE_UNDECLARED_SCHEMA_REFERENCE,
                 arch_file,
@@ -1524,16 +1638,16 @@ def validate_schema_constitution(
                                 f"schema '{claim_sname}' claimed owner type '{claimed_type}' does not match actual Rust owner '{actual_owner.type_name}'",
                             )
 
-    # Step 5.5: Detect drift - schemas implemented in Rust but not registered in SCHEMAS.md
+    # Step 5.5: Detect drift - schemas or digest domains implemented in Rust but not registered
     unregistered_decls: list[dict[str, Any]] = []
     for unreg_sname, unreg_owner in sorted(rust_owners.items()):
-        if unreg_sname not in seen_names:
+        if unreg_sname not in all_registered_names:
             validator.emit(
                 CODE_UNREGISTERED_IMPLEMENTED_SCHEMA,
                 unreg_owner.file,
                 f"#{unreg_sname}",
-                f"schema '{unreg_sname}' is implemented in Rust ({unreg_owner.file}:{unreg_owner.line}) but not declared in registry {schemas_md_path.name}",
-                severity="warning",
+                f"identifier '{unreg_sname}' is implemented in Rust ({unreg_owner.file}:{unreg_owner.line}) but not declared in registries (neither {schemas_md_path.name} nor {d_path.name})",
+                severity="error",
             )
             unregistered_decls.append({
                 "name": unreg_sname,
@@ -1544,9 +1658,16 @@ def validate_schema_constitution(
     sorted_decls = sorted(declarations, key=lambda d: d.stable_id)
     schemas_md_raw = schemas_md_path.read_bytes() if schemas_md_path.is_file() else b""
     schemas_md_digest = "sha256:" + hashlib.sha256(schemas_md_raw).hexdigest()
+
+    sorted_domains = sorted(registered_domains, key=lambda d: d.stable_id)
+    digest_domains_raw = d_path.read_bytes() if d_path.is_file() else b""
+    digest_domains_digest = "sha256:" + hashlib.sha256(digest_domains_raw).hexdigest()
+
     const_payload = {
         "schemasMdDigest": schemas_md_digest,
+        "digestDomainsMdDigest": digest_domains_digest,
         "declarations": [d.to_dict() for d in sorted_decls],
+        "digestDomains": [d.to_dict() for d in sorted_domains],
     }
     constitution_digest = "sha256:" + hashlib.sha256(canonical_json_bytes(const_payload)).hexdigest()
 
@@ -1559,6 +1680,8 @@ def validate_schema_constitution(
         "implementedCount": sum(1 for d in declarations if d.status == "implemented"),
         "declaredOnlyCount": sum(1 for d in declarations if d.status == "declared"),
         "architectureReferenceCount": len(arch_refs),
+        "digestDomainCount": len(registered_domains),
+        "digestDomains": [d.to_dict() for d in sorted_domains],
         "unregisteredImplementedCount": len(unregistered_decls),
         "unregisteredImplementedSchemas": unregistered_decls,
         "constitutionDigest": constitution_digest,
@@ -1571,6 +1694,7 @@ def audit(
     target_file: Path | None = None,
     registries_dir: Path = DEFAULT_REGISTRIES_DIR,
     schemas_md_path: Path | None = None,
+    digest_domains_path: Path | None = None,
     architecture_dir: Path = DEFAULT_ARCHITECTURE_DIR,
     crates_dir: Path = DEFAULT_CRATES_DIR,
     check_constitution: bool = True,
@@ -1616,10 +1740,12 @@ def audit(
     constitution_report: dict[str, Any] | None = None
     if effective_check_constitution:
         s_md = schemas_md_path or (registries_dir / "SCHEMAS.md")
+        d_md = digest_domains_path or (registries_dir / "DIGEST_DOMAINS.md")
         constitution_report = validate_schema_constitution(
             repo_root=ROOT,
             schemas_dir=schemas_dir,
             schemas_md_path=s_md,
+            digest_domains_path=d_md,
             architecture_dir=architecture_dir,
             crates_dir=crates_dir,
             validator=validator,
@@ -1661,7 +1787,7 @@ def audit(
     schema_count = len(catalog.schemas_by_relative)
     used_work_units = schema_count + validator.reference_count
     if constitution_report is not None:
-        used_work_units += constitution_report.get("totalDeclared", 0)
+        used_work_units += constitution_report.get("totalDeclared", 0) + constitution_report.get("digestDomainCount", 0)
 
     report: dict[str, Any] = {
         "schema": "fss.schema_validation_receipt.v1",
@@ -1728,6 +1854,7 @@ def main() -> int:
     parser.add_argument("--schemas-dir", type=Path, default=DEFAULT_SCHEMAS_DIR, help="Path to schemas directory")
     parser.add_argument("--registries-dir", type=Path, default=DEFAULT_REGISTRIES_DIR, help="Path to registries directory")
     parser.add_argument("--schemas-md", type=Path, default=None, help="Path to SCHEMAS.md registry file")
+    parser.add_argument("--digest-domains-md", type=Path, default=None, help="Path to DIGEST_DOMAINS.md registry file")
     parser.add_argument("--architecture-dir", type=Path, default=DEFAULT_ARCHITECTURE_DIR, help="Path to architecture directory")
     parser.add_argument("--crates-dir", type=Path, default=DEFAULT_CRATES_DIR, help="Path to crates directory")
     parser.add_argument("--schema", type=Path, default=None, help="Validate specific schema file")
@@ -1746,6 +1873,7 @@ def main() -> int:
             target_file=args.schema,
             registries_dir=args.registries_dir,
             schemas_md_path=args.schemas_md,
+            digest_domains_path=args.digest_domains_md,
             architecture_dir=args.architecture_dir,
             crates_dir=args.crates_dir,
             check_constitution=not args.skip_constitution,
@@ -1788,10 +1916,14 @@ def main() -> int:
                 c_dec = const.get("totalDeclared", 0)
                 c_imp = const.get("implementedCount", 0)
                 c_only = const.get("declaredOnlyCount", 0)
-                print(f"constitution: {c_dec} declared ({c_imp} implemented, {c_only} declared-only), 0 unowned")
+                c_dom = const.get("digestDomainCount", 0)
+                c_unreg = const.get("unregisteredImplementedCount", 0)
+                print(f"constitution: {c_dec} declared ({c_imp} implemented, {c_only} declared-only), 0 unowned, {c_dom} digest domains, {c_unreg} unregistered")
                 print(f"constitutionDeclared={c_dec}")
                 print(f"constitutionImplemented={c_imp}")
                 print(f"constitutionDeclaredOnly={c_only}")
+                print(f"constitutionDigestDomains={c_dom}")
+                print(f"constitutionUnregistered={c_unreg}")
                 if "constitutionDigest" in report:
                     print(f"constitutionDigest={report['constitutionDigest']}")
             print(f"schemaCount={schema_count}")

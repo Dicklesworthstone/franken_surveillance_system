@@ -287,7 +287,7 @@ impl ContinuationCursor {
     }
 
     fn encode_body(&self, encoder: &mut CanonicalEncoder) {
-        encoder.text("fss.continuation_cursor.v1");
+        encoder.text("fss.agent_continuation_cursor.v1");
         self.scope.encode_canonical(encoder);
         encoder.text(&self.stream_id);
         self.contract_basis.encode_canonical(encoder);
