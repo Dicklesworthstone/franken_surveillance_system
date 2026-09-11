@@ -3,7 +3,7 @@
 use core::fmt;
 use core::str::FromStr;
 
-use crate::ContractError;
+use crate::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContractError};
 
 const SHA256_INITIAL: [u32; 8] = [
     0x6a09_e667,
@@ -103,6 +103,43 @@ impl DigestAlgorithm {
     }
 }
 
+impl fmt::Display for DigestAlgorithm {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for DigestAlgorithm {
+    type Err = ContractError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "sha256" => Ok(Self::Sha256),
+            "blake3" => Ok(Self::Blake3),
+            _ => Err(ContractError::UnsupportedDigestAlgorithm),
+        }
+    }
+}
+
+impl CanonicalEncode for DigestAlgorithm {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.tag(match self {
+            Self::Sha256 => 1,
+            Self::Blake3 => 2,
+        });
+    }
+}
+
+impl CanonicalDecode for DigestAlgorithm {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.tag()? {
+            1 => Ok(Self::Sha256),
+            2 => Ok(Self::Blake3),
+            _ => Err(ContractError::UnsupportedDigestAlgorithm),
+        }
+    }
+}
+
 /// A 256-bit algorithm-qualified content digest.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ContentDigest {
@@ -189,87 +226,162 @@ impl FromStr for ContentDigest {
     }
 }
 
-/// Computes SHA-256 without native bindings or third-party crates.
+/// Incremental streaming SHA-256 hasher without heap allocations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Sha256Hasher {
+    state: [u32; 8],
+    buffer: [u8; 64],
+    buffer_len: usize,
+    total_bytes: u64,
+}
+
+impl Default for Sha256Hasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Sha256Hasher {
+    /// Creates an incremental SHA-256 hasher initialized to FIPS 180-4 standard state.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            state: SHA256_INITIAL,
+            buffer: [0_u8; 64],
+            buffer_len: 0,
+            total_bytes: 0,
+        }
+    }
+
+    /// Feeds input bytes into the streaming hasher.
+    pub fn update(&mut self, mut data: &[u8]) {
+        self.total_bytes = self.total_bytes.wrapping_add(data.len() as u64);
+
+        if self.buffer_len > 0 {
+            let to_fill = 64 - self.buffer_len;
+            if data.len() < to_fill {
+                self.buffer[self.buffer_len..self.buffer_len + data.len()].copy_from_slice(data);
+                self.buffer_len += data.len();
+                return;
+            }
+            self.buffer[self.buffer_len..64].copy_from_slice(&data[..to_fill]);
+            process_block(&mut self.state, &self.buffer);
+            self.buffer_len = 0;
+            data = &data[to_fill..];
+        }
+
+        let (blocks, remainder) = data.as_chunks::<64>();
+        for block in blocks {
+            process_block(&mut self.state, block);
+        }
+
+        if !remainder.is_empty() {
+            self.buffer[..remainder.len()].copy_from_slice(remainder);
+            self.buffer_len = remainder.len();
+        }
+    }
+
+    /// Finalizes the hash computation, applying FIPS 180-4 padding and returning the 32-byte digest.
+    #[must_use]
+    pub fn finalize(mut self) -> [u8; 32] {
+        let bit_len = (self.total_bytes as u128).wrapping_mul(8);
+        let encoded_bit_len = (bit_len as u64).to_be_bytes();
+
+        self.buffer[self.buffer_len] = 0x80;
+        self.buffer_len += 1;
+
+        if self.buffer_len > 56 {
+            self.buffer[self.buffer_len..64].fill(0);
+            process_block(&mut self.state, &self.buffer);
+            self.buffer = [0_u8; 64];
+            self.buffer_len = 0;
+        }
+
+        self.buffer[self.buffer_len..56].fill(0);
+        self.buffer[56..64].copy_from_slice(&encoded_bit_len);
+        process_block(&mut self.state, &self.buffer);
+
+        let mut output = [0_u8; 32];
+        for (index, word) in self.state.iter().enumerate() {
+            let offset = index * 4;
+            output[offset..offset + 4].copy_from_slice(&word.to_be_bytes());
+        }
+        output
+    }
+
+    /// Computes the SHA-256 digest of input in one shot without heap allocations.
+    #[must_use]
+    pub fn digest(input: &[u8]) -> [u8; 32] {
+        let mut hasher = Self::new();
+        hasher.update(input);
+        hasher.finalize()
+    }
+}
+
+/// Computes SHA-256 without native bindings, third-party crates, or heap allocations.
 #[must_use]
 pub fn sha256(input: &[u8]) -> [u8; 32] {
-    let bit_len = (input.len() as u128).wrapping_mul(8);
-    let encoded_bit_len = (bit_len as u64).to_be_bytes();
-    let mut padded = Vec::with_capacity(input.len().saturating_add(72));
-    padded.extend_from_slice(input);
-    padded.push(0x80);
-    while padded.len() % 64 != 56 {
-        padded.push(0);
-    }
-    padded.extend_from_slice(&encoded_bit_len);
+    Sha256Hasher::digest(input)
+}
 
-    let mut state = SHA256_INITIAL;
+fn process_block(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut schedule = [0_u32; 64];
-    let (blocks, _) = padded.as_chunks::<64>();
-    for block in blocks {
-        let (words, _) = block.as_chunks::<4>();
-        for (word, chunk) in schedule.iter_mut().take(16).zip(words) {
-            *word = u32::from_be_bytes(*chunk);
-        }
-        for index in 16..64 {
-            let s0 = schedule[index - 15].rotate_right(7)
-                ^ schedule[index - 15].rotate_right(18)
-                ^ (schedule[index - 15] >> 3);
-            let s1 = schedule[index - 2].rotate_right(17)
-                ^ schedule[index - 2].rotate_right(19)
-                ^ (schedule[index - 2] >> 10);
-            schedule[index] = schedule[index - 16]
-                .wrapping_add(s0)
-                .wrapping_add(schedule[index - 7])
-                .wrapping_add(s1);
-        }
-
-        let mut a = state[0];
-        let mut b = state[1];
-        let mut c = state[2];
-        let mut d = state[3];
-        let mut e = state[4];
-        let mut f = state[5];
-        let mut g = state[6];
-        let mut h = state[7];
-
-        for index in 0..64 {
-            let sum1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let choice = (e & f) ^ ((!e) & g);
-            let temporary1 = h
-                .wrapping_add(sum1)
-                .wrapping_add(choice)
-                .wrapping_add(SHA256_ROUND[index])
-                .wrapping_add(schedule[index]);
-            let sum0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let majority = (a & b) ^ (a & c) ^ (b & c);
-            let temporary2 = sum0.wrapping_add(majority);
-
-            h = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(temporary1);
-            d = c;
-            c = b;
-            b = a;
-            a = temporary1.wrapping_add(temporary2);
-        }
-
-        state[0] = state[0].wrapping_add(a);
-        state[1] = state[1].wrapping_add(b);
-        state[2] = state[2].wrapping_add(c);
-        state[3] = state[3].wrapping_add(d);
-        state[4] = state[4].wrapping_add(e);
-        state[5] = state[5].wrapping_add(f);
-        state[6] = state[6].wrapping_add(g);
-        state[7] = state[7].wrapping_add(h);
+    let (words, _) = block.as_chunks::<4>();
+    for (word, chunk) in schedule.iter_mut().take(16).zip(words) {
+        *word = u32::from_be_bytes(*chunk);
+    }
+    for index in 16..64 {
+        let s0 = schedule[index - 15].rotate_right(7)
+            ^ schedule[index - 15].rotate_right(18)
+            ^ (schedule[index - 15] >> 3);
+        let s1 = schedule[index - 2].rotate_right(17)
+            ^ schedule[index - 2].rotate_right(19)
+            ^ (schedule[index - 2] >> 10);
+        schedule[index] = schedule[index - 16]
+            .wrapping_add(s0)
+            .wrapping_add(schedule[index - 7])
+            .wrapping_add(s1);
     }
 
-    let mut output = [0_u8; 32];
-    for (index, word) in state.iter().enumerate() {
-        let offset = index * 4;
-        output[offset..offset + 4].copy_from_slice(&word.to_be_bytes());
+    let mut a = state[0];
+    let mut b = state[1];
+    let mut c = state[2];
+    let mut d = state[3];
+    let mut e = state[4];
+    let mut f = state[5];
+    let mut g = state[6];
+    let mut h = state[7];
+
+    for index in 0..64 {
+        let sum1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let choice = (e & f) ^ ((!e) & g);
+        let temporary1 = h
+            .wrapping_add(sum1)
+            .wrapping_add(choice)
+            .wrapping_add(SHA256_ROUND[index])
+            .wrapping_add(schedule[index]);
+        let sum0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let majority = (a & b) ^ (a & c) ^ (b & c);
+        let temporary2 = sum0.wrapping_add(majority);
+
+        h = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(temporary1);
+        d = c;
+        c = b;
+        b = a;
+        a = temporary1.wrapping_add(temporary2);
     }
-    output
+
+    state[0] = state[0].wrapping_add(a);
+    state[1] = state[1].wrapping_add(b);
+    state[2] = state[2].wrapping_add(c);
+    state[3] = state[3].wrapping_add(d);
+    state[4] = state[4].wrapping_add(e);
+    state[5] = state[5].wrapping_add(f);
+    state[6] = state[6].wrapping_add(g);
+    state[7] = state[7].wrapping_add(h);
 }
 
 fn is_lower_hex(byte: u8) -> bool {

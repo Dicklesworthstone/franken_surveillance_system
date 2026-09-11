@@ -46,7 +46,7 @@ pub use contract::{
     RuntimeOutcome,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
-pub use digest::{ContentDigest, DigestAlgorithm, sha256};
+pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};
 pub use effect::{
     EffectIntent, EffectJournal, EffectState, Obligation, ObligationState, OperationReceipt,
 };
@@ -78,4 +78,7 @@ pub use projection::{
     CriticalPreservation, ExpansionHandle, ResourcePressure, ResourceState, SemanticContextPack,
     reference_token_count,
 };
-pub use time::{CaptureInterval, TimestampNs};
+pub use time::{
+    CaptureInterval, CaptureIntervalWithBasis, IntervalContainment, IntervalUnion,
+    TemporalPrecedence, TimeIntervalError, TimestampNs,
+};
