@@ -284,6 +284,7 @@ fn test_malformed_value_leaks_token_in_diagnostic() {
         option: "--repeat".to_owned(),
         value: "my_secret_token_12345".to_owned(),
         reason: "--repeat requires a positive integer".to_owned(),
+        command: Some("replay".to_owned()),
         index: 3,
     };
     let (human, json) = fss_cli::render_diagnostic(&err, "fss-lab", Some("replay"));
@@ -454,7 +455,7 @@ fn real_process_execution_tests() -> Result<(), Box<dyn std::error::Error>> {
 
 fn assert_valid_json_payload(json_str: &str) {
     let validation_script = r#"
-import json, os, sys
+import json, os, subprocess, sys, re
 
 candidates = [
     'schemas/cli_diagnostic.v1.json',
@@ -464,20 +465,32 @@ candidates = [
 ]
 schema_file = next((c for c in candidates if os.path.isfile(c)), None)
 assert schema_file, f'could not find schemas/cli_diagnostic.v1.json in {candidates}'
+
+# Locate scripts/schema_validate.py
+validator_candidates = [
+    'scripts/schema_validate.py',
+    '../../scripts/schema_validate.py',
+    '../scripts/schema_validate.py',
+    os.path.join(os.environ.get('CARGO_MANIFEST_DIR', '.'), '../../scripts/schema_validate.py'),
+]
+validator_script = next((c for c in validator_candidates if os.path.isfile(c)), None)
+assert validator_script, f'could not find scripts/schema_validate.py in {validator_candidates}'
+
+# Validate schema using repository stdlib schema_validate.py
+schema_res = subprocess.run(
+    [sys.executable, validator_script, '--schema', schema_file],
+    capture_output=True,
+    text=True,
+)
+assert schema_res.returncode == 0, f'schema_validate.py failed: {schema_res.stderr}'
+
 with open(schema_file) as f:
     schema = json.load(f)
 
 raw = sys.stdin.read()
 instance = json.loads(raw)
 
-# Try jsonschema library validation if present
-try:
-    import jsonschema
-    jsonschema.validate(instance=instance, schema=schema)
-except ImportError:
-    pass
-
-# Strictly validate schema structure stdlib-only
+# Strictly validate instance against schema stdlib-only
 assert isinstance(instance, dict), "instance must be an object"
 required = schema.get("required", [])
 for req in required:
@@ -491,6 +504,10 @@ for k, v in instance.items():
     prop = schema.get("properties", {}).get(k, {})
     if "const" in prop:
         assert v == prop["const"], f"expected const {prop['const']}, got {v}"
+    if "pattern" in prop and isinstance(v, str):
+        assert re.search(prop["pattern"], v), f"field {k}={v!r} does not match pattern {prop['pattern']}"
+    if "maxLength" in prop and isinstance(v, str):
+        assert len(v) <= prop["maxLength"], f"field {k}={v!r} exceeds maxLength {prop['maxLength']}"
     if "type" in prop:
         expected_types = prop["type"] if isinstance(prop["type"], list) else [prop["type"]]
         match = False
@@ -502,22 +519,28 @@ for k, v in instance.items():
         assert match, f"field {k}={v!r} does not match type {expected_types}"
 "#;
 
-    let mut child = Command::new("python3")
+    let child = Command::new("python3")
         .args(["-c", validation_script])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
-        .spawn()
-        .expect("spawn python validator");
+        .spawn();
+    assert!(child.is_ok(), "failed to spawn python validator");
+    let Ok(mut child) = child else {
+        return;
+    };
 
     if let Some(mut stdin) = child.stdin.take() {
         use std::io::Write;
-        stdin
-            .write_all(json_str.as_bytes())
-            .expect("write to python stdin");
+        let write_res = stdin.write_all(json_str.as_bytes());
+        assert!(write_res.is_ok(), "failed to write to python stdin");
     }
 
-    let output = child.wait_with_output().expect("wait for python validator");
+    let output = child.wait_with_output();
+    assert!(output.is_ok(), "failed to wait for python validator");
+    let Ok(output) = output else {
+        return;
+    };
     assert!(
         output.status.success(),
         "rendered diagnostic failed schema validation against schemas/cli_diagnostic.v1.json:\n{json_str}\nstderr: {}",
@@ -543,7 +566,7 @@ fn test_unsalted_digest_allows_preimage_brute_force_of_short_secret() {
         !redacted.contains("sha256:"),
         "Unsalted SHA-256 digest allowed preimage search of short secret: {redacted}"
     );
-    assert_eq!(redacted, "[redacted:6bytes]");
+    assert_eq!(redacted, "[redacted]");
 }
 
 #[test]
@@ -579,16 +602,17 @@ fn test_unknown_option_with_unregistered_sensitive_flag_leaks_secret() {
 }
 
 #[test]
-fn test_sensitive_standalone_flags_redact_next_token() {
+fn test_sensitive_standalone_flags_redact_next_token() -> Result<(), Box<dyn std::error::Error>> {
     let args = [
         std::ffi::OsString::from("status"),
         std::ffi::OsString::from("--password"),
         std::ffi::OsString::from("supersecret123"),
     ];
-    let tokens = fss_cli::tokenize_os_args(args).expect("valid tokens");
+    let tokens = fss_cli::tokenize_os_args(args)?;
     assert_eq!(tokens.len(), 3);
     assert_eq!(tokens[1].raw, "--password");
-    assert_eq!(tokens[2].raw, "[redacted:14bytes]");
+    assert_eq!(tokens[2].raw, "[redacted]");
+    Ok(())
 }
 
 #[test]
@@ -600,4 +624,112 @@ fn test_diagnostic_json_validates_against_schema_file() {
     };
     let (_, json_str) = fss_cli::render_diagnostic(&err, "fss", None);
     assert_valid_json_payload(&json_str);
+}
+
+#[test]
+fn test_diagnostic_command_field_leaks_secret_in_context_command() {
+    let err = fss_cli::CliError::UnknownOption {
+        option: "--verbose".to_owned(),
+        command: Some("my_secret_token_12345".to_owned()),
+        index: 1,
+    };
+    let (human, json) = fss_cli::render_diagnostic(&err, "fss", None);
+    assert!(
+        !human.contains("my_secret_token_12345"),
+        "human diagnostic leaked secret command token: {human}"
+    );
+    assert!(
+        !json.contains("my_secret_token_12345"),
+        "JSON diagnostic leaked secret command token in 'command' field: {json}"
+    );
+}
+
+#[test]
+fn test_redaction_does_not_leak_exact_secret_byte_length() {
+    let secret_pin = "849201";
+    let redacted = fss_cli::redact_value_or_digest(secret_pin);
+    assert_ne!(
+        redacted, "[redacted:6bytes]",
+        "redaction leaks exact byte length of secret token"
+    );
+    assert_eq!(redacted, "[redacted]");
+}
+
+#[test]
+fn test_option_value_that_is_option_flag_reports_missing_value() {
+    let args = [
+        std::ffi::OsString::from("replay"),
+        std::ffi::OsString::from("quiet"),
+        std::ffi::OsString::from("--repeat"),
+        std::ffi::OsString::from("--token=secret123"),
+    ];
+    let res = fss_cli::parse_lab_args(args);
+    assert!(
+        res.is_err(),
+        "expected error for flag passed as option value"
+    );
+    let Err(err) = res else {
+        return;
+    };
+    assert_eq!(
+        err.error_id(),
+        fss_cli::ERR_CLI_MISSING_VALUE,
+        "expected MissingValue for --repeat when followed by another option flag, got: {err:?}"
+    );
+}
+
+#[test]
+fn test_bearer_and_authorization_standalone_flags_redact_next_token()
+-> Result<(), Box<dyn std::error::Error>> {
+    let args = [
+        std::ffi::OsString::from("status"),
+        std::ffi::OsString::from("--bearer"),
+        std::ffi::OsString::from("supersecret_jwt_token"),
+    ];
+    let tokens = fss_cli::tokenize_os_args(args)?;
+    assert_eq!(
+        tokens[2].raw, "[redacted]",
+        "--bearer standalone flag failed to redact following secret token"
+    );
+    let auth_args = [
+        std::ffi::OsString::from("status"),
+        std::ffi::OsString::from("--authorization"),
+        std::ffi::OsString::from("secret_auth_header"),
+    ];
+    let auth_tokens = fss_cli::tokenize_os_args(auth_args)?;
+    assert_eq!(
+        auth_tokens[2].raw, "[redacted]",
+        "--authorization standalone flag failed to redact following secret token"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_hydration_scenarios_are_safe_to_echo() {
+    for scenario in &fss_cli::VALID_HYDRATION_SCENARIOS {
+        assert!(
+            fss_cli::is_safe_to_echo(scenario),
+            "Registered hydration scenario `{scenario}` is missing from SAFE_IDENTIFIERS"
+        );
+    }
+}
+
+#[test]
+fn test_malformed_value_under_known_subcommand_preserves_command_identity() {
+    let args = [
+        std::ffi::OsString::from("replay"),
+        std::ffi::OsString::from("quiet"),
+        std::ffi::OsString::from("--repeat"),
+        std::ffi::OsString::from("not_a_number"),
+    ];
+    let res = fss_cli::parse_lab_args(args);
+    assert!(res.is_err(), "expected error for not_a_number repeat value");
+    let Err(err) = res else {
+        return;
+    };
+    assert_eq!(
+        err.command_name(),
+        Some("replay"),
+        "MalformedValue under `replay` must preserve the command name"
+    );
 }

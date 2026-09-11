@@ -53,7 +53,7 @@ pub fn render_diagnostic(
     );
 
     let cmd_json = match effective_command {
-        Some(cmd) => format!("\"{}\"", escape_json_str(&redact_argument(cmd))),
+        Some(cmd) => format!("\"{}\"", escape_json_str(&redact_value_or_digest(cmd))),
         None => "null".to_owned(),
     };
 

@@ -98,6 +98,13 @@ pub fn parse_hydration_tokens(tokens: &[ArgToken]) -> Result<HydrationAction, Cl
                 });
             }
             let val_tok = &tokens[idx + 1];
+            if val_tok.as_str().starts_with('-') {
+                return Err(CliError::MissingValue {
+                    option: "--scenario".to_owned(),
+                    command: None,
+                    expected: "scenario name (success, budget-fallback, privacy-denied, expired, h4-denied, h4-qualified, or all)".to_owned(),
+                });
+            }
             validate_hydration_scenario(&val_tok.raw, val_tok.index)?;
             scenario = Some(val_tok.raw.clone());
             idx += 2;
@@ -159,6 +166,7 @@ fn validate_hydration_scenario(name: &str, index: usize) -> Result<(), CliError>
                 "unknown scenario; expected {}",
                 VALID_HYDRATION_SCENARIOS.join(", ")
             ),
+            command: None,
             index,
         })
     }

@@ -144,6 +144,8 @@ pub enum CliError {
         value: String,
         /// Explanation of what was expected.
         reason: String,
+        /// Command context.
+        command: Option<String>,
         /// Index of the argument in argv.
         index: usize,
     },
@@ -224,7 +226,7 @@ impl CliError {
                 if let Some(cmd) = command {
                     format!(
                         "option `{safe_opt}` is not supported for command `{}`",
-                        redact_argument(cmd)
+                        redact_value_or_digest(cmd)
                     )
                 } else {
                     format!("option `{safe_opt}` is not recognized")
@@ -244,11 +246,21 @@ impl CliError {
                     redact_argument(option)
                 )
             }
-            Self::MalformedValue { option, reason, .. } => {
-                format!(
-                    "provide a valid value for `{}`: {reason}",
-                    redact_argument(option)
-                )
+            Self::MalformedValue {
+                option,
+                reason,
+                command,
+                ..
+            } => {
+                let safe_opt = redact_argument(option);
+                if let Some(cmd) = command {
+                    format!(
+                        "provide a valid value for `{safe_opt}` for command `{}`: {reason}",
+                        redact_value_or_digest(cmd)
+                    )
+                } else {
+                    format!("provide a valid value for `{safe_opt}`: {reason}")
+                }
             }
             Self::InvalidUnicode { index, .. } => {
                 format!(
@@ -262,7 +274,7 @@ impl CliError {
                 if let Some(cmd) = command {
                     format!(
                         "command `{}` does not accept positional argument `{safe_arg}`",
-                        redact_argument(cmd)
+                        redact_value_or_digest(cmd)
                     )
                 } else {
                     format!("unexpected positional argument `{safe_arg}`")
@@ -275,7 +287,7 @@ impl CliError {
                 if let Some(cmd) = command {
                     format!(
                         "command `{}` grammar was fully satisfied; remove trailing argument `{safe_arg}`",
-                        redact_argument(cmd)
+                        redact_value_or_digest(cmd)
                     )
                 } else {
                     format!(
@@ -294,9 +306,10 @@ impl CliError {
             Self::UnknownOption { command, .. }
             | Self::MissingValue { command, .. }
             | Self::DuplicateOption { command, .. }
+            | Self::MalformedValue { command, .. }
             | Self::UnexpectedPositional { command, .. }
             | Self::TrailingArgument { command, .. } => command.as_deref(),
-            Self::MalformedValue { .. } | Self::InvalidUnicode { .. } => None,
+            Self::InvalidUnicode { .. } => None,
         }
     }
 
@@ -353,7 +366,7 @@ impl fmt::Display for CliError {
                     write!(
                         f,
                         "unknown option `{safe_opt}` for command `{}`",
-                        redact_argument(cmd)
+                        redact_value_or_digest(cmd)
                     )
                 } else {
                     write!(f, "unknown option `{safe_opt}`")
@@ -375,14 +388,20 @@ impl fmt::Display for CliError {
                 option,
                 value,
                 reason,
+                command,
                 ..
             } => {
-                write!(
-                    f,
-                    "malformed value `{}` for `{}`: {reason}",
-                    redact_value_or_digest(value),
-                    redact_argument(option)
-                )
+                let safe_opt = redact_argument(option);
+                let safe_val = redact_value_or_digest(value);
+                if let Some(cmd) = command {
+                    write!(
+                        f,
+                        "malformed value `{safe_val}` for `{safe_opt}` for command `{}`: {reason}",
+                        redact_value_or_digest(cmd)
+                    )
+                } else {
+                    write!(f, "malformed value `{safe_val}` for `{safe_opt}`: {reason}")
+                }
             }
             Self::InvalidUnicode {
                 index,
@@ -402,7 +421,7 @@ impl fmt::Display for CliError {
                     write!(
                         f,
                         "unexpected positional argument `{safe_arg}` for command `{}`",
-                        redact_argument(cmd)
+                        redact_value_or_digest(cmd)
                     )
                 } else {
                     write!(f, "unexpected positional argument `{safe_arg}`")
@@ -419,7 +438,7 @@ impl fmt::Display for CliError {
                     write!(
                         f,
                         "unexpected trailing argument `{safe_arg}` at index {index} for command `{}`",
-                        redact_argument(cmd)
+                        redact_value_or_digest(cmd)
                     )
                 } else {
                     write!(

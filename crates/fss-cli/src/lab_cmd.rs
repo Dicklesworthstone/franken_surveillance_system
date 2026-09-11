@@ -188,7 +188,14 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
                 });
             }
             let val_tok = &tokens[idx + 1];
-            repeat = parse_repeat_value(&val_tok.raw, val_tok.index)?;
+            if val_tok.as_str().starts_with('-') {
+                return Err(CliError::MissingValue {
+                    option: "--repeat".to_owned(),
+                    command: Some("replay".to_owned()),
+                    expected: "positive integer between 2 and 10000".to_owned(),
+                });
+            }
+            repeat = parse_repeat_value(&val_tok.raw, val_tok.index, Some("replay"))?;
             idx += 2;
         } else if let Some(val_str) = s.strip_prefix("--repeat=") {
             if seen_repeat {
@@ -199,7 +206,7 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
                 });
             }
             seen_repeat = true;
-            repeat = parse_repeat_value(val_str, tok.index)?;
+            repeat = parse_repeat_value(val_str, tok.index, Some("replay"))?;
             idx += 1;
         } else if s.starts_with('-') {
             return Err(CliError::UnknownOption {
@@ -235,11 +242,12 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
     }
 }
 
-fn parse_repeat_value(val: &str, index: usize) -> Result<usize, CliError> {
+fn parse_repeat_value(val: &str, index: usize, command: Option<&str>) -> Result<usize, CliError> {
     let parsed = val.parse::<usize>().map_err(|_| CliError::MalformedValue {
         option: "--repeat".to_owned(),
         value: val.to_owned(),
         reason: "--repeat requires a positive integer".to_owned(),
+        command: command.map(ToOwned::to_owned),
         index,
     })?;
 
@@ -248,6 +256,7 @@ fn parse_repeat_value(val: &str, index: usize) -> Result<usize, CliError> {
             option: "--repeat".to_owned(),
             value: val.to_owned(),
             reason: "replay requires --repeat >= 2".to_owned(),
+            command: command.map(ToOwned::to_owned),
             index,
         });
     }
@@ -256,6 +265,7 @@ fn parse_repeat_value(val: &str, index: usize) -> Result<usize, CliError> {
             option: "--repeat".to_owned(),
             value: val.to_owned(),
             reason: "replay repeat count exceeds the 10000-run bound".to_owned(),
+            command: command.map(ToOwned::to_owned),
             index,
         });
     }
@@ -263,7 +273,7 @@ fn parse_repeat_value(val: &str, index: usize) -> Result<usize, CliError> {
     Ok(parsed)
 }
 
-fn validate_scenario(name: &str, index: usize, _command: &str) -> Result<(), CliError> {
+fn validate_scenario(name: &str, index: usize, command: &str) -> Result<(), CliError> {
     if VALID_SCENARIOS.contains(&name) {
         Ok(())
     } else {
@@ -274,6 +284,7 @@ fn validate_scenario(name: &str, index: usize, _command: &str) -> Result<(), Cli
                 "unknown scenario; expected one of: {}",
                 VALID_SCENARIOS.join(", ")
             ),
+            command: Some(command.to_owned()),
             index,
         })
     }

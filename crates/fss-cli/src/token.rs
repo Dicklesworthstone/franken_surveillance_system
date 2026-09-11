@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 
 use crate::error::CliError;
-use crate::redact::{is_sensitive_standalone_flag, redact_argument, safe_os_repr};
+use crate::redact::{is_sensitive_standalone_flag, safe_os_repr};
 
 /// Maximum allowed length in bytes for a single argument token.
 pub const MAX_ARG_TOKEN_BYTES: usize = 4096;
@@ -38,9 +38,8 @@ impl ArgToken {
 /// as valid UTF-8, it returns an explicit `CliError::InvalidUnicode`.
 ///
 /// If any argument exceeds `MAX_ARG_TOKEN_BYTES`, it returns `CliError::MalformedValue`.
-///
-/// Tokens following sensitive standalone flags (e.g. `--password`, `-p`, `--token`) are
-/// automatically redacted to `[redacted:Nbytes]`.
+/// If an argument follows a sensitive standalone flag, its value is
+/// automatically redacted to `[redacted]`.
 pub fn tokenize_os_args<I>(args: I) -> Result<Vec<ArgToken>, CliError>
 where
     I: IntoIterator<Item = OsString>,
@@ -56,21 +55,15 @@ where
             Some(valid_str) => {
                 if valid_str.len() > MAX_ARG_TOKEN_BYTES {
                     return Err(CliError::MalformedValue {
-                        option: format!("argv[{index}]"),
-                        value: redact_argument(valid_str),
-                        reason: format!(
-                            "argument length {} bytes exceeds maximum bound of {} bytes",
-                            valid_str.len(),
-                            MAX_ARG_TOKEN_BYTES
-                        ),
+                        option: "argv".to_owned(),
+                        value: format!("[oversized:{}bytes]", valid_str.len()),
+                        reason: format!("argument exceeds {MAX_ARG_TOKEN_BYTES} byte limit"),
+                        command: None,
                         index,
                     });
                 }
                 if is_sensitive_value {
-                    tokens.push(ArgToken::new(
-                        index,
-                        format!("[redacted:{}bytes]", valid_str.len()),
-                    ));
+                    tokens.push(ArgToken::new(index, "[redacted]".to_owned()));
                 } else {
                     if is_sensitive_standalone_flag(valid_str) {
                         prev_was_sensitive = true;
@@ -84,7 +77,7 @@ where
                     use std::os::unix::ffi::OsStrExt;
                     let bytes = os_arg.as_bytes();
                     if is_sensitive_value {
-                        (bytes.len(), format!("[redacted:{}bytes]", bytes.len()))
+                        (bytes.len(), "[redacted]".to_owned())
                     } else {
                         (bytes.len(), safe_os_repr(bytes, 32))
                     }
@@ -95,7 +88,7 @@ where
                     let wide: Vec<u16> = os_arg.encode_wide().collect();
                     let byte_length = wide.len() * 2;
                     if is_sensitive_value {
-                        (byte_length, format!("[redacted:{}bytes]", byte_length))
+                        (byte_length, "[redacted]".to_owned())
                     } else {
                         let mut repr = String::new();
                         for &unit in wide.iter().take(32) {
@@ -119,7 +112,7 @@ where
                 let (byte_length, redacted_repr) = {
                     let lossy = os_arg.to_string_lossy();
                     if is_sensitive_value {
-                        (lossy.len(), format!("[redacted:{}bytes]", lossy.len()))
+                        (lossy.len(), "[redacted]".to_owned())
                     } else {
                         (lossy.len(), redact_argument(&lossy))
                     }

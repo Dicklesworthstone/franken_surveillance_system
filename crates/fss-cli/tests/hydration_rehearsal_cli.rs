@@ -59,9 +59,10 @@ fn test_hydration_positional_then_flag_reports_correct_error() {
     ];
     let res = parse_hydration_args(args);
     assert!(res.is_err());
-    if let Err(CliError::DuplicateOption { option, .. }) = res {
-        panic!("falsely reported duplicate option for flag only passed once: {option}");
-    }
+    assert!(
+        !matches!(res, Err(CliError::DuplicateOption { .. })),
+        "falsely reported duplicate option for flag only passed once: {res:?}"
+    );
 }
 
 #[test]

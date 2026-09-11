@@ -1,6 +1,9 @@
 #![forbid(unsafe_code)]
 //! Redaction and bounding utilities for safe CLI error and diagnostic rendering.
 
+use crate::hydration_cmd::VALID_HYDRATION_SCENARIOS;
+use crate::lab_cmd::VALID_SCENARIOS;
+
 const DEFAULT_BOUND_LEN: usize = 64;
 
 /// Known prefixes that contain sensitive values and must have their values redacted.
@@ -35,7 +38,7 @@ const SENSITIVE_PREFIXES_BYTES: [&[u8]; 12] = [
 ];
 
 /// Known standalone sensitive flags whose following argument token carries a sensitive value.
-pub const SENSITIVE_STANDALONE_FLAGS: [&str; 10] = [
+pub const SENSITIVE_STANDALONE_FLAGS: [&str; 12] = [
     "--password",
     "-p",
     "--token",
@@ -46,6 +49,8 @@ pub const SENSITIVE_STANDALONE_FLAGS: [&str; 10] = [
     "-k",
     "--api-key",
     "--auth",
+    "--bearer",
+    "--authorization",
 ];
 
 /// Checks whether a flag is a known sensitive standalone flag.
@@ -60,7 +65,7 @@ pub fn is_sensitive_standalone_flag(flag: &str) -> bool {
 #[must_use]
 pub fn is_registered_public_option_with_value(opt_name: &str, val: &str) -> bool {
     if opt_name == "--scenario" {
-        is_safe_to_echo(val)
+        VALID_HYDRATION_SCENARIOS.contains(&val)
     } else if opt_name == "--repeat" {
         val.parse::<usize>().is_ok()
     } else {
@@ -80,7 +85,7 @@ pub fn redact_argument(input: &str) -> String {
         && let Some((opt_name, val)) = input.split_once('=')
         && !is_registered_public_option_with_value(opt_name, val)
     {
-        let redacted_opt = format!("{opt_name}=[redacted:{}bytes]", val.len());
+        let redacted_opt = format!("{opt_name}=[redacted]");
         return sanitize_and_truncate(&redacted_opt, DEFAULT_BOUND_LEN);
     }
     sanitize_and_truncate(&sanitized, DEFAULT_BOUND_LEN)
@@ -145,55 +150,45 @@ pub fn redact_sensitive_bytes(bytes: &[u8]) -> Vec<u8> {
     bytes.to_vec()
 }
 
+const FSS_COMMANDS: [&str; 5] = ["help", "version", "capabilities", "doctor", "status"];
+
+const LAB_COMMANDS: [&str; 6] = ["help", "list", "matrix", "self-test", "run", "replay"];
+
+const COMMON_FLAGS: [&str; 9] = [
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+    "--json",
+    "--scenario",
+    "--repeat",
+    "--strict",
+    "--timeout-ms",
+];
+
 /// Checks whether a token is an allowed safe identifier (registered command name, option, scenario).
 /// Arbitrary numeric strings are NOT considered safe identifiers (F3).
+/// Scenarios are derived from registered lists as the single source of truth (F5).
 #[must_use]
 pub fn is_safe_to_echo(token: &str) -> bool {
-    const SAFE_IDENTIFIERS: &[&str] = &[
-        "help",
-        "version",
-        "capabilities",
-        "doctor",
-        "status",
-        "list",
-        "matrix",
-        "self-test",
-        "run",
-        "replay",
-        "--help",
-        "-h",
-        "--version",
-        "-V",
-        "--json",
-        "--scenario",
-        "--repeat",
-        "--strict",
-        "--timeout-ms",
-        "quiet",
-        "raccoon",
-        "intrusion",
-        "sneaky",
-        "lost-ack",
-        "corrupt-source",
-        "all",
-        "success",
-        "budget-fallback",
-        "expired",
-    ];
-
-    if SAFE_IDENTIFIERS.contains(&token) {
+    if FSS_COMMANDS.contains(&token)
+        || LAB_COMMANDS.contains(&token)
+        || COMMON_FLAGS.contains(&token)
+        || VALID_SCENARIOS.contains(&token)
+        || VALID_HYDRATION_SCENARIOS.contains(&token)
+    {
         return true;
     }
 
     if let Some(val) = token.strip_prefix("--scenario=") {
-        return SAFE_IDENTIFIERS.contains(&val);
+        return VALID_HYDRATION_SCENARIOS.contains(&val);
     }
 
     false
 }
 
 /// Redacts sensitive values or arbitrary unrecognized values to an opaque bounded length form.
-/// Emits deterministic `[redacted:Nbytes]` with NO preimage-derived digest (F2).
+/// Emits deterministic plain `[redacted]` with NO length or preimage-derived digest (F2).
 #[must_use]
 pub fn redact_value_or_digest(input: &str) -> String {
     let sanitized = redact_sensitive_prefixes(input);
@@ -205,7 +200,7 @@ pub fn redact_value_or_digest(input: &str) -> String {
         && let Some((opt_name, val)) = input.split_once('=')
         && !is_registered_public_option_with_value(opt_name, val)
     {
-        let redacted_opt = format!("{opt_name}=[redacted:{}bytes]", val.len());
+        let redacted_opt = format!("{opt_name}=[redacted]");
         return sanitize_and_truncate(&redacted_opt, DEFAULT_BOUND_LEN);
     }
 
@@ -213,7 +208,7 @@ pub fn redact_value_or_digest(input: &str) -> String {
         return sanitize_and_truncate(input, DEFAULT_BOUND_LEN);
     }
 
-    format!("[redacted:{}bytes]", input.len())
+    "[redacted]".to_owned()
 }
 
 /// Escapes control characters and truncates strings exceeding `max_len`.
@@ -334,7 +329,7 @@ mod tests {
     #[test]
     fn redact_value_or_digest_redacts_unknown_tokens_opaquely() {
         let redacted = redact_value_or_digest("my_unknown_secret");
-        assert_eq!(redacted, "[redacted:17bytes]");
+        assert_eq!(redacted, "[redacted]");
         assert_eq!(redact_value_or_digest("status"), "status");
     }
 }
