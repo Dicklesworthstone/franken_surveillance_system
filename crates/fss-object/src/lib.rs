@@ -12,6 +12,7 @@ mod memory;
 mod tests;
 
 pub use error::ObjectError;
+pub use fss_core::TombstoneRecord;
 pub use manifest::ObjectManifest;
 pub use memory::{InMemoryObjectStore, ObjectLimits};
 
@@ -31,6 +32,8 @@ pub enum ObjectState {
     Staged,
     /// Exact bytes have been rehashed and match their content identity.
     Verified,
+    /// Object has been tombstoned: payload bytes and quota released, record retained.
+    Tombstoned,
 }
 
 /// Receipt emitted only after a manifest root is visible and its closure verifies.

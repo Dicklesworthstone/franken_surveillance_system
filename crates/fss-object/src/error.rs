@@ -52,6 +52,17 @@ pub enum ObjectError {
     DuplicateChild(ContentDigest),
     /// A requested manifest root has not been published.
     ManifestNotPublished(ContentDigest),
+    /// An object has been tombstoned: its payload has been released and cannot be read or resurrected.
+    Tombstoned(ContentDigest),
+    /// A tombstone record's payload digest does not match the object content digest.
+    TombstoneDigestMismatch {
+        /// The content digest of the object being tombstoned.
+        expected: ContentDigest,
+        /// The payload digest declared in the tombstone record.
+        actual: ContentDigest,
+    },
+    /// A tombstone already exists for this object with a conflicting record.
+    TombstoneConflict(ContentDigest),
 }
 
 impl fmt::Display for ObjectError {
@@ -90,6 +101,14 @@ impl fmt::Display for ObjectError {
             }
             Self::ManifestNotPublished(digest) => {
                 write!(formatter, "manifest root is not published: {digest}")
+            }
+            Self::Tombstoned(digest) => write!(formatter, "object is tombstoned: {digest}"),
+            Self::TombstoneDigestMismatch { expected, actual } => write!(
+                formatter,
+                "tombstone record payload digest {actual} does not match object {expected}"
+            ),
+            Self::TombstoneConflict(digest) => {
+                write!(formatter, "tombstone conflict for object: {digest}")
             }
         }
     }

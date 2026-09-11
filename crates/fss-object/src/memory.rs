@@ -2,14 +2,15 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fss_core::{CanonicalEncode, ContentDigest};
+use fss_core::{CanonicalEncode, ContentDigest, TombstoneRecord};
 
 use crate::{ObjectError, ObjectManifest, ObjectState, PublicationReceipt, VerifiedObjectCatalog};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StoredObject {
-    bytes: Vec<u8>,
+    bytes: Option<Vec<u8>>,
     state: ObjectState,
+    tombstone: Option<TombstoneRecord>,
 }
 
 /// Resource limits for one deterministic object store.
@@ -103,7 +104,10 @@ impl InMemoryObjectStore {
         }
         let digest = ContentDigest::sha256(bytes);
         if let Some(existing) = self.objects.get(&digest) {
-            if existing.bytes == bytes {
+            if existing.state == ObjectState::Tombstoned {
+                return Err(ObjectError::Tombstoned(digest));
+            }
+            if existing.bytes.as_deref() == Some(bytes) {
                 return Ok(digest);
             }
             return Err(ObjectError::DigestCollision(digest));
@@ -143,8 +147,9 @@ impl InMemoryObjectStore {
         self.objects.insert(
             digest,
             StoredObject {
-                bytes: owned,
+                bytes: Some(owned),
                 state: ObjectState::Staged,
+                tombstone: None,
             },
         );
         self.total_bytes = next_total;
@@ -157,7 +162,11 @@ impl InMemoryObjectStore {
             .objects
             .get_mut(&digest)
             .ok_or(ObjectError::Missing(digest))?;
-        if ContentDigest::sha256(&object.bytes) != digest {
+        if object.state == ObjectState::Tombstoned {
+            return Err(ObjectError::Tombstoned(digest));
+        }
+        let bytes = object.bytes.as_ref().ok_or(ObjectError::Corrupt(digest))?;
+        if ContentDigest::sha256(bytes) != digest {
             return Err(ObjectError::Corrupt(digest));
         }
         object.state = ObjectState::Verified;
@@ -177,13 +186,17 @@ impl InMemoryObjectStore {
             .objects
             .get(&digest)
             .ok_or(ObjectError::Missing(digest))?;
+        if object.state == ObjectState::Tombstoned {
+            return Err(ObjectError::Tombstoned(digest));
+        }
         if object.state != ObjectState::Verified {
             return Err(ObjectError::NotVerified(digest));
         }
-        if ContentDigest::sha256(&object.bytes) != digest {
+        let bytes = object.bytes.as_ref().ok_or(ObjectError::Corrupt(digest))?;
+        if ContentDigest::sha256(bytes) != digest {
             return Err(ObjectError::Corrupt(digest));
         }
-        Ok(&object.bytes)
+        Ok(bytes.as_slice())
     }
 
     /// Returns the local object state, if present.
@@ -315,12 +328,127 @@ impl InMemoryObjectStore {
             .objects
             .get_mut(&digest)
             .ok_or(ObjectError::Missing(digest))?;
-        if object.bytes.is_empty() {
-            object.bytes.push(1);
+        if object.state == ObjectState::Tombstoned {
+            return Err(ObjectError::Tombstoned(digest));
+        }
+        let bytes = object.bytes.as_mut().ok_or(ObjectError::Corrupt(digest))?;
+        if bytes.is_empty() {
+            bytes.push(1);
         } else {
-            object.bytes[0] ^= 1;
+            bytes[0] ^= 1;
         }
         Ok(())
+    }
+
+    /// Transitions a verified object to a permanent tombstone state.
+    ///
+    /// Keeps the tombstone record and content digest, but releases payload bytes and quota.
+    /// Fails with [`ObjectError::TombstoneDigestMismatch`] if the record payload digest does not match,
+    /// [`ObjectError::Missing`] if the object is absent,
+    /// [`ObjectError::NotVerified`] if the object is staged,
+    /// or [`ObjectError::TombstoneConflict`] if a different tombstone record was already applied.
+    /// Idempotent if called with an identical tombstone record.
+    pub fn tombstone(
+        &mut self,
+        digest: ContentDigest,
+        record: TombstoneRecord,
+    ) -> Result<(), ObjectError> {
+        if record.payload_digest != digest {
+            return Err(ObjectError::TombstoneDigestMismatch {
+                expected: digest,
+                actual: record.payload_digest,
+            });
+        }
+        let object = self
+            .objects
+            .get_mut(&digest)
+            .ok_or(ObjectError::Missing(digest))?;
+
+        match object.state {
+            ObjectState::Staged => Err(ObjectError::NotVerified(digest)),
+            ObjectState::Tombstoned => {
+                if object.tombstone.as_ref() == Some(&record) {
+                    Ok(())
+                } else {
+                    Err(ObjectError::TombstoneConflict(digest))
+                }
+            }
+            ObjectState::Verified => {
+                let released_bytes = object.bytes.as_ref().map_or(0, |b| b.len() as u64);
+                object.bytes = None;
+                object.state = ObjectState::Tombstoned;
+                object.tombstone = Some(record);
+                self.total_bytes = self.total_bytes.saturating_sub(released_bytes);
+                Ok(())
+            }
+        }
+    }
+
+    /// Returns the tombstone record for an object, if tombstoned.
+    #[must_use]
+    pub fn tombstone_record(&self, digest: ContentDigest) -> Option<&TombstoneRecord> {
+        self.objects
+            .get(&digest)
+            .and_then(|obj| obj.tombstone.as_ref())
+    }
+
+    /// Returns true if the object is in tombstoned state.
+    #[must_use]
+    pub fn is_tombstoned(&self, digest: ContentDigest) -> bool {
+        self.state(digest) == Some(ObjectState::Tombstoned)
+    }
+
+    /// Returns all published manifest roots whose reachable closure contains at least one tombstoned object.
+    ///
+    /// Descends into published sub-manifests bottom-up, following the same closure rules as
+    /// [`verify_closure`]. Returns manifest roots sorted in canonical order.
+    #[must_use]
+    pub fn published_manifests_with_tombstoned_closure(&self) -> Vec<ContentDigest> {
+        let mut result = Vec::new();
+        for &root in self.visible_manifests.keys() {
+            if self.closure_contains_tombstone(root) {
+                result.push(root);
+            }
+        }
+        result
+    }
+
+    /// Returns true if the reachable closure from `root` contains at least one tombstoned object.
+    ///
+    /// If `root` itself is tombstoned, returns true. Descends only into published sub-manifests.
+    #[must_use]
+    pub fn closure_contains_tombstone(&self, root: ContentDigest) -> bool {
+        if self.state(root) == Some(ObjectState::Tombstoned) {
+            return true;
+        }
+        let mut seen = BTreeSet::new();
+        seen.insert(root);
+        let mut pending = vec![root];
+        while let Some(digest) = pending.pop() {
+            if let Some(manifest) = self.visible_manifests.get(&digest) {
+                for &child in manifest.children() {
+                    if self.state(child) == Some(ObjectState::Tombstoned) {
+                        return true;
+                    }
+                    if seen.insert(child) && self.visible_manifests.contains_key(&child) {
+                        pending.push(child);
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// Alias for [`published_manifests_with_tombstoned_closure`].
+    #[must_use]
+    pub fn manifests_with_tombstoned_closure(&self) -> Vec<ContentDigest> {
+        self.published_manifests_with_tombstoned_closure()
+    }
+
+    /// Alias for [`published_manifests_with_tombstoned_closure`].
+    #[must_use]
+    pub fn published_manifests_with_tombstoned_children(&self) -> Vec<ContentDigest> {
+        self.published_manifests_with_tombstoned_closure()
     }
 }
 
@@ -330,10 +458,14 @@ impl VerifiedObjectCatalog for InMemoryObjectStore {
             .objects
             .get(&digest)
             .ok_or(ObjectError::Missing(digest))?;
+        if object.state == ObjectState::Tombstoned {
+            return Err(ObjectError::Tombstoned(digest));
+        }
         if object.state != ObjectState::Verified {
             return Err(ObjectError::NotVerified(digest));
         }
-        if ContentDigest::sha256(&object.bytes) != digest {
+        let bytes = object.bytes.as_ref().ok_or(ObjectError::Corrupt(digest))?;
+        if ContentDigest::sha256(bytes) != digest {
             return Err(ObjectError::Corrupt(digest));
         }
         Ok(())
