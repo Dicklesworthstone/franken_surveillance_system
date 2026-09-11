@@ -91,12 +91,12 @@ pub fn validate_error_id(value: &str) -> Result<(), ContractError> {
     }
     let mut last_segment: Option<&str> = None;
     for segment in parts {
-        if last_segment.is_some_and(|prev| {
-            prev.is_empty()
+        if let Some(prev) = last_segment
+            && (prev.is_empty()
                 || !prev
                     .chars()
-                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-        }) {
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit()))
+        {
             return Err(ContractError::InvalidIdentifier);
         }
         last_segment = Some(segment);

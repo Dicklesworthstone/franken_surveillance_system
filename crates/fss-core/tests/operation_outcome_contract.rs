@@ -14,11 +14,11 @@
 use std::error::Error;
 
 use fss_core::{
-    CanonicalDecode, CanonicalEncode, ContractError, ErrorId, IndeterminateDetail, OperationError,
+    CanonicalDecode, CanonicalEncode, ContractError, ERR_OP_EXECUTION_FAILED_001,
+    ERR_OP_ID_MALFORMED_001, ERR_OP_INDETERMINATE_001, ERR_OP_INVALID_OUTCOME_001,
+    ERR_OP_NOT_OBSERVABLE_001, ERR_OP_PRECONDITION_FAILED_001, ERR_OP_RECONCILIATION_REQUIRED_001,
+    ERR_OP_TIMEOUT_001, ERR_OP_UNAUTHORIZED_001, ErrorId, IndeterminateDetail, OperationError,
     OperationOutcome, RecoveryClass, RefusalDetail, RefusalReason, validate_error_id,
-    ERR_OP_EXECUTION_FAILED_001, ERR_OP_ID_MALFORMED_001, ERR_OP_INDETERMINATE_001,
-    ERR_OP_INVALID_OUTCOME_001, ERR_OP_NOT_OBSERVABLE_001, ERR_OP_PRECONDITION_FAILED_001,
-    ERR_OP_RECONCILIATION_REQUIRED_001, ERR_OP_TIMEOUT_001, ERR_OP_UNAUTHORIZED_001,
 };
 
 #[test]
@@ -34,10 +34,8 @@ fn outcome_four_valued_construction_and_discrimination() -> Result<(), Box<dyn E
     );
     let indeterminate: OperationOutcome<u64> = OperationOutcome::indeterminate(ind_detail);
 
-    let refusal = RefusalDetail::unauthorized(
-        "camera PTZ control disallowed",
-        Some("CAP-CAMERA-PTZ-001"),
-    );
+    let refusal =
+        RefusalDetail::unauthorized("camera PTZ control disallowed", Some("CAP-CAMERA-PTZ-001"));
     let unauthorized: OperationOutcome<u64> =
         OperationOutcome::unauthorized_or_not_observable(refusal);
 
@@ -194,7 +192,8 @@ fn indeterminate_cannot_be_upgraded_by_flatten() -> Result<(), Box<dyn Error>> {
     let ind = IndeterminateDetail::new("transport", "connection reset", "reconcile stream");
 
     // Outer is Indeterminate
-    let outer_ind: OperationOutcome<OperationOutcome<u32>> = OperationOutcome::indeterminate(ind.clone());
+    let outer_ind: OperationOutcome<OperationOutcome<u32>> =
+        OperationOutcome::indeterminate(ind.clone());
     let flattened1 = outer_ind.flatten();
     assert!(flattened1.is_indeterminate());
     assert!(!flattened1.is_success());
@@ -212,7 +211,8 @@ fn indeterminate_cannot_be_upgraded_by_flatten() -> Result<(), Box<dyn Error>> {
 #[test]
 fn unauthorized_or_not_observable_cannot_be_upgraded() -> Result<(), Box<dyn Error>> {
     let refusal = RefusalDetail::unauthorized("no grant", Some("CAP-TEST-001"));
-    let outcome: OperationOutcome<u32> = OperationOutcome::unauthorized_or_not_observable(refusal.clone());
+    let outcome: OperationOutcome<u32> =
+        OperationOutcome::unauthorized_or_not_observable(refusal.clone());
 
     // Test map
     let mapped = outcome.clone().map(|x| x * 2);
@@ -225,7 +225,9 @@ fn unauthorized_or_not_observable_cannot_be_upgraded() -> Result<(), Box<dyn Err
     assert!(!mapped_err.is_success());
 
     // Test and_then
-    let chained = outcome.clone().and_then(|_| OperationOutcome::success(1234));
+    let chained = outcome
+        .clone()
+        .and_then(|_| OperationOutcome::success(1234));
     assert!(chained.is_unauthorized_or_not_observable());
     assert!(!chained.is_success());
 
@@ -273,9 +275,13 @@ fn combinators_work_on_success_and_failed() -> Result<(), Box<dyn Error>> {
     );
 
     // and_then
-    let s_chained = success.clone().and_then(|x| OperationOutcome::success(x + 5));
+    let s_chained = success
+        .clone()
+        .and_then(|x| OperationOutcome::success(x + 5));
     assert_eq!(s_chained.as_success(), Some(&15));
-    let f_chained = failed.clone().and_then(|x| OperationOutcome::success(x + 5));
+    let f_chained = failed
+        .clone()
+        .and_then(|x| OperationOutcome::success(x + 5));
     assert!(f_chained.is_failed());
 
     // or_else on failed recovers
@@ -333,17 +339,17 @@ fn error_id_validation_rejections() -> Result<(), Box<dyn Error>> {
         "",
         "ERR",
         "ERR-",
-        "ERR-001",                   // Missing middle segment
-        "err-op-001",               // Lowercase prefix
-        "ERR-OP",                   // Missing numeric suffix
-        "ERR-OP-1",                 // Suffix only 1 digit
-        "ERR-OP-12",                // Suffix only 2 digits
-        "ERR-OP-1234",              // Suffix 4 digits
-        "ERR-OP--001",              // Empty middle segment
-        "ERR--OP-001",              // Empty middle segment
-        "ERR-OP-lowercase-001",     // Lowercase in middle segment
-        "ERR-OP-SPECIAL!-001",      // Special character forbidden
-        "ERR-OP-00A",               // Non-digit in suffix
+        "ERR-001",              // Missing middle segment
+        "err-op-001",           // Lowercase prefix
+        "ERR-OP",               // Missing numeric suffix
+        "ERR-OP-1",             // Suffix only 1 digit
+        "ERR-OP-12",            // Suffix only 2 digits
+        "ERR-OP-1234",          // Suffix 4 digits
+        "ERR-OP--001",          // Empty middle segment
+        "ERR--OP-001",          // Empty middle segment
+        "ERR-OP-lowercase-001", // Lowercase in middle segment
+        "ERR-OP-SPECIAL!-001",  // Special character forbidden
+        "ERR-OP-00A",           // Non-digit in suffix
     ];
 
     for &bad in &invalid_ids {
@@ -516,9 +522,18 @@ fn recovery_class_roundtrip_and_parse() -> Result<(), Box<dyn Error>> {
         (RecoveryClass::RefreshAndRetry, "refresh_and_retry"),
         (RecoveryClass::RebaseRequired, "rebase_required"),
         (RecoveryClass::Backoff, "backoff"),
-        (RecoveryClass::ReconciliationRequired, "reconciliation_required"),
-        (RecoveryClass::OperatorActionRequired, "operator_action_required"),
-        (RecoveryClass::ResumeFromContinuation, "resume_from_continuation"),
+        (
+            RecoveryClass::ReconciliationRequired,
+            "reconciliation_required",
+        ),
+        (
+            RecoveryClass::OperatorActionRequired,
+            "operator_action_required",
+        ),
+        (
+            RecoveryClass::ResumeFromContinuation,
+            "resume_from_continuation",
+        ),
     ];
 
     for (class, expected_str) in classes {

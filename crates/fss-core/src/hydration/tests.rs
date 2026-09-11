@@ -37,7 +37,9 @@ fn capabilities(maximum: HydrationLevel) -> BTreeMap<HydrationLevel, BTreeSet<St
         .collect()
 }
 
-fn costs(maximum: HydrationLevel) -> Result<BTreeMap<HydrationLevel, BudgetVector>, HydrationError> {
+fn costs(
+    maximum: HydrationLevel,
+) -> Result<BTreeMap<HydrationLevel, BudgetVector>, HydrationError> {
     let mut map = BTreeMap::new();
     for level in levels(maximum) {
         let scale = u64::from(level.ordinal()) + 1;
