@@ -146,6 +146,43 @@ fn lab_failure_classes_distinguished() {
 }
 
 #[test]
+fn public_commands_are_deterministic_integration() -> Result<(), Box<dyn std::error::Error>> {
+    let bin_path = env!("CARGO_BIN_EXE_fss-lab");
+
+    // matrix output is deterministic across two runs
+    let first = Command::new(bin_path).arg("matrix").output()?;
+    assert!(first.status.success());
+    let second = Command::new(bin_path).arg("matrix").output()?;
+    assert!(second.status.success());
+    assert_eq!(
+        first.stdout, second.stdout,
+        "matrix output must be deterministic"
+    );
+
+    // self-test returns status: pass
+    let st = Command::new(bin_path).arg("self-test").output()?;
+    assert!(st.status.success());
+    let st_out = String::from_utf8(st.stdout)?;
+    assert!(
+        st_out.contains("\"status\":\"pass\""),
+        "self-test must report status pass"
+    );
+
+    // replay returns deterministic: true
+    let rep = Command::new(bin_path)
+        .args(["replay", "intrusion", "--repeat", "10"])
+        .output()?;
+    assert!(rep.status.success());
+    let rep_out = String::from_utf8(rep.stdout)?;
+    assert!(
+        rep_out.contains("\"deterministic\":true"),
+        "replay must report deterministic:true"
+    );
+
+    Ok(())
+}
+
+#[test]
 fn real_process_lab_execution() -> Result<(), Box<dyn std::error::Error>> {
     let bin_path = env!("CARGO_BIN_EXE_fss-lab");
 
