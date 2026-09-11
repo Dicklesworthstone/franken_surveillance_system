@@ -3,9 +3,10 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContractBasis, ContractError,
-    EffectJournal, EventId, HandoffId, IdempotencyKey, KnowledgeState, MissionId, ObligationId,
-    OperationId, PrincipalId, ProbabilityInterval, SensorId, SessionId, TimestampNs,
+    AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContractBasis,
+    ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, HandoffId, IdempotencyKey,
+    KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
+    SensorId, SessionId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -122,14 +123,16 @@ impl SituationHarness {
 
 fn basis() -> ContractBasis {
     ContractBasis::from_registry_bytes(
-        b"schemas",
-        b"operations",
-        b"views",
-        b"capabilities",
-        b"errors",
-        b"costs",
-        "fss-reference:test",
-        Some("nightly-2026-08-31".to_owned()),
+        ContractBasisRegistryBytes::new(
+            b"schemas",
+            b"operations",
+            b"views",
+            b"capabilities",
+            b"errors",
+            b"costs",
+            "fss-reference:test",
+        )
+        .with_accepted_nightly("nightly-2026-08-31"),
     )
 }
 

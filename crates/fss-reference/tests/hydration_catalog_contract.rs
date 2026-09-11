@@ -3,10 +3,10 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    BudgetVector, Completeness, ContentDigest, ContractBasis, ContractError, HandleAvailability,
-    HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose, HydrationRequest,
-    HydrationRequestSpec, LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec,
-    SessionId, TimestampNs,
+    BudgetVector, Completeness, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
+    ContractError, HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel,
+    HydrationPurpose, HydrationRequest, HydrationRequestSpec, LaboratoryAccess, LedgerAnchor,
+    SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
 };
 use fss_reference::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 
@@ -15,7 +15,7 @@ fn descriptor(name: &str) -> Result<SemanticHandle, HydrationError> {
     let mut anchor = LedgerAnchor::genesis("site:catalog");
     anchor.commit_sequence = 1;
     SemanticHandle::publish(SemanticHandleSpec {
-        contract_basis: ContractBasis::from_registry_bytes(
+        contract_basis: ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
             b"s",
             b"o",
             b"v",
@@ -23,8 +23,7 @@ fn descriptor(name: &str) -> Result<SemanticHandle, HydrationError> {
             b"e",
             b"cost",
             "catalog:test",
-            None,
-        ),
+        )),
         anchor,
         subject_id: format!("subject:{name}"),
         subject_digest: ContentDigest::sha256(name.as_bytes()),

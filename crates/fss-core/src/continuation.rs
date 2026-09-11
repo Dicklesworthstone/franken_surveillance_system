@@ -603,9 +603,10 @@ impl ContinuationPage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ContractBasisRegistryBytes;
 
     fn basis() -> ContractBasis {
-        ContractBasis::from_registry_bytes(
+        ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
             b"schemas",
             b"operations",
             b"views",
@@ -613,8 +614,7 @@ mod tests {
             b"errors",
             b"costs",
             "fss:test",
-            None,
-        )
+        ))
     }
 
     fn stream() -> Result<ContinuationStream, ContinuationError> {

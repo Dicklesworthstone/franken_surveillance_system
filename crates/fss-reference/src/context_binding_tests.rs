@@ -6,10 +6,10 @@ use fss_core::hydration::{
 };
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest,
-    ContextBindingError, ContextExpansionBindingSet, ContractBasis, ContractError, HandoffId,
-    KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObligationId, PrincipalId,
-    ProvenanceClass, ResourcePressure, SessionId, SituationCapsule, SituationFrame, TimestampNs,
-    WorldEnvelope,
+    ContextBindingError, ContextExpansionBindingSet, ContractBasis, ContractBasisRegistryBytes,
+    ContractError, HandoffId, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
+    PrincipalId, ProvenanceClass, ResourcePressure, SessionId, SituationCapsule, SituationFrame,
+    TimestampNs, WorldEnvelope,
 };
 
 use crate::{
@@ -20,14 +20,16 @@ use crate::{
 
 fn basis() -> ContractBasis {
     ContractBasis::from_registry_bytes(
-        b"schemas",
-        b"operations",
-        b"views",
-        b"capabilities",
-        b"errors",
-        b"costs",
-        "fss-reference:test",
-        Some("nightly-2026-08-31".to_owned()),
+        ContractBasisRegistryBytes::new(
+            b"schemas",
+            b"operations",
+            b"views",
+            b"capabilities",
+            b"errors",
+            b"costs",
+            "fss-reference:test",
+        )
+        .with_accepted_nightly("nightly-2026-08-31"),
     )
 }
 

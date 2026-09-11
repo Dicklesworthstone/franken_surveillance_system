@@ -4,14 +4,14 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     BudgetVector, Completeness, ContentDigest, ContinuationCursor, ContinuationScope,
-    ContractBasis, ContractError, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact,
-    HydrationError, HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec,
-    HydrationRequest, HydrationRequestSpec, LaboratoryAccess, LedgerAnchor, SemanticHandle,
-    SemanticHandleSpec, SessionId, TimestampNs,
+    ContractBasis, ContractBasisRegistryBytes, ContractError, HYDRATION_VIEW_ID,
+    HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
+    HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec,
+    LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
 };
 
 fn basis() -> ContractBasis {
-    ContractBasis::from_registry_bytes(
+    ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
         b"schemas",
         b"operations",
         b"views",
@@ -19,8 +19,7 @@ fn basis() -> ContractBasis {
         b"errors",
         b"costs",
         "fss-hydration-contract:test",
-        None,
-    )
+    ))
 }
 
 fn anchor() -> LedgerAnchor {

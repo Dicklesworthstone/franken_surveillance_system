@@ -2,9 +2,9 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    CapsuleId, CaptureInterval, Completeness, ContractBasis, EffectJournal, EffectState, EventId,
-    IdempotencyKey, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
-    SensorId, SessionId, TimestampNs,
+    CapsuleId, CaptureInterval, Completeness, ContractBasis, ContractBasisRegistryBytes,
+    EffectJournal, EffectState, EventId, IdempotencyKey, MissionId, ObligationId, OperationId,
+    PrincipalId, ProbabilityInterval, SensorId, SessionId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -118,14 +118,16 @@ fn request<'a>(
         objective_id: "objective:protect-reference-boundary".to_owned(),
         revision: 1,
         contract_basis: ContractBasis::from_registry_bytes(
-            b"schemas",
-            b"operations",
-            b"views",
-            b"capabilities",
-            b"errors",
-            b"costs",
-            "fss-reference:test",
-            Some("nightly-2026-08-31".to_owned()),
+            ContractBasisRegistryBytes::new(
+                b"schemas",
+                b"operations",
+                b"views",
+                b"capabilities",
+                b"errors",
+                b"costs",
+                "fss-reference:test",
+            )
+            .with_accepted_nightly("nightly-2026-08-31"),
         ),
         previous_anchor: None,
         decision,

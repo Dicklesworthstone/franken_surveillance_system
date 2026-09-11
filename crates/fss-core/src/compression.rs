@@ -207,7 +207,7 @@ mod tests {
     fn pack() -> Result<SemanticContextPack, ContractError> {
         SemanticContextPack::publish(
             "context-pack:partial",
-            crate::ContractBasis::from_registry_bytes(
+            crate::ContractBasis::from_registry_bytes(crate::ContractBasisRegistryBytes::new(
                 b"schemas",
                 b"operations",
                 b"views",
@@ -215,8 +215,7 @@ mod tests {
                 b"errors",
                 b"costs",
                 "fss:test",
-                None,
-            ),
+            )),
             MissionId::parse("mission:partial")?,
             SessionId::parse("session:partial")?,
             "AVIEW-001",

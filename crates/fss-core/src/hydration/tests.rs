@@ -1,7 +1,8 @@
 use super::*;
+use crate::ContractBasisRegistryBytes;
 
 fn basis() -> ContractBasis {
-    ContractBasis::from_registry_bytes(
+    ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
         b"schemas",
         b"operations",
         b"views",
@@ -9,8 +10,7 @@ fn basis() -> ContractBasis {
         b"errors",
         b"costs",
         "fss:test",
-        None,
-    )
+    ))
 }
 
 fn anchor(sequence: u64) -> LedgerAnchor {

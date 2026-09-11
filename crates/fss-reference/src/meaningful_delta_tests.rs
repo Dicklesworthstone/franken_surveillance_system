@@ -3,9 +3,9 @@ use std::error::Error;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest, ContractBasis,
-    DeltaPriority, KnowledgeCell, KnowledgeState, LedgerAnchor, MeaningfulDeltaClass, MissionId,
-    ObligationId, PrincipalId, ProvenanceClass, ResourcePressure, SessionId, SituationCapsule,
-    SituationFrame, TimestampNs, WorldEnvelope,
+    ContractBasisRegistryBytes, DeltaPriority, KnowledgeCell, KnowledgeState, LedgerAnchor,
+    MeaningfulDeltaClass, MissionId, ObligationId, PrincipalId, ProvenanceClass, ResourcePressure,
+    SessionId, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 
 use crate::{
@@ -49,14 +49,16 @@ impl Variant {
 
 fn basis() -> ContractBasis {
     ContractBasis::from_registry_bytes(
-        b"schemas",
-        b"operations",
-        b"views",
-        b"capabilities",
-        b"errors",
-        b"costs",
-        "fss-reference:test",
-        Some("nightly-2026-08-31".to_owned()),
+        ContractBasisRegistryBytes::new(
+            b"schemas",
+            b"operations",
+            b"views",
+            b"capabilities",
+            b"errors",
+            b"costs",
+            "fss-reference:test",
+        )
+        .with_accepted_nightly("nightly-2026-08-31"),
     )
 }
 

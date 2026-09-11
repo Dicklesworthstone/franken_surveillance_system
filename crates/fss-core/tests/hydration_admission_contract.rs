@@ -4,10 +4,10 @@ use std::collections::BTreeSet;
 
 use fss_core::{
     BudgetVector, Completeness, ContentDigest, ContinuationCursor, ContinuationScope,
-    ContractBasis, ContractError, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact,
-    HydrationError, HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec,
-    HydrationRequest, HydrationRequestSpec, LaboratoryAccess, LedgerAnchor, SemanticHandle,
-    SemanticHandleSpec, SessionId, TimestampNs,
+    ContractBasis, ContractBasisRegistryBytes, ContractError, HYDRATION_VIEW_ID,
+    HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
+    HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec,
+    LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
 };
 
 fn handle() -> Result<SemanticHandle, HydrationError> {
@@ -19,7 +19,7 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
         HydrationLevel::H4,
     ]);
     SemanticHandle::publish(SemanticHandleSpec {
-        contract_basis: ContractBasis::from_registry_bytes(
+        contract_basis: ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
             b"schemas",
             b"operations",
             b"views",
@@ -27,8 +27,7 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
             b"errors",
             b"costs",
             "hydration-admission:test",
-            None,
-        ),
+        )),
         anchor: LedgerAnchor::genesis("site:admission"),
         subject_id: "subject:admission".to_owned(),
         subject_digest: ContentDigest::sha256(b"exact redacted subject"),

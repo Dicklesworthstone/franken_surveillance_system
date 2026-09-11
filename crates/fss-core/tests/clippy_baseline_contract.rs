@@ -1,3 +1,5 @@
+//! Verification contract for clippy baseline fixes.
+
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;
@@ -6,9 +8,10 @@ use fss_core::{
     CapsuleId, CaptureInterval, ClockBasis, Completeness, CompressionCompleteness,
     CompressionLossClass, CompressionStopReason, CompressionTransform, CompressionTransformKind,
     ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, CriticalPreservation,
-    EffectIntent, EffectJournal, HandoffCapsule, HandoffId, HandoffPublishParams, LedgerAnchor,
-    MissionId, OperationId, PrincipalId, SemanticCompressionReceipt, SemanticContextPack,
-    SensorCapsule, SensorId, SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
+    EffectIntent, EffectJournal, HandoffCapsule, HandoffId, HandoffPublishParams, IdempotencyKey,
+    LedgerAnchor, MissionId, ObligationId, OperationId, PrincipalId, SemanticCompressionReceipt,
+    SemanticContextPack, SensorCapsule, SensorId, SensorSourceBytesSpec, SessionId, StreamId,
+    TimestampNs,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -96,7 +99,7 @@ fn test_handoff_capsule_publish_params() -> Result<(), ContractError> {
     assert_eq!(handoff.handoff_id.as_str(), "handoff:test-001");
     assert!(handoff.child_roots.contains(&situation_root));
     assert!(handoff.child_roots.contains(&child_proof));
-    assert_eq!(handoff.verify()?, handoff.handoff_root);
+    handoff.verify()?;
 
     // Test inverted time interval rejection
     let inverted_params = HandoffPublishParams {
@@ -129,7 +132,7 @@ fn test_sensor_capsule_from_source_bytes_spec() -> Result<(), ContractError> {
         sequence: 42,
         capture: CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(1_033_333))?,
         receive_time: TimestampNs(1_040_000),
-        clock_basis: ClockBasis::MonotonicOffsetCertified,
+        clock_basis: ClockBasis::HostMonotonic,
         source: payload,
         frame_count: 1,
         gap_before: false,
@@ -225,22 +228,28 @@ fn test_semantic_compression_receipt_validation() -> Result<(), ContractError> {
 
 #[test]
 fn test_effect_journal_obligations_iterator() -> Result<(), ContractError> {
-    let mut journal = EffectJournal::new(sample_basis(), LedgerAnchor::genesis("site:journal"));
+    let mut journal = EffectJournal::new();
     let op_id = OperationId::parse("op:pan-tilt-01")?;
-    let intent = EffectIntent::new(
-        op_id.clone(),
-        "ptz:pan".to_owned(),
-        "camera:driveway".to_owned(),
-        b"{\"pan\": 10}".to_vec(),
-        false,
-    );
+    let obligation_id = ObligationId::parse("obligation:pan-tilt-01")?;
+    let intent = EffectIntent {
+        operation_id: op_id.clone(),
+        idempotency_key: IdempotencyKey::parse("idem:pan-tilt-01")?,
+        effect_class: "ptz.pan".to_owned(),
+        request_digest: ContentDigest::sha256(b"{\"pan\": 10}"),
+        precondition_digest: ContentDigest::sha256(b"preconditions-satisfied"),
+    };
 
-    journal.record_intent(intent)?;
-    journal.bind_obligation(&op_id, "ptz.settled", TimestampNs(500))?;
+    journal.prepare(
+        intent,
+        obligation_id.clone(),
+        "ptz.settled",
+        TimestampNs(500),
+    )?;
 
     let obligations: Vec<_> = journal.obligations().collect();
     assert_eq!(obligations.len(), 1);
     assert_eq!(obligations[0].operation_id, op_id);
+    assert_eq!(obligations[0].obligation_id, obligation_id);
     assert_eq!(obligations[0].terminal_predicate, "ptz.settled");
 
     Ok(())

@@ -10,13 +10,13 @@ use fss_core::{
     BudgetVector, Completeness, CompressionCompleteness, CompressionLossClass,
     CompressionStopReason, CompressionTransform, CompressionTransformKind, ContentDigest,
     ContextBindingError, ContextExpansionBinding, ContextExpansionBindingSet, ContextItem,
-    ContractBasis, ContractError, CriticalPreservation, ExpansionHandle, KnowledgeState,
-    LedgerAnchor, MissionId, SemanticCompressionReceipt, SemanticContextPack, SessionId,
-    TimestampNs,
+    ContractBasis, ContractBasisRegistryBytes, ContractError, CriticalPreservation,
+    ExpansionHandle, KnowledgeState, LedgerAnchor, MissionId, SemanticCompressionReceipt,
+    SemanticContextPack, SessionId, TimestampNs,
 };
 
 fn basis() -> ContractBasis {
-    ContractBasis::from_registry_bytes(
+    ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
         b"schemas",
         b"operations",
         b"views",
@@ -24,8 +24,7 @@ fn basis() -> ContractBasis {
         b"errors",
         b"costs",
         "fss:test",
-        None,
-    )
+    ))
 }
 
 fn exact_cost() -> BudgetVector {

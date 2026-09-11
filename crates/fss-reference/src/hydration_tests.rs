@@ -6,22 +6,24 @@ use fss_core::hydration::{
     HydrationRequest, HydrationRequestSpec, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
 };
 use fss_core::{
-    BudgetVector, Completeness, ContentDigest, ContractBasis, ContractError, LedgerAnchor,
-    SessionId, TimestampNs,
+    BudgetVector, Completeness, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
+    ContractError, LedgerAnchor, SessionId, TimestampNs,
 };
 
 use crate::ReferenceHydrationCatalog;
 
 fn basis() -> ContractBasis {
     ContractBasis::from_registry_bytes(
-        b"schemas",
-        b"operations",
-        b"views",
-        b"capabilities",
-        b"errors",
-        b"costs",
-        "fss-reference:test",
-        Some("nightly-2026-08-31".to_owned()),
+        ContractBasisRegistryBytes::new(
+            b"schemas",
+            b"operations",
+            b"views",
+            b"capabilities",
+            b"errors",
+            b"costs",
+            "fss-reference:test",
+        )
+        .with_accepted_nightly("nightly-2026-08-31"),
     )
 }
 
