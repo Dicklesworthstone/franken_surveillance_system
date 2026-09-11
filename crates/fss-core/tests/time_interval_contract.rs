@@ -10,6 +10,8 @@
 //! - Generative property tests over deterministic pseudo-random intervals
 //! - Zero unwrap/expect/panic (all tests return Result)
 
+#![forbid(unsafe_code)]
+
 use fss_core::{
     CanonicalDecode, CanonicalEncode, CanonicalEncoder, CaptureInterval, CaptureIntervalWithBasis,
     ClockBasis, ContractError, IntervalContainment, IntervalUnion, TemporalPrecedence,
