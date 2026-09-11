@@ -1,7 +1,7 @@
 #![forbid(unsafe_code)]
 //! Deterministic process-level rehearsal of the reference hydration catalog.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error;
 use std::io::{self, Write};
@@ -94,7 +94,7 @@ fn rehearse(scenario: &str) -> Result<String, Box<dyn Error>> {
             HydrationLevel::H1
         } else {
             level
-        }),
+        })?,
         purpose: if scenario == "h4-qualified" {
             HydrationPurpose::Qualification
         } else {
@@ -175,7 +175,13 @@ fn fixture() -> Result<(ReferenceHydrationCatalog, SemanticHandle), HydrationErr
                 )
             })
             .collect(),
-        estimated_costs: levels.iter().map(|level| (*level, cost(*level))).collect(),
+        estimated_costs: {
+            let mut costs = BTreeMap::new();
+            for level in &levels {
+                costs.insert(*level, cost(*level)?);
+            }
+            costs
+        },
         levels,
         laboratory_access: LaboratoryAccess::QualificationOrDebugGrant,
         debug_capability: Some("capability:hydrate:debug".to_owned()),
@@ -198,7 +204,7 @@ fn fixture() -> Result<(ReferenceHydrationCatalog, SemanticHandle), HydrationErr
     Ok((catalog, handle))
 }
 
-fn cost(level: HydrationLevel) -> BudgetVector {
+fn cost(level: HydrationLevel) -> Result<BudgetVector, HydrationError> {
     let scale = 1_u64 << level.ordinal();
     BudgetVector::builder()
         .latency_ms(5 * scale)
@@ -208,7 +214,7 @@ fn cost(level: HydrationLevel) -> BudgetVector {
         .storage_operations(1)
         .privacy_exposure(f64::from(level.ordinal()) / 10.0)
         .build()
-        .unwrap_or_default()
+        .map_err(|err| HydrationError::Contract(err.into()))
 }
 
 fn success_record(
