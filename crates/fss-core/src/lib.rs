@@ -24,10 +24,15 @@ mod projection;
 mod time;
 
 pub use agent::{
-    ActionAffordance, AffordanceClass, ContractBasis, HandoffCapsule, KnowledgeCell, PossibleWorld,
-    SituationCapsule, SituationFrame, WorldEnvelope,
+    ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
+    HandoffPublishParams, KnowledgeCell, PossibleWorld, SituationCapsule, SituationFrame,
+    WorldEnvelope,
 };
-pub use canonical::{CanonicalEncode, CanonicalEncoder};
+pub use canonical::{
+    CANONICAL_FORMAT_MAGIC, CANONICAL_VERSION_1, CanonicalDecode, CanonicalDecoder,
+    CanonicalEncode, CanonicalEncoder, CanonicalVersionEnvelope, MAX_CANONICAL_BYTES_LEN,
+    MAX_CANONICAL_TEXT_BYTES,
+};
 pub use compression::SemanticCompressionReceipt;
 pub use context_binding::{
     ContextBindingError, ContextExpansionBinding, ContextExpansionBindingSet,
@@ -35,7 +40,8 @@ pub use context_binding::{
 };
 pub use continuation::*;
 pub use contract::{
-    BudgetVector, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
+    BudgetDimension, BudgetError, BudgetLogRecord, BudgetQuantity, BudgetVector,
+    BudgetVectorBuilder, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
     KnowledgeState, Plane, ProvenanceClass, RecoveryClass, RuntimeOutcome,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
@@ -47,7 +53,7 @@ pub use event::{EventEvidence, EventHypothesis, EventKind, EventState, Probabili
 pub use evidence::{
     ClockBasis, CoverageContinuity, CoverageStopReason, CoverageWitness, EvidenceDelta,
     EvidenceDeltaBatch, LedgerAnchor, LedgerSnapshot, ObjectRevision, ReferenceLedger,
-    SensorCapsule,
+    SensorCapsule, SensorSourceBytesSpec,
 };
 pub use hydration::{
     HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel,
@@ -55,9 +61,16 @@ pub use hydration::{
     HydrationRequestSpec, HydrationResponse, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
 };
 pub use ids::{
-    BatchId, CapsuleId, EventId, HandoffId, IdempotencyKey, MissionId, ObjectId, ObligationId,
-    OperationId, PrincipalId, SensorId, SessionId, StreamId,
+    AdapterEpoch, AdapterGeneration, AffordanceId, BatchId, CalibrationGeneration, CapsuleId,
+    CaseId, ContextPackId, DeviceGeneration, DeviceId, EpisodeId, Epoch, EventId, FindingId,
+    Generation, GraphGeneration, HandoffId, HypothesisId, IdempotencyKey, IdentityLifecycleState,
+    LedgerEpoch, MissionId, ModelGeneration, ObjectId, ObligationId, OntologyGeneration,
+    OperationId, PlanId, PolicyEpoch, PolicyGeneration, PolicyId, PrincipalId, PrivacyEpoch,
+    PrivacyGeneration, PropertyId, SchemaEpoch, SchemaId, SearchGeneration, SensorId, SessionId,
+    StreamGeneration, StreamId, TombstoneId, TombstoneReason, TombstoneRecord, TombstoneRegistry,
+    TrackId, WorkspaceId,
 };
+
 pub use projection::{
     BranchCondition, CompressionCompleteness, CompressionLossClass, CompressionStopReason,
     CompressionTransform, CompressionTransformKind, ContextItem, ControlEnvelope,
