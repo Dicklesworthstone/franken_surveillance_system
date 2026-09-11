@@ -277,12 +277,12 @@ impl InMemoryObjectStore {
                     self.require_verified(*child)?;
                     pending.push(*child);
                 }
-            } else if let Ok(bytes) = self.read_verified(digest) {
-                if let Ok(manifest) = ObjectManifest::from_canonical_bytes(bytes) {
-                    for child in manifest.children().iter().rev() {
-                        self.require_verified(*child)?;
-                        pending.push(*child);
-                    }
+            } else if let Ok(bytes) = self.read_verified(digest)
+                && let Ok(manifest) = ObjectManifest::from_canonical_bytes(bytes)
+            {
+                for child in manifest.children().iter().rev() {
+                    self.require_verified(*child)?;
+                    pending.push(*child);
                 }
             }
         }

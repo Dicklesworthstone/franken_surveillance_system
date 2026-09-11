@@ -44,10 +44,10 @@ impl ObjectManifest {
                 return Err(ObjectError::DuplicateChild(*child));
             }
         }
-        if let Some(metadata) = metadata_digest {
-            if !seen.insert(metadata) {
-                return Err(ObjectError::DuplicateChild(metadata));
-            }
+        if let Some(metadata) = metadata_digest
+            && !seen.insert(metadata)
+        {
+            return Err(ObjectError::DuplicateChild(metadata));
         }
         let mut children = input_children;
         if let Some(metadata) = metadata_digest {
