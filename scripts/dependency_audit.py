@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""Cargo dependency and target root audit oracle (fss-x4a.6.18).
+
+Enumerates the full Cargo workspace semantic surface, all target roots,
+workspace globs/excludes, target cfg dependency tables, and verifies
+unconditional #![forbid(unsafe_code)] enforcement across all targets.
+"""
 from __future__ import annotations
 
 import argparse
