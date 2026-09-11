@@ -267,11 +267,11 @@ mod tests {
             expansion_handles: vec![ExpansionHandle {
                 handle: "context-expand:knowledge".to_owned(),
                 purpose: "hydrate omitted knowledge".to_owned(),
-                estimated_cost: BudgetVector {
-                    tokens: 100,
-                    bytes: 1_000,
-                    ..BudgetVector::default()
-                },
+                estimated_cost: BudgetVector::builder()
+                    .tokens(100)
+                    .bytes(1_000)
+                    .build()
+                    .expect("valid estimated cost"),
             }],
             selection_frontier_digest: Some(ContentDigest::sha256(b"frontier")),
             stop_reason: CompressionStopReason::TargetBudget,

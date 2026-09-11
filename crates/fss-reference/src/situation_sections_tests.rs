@@ -60,16 +60,15 @@ fn situation(long_optional_why: bool) -> Result<ReferenceSituation, ContractErro
         supported_worlds: retained_worlds,
         unsafe_worlds: BTreeSet::new(),
         required_capabilities: BTreeSet::from(["capability:evidence.query".to_owned()]),
-        cost: BudgetVector {
-            latency_ms: 100,
-            tokens: 10,
-            bytes: 128,
-            cpu_millis: 5,
-            accelerator_millis: 2,
-            energy_millijoules: 7,
-            privacy_exposure: 0.1,
-            ..BudgetVector::default()
-        },
+        cost: BudgetVector::builder()
+            .latency_ms(100)
+            .tokens(10)
+            .bytes(128)
+            .cpu_millis(5)
+            .accelerator_millis(2)
+            .energy_millijoules(7)
+            .privacy_exposure(0.1)
+            .build()?,
         reversible: true,
         branch_predicate: None,
     };
@@ -137,26 +136,27 @@ fn situation(long_optional_why: bool) -> Result<ReferenceSituation, ContractErro
 fn spec(target_tokens: u64) -> ReferenceProjectionSpec {
     ReferenceProjectionSpec {
         view_id: "AVIEW-001".to_owned(),
-        available_resources: BudgetVector {
-            latency_ms: 10_000,
-            tokens: 20_000,
-            bytes: 1_000_000,
-            model_calls: 10,
-            cpu_millis: 10_000,
-            accelerator_millis: 10_000,
-            energy_millijoules: 1_000_000,
-            network_bytes: 1_000_000,
-            storage_operations: 10_000,
-            privacy_exposure: 10.0,
-            operator_attention_seconds: 1_000.0,
-        },
-        reserved_resources: BudgetVector {
-            latency_ms: 100,
-            tokens: 100,
-            bytes: 1_000,
-            storage_operations: 1,
-            ..BudgetVector::default()
-        },
+        available_resources: BudgetVector::builder()
+            .latency_ms(10_000)
+            .tokens(20_000)
+            .bytes(1_000_000)
+            .model_calls(10)
+            .cpu_millis(10_000)
+            .accelerator_millis(10_000)
+            .energy_millijoules(1_000_000)
+            .network_bytes(1_000_000)
+            .storage_operations(10_000)
+            .privacy_exposure(10.0)
+            .operator_attention_seconds(1_000.0)
+            .build()
+            .unwrap_or(BudgetVector::ZERO),
+        reserved_resources: BudgetVector::builder()
+            .latency_ms(100)
+            .tokens(100)
+            .bytes(1_000)
+            .storage_operations(1)
+            .build()
+            .unwrap_or(BudgetVector::ZERO),
         pressure: ResourcePressure::Elevated,
         degraded_dimensions: BTreeSet::from(["model_calls".to_owned()]),
         target_tokens,

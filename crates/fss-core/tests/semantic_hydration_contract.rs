@@ -55,35 +55,35 @@ fn costs() -> BTreeMap<HydrationLevel, BudgetVector> {
     BTreeMap::from([
         (
             HydrationLevel::H0,
-            BudgetVector {
-                latency_ms: 5,
-                tokens: 32,
-                bytes: 256,
-                cpu_millis: 1,
-                ..BudgetVector::default()
-            },
+            BudgetVector::builder()
+                .latency_ms(5)
+                .tokens(32)
+                .bytes(256)
+                .cpu_millis(1)
+                .build()
+                .expect("valid budget"),
         ),
         (
             HydrationLevel::H1,
-            BudgetVector {
-                latency_ms: 10,
-                tokens: 128,
-                bytes: 1_024,
-                cpu_millis: 2,
-                privacy_exposure: 0.1,
-                ..BudgetVector::default()
-            },
+            BudgetVector::builder()
+                .latency_ms(10)
+                .tokens(128)
+                .bytes(1_024)
+                .cpu_millis(2)
+                .privacy_exposure(0.1)
+                .build()
+                .expect("valid budget"),
         ),
         (
             HydrationLevel::H2,
-            BudgetVector {
-                latency_ms: 20,
-                tokens: 256,
-                bytes: 4_096,
-                cpu_millis: 4,
-                privacy_exposure: 0.2,
-                ..BudgetVector::default()
-            },
+            BudgetVector::builder()
+                .latency_ms(20)
+                .tokens(256)
+                .bytes(4_096)
+                .cpu_millis(4)
+                .privacy_exposure(0.2)
+                .build()
+                .expect("valid budget"),
         ),
     ])
 }

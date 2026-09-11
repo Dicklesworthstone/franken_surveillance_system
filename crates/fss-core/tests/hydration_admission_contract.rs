@@ -55,11 +55,11 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
             .map(|level| {
                 (
                     *level,
-                    BudgetVector {
-                        bytes: 1_024,
-                        tokens: 256,
-                        ..BudgetVector::default()
-                    },
+                    BudgetVector::builder()
+                        .bytes(1_024)
+                        .tokens(256)
+                        .build()
+                        .expect("valid cost"),
                 )
             })
             .collect(),
@@ -91,11 +91,11 @@ fn request(
             .cloned()
             .collect(),
         authorized_privacy_classes: BTreeSet::from([handle.privacy_class.clone()]),
-        budget: BudgetVector {
-            bytes: 2_048,
-            tokens: 512,
-            ..BudgetVector::default()
-        },
+        budget: BudgetVector::builder()
+            .bytes(2_048)
+            .tokens(512)
+            .build()
+            .expect("valid budget"),
         purpose: HydrationPurpose::Qualification,
         continuation: None,
         issued_at: TimestampNs(10),

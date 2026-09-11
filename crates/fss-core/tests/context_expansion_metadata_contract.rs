@@ -30,15 +30,15 @@ fn basis() -> ContractBasis {
 }
 
 fn exact_cost() -> BudgetVector {
-    BudgetVector {
-        latency_ms: 25,
-        tokens: 128,
-        bytes: 1_024,
-        cpu_millis: 5,
-        storage_operations: 1,
-        privacy_exposure: 0.1,
-        ..BudgetVector::default()
-    }
+    BudgetVector::builder()
+        .latency_ms(25)
+        .tokens(128)
+        .bytes(1_024)
+        .cpu_millis(5)
+        .storage_operations(1)
+        .privacy_exposure(0.1)
+        .build()
+        .expect("valid budget")
 }
 
 fn descriptor(anchor: &LedgerAnchor) -> Result<SemanticHandle, Box<dyn Error>> {

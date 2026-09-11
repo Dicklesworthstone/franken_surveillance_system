@@ -749,10 +749,10 @@ pub struct BudgetVector {
     pub network_bytes: u64,
     /// Storage-operation budget.
     pub storage_operations: u64,
-    /// Privacy-exposure budget in an application-defined monotone scale.
-    pub privacy_exposure: f64,
-    /// Operator-attention budget in seconds.
-    pub operator_attention_seconds: f64,
+    /// Privacy-exposure budget (validated quantity).
+    privacy_exposure: BudgetQuantity,
+    /// Operator-attention budget (validated quantity).
+    operator_attention_seconds: BudgetQuantity,
 }
 
 impl BudgetVector {
@@ -767,8 +767,8 @@ impl BudgetVector {
         energy_millijoules: 0,
         network_bytes: 0,
         storage_operations: 0,
-        privacy_exposure: 0.0,
-        operator_attention_seconds: 0.0,
+        privacy_exposure: BudgetQuantity::ZERO,
+        operator_attention_seconds: BudgetQuantity::ZERO,
     };
 
     /// Constructs and validates a budget vector from a typed parameter specification.
@@ -791,8 +791,8 @@ impl BudgetVector {
             energy_millijoules: spec.energy_millijoules,
             network_bytes: spec.network_bytes,
             storage_operations: spec.storage_operations,
-            privacy_exposure: privacy.get(),
-            operator_attention_seconds: attention.get(),
+            privacy_exposure: privacy,
+            operator_attention_seconds: attention,
         })
     }
 
@@ -809,8 +809,8 @@ impl BudgetVector {
             energy_millijoules: spec.energy_millijoules,
             network_bytes: spec.network_bytes,
             storage_operations: spec.storage_operations,
-            privacy_exposure: spec.privacy_exposure.get(),
-            operator_attention_seconds: spec.operator_attention_seconds.get(),
+            privacy_exposure: spec.privacy_exposure,
+            operator_attention_seconds: spec.operator_attention_seconds,
         }
     }
 
@@ -822,65 +822,42 @@ impl BudgetVector {
 
     /// Validates every component of the budget vector.
     ///
-    /// Rejects negative, NaN, and infinite floating quantities with stable typed errors.
-    pub fn validate(&self) -> Result<(), BudgetError> {
-        let _ = BudgetQuantity::new(self.privacy_exposure, BudgetDimension::PrivacyExposure)?;
-        let _ = BudgetQuantity::new(
-            self.operator_attention_seconds,
-            BudgetDimension::OperatorAttentionSeconds,
-        )?;
+    /// Validated-by-construction: continuous dimensions are stored as validated BudgetQuantity.
+    pub const fn validate(&self) -> Result<(), BudgetError> {
         Ok(())
     }
 
     /// Returns true when every component is finite and nonnegative.
     #[must_use]
-    pub fn is_valid(self) -> bool {
-        self.validate().is_ok()
+    pub const fn is_valid(self) -> bool {
+        true
     }
 
     /// Returns a normalized copy where negative zero (-0.0) is converted to +0.0.
-    pub fn normalized(self) -> Result<Self, BudgetError> {
-        self.validate()?;
-        let privacy = if self.privacy_exposure == 0.0 {
-            0.0
-        } else {
-            self.privacy_exposure
-        };
-        let attention = if self.operator_attention_seconds == 0.0 {
-            0.0
-        } else {
-            self.operator_attention_seconds
-        };
-        Ok(Self {
-            privacy_exposure: privacy,
-            operator_attention_seconds: attention,
-            ..self
-        })
+    pub const fn normalized(self) -> Result<Self, BudgetError> {
+        Ok(self)
     }
 
     /// Accessor for privacy exposure continuous quantity.
     #[must_use]
     pub const fn privacy_exposure(&self) -> f64 {
-        self.privacy_exposure
+        self.privacy_exposure.get()
     }
 
     /// Accessor for operator attention continuous quantity in seconds.
     #[must_use]
     pub const fn operator_attention_seconds(&self) -> f64 {
-        self.operator_attention_seconds
+        self.operator_attention_seconds.get()
     }
 
     /// Encapsulates privacy exposure as a validated `BudgetQuantity`.
-    pub fn privacy_quantity(&self) -> Result<BudgetQuantity, BudgetError> {
-        BudgetQuantity::new(self.privacy_exposure, BudgetDimension::PrivacyExposure)
+    pub const fn privacy_quantity(&self) -> Result<BudgetQuantity, BudgetError> {
+        Ok(self.privacy_exposure)
     }
 
     /// Encapsulates operator attention as a validated `BudgetQuantity`.
-    pub fn operator_attention_quantity(&self) -> Result<BudgetQuantity, BudgetError> {
-        BudgetQuantity::new(
-            self.operator_attention_seconds,
-            BudgetDimension::OperatorAttentionSeconds,
-        )
+    pub const fn operator_attention_quantity(&self) -> Result<BudgetQuantity, BudgetError> {
+        Ok(self.operator_attention_seconds)
     }
 
     /// Returns true when every component fits within another valid budget.
@@ -977,19 +954,13 @@ impl BudgetVector {
                 operation: "add",
             })?;
 
-        let p1 = BudgetQuantity::new(self.privacy_exposure, BudgetDimension::PrivacyExposure)?;
-        let p2 = BudgetQuantity::new(other.privacy_exposure, BudgetDimension::PrivacyExposure)?;
-        let privacy = p1.checked_add(p2, BudgetDimension::PrivacyExposure)?;
-
-        let a1 = BudgetQuantity::new(
-            self.operator_attention_seconds,
-            BudgetDimension::OperatorAttentionSeconds,
-        )?;
-        let a2 = BudgetQuantity::new(
+        let privacy = self
+            .privacy_exposure
+            .checked_add(other.privacy_exposure, BudgetDimension::PrivacyExposure)?;
+        let attention = self.operator_attention_seconds.checked_add(
             other.operator_attention_seconds,
             BudgetDimension::OperatorAttentionSeconds,
         )?;
-        let attention = a1.checked_add(a2, BudgetDimension::OperatorAttentionSeconds)?;
 
         Ok(Self {
             latency_ms,
@@ -1001,8 +972,8 @@ impl BudgetVector {
             energy_millijoules,
             network_bytes,
             storage_operations,
-            privacy_exposure: privacy.get(),
-            operator_attention_seconds: attention.get(),
+            privacy_exposure: privacy,
+            operator_attention_seconds: attention,
         })
     }
 
@@ -1101,19 +1072,13 @@ impl BudgetVector {
             self.storage_operations - other.storage_operations
         };
 
-        let p1 = BudgetQuantity::new(self.privacy_exposure, BudgetDimension::PrivacyExposure)?;
-        let p2 = BudgetQuantity::new(other.privacy_exposure, BudgetDimension::PrivacyExposure)?;
-        let privacy = p1.checked_sub(p2, BudgetDimension::PrivacyExposure)?;
-
-        let a1 = BudgetQuantity::new(
-            self.operator_attention_seconds,
-            BudgetDimension::OperatorAttentionSeconds,
-        )?;
-        let a2 = BudgetQuantity::new(
+        let privacy = self
+            .privacy_exposure
+            .checked_sub(other.privacy_exposure, BudgetDimension::PrivacyExposure)?;
+        let attention = self.operator_attention_seconds.checked_sub(
             other.operator_attention_seconds,
             BudgetDimension::OperatorAttentionSeconds,
         )?;
-        let attention = a1.checked_sub(a2, BudgetDimension::OperatorAttentionSeconds)?;
 
         Ok(Self {
             latency_ms,
@@ -1125,8 +1090,8 @@ impl BudgetVector {
             energy_millijoules,
             network_bytes,
             storage_operations,
-            privacy_exposure: privacy.get(),
-            operator_attention_seconds: attention.get(),
+            privacy_exposure: privacy,
+            operator_attention_seconds: attention,
         })
     }
 
@@ -1186,14 +1151,12 @@ impl BudgetVector {
         let storage_operations =
             scale_u64(self.storage_operations, BudgetDimension::StorageOperations)?;
 
-        let p = BudgetQuantity::new(self.privacy_exposure, BudgetDimension::PrivacyExposure)?;
-        let privacy = p.checked_scale(factor, BudgetDimension::PrivacyExposure)?;
-
-        let a = BudgetQuantity::new(
-            self.operator_attention_seconds,
-            BudgetDimension::OperatorAttentionSeconds,
-        )?;
-        let attention = a.checked_scale(factor, BudgetDimension::OperatorAttentionSeconds)?;
+        let privacy = self
+            .privacy_exposure
+            .checked_scale(factor, BudgetDimension::PrivacyExposure)?;
+        let attention = self
+            .operator_attention_seconds
+            .checked_scale(factor, BudgetDimension::OperatorAttentionSeconds)?;
 
         Ok(Self {
             latency_ms,
@@ -1205,8 +1168,8 @@ impl BudgetVector {
             energy_millijoules,
             network_bytes,
             storage_operations,
-            privacy_exposure: privacy.get(),
-            operator_attention_seconds: attention.get(),
+            privacy_exposure: privacy,
+            operator_attention_seconds: attention,
         })
     }
 
@@ -1307,12 +1270,12 @@ impl BudgetVector {
             privacy_exposure: if predicate(BudgetDimension::PrivacyExposure) {
                 self.privacy_exposure
             } else {
-                0.0
+                BudgetQuantity::ZERO
             },
             operator_attention_seconds: if predicate(BudgetDimension::OperatorAttentionSeconds) {
                 self.operator_attention_seconds
             } else {
-                0.0
+                BudgetQuantity::ZERO
             },
         })
     }
@@ -1381,25 +1344,20 @@ impl BudgetVector {
 
     /// Encodes to canonical binary format (exactly 84 bytes).
     ///
-    /// Fails closed (emits nothing) if the instance contains invalid quantities
-    /// (e.g. constructed via struct literal bypassing validation). Never silently
-    /// falls back to unvalidated values or emits NaN bits.
+    /// Validated-by-construction: BudgetVector fields are guaranteed valid,
+    /// and continuous dimensions emit canonical IEEE-754 bit encodings directly.
     pub fn encode_to_canonical(&self, encoder: &mut CanonicalEncoder) {
-        let norm = match self.normalized() {
-            Ok(v) => v,
-            Err(_) => return,
-        };
-        encoder.u64(norm.latency_ms);
-        encoder.u64(norm.tokens);
-        encoder.u64(norm.bytes);
-        encoder.u32(norm.model_calls);
-        encoder.u64(norm.cpu_millis);
-        encoder.u64(norm.accelerator_millis);
-        encoder.u64(norm.energy_millijoules);
-        encoder.u64(norm.network_bytes);
-        encoder.u64(norm.storage_operations);
-        encoder.u64(canonical_f64_bits(norm.privacy_exposure));
-        encoder.u64(canonical_f64_bits(norm.operator_attention_seconds));
+        encoder.u64(self.latency_ms);
+        encoder.u64(self.tokens);
+        encoder.u64(self.bytes);
+        encoder.u32(self.model_calls);
+        encoder.u64(self.cpu_millis);
+        encoder.u64(self.accelerator_millis);
+        encoder.u64(self.energy_millijoules);
+        encoder.u64(self.network_bytes);
+        encoder.u64(self.storage_operations);
+        encoder.u64(self.privacy_exposure.canonical_bits());
+        encoder.u64(self.operator_attention_seconds.canonical_bits());
     }
 
     /// Decodes from canonical binary format (exactly 84 bytes), rejecting invalid quantities.
@@ -1969,10 +1927,6 @@ impl BudgetLogRecord {
         out.push_str("}\n");
         out
     }
-}
-
-fn canonical_f64_bits(value: f64) -> u64 {
-    if value == 0.0 { 0 } else { value.to_bits() }
 }
 
 /// Stable failures raised by the reference semantic kernel.

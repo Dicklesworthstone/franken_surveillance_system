@@ -894,56 +894,56 @@ fn policy_hypothesis(state: EventState) -> HypothesisDisposition {
 }
 
 fn alert_prepare_cost() -> BudgetVector {
-    BudgetVector {
-        latency_ms: 10,
-        bytes: 2_048,
-        cpu_millis: 5,
-        storage_operations: 2,
-        operator_attention_seconds: 1.0,
-        ..BudgetVector::default()
-    }
+    BudgetVector::builder()
+        .latency_ms(10)
+        .bytes(2_048)
+        .cpu_millis(5)
+        .storage_operations(2)
+        .operator_attention_seconds(1.0)
+        .build()
+        .expect("valid budget")
 }
 
 fn alert_commit_cost() -> BudgetVector {
-    BudgetVector {
-        latency_ms: 5_000,
-        bytes: 4_096,
-        network_bytes: 4_096,
-        storage_operations: 4,
-        privacy_exposure: 1.0,
-        operator_attention_seconds: 2.0,
-        ..BudgetVector::default()
-    }
+    BudgetVector::builder()
+        .latency_ms(5_000)
+        .bytes(4_096)
+        .network_bytes(4_096)
+        .storage_operations(4)
+        .privacy_exposure(1.0)
+        .operator_attention_seconds(2.0)
+        .build()
+        .expect("valid budget")
 }
 
 fn reconcile_cost() -> BudgetVector {
-    BudgetVector {
-        latency_ms: 2_000,
-        bytes: 2_048,
-        network_bytes: 2_048,
-        storage_operations: 2,
-        operator_attention_seconds: 1.0,
-        ..BudgetVector::default()
-    }
+    BudgetVector::builder()
+        .latency_ms(2_000)
+        .bytes(2_048)
+        .network_bytes(2_048)
+        .storage_operations(2)
+        .operator_attention_seconds(1.0)
+        .build()
+        .expect("valid budget")
 }
 
 fn investigate_cost() -> BudgetVector {
-    BudgetVector {
-        latency_ms: 1_000,
-        bytes: 16_384,
-        cpu_millis: 50,
-        storage_operations: 4,
-        privacy_exposure: 0.25,
-        operator_attention_seconds: 1.0,
-        ..BudgetVector::default()
-    }
+    BudgetVector::builder()
+        .latency_ms(1_000)
+        .bytes(16_384)
+        .cpu_millis(50)
+        .storage_operations(4)
+        .privacy_exposure(0.25)
+        .operator_attention_seconds(1.0)
+        .build()
+        .expect("valid budget")
 }
 
 fn wait_cost() -> BudgetVector {
-    BudgetVector {
-        latency_ms: 60_000,
-        bytes: 512,
-        storage_operations: 1,
-        ..BudgetVector::default()
-    }
+    BudgetVector::builder()
+        .latency_ms(60_000)
+        .bytes(512)
+        .storage_operations(1)
+        .build()
+        .expect("valid budget")
 }

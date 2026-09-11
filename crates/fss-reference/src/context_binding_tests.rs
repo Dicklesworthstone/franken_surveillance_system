@@ -63,14 +63,13 @@ fn situation() -> Result<ReferenceSituation, ContractError> {
         supported_worlds: envelope.world_ids(),
         unsafe_worlds: BTreeSet::new(),
         required_capabilities: BTreeSet::from(["capability:evidence.query".to_owned()]),
-        cost: BudgetVector {
-            latency_ms: 100,
-            tokens: 10,
-            bytes: 128,
-            cpu_millis: 5,
-            privacy_exposure: 0.1,
-            ..BudgetVector::default()
-        },
+        cost: BudgetVector::builder()
+            .latency_ms(100)
+            .tokens(10)
+            .bytes(128)
+            .cpu_millis(5)
+            .privacy_exposure(0.1)
+            .build()?,
         reversible: true,
         branch_predicate: None,
     };
@@ -122,26 +121,27 @@ fn situation() -> Result<ReferenceSituation, ContractError> {
 fn projection_spec() -> ReferenceProjectionSpec {
     ReferenceProjectionSpec {
         view_id: "AVIEW-001".to_owned(),
-        available_resources: BudgetVector {
-            latency_ms: 10_000,
-            tokens: 20_000,
-            bytes: 1_000_000,
-            model_calls: 10,
-            cpu_millis: 10_000,
-            accelerator_millis: 10_000,
-            energy_millijoules: 1_000_000,
-            network_bytes: 1_000_000,
-            storage_operations: 10_000,
-            privacy_exposure: 10.0,
-            operator_attention_seconds: 1_000.0,
-        },
-        reserved_resources: BudgetVector {
-            latency_ms: 100,
-            tokens: 100,
-            bytes: 1_000,
-            storage_operations: 1,
-            ..BudgetVector::default()
-        },
+        available_resources: BudgetVector::builder()
+            .latency_ms(10_000)
+            .tokens(20_000)
+            .bytes(1_000_000)
+            .model_calls(10)
+            .cpu_millis(10_000)
+            .accelerator_millis(10_000)
+            .energy_millijoules(1_000_000)
+            .network_bytes(1_000_000)
+            .storage_operations(10_000)
+            .privacy_exposure(10.0)
+            .operator_attention_seconds(1_000.0)
+            .build()
+            .unwrap_or(BudgetVector::ZERO),
+        reserved_resources: BudgetVector::builder()
+            .latency_ms(100)
+            .tokens(100)
+            .bytes(1_000)
+            .storage_operations(1)
+            .build()
+            .unwrap_or(BudgetVector::ZERO),
         pressure: ResourcePressure::Elevated,
         degraded_dimensions: BTreeSet::from(["model_calls".to_owned()]),
         target_tokens: 2_000,
@@ -167,25 +167,25 @@ fn descriptor_for_slot(
     let estimated_costs = BTreeMap::from([
         (
             HydrationLevel::H0,
-            BudgetVector {
-                latency_ms: 10,
-                tokens: 32,
-                bytes: 256,
-                storage_operations: 1,
-                ..BudgetVector::default()
-            },
+            BudgetVector::builder()
+                .latency_ms(10)
+                .tokens(32)
+                .bytes(256)
+                .storage_operations(1)
+                .build()
+                .unwrap_or(BudgetVector::ZERO),
         ),
         (
             HydrationLevel::H1,
-            BudgetVector {
-                latency_ms: 100,
-                tokens: 1_024,
-                bytes: 16_384,
-                cpu_millis: 10,
-                storage_operations: 1,
-                privacy_exposure: 0.1,
-                ..BudgetVector::default()
-            },
+            BudgetVector::builder()
+                .latency_ms(100)
+                .tokens(1_024)
+                .bytes(16_384)
+                .cpu_millis(10)
+                .storage_operations(1)
+                .privacy_exposure(0.1)
+                .build()
+                .unwrap_or(BudgetVector::ZERO),
         ),
     ]);
     SemanticHandle::publish(SemanticHandleSpec {

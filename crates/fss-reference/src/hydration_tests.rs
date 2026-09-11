@@ -59,19 +59,19 @@ fn capabilities() -> BTreeMap<HydrationLevel, BTreeSet<String>> {
 
 fn cost(level: HydrationLevel) -> BudgetVector {
     let scale = u64::from(level.ordinal()) + 1;
-    BudgetVector {
-        latency_ms: scale * 10,
-        tokens: scale * 100,
-        bytes: scale * 1_000,
-        cpu_millis: scale * 5,
-        accelerator_millis: scale * 2,
-        energy_millijoules: scale * 20,
-        network_bytes: scale * 500,
-        storage_operations: scale,
-        privacy_exposure: scale as f64 / 10.0,
-        operator_attention_seconds: scale as f64,
-        ..BudgetVector::default()
-    }
+    BudgetVector::builder()
+        .latency_ms(scale * 10)
+        .tokens(scale * 100)
+        .bytes(scale * 1_000)
+        .cpu_millis(scale * 5)
+        .accelerator_millis(scale * 2)
+        .energy_millijoules(scale * 20)
+        .network_bytes(scale * 500)
+        .storage_operations(scale)
+        .privacy_exposure(scale as f64 / 10.0)
+        .operator_attention_seconds(scale as f64)
+        .build()
+        .expect("valid budget")
 }
 
 fn costs() -> BTreeMap<HydrationLevel, BudgetVector> {
@@ -167,19 +167,20 @@ fn request(
 }
 
 fn ample_budget() -> BudgetVector {
-    BudgetVector {
-        latency_ms: 10_000,
-        tokens: 100_000,
-        bytes: 100_000_000,
-        model_calls: 100,
-        cpu_millis: 100_000,
-        accelerator_millis: 100_000,
-        energy_millijoules: 100_000_000,
-        network_bytes: 100_000_000,
-        storage_operations: 100_000,
-        privacy_exposure: 100.0,
-        operator_attention_seconds: 100_000.0,
-    }
+    BudgetVector::builder()
+        .latency_ms(10_000)
+        .tokens(100_000)
+        .bytes(100_000_000)
+        .model_calls(100)
+        .cpu_millis(100_000)
+        .accelerator_millis(100_000)
+        .energy_millijoules(100_000_000)
+        .network_bytes(100_000_000)
+        .storage_operations(100_000)
+        .privacy_exposure(100.0)
+        .operator_attention_seconds(100_000.0)
+        .build()
+        .expect("valid budget")
 }
 
 #[test]

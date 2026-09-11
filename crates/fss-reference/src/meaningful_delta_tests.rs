@@ -96,16 +96,15 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             supported_worlds: retained_worlds,
             unsafe_worlds: BTreeSet::new(),
             required_capabilities: BTreeSet::from(["capability:evidence.query".to_owned()]),
-            cost: BudgetVector {
-                latency_ms: 100,
-                tokens: 50,
-                bytes: 1_024,
-                cpu_millis: 10,
-                accelerator_millis: 5,
-                energy_millijoules: 20,
-                privacy_exposure: 0.1,
-                ..BudgetVector::default()
-            },
+            cost: BudgetVector::builder()
+                .latency_ms(100)
+                .tokens(50)
+                .bytes(1_024)
+                .cpu_millis(10)
+                .accelerator_millis(5)
+                .energy_millijoules(20)
+                .privacy_exposure(0.1)
+                .build()?,
             reversible: true,
             branch_predicate: None,
         }]
@@ -183,26 +182,25 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
         situation,
         &ReferenceProjectionSpec {
             view_id: "AVIEW-001".to_owned(),
-            available_resources: BudgetVector {
-                latency_ms: 10_000,
-                tokens: 50_000,
-                bytes: 2_000_000,
-                model_calls: 10,
-                cpu_millis: 10_000,
-                accelerator_millis: 10_000,
-                energy_millijoules: 1_000_000,
-                network_bytes: 1_000_000,
-                storage_operations: 10_000,
-                privacy_exposure: 10.0,
-                operator_attention_seconds: 1_000.0,
-            },
-            reserved_resources: BudgetVector {
-                latency_ms: 100,
-                tokens: 100,
-                bytes: 1_000,
-                storage_operations: 1,
-                ..BudgetVector::default()
-            },
+            available_resources: BudgetVector::builder()
+                .latency_ms(10_000)
+                .tokens(50_000)
+                .bytes(2_000_000)
+                .model_calls(10)
+                .cpu_millis(10_000)
+                .accelerator_millis(10_000)
+                .energy_millijoules(1_000_000)
+                .network_bytes(1_000_000)
+                .storage_operations(10_000)
+                .privacy_exposure(10.0)
+                .operator_attention_seconds(1_000.0)
+                .build()?,
+            reserved_resources: BudgetVector::builder()
+                .latency_ms(100)
+                .tokens(100)
+                .bytes(1_000)
+                .storage_operations(1)
+                .build()?,
             pressure: variant.pressure,
             degraded_dimensions: variant.degraded_dimensions.clone(),
             target_tokens: 25_000,

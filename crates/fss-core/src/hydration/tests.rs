@@ -44,14 +44,14 @@ fn costs(maximum: HydrationLevel) -> BTreeMap<HydrationLevel, BudgetVector> {
             let scale = u64::from(level.ordinal()) + 1;
             (
                 level,
-                BudgetVector {
-                    latency_ms: scale * 10,
-                    tokens: scale * 100,
-                    bytes: scale * 1_000,
-                    cpu_millis: scale * 5,
-                    privacy_exposure: scale as f64 / 10.0,
-                    ..BudgetVector::default()
-                },
+                BudgetVector::builder()
+                    .latency_ms(scale * 10)
+                    .tokens(scale * 100)
+                    .bytes(scale * 1_000)
+                    .cpu_millis(scale * 5)
+                    .privacy_exposure(scale as f64 / 10.0)
+                    .build()
+                    .expect("valid budget"),
             )
         })
         .collect()

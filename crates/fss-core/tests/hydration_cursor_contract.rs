@@ -51,10 +51,10 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
             .map(|level| {
                 (
                     level,
-                    BudgetVector {
-                        bytes: 1_024,
-                        ..BudgetVector::default()
-                    },
+                    BudgetVector::builder()
+                        .bytes(1_024)
+                        .build()
+                        .expect("valid cost"),
                 )
             })
             .collect(),
@@ -77,10 +77,10 @@ fn request(handle: &SemanticHandle) -> Result<HydrationRequest, HydrationError> 
         allow_lower_level: false,
         available_capabilities: BTreeSet::new(),
         authorized_privacy_classes: BTreeSet::from(["private:property".to_owned()]),
-        budget: BudgetVector {
-            bytes: 1_024,
-            ..BudgetVector::default()
-        },
+        budget: BudgetVector::builder()
+            .bytes(1_024)
+            .build()
+            .expect("valid budget"),
         purpose: HydrationPurpose::IncidentAdjudication,
         continuation: None,
         issued_at: TimestampNs(20),
@@ -143,10 +143,10 @@ fn receipt(
         requested_level: HydrationLevel::H1,
         delivered_level: Some(HydrationLevel::H1),
         availability: HandleAvailability::Available,
-        cost: BudgetVector {
-            bytes: 1_024,
-            ..BudgetVector::default()
-        },
+        cost: BudgetVector::builder()
+            .bytes(1_024)
+            .build()
+            .expect("valid cost"),
         completeness: Completeness::Complete,
         artifact_digest: Some(artifact.artifact_digest),
         proof_roots,

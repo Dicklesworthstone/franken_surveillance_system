@@ -481,25 +481,5 @@ fn valid_text(value: &str) -> bool {
 }
 
 fn encode_budget(value: BudgetVector, encoder: &mut CanonicalEncoder) {
-    encoder.u64(value.latency_ms);
-    encoder.u64(value.tokens);
-    encoder.u64(value.bytes);
-    encoder.u32(value.model_calls);
-    encoder.u64(value.cpu_millis);
-    encoder.u64(value.accelerator_millis);
-    encoder.u64(value.energy_millijoules);
-    encoder.u64(value.network_bytes);
-    encoder.u64(value.storage_operations);
-    encoder.u64(canonical_f64_bits(value.privacy_exposure));
-    encoder.u64(canonical_f64_bits(value.operator_attention_seconds));
-}
-
-fn canonical_f64_bits(value: f64) -> u64 {
-    if value == 0.0 {
-        0
-    } else if value.is_nan() {
-        0x7ff8_0000_0000_0000
-    } else {
-        value.to_bits()
-    }
+    value.encode_to_canonical(encoder);
 }

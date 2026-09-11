@@ -325,12 +325,12 @@ fn operation_state_rationale(state: EffectState) -> &'static str {
 }
 
 fn status_cost() -> BudgetVector {
-    BudgetVector {
-        latency_ms: 2_000,
-        bytes: 2_048,
-        network_bytes: 2_048,
-        storage_operations: 2,
-        operator_attention_seconds: 1.0,
-        ..BudgetVector::default()
-    }
+    BudgetVector::builder()
+        .latency_ms(2_000)
+        .bytes(2_048)
+        .network_bytes(2_048)
+        .storage_operations(2)
+        .operator_attention_seconds(1.0)
+        .build()
+        .unwrap_or(BudgetVector::ZERO)
 }

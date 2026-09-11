@@ -766,27 +766,7 @@ fn encode_text_set(values: &BTreeSet<String>, encoder: &mut CanonicalEncoder) {
 }
 
 fn encode_budget(value: BudgetVector, encoder: &mut CanonicalEncoder) {
-    encoder.u64(value.latency_ms);
-    encoder.u64(value.tokens);
-    encoder.u64(value.bytes);
-    encoder.u32(value.model_calls);
-    encoder.u64(value.cpu_millis);
-    encoder.u64(value.accelerator_millis);
-    encoder.u64(value.energy_millijoules);
-    encoder.u64(value.network_bytes);
-    encoder.u64(value.storage_operations);
-    encoder.u64(canonical_f64_bits(value.privacy_exposure));
-    encoder.u64(canonical_f64_bits(value.operator_attention_seconds));
-}
-
-fn canonical_f64_bits(value: f64) -> u64 {
-    if value == 0.0 {
-        0
-    } else if value.is_nan() {
-        0x7ff8_0000_0000_0000
-    } else {
-        value.to_bits()
-    }
+    value.encode_to_canonical(encoder);
 }
 
 fn completeness_code(value: Completeness) -> u8 {
@@ -843,25 +823,22 @@ mod tests {
 
     #[test]
     fn reservations_must_fit_and_float_dimensions_must_be_finite() {
-        let available = BudgetVector {
-            latency_ms: 10,
-            privacy_exposure: 1.0,
-            operator_attention_seconds: 1.0,
-            ..BudgetVector::default()
-        };
-        let reserved = BudgetVector {
-            latency_ms: 11,
-            ..BudgetVector::default()
-        };
+        let available = BudgetVector::builder()
+            .latency_ms(10)
+            .privacy_exposure(1.0)
+            .operator_attention_seconds(1.0)
+            .build()
+            .expect("valid available budget");
+        let reserved = BudgetVector::builder()
+            .latency_ms(11)
+            .build()
+            .expect("valid reserved budget");
         assert_eq!(
             ResourceState::new(available, reserved, ResourcePressure::Nominal, []),
             Err(ContractError::BudgetExhausted)
         );
-        let invalid = BudgetVector {
-            privacy_exposure: f64::NAN,
-            ..BudgetVector::default()
-        };
-        assert!(!invalid.is_valid());
+        let invalid = BudgetVector::builder().privacy_exposure(f64::NAN).build();
+        assert!(invalid.is_err());
     }
 
     #[test]

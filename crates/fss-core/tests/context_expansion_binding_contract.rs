@@ -51,25 +51,25 @@ fn handle(subject: &str, sequence: u64) -> Result<SemanticHandle, HydrationError
     let estimated_costs = BTreeMap::from([
         (
             HydrationLevel::H0,
-            BudgetVector {
-                latency_ms: 10,
-                tokens: 32,
-                bytes: 256,
-                storage_operations: 1,
-                ..BudgetVector::default()
-            },
+            BudgetVector::builder()
+                .latency_ms(10)
+                .tokens(32)
+                .bytes(256)
+                .storage_operations(1)
+                .build()
+                .expect("valid budget"),
         ),
         (
             HydrationLevel::H1,
-            BudgetVector {
-                latency_ms: 25,
-                tokens: 128,
-                bytes: 1_024,
-                cpu_millis: 5,
-                storage_operations: 1,
-                privacy_exposure: 0.1,
-                ..BudgetVector::default()
-            },
+            BudgetVector::builder()
+                .latency_ms(25)
+                .tokens(128)
+                .bytes(1_024)
+                .cpu_millis(5)
+                .storage_operations(1)
+                .privacy_exposure(0.1)
+                .build()
+                .expect("valid budget"),
         ),
     ]);
     SemanticHandle::publish(SemanticHandleSpec {
@@ -145,11 +145,11 @@ fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt
         expansion_handles: vec![ExpansionHandle {
             handle: "slot:receipt:knowledge".to_owned(),
             purpose: "Hydrate omitted knowledge context.".to_owned(),
-            estimated_cost: BudgetVector {
-                tokens: 128,
-                bytes: 1_024,
-                ..BudgetVector::default()
-            },
+            estimated_cost: BudgetVector::builder()
+                .tokens(128)
+                .bytes(1_024)
+                .build()
+                .expect("valid budget"),
         }],
         selection_frontier_digest: Some(ContentDigest::sha256(b"selection-frontier")),
         stop_reason: CompressionStopReason::TargetBudget,

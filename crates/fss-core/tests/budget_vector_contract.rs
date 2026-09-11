@@ -25,8 +25,8 @@ fn zero_budget_is_valid_and_fits_within_itself() {
     assert_eq!(zero.checked_fits_within(&zero), Ok(true));
     assert_eq!(zero.latency_ms, 0);
     assert_eq!(zero.tokens, 0);
-    assert_eq!(zero.privacy_exposure, 0.0);
-    assert_eq!(zero.operator_attention_seconds, 0.0);
+    assert_eq!(zero.privacy_exposure(), 0.0);
+    assert_eq!(zero.operator_attention_seconds(), 0.0);
 }
 
 #[test]
@@ -54,8 +54,8 @@ fn ordinary_valid_budget_construction_via_new_and_builder() -> Result<(), Budget
     assert_eq!(budget.energy_millijoules, 15);
     assert_eq!(budget.network_bytes, 512);
     assert_eq!(budget.storage_operations, 5);
-    assert_eq!(budget.privacy_exposure, 0.5);
-    assert_eq!(budget.operator_attention_seconds, 1.25);
+    assert_eq!(budget.privacy_exposure(), 0.5);
+    assert_eq!(budget.operator_attention_seconds(), 1.25);
 
     // Same via from_quantities
     let quantities_budget = BudgetVector::from_quantities(BudgetQuantitiesSpec {
@@ -99,12 +99,13 @@ fn rejects_negative_floating_quantities_with_typed_error() {
         operator_attention_seconds: 1.0,
         ..Default::default()
     });
-    match res {
-        Err(BudgetError::NegativeQuantity { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
-        }
-        _ => panic!("expected NegativeQuantity for negative privacy_exposure"),
-    }
+    assert!(matches!(
+        res,
+        Err(BudgetError::NegativeQuantity {
+            dimension: BudgetDimension::PrivacyExposure,
+            ..
+        })
+    ));
 
     // Negative operator_attention_seconds
     let res2 = BudgetVector::new(BudgetVectorSpec {
@@ -112,12 +113,13 @@ fn rejects_negative_floating_quantities_with_typed_error() {
         operator_attention_seconds: -100.0,
         ..Default::default()
     });
-    match res2 {
-        Err(BudgetError::NegativeQuantity { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::OperatorAttentionSeconds);
-        }
-        _ => panic!("expected NegativeQuantity for negative operator_attention_seconds"),
-    }
+    assert!(matches!(
+        res2,
+        Err(BudgetError::NegativeQuantity {
+            dimension: BudgetDimension::OperatorAttentionSeconds,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -200,10 +202,10 @@ fn normalizes_negative_zero_deterministically() -> Result<(), BudgetError> {
     })?;
 
     // Both normalize to +0.0 bits
-    assert_eq!(v_neg.privacy_exposure.to_bits(), 0);
-    assert_eq!(v_neg.operator_attention_seconds.to_bits(), 0);
-    assert_eq!(v_pos.privacy_exposure.to_bits(), 0);
-    assert_eq!(v_pos.operator_attention_seconds.to_bits(), 0);
+    assert_eq!(v_neg.privacy_exposure().to_bits(), 0);
+    assert_eq!(v_neg.operator_attention_seconds().to_bits(), 0);
+    assert_eq!(v_pos.privacy_exposure().to_bits(), 0);
+    assert_eq!(v_pos.operator_attention_seconds().to_bits(), 0);
 
     // Canonical bytes and digests are bit-for-bit identical
     let bytes_neg = v_neg.canonical_bytes();
@@ -236,7 +238,7 @@ fn checked_add_succeeds_and_detects_overflow() -> Result<(), BudgetError> {
     let s = v1.checked_add(&v2)?;
     assert_eq!(s.latency_ms, 300);
     assert_eq!(s.tokens, 200);
-    assert_eq!(s.privacy_exposure, 4.0);
+    assert_eq!(s.privacy_exposure(), 4.0);
 
     // Integer overflow detection
     let v_max = BudgetVector::builder().latency_ms(u64::MAX).build()?;
@@ -279,26 +281,28 @@ fn checked_sub_succeeds_and_detects_underflow() -> Result<(), BudgetError> {
     let d = v1.checked_sub(&v2)?;
     assert_eq!(d.latency_ms, 200);
     assert_eq!(d.tokens, 150);
-    assert_eq!(d.privacy_exposure, 3.0);
+    assert_eq!(d.privacy_exposure(), 3.0);
 
     // Underflow on latency
     let underflow = v2.checked_sub(&v1);
-    match underflow {
-        Err(BudgetError::Underflow { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::LatencyMs);
-        }
-        _ => panic!("expected Underflow error on LatencyMs"),
-    }
+    assert!(matches!(
+        underflow,
+        Err(BudgetError::Underflow {
+            dimension: BudgetDimension::LatencyMs,
+            ..
+        })
+    ));
 
     // Underflow on privacy exposure
     let v_priv1 = BudgetVector::builder().privacy_exposure(1.0).build()?;
     let v_priv2 = BudgetVector::builder().privacy_exposure(2.0).build()?;
-    match v_priv1.checked_sub(&v_priv2) {
-        Err(BudgetError::Underflow { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
-        }
-        _ => panic!("expected Underflow error on PrivacyExposure"),
-    }
+    assert!(matches!(
+        v_priv1.checked_sub(&v_priv2),
+        Err(BudgetError::Underflow {
+            dimension: BudgetDimension::PrivacyExposure,
+            ..
+        })
+    ));
     Ok(())
 }
 
@@ -324,7 +328,7 @@ fn monotone_consumption_cannot_increase_remaining_authority() -> Result<(), Budg
     assert!(rem.fits_within(avail));
     assert_eq!(rem.latency_ms, 800);
     assert_eq!(rem.tokens, 400);
-    assert_eq!(rem.privacy_exposure, 1.5);
+    assert_eq!(rem.privacy_exposure(), 1.5);
 
     // Overconsumption fails
     let ec = BudgetVector::builder().latency_ms(2000).build()?;
@@ -500,30 +504,31 @@ fn canonical_decode_rejects_malformed_and_faulty_bytes() {
     // Corrupt negative float injected at operator_attention slot (offset 76..84)
     let mut corrupt_neg = [0u8; 84];
     corrupt_neg[76..84].copy_from_slice(&(-5.0f64).to_bits().to_be_bytes());
-    match BudgetVector::decode_canonical(&corrupt_neg) {
-        Err(BudgetError::NegativeQuantity { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::OperatorAttentionSeconds);
-        }
-        _ => panic!("expected NegativeQuantity for negative operator attention"),
-    }
+    assert!(matches!(
+        BudgetVector::decode_canonical(&corrupt_neg),
+        Err(BudgetError::NegativeQuantity {
+            dimension: BudgetDimension::OperatorAttentionSeconds,
+            ..
+        })
+    ));
 }
 
 #[test]
 fn historical_quarantine_produces_explicit_quarantine_record() {
     let corrupt_bytes = [0xFFu8; 84]; // Invariant violation: bits represent negative NaN
     let res = BudgetVector::quarantine_historical(&corrupt_bytes, "rec-hist-0042");
-    match res {
-        Err(
-            ref err @ BudgetError::QuarantinedRecord {
-                ref record_id,
-                ref reason,
-            },
-        ) => {
-            assert_eq!(record_id, "rec-hist-0042");
-            assert!(reason.contains("historical budget validation failed"));
-            assert_eq!(err.code(), "quarantined_budget_record");
-        }
-        _ => panic!("expected QuarantinedRecord error"),
+    if let Err(
+        ref err @ BudgetError::QuarantinedRecord {
+            ref record_id,
+            ref reason,
+        },
+    ) = res
+    {
+        assert_eq!(record_id, "rec-hist-0042");
+        assert!(reason.contains("historical budget validation failed"));
+        assert_eq!(err.code(), "quarantined_budget_record");
+    } else {
+        assert!(matches!(res, Err(BudgetError::QuarantinedRecord { .. })));
     }
 }
 
@@ -550,8 +555,8 @@ fn json_decode_valid_camel_case_and_snake_case() -> Result<(), BudgetError> {
     let budget = BudgetVector::decode_json_slice(json_camel)?;
     assert_eq!(budget.latency_ms, 150);
     assert_eq!(budget.tokens, 300);
-    assert_eq!(budget.privacy_exposure, 0.25);
-    assert_eq!(budget.operator_attention_seconds, 2.5);
+    assert_eq!(budget.privacy_exposure(), 0.25);
+    assert_eq!(budget.operator_attention_seconds(), 2.5);
 
     let json_snake = br#"{
         "latency_ms": 100,
@@ -561,7 +566,7 @@ fn json_decode_valid_camel_case_and_snake_case() -> Result<(), BudgetError> {
     let s = BudgetVector::decode_json_slice(json_snake)?;
     assert_eq!(s.latency_ms, 100);
     assert_eq!(s.tokens, 50);
-    assert_eq!(s.privacy_exposure, 0.1);
+    assert_eq!(s.privacy_exposure(), 0.1);
     Ok(())
 }
 
@@ -569,65 +574,62 @@ fn json_decode_valid_camel_case_and_snake_case() -> Result<(), BudgetError> {
 fn json_decode_rejects_negative_nan_and_infinities() {
     // Negative integer in JSON
     let json_neg_int = br#"{"latencyMs": -50}"#;
-    match BudgetVector::decode_json_slice(json_neg_int) {
-        Err(BudgetError::NegativeQuantity { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::LatencyMs);
-        }
-        _ => panic!("expected NegativeQuantity for negative integer in JSON"),
-    }
+    assert!(matches!(
+        BudgetVector::decode_json_slice(json_neg_int),
+        Err(BudgetError::NegativeQuantity {
+            dimension: BudgetDimension::LatencyMs,
+            ..
+        })
+    ));
 
     // Negative float in JSON
     let json_neg_float = br#"{"privacyExposure": -1.5}"#;
-    match BudgetVector::decode_json_slice(json_neg_float) {
-        Err(BudgetError::NegativeQuantity { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
-        }
-        _ => panic!("expected NegativeQuantity for negative float in JSON"),
-    }
+    assert!(matches!(
+        BudgetVector::decode_json_slice(json_neg_float),
+        Err(BudgetError::NegativeQuantity {
+            dimension: BudgetDimension::PrivacyExposure,
+            ..
+        })
+    ));
 
     // NaN string in JSON
     let json_nan = br#"{"operatorAttentionSeconds": "NaN"}"#;
-    match BudgetVector::decode_json_slice(json_nan) {
-        Err(BudgetError::NaNQuantity { dimension }) => {
-            assert_eq!(dimension, BudgetDimension::OperatorAttentionSeconds);
-        }
-        _ => panic!("expected NaNQuantity for NaN in JSON"),
-    }
+    assert!(matches!(
+        BudgetVector::decode_json_slice(json_nan),
+        Err(BudgetError::NaNQuantity {
+            dimension: BudgetDimension::OperatorAttentionSeconds,
+        })
+    ));
 
     // Infinity in JSON
     let json_inf = br#"{"privacyExposure": "Infinity"}"#;
-    match BudgetVector::decode_json_slice(json_inf) {
+    assert!(matches!(
+        BudgetVector::decode_json_slice(json_inf),
         Err(BudgetError::InfiniteQuantity {
-            dimension,
-            is_negative,
-        }) => {
-            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
-            assert!(!is_negative);
-        }
-        _ => panic!("expected InfiniteQuantity for Infinity in JSON"),
-    }
+            dimension: BudgetDimension::PrivacyExposure,
+            is_negative: false,
+        })
+    ));
 
     // Negative Infinity in JSON
     let json_neg_inf = br#"{"privacyExposure": "-Infinity"}"#;
-    match BudgetVector::decode_json_slice(json_neg_inf) {
+    assert!(matches!(
+        BudgetVector::decode_json_slice(json_neg_inf),
         Err(BudgetError::InfiniteQuantity {
-            dimension,
-            is_negative,
-        }) => {
-            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
-            assert!(is_negative);
-        }
-        _ => panic!("expected InfiniteQuantity (negative) in JSON"),
-    }
+            dimension: BudgetDimension::PrivacyExposure,
+            is_negative: true,
+        })
+    ));
 
     // Exponential overflow to infinity (1e999)
     let json_overflow = br#"{"privacyExposure": 1e999}"#;
-    match BudgetVector::decode_json_slice(json_overflow) {
-        Err(BudgetError::InfiniteQuantity { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
-        }
-        _ => panic!("expected InfiniteQuantity for exponential overflow in JSON"),
-    }
+    assert!(matches!(
+        BudgetVector::decode_json_slice(json_overflow),
+        Err(BudgetError::InfiniteQuantity {
+            dimension: BudgetDimension::PrivacyExposure,
+            ..
+        })
+    ));
 
     // Malformed JSON not an object
     let json_array = br#"[100, 200]"#;
@@ -649,26 +651,30 @@ fn json_decode_rejects_negative_nan_and_infinities() {
 }
 
 #[test]
-fn checked_fits_within_rejects_invalid_operands() {
-    let valid = BudgetVector::ZERO;
-    let mut invalid = BudgetVector::ZERO;
-    invalid.privacy_exposure = -1.0;
+fn checked_fits_within_contract() -> Result<(), BudgetError> {
+    let valid_zero = BudgetVector::ZERO;
+    let valid_some = BudgetVector::builder()
+        .latency_ms(100)
+        .privacy_exposure(1.0)
+        .build()?;
 
-    // Invalid self
-    match invalid.checked_fits_within(&valid) {
-        Err(BudgetError::NegativeQuantity { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
-        }
-        _ => panic!("expected NegativeQuantity for invalid self in checked_fits_within"),
-    }
+    assert_eq!(valid_zero.checked_fits_within(&valid_some), Ok(true));
+    assert_eq!(valid_some.checked_fits_within(&valid_zero), Ok(false));
 
-    // Invalid limit
-    match valid.checked_fits_within(&invalid) {
-        Err(BudgetError::NegativeQuantity { dimension, .. }) => {
-            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
-        }
-        _ => panic!("expected NegativeQuantity for invalid limit in checked_fits_within"),
-    }
+    // Construction of invalid vector fails closed at the boundary
+    let invalid_spec = BudgetVectorSpec {
+        privacy_exposure: -1.0,
+        ..Default::default()
+    };
+    assert!(matches!(
+        BudgetVector::new(invalid_spec),
+        Err(BudgetError::NegativeQuantity {
+            dimension: BudgetDimension::PrivacyExposure,
+            ..
+        })
+    ));
+
+    Ok(())
 }
 
 #[test]
@@ -682,7 +688,7 @@ fn project_dimensions_preserves_selected_and_zeroes_others() -> Result<(), Budge
     let proj = b.project_dimensions(|d| d == BudgetDimension::PrivacyExposure)?;
     assert_eq!(proj.latency_ms, 0);
     assert_eq!(proj.tokens, 0);
-    assert_eq!(proj.privacy_exposure, 1.5);
+    assert_eq!(proj.privacy_exposure(), 1.5);
     assert!(proj.fits_within(b));
     Ok(())
 }
@@ -761,22 +767,6 @@ fn differential_conformance_with_reference_model() -> Result<(), BudgetError> {
         };
         assert_eq!(ref_model.is_valid(), should_be_valid);
 
-        let opt_vec = BudgetVector {
-            latency_ms: lat,
-            tokens: 100,
-            bytes: 1024,
-            model_calls: 1,
-            cpu_millis: 10,
-            accelerator_millis: 5,
-            energy_millijoules: 10,
-            network_bytes: 512,
-            storage_operations: 1,
-            privacy_exposure: priv_exp,
-            operator_attention_seconds: att_sec,
-        };
-        assert_eq!(opt_vec.is_valid(), should_be_valid);
-        assert_eq!(opt_vec.validate().is_ok(), should_be_valid);
-
         let constructor_result = BudgetVector::new(BudgetVectorSpec {
             latency_ms: lat,
             tokens: 100,
@@ -790,8 +780,12 @@ fn differential_conformance_with_reference_model() -> Result<(), BudgetError> {
             privacy_exposure: priv_exp,
             operator_attention_seconds: att_sec,
         });
+        assert_eq!(constructor_result.is_ok(), should_be_valid);
+
         if should_be_valid {
-            assert!(constructor_result.is_ok());
+            let vec = constructor_result?;
+            assert!(vec.is_valid());
+            assert!(vec.validate().is_ok());
 
             let lim = BudgetVector::builder()
                 .latency_ms(2000)
@@ -821,7 +815,7 @@ fn differential_conformance_with_reference_model() -> Result<(), BudgetError> {
                 operator_attention_seconds: 200.0,
             };
 
-            assert_eq!(opt_vec.fits_within(lim), ref_model.fits_within(&ref_limit));
+            assert_eq!(vec.fits_within(lim), ref_model.fits_within(&ref_limit));
         } else {
             assert!(constructor_result.is_err());
         }
@@ -894,16 +888,14 @@ fn budget_error_converts_to_contract_error_with_stable_code() {
 fn json_decoding_rejects_duplicate_keys() {
     let json = br#"{"tokens": 100, "tokens": 200}"#;
     let result = BudgetVector::decode_json_slice(json);
-    match result {
-        Err(BudgetError::InvalidEncoding { reason }) => {
-            assert!(reason.contains("duplicate"));
-        }
-        other => panic!("expected InvalidEncoding for duplicate key, got {other:?}"),
-    }
+    assert!(matches!(
+        result,
+        Err(BudgetError::InvalidEncoding { reason }) if reason.contains("duplicate")
+    ));
 }
 
 #[test]
-fn json_decoding_rejects_quoted_numerals_for_both_integer_and_float() {
+fn json_decoding_rejects_quoted_numerals_for_both_integer_and_float() -> Result<(), BudgetError> {
     // Quoted integer must be rejected with IncompatibleUnit
     let json_quoted_int = br#"{"tokens": "200"}"#;
     let err_int = BudgetVector::decode_json_slice(json_quoted_int);
@@ -934,10 +926,10 @@ fn json_decoding_rejects_quoted_numerals_for_both_integer_and_float() {
 
     // Valid unquoted numbers must be accepted
     let json_unquoted = br#"{"tokens": 200, "privacy_exposure": 0.5}"#;
-    let ok =
-        BudgetVector::decode_json_slice(json_unquoted).expect("unquoted numbers should decode");
+    let ok = BudgetVector::decode_json_slice(json_unquoted)?;
     assert_eq!(ok.tokens, 200);
-    assert_eq!(ok.privacy_exposure, 0.5);
+    assert_eq!(ok.privacy_exposure(), 0.5);
+    Ok(())
 }
 
 #[test]
@@ -952,8 +944,8 @@ fn checked_scale_multiplies_budget_dimensions_and_detects_overflow() -> Result<(
     let scaled = budget.checked_scale(2.5)?;
     assert_eq!(scaled.tokens, 250);
     assert_eq!(scaled.latency_ms, 500);
-    assert_eq!(scaled.privacy_exposure, 3.75);
-    assert_eq!(scaled.operator_attention_seconds, 5.0);
+    assert_eq!(scaled.privacy_exposure(), 3.75);
+    assert_eq!(scaled.operator_attention_seconds(), 5.0);
 
     // Scaling by negative must fail
     assert!(matches!(
@@ -975,16 +967,13 @@ fn checked_scale_multiplies_budget_dimensions_and_detects_overflow() -> Result<(
 
     // Scaling that overflows u64 must return BudgetError::Overflow with operation "scale"
     let huge_budget = BudgetVector::builder().tokens(u64::MAX).build()?;
-    match huge_budget.checked_scale(2.0) {
+    assert!(matches!(
+        huge_budget.checked_scale(2.0),
         Err(BudgetError::Overflow {
-            dimension,
-            operation,
-        }) => {
-            assert_eq!(dimension, BudgetDimension::Tokens);
-            assert_eq!(operation, "scale");
-        }
-        other => panic!("expected Overflow with operation scale, got {other:?}"),
-    }
+            dimension: BudgetDimension::Tokens,
+            operation: "scale",
+        })
+    ));
 
     // BudgetQuantity::checked_scale
     let qty = BudgetQuantity::new(2.0, BudgetDimension::PrivacyExposure)?;
@@ -992,32 +981,45 @@ fn checked_scale_multiplies_budget_dimensions_and_detects_overflow() -> Result<(
     assert_eq!(scaled_qty.get(), 6.0);
 
     let huge_qty = BudgetQuantity::new(f64::MAX, BudgetDimension::PrivacyExposure)?;
-    match huge_qty.checked_scale(2.0, BudgetDimension::PrivacyExposure) {
+    assert!(matches!(
+        huge_qty.checked_scale(2.0, BudgetDimension::PrivacyExposure),
         Err(BudgetError::Overflow {
-            dimension,
-            operation,
-        }) => {
-            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
-            assert_eq!(operation, "scale");
-        }
-        other => panic!("expected Overflow for huge float scale, got {other:?}"),
-    }
+            dimension: BudgetDimension::PrivacyExposure,
+            operation: "scale",
+        })
+    ));
 
     Ok(())
 }
 
 #[test]
-fn struct_literal_bypasses_validation_and_encode_to_canonical_fails_closed() {
-    let bad_budget = BudgetVector {
+fn validated_by_construction_prevents_invalid_values_reaching_canonical_encoding()
+-> Result<(), BudgetError> {
+    // Attempting to construct with NaN or negative float fails closed at construction time
+    let bad_spec = BudgetVectorSpec {
         privacy_exposure: f64::NAN,
         operator_attention_seconds: -10.0,
         ..Default::default()
     };
-    assert!(!bad_budget.is_valid());
+    assert!(matches!(
+        BudgetVector::new(bad_spec),
+        Err(BudgetError::NaNQuantity { .. } | BudgetError::NegativeQuantity { .. })
+    ));
 
+    let bad_builder_result = BudgetVector::builder().privacy_exposure(f64::NAN).build();
+    assert!(matches!(
+        bad_builder_result,
+        Err(BudgetError::NaNQuantity { .. })
+    ));
+
+    // Valid vector encodes deterministically to exactly 84 canonical bytes
+    let valid = BudgetVector::builder()
+        .latency_ms(100)
+        .privacy_exposure(0.5)
+        .build()?;
     let mut encoder = CanonicalEncoder::new();
-    bad_budget.encode_to_canonical(&mut encoder);
+    valid.encode_to_canonical(&mut encoder);
     let bytes = encoder.finish();
-    // Must NOT emit 84 bytes containing NaN bits! Must fail closed.
-    assert_ne!(bytes.len(), 84);
+    assert_eq!(bytes.len(), 84);
+    Ok(())
 }

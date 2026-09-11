@@ -44,15 +44,15 @@ fn descriptor(name: &str) -> Result<SemanticHandle, HydrationError> {
         estimated_costs: levels
             .iter()
             .map(|level| {
-                (
+                Ok((
                     *level,
-                    BudgetVector {
-                        bytes: 256,
-                        ..BudgetVector::default()
-                    },
-                )
+                    BudgetVector::builder()
+                        .bytes(256)
+                        .build()
+                        .map_err(ContractError::from)?,
+                ))
             })
-            .collect(),
+            .collect::<Result<_, HydrationError>>()?,
         levels,
         laboratory_access: LaboratoryAccess::Unavailable,
         debug_capability: None,
@@ -101,10 +101,10 @@ fn request(handle: &SemanticHandle) -> Result<HydrationRequest, HydrationError> 
         allow_lower_level: false,
         available_capabilities: BTreeSet::new(),
         authorized_privacy_classes: BTreeSet::from([handle.privacy_class.clone()]),
-        budget: BudgetVector {
-            bytes: 256,
-            ..BudgetVector::default()
-        },
+        budget: BudgetVector::builder()
+            .bytes(256)
+            .build()
+            .map_err(ContractError::from)?,
         purpose: HydrationPurpose::Routine,
         continuation: None,
         issued_at: TimestampNs(10).max(handle.published_at),
