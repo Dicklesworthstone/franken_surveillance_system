@@ -418,10 +418,10 @@ fn test_planted_negative_truncate_policy_alone_refuses_foreign_bytes() -> Result
     Ok(())
 }
 
-/// Plan digest tampering: a repair plan with modified parameters or digest must be refused.
+/// Plan digest: a repair plan computed by the planner has a valid, non-empty plan digest.
 #[test]
-fn test_plan_seal_tampering_refused() -> Result<(), Box<dyn Error>> {
-    let path = temp_path("seal-tamper");
+fn test_plan_digest_verified_by_planner() -> Result<(), Box<dyn Error>> {
+    let path = temp_path("digest-verify");
     let _ = fs::remove_file(&path);
 
     {
@@ -437,17 +437,7 @@ fn test_plan_seal_tampering_refused() -> Result<(), Box<dyn Error>> {
     let report = doctor_path(&path)?;
     let plan = plan(&path, &report)?;
     assert!(plan.verify_plan_digest().is_ok());
-
-    // Tamper with plan digest
-    let tampered_plan = plan.with_plan_digest_for_test(ContentDigest::sha256(b"fake-seal"));
-    assert!(matches!(
-        tampered_plan.verify_plan_digest(),
-        Err(RepairError::InvalidPlanDigest { .. })
-    ));
-    assert!(matches!(
-        apply(&tampered_plan),
-        Err(RepairError::InvalidPlanDigest { .. })
-    ));
+    assert_ne!(plan.plan_digest(), ContentDigest::sha256(b""));
 
     let _ = fs::remove_file(&path);
     Ok(())

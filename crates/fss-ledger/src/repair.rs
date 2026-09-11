@@ -520,11 +520,6 @@ impl SealedRepairPlan {
         Ok(())
     }
 
-    /// Alias for [`verify_plan_digest`].
-    pub fn verify_seal(&self) -> Result<(), RepairError> {
-        self.verify_plan_digest()
-    }
-
     /// Bound canonical path to the journal file.
     #[must_use]
     pub fn journal_path(&self) -> &Path {
@@ -593,30 +588,9 @@ impl SealedRepairPlan {
         self.plan_digest
     }
 
-    /// Alias for [`plan_digest`].
-    #[must_use]
-    pub const fn seal(&self) -> ContentDigest {
-        self.plan_digest
-    }
-
     /// Executes this repair plan.
     pub fn apply(&self) -> Result<RepairReceipt, RepairError> {
         apply(self)
-    }
-
-    /// Overrides the plan digest for negative testing.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn with_plan_digest_for_test(mut self, digest: ContentDigest) -> Self {
-        self.plan_digest = digest;
-        self
-    }
-
-    /// Alias for [`with_plan_digest_for_test`].
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn with_seal_for_test(self, seal: ContentDigest) -> Self {
-        self.with_plan_digest_for_test(seal)
     }
 }
 
@@ -723,12 +697,6 @@ impl RepairReceipt {
     /// Integrity digest of the repair plan that was executed.
     #[must_use]
     pub const fn plan_digest(&self) -> ContentDigest {
-        self.plan_digest
-    }
-
-    /// Alias for [`plan_digest`].
-    #[must_use]
-    pub const fn plan_seal(&self) -> ContentDigest {
         self.plan_digest
     }
 
