@@ -3,11 +3,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
-    BudgetVector, CanonicalEncode, CanonicalEncoder, Completeness, CompressionCompleteness,
-    CompressionLossClass, CompressionStopReason, CompressionTransform, CompressionTransformKind,
-    ContentDigest, ContextItem, ContractError, ControlEnvelope, CriticalPreservation,
-    ExpansionHandle, HandoffCapsule, HandoffId, HandoffPublishParams, KnowledgeState,
-    OperationReceipt, ResourcePressure, ResourceState, SemanticCompressionReceipt,
+    AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder, Completeness,
+    CompressionCompleteness, CompressionLossClass, CompressionStopReason, CompressionTransform,
+    CompressionTransformKind, ContentDigest, ContextItem, ContractError, ControlEnvelope,
+    CriticalPreservation, ExpansionHandle, HandoffCapsule, HandoffId, HandoffPublishParams,
+    KnowledgeState, OperationReceipt, ResourcePressure, ResourceState, SemanticCompressionReceipt,
     SemanticContextPack, TimestampNs, reference_token_count,
 };
 use fss_ledger::DurableReferenceLedger;
@@ -95,6 +95,13 @@ pub struct ReferenceSituationPublication {
 }
 
 impl ReferenceSituationPublication {
+    /// Returns the required critical context item identities for the situation, or error if candidates cannot be computed.
+    pub fn required_context_item_ids(
+        situation: &ReferenceSituation,
+    ) -> Result<BTreeSet<String>, ReferenceError> {
+        required_context_item_ids(situation)
+    }
+
     /// Recomputes all cross-section invariants and publication identity.
     pub fn verify(&self) -> Result<ContentDigest, ReferenceError> {
         let base = self.situation.verify()?;
@@ -114,7 +121,7 @@ impl ReferenceSituationPublication {
         {
             return Err(ContractError::DigestMismatch.into());
         }
-        let required = required_context_item_ids(&self.situation);
+        let required = required_context_item_ids(&self.situation)?;
         let selected: BTreeSet<_> = self
             .context_pack
             .items
@@ -510,12 +517,37 @@ fn context_candidates(
             },
         )?;
     }
+    for affordance in &capsule.affordances {
+        if affordance.class == AffordanceClass::Unavailable
+            || affordance.class == AffordanceClass::Blocked
+        {
+            let mut basis = affordance.supported_worlds.clone();
+            basis.insert(affordance.affordance_id.clone());
+            basis.insert(affordance.target.clone());
+            basis.extend(affordance.required_capabilities.clone());
+            insert_candidate(
+                &mut candidates,
+                ContextCandidate {
+                    item: ContextItem {
+                        item_id: format!("context:hard_clamp:{}", affordance.affordance_id),
+                        kind: "hard_clamp".to_owned(),
+                        epistemic_state: KnowledgeState::Known,
+                        content: format!("{}: {}", affordance.operation, affordance.rationale),
+                        basis,
+                        expansion_handles: BTreeSet::new(),
+                    },
+                    critical: true,
+                    priority: 0,
+                },
+            )?;
+        }
+    }
     for world in frame
         .world_envelope
         .alternatives
         .iter()
         .chain(frame.world_envelope.adversarial_residuals.iter())
-        .filter(|world| world.protected)
+        .filter(|world| world.protected || world.consequence_severity >= 4)
     {
         let mut basis = world.claim_ids.clone();
         basis.extend(world.evidence.iter().map(ToString::to_string));
@@ -641,7 +673,7 @@ fn context_candidates(
         .alternatives
         .iter()
         .chain(frame.world_envelope.adversarial_residuals.iter())
-        .filter(|world| !world.protected)
+        .filter(|world| !world.protected && world.consequence_severity < 4)
     {
         let mut basis = world.claim_ids.clone();
         basis.extend(world.evidence.iter().map(ToString::to_string));
@@ -736,16 +768,17 @@ fn insert_candidate(
     }
 }
 
-fn required_context_item_ids(situation: &ReferenceSituation) -> BTreeSet<String> {
-    context_candidates(situation)
-        .map(|candidates| {
-            candidates
-                .into_iter()
-                .filter(|candidate| candidate.critical)
-                .map(|candidate| candidate.item.item_id)
-                .collect()
-        })
-        .unwrap_or_default()
+/// Returns the required critical context item identities for the situation, or error if candidates cannot be computed.
+pub fn required_context_item_ids(
+    situation: &ReferenceSituation,
+) -> Result<BTreeSet<String>, ReferenceError> {
+    context_candidates(situation).map(|candidates| {
+        candidates
+            .into_iter()
+            .filter(|candidate| candidate.critical)
+            .map(|candidate| candidate.item.item_id)
+            .collect()
+    })
 }
 
 fn context_frontier_digest(candidates: &[ContextCandidate]) -> ContentDigest {

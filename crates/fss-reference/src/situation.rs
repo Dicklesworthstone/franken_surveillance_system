@@ -228,6 +228,13 @@ pub fn compile_reference_situation(
         &absence_claim_id,
     );
     let retained_worlds = world_envelope.world_ids();
+    let presence_world = format!("world:event:{event_name}:present");
+    let alert_supported_worlds = BTreeSet::from([presence_world.clone()]);
+    let alert_unsafe_worlds: BTreeSet<String> = retained_worlds
+        .iter()
+        .filter(|w| *w != &presence_world)
+        .cloned()
+        .collect();
     let mut obligations = Vec::new();
     let mut affordances = Vec::new();
 
@@ -242,8 +249,10 @@ pub fn compile_reference_situation(
                 "plan",
                 &format!("fss://event/{event_name}/alert"),
                 "Prepare an idempotent alert effect from the corroborated canonical event.",
-                AffordanceClass::Robust,
-                retained_worlds.clone(),
+                AffordanceClass::Conditional,
+                alert_supported_worlds.clone(),
+                alert_unsafe_worlds.clone(),
+                Some(presence_world.clone()),
                 CAPABILITY_ALERT_PREPARE,
                 alert_prepare_cost()?,
                 true,
@@ -261,8 +270,10 @@ pub fn compile_reference_situation(
                 "commit",
                 &format!("fss://operation/{}", plan.intent.operation_id.as_str()),
                 "Commit the exact prepared alert intent; do not substitute a new request or idempotency key.",
-                AffordanceClass::Robust,
-                retained_worlds.clone(),
+                AffordanceClass::Conditional,
+                alert_supported_worlds.clone(),
+                alert_unsafe_worlds.clone(),
+                Some(presence_world.clone()),
                 CAPABILITY_ALERT_COMMIT,
                 alert_commit_cost()?,
                 false,
@@ -293,6 +304,8 @@ pub fn compile_reference_situation(
                         "Read independent provider state and reconcile the existing effect without resending it.",
                         AffordanceClass::Probe,
                         retained_worlds.clone(),
+                        BTreeSet::new(),
+                        None,
                         CAPABILITY_EFFECT_RECONCILE,
                         reconcile_cost()?,
                         true,
@@ -306,8 +319,10 @@ pub fn compile_reference_situation(
                         "plan",
                         &format!("fss://event/{event_name}/alert"),
                         "Prepare a new alert operation only after reviewing the retained failure proof.",
-                        AffordanceClass::Robust,
-                        retained_worlds.clone(),
+                        AffordanceClass::Conditional,
+                        alert_supported_worlds.clone(),
+                        alert_unsafe_worlds.clone(),
+                        Some(presence_world.clone()),
                         CAPABILITY_ALERT_PREPARE,
                         alert_prepare_cost()?,
                         true,
@@ -322,6 +337,8 @@ pub fn compile_reference_situation(
                         "Wait for a meaningful evidence or effect-state delta; the alert obligation is terminal.",
                         AffordanceClass::Wait,
                         retained_worlds.clone(),
+                        BTreeSet::new(),
+                        None,
                         CAPABILITY_SESSION_WAIT,
                         wait_cost()?,
                         true,
@@ -339,6 +356,8 @@ pub fn compile_reference_situation(
                 "Acquire or inspect evidence that can distinguish the retained possible worlds.",
                 AffordanceClass::Probe,
                 retained_worlds.clone(),
+                BTreeSet::new(),
+                None,
                 CAPABILITY_EVIDENCE_QUERY,
                 investigate_cost()?,
                 true,
@@ -351,6 +370,8 @@ pub fn compile_reference_situation(
                 "Wait for a meaningful event or coverage delta while preserving every protected world.",
                 AffordanceClass::Wait,
                 retained_worlds,
+                BTreeSet::new(),
+                None,
                 CAPABILITY_SESSION_WAIT,
                 wait_cost()?,
                 true,
@@ -622,6 +643,14 @@ fn compile_worlds(
                 consequence_severity: 5,
                 protected: true,
             });
+            residuals.push(PossibleWorld {
+                world_id: format!("world:event:{event_name}:spoofing-or-simultaneous-error"),
+                description: "Independent sensor sources are compromised by common-mode spoofing, simultaneous failure, or shared environmental artifact.".to_owned(),
+                claim_ids: BTreeSet::from([policy_claim_id.to_owned()]),
+                evidence: policy_evidence.clone(),
+                consequence_severity: 4,
+                protected: true,
+            });
         }
         EventState::Witnessed => {
             nominal_claim_ids.insert(physical_claim_id.to_owned());
@@ -738,6 +767,8 @@ fn project_affordance(
     rationale: &str,
     available_class: AffordanceClass,
     supported_worlds: BTreeSet<String>,
+    unsafe_worlds: BTreeSet<String>,
+    branch_predicate: Option<String>,
     required_capability: &str,
     cost: BudgetVector,
     reversible: bool,
@@ -763,11 +794,15 @@ fn project_affordance(
         } else {
             BTreeSet::new()
         },
-        unsafe_worlds: BTreeSet::new(),
+        unsafe_worlds: if available {
+            unsafe_worlds
+        } else {
+            BTreeSet::new()
+        },
         required_capabilities: BTreeSet::from([required_capability.to_owned()]),
         cost,
         reversible,
-        branch_predicate: None,
+        branch_predicate: if available { branch_predicate } else { None },
     }
 }
 

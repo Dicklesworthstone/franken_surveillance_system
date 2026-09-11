@@ -192,7 +192,10 @@ fn corroborated_projection_is_deterministic_and_capability_explicit() -> Result<
         first.capsule.frame.next,
         vec!["affordance:alert:prepare".to_owned()]
     );
-    assert_eq!(first.capsule.affordances[0].class, AffordanceClass::Robust);
+    assert_eq!(
+        first.capsule.affordances[0].class,
+        AffordanceClass::Conditional
+    );
     assert!(first.capsule.obligations.is_empty());
     first.verify()?;
 
@@ -309,6 +312,7 @@ fn lost_ack_projects_only_reconciliation_and_seals_root_closed_handoff()
         &journal,
         &mut harness.objects,
         &mut harness.authority,
+        &provider,
     )?;
     let mut compile_request = request(
         &decision,
@@ -395,14 +399,23 @@ fn canonical_effect_outcome_cannot_be_omitted_from_projection() -> Result<(), Bo
         &mut journal,
         &mut provider,
     )?;
-    let obs_proof = fss_core::ContentDigest::sha256(b"situation-delivery-observation");
-    let _ = observe_reference_alert(&plan, obs_proof, TimestampNs(103), &mut journal)?;
+    let provider_receipt = provider
+        .lookup(&plan.intent)?
+        .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+    let _ = observe_reference_alert(
+        &plan,
+        provider_receipt.receipt_digest(),
+        TimestampNs(103),
+        &mut journal,
+        &provider,
+    )?;
     let _ = verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;
     let _outcome = publish_reference_alert_outcome(
         &plan,
         &journal,
         &mut harness.objects,
         &mut harness.authority,
+        &provider,
     )?;
     let mut compile_request = request(
         &decision,
