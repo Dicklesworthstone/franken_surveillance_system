@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/source_identity.v1.json",
+  "title": "Source identity v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "sourceId",
+    "deviceId",
+    "adapterId",
+    "sourceKind",
+    "mediaKind",
+    "channel",
+    "nominalClockBasis",
+    "streamGeneration",
+    "failureDomain",
+    "isLive"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.source_identity.v1"
+    },
+    "sourceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9_.:-]+$"
+    },
+    "deviceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9_.:-]+$"
+    },
+    "adapterId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9_.:-]+$"
+    },
+    "sourceKind": {
+      "type": "string",
+      "enum": [
+        "physical_sensor",
+        "virtual_fixture",
+        "bridge_or_nvr",
+        "imported_archive",
+        "synthetic_oracle"
+      ]
+    },
+    "mediaKind": {
+      "type": "string",
+      "enum": [
+        "video",
+        "audio",
+        "image",
+        "metadata",
+        "compound"
+      ]
+    },
+    "channel": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "nominalClockBasis": {
+      "type": "string",
+      "enum": [
+        "utc_disciplined",
+        "device_monotonic",
+        "host_monotonic",
+        "estimated"
+      ]
+    },
+    "streamGeneration": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "failureDomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "isLive": {
+      "type": "boolean"
+    }
+  }
+}

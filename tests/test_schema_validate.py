@@ -1352,7 +1352,7 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["unregisteredImplementedCount"], 0)
         self.assertEqual(result["digestDomainCount"], 14)
-        self.assertEqual(result["implementedCount"], 18)
+        self.assertEqual(result["implementedCount"], 21)
 
         unreg_findings = [
             f for f in validator.findings

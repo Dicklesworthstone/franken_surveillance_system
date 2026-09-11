@@ -172,7 +172,75 @@ stable_id!(HandoffId, "A stable handoff-capsule identity.");
 stable_id!(ObjectId, "A stable object identity in the semantic ledger.");
 
 // Additional architectural stable IDs
+stable_id!(
+    SourceId,
+    "A stable opaque identifier for an evidence source."
+);
 stable_id!(DeviceId, "A stable physical or virtual device identity.");
+stable_id!(
+    AdapterId,
+    "A stable opaque identifier for a device adapter."
+);
+
+impl SourceId {
+    /// Canonical prefix for source identifiers (`"src:"`).
+    pub const PREFIX: &'static str = "src:";
+
+    /// Alternative accepted prefix for source identifiers (`"source:"`).
+    pub const ALT_PREFIX: &'static str = "source:";
+
+    /// Creates a source identifier from a suffix using the canonical `"src:"` prefix.
+    pub fn from_suffix(suffix: &str) -> Result<Self, ContractError> {
+        let text = format!("{}{suffix}", Self::PREFIX);
+        Self::parse(text)
+    }
+
+    /// Returns true if the identifier text begins with a recognized source prefix (`src:` or `source:`).
+    #[must_use]
+    pub fn has_source_prefix(&self) -> bool {
+        self.as_str().starts_with(Self::PREFIX) || self.as_str().starts_with(Self::ALT_PREFIX)
+    }
+}
+
+impl DeviceId {
+    /// Canonical prefix for device identifiers (`"device:"`).
+    pub const PREFIX: &'static str = "device:";
+
+    /// Alternative accepted prefix for device identifiers (`"dev:"`).
+    pub const ALT_PREFIX: &'static str = "dev:";
+
+    /// Creates a device identifier from a suffix using the canonical `"device:"` prefix.
+    pub fn from_suffix(suffix: &str) -> Result<Self, ContractError> {
+        let text = format!("{}{suffix}", Self::PREFIX);
+        Self::parse(text)
+    }
+
+    /// Returns true if the identifier text begins with a recognized device prefix (`device:` or `dev:`).
+    #[must_use]
+    pub fn has_device_prefix(&self) -> bool {
+        self.as_str().starts_with(Self::PREFIX) || self.as_str().starts_with(Self::ALT_PREFIX)
+    }
+}
+
+impl AdapterId {
+    /// Canonical prefix for adapter identifiers (`"adapter:"`).
+    pub const PREFIX: &'static str = "adapter:";
+
+    /// Alternative accepted prefix for adapter identifiers (`"adp:"`).
+    pub const ALT_PREFIX: &'static str = "adp:";
+
+    /// Creates an adapter identifier from a suffix using the canonical `"adapter:"` prefix.
+    pub fn from_suffix(suffix: &str) -> Result<Self, ContractError> {
+        let text = format!("{}{suffix}", Self::PREFIX);
+        Self::parse(text)
+    }
+
+    /// Returns true if the identifier text begins with a recognized adapter prefix (`adapter:` or `adp:`).
+    #[must_use]
+    pub fn has_adapter_prefix(&self) -> bool {
+        self.as_str().starts_with(Self::PREFIX) || self.as_str().starts_with(Self::ALT_PREFIX)
+    }
+}
 stable_id!(TrackId, "A stable tracked subject trajectory identity.");
 stable_id!(CaseId, "A stable investigation case identity.");
 stable_id!(HypothesisId, "A stable competing hypothesis identity.");

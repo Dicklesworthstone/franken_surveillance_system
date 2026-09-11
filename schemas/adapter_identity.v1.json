@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/adapter_identity.v1.json",
+  "title": "Adapter identity v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "adapterId",
+    "generation",
+    "adapterKind",
+    "protocolProfile",
+    "isolationMode",
+    "credentialMethod",
+    "capabilities",
+    "maxBandwidthBytesPerSec",
+    "maxBufferFrames",
+    "requestTimeoutNs"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.adapter_identity.v1"
+    },
+    "adapterId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9_.:-]+$"
+    },
+    "generation": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "adapterKind": {
+      "type": "string",
+      "enum": [
+        "uvc",
+        "rtsp",
+        "onvif_profile_t",
+        "onvif_profile_m",
+        "file_archive",
+        "virtual_simulated"
+      ]
+    },
+    "protocolProfile": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "isolationMode": {
+      "type": "string",
+      "enum": [
+        "native_pure_rust",
+        "sealed_laboratory_process"
+      ]
+    },
+    "credentialMethod": {
+      "type": "string",
+      "enum": [
+        "none",
+        "local_secret",
+        "basic_auth",
+        "digest_auth",
+        "mutual_tls",
+        "token"
+      ]
+    },
+    "capabilities": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "maxBandwidthBytesPerSec": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "maxBufferFrames": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "requestTimeoutNs": {
+      "type": "integer",
+      "minimum": 1
+    }
+  }
+}

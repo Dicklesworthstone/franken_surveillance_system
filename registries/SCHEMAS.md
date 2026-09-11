@@ -63,5 +63,8 @@
 | `SCHEMA-DOCTOR-001` | `fss.doctor.v1` | `CLI output` | diagnostics | bounded and secret-free |
 | `SCHEMA-STATUS-001` | `fss.status.v1` | `CLI output` | product boundary | status fields cannot imply unsupported readiness |
 | `SCHEMA-CLI-DIAGNOSTIC-001` | `fss.cli_diagnostic.v1` | `schemas/cli_diagnostic.v1.json` | authority/diagnostic | diagnostic schema immutable; errors follow structured envelope |
+| `SCHEMA-DEVICE-IDENTITY-001` | `fss.device_identity.v1` | `schemas/device_identity.v1.json` | device authority | immutable hardware, firmware, and model generation; generation change produces a new identity |
+| `SCHEMA-SOURCE-IDENTITY-001` | `fss.source_identity.v1` | `schemas/source_identity.v1.json` | source custody | source identity binds device, adapter, channel, clock basis, and stream generation; unknown versions fail closed |
+| `SCHEMA-ADAPTER-IDENTITY-001` | `fss.adapter_identity.v1` | `schemas/adapter_identity.v1.json` | adapter authority | adapter identity binds protocol profile, isolation mode, credentials, and capabilities |
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.

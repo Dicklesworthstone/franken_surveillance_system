@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/device_identity.v1.json",
+  "title": "Device identity v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "deviceId",
+    "generation",
+    "manufacturer",
+    "model",
+    "hardwareRevision",
+    "firmwareVersion",
+    "deviceClass",
+    "capabilities",
+    "failureDomain"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.device_identity.v1"
+    },
+    "deviceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[a-zA-Z0-9_.:-]+$"
+    },
+    "generation": {
+      "type": "string",
+      "minLength": 8,
+      "maxLength": 256,
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+    },
+    "manufacturer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "model": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "hardwareRevision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "firmwareVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "applicationVersion": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "modelGeneration": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 256,
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "deviceClass": {
+      "type": "string",
+      "enum": [
+        "camera",
+        "microphone",
+        "sensor_node",
+        "nvr_bridge",
+        "virtual_device",
+        "synthetic_fixture"
+      ]
+    },
+    "capabilities": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "failureDomain": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    }
+  }
+}
