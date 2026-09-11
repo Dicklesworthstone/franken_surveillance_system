@@ -152,9 +152,17 @@ fn interval_containment_outcomes() -> TestResult {
     assert!(!c1.is_indeterminate());
     assert_eq!(c1, IntervalContainment::Contains);
 
+    // Abutting intervals (0ns gap)
+    let abutting = CaptureInterval::new(TimestampNs(301), TimestampNs(400))?;
+    let c_abut = outer.classify_containment(abutting);
+    assert!(c_abut.is_abutting());
+    assert!(!c_abut.is_definite_disjoint());
+    assert_eq!(c_abut, IntervalContainment::Abutting);
+
     // Definite disjoint (gap = 400 - 300 - 1 = 99 ns)
     let c2 = outer.classify_containment(disjoint);
     assert!(c2.is_definite_disjoint());
+    assert!(!c2.is_abutting());
     assert_eq!(c2, IntervalContainment::Disjoint { gap_ns: 99 });
 
     // Partial overlap below: true event could be inside or outside -> Indeterminate
@@ -216,11 +224,36 @@ fn interval_temporal_precedence_outcomes() -> TestResult {
     assert!(p_abut.is_definitely_before());
     assert_eq!(p_abut, TemporalPrecedence::Before { gap_ns: 0 });
 
+    // Boundary contact (touching at exact boundary point 200ns)
+    let touching = CaptureInterval::new(TimestampNs(200), TimestampNs(300))?;
+    let p_touch = a.temporal_precedence(touching);
+    assert!(p_touch.is_boundary_contact());
+    assert!(p_touch.is_weakly_before());
+    assert!(!p_touch.is_indeterminate());
+    assert_eq!(
+        p_touch,
+        TemporalPrecedence::BoundaryContact {
+            point: TimestampNs(200),
+            self_precedes: true,
+        }
+    );
+    let p_touch_rev = touching.temporal_precedence(a);
+    assert!(p_touch_rev.is_boundary_contact());
+    assert!(p_touch_rev.is_weakly_after());
+    assert_eq!(
+        p_touch_rev,
+        TemporalPrecedence::BoundaryContact {
+            point: TimestampNs(200),
+            self_precedes: false,
+        }
+    );
+
     // Overlapping: precedence of underlying events cannot be collapsed -> Indeterminate
     let p_ov = a.temporal_precedence(overlap);
     assert!(p_ov.is_indeterminate());
     assert!(!p_ov.is_definitely_before());
     assert!(!p_ov.is_definitely_after());
+    assert!(!p_ov.is_boundary_contact());
     assert_eq!(
         p_ov,
         TemporalPrecedence::Indeterminate {
@@ -433,6 +466,25 @@ fn uncertainty_widening_is_strictly_monotone() -> TestResult {
     assert!(hull.uncertainty_ns() >= b.uncertainty_ns());
     assert!(hull.contains(a));
     assert!(hull.contains(b));
+
+    // Checked shift narrowing is rejected with NonMonotoneUncertaintyNarrowing
+    assert_eq!(
+        orig.checked_shift(500, 0),
+        Err(ContractError::from(
+            TimeIntervalError::NonMonotoneUncertaintyNarrowing
+        ))
+    );
+
+    // Rigid translation preserves width exactly
+    let translated = orig.checked_translate(500)?;
+    assert_eq!(translated.uncertainty_ns(), orig.uncertainty_ns());
+    assert_eq!(translated.earliest, TimestampNs(1_500));
+    assert_eq!(translated.latest, TimestampNs(2_500));
+
+    // Non-narrowing checked_shift succeeds
+    let widened_shift = orig.checked_shift(-100, 200)?;
+    assert_eq!(widened_shift.uncertainty_ns(), 1_300);
+    assert!(widened_shift.uncertainty_ns() >= orig.uncertainty_ns());
     Ok(())
 }
 
@@ -463,12 +515,13 @@ fn canonical_encoding_round_trip_for_all_types() -> TestResult {
         assert_eq!(b_decoded, basis);
     }
 
-    // Invalid ClockBasis tag fails closed
-    let bad_tag = [99_u8];
-    assert_eq!(
-        ClockBasis::from_canonical_bytes(&bad_tag),
-        Err(ContractError::InvalidDigest)
-    );
+    // Invalid ClockBasis tags fail closed with InvalidIdentifier
+    for bad_tag in [0_u8, 5_u8, 99_u8, 255_u8] {
+        assert_eq!(
+            ClockBasis::from_canonical_bytes(&[bad_tag]),
+            Err(ContractError::InvalidIdentifier)
+        );
+    }
 
     // 3. CaptureIntervalWithBasis (32 bytes + 1 byte = 33 bytes)
     let based = CaptureIntervalWithBasis::new(interval, ClockBasis::UtcDisciplined);
@@ -512,9 +565,13 @@ impl DeterministicRng {
     }
 
     fn next_i128_range(&mut self, min: i128, max: i128) -> i128 {
-        let span = (max - min) as u128;
+        let diff = max.abs_diff(min);
+        if diff == 0 {
+            return min;
+        }
         let r = ((self.next_u64() as u128) << 64) | (self.next_u64() as u128);
-        min + (r % span) as i128
+        let offset = r % diff;
+        min.saturating_add_unsigned(offset)
     }
 
     fn next_interval(&mut self, min: i128, max: i128) -> Result<CaptureInterval, ContractError> {
@@ -525,83 +582,187 @@ impl DeterministicRng {
     }
 }
 
+fn verify_interval_pair_invariants(
+    a: CaptureInterval,
+    b: CaptureInterval,
+    skew: u128,
+) -> TestResult {
+    // Property 1: Intersection symmetry
+    let isect_ab = a.intersection(b);
+    let isect_ba = b.intersection(a);
+    assert_eq!(isect_ab, isect_ba);
+
+    // Property 2: Intersection subset invariant
+    if let Some(isect) = isect_ab {
+        assert!(a.contains(isect));
+        assert!(b.contains(isect));
+        assert!(a.overlaps(b));
+        assert!(b.overlaps(a));
+    } else {
+        assert!(!a.overlaps(b));
+        assert!(!b.overlaps(a));
+    }
+
+    // Property 3: Convex hull monotonicity and containment
+    let hull = a.hull(b);
+    assert!(hull.contains(a));
+    assert!(hull.contains(b));
+    assert!(hull.uncertainty_ns() >= a.uncertainty_ns());
+    assert!(hull.uncertainty_ns() >= b.uncertainty_ns());
+
+    // Property 4: Temporal precedence mutual exclusion
+    let p_ab = a.temporal_precedence(b);
+    let p_ba = b.temporal_precedence(a);
+
+    let def_before = p_ab.is_definitely_before();
+    let def_after = p_ab.is_definitely_after();
+    let boundary = p_ab.is_boundary_contact();
+    let indet = p_ab.is_indeterminate();
+
+    // Exactly one of the four states must hold
+    let count = (def_before as u8) + (def_after as u8) + (boundary as u8) + (indet as u8);
+    assert_eq!(count, 1);
+
+    // Antisymmetry of precedence
+    if def_before {
+        assert!(p_ba.is_definitely_after());
+    } else if def_after {
+        assert!(p_ba.is_definitely_before());
+    } else if boundary {
+        assert!(p_ba.is_boundary_contact());
+        if let (
+            TemporalPrecedence::BoundaryContact {
+                point: pt_ab,
+                self_precedes: sp_ab,
+            },
+            TemporalPrecedence::BoundaryContact {
+                point: pt_ba,
+                self_precedes: sp_ba,
+            },
+        ) = (p_ab, p_ba)
+        {
+            assert_eq!(pt_ab, pt_ba);
+            assert_ne!(sp_ab, sp_ba);
+        }
+    } else {
+        assert!(p_ba.is_indeterminate());
+    }
+
+    // Property 5: Union consistency
+    let u_ab = a.union(b);
+    let u_ba = b.union(a);
+    assert_eq!(u_ab, u_ba);
+
+    if a.overlaps(b) || a.abuts(b) {
+        assert!(u_ab.is_contiguous());
+        let contig = u_ab.into_contiguous()?;
+        assert!(contig.contains(a));
+        assert!(contig.contains(b));
+    } else {
+        assert!(u_ab.is_disjoint());
+        assert!(u_ab.gap_ns() > 0);
+    }
+
+    // Property 6: Containment consistency
+    let cont_ab = a.classify_containment(b);
+    if a.contains(b) {
+        assert!(cont_ab.is_definite_contains());
+    } else if a.abuts(b) {
+        assert!(cont_ab.is_abutting());
+    } else if !a.overlaps(b) {
+        assert!(cont_ab.is_definite_disjoint());
+    } else {
+        assert!(cont_ab.is_indeterminate());
+    }
+
+    // Property 7: Monotone widening
+    if let Ok(widened) = a.widen_skew(skew) {
+        assert!(widened.uncertainty_ns() >= a.uncertainty_ns());
+        assert!(widened.contains(a));
+    }
+
+    // Property 8: Canonical encode/decode round trip
+    let encoded = a.canonical_bytes();
+    let decoded = CaptureInterval::from_canonical_bytes(&encoded)?;
+    assert_eq!(decoded, a);
+    Ok(())
+}
+
 #[test]
 fn property_test_interval_algebra_invariants() -> TestResult {
     let mut rng = DeterministicRng::new(0xDEAD_BEEF_CAFE_BABE);
 
-    for _ in 0..500 {
+    // Partition 1: Standard uniform random intervals (300 pairs)
+    for _ in 0..300 {
         let a = rng.next_interval(-1_000_000, 1_000_000)?;
         let b = rng.next_interval(-1_000_000, 1_000_000)?;
-
-        // Property 1: Intersection symmetry
-        let isect_ab = a.intersection(b);
-        let isect_ba = b.intersection(a);
-        assert_eq!(isect_ab, isect_ba);
-
-        // Property 2: Intersection subset invariant
-        if let Some(isect) = isect_ab {
-            assert!(a.contains(isect));
-            assert!(b.contains(isect));
-            assert!(a.overlaps(b));
-            assert!(b.overlaps(a));
-        } else {
-            assert!(!a.overlaps(b));
-            assert!(!b.overlaps(a));
-        }
-
-        // Property 3: Convex hull monotonicity and containment
-        let hull = a.hull(b);
-        assert!(hull.contains(a));
-        assert!(hull.contains(b));
-        assert!(hull.uncertainty_ns() >= a.uncertainty_ns());
-        assert!(hull.uncertainty_ns() >= b.uncertainty_ns());
-
-        // Property 4: Temporal precedence mutual exclusion
-        let p_ab = a.temporal_precedence(b);
-        let p_ba = b.temporal_precedence(a);
-
-        let def_before = p_ab.is_definitely_before();
-        let def_after = p_ab.is_definitely_after();
-        let indet = p_ab.is_indeterminate();
-
-        // Exactly one of the three states must hold
-        let count = (def_before as u8) + (def_after as u8) + (indet as u8);
-        assert_eq!(count, 1);
-
-        // Antisymmetry of precedence
-        if def_before {
-            assert!(p_ba.is_definitely_after());
-        } else if def_after {
-            assert!(p_ba.is_definitely_before());
-        } else {
-            assert!(p_ba.is_indeterminate());
-        }
-
-        // Property 5: Union consistency
-        let u_ab = a.union(b);
-        let u_ba = b.union(a);
-        assert_eq!(u_ab, u_ba);
-
-        if a.overlaps(b) || a.abuts(b) {
-            assert!(u_ab.is_contiguous());
-            let contig = u_ab.into_contiguous()?;
-            assert!(contig.contains(a));
-            assert!(contig.contains(b));
-        } else {
-            assert!(u_ab.is_disjoint());
-            assert!(u_ab.gap_ns() > 0);
-        }
-
-        // Property 6: Monotone widening
         let skew = (rng.next_u64() % 10_000) as u128;
-        let widened = a.widen_skew(skew)?;
-        assert!(widened.uncertainty_ns() >= a.uncertainty_ns());
-        assert!(widened.contains(a));
-
-        // Property 7: Canonical encode/decode round trip
-        let encoded = a.canonical_bytes();
-        let decoded = CaptureInterval::from_canonical_bytes(&encoded)?;
-        assert_eq!(decoded, a);
+        verify_interval_pair_invariants(a, b, skew)?;
     }
+
+    // Partition 2: Realistic Unix timestamps ~1.72e18 ns (100 pairs)
+    let unix_base: i128 = 1_725_000_000_000_000_000;
+    for _ in 0..100 {
+        let a = rng.next_interval(unix_base, unix_base + 1_000_000_000)?;
+        let b = rng.next_interval(unix_base, unix_base + 1_000_000_000)?;
+        verify_interval_pair_invariants(a, b, 500)?;
+    }
+
+    // Partition 3: Synthetic abutting pairs [t1, t2] and [t2 + 1, t3] (50 pairs)
+    for _ in 0..50 {
+        let t1 = rng.next_i128_range(0, 100_000);
+        let t2 = t1 + rng.next_i128_range(10, 1_000);
+        let t3 = t2 + 1 + rng.next_i128_range(10, 1_000);
+        let a = CaptureInterval::new(TimestampNs(t1), TimestampNs(t2))?;
+        let b = CaptureInterval::new(TimestampNs(t2 + 1), TimestampNs(t3))?;
+        assert!(a.abuts(b));
+        verify_interval_pair_invariants(a, b, 100)?;
+    }
+
+    // Partition 4: Synthetic boundary-touching pairs [t1, t2] and [t2, t3] (50 pairs)
+    for _ in 0..50 {
+        let t1 = rng.next_i128_range(0, 100_000);
+        let t2 = t1 + rng.next_i128_range(10, 1_000);
+        let t3 = t2 + rng.next_i128_range(10, 1_000);
+        let a = CaptureInterval::new(TimestampNs(t1), TimestampNs(t2))?;
+        let b = CaptureInterval::new(TimestampNs(t2), TimestampNs(t3))?;
+        assert_eq!(
+            a.temporal_precedence(b),
+            TemporalPrecedence::BoundaryContact {
+                point: TimestampNs(t2),
+                self_precedes: true,
+            }
+        );
+        verify_interval_pair_invariants(a, b, 100)?;
+    }
+
+    // Partition 5: Concentric intervals (50 pairs)
+    for _ in 0..50 {
+        let t1 = rng.next_i128_range(0, 10_000);
+        let t2 = t1 + 100;
+        let t3 = t2 + 500;
+        let t4 = t3 + 100;
+        let outer = CaptureInterval::new(TimestampNs(t1), TimestampNs(t4))?;
+        let inner = CaptureInterval::new(TimestampNs(t2), TimestampNs(t3))?;
+        assert!(outer.contains(inner));
+        verify_interval_pair_invariants(outer, inner, 100)?;
+    }
+
+    // Partition 6: Point intervals (50 pairs)
+    for _ in 0..50 {
+        let t1 = rng.next_i128_range(0, 100_000);
+        let t2 = rng.next_i128_range(0, 100_000);
+        let a = CaptureInterval::point(TimestampNs(t1));
+        let b = CaptureInterval::point(TimestampNs(t2));
+        assert_eq!(a.uncertainty_ns(), 0);
+        assert_eq!(b.uncertainty_ns(), 0);
+        verify_interval_pair_invariants(a, b, 50)?;
+    }
+
+    // Partition 7: Boundary values near i128::MIN and i128::MAX
+    let near_min = CaptureInterval::new(TimestampNs(i128::MIN), TimestampNs(i128::MIN + 1_000))?;
+    let near_max = CaptureInterval::new(TimestampNs(i128::MAX - 1_000), TimestampNs(i128::MAX))?;
+    verify_interval_pair_invariants(near_min, near_max, 0)?;
+
     Ok(())
 }
