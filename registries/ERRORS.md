@@ -60,10 +60,10 @@ operation states rather than generic errors.
 | `ERR-CLI-TRAILING-ARGUMENT-001` | extra argument provided after command grammar is satisfied | remove trailing argument before retry |
 | `ERR-CLI-RUNTIME-FAILURE-001` | runtime error occurred during validated command execution | inspect diagnostic and address failure cause |
 | `ERR-OP-EXECUTION-FAILED-001` | operation execution failed with expected domain error | inspect error details and apply recovery guidance |
-| `ERR-OP-PRECONDITION-FAILED-001` | operation precondition or basis anchor invalidated | rebase against fresh situation anchor before retry |
-| `ERR-OP-INDETERMINATE-001` | operation effect outcome cannot be verified | reconcile durable state before attempting retry |
-| `ERR-OP-UNAUTHORIZED-001` | operation refused due to missing authority or capability | obtain required capability grant before retry |
-| `ERR-OP-NOT-OBSERVABLE-001` | operation domain is not observable under current coverage | establish coverage witness or abstain |
+| `ERR-OP-PRECONDITION-FAILED-001` | tombstone: superseded by `ERR-PRECONDITION-STALE-001` | historical duplicate preserved for audit; canonical target is `ERR-PRECONDITION-STALE-001` |
+| `ERR-OP-INDETERMINATE-001` | tombstone: superseded by `ERR-EFFECT-INDETERMINATE-001` | historical duplicate preserved for audit; indeterminate outcomes must use Indeterminate variant |
+| `ERR-OP-UNAUTHORIZED-001` | tombstone: superseded by `ERR-AUTH-DENIED-001` | historical duplicate preserved for audit; canonical target is `ERR-AUTH-DENIED-001` |
+| `ERR-OP-NOT-OBSERVABLE-001` | tombstone: superseded by `ERR-COVERAGE-UNKNOWN-001` | historical duplicate preserved for audit; canonical target is `ERR-COVERAGE-UNKNOWN-001` |
 | `ERR-OP-TIMEOUT-001` | operation budget or deadline expired before completion | retry with higher budget or backoff |
 | `ERR-OP-RECONCILIATION-REQUIRED-001` | pending unresolved operation must be reconciled before further mutation | reconcile pending sequence before retry |
 | `ERR-OP-ID-MALFORMED-001` | error identity does not conform to stable ERR pattern | fix error identity to match stable registry format |

@@ -74,11 +74,12 @@ pub use ids::{
 };
 
 pub use outcome::{
+    ERR_AUTH_DENIED_001, ERR_COVERAGE_UNKNOWN_001, ERR_EFFECT_INDETERMINATE_001,
     ERR_OP_EXECUTION_FAILED_001, ERR_OP_ID_MALFORMED_001, ERR_OP_INDETERMINATE_001,
     ERR_OP_INVALID_OUTCOME_001, ERR_OP_NOT_OBSERVABLE_001, ERR_OP_PRECONDITION_FAILED_001,
-    ERR_OP_RECONCILIATION_REQUIRED_001, ERR_OP_TIMEOUT_001, ERR_OP_UNAUTHORIZED_001, ErrorId,
-    IndeterminateDetail, OperationError, OperationOutcome, RefusalDetail, RefusalReason,
-    validate_error_id,
+    ERR_OP_RECONCILIATION_REQUIRED_001, ERR_OP_TIMEOUT_001, ERR_OP_UNAUTHORIZED_001,
+    ERR_PRECONDITION_STALE_001, ErrorId, IndeterminateDetail, OperationError, OperationOutcome,
+    RefusalDetail, RefusalReason, validate_error_id,
 };
 
 pub use projection::{

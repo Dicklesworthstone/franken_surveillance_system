@@ -39,20 +39,20 @@ use crate::contract::{ContractError, RecoveryClass};
 // Stable Error Identifier Constants (Registered in registries/ERRORS.md)
 // ---------------------------------------------------------------------------
 
+/// Principal lacks exact capability or authorization.
+pub const ERR_AUTH_DENIED_001: &str = "ERR-AUTH-DENIED-001";
+
+/// Dispatch or effect outcome cannot be definitively determined; reconciliation required.
+pub const ERR_EFFECT_INDETERMINATE_001: &str = "ERR-EFFECT-INDETERMINATE-001";
+
+/// Operation plan anchor or precondition changed before commit.
+pub const ERR_PRECONDITION_STALE_001: &str = "ERR-PRECONDITION-STALE-001";
+
+/// Effective observability cannot be established under current coverage.
+pub const ERR_COVERAGE_UNKNOWN_001: &str = "ERR-COVERAGE-UNKNOWN-001";
+
 /// Operation execution failed with expected domain error.
 pub const ERR_OP_EXECUTION_FAILED_001: &str = "ERR-OP-EXECUTION-FAILED-001";
-
-/// Operation precondition or basis anchor invalidated.
-pub const ERR_OP_PRECONDITION_FAILED_001: &str = "ERR-OP-PRECONDITION-FAILED-001";
-
-/// Operation effect outcome cannot be verified and must be reconciled.
-pub const ERR_OP_INDETERMINATE_001: &str = "ERR-OP-INDETERMINATE-001";
-
-/// Operation refused due to missing authority or capability.
-pub const ERR_OP_UNAUTHORIZED_001: &str = "ERR-OP-UNAUTHORIZED-001";
-
-/// Operation domain is not observable under current coverage.
-pub const ERR_OP_NOT_OBSERVABLE_001: &str = "ERR-OP-NOT-OBSERVABLE-001";
 
 /// Operation budget or deadline expired before completion.
 pub const ERR_OP_TIMEOUT_001: &str = "ERR-OP-TIMEOUT-001";
@@ -65,6 +65,22 @@ pub const ERR_OP_ID_MALFORMED_001: &str = "ERR-OP-ID-MALFORMED-001";
 
 /// Operation outcome state transition or representation is invalid.
 pub const ERR_OP_INVALID_OUTCOME_001: &str = "ERR-OP-INVALID-OUTCOME-001";
+
+// ---------------------------------------------------------------------------
+// Tombstoned / Superseded Error Identifiers (Preserved for audit)
+// ---------------------------------------------------------------------------
+
+/// Superseded by [`ERR_AUTH_DENIED_001`].
+pub const ERR_OP_UNAUTHORIZED_001: &str = "ERR-OP-UNAUTHORIZED-001";
+
+/// Superseded by [`ERR_EFFECT_INDETERMINATE_001`].
+pub const ERR_OP_INDETERMINATE_001: &str = "ERR-OP-INDETERMINATE-001";
+
+/// Superseded by [`ERR_PRECONDITION_STALE_001`].
+pub const ERR_OP_PRECONDITION_FAILED_001: &str = "ERR-OP-PRECONDITION-FAILED-001";
+
+/// Superseded by [`ERR_COVERAGE_UNKNOWN_001`].
+pub const ERR_OP_NOT_OBSERVABLE_001: &str = "ERR-OP-NOT-OBSERVABLE-001";
 
 // ---------------------------------------------------------------------------
 // ErrorId
@@ -252,31 +268,105 @@ pub struct OperationError {
 }
 
 impl OperationError {
-    /// Constructs a basic operational error with default retry/rebase flags (false/None).
+    /// Validates internal consistency between `recovery_class` and guidance fields.
+    pub fn validate_guidance(&self) -> Result<(), ContractError> {
+        // Indeterminate identities are forbidden in OperationError (F3)
+        if self.error_id.as_str() == ERR_EFFECT_INDETERMINATE_001
+            || self.error_id.as_str() == ERR_OP_INDETERMINATE_001
+            || self.error_id.as_str().contains("INDETERMINATE")
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+
+        // Backoff interval, if present, must be strictly positive (> 0 ms)
+        if self.backoff_ms == Some(0) {
+            return Err(ContractError::InvalidIdentifier);
+        }
+
+        match self.recovery_class {
+            RecoveryClass::NeverUnchanged => {
+                if self.safe_retry || self.reconciliation_required {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+            RecoveryClass::SafeReadRetry => {
+                if !self.safe_retry || self.reconciliation_required || self.resnapshot_required {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+            RecoveryClass::RefreshAndRetry => {
+                if self.safe_retry || !self.resnapshot_required || self.reconciliation_required {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+            RecoveryClass::RebaseRequired => {
+                if self.safe_retry || !self.resnapshot_required || self.reconciliation_required {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+            RecoveryClass::Backoff => {
+                if self.reconciliation_required {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+            RecoveryClass::ReconciliationRequired => {
+                if !self.reconciliation_required || self.safe_retry {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+            RecoveryClass::OperatorActionRequired => {
+                if self.safe_retry || self.reconciliation_required {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+            RecoveryClass::ResumeFromContinuation => {
+                if self.safe_retry || self.reconciliation_required {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Constructs a basic operational error validated against the recovery guidance table.
     pub fn new(
         error_id: ErrorId,
         message: impl Into<String>,
         recovery_class: RecoveryClass,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, ContractError> {
+        let (safe_retry, resnapshot_required, reconciliation_required) = match recovery_class {
+            RecoveryClass::NeverUnchanged => (false, false, false),
+            RecoveryClass::SafeReadRetry => (true, false, false),
+            RecoveryClass::RefreshAndRetry => (false, true, false),
+            RecoveryClass::RebaseRequired => (false, true, false),
+            RecoveryClass::Backoff => (true, false, false),
+            RecoveryClass::ReconciliationRequired => (false, true, true),
+            RecoveryClass::OperatorActionRequired => (false, false, false),
+            RecoveryClass::ResumeFromContinuation => (false, false, false),
+        };
+
+        let err = Self {
             error_id,
             message: message.into(),
             recovery_class,
-            safe_retry: false,
-            resnapshot_required: false,
-            reconciliation_required: false,
+            safe_retry,
+            resnapshot_required,
+            reconciliation_required,
             rebase_guidance: None,
             backoff_ms: None,
-        }
+        };
+        err.validate_guidance()?;
+        Ok(err)
     }
 
     /// Convenience constructor for execution failure.
     pub fn execution_failed(message: impl Into<String>) -> Result<Self, ContractError> {
-        Ok(Self::new(
+        Self::new(
             ErrorId::parse(ERR_OP_EXECUTION_FAILED_001)?,
             message,
             RecoveryClass::NeverUnchanged,
-        ))
+        )
     }
 
     /// Convenience constructor for precondition or anchor staleness.
@@ -284,61 +374,70 @@ impl OperationError {
         message: impl Into<String>,
         rebase_guidance: impl Into<String>,
     ) -> Result<Self, ContractError> {
-        Ok(Self::new(
-            ErrorId::parse(ERR_OP_PRECONDITION_FAILED_001)?,
+        Self::new(
+            ErrorId::parse(ERR_PRECONDITION_STALE_001)?,
             message,
             RecoveryClass::RebaseRequired,
-        )
-        .with_resnapshot(true)
-        .with_rebase_guidance(rebase_guidance))
+        )?
+        .with_resnapshot(true)?
+        .with_rebase_guidance(rebase_guidance)
     }
 
     /// Convenience constructor for operations requiring external reconciliation.
     pub fn reconciliation_required_error(
         message: impl Into<String>,
     ) -> Result<Self, ContractError> {
-        Ok(Self::new(
+        Self::new(
             ErrorId::parse(ERR_OP_RECONCILIATION_REQUIRED_001)?,
             message,
             RecoveryClass::ReconciliationRequired,
-        )
-        .with_reconciliation(true)
-        .with_resnapshot(true))
+        )?
+        .with_reconciliation(true)?
+        .with_resnapshot(true)
     }
 
-    /// Sets the safe_retry flag.
-    #[must_use]
-    pub fn with_safe_retry(mut self, safe_retry: bool) -> Self {
+    /// Sets the safe_retry flag, validating consistency with the recovery class.
+    pub fn with_safe_retry(mut self, safe_retry: bool) -> Result<Self, ContractError> {
         self.safe_retry = safe_retry;
-        self
+        self.validate_guidance()?;
+        Ok(self)
     }
 
-    /// Sets the resnapshot_required flag.
-    #[must_use]
-    pub fn with_resnapshot(mut self, resnapshot_required: bool) -> Self {
+    /// Sets the resnapshot_required flag, validating consistency with the recovery class.
+    pub fn with_resnapshot(mut self, resnapshot_required: bool) -> Result<Self, ContractError> {
         self.resnapshot_required = resnapshot_required;
-        self
+        self.validate_guidance()?;
+        Ok(self)
     }
 
-    /// Sets the reconciliation_required flag.
-    #[must_use]
-    pub fn with_reconciliation(mut self, reconciliation_required: bool) -> Self {
+    /// Sets the reconciliation_required flag, validating consistency with the recovery class.
+    pub fn with_reconciliation(
+        mut self,
+        reconciliation_required: bool,
+    ) -> Result<Self, ContractError> {
         self.reconciliation_required = reconciliation_required;
-        self
+        self.validate_guidance()?;
+        Ok(self)
     }
 
     /// Sets optional rebase guidance.
-    #[must_use]
-    pub fn with_rebase_guidance(mut self, guidance: impl Into<String>) -> Self {
+    pub fn with_rebase_guidance(
+        mut self,
+        guidance: impl Into<String>,
+    ) -> Result<Self, ContractError> {
         self.rebase_guidance = Some(guidance.into());
-        self
+        self.validate_guidance()?;
+        Ok(self)
     }
 
-    /// Sets optional backoff in milliseconds.
-    #[must_use]
-    pub fn with_backoff_ms(mut self, backoff_ms: u64) -> Self {
+    /// Sets optional backoff in milliseconds (must be > 0).
+    pub fn with_backoff_ms(mut self, backoff_ms: u64) -> Result<Self, ContractError> {
+        if backoff_ms == 0 {
+            return Err(ContractError::InvalidIdentifier);
+        }
         self.backoff_ms = Some(backoff_ms);
-        self
+        self.validate_guidance()?;
+        Ok(self)
     }
 }
 
@@ -405,7 +504,7 @@ impl CanonicalDecode for OperationError {
         } else {
             None
         };
-        Ok(Self {
+        let err = Self {
             error_id,
             message,
             recovery_class,
@@ -414,7 +513,9 @@ impl CanonicalDecode for OperationError {
             reconciliation_required,
             rebase_guidance,
             backoff_ms,
-        })
+        };
+        err.validate_guidance()?;
+        Ok(err)
     }
 }
 
@@ -506,6 +607,22 @@ impl RefusalDetail {
             coverage_witness_required,
         }
     }
+    /// Validates consistency between reason and capability/coverage fields.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        match self.reason {
+            RefusalReason::Unauthorized => {
+                if self.coverage_witness_required {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+            RefusalReason::NotObservable => {
+                if self.required_capability.is_some() {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl fmt::Display for RefusalDetail {
@@ -544,12 +661,14 @@ impl CanonicalDecode for RefusalDetail {
             None
         };
         let coverage_witness_required = decoder.bool()?;
-        Ok(Self {
+        let detail = Self {
             reason,
             message,
             required_capability,
             coverage_witness_required,
-        })
+        };
+        detail.validate()?;
+        Ok(detail)
     }
 }
 
@@ -661,18 +780,18 @@ impl CanonicalDecode for IndeterminateDetail {
 /// Disallows implicit conversion to/from standard [`Result`] to prevent accidental
 /// erasure of indeterminate effects or observation refusals.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub enum OperationOutcome<T, E = OperationError> {
+pub enum OperationOutcome<T, E = OperationError, I = IndeterminateDetail, R = RefusalDetail> {
     /// Work completed definitively with a typed payload.
     Success(T),
     /// Work failed with a stable, typed error.
     Failed(E),
     /// Work execution or effect cannot be definitively verified; reconciliation required.
-    Indeterminate(IndeterminateDetail),
+    Indeterminate(I),
     /// Operation was refused due to missing authority/capability or unobservable domain.
-    UnauthorizedOrNotObservable(RefusalDetail),
+    UnauthorizedOrNotObservable(R),
 }
 
-impl<T, E> OperationOutcome<T, E> {
+impl<T, E, I, R> OperationOutcome<T, E, I, R> {
     /// Creates a [`Success`](Self::Success) outcome.
     pub const fn success(val: T) -> Self {
         Self::Success(val)
@@ -684,29 +803,13 @@ impl<T, E> OperationOutcome<T, E> {
     }
 
     /// Creates an [`Indeterminate`](Self::Indeterminate) outcome.
-    pub const fn indeterminate(detail: IndeterminateDetail) -> Self {
+    pub const fn indeterminate(detail: I) -> Self {
         Self::Indeterminate(detail)
     }
 
     /// Creates an [`UnauthorizedOrNotObservable`](Self::UnauthorizedOrNotObservable) outcome.
-    pub const fn unauthorized_or_not_observable(refusal: RefusalDetail) -> Self {
+    pub const fn unauthorized_or_not_observable(refusal: R) -> Self {
         Self::UnauthorizedOrNotObservable(refusal)
-    }
-
-    /// Convenience constructor for an authorization refusal.
-    pub fn unauthorized(
-        message: impl Into<String>,
-        required_capability: Option<impl Into<String>>,
-    ) -> Self {
-        Self::UnauthorizedOrNotObservable(RefusalDetail::unauthorized(message, required_capability))
-    }
-
-    /// Convenience constructor for an unobservable domain refusal.
-    pub fn not_observable(message: impl Into<String>, coverage_witness_required: bool) -> Self {
-        Self::UnauthorizedOrNotObservable(RefusalDetail::not_observable(
-            message,
-            coverage_witness_required,
-        ))
     }
 
     /// Returns `true` if the outcome is [`Success`](Self::Success).
@@ -769,7 +872,15 @@ impl<T, E> OperationOutcome<T, E> {
 
     /// Returns a reference to the contained indeterminate diagnostic, if any.
     #[must_use]
-    pub const fn as_indeterminate(&self) -> Option<&IndeterminateDetail> {
+    pub const fn as_indeterminate(&self) -> Option<&I> {
+        match self {
+            Self::Indeterminate(detail) => Some(detail),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the contained indeterminate diagnostic, if any.
+    pub const fn as_indeterminate_mut(&mut self) -> Option<&mut I> {
         match self {
             Self::Indeterminate(detail) => Some(detail),
             _ => None,
@@ -778,7 +889,15 @@ impl<T, E> OperationOutcome<T, E> {
 
     /// Returns a reference to the contained refusal detail, if any.
     #[must_use]
-    pub const fn as_unauthorized_or_not_observable(&self) -> Option<&RefusalDetail> {
+    pub const fn as_unauthorized_or_not_observable(&self) -> Option<&R> {
+        match self {
+            Self::UnauthorizedOrNotObservable(refusal) => Some(refusal),
+            _ => None,
+        }
+    }
+
+    /// Returns a mutable reference to the contained refusal detail, if any.
+    pub const fn as_unauthorized_or_not_observable_mut(&mut self) -> Option<&mut R> {
         match self {
             Self::UnauthorizedOrNotObservable(refusal) => Some(refusal),
             _ => None,
@@ -805,7 +924,7 @@ impl<T, E> OperationOutcome<T, E> {
 
     /// Consumes `self`, returning the indeterminate diagnostic if present.
     #[must_use]
-    pub fn into_indeterminate(self) -> Option<IndeterminateDetail> {
+    pub fn into_indeterminate(self) -> Option<I> {
         match self {
             Self::Indeterminate(detail) => Some(detail),
             _ => None,
@@ -814,44 +933,48 @@ impl<T, E> OperationOutcome<T, E> {
 
     /// Consumes `self`, returning the refusal detail if present.
     #[must_use]
-    pub fn into_unauthorized_or_not_observable(self) -> Option<RefusalDetail> {
+    pub fn into_unauthorized_or_not_observable(self) -> Option<R> {
         match self {
             Self::UnauthorizedOrNotObservable(refusal) => Some(refusal),
             _ => None,
         }
     }
 
-    /// Maps an `OperationOutcome<T, E>` to `OperationOutcome<&T, &E>`.
-    pub fn as_ref(&self) -> OperationOutcome<&T, &E> {
+    /// Maps an `OperationOutcome<T, E, I, R>` to `OperationOutcome<&T, &E, &I, &R>`.
+    ///
+    /// This is completely zero-copy and allocates no heap memory.
+    pub const fn as_ref(&self) -> OperationOutcome<&T, &E, &I, &R> {
         match self {
             Self::Success(val) => OperationOutcome::Success(val),
             Self::Failed(err) => OperationOutcome::Failed(err),
-            Self::Indeterminate(detail) => OperationOutcome::Indeterminate(detail.clone()),
+            Self::Indeterminate(detail) => OperationOutcome::Indeterminate(detail),
             Self::UnauthorizedOrNotObservable(refusal) => {
-                OperationOutcome::UnauthorizedOrNotObservable(refusal.clone())
+                OperationOutcome::UnauthorizedOrNotObservable(refusal)
             }
         }
     }
 
-    /// Maps an `OperationOutcome<T, E>` to `OperationOutcome<&mut T, &mut E>`.
-    pub fn as_mut(&mut self) -> OperationOutcome<&mut T, &mut E> {
+    /// Maps an `OperationOutcome<T, E, I, R>` to `OperationOutcome<&mut T, &mut E, &mut I, &mut R>`.
+    ///
+    /// Modifying any inner field through this reference modifies the underlying detail in place.
+    pub fn as_mut(&mut self) -> OperationOutcome<&mut T, &mut E, &mut I, &mut R> {
         match self {
             Self::Success(val) => OperationOutcome::Success(val),
             Self::Failed(err) => OperationOutcome::Failed(err),
-            Self::Indeterminate(detail) => OperationOutcome::Indeterminate(detail.clone()),
+            Self::Indeterminate(detail) => OperationOutcome::Indeterminate(detail),
             Self::UnauthorizedOrNotObservable(refusal) => {
-                OperationOutcome::UnauthorizedOrNotObservable(refusal.clone())
+                OperationOutcome::UnauthorizedOrNotObservable(refusal)
             }
         }
     }
 
-    /// Maps a `OperationOutcome<T, E>` to `OperationOutcome<U, E>` by applying a function
+    /// Maps a `OperationOutcome<T, E, I, R>` to `OperationOutcome<U, E, I, R>` by applying a function
     /// to a contained `Success` value, leaving `Failed`, `Indeterminate`, and
     /// `UnauthorizedOrNotObservable` untouched.
     ///
     /// # Invariant
     /// An indeterminate or refused outcome is never upgraded or transformed into success.
-    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> OperationOutcome<U, E> {
+    pub fn map<U, F: FnOnce(T) -> U>(self, f: F) -> OperationOutcome<U, E, I, R> {
         match self {
             Self::Success(val) => OperationOutcome::Success(f(val)),
             Self::Failed(err) => OperationOutcome::Failed(err),
@@ -862,13 +985,13 @@ impl<T, E> OperationOutcome<T, E> {
         }
     }
 
-    /// Maps a `OperationOutcome<T, E>` to `OperationOutcome<T, O>` by applying a function
+    /// Maps a `OperationOutcome<T, E, I, R>` to `OperationOutcome<T, O, I, R>` by applying a function
     /// to a contained `Failed` error, leaving `Success`, `Indeterminate`, and
     /// `UnauthorizedOrNotObservable` untouched.
     ///
     /// # Invariant
     /// An indeterminate or refused outcome is never upgraded or transformed into success.
-    pub fn map_err<O, F: FnOnce(E) -> O>(self, f: F) -> OperationOutcome<T, O> {
+    pub fn map_err<O, F: FnOnce(E) -> O>(self, f: F) -> OperationOutcome<T, O, I, R> {
         match self {
             Self::Success(val) => OperationOutcome::Success(val),
             Self::Failed(err) => OperationOutcome::Failed(f(err)),
@@ -884,10 +1007,10 @@ impl<T, E> OperationOutcome<T, E> {
     /// # Invariant
     /// If `self` is `Indeterminate` or `UnauthorizedOrNotObservable`, `f` is never executed
     /// and the indeterminate/refusal state is strictly preserved.
-    pub fn and_then<U, F: FnOnce(T) -> OperationOutcome<U, E>>(
+    pub fn and_then<U, F: FnOnce(T) -> OperationOutcome<U, E, I, R>>(
         self,
         f: F,
-    ) -> OperationOutcome<U, E> {
+    ) -> OperationOutcome<U, E, I, R> {
         match self {
             Self::Success(val) => f(val),
             Self::Failed(err) => OperationOutcome::Failed(err),
@@ -903,10 +1026,10 @@ impl<T, E> OperationOutcome<T, E> {
     /// # Invariant
     /// If `self` is `Indeterminate`, `f` is **never** executed. An indeterminate effect
     /// cannot be caught and replaced with a success value via `or_else`.
-    pub fn or_else<O, F: FnOnce(E) -> OperationOutcome<T, O>>(
+    pub fn or_else<O, F: FnOnce(E) -> OperationOutcome<T, O, I, R>>(
         self,
         f: F,
-    ) -> OperationOutcome<T, O> {
+    ) -> OperationOutcome<T, O, I, R> {
         match self {
             Self::Success(val) => OperationOutcome::Success(val),
             Self::Failed(err) => f(err),
@@ -934,7 +1057,7 @@ impl<T, E> OperationOutcome<T, E> {
     }
 
     /// Calls the provided closure with a reference to the contained diagnostic if `Indeterminate`.
-    pub fn inspect_indeterminate<F: FnOnce(&IndeterminateDetail)>(self, f: F) -> Self {
+    pub fn inspect_indeterminate<F: FnOnce(&I)>(self, f: F) -> Self {
         if let Self::Indeterminate(ref ind) = self {
             f(ind);
         }
@@ -942,7 +1065,7 @@ impl<T, E> OperationOutcome<T, E> {
     }
 
     /// Calls the provided closure with a reference to the contained refusal if `UnauthorizedOrNotObservable`.
-    pub fn inspect_unauthorized_or_not_observable<F: FnOnce(&RefusalDetail)>(self, f: F) -> Self {
+    pub fn inspect_unauthorized_or_not_observable<F: FnOnce(&R)>(self, f: F) -> Self {
         if let Self::UnauthorizedOrNotObservable(ref refusal) = self {
             f(refusal);
         }
@@ -950,13 +1073,31 @@ impl<T, E> OperationOutcome<T, E> {
     }
 }
 
-impl<T, E> OperationOutcome<OperationOutcome<T, E>, E> {
-    /// Flattens an `OperationOutcome<OperationOutcome<T, E>, E>` into an `OperationOutcome<T, E>`.
+impl<T, E, I> OperationOutcome<T, E, I, RefusalDetail> {
+    /// Convenience constructor for an authorization refusal.
+    pub fn unauthorized(
+        message: impl Into<String>,
+        required_capability: Option<impl Into<String>>,
+    ) -> Self {
+        Self::UnauthorizedOrNotObservable(RefusalDetail::unauthorized(message, required_capability))
+    }
+
+    /// Convenience constructor for an unobservable domain refusal.
+    pub fn not_observable(message: impl Into<String>, coverage_witness_required: bool) -> Self {
+        Self::UnauthorizedOrNotObservable(RefusalDetail::not_observable(
+            message,
+            coverage_witness_required,
+        ))
+    }
+}
+
+impl<T, E, I, R> OperationOutcome<OperationOutcome<T, E, I, R>, E, I, R> {
+    /// Flattens an `OperationOutcome<OperationOutcome<T, E, I, R>, E, I, R>` into an `OperationOutcome<T, E, I, R>`.
     ///
     /// # Invariant
     /// If either outer or inner outcome is `Indeterminate` or `UnauthorizedOrNotObservable`,
     /// that state is strictly preserved and never upgraded to `Success`.
-    pub fn flatten(self) -> OperationOutcome<T, E> {
+    pub fn flatten(self) -> OperationOutcome<T, E, I, R> {
         match self {
             Self::Success(inner) => inner,
             Self::Failed(err) => OperationOutcome::Failed(err),
@@ -972,7 +1113,9 @@ impl<T, E> OperationOutcome<OperationOutcome<T, E>, E> {
 // Canonical Codec for OperationOutcome
 // ---------------------------------------------------------------------------
 
-impl<T: CanonicalEncode, E: CanonicalEncode> CanonicalEncode for OperationOutcome<T, E> {
+impl<T: CanonicalEncode, E: CanonicalEncode, I: CanonicalEncode, R: CanonicalEncode> CanonicalEncode
+    for OperationOutcome<T, E, I, R>
+{
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         match self {
             Self::Success(val) => {
@@ -995,14 +1138,16 @@ impl<T: CanonicalEncode, E: CanonicalEncode> CanonicalEncode for OperationOutcom
     }
 }
 
-impl<T: CanonicalDecode, E: CanonicalDecode> CanonicalDecode for OperationOutcome<T, E> {
+impl<T: CanonicalDecode, E: CanonicalDecode, I: CanonicalDecode, R: CanonicalDecode> CanonicalDecode
+    for OperationOutcome<T, E, I, R>
+{
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let tag = decoder.tag()?;
         match tag {
             0 => T::decode_canonical(decoder).map(Self::Success),
             1 => E::decode_canonical(decoder).map(Self::Failed),
-            2 => IndeterminateDetail::decode_canonical(decoder).map(Self::Indeterminate),
-            3 => RefusalDetail::decode_canonical(decoder).map(Self::UnauthorizedOrNotObservable),
+            2 => I::decode_canonical(decoder).map(Self::Indeterminate),
+            3 => R::decode_canonical(decoder).map(Self::UnauthorizedOrNotObservable),
             _ => Err(ContractError::InvalidIdentifier),
         }
     }

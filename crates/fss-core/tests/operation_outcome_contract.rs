@@ -14,11 +14,13 @@
 use std::error::Error;
 
 use fss_core::{
-    CanonicalDecode, CanonicalEncode, ContractError, ERR_OP_EXECUTION_FAILED_001,
-    ERR_OP_ID_MALFORMED_001, ERR_OP_INDETERMINATE_001, ERR_OP_INVALID_OUTCOME_001,
-    ERR_OP_NOT_OBSERVABLE_001, ERR_OP_PRECONDITION_FAILED_001, ERR_OP_RECONCILIATION_REQUIRED_001,
-    ERR_OP_TIMEOUT_001, ERR_OP_UNAUTHORIZED_001, ErrorId, IndeterminateDetail, OperationError,
-    OperationOutcome, RecoveryClass, RefusalDetail, RefusalReason, validate_error_id,
+    CanonicalDecode, CanonicalEncode, ContractError, ERR_AUTH_DENIED_001, ERR_COVERAGE_UNKNOWN_001,
+    ERR_EFFECT_INDETERMINATE_001, ERR_OP_EXECUTION_FAILED_001, ERR_OP_ID_MALFORMED_001,
+    ERR_OP_INDETERMINATE_001, ERR_OP_INVALID_OUTCOME_001, ERR_OP_NOT_OBSERVABLE_001,
+    ERR_OP_PRECONDITION_FAILED_001, ERR_OP_RECONCILIATION_REQUIRED_001, ERR_OP_TIMEOUT_001,
+    ERR_OP_UNAUTHORIZED_001, ERR_PRECONDITION_STALE_001, ErrorId, IndeterminateDetail,
+    OperationError, OperationOutcome, RecoveryClass, RefusalDetail, RefusalReason,
+    validate_error_id,
 };
 
 #[test]
@@ -261,11 +263,9 @@ fn combinators_work_on_success_and_failed() -> Result<(), Box<dyn Error>> {
 
     // map_err
     let f_mapped_err = failed.clone().map_err(|e| {
-        OperationError::new(
-            e.error_id,
-            format!("wrapped: {}", e.message),
-            e.recovery_class,
-        )
+        let mut cloned = e;
+        cloned.message = format!("wrapped: {}", cloned.message);
+        cloned
     });
     assert_eq!(
         f_mapped_err
@@ -306,21 +306,22 @@ fn combinators_work_on_success_and_failed() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+// This test explicitly validates the grammar/syntax of ErrorId parsing (including multi-segment
+// and minimum-length valid syntax forms), as permitted by the registry policy.
 #[test]
-fn error_id_validation_valid_cases() -> Result<(), Box<dyn Error>> {
+fn error_id_syntax_validation_valid_cases() -> Result<(), Box<dyn Error>> {
     let valid_ids = [
+        ERR_AUTH_DENIED_001,
+        ERR_EFFECT_INDETERMINATE_001,
+        ERR_PRECONDITION_STALE_001,
+        ERR_COVERAGE_UNKNOWN_001,
         ERR_OP_EXECUTION_FAILED_001,
-        ERR_OP_PRECONDITION_FAILED_001,
-        ERR_OP_INDETERMINATE_001,
-        ERR_OP_UNAUTHORIZED_001,
-        ERR_OP_NOT_OBSERVABLE_001,
         ERR_OP_TIMEOUT_001,
         ERR_OP_RECONCILIATION_REQUIRED_001,
         ERR_OP_ID_MALFORMED_001,
         ERR_OP_INVALID_OUTCOME_001,
-        "ERR-AUTH-DENIED-001",
-        "ERR-A-001",
-        "ERR-MODULE1-SUB2-SEG3-999",
+        "ERR-A-001",                 // Valid minimal segment syntax
+        "ERR-MODULE1-SUB2-SEG3-999", // Valid multi-segment syntax
     ];
 
     for &id_str in &valid_ids {
@@ -368,10 +369,10 @@ fn operation_error_guidance_fields_and_builder() -> Result<(), Box<dyn Error>> {
         "anchor epoch drift detected",
         "rebase situation capsule to epoch 42",
     )?
-    .with_safe_retry(false)
-    .with_backoff_ms(250);
+    .with_safe_retry(false)?
+    .with_backoff_ms(250)?;
 
-    assert_eq!(op_err.error_id.as_str(), ERR_OP_PRECONDITION_FAILED_001);
+    assert_eq!(op_err.error_id.as_str(), ERR_PRECONDITION_STALE_001);
     assert_eq!(op_err.recovery_class, RecoveryClass::RebaseRequired);
     assert!(!op_err.safe_retry);
     assert!(op_err.resnapshot_required);
@@ -384,7 +385,7 @@ fn operation_error_guidance_fields_and_builder() -> Result<(), Box<dyn Error>> {
 
     let display = format!("{op_err}");
     assert!(display.contains("rebase_required"));
-    assert!(display.contains(ERR_OP_PRECONDITION_FAILED_001));
+    assert!(display.contains(ERR_PRECONDITION_STALE_001));
     assert!(display.contains("anchor epoch drift detected"));
     assert!(display.contains("rebase situation capsule to epoch 42"));
     assert!(display.contains("backoff_ms: 250"));
@@ -431,9 +432,9 @@ fn canonical_encoding_roundtrip_all_four_variants() -> Result<(), Box<dyn Error>
         ErrorId::parse(ERR_OP_TIMEOUT_001)?,
         "operation budget expired after 5000ms",
         RecoveryClass::Backoff,
-    )
-    .with_safe_retry(true)
-    .with_backoff_ms(1000);
+    )?
+    .with_safe_retry(true)?
+    .with_backoff_ms(1000)?;
     let outcome4: OperationOutcome<u64> = OperationOutcome::failed(err);
     let bytes4 = outcome4.canonical_bytes();
     let decoded4: OperationOutcome<u64> = OperationOutcome::from_canonical_bytes(&bytes4)?;
@@ -571,6 +572,256 @@ fn refusal_reason_roundtrip_and_parse() -> Result<(), Box<dyn Error>> {
 
     assert_eq!(
         RefusalReason::parse("unknown_refusal"),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn defect_never_unchanged_forbids_safe_retry() -> Result<(), Box<dyn Error>> {
+    let op_err = OperationError::new(
+        ErrorId::parse(ERR_OP_EXECUTION_FAILED_001)?,
+        "fatal unrecoverable database corruption",
+        RecoveryClass::NeverUnchanged,
+    )?;
+
+    assert!(!op_err.safe_retry);
+    let retry_res = op_err.clone().with_safe_retry(true);
+    assert_eq!(retry_res, Err(ContractError::InvalidIdentifier));
+
+    let recon_res = op_err.with_reconciliation(true);
+    assert_eq!(recon_res, Err(ContractError::InvalidIdentifier));
+
+    Ok(())
+}
+
+#[test]
+fn defect_canonical_decode_accepts_contradictory_guidance() -> Result<(), Box<dyn Error>> {
+    let mut encoder = fss_core::CanonicalEncoder::new();
+    ErrorId::parse(ERR_OP_EXECUTION_FAILED_001)?.encode_canonical(&mut encoder);
+    encoder.text("fatal permanent corruption");
+    RecoveryClass::NeverUnchanged.encode_canonical(&mut encoder);
+    encoder.bool(true); // safe_retry = true (CONTRADICTION with NeverUnchanged!)
+    encoder.bool(false); // resnapshot_required
+    encoder.bool(false); // reconciliation_required
+    encoder.bool(false); // has_rebase
+    encoder.bool(false); // has_backoff
+    let bytes = encoder.finish();
+
+    let decoded = OperationError::from_canonical_bytes(&bytes);
+    assert_eq!(decoded, Err(ContractError::InvalidIdentifier));
+
+    Ok(())
+}
+
+#[test]
+fn defect_indeterminate_error_id_subverts_non_upgradability() -> Result<(), Box<dyn Error>> {
+    let err_id_res = ErrorId::parse(ERR_EFFECT_INDETERMINATE_001)?;
+    let op_err_res = OperationError::new(
+        err_id_res,
+        "mutation state indeterminate",
+        RecoveryClass::ReconciliationRequired,
+    );
+    assert_eq!(op_err_res, Err(ContractError::InvalidIdentifier));
+
+    let superseded_id = ErrorId::parse(ERR_OP_INDETERMINATE_001)?;
+    let op_err_res2 = OperationError::new(
+        superseded_id,
+        "mutation state indeterminate",
+        RecoveryClass::ReconciliationRequired,
+    );
+    assert_eq!(op_err_res2, Err(ContractError::InvalidIdentifier));
+
+    // Also verify decode rejects indeterminate error ID in OperationError
+    let mut encoder = fss_core::CanonicalEncoder::new();
+    ErrorId::parse(ERR_EFFECT_INDETERMINATE_001)?.encode_canonical(&mut encoder);
+    encoder.text("mutation state indeterminate");
+    RecoveryClass::ReconciliationRequired.encode_canonical(&mut encoder);
+    encoder.bool(false); // safe_retry
+    encoder.bool(true); // resnapshot_required
+    encoder.bool(true); // reconciliation_required
+    encoder.bool(false); // has_rebase
+    encoder.bool(false); // has_backoff
+    let bytes = encoder.finish();
+
+    let decoded = OperationError::from_canonical_bytes(&bytes);
+    assert_eq!(decoded, Err(ContractError::InvalidIdentifier));
+
+    Ok(())
+}
+
+#[test]
+fn defect_registry_audit_for_outcome_error_constants() -> Result<(), Box<dyn Error>> {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .ok_or("failed to resolve workspace root")?;
+    let errors_md_path = workspace_root.join("registries/ERRORS.md");
+    let content = std::fs::read_to_string(&errors_md_path)?;
+
+    let mut registered_ids = std::collections::BTreeSet::new();
+    for line in content.lines() {
+        if line.starts_with('|') {
+            let cols: Vec<&str> = line.split('|').map(str::trim).collect();
+            if cols.len() >= 2 {
+                let token = cols[1].trim_matches('`').trim();
+                if token.starts_with("ERR-") {
+                    registered_ids.insert(token.to_string());
+                }
+            }
+        }
+    }
+
+    let constants = [
+        ERR_AUTH_DENIED_001,
+        ERR_EFFECT_INDETERMINATE_001,
+        ERR_PRECONDITION_STALE_001,
+        ERR_COVERAGE_UNKNOWN_001,
+        ERR_OP_EXECUTION_FAILED_001,
+        ERR_OP_TIMEOUT_001,
+        ERR_OP_RECONCILIATION_REQUIRED_001,
+        ERR_OP_ID_MALFORMED_001,
+        ERR_OP_INVALID_OUTCOME_001,
+        ERR_OP_UNAUTHORIZED_001,
+        ERR_OP_INDETERMINATE_001,
+        ERR_OP_PRECONDITION_FAILED_001,
+        ERR_OP_NOT_OBSERVABLE_001,
+    ];
+
+    for &constant in &constants {
+        assert!(
+            registered_ids.contains(constant),
+            "Constant '{constant}' is not registered in registries/ERRORS.md"
+        );
+        validate_error_id(constant)?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn defect_zero_copy_as_ref_and_in_place_as_mut() -> Result<(), Box<dyn Error>> {
+    // 1. In-place mutation of IndeterminateDetail via as_mut()
+    let mut ind_outcome: OperationOutcome<u32> = OperationOutcome::indeterminate(
+        IndeterminateDetail::new("dispatch", "network timeout", "verify anchor"),
+    );
+    if let OperationOutcome::Indeterminate(ind) = ind_outcome.as_mut() {
+        ind.phase = "commit".to_string();
+    }
+    assert_eq!(
+        ind_outcome.as_indeterminate().map(|i| i.phase.as_str()),
+        Some("commit")
+    );
+
+    // 2. In-place mutation of RefusalDetail via as_mut()
+    let mut refusal_outcome: OperationOutcome<u32> =
+        OperationOutcome::unauthorized("principal unauthorized", Some("CAP-AUDIT-001"));
+    if let OperationOutcome::UnauthorizedOrNotObservable(refusal) = refusal_outcome.as_mut() {
+        refusal.message = "capability missing".to_string();
+    }
+    assert_eq!(
+        refusal_outcome
+            .as_unauthorized_or_not_observable()
+            .map(|r| r.message.as_str()),
+        Some("capability missing")
+    );
+
+    // 3. Zero-copy borrow via as_ref()
+    let ref_view = ind_outcome.as_ref();
+    assert!(ref_view.is_indeterminate());
+    if let OperationOutcome::Indeterminate(ind_ref) = ref_view {
+        assert_eq!(ind_ref.phase, "commit");
+    }
+
+    Ok(())
+}
+
+#[test]
+fn recovery_class_consistency_table_comprehensive() -> Result<(), Box<dyn Error>> {
+    // SafeReadRetry: safe_retry must be true, cannot be set to false
+    let read_err = OperationError::new(
+        ErrorId::parse(ERR_OP_EXECUTION_FAILED_001)?,
+        "transient read failure",
+        RecoveryClass::SafeReadRetry,
+    )?;
+    assert!(read_err.safe_retry);
+    assert_eq!(
+        read_err.clone().with_safe_retry(false),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        read_err.with_reconciliation(true),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // ReconciliationRequired: reconciliation_required must be true, safe_retry must be false
+    let recon_err = OperationError::new(
+        ErrorId::parse(ERR_OP_RECONCILIATION_REQUIRED_001)?,
+        "side-effect indeterminate",
+        RecoveryClass::ReconciliationRequired,
+    )?;
+    assert!(recon_err.reconciliation_required);
+    assert!(!recon_err.safe_retry);
+    assert_eq!(
+        recon_err.clone().with_safe_retry(true),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        recon_err.with_reconciliation(false),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // RebaseRequired: resnapshot must be true, safe_retry must be false
+    let rebase_err = OperationError::new(
+        ErrorId::parse(ERR_PRECONDITION_STALE_001)?,
+        "anchor stale",
+        RecoveryClass::RebaseRequired,
+    )?;
+    assert!(rebase_err.resnapshot_required);
+    assert!(!rebase_err.safe_retry);
+    assert_eq!(
+        rebase_err.clone().with_safe_retry(true),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        rebase_err.with_resnapshot(false),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // Backoff: backoff_ms(0) is invalid
+    let backoff_err = OperationError::new(
+        ErrorId::parse(ERR_OP_TIMEOUT_001)?,
+        "rate limited",
+        RecoveryClass::Backoff,
+    )?;
+    assert_eq!(
+        backoff_err.with_backoff_ms(0),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // RefusalDetail canonical decode rejects contradictory fields
+    let mut enc1 = fss_core::CanonicalEncoder::new();
+    RefusalReason::Unauthorized.encode_canonical(&mut enc1);
+    enc1.text("principal lacks permission");
+    enc1.bool(false); // no required_capability
+    enc1.bool(true); // coverage_witness_required = true (CONTRADICTION with Unauthorized!)
+    let bytes1 = enc1.finish();
+    assert_eq!(
+        RefusalDetail::from_canonical_bytes(&bytes1),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    let mut enc2 = fss_core::CanonicalEncoder::new();
+    RefusalReason::NotObservable.encode_canonical(&mut enc2);
+    enc2.text("domain not observable");
+    enc2.bool(true); // has required_capability (CONTRADICTION with NotObservable!)
+    enc2.text("CAP-SENSOR-001");
+    enc2.bool(true); // coverage_witness_required
+    let bytes2 = enc2.finish();
+    assert_eq!(
+        RefusalDetail::from_canonical_bytes(&bytes2),
         Err(ContractError::InvalidIdentifier)
     );
 
