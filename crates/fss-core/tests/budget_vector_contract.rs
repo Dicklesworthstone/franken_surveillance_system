@@ -1023,3 +1023,96 @@ fn validated_by_construction_prevents_invalid_values_reaching_canonical_encoding
     assert_eq!(bytes.len(), 84);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Cross-Review Defect Hunt Tests (F1 - F6)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_f1_canonical_decode_rejects_negative_zero_bits() -> Result<(), Box<dyn std::error::Error>> {
+    let mut bytes = [0u8; 84];
+    bytes[68] = 0x80; // privacy_exposure set to -0.0 bits (0x8000_0000_0000_0000)
+    let res = BudgetVector::decode_canonical(&bytes);
+    assert!(
+        res.is_err(),
+        "canonical decode must reject non-canonical -0.0 bits"
+    );
+
+    let quarantine_res = BudgetVector::quarantine_historical(&bytes, "hist-neg-zero");
+    assert!(
+        quarantine_res.is_err(),
+        "quarantine_historical must quarantine non-canonical -0.0 bits"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_f2_json_decode_rejects_leading_plus_in_float_dimensions()
+-> Result<(), Box<dyn std::error::Error>> {
+    let json = br#"{"privacyExposure": +1.5}"#;
+    let res = BudgetVector::decode_json_slice(json);
+    assert!(
+        res.is_err(),
+        "JSON specification forbids leading +, but decode_json_slice accepted it"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_f3_json_decode_rejects_unquoted_keys() -> Result<(), Box<dyn std::error::Error>> {
+    let json = br#"{tokens: 100}"#;
+    let res = BudgetVector::decode_json_slice(json);
+    assert!(res.is_err(), "JSON keys must be double-quoted strings");
+    Ok(())
+}
+
+#[test]
+fn test_f4_json_decode_rejects_trailing_and_empty_commas() -> Result<(), Box<dyn std::error::Error>>
+{
+    let json_trailing = br#"{"tokens": 100,}"#;
+    assert!(
+        BudgetVector::decode_json_slice(json_trailing).is_err(),
+        "trailing comma in JSON must be rejected"
+    );
+
+    let json_empty = br#"{,}"#;
+    assert!(
+        BudgetVector::decode_json_slice(json_empty).is_err(),
+        "{{,}} in JSON must be rejected"
+    );
+
+    let json_consecutive = br#"{"tokens": 100,, "bytes": 200}"#;
+    assert!(
+        BudgetVector::decode_json_slice(json_consecutive).is_err(),
+        "consecutive commas in JSON must be rejected"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_f5_json_decode_nested_object_reports_structural_error()
+-> Result<(), Box<dyn std::error::Error>> {
+    let json = br#"{"tokens": {"a": 1, "b": 2}}"#;
+    let res = BudgetVector::decode_json_slice(json);
+    assert!(
+        matches!(res, Err(BudgetError::InvalidEncoding { reason }) if reason.contains("nested")),
+        "nested values must produce structural InvalidEncoding, got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_f6_checked_scale_does_not_blame_latency_when_vector_has_no_latency()
+-> Result<(), Box<dyn std::error::Error>> {
+    let budget = BudgetVector::builder().privacy_exposure(1.0).build()?;
+    let res = budget.checked_scale(-1.0);
+    let is_neg_non_latency = matches!(
+        res,
+        Err(BudgetError::NegativeQuantity { dimension, .. }) if dimension != BudgetDimension::LatencyMs
+    );
+    assert!(
+        is_neg_non_latency,
+        "scaling factor error should not blame LatencyMs on a pure privacy budget"
+    );
+    Ok(())
+}

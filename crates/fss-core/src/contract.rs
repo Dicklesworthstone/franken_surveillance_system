@@ -1095,25 +1095,62 @@ impl BudgetVector {
         })
     }
 
+    /// Returns the first configured nonzero dimension in canonical registry order, if any.
+    #[must_use]
+    pub fn first_nonzero_dimension(&self) -> Option<BudgetDimension> {
+        if self.latency_ms > 0 {
+            return Some(BudgetDimension::LatencyMs);
+        }
+        if self.tokens > 0 {
+            return Some(BudgetDimension::Tokens);
+        }
+        if self.bytes > 0 {
+            return Some(BudgetDimension::Bytes);
+        }
+        if self.model_calls > 0 {
+            return Some(BudgetDimension::ModelCalls);
+        }
+        if self.cpu_millis > 0 {
+            return Some(BudgetDimension::CpuMillis);
+        }
+        if self.accelerator_millis > 0 {
+            return Some(BudgetDimension::AcceleratorMillis);
+        }
+        if self.energy_millijoules > 0 {
+            return Some(BudgetDimension::EnergyMillijoules);
+        }
+        if self.network_bytes > 0 {
+            return Some(BudgetDimension::NetworkBytes);
+        }
+        if self.storage_operations > 0 {
+            return Some(BudgetDimension::StorageOperations);
+        }
+        if self.privacy_exposure.get() > 0.0 {
+            return Some(BudgetDimension::PrivacyExposure);
+        }
+        if self.operator_attention_seconds.get() > 0.0 {
+            return Some(BudgetDimension::OperatorAttentionSeconds);
+        }
+        None
+    }
+
     /// Checked scaling of all budget dimensions by a non-negative finite factor.
     pub fn checked_scale(&self, factor: f64) -> Result<Self, BudgetError> {
         self.validate()?;
+        let dim = self
+            .first_nonzero_dimension()
+            .unwrap_or(BudgetDimension::LatencyMs);
         if factor.is_nan() {
-            return Err(BudgetError::NaNQuantity {
-                dimension: BudgetDimension::LatencyMs,
-            });
+            return Err(BudgetError::NaNQuantity { dimension: dim });
         }
         if factor.is_infinite() {
             return Err(BudgetError::InfiniteQuantity {
-                dimension: BudgetDimension::LatencyMs,
+                dimension: dim,
                 is_negative: factor.is_sign_negative(),
             });
         }
         if factor < 0.0 {
-            return Err(BudgetError::negative_quantity(
-                BudgetDimension::LatencyMs,
-                factor,
-            ));
+            return Err(BudgetError::negative_quantity(dim, factor));
         }
 
         let scale_u64 = |val: u64, dim: BudgetDimension| -> Result<u64, BudgetError> {
@@ -1403,6 +1440,21 @@ impl BudgetVector {
         slice_8.copy_from_slice(&bytes[76..84]);
         let attention_bits = u64::from_be_bytes(slice_8);
 
+        // Canonical binary encoding strictly maps 0.0 to 0x0000_0000_0000_0000 (+0.0).
+        // IEEE-754 negative zero bits (0x8000_0000_0000_0000) are non-canonical and must be rejected.
+        if privacy_bits == 0x8000_0000_0000_0000 {
+            return Err(BudgetError::NegativeQuantity {
+                dimension: BudgetDimension::PrivacyExposure,
+                value_bits: privacy_bits,
+            });
+        }
+        if attention_bits == 0x8000_0000_0000_0000 {
+            return Err(BudgetError::NegativeQuantity {
+                dimension: BudgetDimension::OperatorAttentionSeconds,
+                value_bits: attention_bits,
+            });
+        }
+
         let privacy = f64::from_bits(privacy_bits);
         let attention = f64::from_bits(attention_bits);
 
@@ -1451,33 +1503,90 @@ impl BudgetVector {
             });
         }
         let inner = &trimmed[1..trimmed.len() - 1];
+        let inner_bytes = inner.as_bytes();
+        let len = inner_bytes.len();
+        let mut pos = 0;
+
+        let skip_ws = |pos: &mut usize| {
+            while *pos < len && matches!(inner_bytes[*pos], b' ' | b'\t' | b'\n' | b'\r') {
+                *pos += 1;
+            }
+        };
+
+        skip_ws(&mut pos);
+        if pos == len {
+            return Self::builder().build();
+        }
 
         let mut builder = Self::builder();
         let mut seen_dimensions: u16 = 0;
+        let mut expect_comma = false;
 
-        for item in inner.split(',') {
-            let item = item.trim();
-            if item.is_empty() {
-                continue;
+        while pos < len {
+            skip_ws(&mut pos);
+            if pos == len {
+                break;
             }
-            let mut colon_parts = item.splitn(2, ':');
-            let raw_key = colon_parts
-                .next()
-                .ok_or(BudgetError::InvalidEncoding {
-                    reason: "missing key in JSON budget",
-                })?
-                .trim();
-            let raw_val = colon_parts
-                .next()
-                .ok_or(BudgetError::InvalidEncoding {
-                    reason: "missing value in JSON budget",
-                })?
-                .trim();
 
-            let key = raw_key.trim_matches('"').trim();
-            let dimension = BudgetDimension::parse(key).ok_or(BudgetError::InvalidEncoding {
-                reason: "unknown budget dimension in JSON",
-            })?;
+            if expect_comma {
+                if inner_bytes[pos] != b',' {
+                    return Err(BudgetError::InvalidEncoding {
+                        reason: "expected comma between object members in JSON budget",
+                    });
+                }
+                pos += 1;
+                skip_ws(&mut pos);
+                if pos == len {
+                    return Err(BudgetError::InvalidEncoding {
+                        reason: "trailing comma in JSON budget",
+                    });
+                }
+                if inner_bytes[pos] == b',' {
+                    return Err(BudgetError::InvalidEncoding {
+                        reason: "consecutive commas in JSON budget",
+                    });
+                }
+            } else if inner_bytes[pos] == b',' {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "unexpected comma in JSON budget",
+                });
+            }
+
+            // Key must be a double-quoted string
+            if inner_bytes[pos] != b'"' {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "JSON keys must be double-quoted strings",
+                });
+            }
+            pos += 1; // skip opening "
+            let key_start = pos;
+            let mut key_end = None;
+            while pos < len {
+                if inner_bytes[pos] == b'\\' {
+                    pos += 2;
+                    continue;
+                }
+                if inner_bytes[pos] == b'"' {
+                    key_end = Some(pos);
+                    pos += 1;
+                    break;
+                }
+                pos += 1;
+            }
+
+            let key_str = match key_end {
+                Some(end) => &inner[key_start..end],
+                None => {
+                    return Err(BudgetError::InvalidEncoding {
+                        reason: "unterminated string key in JSON budget",
+                    });
+                }
+            };
+
+            let dimension =
+                BudgetDimension::parse(key_str).ok_or(BudgetError::InvalidEncoding {
+                    reason: "unknown budget dimension in JSON",
+                })?;
 
             let bit = 1u16 << (dimension as u8);
             if (seen_dimensions & bit) != 0 {
@@ -1487,19 +1596,87 @@ impl BudgetVector {
             }
             seen_dimensions |= bit;
 
-            let is_quoted = (raw_val.starts_with('"') && raw_val.ends_with('"'))
-                || (raw_val.starts_with('\'') && raw_val.ends_with('\''));
-            let val_unquoted = raw_val.trim_matches(['"', '\'']).trim();
-            if val_unquoted == "NaN" || val_unquoted == "nan" {
+            // Colon separator
+            skip_ws(&mut pos);
+            if pos >= len || inner_bytes[pos] != b':' {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "missing colon after key in JSON budget",
+                });
+            }
+            pos += 1; // skip :
+            skip_ws(&mut pos);
+            if pos >= len {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "missing value in JSON budget",
+                });
+            }
+
+            // Value parsing: reject nested structures or leading '+'
+            if inner_bytes[pos] == b'{' || inner_bytes[pos] == b'[' {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "nested structure not permitted in flat budget JSON",
+                });
+            }
+
+            if inner_bytes[pos] == b'+' {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "leading plus sign is forbidden in JSON numbers",
+                });
+            }
+
+            let (raw_val, is_quoted) = if inner_bytes[pos] == b'"' || inner_bytes[pos] == b'\'' {
+                let quote = inner_bytes[pos];
+                pos += 1;
+                let val_start = pos;
+                let mut val_end = None;
+                while pos < len {
+                    if inner_bytes[pos] == b'\\' {
+                        pos += 2;
+                        continue;
+                    }
+                    if inner_bytes[pos] == quote {
+                        val_end = Some(pos);
+                        pos += 1;
+                        break;
+                    }
+                    pos += 1;
+                }
+                let val_slice = match val_end {
+                    Some(end) => &inner[val_start..end],
+                    None => {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "unterminated string value in JSON budget",
+                        });
+                    }
+                };
+                (val_slice.trim(), true)
+            } else {
+                let val_start = pos;
+                while pos < len
+                    && inner_bytes[pos] != b','
+                    && !matches!(inner_bytes[pos], b' ' | b'\t' | b'\n' | b'\r')
+                {
+                    if inner_bytes[pos] == b'{' || inner_bytes[pos] == b'[' {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "nested structure not permitted in flat budget JSON",
+                        });
+                    }
+                    pos += 1;
+                }
+                let val_slice = &inner[val_start..pos];
+                (val_slice.trim(), false)
+            };
+
+            if raw_val == "NaN" || raw_val == "nan" {
                 return Err(BudgetError::NaNQuantity { dimension });
             }
-            if val_unquoted == "Infinity" || val_unquoted == "+Infinity" {
+            if raw_val == "Infinity" || raw_val == "+Infinity" {
                 return Err(BudgetError::InfiniteQuantity {
                     dimension,
                     is_negative: false,
                 });
             }
-            if val_unquoted == "-Infinity" {
+            if raw_val == "-Infinity" {
                 return Err(BudgetError::InfiniteQuantity {
                     dimension,
                     is_negative: true,
@@ -1511,7 +1688,13 @@ impl BudgetVector {
                 return Err(BudgetError::IncompatibleUnit {
                     dimension,
                     expected_unit: dimension.unit(),
-                    found_unit: raw_val.to_owned(),
+                    found_unit: format!("\"{raw_val}\""),
+                });
+            }
+
+            if raw_val.starts_with('+') {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "leading plus sign is forbidden in JSON numbers",
                 });
             }
 
@@ -1656,6 +1839,8 @@ impl BudgetVector {
                     builder = builder.operator_attention_seconds(v);
                 }
             }
+
+            expect_comma = true;
         }
 
         builder.build()
@@ -1681,6 +1866,21 @@ impl CanonicalDecode for BudgetVector {
         let storage_operations = decoder.u64()?;
         let privacy_bits = decoder.u64()?;
         let attention_bits = decoder.u64()?;
+
+        // Canonical binary encoding strictly maps 0.0 to 0x0000_0000_0000_0000 (+0.0).
+        // IEEE-754 negative zero bits (0x8000_0000_0000_0000) are non-canonical and must be rejected.
+        if privacy_bits == 0x8000_0000_0000_0000 {
+            return Err(ContractError::from(BudgetError::NegativeQuantity {
+                dimension: BudgetDimension::PrivacyExposure,
+                value_bits: privacy_bits,
+            }));
+        }
+        if attention_bits == 0x8000_0000_0000_0000 {
+            return Err(ContractError::from(BudgetError::NegativeQuantity {
+                dimension: BudgetDimension::OperatorAttentionSeconds,
+                value_bits: attention_bits,
+            }));
+        }
 
         let privacy = f64::from_bits(privacy_bits);
         let attention = f64::from_bits(attention_bits);
