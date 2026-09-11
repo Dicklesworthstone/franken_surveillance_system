@@ -252,7 +252,7 @@ pub fn project_reference_situation(
             ),
         });
     }
-    let expansion_handles = expansion_handles(&context_pack.pack_id, &omitted_classes);
+    let expansion_handles = expansion_handles(&context_pack.pack_id, &omitted_classes)?;
     let compression_receipt = SemanticCompressionReceipt {
         receipt_id,
         source_anchor: situation.capsule.anchor.clone(),
@@ -789,26 +789,31 @@ fn compression_completeness(
         .collect()
 }
 
-fn expansion_handles(pack_id: &str, omitted_classes: &BTreeSet<String>) -> Vec<ExpansionHandle> {
-    omitted_classes
-        .iter()
-        .map(|class| ExpansionHandle {
+fn expansion_handles(
+    pack_id: &str,
+    omitted_classes: &BTreeSet<String>,
+) -> Result<Vec<ExpansionHandle>, ReferenceError> {
+    let mut handles = Vec::with_capacity(omitted_classes.len());
+    for class in omitted_classes {
+        let estimated_cost = BudgetVector::builder()
+            .latency_ms(100)
+            .tokens(1_024)
+            .bytes(16_384)
+            .cpu_millis(10)
+            .storage_operations(1)
+            .privacy_exposure(0.1)
+            .build()
+            .map_err(|_| ReferenceError::InvalidSpec("expansion_handle_cost"))?;
+        handles.push(ExpansionHandle {
             handle: format!(
                 "context-expand:{}",
                 ContentDigest::sha256(format!("{pack_id}:{class}").as_bytes())
             ),
             purpose: format!("Hydrate optional omitted {class} context."),
-            estimated_cost: BudgetVector::builder()
-                .latency_ms(100)
-                .tokens(1_024)
-                .bytes(16_384)
-                .cpu_millis(10)
-                .storage_operations(1)
-                .privacy_exposure(0.1)
-                .build()
-                .expect("valid budget"),
-        })
-        .collect()
+            estimated_cost,
+        });
+    }
+    Ok(handles)
 }
 
 fn projection_identity(

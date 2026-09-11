@@ -822,23 +822,20 @@ mod tests {
     }
 
     #[test]
-    fn reservations_must_fit_and_float_dimensions_must_be_finite() {
+    fn reservations_must_fit_and_float_dimensions_must_be_finite() -> Result<(), ContractError> {
         let available = BudgetVector::builder()
             .latency_ms(10)
             .privacy_exposure(1.0)
             .operator_attention_seconds(1.0)
-            .build()
-            .expect("valid available budget");
-        let reserved = BudgetVector::builder()
-            .latency_ms(11)
-            .build()
-            .expect("valid reserved budget");
+            .build()?;
+        let reserved = BudgetVector::builder().latency_ms(11).build()?;
         assert_eq!(
             ResourceState::new(available, reserved, ResourcePressure::Nominal, []),
             Err(ContractError::BudgetExhausted)
         );
         let invalid = BudgetVector::builder().privacy_exposure(f64::NAN).build();
         assert!(invalid.is_err());
+        Ok(())
     }
 
     #[test]

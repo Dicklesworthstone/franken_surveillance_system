@@ -37,24 +37,21 @@ fn capabilities(maximum: HydrationLevel) -> BTreeMap<HydrationLevel, BTreeSet<St
         .collect()
 }
 
-fn costs(maximum: HydrationLevel) -> BTreeMap<HydrationLevel, BudgetVector> {
-    levels(maximum)
-        .into_iter()
-        .map(|level| {
-            let scale = u64::from(level.ordinal()) + 1;
-            (
-                level,
-                BudgetVector::builder()
-                    .latency_ms(scale * 10)
-                    .tokens(scale * 100)
-                    .bytes(scale * 1_000)
-                    .cpu_millis(scale * 5)
-                    .privacy_exposure(scale as f64 / 10.0)
-                    .build()
-                    .expect("valid budget"),
-            )
-        })
-        .collect()
+fn costs(maximum: HydrationLevel) -> Result<BTreeMap<HydrationLevel, BudgetVector>, HydrationError> {
+    let mut map = BTreeMap::new();
+    for level in levels(maximum) {
+        let scale = u64::from(level.ordinal()) + 1;
+        let budget = BudgetVector::builder()
+            .latency_ms(scale * 10)
+            .tokens(scale * 100)
+            .bytes(scale * 1_000)
+            .cpu_millis(scale * 5)
+            .privacy_exposure(scale as f64 / 10.0)
+            .build()
+            .map_err(ContractError::from)?;
+        map.insert(level, budget);
+    }
+    Ok(map)
 }
 
 fn handle(
@@ -76,7 +73,7 @@ fn handle(
         retention_until: TimestampNs(10_000),
         levels: levels(HydrationLevel::H4),
         required_capabilities: capabilities(HydrationLevel::H4),
-        estimated_costs: costs(HydrationLevel::H4),
+        estimated_costs: costs(HydrationLevel::H4)?,
         laboratory_access: LaboratoryAccess::QualificationOrDebugGrant,
         debug_capability: Some("capability:hydrate:debug".to_owned()),
         derivative_handles: BTreeSet::new(),

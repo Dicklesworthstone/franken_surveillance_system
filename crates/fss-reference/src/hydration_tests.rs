@@ -57,7 +57,7 @@ fn capabilities() -> BTreeMap<HydrationLevel, BTreeSet<String>> {
         .collect()
 }
 
-fn cost(level: HydrationLevel) -> BudgetVector {
+fn cost(level: HydrationLevel) -> Result<BudgetVector, HydrationError> {
     let scale = u64::from(level.ordinal()) + 1;
     BudgetVector::builder()
         .latency_ms(scale * 10)
@@ -71,14 +71,15 @@ fn cost(level: HydrationLevel) -> BudgetVector {
         .privacy_exposure(scale as f64 / 10.0)
         .operator_attention_seconds(scale as f64)
         .build()
-        .expect("valid budget")
+        .map_err(|e| HydrationError::Contract(ContractError::from(e)))
 }
 
-fn costs() -> BTreeMap<HydrationLevel, BudgetVector> {
-    level_set()
-        .into_iter()
-        .map(|level| (level, cost(level)))
-        .collect()
+fn costs() -> Result<BTreeMap<HydrationLevel, BudgetVector>, HydrationError> {
+    let mut map = BTreeMap::new();
+    for level in level_set() {
+        map.insert(level, cost(level)?);
+    }
+    Ok(map)
 }
 
 fn descriptor(
@@ -100,7 +101,7 @@ fn descriptor(
         retention_until,
         levels: level_set(),
         required_capabilities: capabilities(),
-        estimated_costs: costs(),
+        estimated_costs: costs()?,
         laboratory_access: LaboratoryAccess::QualificationOrDebugGrant,
         debug_capability: Some("capability:hydrate:debug".to_owned()),
         derivative_handles: BTreeSet::new(),
@@ -166,7 +167,7 @@ fn request(
     })
 }
 
-fn ample_budget() -> BudgetVector {
+fn ample_budget() -> Result<BudgetVector, HydrationError> {
     BudgetVector::builder()
         .latency_ms(10_000)
         .tokens(100_000)
@@ -180,7 +181,7 @@ fn ample_budget() -> BudgetVector {
         .privacy_exposure(100.0)
         .operator_attention_seconds(100_000.0)
         .build()
-        .expect("valid budget")
+        .map_err(|e| HydrationError::Contract(ContractError::from(e)))
 }
 
 #[test]
@@ -190,7 +191,7 @@ fn exact_level_hydration_is_proof_bearing() -> Result<(), Box<dyn Error>> {
         &descriptor,
         HydrationLevel::H2,
         false,
-        ample_budget(),
+        ample_budget()?,
         &["capability:hydrate:H2"],
         HydrationPurpose::IncidentAdjudication,
     )?;
@@ -216,7 +217,7 @@ fn lower_level_delivery_is_explicit_and_bounded() -> Result<(), Box<dyn Error>> 
         &descriptor,
         HydrationLevel::H3,
         true,
-        cost(HydrationLevel::H1),
+        cost(HydrationLevel::H1)?,
         &["capability:hydrate:H1"],
         HydrationPurpose::IncidentAdjudication,
     )?;
@@ -240,7 +241,7 @@ fn budget_failure_does_not_silently_downgrade() -> Result<(), Box<dyn Error>> {
         &descriptor,
         HydrationLevel::H3,
         false,
-        cost(HydrationLevel::H1),
+        cost(HydrationLevel::H1)?,
         &["capability:hydrate:H3"],
         HydrationPurpose::IncidentAdjudication,
     )?;
@@ -258,7 +259,7 @@ fn privacy_and_capability_denials_are_distinct() -> Result<(), Box<dyn Error>> {
         &descriptor,
         HydrationLevel::H1,
         false,
-        ample_budget(),
+        ample_budget()?,
         &["capability:hydrate:H1"],
         HydrationPurpose::Routine,
     )?;
@@ -274,7 +275,7 @@ fn privacy_and_capability_denials_are_distinct() -> Result<(), Box<dyn Error>> {
         &descriptor,
         HydrationLevel::H1,
         false,
-        ample_budget(),
+        ample_budget()?,
         &[],
         HydrationPurpose::Routine,
     )?;
@@ -292,7 +293,7 @@ fn expired_subject_returns_typed_unavailability() -> Result<(), Box<dyn Error>> 
         &descriptor,
         HydrationLevel::H2,
         false,
-        ample_budget(),
+        ample_budget()?,
         &["capability:hydrate:H2"],
         HydrationPurpose::IncidentAdjudication,
     )?;
@@ -312,7 +313,7 @@ fn h4_requires_qualification_or_explicit_debug_grant() -> Result<(), Box<dyn Err
         &descriptor,
         HydrationLevel::H4,
         false,
-        ample_budget(),
+        ample_budget()?,
         &["capability:hydrate:H4"],
         HydrationPurpose::Routine,
     )?;
@@ -325,7 +326,7 @@ fn h4_requires_qualification_or_explicit_debug_grant() -> Result<(), Box<dyn Err
         &descriptor,
         HydrationLevel::H4,
         false,
-        ample_budget(),
+        ample_budget()?,
         &["capability:hydrate:H4"],
         HydrationPurpose::Qualification,
     )?;
@@ -341,7 +342,7 @@ fn h4_requires_qualification_or_explicit_debug_grant() -> Result<(), Box<dyn Err
         &descriptor,
         HydrationLevel::H4,
         false,
-        ample_budget(),
+        ample_budget()?,
         &["capability:hydrate:H4", "capability:hydrate:debug"],
         HydrationPurpose::Debugging,
     )?;
@@ -362,7 +363,7 @@ fn continuation_is_exactly_bound_to_the_next_level() -> Result<(), Box<dyn Error
         &descriptor,
         HydrationLevel::H1,
         false,
-        ample_budget(),
+        ample_budget()?,
         &["capability:hydrate:H1"],
         HydrationPurpose::IncidentAdjudication,
     )?;
@@ -383,7 +384,7 @@ fn continuation_is_exactly_bound_to_the_next_level() -> Result<(), Box<dyn Error
         allow_lower_level: false,
         available_capabilities: BTreeSet::from(["capability:hydrate:H2".to_owned()]),
         authorized_privacy_classes: BTreeSet::from([descriptor.privacy_class.clone()]),
-        budget: ample_budget(),
+        budget: ample_budget()?,
         purpose: HydrationPurpose::IncidentAdjudication,
         continuation: Some(cursor),
         issued_at: TimestampNs(102),
@@ -405,7 +406,7 @@ fn stale_descriptor_revision_is_not_retargeted() -> Result<(), Box<dyn Error>> {
         &descriptor,
         HydrationLevel::H1,
         false,
-        ample_budget(),
+        ample_budget()?,
         &["capability:hydrate:H1"],
         HydrationPurpose::Routine,
     )?;

@@ -245,7 +245,7 @@ pub fn compile_reference_situation(
                 AffordanceClass::Robust,
                 retained_worlds.clone(),
                 CAPABILITY_ALERT_PREPARE,
-                alert_prepare_cost(),
+                alert_prepare_cost()?,
                 true,
                 &request.available_capabilities,
             ));
@@ -264,7 +264,7 @@ pub fn compile_reference_situation(
                 AffordanceClass::Robust,
                 retained_worlds.clone(),
                 CAPABILITY_ALERT_COMMIT,
-                alert_commit_cost(),
+                alert_commit_cost()?,
                 false,
                 &request.available_capabilities,
             ));
@@ -294,7 +294,7 @@ pub fn compile_reference_situation(
                         AffordanceClass::Probe,
                         retained_worlds.clone(),
                         CAPABILITY_EFFECT_RECONCILE,
-                        reconcile_cost(),
+                        reconcile_cost()?,
                         true,
                         &request.available_capabilities,
                     ));
@@ -309,7 +309,7 @@ pub fn compile_reference_situation(
                         AffordanceClass::Robust,
                         retained_worlds.clone(),
                         CAPABILITY_ALERT_PREPARE,
-                        alert_prepare_cost(),
+                        alert_prepare_cost()?,
                         true,
                         &request.available_capabilities,
                     ));
@@ -323,7 +323,7 @@ pub fn compile_reference_situation(
                         AffordanceClass::Wait,
                         retained_worlds.clone(),
                         CAPABILITY_SESSION_WAIT,
-                        wait_cost(),
+                        wait_cost()?,
                         true,
                         &request.available_capabilities,
                     ));
@@ -340,7 +340,7 @@ pub fn compile_reference_situation(
                 AffordanceClass::Probe,
                 retained_worlds.clone(),
                 CAPABILITY_EVIDENCE_QUERY,
-                investigate_cost(),
+                investigate_cost()?,
                 true,
                 &request.available_capabilities,
             ));
@@ -352,7 +352,7 @@ pub fn compile_reference_situation(
                 AffordanceClass::Wait,
                 retained_worlds,
                 CAPABILITY_SESSION_WAIT,
-                wait_cost(),
+                wait_cost()?,
                 true,
                 &request.available_capabilities,
             ));
@@ -893,7 +893,7 @@ fn policy_hypothesis(state: EventState) -> HypothesisDisposition {
     }
 }
 
-fn alert_prepare_cost() -> BudgetVector {
+fn alert_prepare_cost() -> Result<BudgetVector, ReferenceError> {
     BudgetVector::builder()
         .latency_ms(10)
         .bytes(2_048)
@@ -901,10 +901,10 @@ fn alert_prepare_cost() -> BudgetVector {
         .storage_operations(2)
         .operator_attention_seconds(1.0)
         .build()
-        .expect("valid budget")
+        .map_err(|_| ReferenceError::InvalidSpec("alert_prepare_cost"))
 }
 
-fn alert_commit_cost() -> BudgetVector {
+fn alert_commit_cost() -> Result<BudgetVector, ReferenceError> {
     BudgetVector::builder()
         .latency_ms(5_000)
         .bytes(4_096)
@@ -913,10 +913,10 @@ fn alert_commit_cost() -> BudgetVector {
         .privacy_exposure(1.0)
         .operator_attention_seconds(2.0)
         .build()
-        .expect("valid budget")
+        .map_err(|_| ReferenceError::InvalidSpec("alert_commit_cost"))
 }
 
-fn reconcile_cost() -> BudgetVector {
+fn reconcile_cost() -> Result<BudgetVector, ReferenceError> {
     BudgetVector::builder()
         .latency_ms(2_000)
         .bytes(2_048)
@@ -924,10 +924,10 @@ fn reconcile_cost() -> BudgetVector {
         .storage_operations(2)
         .operator_attention_seconds(1.0)
         .build()
-        .expect("valid budget")
+        .map_err(|_| ReferenceError::InvalidSpec("reconcile_cost"))
 }
 
-fn investigate_cost() -> BudgetVector {
+fn investigate_cost() -> Result<BudgetVector, ReferenceError> {
     BudgetVector::builder()
         .latency_ms(1_000)
         .bytes(16_384)
@@ -936,14 +936,14 @@ fn investigate_cost() -> BudgetVector {
         .privacy_exposure(0.25)
         .operator_attention_seconds(1.0)
         .build()
-        .expect("valid budget")
+        .map_err(|_| ReferenceError::InvalidSpec("investigate_cost"))
 }
 
-fn wait_cost() -> BudgetVector {
+fn wait_cost() -> Result<BudgetVector, ReferenceError> {
     BudgetVector::builder()
         .latency_ms(60_000)
         .bytes(512)
         .storage_operations(1)
         .build()
-        .expect("valid budget")
+        .map_err(|_| ReferenceError::InvalidSpec("wait_cost"))
 }

@@ -272,7 +272,7 @@ mod tests {
                     .tokens(100)
                     .bytes(1_000)
                     .build()
-                    .expect("valid estimated cost"),
+                    .map_err(ContractError::from)?,
             }],
             selection_frontier_digest: Some(ContentDigest::sha256(b"frontier")),
             stop_reason: CompressionStopReason::TargetBudget,
