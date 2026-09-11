@@ -76,13 +76,12 @@ pub fn redact_argument(input: &str) -> String {
     if sanitized != input {
         return sanitize_and_truncate(&sanitized, DEFAULT_BOUND_LEN);
     }
-    if (input.starts_with("--") || input.starts_with('-')) && input.contains('=') {
-        if let Some((opt_name, val)) = input.split_once('=') {
-            if !is_registered_public_option_with_value(opt_name, val) {
-                let redacted_opt = format!("{opt_name}=[redacted:{}bytes]", val.len());
-                return sanitize_and_truncate(&redacted_opt, DEFAULT_BOUND_LEN);
-            }
-        }
+    if (input.starts_with("--") || input.starts_with('-'))
+        && let Some((opt_name, val)) = input.split_once('=')
+        && !is_registered_public_option_with_value(opt_name, val)
+    {
+        let redacted_opt = format!("{opt_name}=[redacted:{}bytes]", val.len());
+        return sanitize_and_truncate(&redacted_opt, DEFAULT_BOUND_LEN);
     }
     sanitize_and_truncate(&sanitized, DEFAULT_BOUND_LEN)
 }
@@ -202,13 +201,12 @@ pub fn redact_value_or_digest(input: &str) -> String {
         return sanitize_and_truncate(&sanitized, DEFAULT_BOUND_LEN);
     }
 
-    if (input.starts_with("--") || input.starts_with('-')) && input.contains('=') {
-        if let Some((opt_name, val)) = input.split_once('=') {
-            if !is_registered_public_option_with_value(opt_name, val) {
-                let redacted_opt = format!("{opt_name}=[redacted:{}bytes]", val.len());
-                return sanitize_and_truncate(&redacted_opt, DEFAULT_BOUND_LEN);
-            }
-        }
+    if (input.starts_with("--") || input.starts_with('-'))
+        && let Some((opt_name, val)) = input.split_once('=')
+        && !is_registered_public_option_with_value(opt_name, val)
+    {
+        let redacted_opt = format!("{opt_name}=[redacted:{}bytes]", val.len());
+        return sanitize_and_truncate(&redacted_opt, DEFAULT_BOUND_LEN);
     }
 
     if is_safe_to_echo(input) {
