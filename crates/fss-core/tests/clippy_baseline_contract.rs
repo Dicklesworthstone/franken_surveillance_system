@@ -127,10 +127,7 @@ fn test_sensor_capsule_from_source_bytes_spec() -> Result<(), ContractError> {
         sensor_id: SensorId::parse("sensor:cam01")?,
         stream_id: StreamId::parse("stream:cam01-main")?,
         sequence: 42,
-        capture: CaptureInterval {
-            start: TimestampNs(1_000_000),
-            end: TimestampNs(1_033_333),
-        },
+        capture: CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(1_033_333))?,
         receive_time: TimestampNs(1_040_000),
         clock_basis: ClockBasis::MonotonicOffsetCertified,
         source: payload,
@@ -206,6 +203,22 @@ fn test_semantic_compression_receipt_validation() -> Result<(), ContractError> {
     receipt.validate_for(&pack)?;
     let digest = receipt.receipt_digest();
     assert_eq!(digest, receipt.receipt_digest());
+
+    // Negative test: empty receipt_id fails validation
+    let mut invalid_receipt = receipt.clone();
+    invalid_receipt.receipt_id = String::new();
+    assert_eq!(
+        invalid_receipt.validate(),
+        Err(ContractError::BudgetExhausted)
+    );
+
+    // Negative test: mismatched view_id fails pack cross-check
+    let mut mismatched_receipt = receipt;
+    mismatched_receipt.view_id = "AVIEW-MISMATCH".to_owned();
+    assert_eq!(
+        mismatched_receipt.validate_for(&pack),
+        Err(ContractError::DigestMismatch)
+    );
 
     Ok(())
 }
