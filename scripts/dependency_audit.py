@@ -483,18 +483,17 @@ def discover_crate_targets(
                             candidate_targets[cand.resolve()] = ("example", ex_name)
                             break
 
-    if autoexamples:
-        ex_dir = crate_dir / "examples"
-        if ex_dir.is_dir():
-            for p in sorted(ex_dir.iterdir()):
-                if p.is_file() and p.suffix == ".rs":
-                    res = p.resolve()
-                    if res not in candidate_targets:
-                        candidate_targets[res] = ("example", p.stem)
-                elif p.is_dir() and (p / "main.rs").is_file():
-                    res = (p / "main.rs").resolve()
-                    if res not in candidate_targets:
-                        candidate_targets[res] = ("example", p.name)
+    ex_dir = crate_dir / "examples"
+    if ex_dir.is_dir():
+        for p in sorted(ex_dir.iterdir()):
+            if p.is_file() and p.suffix == ".rs":
+                res = p.resolve()
+                if res not in candidate_targets:
+                    candidate_targets[res] = ("example", p.stem)
+            elif p.is_dir() and (p / "main.rs").is_file():
+                res = (p / "main.rs").resolve()
+                if res not in candidate_targets:
+                    candidate_targets[res] = ("example", p.name)
 
     tests = data.get("test", [])
     if isinstance(tests, dict):
@@ -515,18 +514,17 @@ def discover_crate_targets(
                             candidate_targets[cand.resolve()] = ("test", t_name)
                             break
 
-    if autotests:
-        test_dir = crate_dir / "tests"
-        if test_dir.is_dir():
-            for p in sorted(test_dir.iterdir()):
-                if p.is_file() and p.suffix == ".rs":
-                    res = p.resolve()
-                    if res not in candidate_targets:
-                        candidate_targets[res] = ("test", p.stem)
-                elif p.is_dir() and (p / "main.rs").is_file():
-                    res = (p / "main.rs").resolve()
-                    if res not in candidate_targets:
-                        candidate_targets[res] = ("test", p.name)
+    test_dir = crate_dir / "tests"
+    if test_dir.is_dir():
+        for p in sorted(test_dir.iterdir()):
+            if p.is_file() and p.suffix == ".rs":
+                res = p.resolve()
+                if res not in candidate_targets:
+                    candidate_targets[res] = ("test", p.stem)
+            elif p.is_dir() and (p / "main.rs").is_file():
+                res = (p / "main.rs").resolve()
+                if res not in candidate_targets:
+                    candidate_targets[res] = ("test", p.name)
 
     benches = data.get("bench", [])
     if isinstance(benches, dict):
@@ -547,18 +545,17 @@ def discover_crate_targets(
                             candidate_targets[cand.resolve()] = ("bench", b_name)
                             break
 
-    if autobenches:
-        bench_dir = crate_dir / "benches"
-        if bench_dir.is_dir():
-            for p in sorted(bench_dir.iterdir()):
-                if p.is_file() and p.suffix == ".rs":
-                    res = p.resolve()
-                    if res not in candidate_targets:
-                        candidate_targets[res] = ("bench", p.stem)
-                elif p.is_dir() and (p / "main.rs").is_file():
-                    res = (p / "main.rs").resolve()
-                    if res not in candidate_targets:
-                        candidate_targets[res] = ("bench", p.name)
+    bench_dir = crate_dir / "benches"
+    if bench_dir.is_dir():
+        for p in sorted(bench_dir.iterdir()):
+            if p.is_file() and p.suffix == ".rs":
+                res = p.resolve()
+                if res not in candidate_targets:
+                    candidate_targets[res] = ("bench", p.stem)
+            elif p.is_dir() and (p / "main.rs").is_file():
+                res = (p / "main.rs").resolve()
+                if res not in candidate_targets:
+                    candidate_targets[res] = ("bench", p.name)
 
     if build_spec is False:
         pass
@@ -1046,6 +1043,42 @@ def audit_workspace(
         root_cargo_data = load_toml(root_manifest_path)
         manifests, member_names, member_map = expand_workspace_members(root, root_cargo_data, findings)
 
+    known_manifests = {m.resolve() for m in manifests}
+    if root_manifest_path.is_file():
+        known_manifests.add(root_manifest_path.resolve())
+
+    if isinstance(root_cargo_data.get("workspace"), dict):
+        for excl in root_cargo_data["workspace"].get("exclude", []):
+            for excl_path in root.glob(excl):
+                if (excl_path / "Cargo.toml").is_file():
+                    known_manifests.add((excl_path / "Cargo.toml").resolve())
+
+    vendored_fixture_dirs = set(policy.get("fixtures", {}).get("directories", []) or policy.get("vendored_fixtures", {}).get("directories", []))
+    for cand_cargo in sorted(root.rglob("Cargo.toml")):
+        parts = cand_cargo.parts
+        if "target" in parts or ".git" in parts or any(v in parts for v in vendored_fixture_dirs):
+            continue
+        if cand_cargo.resolve() not in known_manifests:
+            add(
+                findings,
+                "error",
+                "DEP-AUD-019",
+                cand_cargo,
+                f"undeclared non-member crate detected in repository tree: {cand_cargo}",
+                root=root,
+                params={"manifest": cand_cargo, "path": cand_cargo},
+            )
+            try:
+                cand_data = load_toml(cand_cargo)
+                crate_name = cand_data.get("package", {}).get("name", cand_cargo.parent.name)
+                try:
+                    cand_manifest_rel = cand_cargo.relative_to(root).as_posix()
+                except ValueError:
+                    cand_manifest_rel = str(cand_cargo)
+                discover_crate_targets(cand_cargo.parent, cand_data, crate_name, cand_manifest_rel, root, findings)
+            except Exception as exc:
+                add(findings, "error", "DEP-AUD-011", cand_cargo, f"cannot parse TOML: {exc}", root=root, params={"manifest": cand_cargo, "error": str(exc)})
+
     direct = enumerate_dependencies(root, manifests, member_names, member_map, policy, findings)
     source_census = rust_source_audit(findings, root=root)
 
@@ -1054,6 +1087,26 @@ def audit_workspace(
         ref_targets.append(TargetRoot(**tr_dict))
 
     metadata_available, metadata_error, resolved = metadata_audit(findings, policy, root=root, reference_targets=ref_targets)
+    if not metadata_available:
+        lock_file = root / "Cargo.lock"
+        if lock_file.is_file():
+            try:
+                lock_data = load_toml(lock_file)
+                forbidden_crates = set(policy.get("forbidden", {}).get("crates", []))
+                for pkg in lock_data.get("package", []):
+                    pkg_name = pkg.get("name")
+                    if isinstance(pkg_name, str) and pkg_name in forbidden_crates:
+                        add(
+                            findings,
+                            "error",
+                            "DEP-AUD-030",
+                            "Cargo.lock",
+                            f"forbidden package is reachable: {pkg_name}",
+                            root=root,
+                            params={"package": pkg_name, "version": str(pkg.get("version", ""))},
+                        )
+            except Exception:
+                pass
     if require_metadata and not metadata_available:
         add(findings, "error", "DEP-AUD-040", "Cargo.lock", f"offline pinned-nightly metadata is required: {metadata_error}", root=root, params={"error": str(metadata_error)})
 

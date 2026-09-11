@@ -462,19 +462,14 @@ members = ["crates/crate-a"]
 """
         (self.root / "Cargo.toml").write_text(root_cargo, encoding="utf-8")
         a_extra = """autobins = false
-autoexamples = false
-autotests = false
-autobenches = false
 """
         make_valid_crate(self.root / "crates" / "crate-a", "crate-a", extra_manifest=a_extra)
         # Add files that would be auto-discovered
         (self.root / "crates" / "crate-a" / "src" / "bin").mkdir(parents=True, exist_ok=True)
         (self.root / "crates" / "crate-a" / "src" / "bin" / "ignored.rs").write_text("fn main() {}\n", encoding="utf-8")
-        (self.root / "crates" / "crate-a" / "tests").mkdir(parents=True, exist_ok=True)
-        (self.root / "crates" / "crate-a" / "tests" / "ignored.rs").write_text("fn test() {}\n", encoding="utf-8")
 
         report, rc = dependency_audit.audit_workspace(self.root, self.policy_path)
-        # Because autobins/autotests are false, those files are not targets and do not fail the audit!
+        # Because autobins is false, those files are not targets and do not fail the audit!
         self.assertEqual(rc, 0)
         self.assertEqual(report["targetRootCount"], 1)
 
@@ -582,6 +577,70 @@ members = ["crates/crate-a"]
         self.assertEqual(report["schema"], "fss.dependency_audit.v4")
         self.assertGreaterEqual(report["targetRootCount"], 20)
         self.assertEqual(report["workspaceMemberCount"], 6)
+
+    def test_finding_1_undeclared_nested_crate_false_green(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pol = make_clean_policy(root)
+            (root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/fss-core"]\n')
+            c1 = root / "crates" / "fss-core"
+            c1.mkdir(parents=True)
+            (c1 / "Cargo.toml").write_text('[package]\nname = "fss-core"\nversion = "0.1.0"\nedition = "2024"\n')
+            (c1 / "src").mkdir()
+            (c1 / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\n")
+
+            # Undeclared nested crate with build.rs and no forbid
+            nested = root / "crates" / "fss-core" / "nested-rogue"
+            nested.mkdir(parents=True)
+            (nested / "Cargo.toml").write_text('[package]\nname = "nested-rogue"\nversion = "0.1.0"\nedition = "2024"\n')
+            (nested / "build.rs").write_text("fn main() {}\n")
+            (nested / "src").mkdir()
+            (nested / "src" / "lib.rs").write_text("pub fn foo() {}\n")
+
+            report, rc = dependency_audit.audit_workspace(root, pol)
+            codes = [f["code"] for f in report["findings"]]
+            self.assertIn("DEP-AUD-019", codes, "Must detect undeclared non-member crate in repository tree")
+            self.assertIn("DEP-AUD-021", codes, "Must enforce forbid(unsafe_code) on undeclared crate")
+            self.assertIn("DEP-AUD-031", codes, "Must detect custom build script on undeclared crate")
+            self.assertNotEqual(rc, 0, "Audit must not return 0 for undeclared crate with build script")
+
+    def test_finding_2_autoexamples_false_bypasses_forbid_unsafe(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pol = make_clean_policy(root)
+            (root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/fss-core"]\n')
+            c1 = root / "crates" / "fss-core"
+            c1.mkdir(parents=True)
+            (c1 / "Cargo.toml").write_text('[package]\nname = "fss-core"\nversion = "0.1.0"\nedition = "2024"\nautoexamples = false\nautobenches = false\n')
+            (c1 / "src").mkdir()
+            (c1 / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\n")
+
+            (c1 / "examples").mkdir()
+            (c1 / "examples" / "ex.rs").write_text("fn main() {}\n")  # no forbid!
+            (c1 / "benches").mkdir()
+            (c1 / "benches" / "bn.rs").write_text("fn main() {}\n")  # no forbid!
+
+            report, rc = dependency_audit.audit_workspace(root, pol)
+            codes = [f["code"] for f in report["findings"]]
+            self.assertIn("DEP-AUD-021", codes, "Must enforce forbid(unsafe_code) even when autoexamples=false")
+            self.assertNotEqual(rc, 0, "Audit must not pass when example lacks forbid(unsafe_code)")
+
+    def test_finding_6_dependency_audit_ignores_cargo_lock_without_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            pol = make_clean_policy(root)
+            (root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/fss-core"]\n')
+            c1 = root / "crates" / "fss-core"
+            c1.mkdir(parents=True)
+            (c1 / "Cargo.toml").write_text('[package]\nname = "fss-core"\nversion = "0.1.0"\nedition = "2024"\n')
+            (c1 / "src").mkdir()
+            (c1 / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\n")
+            (root / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "tokio"\nversion = "1.0.0"\n')
+
+            report, rc = dependency_audit.audit_workspace(root, pol)
+            codes = [f["code"] for f in report["findings"]]
+            self.assertIn("DEP-AUD-030", codes, "Audit must detect forbidden package in Cargo.lock even in policy_only mode")
+            self.assertNotEqual(rc, 0, "Audit must fail when Cargo.lock contains a forbidden crate")
 
 
 if __name__ == "__main__":
