@@ -383,6 +383,20 @@ def validate_manifest() -> int:
     return len(entries)
 
 
+def check_slo_policy(root: Path = ROOT) -> None:
+    slo_valid, slo_findings, _ = slo_validate.validate_slos(root)
+    if not slo_valid:
+        reported_error = False
+        for finding in slo_findings:
+            if finding.severity == "error":
+                fail(f"{finding.code}: {finding.message} ({finding.path})")
+                reported_error = True
+            else:
+                notes.append(f"{finding.code}: {finding.message} ({finding.path})")
+        if not reported_error:
+            fail(f"SLO-VAL-FAILED: slo_validate reported validation failure with {len(slo_findings)} non-error finding(s)")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate FSS constitutional repository policy")
     parser.add_argument("--skip-manifest", action="store_true", help="used only while regenerating the manifest")
@@ -838,11 +852,7 @@ def main() -> int:
     if "SLO-AGENT-ROBUSTNESS-001" not in slos_text:
         fail("agent WorldEnvelope robustness SLO is missing")
 
-    slo_valid, slo_findings, _ = slo_validate.validate_slos(ROOT)
-    if not slo_valid:
-        for finding in slo_findings:
-            if finding.severity == "error":
-                fail(f"{finding.code}: {finding.message} ({finding.path})")
+    check_slo_policy(ROOT)
 
     release_doc = load_json("architecture/release_qualification.json")
     lanes = unique_rows(release_doc.get("lanes"), "id", "architecture/release_qualification.json")

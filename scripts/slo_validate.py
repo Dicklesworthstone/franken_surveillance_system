@@ -220,7 +220,7 @@ def parse_markdown_table(
 
 
 def validate_target_units(target: str, is_tombstone: bool) -> bool:
-    """Validate that target matches a structured threshold grammar with registered units."""
+    """Validate that target matches a structured threshold grammar with registered units and valid ranges."""
     if is_tombstone:
         return True
 
@@ -230,17 +230,39 @@ def validate_target_units(target: str, is_tombstone: bool) -> bool:
     if any(pat.search(t_lower) for pat in APPROVED_TARGET_PATTERNS):
         return True
 
+    # F4: Physical, rate, count, and size units cannot be negative.
+    if re.search(r"(?:<=|>=|<|>|==|≤|≥)\s*-\s*\d", target) or re.search(r"-\s*\d+(?:\.\d+)?\s*(?:%|percent|[a-z/_-]+)", t_lower):
+        return False
+
+    # Check percentage ranges: [0, 100]
+    percent_matches = re.findall(r"([+-]?\d+(?:\.\d+)?)\s*(?:%|percent)", target)
+    if percent_matches:
+        for p_str in percent_matches:
+            try:
+                p_val = float(p_str)
+                if p_val < 0.0 or p_val > 100.0:
+                    return False
+            except ValueError:
+                return False
+        return True
+
     has_operator = bool(re.search(r"(?:<=|>=|<|>|==|≤|≥)", target))
     has_number = bool(re.search(r"\b\d+(?:\.\d+)?", target))
 
     if has_operator or has_number:
+        # Check that numeric values associated with units are non-negative
         for unit in sorted(REGISTERED_UNITS, key=len, reverse=True):
             if unit == "%":
-                if "%" in target:
-                    return True
-            else:
-                if re.search(r"\b" + re.escape(unit) + r"\b", t_lower):
-                    return True
+                continue
+            if re.search(r"\b" + re.escape(unit) + r"\b", t_lower):
+                num_matches = re.findall(r"([+-]?\d+(?:\.\d+)?)\s*" + re.escape(unit) + r"\b", t_lower)
+                for n_str in num_matches:
+                    try:
+                        if float(n_str) < 0.0:
+                            return False
+                    except ValueError:
+                        return False
+                return True
         return False
 
     return False
@@ -257,11 +279,24 @@ def parse_slos(
     raw_rows = parse_markdown_table(markdown_text, path_str, findings)
 
     slos: dict[str, SloRow] = {}
-    case_folded: dict[str, str] = {}
+    zero_width_chars = frozenset({"\u200b", "\u200c", "\u200d", "\ufeff"})
 
     for row_idx, row in enumerate(raw_rows, start=1):
         # Extract ID (strictly anchored to whole cell; rejects trailing annotations or aliases)
         id_cell = row.get("id", "").strip()
+
+        # F3: IDs must be validated as pure ASCII first; any non-ASCII or zero-width character is an error
+        if not id_cell.isascii() or any(c in id_cell for c in zero_width_chars):
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_INVALID_SLO_ID,
+                path=path_str,
+                message=f"Row {row_idx} SLO ID cell contains non-ASCII or zero-width characters: '{id_cell}'",
+                remediation="SLO IDs must be pure ASCII with no non-ASCII or zero-width characters",
+                params={"row": row_idx, "raw_id": id_cell},
+            ))
+            continue
+
         m_id = re.match(r"^`?((?:SLO)-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3})`?$", id_cell)
         if not m_id:
             findings.append(SloFinding(
@@ -276,17 +311,16 @@ def parse_slos(
 
         slo_id = m_id.group(1).strip()
 
-        # Check duplicate and case-fold collision
-        lower_id = slo_id.lower()
-        if slo_id in slos or lower_id in case_folded:
-            existing = slos.get(slo_id) or slos.get(case_folded.get(lower_id, ""))
+        # F6: Check duplicate SLO ID (exact match; case-collision code removed since SLO_ID_REGEX enforces uppercase)
+        if slo_id in slos:
+            existing = slos[slo_id]
             findings.append(SloFinding(
                 severity="error",
                 code=CODE_DUPLICATE_SLO_ID,
                 path=path_str,
-                message=f"Duplicate or case-colliding SLO ID detected: '{slo_id}' (collides with '{existing.id if existing else lower_id}')",
+                message=f"Duplicate SLO ID detected: '{slo_id}'",
                 remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_SLO_ID]["remediation"],
-                params={"slo_id": slo_id, "collides_with": existing.id if existing else lower_id},
+                params={"slo_id": slo_id, "collides_with": existing.id},
             ))
             continue
 
@@ -381,30 +415,130 @@ def parse_slos(
                         remediation="Proof root must be a relative path strictly within qualification-artifacts/",
                         params={"slo_id": slo_id, "proof_root": proof_root},
                     ))
+                elif ".." in proof_path.parts:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_PROOF_ROOT_NOT_FOUND,
+                        path=path_str,
+                        message=f"SLO {slo_id} referenced proof root '{proof_root}' contains forbidden traversal components ('..')",
+                        remediation="Proof root must not contain '..' components",
+                        params={"slo_id": slo_id, "proof_root": proof_root},
+                    ))
                 else:
-                    qual_dir = (root / "qualification-artifacts").resolve()
-                    resolved_cand = (root / proof_path).resolve()
-                    if not resolved_cand.is_relative_to(qual_dir):
-                        resolved_cand = (qual_dir / proof_path).resolve()
+                    qual_dir = root / "qualification-artifacts"
+                    parts = proof_path.parts
+                    if parts and parts[0] == "qualification-artifacts":
+                        parts = parts[1:]
 
-                    if not resolved_cand.is_relative_to(qual_dir) or resolved_cand == qual_dir:
+                    if not parts:
                         findings.append(SloFinding(
                             severity="error",
                             code=CODE_PROOF_ROOT_NOT_FOUND,
                             path=path_str,
-                            message=f"SLO {slo_id} referenced proof root '{proof_root}' does not resolve to a file strictly within qualification-artifacts/",
-                            remediation="Proof root must resolve to a file strictly within qualification-artifacts/",
+                            message=f"SLO {slo_id} referenced proof root '{proof_root}' points to qualification-artifacts root directory, not a file",
+                            remediation="Proof root must point to a specific qualification receipt file",
                             params={"slo_id": slo_id, "proof_root": proof_root},
                         ))
-                    elif not resolved_cand.is_file():
-                        findings.append(SloFinding(
-                            severity="error",
-                            code=CODE_PROOF_ROOT_NOT_FOUND,
-                            path=path_str,
-                            message=f"SLO {slo_id} referenced proof root does not exist as a regular file on disk: '{proof_root}'",
-                            remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_ROOT_NOT_FOUND]["remediation"],
-                            params={"slo_id": slo_id, "proof_root": proof_root},
-                        ))
+                    else:
+                        # F1: reject symlinks anywhere in the proof path (lstat each component; no .resolve() escape)
+                        has_symlink = False
+                        curr = qual_dir
+                        try:
+                            if os.path.islink(curr):
+                                has_symlink = True
+                        except OSError:
+                            pass
+
+                        for part in parts:
+                            curr = curr / part
+                            try:
+                                if os.path.islink(curr):
+                                    has_symlink = True
+                                    break
+                            except OSError:
+                                pass
+
+                        if has_symlink:
+                            findings.append(SloFinding(
+                                severity="error",
+                                code=CODE_PROOF_ROOT_NOT_FOUND,
+                                path=path_str,
+                                message=f"SLO {slo_id} referenced proof root '{proof_root}' contains a symlink at '{curr}'; symlinks in proof paths are strictly forbidden",
+                                remediation="Use real, regular files without symlinks for qualification proof roots",
+                                params={"slo_id": slo_id, "proof_root": proof_root, "symlink": str(curr)},
+                            ))
+                        elif not curr.is_file():
+                            findings.append(SloFinding(
+                                severity="error",
+                                code=CODE_PROOF_ROOT_NOT_FOUND,
+                                path=path_str,
+                                message=f"SLO {slo_id} referenced proof root does not exist as a regular file on disk: '{proof_root}'",
+                                remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_ROOT_NOT_FOUND]["remediation"],
+                                params={"slo_id": slo_id, "proof_root": proof_root},
+                            ))
+                        else:
+                            # F2: an achieved proof root must be a non-empty JSON file that parses as a qualification receipt with schema fss.release_qualification_receipt.v1
+                            file_size = curr.stat().st_size
+                            if file_size == 0:
+                                findings.append(SloFinding(
+                                    severity="error",
+                                    code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                    path=path_str,
+                                    message=f"SLO {slo_id} referenced proof root '{proof_root}' is empty (0 bytes); existence is not proof",
+                                    remediation="Qualification proof root must be a valid, non-empty receipt",
+                                    params={"slo_id": slo_id, "proof_root": proof_root},
+                                ))
+                            else:
+                                receipt_json: Any = None
+                                try:
+                                    content = curr.read_text(encoding="utf-8")
+                                    receipt_json = json.loads(content)
+                                except Exception as exc:
+                                    findings.append(SloFinding(
+                                        severity="error",
+                                        code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                        path=path_str,
+                                        message=f"SLO {slo_id} referenced proof root '{proof_root}' is not valid JSON: {exc}",
+                                        remediation="Ensure proof root contains valid JSON",
+                                        params={"slo_id": slo_id, "proof_root": proof_root, "error": str(exc)},
+                                    ))
+
+                                if isinstance(receipt_json, dict):
+                                    receipt_schema = receipt_json.get("schema")
+                                    if receipt_schema != "fss.release_qualification_receipt.v1":
+                                        findings.append(SloFinding(
+                                            severity="error",
+                                            code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                            path=path_str,
+                                            message=f"SLO {slo_id} referenced proof root '{proof_root}' schema is '{receipt_schema}'; expected 'fss.release_qualification_receipt.v1'",
+                                            remediation="Qualification receipt must specify schema 'fss.release_qualification_receipt.v1'",
+                                            params={"slo_id": slo_id, "proof_root": proof_root, "schema": str(receipt_schema)},
+                                        ))
+                                    else:
+                                        receipt_req = [
+                                            "receiptId", "laneId", "sourceCommit", "sourceTree",
+                                            "siblingClosureDigest", "toolchain", "hostIdentity",
+                                            "target", "features", "commands", "status"
+                                        ]
+                                        missing_keys = [k for k in receipt_req if k not in receipt_json]
+                                        if missing_keys:
+                                            findings.append(SloFinding(
+                                                severity="error",
+                                                code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                                path=path_str,
+                                                message=f"SLO {slo_id} qualification receipt '{proof_root}' missing required fields: {missing_keys}",
+                                                remediation="Receipt must satisfy fss.release_qualification_receipt.v1 schema",
+                                                params={"slo_id": slo_id, "missing": missing_keys},
+                                            ))
+                                        elif receipt_json.get("status") != "passed":
+                                            findings.append(SloFinding(
+                                                severity="error",
+                                                code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                                path=path_str,
+                                                message=f"SLO {slo_id} qualification receipt '{proof_root}' status is '{receipt_json.get('status')}'; must be 'passed'",
+                                                remediation="Achieved SLO must reference a passed qualification receipt",
+                                                params={"slo_id": slo_id, "status": str(receipt_json.get("status"))},
+                                            ))
 
         # Tombstone validation
         if is_tombstone:
@@ -447,7 +581,6 @@ def parse_slos(
             superseded_by=superseded_by,
         )
         slos[slo_id] = slo_obj
-        case_folded[lower_id] = slo_id
     
     # Second pass: validate tombstone chains (cycles and dangling references)
     for slo_id, slo_obj in slos.items():
@@ -524,9 +657,36 @@ def validate_cost_references(
             remediation="Ensure operation_cost_registry.toml defines [[operation]] tables",
         ))
         return []
-    
+
+    seen_op_ids: dict[str, str] = {}
     for op in operations:
         cost_id = op.get("id", "UNKNOWN_COST")
+
+        # F6: Duplicate and case-colliding operation IDs are errors
+        if not isinstance(cost_id, str) or not cost_id.strip():
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MALFORMED_TABLE,
+                path=path_str,
+                message=f"Operation table entry missing valid 'id': {op}",
+                remediation="Ensure every [[operation]] table has a non-empty string 'id'",
+                params={"operation": str(op)},
+            ))
+            continue
+
+        cost_id = cost_id.strip()
+        lower_cost_id = cost_id.lower()
+        if lower_cost_id in seen_op_ids:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MALFORMED_TABLE,
+                path=path_str,
+                message=f"Duplicate or case-colliding operation ID detected: '{cost_id}' (collides with '{seen_op_ids[lower_cost_id]}')",
+                remediation="Ensure all operation IDs are unique and do not collide under case folding",
+                params={"cost_id": cost_id, "collides_with": seen_op_ids[lower_cost_id]},
+            ))
+            continue
+        seen_op_ids[lower_cost_id] = cost_id
 
         # F4: Reject unknown keys in operation row (including singular 'slo_id')
         unknown_keys = set(op.keys()) - KNOWN_OPERATION_KEYS
@@ -574,7 +734,19 @@ def validate_cost_references(
             continue
 
         for ref_slo_id in referenced_slos:
-            if not isinstance(ref_slo_id, str) or not SLO_ID_REGEX.match(ref_slo_id):
+            # F7: slo_ids containing an empty or whitespace-only string is a missing linkage (SLO-VAL-009)
+            if not isinstance(ref_slo_id, str) or not ref_slo_id.strip():
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_UNREGISTERED_SLO_REFERENCE,
+                    path=path_str,
+                    message=f"Operation {cost_id} has empty string in 'slo_ids'; every operation must link to at least one valid SLO",
+                    remediation="Ensure 'slo_ids' contains non-empty, registered SLO IDs",
+                    params={"cost_id": cost_id, "slo_id": str(ref_slo_id)},
+                ))
+                continue
+
+            if not SLO_ID_REGEX.match(ref_slo_id):
                 findings.append(SloFinding(
                     severity="error",
                     code=CODE_MALFORMED_COST_SLO_REFERENCE,
@@ -632,29 +804,78 @@ def validate_claim_promotions(
         return
 
     claims_text = claims_path.read_text(encoding="utf-8")
+    zero_width_chars = frozenset({"\u200b", "\u200c", "\u200d", "\ufeff"})
 
-    # Extract all SLO IDs mentioned in claims text
-    referenced_slo_matches = re.findall(r"`?((?:SLO)-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3})`?", claims_text)
-    for ref_slo_id in set(referenced_slo_matches):
-        if ref_slo_id in slos:
-            slo_info = slos[ref_slo_id]
-            if slo_info.status != "achieved":
-                findings.append(SloFinding(
-                    severity="error",
-                    code=CODE_TARGET_CLAIM_PROMOTION,
-                    path=path_str,
-                    message=f"Public claim in {path_str} cites SLO '{ref_slo_id}' with status '{slo_info.status}' as evidence; targets cannot be promoted to public claims without retained qualification proof",
-                    remediation=DIAGNOSTIC_REGISTRY[CODE_TARGET_CLAIM_PROMOTION]["remediation"],
-                    params={"slo_id": ref_slo_id, "status": slo_info.status},
-                ))
-        else:
+    # Extract all candidate SLO citations (backticked spans and SLO-like tokens)
+    citations: set[str] = set()
+
+    slo_prefix_pattern = re.compile(r"^(?:SL[O\u041e]|[\u0421\u0441][\u041b\u044c][\u041e\u043e])[-_]", re.IGNORECASE)
+
+    # 1. Backticked tokens
+    for m in re.finditer(r"`([^`]+)`", claims_text):
+        token = m.group(1).strip()
+        if slo_prefix_pattern.search(token):
+            citations.add(token)
+
+    # 2. Unbackticked tokens
+    for m in re.finditer(r"\b(?:SL[O\u041e]|[\u0421\u0441][\u041b\u044c][\u041e\u043e])-[^\s|`]+\b", claims_text, re.IGNORECASE):
+        citations.add(m.group(0).strip())
+
+    for citation in sorted(citations):
+        # F3: IDs and claim citations must be validated as pure ASCII first
+        if not citation.isascii() or any(c in citation for c in zero_width_chars):
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_INVALID_SLO_ID,
+                path=path_str,
+                message=f"Public claim citation contains non-ASCII or zero-width characters: '{citation}'",
+                remediation="Claim citations must be pure ASCII with no non-ASCII or zero-width characters",
+                params={"citation": citation},
+            ))
+            continue
+
+        # F5: A claim citing an alias/non-conforming ID is an error
+        if not SLO_ID_REGEX.match(citation):
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_INVALID_SLO_ID,
+                path=path_str,
+                message=f"Public claim cites non-conforming or alias SLO ID: '{citation}'",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_INVALID_SLO_ID]["remediation"],
+                params={"citation": citation},
+            ))
+            continue
+
+        if citation not in slos:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_UNREGISTERED_SLO_REFERENCE,
+                path=path_str,
+                message=f"Public claim in {path_str} cites unregistered SLO '{citation}'",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_UNREGISTERED_SLO_REFERENCE]["remediation"],
+                params={"slo_id": citation},
+            ))
+            continue
+
+        slo_info = slos[citation]
+        # F5: A claim citing a tombstone emits SLO-VAL-014
+        if slo_info.is_tombstone:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_TOMBSTONE_REFERENCED_AS_ACTIVE,
+                path=path_str,
+                message=f"Public claim in {path_str} cites tombstoned SLO '{citation}'; must cite canonical successor '{slo_info.superseded_by}'",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_TOMBSTONE_REFERENCED_AS_ACTIVE]["remediation"],
+                params={"slo_id": citation, "superseded_by": slo_info.superseded_by},
+            ))
+        elif slo_info.status != "achieved":
             findings.append(SloFinding(
                 severity="error",
                 code=CODE_TARGET_CLAIM_PROMOTION,
                 path=path_str,
-                message=f"Public claim in {path_str} cites unregistered SLO '{ref_slo_id}'",
+                message=f"Public claim in {path_str} cites SLO '{citation}' with status '{slo_info.status}' as evidence; targets cannot be promoted to public claims without retained qualification proof",
                 remediation=DIAGNOSTIC_REGISTRY[CODE_TARGET_CLAIM_PROMOTION]["remediation"],
-                params={"slo_id": ref_slo_id},
+                params={"slo_id": citation, "status": slo_info.status},
             ))
 
 

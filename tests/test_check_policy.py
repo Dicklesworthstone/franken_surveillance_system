@@ -276,6 +276,23 @@ jobs:
         check_policy.workflow_policy()
         self.assertTrue(any("unpinned or comment-lacking workflow action" in err for err in check_policy.errors))
 
+    def test_slo_validate_failure_fails_policy_even_without_error_severity(self) -> None:
+        import slo_validate
+        orig_validate = slo_validate.validate_slos
+        try:
+            slo_validate.validate_slos = lambda root=ROOT, slos_path=None, costs_path=None, claims_path=None: (
+                False, [slo_validate.SloFinding("warning", "CODE-WARN-001", "path/to/file", "warning message")], {}
+            )
+            check_policy.ROOT = ROOT
+            check_policy.errors = []
+            check_policy.check_slo_policy(ROOT)
+            self.assertTrue(
+                any("SLO-VAL-FAILED" in err or "CODE-WARN-001" in err for err in check_policy.errors),
+                f"check-policy must record an error when slo_valid is False even with only warnings, got: {check_policy.errors}",
+            )
+        finally:
+            slo_validate.validate_slos = orig_validate
+
 
 if __name__ == "__main__":
     unittest.main()

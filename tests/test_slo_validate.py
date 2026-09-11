@@ -173,7 +173,25 @@ class SloValidatePlantedFaultTests(unittest.TestCase):
         proof_dir = ROOT / "qualification-artifacts"
         proof_dir.mkdir(parents=True, exist_ok=True)
         proof_file = proof_dir / "SLO-TEST-001-proof.receipt"
-        proof_file.write_text("retained proof evidence\n", encoding="utf-8")
+        receipt_data = {
+            "schema": "fss.release_qualification_receipt.v1",
+            "receiptId": "local:test:12345678",
+            "laneId": "QL-POLICY-001",
+            "sourceCommit": "sha256:0123456789abcdef",
+            "sourceTree": "sha256:0123456789abcdef",
+            "siblingClosureDigest": "sha256:0123456789abcdef",
+            "cargoLockDigest": None,
+            "toolchain": "nightly-2026-08-31",
+            "hostIdentity": "sha256:0123456789abcdef",
+            "target": "x86_64-unknown-linux-gnu",
+            "features": [],
+            "commands": [{"argv": ["test"], "status": "passed", "outputDigest": "sha256:0123456789abcdef"}],
+            "artifactManifestDigest": None,
+            "startedAt": {"earliestNs": 1000, "latestNs": 2000, "clockBasis": "host-realtime"},
+            "finishedAt": {"earliestNs": 2000, "latestNs": 3000, "clockBasis": "host-realtime"},
+            "status": "passed",
+        }
+        proof_file.write_text(json.dumps(receipt_data, indent=2) + "\n", encoding="utf-8")
         try:
             real_proof_root = "qualification-artifacts/SLO-TEST-001-proof.receipt"
             planted = self.real_slos_text + f"\n| `SLO-TEST-001` | latency <= 5 ms | edge-GPU | achieved | {real_proof_root} |\n"
@@ -346,6 +364,150 @@ slo_ids = ["SLO-PRIVACY-001"]
         self.assertIn("SLO-VAL-012", codes, "Defect 6: SLO-VAL-012 (CODE_TARGET_CLAIM_PROMOTION) is not emitted!")
 
 
+class RusticGooseAdversarialNegativeTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.qual = self.root / "qualification-artifacts"
+        self.qual.mkdir()
+        self.slos = self.root / "SLOS.md"
+        self.costs = self.root / "costs.toml"
+        self.claims = self.root / "CLAIMS.md"
+        self.costs.write_text("""
+[[operation]]
+id = "COST-TEST-001"
+name = "test"
+unit = "frame"
+slo_ids = ["SLO-TEST-001"]
+""", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    # Finding 1: Symlink inside qualification-artifacts accepted
+    def test_f1_symlink_inside_qualification_artifacts_accepted(self) -> None:
+        real_proof = self.qual / "real.json"
+        real_proof.write_text("proof", encoding="utf-8")
+        link = self.qual / "link.json"
+        link.symlink_to(real_proof)
+        self.slos.write_text("""
+| ID | Target | Measurement surface | Status | Proof root |
+|---|---|---|---|---|
+| `SLO-TEST-001` | latency <= 5 ms | edge-GPU | achieved | qualification-artifacts/link.json |
+""", encoding="utf-8")
+        valid, findings, _ = slo_validate.validate_slos(root=self.root, slos_path=self.slos, costs_path=self.costs)
+        self.assertFalse(valid, "Symlink inside qualification-artifacts was accepted as valid proof!")
+
+    # Finding 2: Empty 0-byte proof file accepted
+    def test_f2_empty_proof_file_accepted(self) -> None:
+        empty_proof = self.qual / "empty.json"
+        empty_proof.write_text("", encoding="utf-8")
+        self.slos.write_text("""
+| ID | Target | Measurement surface | Status | Proof root |
+|---|---|---|---|---|
+| `SLO-TEST-001` | latency <= 5 ms | edge-GPU | achieved | qualification-artifacts/empty.json |
+""", encoding="utf-8")
+        valid, findings, _ = slo_validate.validate_slos(root=self.root, slos_path=self.slos, costs_path=self.costs)
+        self.assertFalse(valid, "0-byte empty file was accepted as valid qualification proof!")
+
+    # Finding 3: Unicode confusable in CLAIMS.md silently ignored
+    def test_f3_unicode_confusable_in_claims_ignored(self) -> None:
+        self.slos.write_text("""
+| ID | Target | Measurement surface | Status | Proof root |
+|---|---|---|---|---|
+| `SLO-TEST-001` | latency <= 5 ms | edge-GPU | target | - |
+""", encoding="utf-8")
+        self.claims.write_text("""
+| ID | Claim | Evidence |
+|---|---|---|
+| CLAIM-001 | test | `SL\u041e-TEST-001` achieved |
+""", encoding="utf-8")
+        valid, findings, _ = slo_validate.validate_slos(root=self.root, slos_path=self.slos, costs_path=self.costs, claims_path=self.claims)
+        self.assertFalse(valid, "Cyrillic confusable in CLAIMS.md was silently ignored!")
+
+    # Finding 4: Impossible physical and percentage values accepted
+    def test_f4_impossible_values_accepted(self) -> None:
+        self.assertFalse(slo_validate.validate_target_units("latency <= -5 ms", False), "Negative latency accepted!")
+        self.assertFalse(slo_validate.validate_target_units("availability >= 150%", False), "150% availability accepted!")
+
+    # Finding 5: Tombstone in claims emits target promotion instead of tombstone code
+    def test_f5_tombstone_in_claims_emits_wrong_code(self) -> None:
+        self.slos.write_text("""
+| ID | Target | Measurement surface | Status | Proof root |
+|---|---|---|---|---|
+| `SLO-TEST-001` | latency <= 5 ms | edge-GPU | target | - |
+| `SLO-TOMB-001` | tombstone: superseded by `SLO-TEST-001` | edge-GPU | tombstone | - |
+""", encoding="utf-8")
+        self.claims.write_text("""
+| ID | Claim | Evidence |
+|---|---|---|
+| CLAIM-001 | test | `SLO-TOMB-001` |
+""", encoding="utf-8")
+        valid, findings, _ = slo_validate.validate_slos(root=self.root, slos_path=self.slos, costs_path=self.costs, claims_path=self.claims)
+        codes = [f.code for f in findings]
+        self.assertIn("SLO-VAL-014", codes, "Tombstone cited in CLAIMS should emit SLO-VAL-014")
+
+    # Finding 6: Duplicate case-colliding cost operations accepted
+    def test_f6_duplicate_case_colliding_cost_operations_accepted(self) -> None:
+        self.slos.write_text("""
+| ID | Target | Measurement surface | Status | Proof root |
+|---|---|---|---|---|
+| `SLO-TEST-001` | latency <= 5 ms | edge-GPU | target | - |
+""", encoding="utf-8")
+        self.costs.write_text("""
+[[operation]]
+id = "COST-TEST-001"
+name = "test 1"
+unit = "frame"
+slo_ids = ["SLO-TEST-001"]
+
+[[operation]]
+id = "cost-test-001"
+name = "test 2"
+unit = "frame"
+slo_ids = ["SLO-TEST-001"]
+""", encoding="utf-8")
+        valid, findings, _ = slo_validate.validate_slos(root=self.root, slos_path=self.slos, costs_path=self.costs)
+        self.assertFalse(valid, "Case-colliding operation IDs in costs.toml were accepted!")
+
+    # Finding 7: Empty string in slo_ids misclassified
+    def test_f7_empty_string_in_slo_ids_misclassified(self) -> None:
+        self.slos.write_text("""
+| ID | Target | Measurement surface | Status | Proof root |
+|---|---|---|---|---|
+| `SLO-TEST-001` | latency <= 5 ms | edge-GPU | target | - |
+""", encoding="utf-8")
+        self.costs.write_text("""
+[[operation]]
+id = "COST-TEST-001"
+name = "test"
+unit = "frame"
+slo_ids = [""]
+""", encoding="utf-8")
+        valid, findings, _ = slo_validate.validate_slos(root=self.root, slos_path=self.slos, costs_path=self.costs)
+        codes = [f.code for f in findings]
+        self.assertIn("SLO-VAL-009", codes, "slo_ids=[''] should report unlinked/unregistered SLO reference")
+
+    # Finding 8: check-policy.py passes when slo_valid is False with non-error findings
+    def test_f8_check_policy_silent_pass_on_non_error_slo_invalid(self) -> None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("check_policy", (ROOT / "scripts/check-policy.py").resolve())
+        cp = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cp)
+
+        orig_validate = slo_validate.validate_slos
+        try:
+            slo_validate.validate_slos = lambda root=ROOT, slos_path=None, costs_path=None, claims_path=None: (
+                False, [slo_validate.SloFinding("warning", "CODE-WARN", "path", "msg")], {}
+            )
+            cp.errors = []
+            cp.check_slo_policy(ROOT)
+            self.assertGreater(len(cp.errors), 0, "check-policy must record an error when slo_valid is False")
+        finally:
+            slo_validate.validate_slos = orig_validate
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
 
