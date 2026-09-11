@@ -626,6 +626,23 @@ mod tests {
     }
 
     #[test]
+    fn terminal_transition_is_non_coalescible_and_cannot_coalesce() -> Result<(), ContractError> {
+        let first = delta(MeaningfulDeltaClass::TerminalTransition, 1)?;
+        let second = delta(MeaningfulDeltaClass::MaterialState, 2)?;
+        assert!(first.is_non_coalescible());
+        assert!(!first.can_coalesce_with(&second)?);
+        assert!(!second.can_coalesce_with(&first)?);
+        let err = first.coalesce(
+            &second,
+            "delta:coalesced",
+            "continuation:coalesced",
+            ContentDigest::sha256(b"coalesced"),
+        );
+        assert_eq!(err.unwrap_err(), ContractError::EvidenceRequired);
+        Ok(())
+    }
+
+    #[test]
     fn silence_is_a_proved_distinct_state() -> Result<(), ContractError> {
         let delta = delta(MeaningfulDeltaClass::NoMeaningfulChange, 1)?;
         delta.validate()?;

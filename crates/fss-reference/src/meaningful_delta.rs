@@ -4,8 +4,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     ActionAffordance, AffordanceClass, CanonicalEncode, CanonicalEncoder, Completeness,
-    ContentDigest, ContractError, DeltaPriority, KnowledgeCell, KnowledgeState, MeaningfulDelta,
-    MeaningfulDeltaClass, SilenceCertificate, WorldEnvelope,
+    ContentDigest, ContractError, DeltaPriority, HypothesisDisposition, KnowledgeCell,
+    KnowledgeState, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate, WorldEnvelope,
 };
 
 use crate::{ReferenceError, ReferenceSituationPublication};
@@ -83,6 +83,14 @@ pub fn classify_reference_meaningful_delta(
                 basis_capsule.completeness, result_capsule.completeness
             ));
         }
+    } else if result_completeness == basis_completeness
+        && result_capsule.completeness != Completeness::Complete
+    {
+        classes.insert(MeaningfulDeltaClass::CoverageLoss);
+        coverage_changes.push(format!(
+            "situation completeness remains degraded at {:?}",
+            result_capsule.completeness
+        ));
     }
     if !result_coverage.is_subset(basis_coverage) || result_completeness < basis_completeness {
         classes.insert(MeaningfulDeltaClass::CoverageRecovery);
@@ -92,6 +100,11 @@ pub fn classify_reference_meaningful_delta(
                 basis_capsule.completeness, result_capsule.completeness
             ));
         }
+    }
+    if result_coverage.is_empty() {
+        classes.insert(MeaningfulDeltaClass::CoverageLoss);
+        coverage_changes
+            .push("result situation has no active coverage boundary handles".to_owned());
     }
 
     let result_actionable: BTreeSet<_> = result_capsule
@@ -115,9 +128,13 @@ pub fn classify_reference_meaningful_delta(
         }
     }
     for prior in &basis_frame.knowledge_cells {
-        if prior.knowledge_state != KnowledgeState::Known {
+        if !matches!(
+            prior.knowledge_state,
+            KnowledgeState::Known | KnowledgeState::Estimated
+        ) {
             continue;
         }
+        let state_label = prior.knowledge_state.as_str();
         match result_frame
             .knowledge_cells
             .iter()
@@ -131,16 +148,17 @@ pub fn classify_reference_meaningful_delta(
                         | KnowledgeState::Stale
                         | KnowledgeState::NotObservable
                         | KnowledgeState::Indeterminate
-                ) =>
+                ) || (prior.knowledge_state == KnowledgeState::Known
+                    && current.knowledge_state == KnowledgeState::Estimated) =>
             {
                 invalidated_assumptions.push(format!(
-                    "known premise {} became {}",
+                    "{state_label} premise {} became {}",
                     prior.claim_id,
                     current.knowledge_state.as_str()
                 ));
             }
             None => invalidated_assumptions.push(format!(
-                "known premise {} disappeared from the result frame",
+                "{state_label} premise {} disappeared from the result frame",
                 prior.claim_id
             )),
             Some(_) => {}
@@ -173,11 +191,78 @@ pub fn classify_reference_meaningful_delta(
     if !effect_uncertainty_changes.is_empty() {
         classes.insert(MeaningfulDeltaClass::EffectUncertainty);
     }
-    if basis_indeterminate.iter().any(|claim| {
-        result_frame.knowledge_cells.iter().any(|cell| {
-            cell.claim_id.as_str() == *claim && cell.knowledge_state == KnowledgeState::Known
-        })
-    }) {
+
+    let obligation_terminalized = basis_obligations
+        .difference(&result_obligations)
+        .next()
+        .is_some();
+    let effect_terminalized = basis_indeterminate
+        .difference(&result_indeterminate)
+        .next()
+        .is_some()
+        || result_frame.knowledge_cells.iter().any(|cell| {
+            cell.claim_id.starts_with("claim:effect:")
+                && (cell.knowledge_state == KnowledgeState::Known
+                    || cell.statement.contains("terminally")
+                    || cell.statement.contains("verified")
+                    || cell.statement.contains("failed")
+                    || cell.statement.contains("cancelled"))
+                && basis_frame
+                    .knowledge_cells
+                    .iter()
+                    .find(|b| b.claim_id == cell.claim_id)
+                    .is_none_or(|b| {
+                        b.knowledge_state != KnowledgeState::Known
+                            && !b.statement.contains("terminally")
+                    })
+        });
+    let event_terminalized = result_frame.knowledge_cells.iter().any(|cell| {
+        let is_terminal_hypothesis = matches!(
+            cell.hypothesis,
+            Some(
+                HypothesisDisposition::Refuted
+                    | HypothesisDisposition::Resolved
+                    | HypothesisDisposition::Superseded
+            )
+        );
+        let is_terminal_event_statement = cell.claim_id.starts_with("claim:event:")
+            && (cell.statement.to_ascii_lowercase().contains("rejected")
+                || cell.statement.to_ascii_lowercase().contains("resolved"));
+        (is_terminal_hypothesis || is_terminal_event_statement)
+            && basis_frame
+                .knowledge_cells
+                .iter()
+                .find(|b| b.claim_id == cell.claim_id)
+                .is_none_or(|b| {
+                    !matches!(
+                        b.hypothesis,
+                        Some(
+                            HypothesisDisposition::Refuted
+                                | HypothesisDisposition::Resolved
+                                | HypothesisDisposition::Superseded
+                        )
+                    ) && !b.statement.to_ascii_lowercase().contains("rejected")
+                        && !b.statement.to_ascii_lowercase().contains("resolved")
+                })
+    });
+    let mission_terminalized = result_frame.now.iter().any(|s| {
+        let lower = s.to_ascii_lowercase();
+        lower.contains("concluded")
+            || lower.contains("closed")
+            || lower.contains("completed")
+            || lower.contains("terminated")
+            || lower.contains("terminal")
+    }) && !basis_frame.now.iter().any(|s| {
+        let lower = s.to_ascii_lowercase();
+        lower.contains("concluded")
+            || lower.contains("closed")
+            || lower.contains("completed")
+            || lower.contains("terminated")
+            || lower.contains("terminal")
+    });
+
+    if obligation_terminalized || effect_terminalized || event_terminalized || mission_terminalized
+    {
         classes.insert(MeaningfulDeltaClass::TerminalTransition);
     }
 
@@ -195,9 +280,18 @@ pub fn classify_reference_meaningful_delta(
     sort_dedup(&mut obligation_changes);
     sort_dedup(&mut effect_uncertainty_changes);
 
-    let is_silence = classes.is_empty();
+    let has_active_coverage_gap = result_capsule.completeness != Completeness::Complete
+        || result_coverage.is_empty()
+        || !basis_coverage.is_subset(result_coverage);
+    let is_silence = classes.is_empty() && !has_active_coverage_gap;
     if is_silence {
         classes.insert(MeaningfulDeltaClass::NoMeaningfulChange);
+    } else if classes.is_empty() {
+        classes.insert(MeaningfulDeltaClass::CoverageLoss);
+        coverage_changes.push(format!(
+            "situation coverage is incomplete or degraded: {:?}",
+            result_capsule.completeness
+        ));
     }
     let selection_witness = comparison_witness(
         basis,
