@@ -8,7 +8,7 @@
 use fss_core::{
     BudgetDimension, BudgetError, BudgetLogRecord, BudgetQuantitiesSpec, BudgetQuantity,
     BudgetVector, BudgetVectorBuilder, BudgetVectorSpec, CanonicalDecode, CanonicalEncode,
-    ContractError,
+    CanonicalEncoder, ContractError,
 };
 
 // ---------------------------------------------------------------------------
@@ -884,4 +884,140 @@ fn budget_error_converts_to_contract_error_with_stable_code() {
     let c_err: ContractError = b_err.into();
     assert_eq!(c_err.code(), "nan_budget_quantity");
     assert_eq!(format!("{c_err}"), "nan_budget_quantity");
+}
+
+// ---------------------------------------------------------------------------
+// 9. Cross-Review Findings Regression Tests (DustyChapel Review)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn json_decoding_rejects_duplicate_keys() {
+    let json = br#"{"tokens": 100, "tokens": 200}"#;
+    let result = BudgetVector::decode_json_slice(json);
+    match result {
+        Err(BudgetError::InvalidEncoding { reason }) => {
+            assert!(reason.contains("duplicate"));
+        }
+        other => panic!("expected InvalidEncoding for duplicate key, got {other:?}"),
+    }
+}
+
+#[test]
+fn json_decoding_rejects_quoted_numerals_for_both_integer_and_float() {
+    // Quoted integer must be rejected with IncompatibleUnit
+    let json_quoted_int = br#"{"tokens": "200"}"#;
+    let err_int = BudgetVector::decode_json_slice(json_quoted_int);
+    assert!(
+        matches!(
+            err_int,
+            Err(BudgetError::IncompatibleUnit {
+                dimension: BudgetDimension::Tokens,
+                ..
+            })
+        ),
+        "expected IncompatibleUnit for quoted integer, got {err_int:?}"
+    );
+
+    // Quoted float must be rejected with IncompatibleUnit (strict: neither accepts quoted numerals)
+    let json_quoted_float = br#"{"privacy_exposure": "0.5"}"#;
+    let err_float = BudgetVector::decode_json_slice(json_quoted_float);
+    assert!(
+        matches!(
+            err_float,
+            Err(BudgetError::IncompatibleUnit {
+                dimension: BudgetDimension::PrivacyExposure,
+                ..
+            })
+        ),
+        "expected IncompatibleUnit for quoted float, got {err_float:?}"
+    );
+
+    // Valid unquoted numbers must be accepted
+    let json_unquoted = br#"{"tokens": 200, "privacy_exposure": 0.5}"#;
+    let ok =
+        BudgetVector::decode_json_slice(json_unquoted).expect("unquoted numbers should decode");
+    assert_eq!(ok.tokens, 200);
+    assert_eq!(ok.privacy_exposure, 0.5);
+}
+
+#[test]
+fn checked_scale_multiplies_budget_dimensions_and_detects_overflow() -> Result<(), BudgetError> {
+    let budget = BudgetVector::builder()
+        .tokens(100)
+        .latency_ms(200)
+        .privacy_exposure(1.5)
+        .operator_attention_seconds(2.0)
+        .build()?;
+
+    let scaled = budget.checked_scale(2.5)?;
+    assert_eq!(scaled.tokens, 250);
+    assert_eq!(scaled.latency_ms, 500);
+    assert_eq!(scaled.privacy_exposure, 3.75);
+    assert_eq!(scaled.operator_attention_seconds, 5.0);
+
+    // Scaling by negative must fail
+    assert!(matches!(
+        budget.checked_scale(-1.0),
+        Err(BudgetError::NegativeQuantity { .. })
+    ));
+
+    // Scaling by NaN must fail
+    assert!(matches!(
+        budget.checked_scale(f64::NAN),
+        Err(BudgetError::NaNQuantity { .. })
+    ));
+
+    // Scaling by infinity must fail
+    assert!(matches!(
+        budget.checked_scale(f64::INFINITY),
+        Err(BudgetError::InfiniteQuantity { .. })
+    ));
+
+    // Scaling that overflows u64 must return BudgetError::Overflow with operation "scale"
+    let huge_budget = BudgetVector::builder().tokens(u64::MAX).build()?;
+    match huge_budget.checked_scale(2.0) {
+        Err(BudgetError::Overflow {
+            dimension,
+            operation,
+        }) => {
+            assert_eq!(dimension, BudgetDimension::Tokens);
+            assert_eq!(operation, "scale");
+        }
+        other => panic!("expected Overflow with operation scale, got {other:?}"),
+    }
+
+    // BudgetQuantity::checked_scale
+    let qty = BudgetQuantity::new(2.0, BudgetDimension::PrivacyExposure)?;
+    let scaled_qty = qty.checked_scale(3.0, BudgetDimension::PrivacyExposure)?;
+    assert_eq!(scaled_qty.get(), 6.0);
+
+    let huge_qty = BudgetQuantity::new(f64::MAX, BudgetDimension::PrivacyExposure)?;
+    match huge_qty.checked_scale(2.0, BudgetDimension::PrivacyExposure) {
+        Err(BudgetError::Overflow {
+            dimension,
+            operation,
+        }) => {
+            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
+            assert_eq!(operation, "scale");
+        }
+        other => panic!("expected Overflow for huge float scale, got {other:?}"),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn struct_literal_bypasses_validation_and_encode_to_canonical_fails_closed() {
+    let bad_budget = BudgetVector {
+        privacy_exposure: f64::NAN,
+        operator_attention_seconds: -10.0,
+        ..Default::default()
+    };
+    assert!(!bad_budget.is_valid());
+
+    let mut encoder = CanonicalEncoder::new();
+    bad_budget.encode_to_canonical(&mut encoder);
+    let bytes = encoder.finish();
+    // Must NOT emit 84 bytes containing NaN bits! Must fail closed.
+    assert_ne!(bytes.len(), 84);
 }

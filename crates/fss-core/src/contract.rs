@@ -578,6 +578,34 @@ impl BudgetQuantity {
         let normalized = if diff <= 0.0 { 0.0 } else { diff };
         Ok(Self { raw: normalized })
     }
+
+    /// Checked scaling of a budget quantity by a non-negative finite factor.
+    pub fn checked_scale(
+        self,
+        factor: f64,
+        dimension: BudgetDimension,
+    ) -> Result<Self, BudgetError> {
+        if factor.is_nan() {
+            return Err(BudgetError::NaNQuantity { dimension });
+        }
+        if factor.is_infinite() {
+            return Err(BudgetError::InfiniteQuantity {
+                dimension,
+                is_negative: factor.is_sign_negative(),
+            });
+        }
+        if factor < 0.0 {
+            return Err(BudgetError::negative_quantity(dimension, factor));
+        }
+        let scaled = self.raw * factor;
+        if !scaled.is_finite() {
+            return Err(BudgetError::Overflow {
+                dimension,
+                operation: "scale",
+            });
+        }
+        Self::new(scaled, dimension)
+    }
 }
 
 impl Eq for BudgetQuantity {}
@@ -828,6 +856,18 @@ impl BudgetVector {
             operator_attention_seconds: attention,
             ..self
         })
+    }
+
+    /// Accessor for privacy exposure continuous quantity.
+    #[must_use]
+    pub const fn privacy_exposure(&self) -> f64 {
+        self.privacy_exposure
+    }
+
+    /// Accessor for operator attention continuous quantity in seconds.
+    #[must_use]
+    pub const fn operator_attention_seconds(&self) -> f64 {
+        self.operator_attention_seconds
     }
 
     /// Encapsulates privacy exposure as a validated `BudgetQuantity`.
@@ -1090,6 +1130,86 @@ impl BudgetVector {
         })
     }
 
+    /// Checked scaling of all budget dimensions by a non-negative finite factor.
+    pub fn checked_scale(&self, factor: f64) -> Result<Self, BudgetError> {
+        self.validate()?;
+        if factor.is_nan() {
+            return Err(BudgetError::NaNQuantity {
+                dimension: BudgetDimension::LatencyMs,
+            });
+        }
+        if factor.is_infinite() {
+            return Err(BudgetError::InfiniteQuantity {
+                dimension: BudgetDimension::LatencyMs,
+                is_negative: factor.is_sign_negative(),
+            });
+        }
+        if factor < 0.0 {
+            return Err(BudgetError::negative_quantity(
+                BudgetDimension::LatencyMs,
+                factor,
+            ));
+        }
+
+        let scale_u64 = |val: u64, dim: BudgetDimension| -> Result<u64, BudgetError> {
+            let scaled = (val as f64) * factor;
+            if !scaled.is_finite() || scaled > u64::MAX as f64 {
+                return Err(BudgetError::Overflow {
+                    dimension: dim,
+                    operation: "scale",
+                });
+            }
+            Ok(scaled.round() as u64)
+        };
+
+        let scale_u32 = |val: u32, dim: BudgetDimension| -> Result<u32, BudgetError> {
+            let scaled = (val as f64) * factor;
+            if !scaled.is_finite() || scaled > u32::MAX as f64 {
+                return Err(BudgetError::Overflow {
+                    dimension: dim,
+                    operation: "scale",
+                });
+            }
+            Ok(scaled.round() as u32)
+        };
+
+        let latency_ms = scale_u64(self.latency_ms, BudgetDimension::LatencyMs)?;
+        let tokens = scale_u64(self.tokens, BudgetDimension::Tokens)?;
+        let bytes = scale_u64(self.bytes, BudgetDimension::Bytes)?;
+        let model_calls = scale_u32(self.model_calls, BudgetDimension::ModelCalls)?;
+        let cpu_millis = scale_u64(self.cpu_millis, BudgetDimension::CpuMillis)?;
+        let accelerator_millis =
+            scale_u64(self.accelerator_millis, BudgetDimension::AcceleratorMillis)?;
+        let energy_millijoules =
+            scale_u64(self.energy_millijoules, BudgetDimension::EnergyMillijoules)?;
+        let network_bytes = scale_u64(self.network_bytes, BudgetDimension::NetworkBytes)?;
+        let storage_operations =
+            scale_u64(self.storage_operations, BudgetDimension::StorageOperations)?;
+
+        let p = BudgetQuantity::new(self.privacy_exposure, BudgetDimension::PrivacyExposure)?;
+        let privacy = p.checked_scale(factor, BudgetDimension::PrivacyExposure)?;
+
+        let a = BudgetQuantity::new(
+            self.operator_attention_seconds,
+            BudgetDimension::OperatorAttentionSeconds,
+        )?;
+        let attention = a.checked_scale(factor, BudgetDimension::OperatorAttentionSeconds)?;
+
+        Ok(Self {
+            latency_ms,
+            tokens,
+            bytes,
+            model_calls,
+            cpu_millis,
+            accelerator_millis,
+            energy_millijoules,
+            network_bytes,
+            storage_operations,
+            privacy_exposure: privacy.get(),
+            operator_attention_seconds: attention.get(),
+        })
+    }
+
     /// Consumes `cost` from `self`.
     ///
     /// Invariant: consumption may NEVER increase remaining authority.
@@ -1260,10 +1380,14 @@ impl BudgetVector {
     }
 
     /// Encodes to canonical binary format (exactly 84 bytes).
+    ///
+    /// Fails closed (emits nothing) if the instance contains invalid quantities
+    /// (e.g. constructed via struct literal bypassing validation). Never silently
+    /// falls back to unvalidated values or emits NaN bits.
     pub fn encode_to_canonical(&self, encoder: &mut CanonicalEncoder) {
         let norm = match self.normalized() {
             Ok(v) => v,
-            Err(_) => *self,
+            Err(_) => return,
         };
         encoder.u64(norm.latency_ms);
         encoder.u64(norm.tokens);
@@ -1371,6 +1495,7 @@ impl BudgetVector {
         let inner = &trimmed[1..trimmed.len() - 1];
 
         let mut builder = Self::builder();
+        let mut seen_dimensions: u16 = 0;
 
         for item in inner.split(',') {
             let item = item.trim();
@@ -1396,7 +1521,17 @@ impl BudgetVector {
                 reason: "unknown budget dimension in JSON",
             })?;
 
-            let val_unquoted = raw_val.trim_matches('"').trim();
+            let bit = 1u16 << (dimension as u8);
+            if (seen_dimensions & bit) != 0 {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "duplicate budget dimension in JSON",
+                });
+            }
+            seen_dimensions |= bit;
+
+            let is_quoted = (raw_val.starts_with('"') && raw_val.ends_with('"'))
+                || (raw_val.starts_with('\'') && raw_val.ends_with('\''));
+            let val_unquoted = raw_val.trim_matches(['"', '\'']).trim();
             if val_unquoted == "NaN" || val_unquoted == "nan" {
                 return Err(BudgetError::NaNQuantity { dimension });
             }
@@ -1410,6 +1545,15 @@ impl BudgetVector {
                 return Err(BudgetError::InfiniteQuantity {
                     dimension,
                     is_negative: true,
+                });
+            }
+
+            // Strict unquoting: neither integer nor float dimensions accept quoted numerals
+            if is_quoted {
+                return Err(BudgetError::IncompatibleUnit {
+                    dimension,
+                    expected_unit: dimension.unit(),
+                    found_unit: raw_val.to_owned(),
                 });
             }
 
@@ -1514,14 +1658,11 @@ impl BudgetVector {
                     builder = builder.storage_operations(v);
                 }
                 BudgetDimension::PrivacyExposure => {
-                    let v: f64 =
-                        val_unquoted
-                            .parse()
-                            .map_err(|_| BudgetError::IncompatibleUnit {
-                                dimension,
-                                expected_unit: dimension.unit(),
-                                found_unit: raw_val.to_owned(),
-                            })?;
+                    let v: f64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
+                        dimension,
+                        expected_unit: dimension.unit(),
+                        found_unit: raw_val.to_owned(),
+                    })?;
                     if v < 0.0 {
                         return Err(BudgetError::negative_quantity(dimension, v));
                     }
@@ -1537,14 +1678,11 @@ impl BudgetVector {
                     builder = builder.privacy_exposure(v);
                 }
                 BudgetDimension::OperatorAttentionSeconds => {
-                    let v: f64 =
-                        val_unquoted
-                            .parse()
-                            .map_err(|_| BudgetError::IncompatibleUnit {
-                                dimension,
-                                expected_unit: dimension.unit(),
-                                found_unit: raw_val.to_owned(),
-                            })?;
+                    let v: f64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
+                        dimension,
+                        expected_unit: dimension.unit(),
+                        found_unit: raw_val.to_owned(),
+                    })?;
                     if v < 0.0 {
                         return Err(BudgetError::negative_quantity(dimension, v));
                     }
@@ -1834,13 +1972,7 @@ impl BudgetLogRecord {
 }
 
 fn canonical_f64_bits(value: f64) -> u64 {
-    if value == 0.0 {
-        0
-    } else if value.is_nan() {
-        0x7ff8_0000_0000_0000
-    } else {
-        value.to_bits()
-    }
+    if value == 0.0 { 0 } else { value.to_bits() }
 }
 
 /// Stable failures raised by the reference semantic kernel.
