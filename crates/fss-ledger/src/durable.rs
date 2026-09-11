@@ -142,16 +142,15 @@ impl DurableReferenceLedger {
         let journal = Journal::open(&path, tail_policy)?;
         let report = crate::inspect(journal.path())?;
 
-        if let Some(preflight) = preflight {
-            if report.last_root() != preflight.last_root()
-                || report.committed_len() != preflight.committed_len()
-            {
-                return Err(JournalError::ExternalMutation {
-                    expected_len: preflight.committed_len(),
-                    observed_len: report.committed_len(),
-                }
-                .into());
+        if let Some(preflight) = preflight
+            && (report.last_root() != preflight.last_root()
+                || report.committed_len() != preflight.committed_len())
+        {
+            return Err(JournalError::ExternalMutation {
+                expected_len: preflight.committed_len(),
+                observed_len: report.committed_len(),
             }
+            .into());
         }
 
         let ledger = replay_report(&report, &site_lineage)?;

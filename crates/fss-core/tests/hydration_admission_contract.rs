@@ -1,3 +1,5 @@
+//! Contract tests for hydration admission control and validation.
+
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;

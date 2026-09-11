@@ -1,3 +1,5 @@
+//! Contract tests for reference hydration catalog.
+
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;

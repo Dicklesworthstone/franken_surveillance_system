@@ -1,3 +1,5 @@
+//! Contract tests for hydration cursor operations.
+
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;

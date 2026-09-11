@@ -1,3 +1,5 @@
+//! Contract tests for hydration handle availability.
+
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};

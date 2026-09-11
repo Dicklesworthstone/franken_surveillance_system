@@ -1,3 +1,5 @@
+//! Contract tests for context metadata identity and binding.
+
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeSet;

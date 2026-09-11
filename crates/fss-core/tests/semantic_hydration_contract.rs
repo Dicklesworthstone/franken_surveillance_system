@@ -1,3 +1,5 @@
+//! Contract tests for semantic hydration.
+
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, BTreeSet};

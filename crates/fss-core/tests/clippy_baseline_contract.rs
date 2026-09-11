@@ -7,11 +7,11 @@ use std::collections::BTreeSet;
 use fss_core::{
     CapsuleId, CaptureInterval, ClockBasis, Completeness, CompressionCompleteness,
     CompressionLossClass, CompressionStopReason, CompressionTransform, CompressionTransformKind,
-    ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, CriticalPreservation,
-    EffectIntent, EffectJournal, HandoffCapsule, HandoffId, HandoffPublishParams, IdempotencyKey,
-    LedgerAnchor, MissionId, ObligationId, OperationId, PrincipalId, SemanticCompressionReceipt,
-    SemanticContextPack, SensorCapsule, SensorId, SensorSourceBytesSpec, SessionId, StreamId,
-    TimestampNs,
+    ContentDigest, ContextItem, ContractBasis, ContractBasisRegistryBytes, ContractError,
+    CriticalPreservation, EffectIntent, EffectJournal, HandoffCapsule, HandoffId,
+    HandoffPublishParams, IdempotencyKey, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
+    OperationId, PrincipalId, SemanticCompressionReceipt, SemanticContextPack, SensorCapsule,
+    SensorId, SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -156,6 +156,14 @@ fn test_sensor_capsule_from_source_bytes_spec() -> Result<(), ContractError> {
 #[test]
 fn test_semantic_compression_receipt_validation() -> Result<(), ContractError> {
     let anchor = LedgerAnchor::genesis("site:test");
+    let item = ContextItem {
+        item_id: "context:knowledge:001".to_owned(),
+        kind: "knowledge".to_owned(),
+        epistemic_state: KnowledgeState::Known,
+        content: "selected knowledge item".to_owned(),
+        basis: BTreeSet::from(["claim:selected".to_owned()]),
+        expansion_handles: BTreeSet::new(),
+    };
     let pack = SemanticContextPack::publish(
         "pack:test-001",
         sample_basis(),
@@ -164,7 +172,7 @@ fn test_semantic_compression_receipt_validation() -> Result<(), ContractError> {
         "AVIEW-001",
         anchor.clone(),
         ContentDigest::sha256(b"frame-digest"),
-        vec![],
+        vec![item],
         "receipt:test-001",
         None,
         TimestampNs(50),
@@ -175,16 +183,16 @@ fn test_semantic_compression_receipt_validation() -> Result<(), ContractError> {
         source_anchor: anchor,
         view_id: "AVIEW-001".to_owned(),
         target_tokens: pack.token_count,
-        selected_classes: BTreeSet::new(),
+        selected_classes: BTreeSet::from(["knowledge".to_owned()]),
         omitted_classes: BTreeSet::new(),
         transforms: vec![CompressionTransform {
             kind: CompressionTransformKind::Select,
-            scope: "nominal".to_owned(),
+            scope: "knowledge".to_owned(),
             loss_class: CompressionLossClass::Lossless,
             details: None,
         }],
         completeness: vec![CompressionCompleteness {
-            domain: "nominal".to_owned(),
+            domain: "knowledge".to_owned(),
             state: Completeness::Complete,
             omitted_count: 0,
         }],
