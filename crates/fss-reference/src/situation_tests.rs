@@ -12,12 +12,13 @@ use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 
 use crate::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, ReferenceAlertProvider,
-    ReferenceError, ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyDecision,
-    ReferenceProviderBehavior, ReferenceSituationRequest, VirtualCameraSpec,
-    compile_reference_situation, dispatch_reference_alert, evaluate_unknown_presence,
-    execute_mock_model, prepare_reference_alert, publish_reference_alert_outcome,
-    publish_reference_event, run_reference_capture, seal_reference_handoff,
+    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
+    ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
+    ReferencePolicyDecision, ReferenceProviderBehavior, ReferenceSituationRequest,
+    VirtualCameraSpec, compile_reference_situation, dispatch_reference_alert,
+    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
+    publish_reference_alert_outcome, publish_reference_event, run_reference_capture,
+    seal_reference_handoff,
 };
 
 struct SituationHarness {
@@ -282,14 +283,16 @@ fn lost_ack_projects_only_reconciliation_and_seals_root_closed_handoff()
     )?;
     let mut journal = EffectJournal::new();
     let plan = prepare_reference_alert(
-        &decision,
-        &event_receipt,
-        &harness.authority,
-        OperationId::parse("operation:situation:lost-ack")?,
-        IdempotencyKey::parse("idempotency:situation:lost-ack")?,
-        ObligationId::parse("obligation:situation:lost-ack")?,
-        "operator:oncall",
-        TimestampNs(100),
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &harness.authority,
+            operation_id: OperationId::parse("operation:situation:lost-ack")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:situation:lost-ack")?,
+            obligation_id: ObligationId::parse("obligation:situation:lost-ack")?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
         &mut journal,
     )?;
     let mut provider = ReferenceAlertProvider::new();
@@ -371,14 +374,16 @@ fn canonical_effect_outcome_cannot_be_omitted_from_projection() -> Result<(), Bo
     )?;
     let mut journal = EffectJournal::new();
     let plan = prepare_reference_alert(
-        &decision,
-        &event_receipt,
-        &harness.authority,
-        OperationId::parse("operation:situation:omission")?,
-        IdempotencyKey::parse("idempotency:situation:omission")?,
-        ObligationId::parse("obligation:situation:omission")?,
-        "operator:oncall",
-        TimestampNs(100),
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &harness.authority,
+            operation_id: OperationId::parse("operation:situation:omission")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:situation:omission")?,
+            obligation_id: ObligationId::parse("obligation:situation:omission")?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
         &mut journal,
     )?;
     let mut provider = ReferenceAlertProvider::new();

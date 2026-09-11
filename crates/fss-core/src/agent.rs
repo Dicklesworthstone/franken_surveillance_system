@@ -84,6 +84,14 @@ impl<'a> ContractBasisRegistryBytes<'a> {
         self.accepted_nightly = Some(accepted_nightly);
         self
     }
+
+    /// Validates that required identity invariants are satisfied.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.producer_release_id.is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        Ok(())
+    }
 }
 
 impl ContractBasis {
@@ -102,6 +110,14 @@ impl ContractBasis {
             producer_release_id: spec.producer_release_id.to_owned(),
             accepted_nightly: spec.accepted_nightly.map(ToOwned::to_owned),
         }
+    }
+
+    /// Validates that required identity invariants are satisfied.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.producer_release_id.is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        Ok(())
     }
 
     /// Returns the canonical basis digest.
@@ -608,7 +624,7 @@ pub struct HandoffCapsule {
 }
 
 /// Parameters for publishing a root-last `HandoffCapsule`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HandoffPublishParams<I = Vec<ContentDigest>> {
     /// Stable handoff identifier.
     pub handoff_id: HandoffId,
@@ -642,10 +658,10 @@ impl HandoffCapsule {
             return Err(ContractError::InvertedTimeInterval);
         }
         let mut children: BTreeSet<_> = params.child_roots.into_iter().collect();
-        children.insert(params.situation_capsule_root);
         if children.is_empty() {
             return Err(ContractError::IncompletePublicationGraph);
         }
+        children.insert(params.situation_capsule_root);
         let mut capsule = Self {
             handoff_id: params.handoff_id,
             mission_id: params.mission_id,

@@ -53,11 +53,12 @@ impl SemanticCompressionReceipt {
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.receipt_id.is_empty()
             || self.view_id.is_empty()
-            || self.actual_tokens > self.target_tokens
-            || !self.critical_preservation.is_lossless()
             || self.selected_classes.iter().any(String::is_empty)
             || self.omitted_classes.iter().any(String::is_empty)
         {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if self.actual_tokens > self.target_tokens || !self.critical_preservation.is_lossless() {
             return Err(ContractError::BudgetExhausted);
         }
         if self.stop_reason == CompressionStopReason::Complete && !self.omitted_classes.is_empty() {

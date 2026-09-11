@@ -119,63 +119,77 @@ impl ReferenceAlertProvider {
     }
 }
 
+/// Parameters for preparing an authoritative reference alert.
+#[derive(Debug)]
+pub struct PrepareAlertParams<'a> {
+    /// Policy decision triggering this alert.
+    pub decision: &'a ReferencePolicyDecision,
+    /// Authoritative event receipt witness.
+    pub event_receipt: &'a ReferenceEventReceipt,
+    /// Current durable authority ledger.
+    pub authority: &'a DurableReferenceLedger,
+    /// Operation identity.
+    pub operation_id: OperationId,
+    /// Effect idempotency key.
+    pub idempotency_key: IdempotencyKey,
+    /// Obligation tracking identity.
+    pub obligation_id: ObligationId,
+    /// Alert delivery channel.
+    pub channel: String,
+    /// Preparation timestamp.
+    pub now: TimestampNs,
+}
+
 /// Prepares an alert effect only from a currently authoritative independently corroborated event.
 ///
 /// The supplied event receipt must match the current durable authority anchor and the latest
 /// publication batch must contain the exact event root/revision witness. This prevents a forged or
 /// stale typed receipt from becoming effect authority.
 pub fn prepare_reference_alert(
-    decision: &ReferencePolicyDecision,
-    event_receipt: &ReferenceEventReceipt,
-    authority: &DurableReferenceLedger,
-    operation_id: OperationId,
-    idempotency_key: IdempotencyKey,
-    obligation_id: ObligationId,
-    channel: impl Into<String>,
-    now: TimestampNs,
+    params: PrepareAlertParams<'_>,
     journal: &mut EffectJournal,
 ) -> Result<ReferenceAlertPlan, ReferenceError> {
-    if decision.action != ReferencePolicyAction::PrepareAlert
-        || decision.event.state != fss_core::EventState::Corroborated
+    if params.decision.action != ReferencePolicyAction::PrepareAlert
+        || params.decision.event.state != fss_core::EventState::Corroborated
     {
         return Err(ReferenceError::InvalidSpec("alert_not_eligible"));
     }
-    if event_receipt.event_revision_digest != decision.event.revision_digest() {
+    if params.event_receipt.event_revision_digest != params.decision.event.revision_digest() {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
     }
-    if authority.current().anchor != event_receipt.authority_anchor {
+    if params.authority.current().anchor != params.event_receipt.authority_anchor {
         return Err(ReferenceError::InvalidSpec("event_authority_stale"));
     }
-    let latest_contains_event = authority.batches().last().is_some_and(|batch| {
+    let latest_contains_event = params.authority.batches().last().is_some_and(|batch| {
         batch.deltas.iter().any(|delta| {
             delta.family == "event_revision"
-                && delta.payload_digest == event_receipt.event_root
-                && delta.witness_digest == Some(event_receipt.event_revision_digest)
+                && delta.payload_digest == params.event_receipt.event_root
+                && delta.witness_digest == Some(params.event_receipt.event_revision_digest)
         })
     });
     if !latest_contains_event {
         return Err(ReferenceError::InvalidSpec("event_receipt_mismatch"));
     }
 
-    let channel = channel.into();
+    let channel = params.channel;
     if channel.is_empty() || channel.len() > MAX_ALERT_CHANNEL_BYTES {
         return Err(ReferenceError::InvalidSpec("alert_channel"));
     }
 
-    let request_digest = alert_request_digest(event_receipt, &channel);
-    let precondition_digest = alert_precondition_digest(decision, event_receipt);
+    let request_digest = alert_request_digest(params.event_receipt, &channel);
+    let precondition_digest = alert_precondition_digest(params.decision, params.event_receipt);
     let intent = EffectIntent {
-        operation_id,
-        idempotency_key,
+        operation_id: params.operation_id,
+        idempotency_key: params.idempotency_key,
         effect_class: "alert.dispatch".to_owned(),
         request_digest,
         precondition_digest,
     };
     let receipt = journal.prepare(
         intent.clone(),
-        obligation_id,
+        params.obligation_id,
         "provider delivery is independently reconciled",
-        now,
+        params.now,
     )?;
     let prepared_intent = receipt.intent.clone();
     let actual_obligation = journal
@@ -187,8 +201,8 @@ pub fn prepare_reference_alert(
     Ok(ReferenceAlertPlan {
         intent: prepared_intent,
         obligation_id: actual_obligation,
-        event_root: event_receipt.event_root,
-        event_revision_digest: event_receipt.event_revision_digest,
+        event_root: params.event_receipt.event_root,
+        event_revision_digest: params.event_receipt.event_revision_digest,
         channel,
     })
 }

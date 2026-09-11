@@ -9,11 +9,11 @@ use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 
 use crate::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, ReferenceAlertPlan,
-    ReferenceAlertProvider, ReferenceError, ReferenceModelObservation, ReferenceProviderBehavior,
-    VirtualCameraSpec, dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
-    prepare_reference_alert, publish_reference_alert_outcome, publish_reference_event,
-    run_reference_capture,
+    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
+    ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError, ReferenceModelObservation,
+    ReferenceProviderBehavior, VirtualCameraSpec, dispatch_reference_alert,
+    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
+    publish_reference_alert_outcome, publish_reference_event, run_reference_capture,
 };
 
 struct OutcomeHarness {
@@ -58,14 +58,16 @@ impl OutcomeHarness {
 
         let mut journal = EffectJournal::new();
         let plan = prepare_reference_alert(
-            &decision,
-            &event_receipt,
-            &authority,
-            OperationId::parse(format!("operation:outcome:{name}"))?,
-            IdempotencyKey::parse(format!("idempotency:outcome:{name}"))?,
-            ObligationId::parse(format!("obligation:outcome:{name}"))?,
-            "operator:oncall",
-            TimestampNs(100),
+            PrepareAlertParams {
+                decision: &decision,
+                event_receipt: &event_receipt,
+                authority: &authority,
+                operation_id: OperationId::parse(format!("operation:outcome:{name}"))?,
+                idempotency_key: IdempotencyKey::parse(format!("idempotency:outcome:{name}"))?,
+                obligation_id: ObligationId::parse(format!("obligation:outcome:{name}"))?,
+                channel: "operator:oncall".to_owned(),
+                now: TimestampNs(100),
+            },
             &mut journal,
         )?;
         let mut provider = ReferenceAlertProvider::new();

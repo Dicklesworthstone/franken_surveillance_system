@@ -131,10 +131,10 @@ impl DeliveryPlan {
                     directive.source_sequence,
                 ))?;
             let mut bytes = packet.bytes.clone();
-            if directive.mutation == DeliveryMutation::FlipFirstBit {
-                if let Some(first) = bytes.first_mut() {
-                    *first ^= 1;
-                }
+            if directive.mutation == DeliveryMutation::FlipFirstBit
+                && let Some(first) = bytes.first_mut()
+            {
+                *first ^= 1;
             }
             let observed_digest = ContentDigest::sha256(&bytes);
             if observed_digest != packet.digest {

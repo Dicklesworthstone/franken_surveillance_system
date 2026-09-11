@@ -48,7 +48,7 @@ mod situation_tests;
 mod tests;
 
 pub use alert::{
-    ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior,
+    PrepareAlertParams, ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior,
     dispatch_reference_alert, prepare_reference_alert, reconcile_reference_alert,
 };
 pub use bundle::{ReplayBundle, ReplayBundleError, ReplayCursor};

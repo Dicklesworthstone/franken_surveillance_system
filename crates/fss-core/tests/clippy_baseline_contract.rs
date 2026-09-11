@@ -72,8 +72,31 @@ fn test_contract_basis_registry_bytes_parameter_struct() {
     assert_eq!(basis.error_registry_digest, ContentDigest::sha256(b"errs"));
     assert_eq!(basis.cost_registry_digest, ContentDigest::sha256(b"costs"));
 
-    let digest = basis.basis_digest();
-    assert_eq!(digest, basis.basis_digest());
+    let spec_identical = ContractBasisRegistryBytes::new(
+        b"catalog",
+        b"ops",
+        b"views",
+        b"caps",
+        b"errs",
+        b"costs",
+        "release-123",
+    )
+    .with_accepted_nightly("nightly-2026-08-31");
+    let basis_identical = ContractBasis::from_registry_bytes(spec_identical);
+    assert_eq!(basis.basis_digest(), basis_identical.basis_digest());
+
+    let spec_diff = ContractBasisRegistryBytes::new(
+        b"catalog-v2",
+        b"ops",
+        b"views",
+        b"caps",
+        b"errs",
+        b"costs",
+        "release-123",
+    )
+    .with_accepted_nightly("nightly-2026-08-31");
+    let basis_diff = ContractBasis::from_registry_bytes(spec_diff);
+    assert_ne!(basis.basis_digest(), basis_diff.basis_digest());
 }
 
 #[test]
@@ -100,6 +123,28 @@ fn test_handoff_capsule_publish_params() -> Result<(), ContractError> {
     assert!(handoff.child_roots.contains(&situation_root));
     assert!(handoff.child_roots.contains(&child_proof));
     handoff.verify()?;
+
+    // Test that HandoffPublishParams implements Eq
+    fn assert_eq_bound<T: Eq>() {}
+    assert_eq_bound::<HandoffPublishParams<Vec<ContentDigest>>>();
+
+    // Test empty child roots rejection
+    let empty_children_params = HandoffPublishParams {
+        handoff_id: HandoffId::parse("handoff:test-empty")?,
+        mission_id: MissionId::parse("mission:test-001")?,
+        source_session_id: SessionId::parse("session:test-001")?,
+        source_principal_id: PrincipalId::parse("principal:test-001")?,
+        anchor: LedgerAnchor::genesis("site:test-anchor"),
+        situation_capsule_root: situation_root,
+        child_roots: Vec::<ContentDigest>::new(),
+        contract_basis: basis.clone(),
+        created_at: TimestampNs(100),
+        expires_at: TimestampNs(200),
+    };
+    assert_eq!(
+        HandoffCapsule::publish(empty_children_params),
+        Err(ContractError::IncompletePublicationGraph)
+    );
 
     // Test inverted time interval rejection
     let inverted_params = HandoffPublishParams {
@@ -138,7 +183,7 @@ fn test_sensor_capsule_from_source_bytes_spec() -> Result<(), ContractError> {
         gap_before: false,
     };
 
-    let capsule = SensorCapsule::from_source_bytes(spec);
+    let capsule = SensorCapsule::from_source_bytes(spec.clone())?;
     assert_eq!(capsule.capsule_id.as_str(), "capsule:cam01-seq001");
     assert_eq!(capsule.sensor_id.as_str(), "sensor:cam01");
     assert_eq!(capsule.sequence, 42);
@@ -147,8 +192,16 @@ fn test_sensor_capsule_from_source_bytes_spec() -> Result<(), ContractError> {
     assert_eq!(capsule.frame_count, 1);
     assert!(!capsule.gap_before);
 
-    let meta_digest = capsule.metadata_digest();
-    assert_eq!(meta_digest, capsule.metadata_digest());
+    let mut spec_diff = spec.clone();
+    spec_diff.sequence = 43;
+    let capsule_diff = SensorCapsule::from_source_bytes(spec_diff)?;
+    assert_ne!(capsule.metadata_digest(), capsule_diff.metadata_digest());
+
+    let capsule_identical = SensorCapsule::from_source_bytes(spec)?;
+    assert_eq!(
+        capsule.metadata_digest(),
+        capsule_identical.metadata_digest()
+    );
 
     Ok(())
 }
@@ -212,15 +265,16 @@ fn test_semantic_compression_receipt_validation() -> Result<(), ContractError> {
 
     receipt.validate()?;
     receipt.validate_for(&pack)?;
-    let digest = receipt.receipt_digest();
-    assert_eq!(digest, receipt.receipt_digest());
+    let mut receipt_diff = receipt.clone();
+    receipt_diff.actual_tokens += 10;
+    assert_ne!(receipt.receipt_digest(), receipt_diff.receipt_digest());
 
-    // Negative test: empty receipt_id fails validation
+    // Negative test: empty receipt_id fails validation with distinct InvalidIdentifier error
     let mut invalid_receipt = receipt.clone();
     invalid_receipt.receipt_id = String::new();
     assert_eq!(
         invalid_receipt.validate(),
-        Err(ContractError::BudgetExhausted)
+        Err(ContractError::InvalidIdentifier)
     );
 
     // Negative test: mismatched view_id fails pack cross-check
@@ -232,6 +286,61 @@ fn test_semantic_compression_receipt_validation() -> Result<(), ContractError> {
     );
 
     Ok(())
+}
+
+#[test]
+fn test_sensor_source_bytes_spec_validation() -> Result<(), ContractError> {
+    let valid_spec = SensorSourceBytesSpec {
+        capsule_id: CapsuleId::parse("capsule:cam01-vld")?,
+        sensor_id: SensorId::parse("sensor:cam01")?,
+        stream_id: StreamId::parse("stream:cam01-main")?,
+        sequence: 1,
+        capture: CaptureInterval::new(TimestampNs(100), TimestampNs(200))?,
+        receive_time: TimestampNs(250),
+        clock_basis: ClockBasis::HostMonotonic,
+        source: b"payload",
+        frame_count: 1,
+        gap_before: false,
+    };
+    valid_spec.validate()?;
+
+    // Reject empty source with frame_count > 0
+    let mut empty_source_spec = valid_spec.clone();
+    empty_source_spec.source = &[];
+    empty_source_spec.frame_count = 10;
+    assert_eq!(
+        empty_source_spec.validate(),
+        Err(ContractError::EvidenceRequired)
+    );
+    assert_eq!(
+        SensorCapsule::from_source_bytes(empty_source_spec),
+        Err(ContractError::EvidenceRequired)
+    );
+
+    // Reject receive_time < capture.earliest
+    let mut causal_spec = valid_spec;
+    causal_spec.receive_time = TimestampNs(50);
+    assert_eq!(
+        causal_spec.validate(),
+        Err(ContractError::InvertedTimeInterval)
+    );
+    assert_eq!(
+        SensorCapsule::from_source_bytes(causal_spec),
+        Err(ContractError::InvertedTimeInterval)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_contract_basis_registry_bytes_validation() {
+    let spec = ContractBasisRegistryBytes::new(
+        b"catalog", b"ops", b"views", b"caps", b"errs", b"costs", "",
+    );
+    assert_eq!(spec.validate(), Err(ContractError::InvalidIdentifier));
+
+    let basis = ContractBasis::from_registry_bytes(spec);
+    assert_eq!(basis.validate(), Err(ContractError::InvalidIdentifier));
 }
 
 #[test]

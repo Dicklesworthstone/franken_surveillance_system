@@ -83,11 +83,25 @@ pub struct SensorSourceBytesSpec<'a> {
     pub gap_before: bool,
 }
 
+impl<'a> SensorSourceBytesSpec<'a> {
+    /// Validates physical and temporal invariants of this sensor specification.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.capture.earliest > self.capture.latest || self.receive_time < self.capture.earliest
+        {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+        if self.source.is_empty() && self.frame_count > 0 {
+            return Err(ContractError::EvidenceRequired);
+        }
+        Ok(())
+    }
+}
+
 impl SensorCapsule {
     /// Constructs a capsule and binds its identity to exact source bytes.
-    #[must_use]
-    pub fn from_source_bytes(spec: SensorSourceBytesSpec<'_>) -> Self {
-        Self {
+    pub fn from_source_bytes(spec: SensorSourceBytesSpec<'_>) -> Result<Self, ContractError> {
+        spec.validate()?;
+        Ok(Self {
             capsule_id: spec.capsule_id,
             sensor_id: spec.sensor_id,
             stream_id: spec.stream_id,
@@ -99,7 +113,7 @@ impl SensorCapsule {
             source_bytes: spec.source.len() as u64,
             frame_count: spec.frame_count,
             gap_before: spec.gap_before,
-        }
+        })
     }
 
     /// Returns the canonical metadata digest for this capsule.

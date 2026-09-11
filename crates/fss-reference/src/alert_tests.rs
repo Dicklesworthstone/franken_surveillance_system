@@ -9,11 +9,11 @@ use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 
 use crate::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, ReferenceAlertProvider,
-    ReferenceError, ReferenceModelObservation, ReferencePolicyDecision, ReferenceProviderBehavior,
-    VirtualCameraSpec, dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
-    prepare_reference_alert, publish_reference_event, reconcile_reference_alert,
-    run_reference_capture,
+    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
+    ReferenceAlertProvider, ReferenceError, ReferenceModelObservation, ReferencePolicyDecision,
+    ReferenceProviderBehavior, VirtualCameraSpec, dispatch_reference_alert,
+    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
+    publish_reference_event, reconcile_reference_alert, run_reference_capture,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -105,14 +105,16 @@ fn prepare(
     journal: &mut EffectJournal,
 ) -> Result<crate::ReferenceAlertPlan, ReferenceError> {
     prepare_reference_alert(
-        decision,
-        event_receipt,
-        authority,
-        OperationId::parse("operation:alert:1")?,
-        IdempotencyKey::parse("idempotency:alert:1")?,
-        ObligationId::parse("obligation:alert:1")?,
-        "operator:oncall",
-        TimestampNs(100),
+        PrepareAlertParams {
+            decision,
+            event_receipt,
+            authority,
+            operation_id: OperationId::parse("operation:alert:1")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:alert:1")?,
+            obligation_id: ObligationId::parse("obligation:alert:1")?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
         journal,
     )
 }

@@ -10,11 +10,12 @@ use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 
 use crate::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, ReferenceAlertPlan,
-    ReferenceError, ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyDecision,
-    ReferenceSituationRequest, VirtualCameraSpec, compile_reference_situation,
-    compile_reference_situation_with_operation_receipt, evaluate_unknown_presence,
-    execute_mock_model, prepare_reference_alert, publish_reference_event, run_reference_capture,
+    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
+    ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
+    ReferencePolicyDecision, ReferenceSituationRequest, VirtualCameraSpec,
+    compile_reference_situation, compile_reference_situation_with_operation_receipt,
+    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
+    publish_reference_event, run_reference_capture,
 };
 
 const CAPABILITY_EFFECT_RECONCILE: &str = "capability:effect.reconcile";
@@ -150,14 +151,16 @@ fn prepare(
     name: &str,
 ) -> Result<ReferenceAlertPlan, Box<dyn Error>> {
     Ok(prepare_reference_alert(
-        decision,
-        receipt,
-        authority,
-        OperationId::parse(format!("operation:situation-guard:{name}"))?,
-        IdempotencyKey::parse(format!("idempotency:situation-guard:{name}"))?,
-        ObligationId::parse(format!("obligation:situation-guard:{name}"))?,
-        "operator:oncall",
-        TimestampNs(100),
+        PrepareAlertParams {
+            decision,
+            event_receipt: receipt,
+            authority,
+            operation_id: OperationId::parse(format!("operation:situation-guard:{name}"))?,
+            idempotency_key: IdempotencyKey::parse(format!("idempotency:situation-guard:{name}"))?,
+            obligation_id: ObligationId::parse(format!("obligation:situation-guard:{name}"))?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
         journal,
     )?)
 }

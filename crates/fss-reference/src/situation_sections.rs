@@ -427,37 +427,43 @@ fn context_candidates(
     for statement in &frame.at_risk {
         insert_statement(
             &mut candidates,
-            "at-risk",
-            "at_risk",
-            KnowledgeState::Indeterminate,
-            statement,
-            &frame.frame_id,
-            true,
-            0,
+            StatementCandidateSpec {
+                id_class: "at-risk",
+                kind: "at_risk",
+                state: KnowledgeState::Indeterminate,
+                statement,
+                frame_id: &frame.frame_id,
+                critical: true,
+                priority: 0,
+            },
         )?;
     }
     for statement in &frame.unknown {
         insert_statement(
             &mut candidates,
-            "unknown",
-            "unknown",
-            KnowledgeState::Unknown,
-            statement,
-            &frame.frame_id,
-            true,
-            0,
+            StatementCandidateSpec {
+                id_class: "unknown",
+                kind: "unknown",
+                state: KnowledgeState::Unknown,
+                statement,
+                frame_id: &frame.frame_id,
+                critical: true,
+                priority: 0,
+            },
         )?;
     }
     for statement in &frame.changed {
         insert_statement(
             &mut candidates,
-            "changed",
-            "changed",
-            KnowledgeState::Known,
-            statement,
-            &frame.frame_id,
-            true,
-            1,
+            StatementCandidateSpec {
+                id_class: "changed",
+                kind: "changed",
+                state: KnowledgeState::Known,
+                statement,
+                frame_id: &frame.frame_id,
+                critical: true,
+                priority: 1,
+            },
         )?;
     }
     for obligation in &capsule.obligations {
@@ -581,25 +587,29 @@ fn context_candidates(
     for statement in &frame.now {
         insert_statement(
             &mut candidates,
-            "now",
-            "now",
-            KnowledgeState::Known,
-            statement,
-            &frame.frame_id,
-            false,
-            2,
+            StatementCandidateSpec {
+                id_class: "now",
+                kind: "now",
+                state: KnowledgeState::Known,
+                statement,
+                frame_id: &frame.frame_id,
+                critical: false,
+                priority: 2,
+            },
         )?;
     }
     for statement in &frame.why {
         insert_statement(
             &mut candidates,
-            "why",
-            "why",
-            KnowledgeState::Estimated,
-            statement,
-            &frame.frame_id,
-            false,
-            3,
+            StatementCandidateSpec {
+                id_class: "why",
+                kind: "why",
+                state: KnowledgeState::Estimated,
+                statement,
+                frame_id: &frame.frame_id,
+                critical: false,
+                priority: 3,
+            },
         )?;
     }
     for cell in &frame.knowledge_cells {
@@ -675,33 +685,38 @@ fn context_candidates(
     Ok(candidates.into_values().collect())
 }
 
-fn insert_statement(
-    candidates: &mut BTreeMap<String, ContextCandidate>,
-    id_class: &str,
-    kind: &str,
+struct StatementCandidateSpec<'a> {
+    id_class: &'a str,
+    kind: &'a str,
     state: KnowledgeState,
-    statement: &str,
-    frame_id: &str,
+    statement: &'a str,
+    frame_id: &'a str,
     critical: bool,
     priority: u8,
+}
+
+fn insert_statement(
+    candidates: &mut BTreeMap<String, ContextCandidate>,
+    spec: StatementCandidateSpec<'_>,
 ) -> Result<(), ReferenceError> {
     let item_id = format!(
-        "context:{id_class}:{}",
-        ContentDigest::sha256(statement.as_bytes())
+        "context:{}:{}",
+        spec.id_class,
+        ContentDigest::sha256(spec.statement.as_bytes())
     );
     insert_candidate(
         candidates,
         ContextCandidate {
             item: ContextItem {
                 item_id,
-                kind: kind.to_owned(),
-                epistemic_state: state,
-                content: statement.to_owned(),
-                basis: BTreeSet::from([frame_id.to_owned()]),
+                kind: spec.kind.to_owned(),
+                epistemic_state: spec.state,
+                content: spec.statement.to_owned(),
+                basis: BTreeSet::from([spec.frame_id.to_owned()]),
                 expansion_handles: BTreeSet::new(),
             },
-            critical,
-            priority,
+            critical: spec.critical,
+            priority: spec.priority,
         },
     )
 }
