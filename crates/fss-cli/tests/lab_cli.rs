@@ -59,6 +59,24 @@ fn valid_lab_commands_decode_successfully() {
 }
 
 #[test]
+fn test_lab_replay_allows_options_before_positional() {
+    let args = [
+        OsString::from("replay"),
+        OsString::from("--repeat"),
+        OsString::from("5"),
+        OsString::from("intrusion"),
+    ];
+    let res = parse_lab_args(args);
+    assert_eq!(
+        res.ok(),
+        Some(LabAction::Replay {
+            scenario: "intrusion".to_owned(),
+            repeat: 5,
+        })
+    );
+}
+
+#[test]
 fn trailing_arguments_on_all_lab_commands_are_rejected() {
     let cases: &[&[&str]] = &[
         &["list", "extra"],

@@ -4,7 +4,7 @@
 use std::io::{self, Write};
 
 use crate::error::CliError;
-use crate::redact::redact_argument;
+use crate::redact::{redact_argument, redact_value_or_digest};
 
 const CONTRACT_BASIS: &str = "fss/1";
 const PROOF_HANDLE: &str = "fss://proof/cli/parse-failure";
@@ -22,7 +22,10 @@ pub fn escape_json_str(input: &str) -> String {
             '\t' => out.push_str("\\t"),
             '\x08' => out.push_str("\\b"),
             '\x0C' => out.push_str("\\f"),
-            c if (c as u32) < 0x20 => {
+            '\u{2028}' => out.push_str("\\u2028"),
+            '\u{2029}' => out.push_str("\\u2029"),
+            '\x7f' => out.push_str("\\u007f"),
+            c if (c as u32) < 0x20 || (0x80..=0x9F).contains(&(c as u32)) => {
                 out.push_str(&format!("\\u{:04x}", c as u32));
             }
             c => out.push(c),
@@ -60,14 +63,14 @@ pub fn render_diagnostic(
     };
 
     let redacted_input = match error {
-        CliError::UnknownCommand { command, .. } => redact_argument(command),
+        CliError::UnknownCommand { command, .. } => redact_value_or_digest(command),
         CliError::UnknownOption { option, .. } => redact_argument(option),
         CliError::MissingValue { option, .. } => redact_argument(option),
         CliError::DuplicateOption { option, .. } => redact_argument(option),
-        CliError::MalformedValue { value, .. } => redact_argument(value),
+        CliError::MalformedValue { value, .. } => redact_value_or_digest(value),
         CliError::InvalidUnicode { redacted_repr, .. } => redacted_repr.clone(),
-        CliError::UnexpectedPositional { argument, .. } => redact_argument(argument),
-        CliError::TrailingArgument { argument, .. } => redact_argument(argument),
+        CliError::UnexpectedPositional { argument, .. } => redact_value_or_digest(argument),
+        CliError::TrailingArgument { argument, .. } => redact_value_or_digest(argument),
     };
 
     let safe_redacted_input = escape_json_str(&redacted_input);

@@ -67,50 +67,76 @@ pub fn parse_hydration_tokens(tokens: &[ArgToken]) -> Result<HydrationAction, Cl
     }
 
     let mut scenario: Option<String> = None;
+    let mut seen_scenario_option = false;
     let mut idx = 0;
 
     while idx < tokens.len() {
         let tok = &tokens[idx];
-        match tok.as_str() {
-            "--scenario" => {
-                if scenario.is_some() {
-                    return Err(CliError::DuplicateOption {
-                        option: "--scenario".to_owned(),
-                        command: None,
-                        index: tok.index,
-                    });
-                }
-                if idx + 1 >= tokens.len() {
-                    return Err(CliError::MissingValue {
-                        option: "--scenario".to_owned(),
-                        command: None,
-                        expected: "scenario name (success, budget-fallback, privacy-denied, expired, h4-denied, h4-qualified, or all)".to_owned(),
-                    });
-                }
-                let val_tok = &tokens[idx + 1];
-                validate_hydration_scenario(&val_tok.raw, val_tok.index)?;
-                scenario = Some(val_tok.raw.clone());
-                idx += 2;
-            }
-            opt if opt.starts_with('-') => {
-                return Err(CliError::UnknownOption {
-                    option: opt.to_owned(),
+        let s = tok.as_str();
+
+        if s == "--scenario" {
+            if seen_scenario_option {
+                return Err(CliError::DuplicateOption {
+                    option: "--scenario".to_owned(),
                     command: None,
                     index: tok.index,
                 });
             }
-            positional => {
-                if scenario.is_some() {
-                    return Err(CliError::TrailingArgument {
-                        argument: positional.to_owned(),
-                        index: tok.index,
-                        command: None,
-                    });
-                }
-                validate_hydration_scenario(positional, tok.index)?;
-                scenario = Some(positional.to_owned());
-                idx += 1;
+            if scenario.is_some() {
+                return Err(CliError::TrailingArgument {
+                    argument: tok.raw.clone(),
+                    index: tok.index,
+                    command: None,
+                });
             }
+            seen_scenario_option = true;
+            if idx + 1 >= tokens.len() {
+                return Err(CliError::MissingValue {
+                    option: "--scenario".to_owned(),
+                    command: None,
+                    expected: "scenario name (success, budget-fallback, privacy-denied, expired, h4-denied, h4-qualified, or all)".to_owned(),
+                });
+            }
+            let val_tok = &tokens[idx + 1];
+            validate_hydration_scenario(&val_tok.raw, val_tok.index)?;
+            scenario = Some(val_tok.raw.clone());
+            idx += 2;
+        } else if let Some(val_str) = s.strip_prefix("--scenario=") {
+            if seen_scenario_option {
+                return Err(CliError::DuplicateOption {
+                    option: "--scenario".to_owned(),
+                    command: None,
+                    index: tok.index,
+                });
+            }
+            if scenario.is_some() {
+                return Err(CliError::TrailingArgument {
+                    argument: tok.raw.clone(),
+                    index: tok.index,
+                    command: None,
+                });
+            }
+            seen_scenario_option = true;
+            validate_hydration_scenario(val_str, tok.index)?;
+            scenario = Some(val_str.to_owned());
+            idx += 1;
+        } else if s.starts_with('-') {
+            return Err(CliError::UnknownOption {
+                option: s.to_owned(),
+                command: None,
+                index: tok.index,
+            });
+        } else {
+            if scenario.is_some() {
+                return Err(CliError::TrailingArgument {
+                    argument: s.to_owned(),
+                    index: tok.index,
+                    command: None,
+                });
+            }
+            validate_hydration_scenario(s, tok.index)?;
+            scenario = Some(s.to_owned());
+            idx += 1;
         }
     }
 

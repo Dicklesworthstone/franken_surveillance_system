@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/cli_diagnostic.v1.json",
+  "title": "FSS CLI Diagnostic v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "phase",
+    "binary",
+    "command",
+    "argument_index",
+    "redacted_input",
+    "error_id",
+    "exit_id",
+    "exit_code",
+    "contract_basis",
+    "effect_started",
+    "retryable",
+    "recovery_class",
+    "correlation_id",
+    "proof_handle"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.cli_diagnostic.v1"
+    },
+    "phase": {
+      "type": "string"
+    },
+    "binary": {
+      "type": "string"
+    },
+    "command": {
+      "type": ["string", "null"]
+    },
+    "argument_index": {
+      "type": ["integer", "null"]
+    },
+    "redacted_input": {
+      "type": "string"
+    },
+    "error_id": {
+      "type": "string"
+    },
+    "exit_id": {
+      "type": "string"
+    },
+    "exit_code": {
+      "type": "integer"
+    },
+    "contract_basis": {
+      "type": "string"
+    },
+    "effect_started": {
+      "type": "boolean"
+    },
+    "retryable": {
+      "type": "boolean"
+    },
+    "recovery_class": {
+      "type": "string"
+    },
+    "correlation_id": {
+      "type": "string"
+    },
+    "proof_handle": {
+      "type": "string"
+    }
+  }
+}

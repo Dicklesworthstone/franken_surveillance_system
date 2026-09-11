@@ -37,7 +37,6 @@ fn main() {
             }
         }
         Err(error) => {
-            eprintln!("fss-hydration-rehearsal: {error}");
             emit_diagnostic(&error, "fss-hydration-rehearsal", None);
             std::process::exit(error.exit_identity().code as i32);
         }
@@ -201,15 +200,15 @@ fn fixture() -> Result<(ReferenceHydrationCatalog, SemanticHandle), HydrationErr
 
 fn cost(level: HydrationLevel) -> BudgetVector {
     let scale = 1_u64 << level.ordinal();
-    BudgetVector {
-        latency_ms: 5 * scale,
-        tokens: 32 * scale,
-        bytes: 256 * scale,
-        cpu_millis: scale,
-        storage_operations: 1,
-        privacy_exposure: f64::from(level.ordinal()) / 10.0,
-        ..BudgetVector::default()
-    }
+    BudgetVector::builder()
+        .latency_ms(5 * scale)
+        .tokens(32 * scale)
+        .bytes(256 * scale)
+        .cpu_millis(scale)
+        .storage_operations(1)
+        .privacy_exposure(f64::from(level.ordinal()) / 10.0)
+        .build()
+        .unwrap_or_default()
 }
 
 fn success_record(

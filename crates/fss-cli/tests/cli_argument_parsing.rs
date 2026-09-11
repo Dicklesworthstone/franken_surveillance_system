@@ -258,6 +258,67 @@ fn diagnostic_json_is_valid_for_hostile_characters() {
 }
 
 #[test]
+fn test_safe_os_repr_leaks_sensitive_prefix_on_invalid_utf8() {
+    let sensitive_bytes = b"--password=supersecretpassword123\x80";
+    let repr = fss_cli::safe_os_repr(sensitive_bytes, 64);
+    assert!(
+        !repr.contains("supersecretpassword123"),
+        "safe_os_repr leaked sensitive password: {repr}"
+    );
+}
+
+#[test]
+fn test_redaction_bypassed_for_short_option_flag() {
+    let input = "-p=supersecretpassword123";
+    let redacted = fss_cli::redact_argument(input);
+    assert!(
+        !redacted.contains("supersecretpassword123"),
+        "redact_argument leaked short option password: {redacted}"
+    );
+    assert_eq!(redacted, "-p=[REDACTED]");
+}
+
+#[test]
+fn test_malformed_value_leaks_token_in_diagnostic() {
+    let err = fss_cli::CliError::MalformedValue {
+        option: "--repeat".to_owned(),
+        value: "my_secret_token_12345".to_owned(),
+        reason: "--repeat requires a positive integer".to_owned(),
+        index: 3,
+    };
+    let (human, json) = fss_cli::render_diagnostic(&err, "fss-lab", Some("replay"));
+    assert!(
+        !human.contains("my_secret_token_12345"),
+        "human output leaked value"
+    );
+    assert!(
+        !json.contains("my_secret_token_12345"),
+        "json output leaked value"
+    );
+}
+
+#[test]
+fn test_escape_json_str_unicode_line_separators_and_del() {
+    let input = "line1\u{2028}line2\u{2029}\x7fcontrol";
+    let escaped = fss_cli::escape_json_str(input);
+    assert!(
+        !escaped.contains('\u{2028}'),
+        "unescaped U+2028 Line Separator in JSON string: {escaped}"
+    );
+    assert!(
+        !escaped.contains('\u{2029}'),
+        "unescaped U+2029 Paragraph Separator in JSON string: {escaped}"
+    );
+    assert!(
+        !escaped.contains('\x7f'),
+        "unescaped 0x7F DEL control character in JSON string: {escaped}"
+    );
+    assert!(escaped.contains("\\u2028"));
+    assert!(escaped.contains("\\u2029"));
+    assert!(escaped.contains("\\u007f"));
+}
+
+#[test]
 fn parser_totality_and_determinism_property() {
     let sample_tokens = [
         "",

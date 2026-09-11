@@ -50,6 +50,15 @@ operation states rather than generic errors.
 | `ERR-AGENT-CASE-BUDGET-001` | investigation cannot discriminate remaining hypotheses within declared budget | return residual uncertainty and explicit next probe/approval options |
 | `ERR-AGENT-PROTOCOL-001` | presentation attempted an unregistered verb/view or changed semantic meaning | reject and repair registry/transport drift |
 | `ERR-AGENT-HIDDEN-STATE-001` | required mission state exists only in conversation or caller memory | persist typed mission/workspace/case/plan/finding/handoff state before proceeding |
+| `ERR-CLI-UNKNOWN-COMMAND-001` | command token is not a recognized CLI command or verb | do not retry without valid command name |
+| `ERR-CLI-UNKNOWN-OPTION-001` | option flag is unrecognized for binary or active command | do not retry without valid option flag |
+| `ERR-CLI-MISSING-VALUE-001` | required option or positional argument value is missing | provide required value before retry |
+| `ERR-CLI-DUPLICATE-OPTION-001` | option flag was specified more than once | specify option at most once |
+| `ERR-CLI-MALFORMED-VALUE-001` | option or argument value cannot be parsed into expected domain | provide valid typed value before retry |
+| `ERR-CLI-INVALID-UNICODE-001` | command-line argument contains invalid UTF-8 bytes | encode command-line arguments in UTF-8 |
+| `ERR-CLI-UNEXPECTED-POSITIONAL-001` | positional argument provided to command taking no positionals | remove unexpected positional argument |
+| `ERR-CLI-TRAILING-ARGUMENT-001` | extra argument provided after command grammar is satisfied | remove trailing argument before retry |
+| `ERR-CLI-RUNTIME-FAILURE-001` | runtime error occurred during validated command execution | inspect diagnostic and address failure cause |
 
 ## Subordinate dependency audit diagnostic registry (DEP-AUD)
 
@@ -87,3 +96,21 @@ or drifted IDs are rejected by the policy lane (`scripts/check-policy.py`).
 | `DEP-AUD-033` | error | a resolved Git package source is not commit-resolved | pin and lock an immutable exact commit with source/provenance evidence | `GATE-000`, `QL-POLICY-001` | lock exact commit revision before re-running qualification |
 | `DEP-AUD-040` | error | required pinned-nightly offline Cargo metadata is unavailable | restore exact toolchain/cache/lock/sibling closure and rerun; policy-only execution cannot certify release | `GATE-000`, `QL-POLICY-001` | restore toolchain/cache before re-running qualification |
 | `DEP-AUD-041` | warning | target census drift between reference model and cargo metadata | reconcile target roots with cargo metadata to ensure no target is hidden or missing | `GATE-000`, `QL-POLICY-001` | reconcile target roots before re-running qualification |
+
+## Process exit identity registry (EXIT)
+
+Stable process exit identities map command-line interface outcomes to deterministic exit codes and registered identities.
+
+| Exit ID | Code | Meaning | Recovery guidance |
+|---|---|---|---|
+| `EXIT-OK-000` | 0 | successful execution | no recovery needed |
+| `EXIT-CLI-RUNTIME-FAILURE-001` | 1 | runtime execution failure | inspect error output and address underlying cause |
+| `EXIT-CLI-UNKNOWN-COMMAND-002` | 2 | unknown command specified | consult help and run a registered command |
+| `EXIT-CLI-UNKNOWN-OPTION-002` | 2 | unknown option specified | consult help and provide registered options |
+| `EXIT-CLI-MISSING-VALUE-002` | 2 | missing value for option | provide required parameter value |
+| `EXIT-CLI-DUPLICATE-OPTION-002` | 2 | duplicate option specified | specify option at most once |
+| `EXIT-CLI-MALFORMED-VALUE-002` | 2 | malformed value specified | supply value matching required format and bounds |
+| `EXIT-CLI-INVALID-UNICODE-002` | 2 | invalid UTF-8 argument | supply valid UTF-8 argument bytes |
+| `EXIT-CLI-UNEXPECTED-POSITIONAL-002` | 2 | unexpected positional argument | remove unexpected positional arguments |
+| `EXIT-CLI-TRAILING-ARGUMENT-002` | 2 | trailing argument after grammar exhaustion | remove trailing arguments |
+

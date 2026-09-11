@@ -5,7 +5,7 @@ use core::fmt;
 
 use fss_core::RecoveryClass;
 
-use crate::redact::redact_argument;
+use crate::redact::{redact_argument, redact_value_or_digest};
 
 /// Stable error identity for unknown commands.
 pub const ERR_CLI_UNKNOWN_COMMAND: &str = "ERR-CLI-UNKNOWN-COMMAND-001";
@@ -23,6 +23,8 @@ pub const ERR_CLI_INVALID_UNICODE: &str = "ERR-CLI-INVALID-UNICODE-001";
 pub const ERR_CLI_UNEXPECTED_POSITIONAL: &str = "ERR-CLI-UNEXPECTED-POSITIONAL-001";
 /// Stable error identity for trailing arguments after grammar exhaustion.
 pub const ERR_CLI_TRAILING_ARGUMENT: &str = "ERR-CLI-TRAILING-ARGUMENT-001";
+/// Stable error identity for runtime execution failure.
+pub const ERR_CLI_RUNTIME_FAILURE: &str = "ERR-CLI-RUNTIME-FAILURE-001";
 
 /// Stable exit identity representing an exit code and a registered identifier.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,6 +40,12 @@ impl ExitIdentity {
     pub const SUCCESS: Self = Self {
         code: 0,
         identifier: "EXIT-OK-000",
+    };
+
+    /// Runtime execution failure exit identity.
+    pub const RUNTIME_FAILURE: Self = Self {
+        code: 1,
+        identifier: "EXIT-CLI-RUNTIME-FAILURE-001",
     };
 
     /// Unknown command exit identity.
@@ -206,7 +214,7 @@ impl CliError {
             Self::UnknownCommand { command, .. } => {
                 format!(
                     "command `{}` is not recognized; run with `help` or `--help` to view supported commands",
-                    redact_argument(command)
+                    redact_value_or_digest(command)
                 )
             }
             Self::UnknownOption {
@@ -250,7 +258,7 @@ impl CliError {
             Self::UnexpectedPositional {
                 argument, command, ..
             } => {
-                let safe_arg = redact_argument(argument);
+                let safe_arg = redact_value_or_digest(argument);
                 if let Some(cmd) = command {
                     format!(
                         "command `{}` does not accept positional argument `{safe_arg}`",
@@ -263,7 +271,7 @@ impl CliError {
             Self::TrailingArgument {
                 argument, command, ..
             } => {
-                let safe_arg = redact_argument(argument);
+                let safe_arg = redact_value_or_digest(argument);
                 if let Some(cmd) = command {
                     format!(
                         "command `{}` grammar was fully satisfied; remove trailing argument `{safe_arg}`",
@@ -334,7 +342,7 @@ impl fmt::Display for CliError {
                 write!(
                     f,
                     "unknown or incomplete command: {}",
-                    redact_argument(command)
+                    redact_value_or_digest(command)
                 )
             }
             Self::UnknownOption {
@@ -372,7 +380,7 @@ impl fmt::Display for CliError {
                 write!(
                     f,
                     "malformed value `{}` for `{}`: {reason}",
-                    redact_argument(value),
+                    redact_value_or_digest(value),
                     redact_argument(option)
                 )
             }
@@ -389,7 +397,7 @@ impl fmt::Display for CliError {
             Self::UnexpectedPositional {
                 argument, command, ..
             } => {
-                let safe_arg = redact_argument(argument);
+                let safe_arg = redact_value_or_digest(argument);
                 if let Some(cmd) = command {
                     write!(
                         f,
@@ -406,7 +414,7 @@ impl fmt::Display for CliError {
                 command,
                 ..
             } => {
-                let safe_arg = redact_argument(argument);
+                let safe_arg = redact_value_or_digest(argument);
                 if let Some(cmd) = command {
                     write!(
                         f,

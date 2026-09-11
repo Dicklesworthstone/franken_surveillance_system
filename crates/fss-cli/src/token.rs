@@ -67,7 +67,29 @@ where
                     let bytes = os_arg.as_bytes();
                     (bytes.len(), safe_os_repr(bytes, 32))
                 };
-                #[cfg(not(unix))]
+                #[cfg(windows)]
+                let (byte_length, redacted_repr) = {
+                    use std::os::windows::ffi::OsStrExt;
+                    let wide: Vec<u16> = os_arg.encode_wide().collect();
+                    let byte_length = wide.len() * 2;
+                    let mut repr = String::new();
+                    for &unit in wide.iter().take(32) {
+                        if (0x20..=0x7E).contains(&unit)
+                            && unit != b'\\' as u16
+                            && unit != b'"' as u16
+                        {
+                            repr.push(unit as u8 as char);
+                        } else {
+                            use std::fmt::Write;
+                            let _ = write!(repr, "\\u{{{unit:04x}}}");
+                        }
+                    }
+                    if wide.len() > 32 {
+                        repr.push_str("...[truncated]");
+                    }
+                    (byte_length, redact_argument(&repr))
+                };
+                #[cfg(all(not(unix), not(windows)))]
                 let (byte_length, redacted_repr) = {
                     let lossy = os_arg.to_string_lossy();
                     (lossy.len(), redact_argument(&lossy))

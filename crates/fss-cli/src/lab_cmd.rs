@@ -162,85 +162,105 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
         });
     }
 
-    let scenario_tok = &tokens[1];
-    validate_scenario(&scenario_tok.raw, scenario_tok.index, "replay")?;
-
+    let mut scenario: Option<String> = None;
     let mut repeat: usize = 2;
     let mut seen_repeat = false;
-    let mut idx = 2;
+    let mut idx = 1;
 
     while idx < tokens.len() {
         let tok = &tokens[idx];
-        match tok.as_str() {
-            "--repeat" => {
-                if seen_repeat {
-                    return Err(CliError::DuplicateOption {
-                        option: "--repeat".to_owned(),
-                        command: Some("replay".to_owned()),
-                        index: tok.index,
-                    });
-                }
-                seen_repeat = true;
-                if idx + 1 >= tokens.len() {
-                    return Err(CliError::MissingValue {
-                        option: "--repeat".to_owned(),
-                        command: Some("replay".to_owned()),
-                        expected: "positive integer between 2 and 10000".to_owned(),
-                    });
-                }
-                let val_tok = &tokens[idx + 1];
-                let parsed =
-                    val_tok
-                        .raw
-                        .parse::<usize>()
-                        .map_err(|_| CliError::MalformedValue {
-                            option: "--repeat".to_owned(),
-                            value: val_tok.raw.clone(),
-                            reason: "--repeat requires a positive integer".to_owned(),
-                            index: val_tok.index,
-                        })?;
+        let s = tok.as_str();
 
-                if parsed < 2 {
-                    return Err(CliError::MalformedValue {
-                        option: "--repeat".to_owned(),
-                        value: val_tok.raw.clone(),
-                        reason: "replay requires --repeat >= 2".to_owned(),
-                        index: val_tok.index,
-                    });
-                }
-                if parsed > 10_000 {
-                    return Err(CliError::MalformedValue {
-                        option: "--repeat".to_owned(),
-                        value: val_tok.raw.clone(),
-                        reason: "replay repeat count exceeds the 10000-run bound".to_owned(),
-                        index: val_tok.index,
-                    });
-                }
-
-                repeat = parsed;
-                idx += 2;
-            }
-            opt if opt.starts_with('-') => {
-                return Err(CliError::UnknownOption {
-                    option: opt.to_owned(),
+        if s == "--repeat" {
+            if seen_repeat {
+                return Err(CliError::DuplicateOption {
+                    option: "--repeat".to_owned(),
                     command: Some("replay".to_owned()),
                     index: tok.index,
                 });
             }
-            trailing => {
+            seen_repeat = true;
+            if idx + 1 >= tokens.len() {
+                return Err(CliError::MissingValue {
+                    option: "--repeat".to_owned(),
+                    command: Some("replay".to_owned()),
+                    expected: "positive integer between 2 and 10000".to_owned(),
+                });
+            }
+            let val_tok = &tokens[idx + 1];
+            repeat = parse_repeat_value(&val_tok.raw, val_tok.index)?;
+            idx += 2;
+        } else if let Some(val_str) = s.strip_prefix("--repeat=") {
+            if seen_repeat {
+                return Err(CliError::DuplicateOption {
+                    option: "--repeat".to_owned(),
+                    command: Some("replay".to_owned()),
+                    index: tok.index,
+                });
+            }
+            seen_repeat = true;
+            repeat = parse_repeat_value(val_str, tok.index)?;
+            idx += 1;
+        } else if s.starts_with('-') {
+            return Err(CliError::UnknownOption {
+                option: s.to_owned(),
+                command: Some("replay".to_owned()),
+                index: tok.index,
+            });
+        } else {
+            if scenario.is_some() {
                 return Err(CliError::TrailingArgument {
-                    argument: trailing.to_owned(),
+                    argument: s.to_owned(),
                     index: tok.index,
                     command: Some("replay".to_owned()),
                 });
             }
+            validate_scenario(&tok.raw, tok.index, "replay")?;
+            scenario = Some(tok.raw.clone());
+            idx += 1;
         }
     }
 
-    Ok(LabAction::Replay {
-        scenario: scenario_tok.raw.clone(),
-        repeat,
-    })
+    match scenario {
+        Some(sc) => Ok(LabAction::Replay {
+            scenario: sc,
+            repeat,
+        }),
+        None => Err(CliError::MissingValue {
+            option: "<scenario>".to_owned(),
+            command: Some("replay".to_owned()),
+            expected: "one of: quiet, raccoon, intrusion, sneaky, lost-ack, corrupt-source"
+                .to_owned(),
+        }),
+    }
+}
+
+fn parse_repeat_value(val: &str, index: usize) -> Result<usize, CliError> {
+    let parsed = val.parse::<usize>().map_err(|_| CliError::MalformedValue {
+        option: "--repeat".to_owned(),
+        value: val.to_owned(),
+        reason: "--repeat requires a positive integer".to_owned(),
+        index,
+    })?;
+
+    if parsed < 2 {
+        return Err(CliError::MalformedValue {
+            option: "--repeat".to_owned(),
+            value: val.to_owned(),
+            reason: "replay requires --repeat >= 2".to_owned(),
+            index,
+        });
+    }
+    if parsed > 10_000 {
+        return Err(CliError::MalformedValue {
+            option: "--repeat".to_owned(),
+            value: val.to_owned(),
+            reason: "replay repeat count exceeds the 10000-run bound".to_owned(),
+            index,
+        });
+    }
+
+    Ok(parsed)
 }
 
 fn validate_scenario(name: &str, index: usize, _command: &str) -> Result<(), CliError> {

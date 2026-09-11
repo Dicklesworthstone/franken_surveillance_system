@@ -62,5 +62,6 @@
 | `SCHEMA-CAPABILITIES-001` | `fss.capabilities.v1` | `CLI output` | product boundary | additions compatible; changed meaning requires new schema |
 | `SCHEMA-DOCTOR-001` | `fss.doctor.v1` | `CLI output` | diagnostics | bounded and secret-free |
 | `SCHEMA-STATUS-001` | `fss.status.v1` | `CLI output` | product boundary | status fields cannot imply unsupported readiness |
+| `SCHEMA-CLI-DIAGNOSTIC-001` | `fss.cli_diagnostic.v1` | `schemas/cli_diagnostic.v1.json` | authority/diagnostic | diagnostic schema immutable; errors follow structured envelope |
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.

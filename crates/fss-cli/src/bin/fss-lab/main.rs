@@ -34,7 +34,7 @@ fn main() -> ExitCode {
             }
             Err(error) => {
                 eprintln!("fss-lab: {error}");
-                ExitCode::from(2)
+                ExitCode::from(1)
             }
         },
         Err(error) => {

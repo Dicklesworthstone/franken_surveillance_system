@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use std::process::Command;
 
 use fss_cli::{
-    ERR_CLI_DUPLICATE_OPTION, ERR_CLI_MALFORMED_VALUE, ERR_CLI_MISSING_VALUE,
+    CliError, ERR_CLI_DUPLICATE_OPTION, ERR_CLI_MALFORMED_VALUE, ERR_CLI_MISSING_VALUE,
     ERR_CLI_TRAILING_ARGUMENT, ERR_CLI_UNKNOWN_OPTION, HydrationAction, parse_hydration_args,
 };
 
@@ -48,6 +48,45 @@ fn valid_hydration_invocations_decode_successfully() {
             assert_eq!(action, *expected, "mismatched action for: {argv:?}");
         }
     }
+}
+
+#[test]
+fn test_hydration_positional_then_flag_reports_correct_error() {
+    let args = [
+        OsString::from("success"),
+        OsString::from("--scenario"),
+        OsString::from("all"),
+    ];
+    let res = parse_hydration_args(args);
+    assert!(res.is_err());
+    if let Err(CliError::DuplicateOption { option, .. }) = res {
+        panic!("falsely reported duplicate option for flag only passed once: {option}");
+    }
+}
+
+#[test]
+fn test_hydration_accepts_scenario_equals_syntax() {
+    let args = [OsString::from("--scenario=success")];
+    let res = parse_hydration_args(args);
+    assert_eq!(
+        res.ok(),
+        Some(HydrationAction::Run {
+            scenario: "success".to_owned(),
+        })
+    );
+}
+
+#[test]
+fn test_hydration_cli_stderr_no_duplicate_error() -> Result<(), Box<dyn std::error::Error>> {
+    let bin_path = env!("CARGO_BIN_EXE_fss-hydration-rehearsal");
+    let output = Command::new(bin_path).arg("--invalid-flag").output()?;
+    let stderr = String::from_utf8(output.stderr)?;
+    let count = stderr.matches("unknown option `--invalid-flag`").count();
+    assert_eq!(
+        count, 1,
+        "error message must not be duplicated on stderr, got {count} occurrences"
+    );
+    Ok(())
 }
 
 #[test]
