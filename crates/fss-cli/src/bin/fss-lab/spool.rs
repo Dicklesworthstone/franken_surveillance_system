@@ -259,62 +259,63 @@ mod tests {
     use super::{SourceKey, SourceSpool, SourceState, SpoolError};
 
     #[test]
-    fn staged_bytes_are_not_visible_before_root_publication() {
+    fn staged_bytes_are_not_visible_before_root_publication()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut spool = SourceSpool::default();
         let key = SourceKey::new("cam-a", 1);
-        spool.stage(key.clone(), b"frame".to_vec()).expect("stage");
+        spool.stage(key.clone(), b"frame".to_vec())?;
         assert!(matches!(spool.read(&key), Err(SpoolError::NotPublished(_))));
-        spool.verify(&key).expect("verify");
+        spool.verify(&key)?;
         assert!(matches!(spool.read(&key), Err(SpoolError::NotPublished(_))));
-        spool.publish(&key).expect("publish");
-        assert_eq!(spool.read(&key).expect("read").bytes, b"frame");
+        spool.publish(&key)?;
+        assert_eq!(spool.read(&key)?.bytes, b"frame");
+        Ok(())
     }
 
     #[test]
-    fn corruption_prevents_verification_and_reads() {
+    fn corruption_prevents_verification_and_reads() -> Result<(), Box<dyn std::error::Error>> {
         let mut spool = SourceSpool::default();
         let staged = SourceKey::new("cam-a", 1);
-        spool
-            .stage(staged.clone(), b"frame".to_vec())
-            .expect("stage");
-        spool.inject_corruption(&staged).expect("corrupt");
+        spool.stage(staged.clone(), b"frame".to_vec())?;
+        spool.inject_corruption(&staged)?;
         assert!(matches!(spool.verify(&staged), Err(SpoolError::Corrupt(_))));
 
         let published = SourceKey::new("cam-a", 2);
-        spool
-            .ingest(published.clone(), b"frame-two".to_vec())
-            .expect("ingest");
-        spool.inject_corruption(&published).expect("corrupt");
+        spool.ingest(published.clone(), b"frame-two".to_vec())?;
+        spool.inject_corruption(&published)?;
         assert!(matches!(
             spool.read(&published),
             Err(SpoolError::Corrupt(_))
         ));
+        Ok(())
     }
 
     #[test]
-    fn publication_is_idempotent_and_ordered() {
+    fn publication_is_idempotent_and_ordered() -> Result<(), Box<dyn std::error::Error>> {
         let mut spool = SourceSpool::default();
         let first = SourceKey::new("cam-a", 1);
         let second = SourceKey::new("cam-b", 1);
-        spool.stage(first.clone(), b"one".to_vec()).expect("stage");
-        spool.verify(&first).expect("verify");
-        let first_root = spool.publish(&first).expect("publish");
-        assert_eq!(first_root, spool.publish(&first).expect("republish"));
+        spool.stage(first.clone(), b"one".to_vec())?;
+        spool.verify(&first)?;
+        let first_root = spool.publish(&first)?;
+        assert_eq!(first_root, spool.publish(&first)?);
         assert_eq!(spool.published_count(), 1);
-        spool.ingest(second, b"two".to_vec()).expect("second");
+        spool.ingest(second, b"two".to_vec())?;
         assert_eq!(spool.published_count(), 2);
         assert_ne!(first_root, spool.root());
-        assert_eq!(spool.state(&first).expect("state"), SourceState::Published);
+        assert_eq!(spool.state(&first)?, SourceState::Published);
+        Ok(())
     }
 
     #[test]
-    fn key_reuse_with_different_bytes_fails() {
+    fn key_reuse_with_different_bytes_fails() -> Result<(), Box<dyn std::error::Error>> {
         let mut spool = SourceSpool::default();
         let key = SourceKey::new("cam-a", 1);
-        spool.stage(key.clone(), b"one".to_vec()).expect("stage");
+        spool.stage(key.clone(), b"one".to_vec())?;
         assert!(matches!(
             spool.stage(key, b"two".to_vec()),
             Err(SpoolError::DuplicateKeyConflict(_))
         ));
+        Ok(())
     }
 }

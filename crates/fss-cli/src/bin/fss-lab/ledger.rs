@@ -484,67 +484,69 @@ mod tests {
     };
     use crate::digest::domain_digest;
 
-    fn observation(sensor: &str, domain: &str, at: u64, class: ObservationClass) -> Observation {
-        Observation {
+    fn observation(
+        sensor: &str,
+        domain: &str,
+        at: u64,
+        class: ObservationClass,
+    ) -> Result<Observation, crate::digest::DigestError> {
+        Ok(Observation {
             sensor: sensor.to_owned(),
             failure_domain: domain.to_owned(),
             at,
             class,
             confidence_basis_points: 9_000,
-            source_digest: domain_digest("test-source", sensor.as_bytes()).expect("digest"),
-        }
+            source_digest: domain_digest("test-source", sensor.as_bytes())?,
+        })
     }
 
     #[test]
-    fn ledger_is_append_only_and_rejects_time_reversal() {
+    fn ledger_is_append_only_and_rejects_time_reversal() -> Result<(), Box<dyn std::error::Error>> {
         let mut ledger = EvidenceLedger::default();
-        let first = ledger
-            .append(10, RecordKind::Observation, Vec::new(), b"first")
-            .expect("first");
-        let second = ledger
-            .append(11, RecordKind::Event, vec![first.root], b"second")
-            .expect("second");
+        let first = ledger.append(10, RecordKind::Observation, Vec::new(), b"first")?;
+        let second = ledger.append(11, RecordKind::Event, vec![first.root], b"second")?;
         assert_eq!(second.sequence, 2);
         assert_ne!(first.root, second.root);
         assert!(matches!(
             ledger.append(9, RecordKind::Event, Vec::new(), b"past"),
             Err(LedgerError::TimeReversal { .. })
         ));
+        Ok(())
     }
 
     #[test]
-    fn absence_requires_complete_continuous_coverage() {
+    fn absence_requires_complete_continuous_coverage() -> Result<(), Box<dyn std::error::Error>> {
         let required = BTreeSet::from(["cam-a".to_owned(), "cam-b".to_owned()]);
         let incomplete = vec![
-            CoverageInterval::new("cam-a", "power-a", 0, 10, true).expect("interval"),
-            CoverageInterval::new("cam-b", "power-b", 0, 4, true).expect("interval"),
-            CoverageInterval::new("cam-b", "power-b", 5, 10, true).expect("interval"),
+            CoverageInterval::new("cam-a", "power-a", 0, 10, true)?,
+            CoverageInterval::new("cam-b", "power-b", 0, 4, true)?,
+            CoverageInterval::new("cam-b", "power-b", 5, 10, true)?,
         ];
         assert!(matches!(
             CoverageCertificate::build(&required, &incomplete, 0, 10),
             Err(LedgerError::CoverageGap { .. })
         ));
         let complete = vec![
-            CoverageInterval::new("cam-a", "power-a", 0, 10, true).expect("interval"),
-            CoverageInterval::new("cam-b", "power-b", 0, 10, true).expect("interval"),
+            CoverageInterval::new("cam-a", "power-a", 0, 10, true)?,
+            CoverageInterval::new("cam-b", "power-b", 0, 10, true)?,
         ];
-        let coverage = CoverageCertificate::build(&required, &complete, 0, 10).expect("coverage");
+        let coverage = CoverageCertificate::build(&required, &complete, 0, 10)?;
         let anchor = EvidenceLedger::default().anchor();
-        certify_absence(ObservationClass::UnknownPerson, coverage, &[], anchor).expect("absence");
+        certify_absence(ObservationClass::UnknownPerson, coverage, &[], anchor)?;
+        Ok(())
     }
 
     #[test]
-    fn observed_presence_blocks_absence_certificate() {
+    fn observed_presence_blocks_absence_certificate() -> Result<(), Box<dyn std::error::Error>> {
         let required = BTreeSet::from(["cam-a".to_owned()]);
-        let intervals =
-            vec![CoverageInterval::new("cam-a", "power-a", 0, 10, true).expect("interval")];
-        let coverage = CoverageCertificate::build(&required, &intervals, 0, 10).expect("coverage");
+        let intervals = vec![CoverageInterval::new("cam-a", "power-a", 0, 10, true)?];
+        let coverage = CoverageCertificate::build(&required, &intervals, 0, 10)?;
         let observations = vec![observation(
             "cam-a",
             "power-a",
             4,
             ObservationClass::UnknownPerson,
-        )];
+        )?];
         assert!(matches!(
             certify_absence(
                 ObservationClass::UnknownPerson,
@@ -554,26 +556,29 @@ mod tests {
             ),
             Err(LedgerError::PresenceObserved { .. })
         ));
+        Ok(())
     }
 
     #[test]
-    fn correlated_sources_do_not_fake_corroboration() {
+    fn correlated_sources_do_not_fake_corroboration() -> Result<(), Box<dyn std::error::Error>> {
         let observations = vec![
-            observation("cam-a", "shared-power", 2, ObservationClass::UnknownPerson),
-            observation("cam-b", "shared-power", 3, ObservationClass::UnknownPerson),
+            observation("cam-a", "shared-power", 2, ObservationClass::UnknownPerson)?,
+            observation("cam-b", "shared-power", 3, ObservationClass::UnknownPerson)?,
         ];
-        let assessment = assess_event(&observations, 0, 10).expect("assessment");
+        let assessment = assess_event(&observations, 0, 10)?;
         assert_eq!(assessment.disposition, EventDisposition::ProtectedResidual);
+        Ok(())
     }
 
     #[test]
-    fn independent_failure_domains_corroborate() {
+    fn independent_failure_domains_corroborate() -> Result<(), Box<dyn std::error::Error>> {
         let observations = vec![
-            observation("cam-a", "power-a", 2, ObservationClass::UnknownPerson),
-            observation("cam-b", "power-b", 3, ObservationClass::UnknownPerson),
+            observation("cam-a", "power-a", 2, ObservationClass::UnknownPerson)?,
+            observation("cam-b", "power-b", 3, ObservationClass::UnknownPerson)?,
         ];
-        let assessment = assess_event(&observations, 0, 10).expect("assessment");
+        let assessment = assess_event(&observations, 0, 10)?;
         assert_eq!(assessment.disposition, EventDisposition::CorroboratedThreat);
         assert_eq!(assessment.independent_failure_domains.len(), 2);
+        Ok(())
     }
 }

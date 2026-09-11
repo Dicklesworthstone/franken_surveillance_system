@@ -78,7 +78,6 @@ pub struct CanonicalWriter {
 }
 
 impl CanonicalWriter {
-    #[must_use]
     pub fn new(domain: &str) -> Result<Self, DigestError> {
         let mut writer = Self::default();
         writer.push_bytes(domain.as_bytes())?;
@@ -139,22 +138,18 @@ pub fn sha256(input: &[u8]) -> Result<Digest, DigestError> {
         .checked_mul(8)
         .ok_or(DigestError::InputTooLarge)?;
     let mut state = INITIAL_STATE;
-    let mut chunks = input.chunks_exact(64);
-    for chunk in &mut chunks {
-        let block: &[u8; 64] = chunk
-            .try_into()
-            .expect("chunks_exact yields 64-byte blocks");
+    let (chunks, remainder) = input.as_chunks::<64>();
+    for block in chunks {
         compress(&mut state, block);
     }
 
-    let remainder = chunks.remainder();
     let final_len = if remainder.len() < 56 { 64 } else { 128 };
     let mut final_blocks = [0_u8; 128];
     final_blocks[..remainder.len()].copy_from_slice(remainder);
     final_blocks[remainder.len()] = 0x80;
     final_blocks[final_len - 8..final_len].copy_from_slice(&bit_length.to_be_bytes());
-    for chunk in final_blocks[..final_len].chunks_exact(64) {
-        let block: &[u8; 64] = chunk.try_into().expect("final padding uses 64-byte blocks");
+    let (final_chunks, _) = final_blocks[..final_len].as_chunks::<64>();
+    for block in final_chunks {
         compress(&mut state, block);
     }
 
@@ -167,8 +162,9 @@ pub fn sha256(input: &[u8]) -> Result<Digest, DigestError> {
 
 fn compress(state: &mut [u32; 8], block: &[u8; 64]) {
     let mut schedule = [0_u32; 64];
-    for (index, word) in block.chunks_exact(4).enumerate() {
-        schedule[index] = u32::from_be_bytes(word.try_into().expect("four-byte word"));
+    let (words, _) = block.as_chunks::<4>();
+    for (index, word) in words.iter().enumerate() {
+        schedule[index] = u32::from_be_bytes(*word);
     }
     for index in 16..64 {
         let s0 = schedule[index - 15].rotate_right(7)
@@ -220,40 +216,41 @@ mod tests {
     use super::{CanonicalWriter, domain_digest, sha256};
 
     #[test]
-    fn sha256_known_vectors() {
+    fn sha256_known_vectors() -> Result<(), Box<dyn std::error::Error>> {
         assert_eq!(
-            sha256(b"").expect("digest").to_hex(),
+            sha256(b"")?.to_hex(),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
         assert_eq!(
-            sha256(b"abc").expect("digest").to_hex(),
+            sha256(b"abc")?.to_hex(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+        let million_a = vec![b'a'; 1_000_000];
         assert_eq!(
-            sha256(&vec![b'a'; 1_000_000]).expect("digest").to_hex(),
+            sha256(&million_a)?.to_hex(),
             "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
         );
+        Ok(())
     }
 
     #[test]
-    fn canonical_fields_are_unambiguous() {
-        let mut left = CanonicalWriter::new("test").expect("writer");
-        left.push_str("ab").expect("field");
-        left.push_str("c").expect("field");
-        let mut right = CanonicalWriter::new("test").expect("writer");
-        right.push_str("a").expect("field");
-        right.push_str("bc").expect("field");
-        assert_ne!(
-            left.digest().expect("digest"),
-            right.digest().expect("digest")
-        );
+    fn canonical_fields_are_unambiguous() -> Result<(), Box<dyn std::error::Error>> {
+        let mut left = CanonicalWriter::new("test")?;
+        left.push_str("ab")?;
+        left.push_str("c")?;
+        let mut right = CanonicalWriter::new("test")?;
+        right.push_str("a")?;
+        right.push_str("bc")?;
+        assert_ne!(left.digest()?, right.digest()?);
+        Ok(())
     }
 
     #[test]
-    fn domains_are_separated() {
+    fn domains_are_separated() -> Result<(), Box<dyn std::error::Error>> {
         assert_ne!(
-            domain_digest("source", b"same").expect("source digest"),
-            domain_digest("event", b"same").expect("event digest")
+            domain_digest("source", b"same")?,
+            domain_digest("event", b"same")?
         );
+        Ok(())
     }
 }
