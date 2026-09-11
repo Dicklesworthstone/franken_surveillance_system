@@ -51,8 +51,8 @@ pub use evidence::{
 };
 pub use hydration::{
     HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel,
-    HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec,
-    HydrationResponse, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
+    HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
+    HydrationRequestSpec, HydrationResponse, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
 };
 pub use ids::{
     BatchId, CapsuleId, EventId, HandoffId, IdempotencyKey, MissionId, ObjectId, ObligationId,

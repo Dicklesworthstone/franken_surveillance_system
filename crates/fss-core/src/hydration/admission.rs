@@ -41,7 +41,10 @@ impl HydrationRequest {
         {
             return Err(ContractError::DigestMismatch.into());
         }
-        if !self.authorized_privacy_classes.contains(&handle.privacy_class) {
+        if !self
+            .authorized_privacy_classes
+            .contains(&handle.privacy_class)
+        {
             return Err(HydrationError::PrivacyDenied);
         }
         if let Some(cursor) = &self.continuation {

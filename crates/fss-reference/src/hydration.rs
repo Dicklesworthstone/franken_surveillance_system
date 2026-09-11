@@ -21,7 +21,10 @@ pub struct ReferenceHydrationLimits {
 
 impl Default for ReferenceHydrationLimits {
     fn default() -> Self {
-        Self { max_descriptors: 4_096, max_payload_bytes: 64 * 1_024 * 1_024 }
+        Self {
+            max_descriptors: 4_096,
+            max_payload_bytes: 64 * 1_024 * 1_024,
+        }
     }
 }
 
@@ -83,7 +86,10 @@ impl ReferenceHydrationCatalog {
     /// An exact retry is a no-op even after supersession; it never makes the old revision current.
     /// Changed descriptors require a strictly newer commit in the same ledger epoch and a
     /// nondecreasing publication time. Epoch changes require rebuilding the reference catalog.
-    pub fn register_descriptor(&mut self, descriptor: SemanticHandle) -> Result<(), HydrationError> {
+    pub fn register_descriptor(
+        &mut self,
+        descriptor: SemanticHandle,
+    ) -> Result<(), HydrationError> {
         descriptor.verify()?;
         let key = (descriptor.handle_id.clone(), descriptor.descriptor_digest);
         match self.descriptors.get(&key) {
@@ -109,8 +115,10 @@ impl ReferenceHydrationCatalog {
             if (prior == HandleAvailability::Deleted
                 && descriptor.availability != HandleAvailability::Deleted)
                 || (prior == HandleAvailability::Expired
-                    && !matches!(descriptor.availability,
-                        HandleAvailability::Expired | HandleAvailability::Deleted))
+                    && !matches!(
+                        descriptor.availability,
+                        HandleAvailability::Expired | HandleAvailability::Deleted
+                    ))
             {
                 return Err(ContractError::GenerationConflict.into());
             }
@@ -149,7 +157,9 @@ impl ReferenceHydrationCatalog {
             Some(_) => return Err(ContractError::DigestMismatch.into()),
             None => {}
         }
-        let new_bytes = self.stored_payload_bytes.checked_add(artifact.payload.len())
+        let new_bytes = self
+            .stored_payload_bytes
+            .checked_add(artifact.payload.len())
             .ok_or(HydrationError::BudgetExceeded)?;
         if new_bytes > self.limits.max_payload_bytes {
             return Err(HydrationError::BudgetExceeded);
@@ -166,13 +176,16 @@ impl ReferenceHydrationCatalog {
         handle_id: &str,
         descriptor_digest: ContentDigest,
     ) -> Option<&SemanticHandle> {
-        self.descriptors.get(&(handle_id.to_owned(), descriptor_digest))
+        self.descriptors
+            .get(&(handle_id.to_owned(), descriptor_digest))
     }
 
     /// Resolves the current immutable descriptor revision without retargeting an exact request.
     #[must_use]
     pub fn current_descriptor(&self, handle_id: &str) -> Option<&SemanticHandle> {
-        self.current.get(handle_id).and_then(|digest| self.descriptor(handle_id, *digest))
+        self.current
+            .get(handle_id)
+            .and_then(|digest| self.descriptor(handle_id, *digest))
     }
 
     /// Hydrates the richest permitted level, revalidating policy and availability at service time.
@@ -185,37 +198,59 @@ impl ReferenceHydrationCatalog {
         now: TimestampNs,
     ) -> Result<HydrationResponse, HydrationError> {
         request.verify()?;
-        let descriptor = self.current_exact(&request.handle_id, request.expected_descriptor_digest)?;
+        let descriptor =
+            self.current_exact(&request.handle_id, request.expected_descriptor_digest)?;
         request.validate_for(descriptor, now)?;
         let availability = descriptor.availability_at(now);
         if availability != HandleAvailability::Available {
             return unavailable_response(request, descriptor, availability, now);
         }
         if let Some(cursor) = &request.continuation {
-            let ordinal = u8::try_from(cursor.position).map_err(|_| HydrationError::WrongContinuation)?;
-            let prior_level = ordinal.checked_sub(1).and_then(HydrationLevel::from_ordinal)
+            let ordinal =
+                u8::try_from(cursor.position).map_err(|_| HydrationError::WrongContinuation)?;
+            let prior_level = ordinal
+                .checked_sub(1)
+                .and_then(HydrationLevel::from_ordinal)
                 .ok_or(HydrationError::WrongContinuation)?;
-            let prior = self.artifacts.get(&(
-                descriptor.handle_id.clone(), descriptor.descriptor_digest, prior_level,
-            )).ok_or(HydrationError::WrongContinuation)?;
+            let prior = self
+                .artifacts
+                .get(&(
+                    descriptor.handle_id.clone(),
+                    descriptor.descriptor_digest,
+                    prior_level,
+                ))
+                .ok_or(HydrationError::WrongContinuation)?;
             prior.verify()?;
             if cursor.selection_witness != prior.artifact_digest {
                 return Err(HydrationError::WrongContinuation);
             }
         }
-        let minimum = if request.allow_lower_level { 0 } else { request.requested_level.ordinal() };
+        let minimum = if request.allow_lower_level {
+            0
+        } else {
+            request.requested_level.ordinal()
+        };
         let mut first_failure = None;
         for ordinal in (minimum..=request.requested_level.ordinal()).rev() {
-            let level = HydrationLevel::from_ordinal(ordinal).ok_or(HydrationError::LevelUnavailable)?;
-            let key = (descriptor.handle_id.clone(), descriptor.descriptor_digest, level);
+            let level =
+                HydrationLevel::from_ordinal(ordinal).ok_or(HydrationError::LevelUnavailable)?;
+            let key = (
+                descriptor.handle_id.clone(),
+                descriptor.descriptor_digest,
+                level,
+            );
             let Some(artifact) = self.artifacts.get(&key) else {
                 first_failure.get_or_insert(HydrationError::LevelUnavailable);
                 continue;
             };
             let cost = match request.validate_delivery(descriptor, artifact, now) {
                 Ok(cost) => cost,
-                Err(error @ (HydrationError::LevelUnavailable | HydrationError::CapabilityDenied
-                    | HydrationError::LaboratoryGrantRequired | HydrationError::BudgetExceeded)) => {
+                Err(
+                    error @ (HydrationError::LevelUnavailable
+                    | HydrationError::CapabilityDenied
+                    | HydrationError::LaboratoryGrantRequired
+                    | HydrationError::BudgetExceeded),
+                ) => {
                     first_failure.get_or_insert(error);
                     continue;
                 }
@@ -224,8 +259,10 @@ impl ReferenceHydrationCatalog {
             let continuation = self.next_cursor(request, descriptor, artifact, now)?;
             let mut proof_roots = artifact.proof_roots.clone();
             proof_roots.extend([
-                artifact.artifact_digest, descriptor.subject_digest,
-                descriptor.descriptor_digest, request.request_digest,
+                artifact.artifact_digest,
+                descriptor.subject_digest,
+                descriptor.descriptor_digest,
+                request.request_digest,
             ]);
             let receipt = HydrationReceipt::publish(HydrationReceiptSpec {
                 request_digest: request.request_digest,
@@ -244,7 +281,10 @@ impl ReferenceHydrationCatalog {
                 invalidators: invalidators(descriptor, level, request.requested_level),
                 issued_at: now,
             })?;
-            let response = HydrationResponse { artifact: Some(artifact.clone()), receipt };
+            let response = HydrationResponse {
+                artifact: Some(artifact.clone()),
+                receipt,
+            };
             response.validate_for(request, descriptor)?;
             return Ok(response);
         }
@@ -256,7 +296,8 @@ impl ReferenceHydrationCatalog {
         handle_id: &str,
         descriptor_digest: ContentDigest,
     ) -> Result<&SemanticHandle, HydrationError> {
-        let descriptor = self.descriptor(handle_id, descriptor_digest)
+        let descriptor = self
+            .descriptor(handle_id, descriptor_digest)
             .ok_or(HydrationError::DescriptorNotFound)?;
         if self.current.get(handle_id) != Some(&descriptor_digest) {
             return Err(ContractError::StaleAnchor.into());
@@ -271,16 +312,31 @@ impl ReferenceHydrationCatalog {
         artifact: &HydrationArtifact,
         now: TimestampNs,
     ) -> Result<Option<ContinuationCursor>, HydrationError> {
-        let Some(next) = artifact.level.successor() else { return Ok(None); };
-        let maximum = descriptor.maximum_level().ok_or(HydrationError::LevelUnavailable)?;
-        if next > maximum || !self.artifacts.contains_key(&(
-            descriptor.handle_id.clone(), descriptor.descriptor_digest, next,
-        )) {
+        let Some(next) = artifact.level.successor() else {
+            return Ok(None);
+        };
+        let maximum = descriptor
+            .maximum_level()
+            .ok_or(HydrationError::LevelUnavailable)?;
+        if next > maximum
+            || !self.artifacts.contains_key(&(
+                descriptor.handle_id.clone(),
+                descriptor.descriptor_digest,
+                next,
+            ))
+        {
             return Ok(None);
         }
-        let predecessor = request.continuation.as_ref().map(|prior| prior.cursor_digest);
-        let expiry = request.continuation.as_ref().map_or(descriptor.retention_until,
-            |prior| prior.expires_at.min(descriptor.retention_until));
+        let predecessor = request
+            .continuation
+            .as_ref()
+            .map(|prior| prior.cursor_digest);
+        let expiry = request
+            .continuation
+            .as_ref()
+            .map_or(descriptor.retention_until, |prior| {
+                prior.expires_at.min(descriptor.retention_until)
+            });
         Ok(Some(ContinuationCursor::publish(
             ContinuationScope::EvidenceHydration,
             descriptor.handle_id.clone(),
@@ -319,13 +375,18 @@ fn unavailable_response(
         completeness: availability.unavailable_completeness(),
         artifact_digest: None,
         proof_roots: BTreeSet::from([
-            descriptor.subject_digest, descriptor.descriptor_digest, request.request_digest,
+            descriptor.subject_digest,
+            descriptor.descriptor_digest,
+            request.request_digest,
         ]),
         continuation: None,
         invalidators: invalidators(descriptor, HydrationLevel::H0, request.requested_level),
         issued_at: now,
     })?;
-    let response = HydrationResponse { artifact: None, receipt };
+    let response = HydrationResponse {
+        artifact: None,
+        receipt,
+    };
     response.validate_for(request, descriptor)?;
     Ok(response)
 }
@@ -342,7 +403,11 @@ fn invalidators(
         format!("privacy-class:{}", descriptor.privacy_class),
     ]);
     if delivered != requested {
-        values.insert(format!("explicit-downgrade:{}-to-{}", requested.as_str(), delivered.as_str()));
+        values.insert(format!(
+            "explicit-downgrade:{}-to-{}",
+            requested.as_str(),
+            delivered.as_str()
+        ));
     }
     values
 }

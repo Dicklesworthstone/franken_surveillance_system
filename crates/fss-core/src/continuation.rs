@@ -645,7 +645,10 @@ mod tests {
         let replay = stream.read_page(&cursor, TimestampNs(20))?;
         assert_eq!(first, replay);
         assert_eq!(first.entries.len(), 2);
-        let next = first.next_cursor.clone().ok_or(ContinuationError::OutOfRange)?;
+        let next = first
+            .next_cursor
+            .clone()
+            .ok_or(ContinuationError::OutOfRange)?;
         assert_eq!(next.predecessor_digest, Some(cursor.cursor_digest));
         let terminal = stream.read_page(&next, TimestampNs(20))?;
         assert_eq!(terminal.entries.len(), 1);

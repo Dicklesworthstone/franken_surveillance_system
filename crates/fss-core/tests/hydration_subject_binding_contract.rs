@@ -38,7 +38,13 @@ fn handle() -> Result<SemanticHandle, HydrationError> {
         retention_until: TimestampNs(1_000),
         levels: BTreeSet::from([HydrationLevel::H0]),
         required_capabilities: BTreeMap::from([(HydrationLevel::H0, BTreeSet::new())]),
-        estimated_costs: BTreeMap::from([(HydrationLevel::H0, BudgetVector { bytes: 1_024, ..BudgetVector::default() })]),
+        estimated_costs: BTreeMap::from([(
+            HydrationLevel::H0,
+            BudgetVector {
+                bytes: 1_024,
+                ..BudgetVector::default()
+            },
+        )]),
         laboratory_access: LaboratoryAccess::Unavailable,
         debug_capability: None,
         derivative_handles: BTreeSet::new(),
@@ -61,7 +67,10 @@ fn request(
         allow_lower_level: false,
         available_capabilities: BTreeSet::new(),
         authorized_privacy_classes: BTreeSet::from(["private:redacted".to_owned()]),
-        budget: BudgetVector { bytes: 1_024, ..BudgetVector::default() },
+        budget: BudgetVector {
+            bytes: 1_024,
+            ..BudgetVector::default()
+        },
         purpose: HydrationPurpose::IncidentAdjudication,
         continuation: None,
         issued_at,
@@ -86,7 +95,10 @@ fn receipt(
         requested_level: HydrationLevel::H0,
         delivered_level: Some(HydrationLevel::H0),
         availability: HandleAvailability::Available,
-        cost: BudgetVector { bytes: 1_024, ..BudgetVector::default() },
+        cost: BudgetVector {
+            bytes: 1_024,
+            ..BudgetVector::default()
+        },
         completeness: Completeness::Complete,
         artifact_digest: Some(artifact.artifact_digest),
         proof_roots,

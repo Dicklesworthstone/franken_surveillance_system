@@ -177,14 +177,15 @@ pub fn prepare_reference_alert(
         "provider delivery is independently reconciled",
         now,
     )?;
+    let prepared_intent = receipt.intent.clone();
     let actual_obligation = journal
         .obligations()
-        .find(|obligation| obligation.operation_id == receipt.intent.operation_id)
+        .find(|obligation| obligation.operation_id == prepared_intent.operation_id)
         .ok_or(fss_core::ContractError::NotFound)?
         .obligation_id
         .clone();
     Ok(ReferenceAlertPlan {
-        intent: receipt.intent.clone(),
+        intent: prepared_intent,
         obligation_id: actual_obligation,
         event_root: event_receipt.event_root,
         event_revision_digest: event_receipt.event_revision_digest,

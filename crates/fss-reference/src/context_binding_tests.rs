@@ -13,9 +13,9 @@ use fss_core::{
 };
 
 use crate::{
-    BoundReferenceSituationPublication, ReferenceContextBindingError, ReferenceExpansionBindingSpec,
-    ReferenceProjectionSpec, ReferenceSituation, project_reference_situation,
-    seal_bound_reference_publication_handoff,
+    BoundReferenceSituationPublication, ReferenceContextBindingError,
+    ReferenceExpansionBindingSpec, ReferenceProjectionSpec, ReferenceSituation,
+    project_reference_situation, seal_bound_reference_publication_handoff,
 };
 
 fn basis() -> ContractBasis {
@@ -234,13 +234,16 @@ fn binding_specs(
 }
 
 #[test]
-fn bound_reference_publication_is_self_contained_and_handoff_rooted()
--> Result<(), Box<dyn Error>> {
+fn bound_reference_publication_is_self_contained_and_handoff_rooted() -> Result<(), Box<dyn Error>>
+{
     let publication = project_reference_situation(situation()?, &projection_spec())?;
     assert!(!publication.compression_receipt.expansion_handles.is_empty());
     let bound = BoundReferenceSituationPublication::publish(
         publication,
-        binding_specs(&project_reference_situation(situation()?, &projection_spec())?)?,
+        binding_specs(&project_reference_situation(
+            situation()?,
+            &projection_spec(),
+        )?)?,
     )?;
 
     assert_eq!(bound.verify()?, bound.bound_publication_digest);

@@ -68,7 +68,12 @@ fn all_preserves_canonical_scenario_order() -> Result<(), Box<dyn Error>> {
     let lines: Vec<_> = transcript.lines().collect();
     assert_eq!(lines.len(), 6);
     for (line, scenario) in lines.iter().zip([
-        "success", "budget-fallback", "privacy-denied", "expired", "h4-denied", "h4-qualified",
+        "success",
+        "budget-fallback",
+        "privacy-denied",
+        "expired",
+        "h4-denied",
+        "h4-qualified",
     ]) {
         assert!(line.contains(&format!("\"scenario\":\"{scenario}\"")));
     }

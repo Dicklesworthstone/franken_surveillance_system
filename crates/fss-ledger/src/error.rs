@@ -134,10 +134,7 @@ impl fmt::Display for JournalError {
                 observed_len,
             } => write!(
                 formatter,
-                concat!(
-                    "journal changed outside this writer: expected length {expected_len}, ",
-                    "observed {observed_len}"
-                )
+                "journal changed outside this writer: expected length {expected_len}, observed {observed_len}"
             ),
         }
     }

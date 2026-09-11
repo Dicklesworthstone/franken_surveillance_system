@@ -73,8 +73,7 @@ fn descriptor(anchor: &LedgerAnchor) -> Result<SemanticHandle, Box<dyn Error>> {
     })?)
 }
 
-fn pack_and_receipt(
-) -> Result<(SemanticContextPack, SemanticCompressionReceipt), Box<dyn Error>> {
+fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt), Box<dyn Error>> {
     let anchor = LedgerAnchor::genesis("site:context-metadata");
     let pack = SemanticContextPack::publish(
         "context-pack:metadata",

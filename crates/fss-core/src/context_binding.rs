@@ -322,9 +322,7 @@ impl ContextExpansionBindingSet {
             pack_digest: pack.pack_digest,
             compression_receipt_digest: receipt.receipt_digest(),
             bindings,
-            binding_set_digest: ContentDigest::sha256(
-                b"unpublished-context-expansion-binding-set",
-            ),
+            binding_set_digest: ContentDigest::sha256(b"unpublished-context-expansion-binding-set"),
         };
         binding_set.validate_body(pack, receipt)?;
         binding_set.binding_set_digest = binding_set.computed_digest();

@@ -5,9 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::hydration::{HydrationError, HydrationLevel, SemanticHandle};
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, ContentDigest, ContextBindingError,
-    ContextExpansionBinding, ContextExpansionBindingSet, ContractError, HandoffCapsule, HandoffId,
-    TimestampNs,
+    CanonicalEncode, CanonicalEncoder, ContentDigest, ContextBindingError, ContextExpansionBinding,
+    ContextExpansionBindingSet, ContractError, HandoffCapsule, HandoffId, TimestampNs,
 };
 
 use crate::{ReferenceError, ReferenceSituationPublication};

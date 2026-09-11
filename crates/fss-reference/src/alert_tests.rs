@@ -128,7 +128,10 @@ fn delivered_alert_closes_verified_obligation() -> Result<(), Box<dyn Error>> {
     let mut journal = EffectJournal::new();
     let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
     assert_eq!(
-        journal.operation(&plan.intent.operation_id)?.state,
+        journal
+            .operation(&plan.intent.operation_id)
+            .ok_or("prepared operation receipt missing")?
+            .state,
         EffectState::Prepared
     );
 

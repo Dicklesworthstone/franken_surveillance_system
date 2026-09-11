@@ -35,7 +35,8 @@ fn main() -> ExitCode {
 
 fn run(arguments: Vec<String>) -> Result<String, String> {
     match arguments.as_slice() {
-        [] | [value] if value == "help" || value == "--help" || value == "-h" => {
+        [] => Ok(help_text().to_owned()),
+        [value] if value == "help" || value == "--help" || value == "-h" => {
             Ok(help_text().to_owned())
         }
         [command] if command == "list" => Ok(render_scenario_list()),

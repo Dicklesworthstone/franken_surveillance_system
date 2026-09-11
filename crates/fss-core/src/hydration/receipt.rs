@@ -175,12 +175,19 @@ impl HydrationReceipt {
             let Some(delivered) = self.delivered_level else {
                 return Err(ContractError::EvidenceRequired.into());
             };
-            let maximum = handle.maximum_level().ok_or(HydrationError::LevelUnavailable)?;
-            let predecessor = request.continuation.as_ref().map(|prior| prior.cursor_digest);
-            let expiry_ceiling = request.continuation.as_ref().map_or(
-                handle.retention_until,
-                |prior| prior.expires_at.min(handle.retention_until),
-            );
+            let maximum = handle
+                .maximum_level()
+                .ok_or(HydrationError::LevelUnavailable)?;
+            let predecessor = request
+                .continuation
+                .as_ref()
+                .map(|prior| prior.cursor_digest);
+            let expiry_ceiling = request
+                .continuation
+                .as_ref()
+                .map_or(handle.retention_until, |prior| {
+                    prior.expires_at.min(handle.retention_until)
+                });
             if cursor.scope != ContinuationScope::EvidenceHydration
                 || cursor.stream_id != self.handle_id
                 || cursor.contract_basis != request.contract_basis
