@@ -11,7 +11,6 @@ Machine source: `architecture/claims.json`.
 | `slo` | operational latency/availability/cost target achieved | operation-cost row, environment, workload, raw measurements, failures |
 | `benchmark` | comparative performance | pinned same-workload oracle, exact versions, raw samples, variance, command |
 | `compatibility` | exact device/model/provider tuple works | tuple identity, fixture, conformance/soak/crash/security evidence |
-
 | `agent_task` | task-level agent correctness, calibration, safety, and efficiency | sealed task corpus, anchor-aligned transcripts, CognitiveFacet owner/anchor compatibility, WorldEnvelope/control classification, task/evidence/safety metrics, resource cost vector, failures/abstentions/interventions |
 | `agent_accretion` | improvement from retained handoff/experience/procedures across repeated tasks | repeated-task corpus, no-memory baseline, quality non-regression, resource-savings distribution, harmful-transfer/trauma-guard evidence |
 
