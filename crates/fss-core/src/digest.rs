@@ -363,28 +363,25 @@ impl Sha256Hasher {
     }
 
     /// Computes the SHA-256 digest of input in one shot without heap allocations.
-    #[must_use]
-    pub fn digest(input: &[u8]) -> [u8; 32] {
+    pub fn digest(input: &[u8]) -> Result<[u8; 32], ContractError> {
         let mut hasher = Self::new();
         hasher.update(input);
-        match hasher.finalize() {
-            Ok(digest) => digest,
-            Err(_) => [0_u8; 32],
-        }
+        hasher.finalize()
     }
 
     /// Computes the SHA-256 digest of input in one shot, returning an error on overflow.
     pub fn try_digest(input: &[u8]) -> Result<[u8; 32], ContractError> {
-        let mut hasher = Self::new();
-        hasher.update(input);
-        hasher.finalize()
+        Self::digest(input)
     }
 }
 
 /// Computes SHA-256 without native bindings, third-party crates, or heap allocations.
 #[must_use]
 pub fn sha256(input: &[u8]) -> [u8; 32] {
-    Sha256Hasher::digest(input)
+    match Sha256Hasher::digest(input) {
+        Ok(digest) => digest,
+        Err(_) => unreachable!("in-memory slice cannot exceed SHA-256 maximum message length"),
+    }
 }
 
 fn process_block(state: &mut [u32; 8], block: &[u8; 64]) {

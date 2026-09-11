@@ -27,7 +27,7 @@ fn streaming_sha256_matches_oneshot_across_boundary_lengths() -> Result<(), Cont
         let expected = sha256(&pattern);
 
         // One-shot via Sha256Hasher::digest
-        let oneshot_digest = Sha256Hasher::digest(&pattern);
+        let oneshot_digest = Sha256Hasher::digest(&pattern)?;
         assert_eq!(
             oneshot_digest, expected,
             "Sha256Hasher::digest failed for len {len}"
