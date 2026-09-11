@@ -32,9 +32,7 @@ use core::fmt;
 use core::ops::Deref;
 use core::str::FromStr;
 
-use crate::canonical::{
-    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-};
+use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, RecoveryClass};
 
 // ---------------------------------------------------------------------------
@@ -93,14 +91,13 @@ pub fn validate_error_id(value: &str) -> Result<(), ContractError> {
     }
     let mut last_segment: Option<&str> = None;
     for segment in parts {
-        if let Some(prev) = last_segment {
-            if prev.is_empty()
+        if last_segment.is_some_and(|prev| {
+            prev.is_empty()
                 || !prev
                     .chars()
                     .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
-            {
-                return Err(ContractError::InvalidIdentifier);
-            }
+        }) {
+            return Err(ContractError::InvalidIdentifier);
         }
         last_segment = Some(segment);
     }
@@ -501,10 +498,7 @@ impl RefusalDetail {
     }
 
     /// Constructs an observability refusal detail.
-    pub fn not_observable(
-        message: impl Into<String>,
-        coverage_witness_required: bool,
-    ) -> Self {
+    pub fn not_observable(message: impl Into<String>, coverage_witness_required: bool) -> Self {
         Self {
             reason: RefusalReason::NotObservable,
             message: message.into(),
@@ -708,10 +702,7 @@ impl<T, E> OperationOutcome<T, E> {
     }
 
     /// Convenience constructor for an unobservable domain refusal.
-    pub fn not_observable(
-        message: impl Into<String>,
-        coverage_witness_required: bool,
-    ) -> Self {
+    pub fn not_observable(message: impl Into<String>, coverage_witness_required: bool) -> Self {
         Self::UnauthorizedOrNotObservable(RefusalDetail::not_observable(
             message,
             coverage_witness_required,
