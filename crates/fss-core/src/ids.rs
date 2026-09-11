@@ -840,10 +840,10 @@ impl TombstoneRegistry {
     /// Returns true if an identity has been tombstoned.
     #[must_use]
     pub fn is_tombstoned(&self, id: &ObjectId) -> bool {
-        match self.entries.get(id) {
-            Some(IdentityLifecycleState::Tombstoned { .. }) => true,
-            _ => false,
-        }
+        matches!(
+            self.entries.get(id),
+            Some(IdentityLifecycleState::Tombstoned { .. })
+        )
     }
 
     /// Returns the tombstone record if the identity is tombstoned.
