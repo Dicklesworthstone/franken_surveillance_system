@@ -912,31 +912,35 @@ mod tests {
     use crate::effects::{EffectState, ObligationState};
 
     #[test]
-    fn quiet_requires_and_earns_certified_absence() {
-        let report = run_scenario(ScenarioKind::Quiet).expect("quiet");
+    fn quiet_requires_and_earns_certified_absence() -> Result<(), Box<dyn std::error::Error>> {
+        let report = run_scenario(ScenarioKind::Quiet)?;
         assert_eq!(report.envelope, EnvelopeClass::CertifiedQuiet);
         assert!(report.absence.is_some());
         assert!(report.effect_state.is_none());
+        Ok(())
     }
 
     #[test]
-    fn raccoon_is_benign_without_alert_effect() {
-        let report = run_scenario(ScenarioKind::Raccoon).expect("raccoon");
+    fn raccoon_is_benign_without_alert_effect() -> Result<(), Box<dyn std::error::Error>> {
+        let report = run_scenario(ScenarioKind::Raccoon)?;
         assert_eq!(report.envelope, EnvelopeClass::BenignActivity);
         assert!(report.effect_state.is_none());
+        Ok(())
     }
 
     #[test]
-    fn independent_intrusion_observations_verify_alert() {
-        let report = run_scenario(ScenarioKind::Intrusion).expect("intrusion");
+    fn independent_intrusion_observations_verify_alert() -> Result<(), Box<dyn std::error::Error>> {
+        let report = run_scenario(ScenarioKind::Intrusion)?;
         assert_eq!(report.envelope, EnvelopeClass::CorroboratedThreat);
         assert_eq!(report.effect_state, Some(EffectState::Verified));
         assert_eq!(report.obligation_state, Some(ObligationState::Satisfied));
+        Ok(())
     }
 
     #[test]
-    fn sneaky_intrusion_remains_protected_when_coverage_has_a_gap() {
-        let report = run_scenario(ScenarioKind::Sneaky).expect("sneaky");
+    fn sneaky_intrusion_remains_protected_when_coverage_has_a_gap()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let report = run_scenario(ScenarioKind::Sneaky)?;
         assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
         assert!(report.absence.is_none());
         assert!(
@@ -945,19 +949,23 @@ mod tests {
                 .iter()
                 .any(|affordance| affordance.operation.starts_with("investigate."))
         );
+        Ok(())
     }
 
     #[test]
-    fn lost_ack_is_reconciled_without_duplicate_dispatch() {
-        let report = run_scenario(ScenarioKind::LostAcknowledgement).expect("lost ack");
+    fn lost_ack_is_reconciled_without_duplicate_dispatch() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let report = run_scenario(ScenarioKind::LostAcknowledgement)?;
         assert!(report.transient_indeterminate);
         assert_eq!(report.effect_state, Some(EffectState::Verified));
         assert_eq!(report.obligation_state, Some(ObligationState::Satisfied));
+        Ok(())
     }
 
     #[test]
-    fn corrupted_source_destroys_coverage_not_truthfulness() {
-        let report = run_scenario(ScenarioKind::CorruptSource).expect("corrupt source");
+    fn corrupted_source_destroys_coverage_not_truthfulness()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let report = run_scenario(ScenarioKind::CorruptSource)?;
         assert_eq!(report.envelope, EnvelopeClass::ProtectedResidual);
         assert!(report.absence.is_none());
         assert!(
@@ -966,10 +974,11 @@ mod tests {
                 .iter()
                 .any(|warning| warning.starts_with("source_corrupt:"))
         );
+        Ok(())
     }
 
     #[test]
-    fn replay_is_byte_identical() {
+    fn replay_is_byte_identical() -> Result<(), Box<dyn std::error::Error>> {
         for scenario in [
             ScenarioKind::Quiet,
             ScenarioKind::Raccoon,
@@ -978,9 +987,10 @@ mod tests {
             ScenarioKind::LostAcknowledgement,
             ScenarioKind::CorruptSource,
         ] {
-            let first = run_scenario(scenario).expect("first").render_json();
-            let second = run_scenario(scenario).expect("second").render_json();
+            let first = run_scenario(scenario)?.render_json();
+            let second = run_scenario(scenario)?.render_json();
             assert_eq!(first, second, "scenario {} drifted", scenario.as_str());
         }
+        Ok(())
     }
 }

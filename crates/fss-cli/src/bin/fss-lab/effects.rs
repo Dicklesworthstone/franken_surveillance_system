@@ -213,14 +213,14 @@ impl EffectCoordinator {
             }
             return Err(EffectError::IdempotencyConflict(idempotency_key));
         }
-        if let Some(existing_operation) = self.obligation_owners.get(&obligation_id) {
-            if existing_operation != &operation_id {
-                return Err(EffectError::ObligationConflict {
-                    obligation_id,
-                    existing_operation: existing_operation.clone(),
-                    proposed_operation: operation_id,
-                });
-            }
+        if let Some(existing_operation) = self.obligation_owners.get(&obligation_id)
+            && existing_operation != &operation_id
+        {
+            return Err(EffectError::ObligationConflict {
+                obligation_id,
+                existing_operation: existing_operation.clone(),
+                proposed_operation: operation_id,
+            });
         }
 
         let obligation_digest = obligation_digest(
@@ -267,27 +267,19 @@ impl EffectCoordinator {
         idempotency_key: &str,
         outcome: DispatchOutcome,
     ) -> Result<EffectOperation, EffectError> {
-        let current = self
-            .operations
-            .get(idempotency_key)
-            .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?
-            .state;
-        if current == EffectState::Indeterminate {
-            let id = self
+        let (current, operation_id) = {
+            let op = self
                 .operations
                 .get(idempotency_key)
-                .expect("operation checked above")
-                .id
-                .clone();
-            return Err(EffectError::BlindRetryForbidden(id));
+                .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?;
+            (op.state, op.id.clone())
+        };
+        if current == EffectState::Indeterminate {
+            return Err(EffectError::BlindRetryForbidden(operation_id));
         }
         if current != EffectState::Prepared {
-            let operation = self
-                .operations
-                .get(idempotency_key)
-                .expect("operation checked above");
             return Err(EffectError::InvalidTransition {
-                operation_id: operation.id.clone(),
+                operation_id,
                 from: current,
                 attempted: "dispatch",
             });
@@ -307,20 +299,16 @@ impl EffectCoordinator {
     }
 
     pub fn verify(&mut self, idempotency_key: &str) -> Result<EffectOperation, EffectError> {
-        let current = self
-            .operations
-            .get(idempotency_key)
-            .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?
-            .state;
-        if current != EffectState::AppliedAwaitingVerification {
-            let id = self
+        let (current, operation_id) = {
+            let op = self
                 .operations
                 .get(idempotency_key)
-                .expect("operation checked above")
-                .id
-                .clone();
+                .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?;
+            (op.state, op.id.clone())
+        };
+        if current != EffectState::AppliedAwaitingVerification {
             return Err(EffectError::InvalidTransition {
-                operation_id: id,
+                operation_id,
                 from: current,
                 attempted: "verify",
             });
@@ -338,20 +326,16 @@ impl EffectCoordinator {
         idempotency_key: &str,
         observation: ReconciliationObservation,
     ) -> Result<EffectOperation, EffectError> {
-        let current = self
-            .operations
-            .get(idempotency_key)
-            .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?
-            .state;
-        if current != EffectState::Indeterminate {
-            let id = self
+        let (current, operation_id) = {
+            let op = self
                 .operations
                 .get(idempotency_key)
-                .expect("operation checked above")
-                .id
-                .clone();
+                .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?;
+            (op.state, op.id.clone())
+        };
+        if current != EffectState::Indeterminate {
             return Err(EffectError::InvalidTransition {
-                operation_id: id,
+                operation_id,
                 from: current,
                 attempted: "reconcile",
             });
@@ -375,35 +359,27 @@ impl EffectCoordinator {
     }
 
     pub fn cancel(&mut self, idempotency_key: &str) -> Result<EffectOperation, EffectError> {
-        let current = self
-            .operations
-            .get(idempotency_key)
-            .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?
-            .state;
+        let (current, operation_id, existing_op) = {
+            let op = self
+                .operations
+                .get(idempotency_key)
+                .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?;
+            (op.state, op.id.clone(), op.clone())
+        };
         let next = match current {
             EffectState::Prepared => EffectState::Cancelled,
             EffectState::Dispatching | EffectState::AppliedAwaitingVerification => {
                 EffectState::CancelRequested
             }
             EffectState::Indeterminate => {
-                let id = self
-                    .operations
-                    .get(idempotency_key)
-                    .expect("operation checked above")
-                    .id
-                    .clone();
                 return Err(EffectError::InvalidTransition {
-                    operation_id: id,
+                    operation_id,
                     from: current,
                     attempted: "cancel without reconciliation",
                 });
             }
             _ => {
-                let operation = self
-                    .operations
-                    .get(idempotency_key)
-                    .expect("operation checked above");
-                return Ok(operation.clone());
+                return Ok(existing_op);
             }
         };
         self.transition_effect(idempotency_key, next, None)?;
@@ -575,96 +551,87 @@ mod tests {
     };
 
     #[test]
-    fn exact_idempotent_prepare_returns_the_existing_operation() {
+    fn exact_idempotent_prepare_returns_the_existing_operation()
+    -> Result<(), Box<dyn std::error::Error>> {
         let mut coordinator = EffectCoordinator::default();
-        let first = coordinator
-            .prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")
-            .expect("prepare");
-        let second = coordinator
-            .prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")
-            .expect("repeat");
+        let first =
+            coordinator.prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")?;
+        let second =
+            coordinator.prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")?;
         assert_eq!(first, second);
+        Ok(())
     }
 
     #[test]
-    fn idempotency_drift_fails() {
+    fn idempotency_drift_fails() -> Result<(), Box<dyn std::error::Error>> {
         let mut coordinator = EffectCoordinator::default();
-        coordinator
-            .prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")
-            .expect("prepare");
+        coordinator.prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")?;
         assert!(matches!(
             coordinator.prepare("op-2", "key-1", "obl-2", "different", "different"),
             Err(EffectError::IdempotencyConflict(_))
         ));
+        Ok(())
     }
 
     #[test]
-    fn obligation_cannot_drift_between_operations() {
+    fn obligation_cannot_drift_between_operations() -> Result<(), Box<dyn std::error::Error>> {
         let mut coordinator = EffectCoordinator::default();
-        coordinator
-            .prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")
-            .expect("prepare");
+        coordinator.prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")?;
         assert!(matches!(
             coordinator.prepare("op-2", "key-2", "obl-1", "log-event", "log visible"),
             Err(EffectError::ObligationConflict { .. })
         ));
+        Ok(())
     }
 
     #[test]
-    fn lost_ack_is_indeterminate_and_blocks_blind_retry() {
+    fn lost_ack_is_indeterminate_and_blocks_blind_retry() -> Result<(), Box<dyn std::error::Error>>
+    {
         let mut coordinator = EffectCoordinator::default();
-        coordinator
-            .prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")
-            .expect("prepare");
-        let operation = coordinator
-            .dispatch("key-1", DispatchOutcome::LostAcknowledgement)
-            .expect("dispatch");
+        coordinator.prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")?;
+        let operation = coordinator.dispatch("key-1", DispatchOutcome::LostAcknowledgement)?;
         assert_eq!(operation.state, EffectState::Indeterminate);
         assert_eq!(
-            coordinator.obligation("obl-1").expect("obligation").state,
+            coordinator
+                .obligation("obl-1")
+                .ok_or("missing obligation")?
+                .state,
             ObligationState::Indeterminate
         );
         assert!(matches!(
             coordinator.dispatch("key-1", DispatchOutcome::Acknowledged),
             Err(EffectError::BlindRetryForbidden(_))
         ));
+        Ok(())
     }
 
     #[test]
-    fn reconciliation_can_prove_completion() {
+    fn reconciliation_can_prove_completion() -> Result<(), Box<dyn std::error::Error>> {
         let mut coordinator = EffectCoordinator::default();
-        coordinator
-            .prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")
-            .expect("prepare");
-        coordinator
-            .dispatch("key-1", DispatchOutcome::LostAcknowledgement)
-            .expect("dispatch");
-        let operation = coordinator
-            .reconcile("key-1", ReconciliationObservation::AppliedAndVerified)
-            .expect("reconcile");
+        coordinator.prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")?;
+        coordinator.dispatch("key-1", DispatchOutcome::LostAcknowledgement)?;
+        let operation =
+            coordinator.reconcile("key-1", ReconciliationObservation::AppliedAndVerified)?;
         assert_eq!(operation.state, EffectState::Verified);
         assert_eq!(
-            coordinator.obligation("obl-1").expect("obligation").state,
+            coordinator
+                .obligation("obl-1")
+                .ok_or("missing obligation")?
+                .state,
             ObligationState::Satisfied
         );
+        Ok(())
     }
 
     #[test]
-    fn proven_non_application_allows_same_key_retry() {
+    fn proven_non_application_allows_same_key_retry() -> Result<(), Box<dyn std::error::Error>> {
         let mut coordinator = EffectCoordinator::default();
-        coordinator
-            .prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")
-            .expect("prepare");
-        coordinator
-            .dispatch("key-1", DispatchOutcome::LostAcknowledgement)
-            .expect("dispatch");
-        coordinator
-            .reconcile("key-1", ReconciliationObservation::ProvenNotApplied)
-            .expect("reconcile");
-        let operation = coordinator
-            .dispatch("key-1", DispatchOutcome::Acknowledged)
-            .expect("retry");
+        coordinator.prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")?;
+        coordinator.dispatch("key-1", DispatchOutcome::LostAcknowledgement)?;
+        coordinator.reconcile("key-1", ReconciliationObservation::ProvenNotApplied)?;
+        let operation = coordinator.dispatch("key-1", DispatchOutcome::Acknowledged)?;
         assert_eq!(operation.state, EffectState::AppliedAwaitingVerification);
         assert_eq!(operation.dispatch_attempts, 2);
+        Ok(())
     }
 }
