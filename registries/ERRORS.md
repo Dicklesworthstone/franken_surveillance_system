@@ -50,3 +50,40 @@ operation states rather than generic errors.
 | `ERR-AGENT-CASE-BUDGET-001` | investigation cannot discriminate remaining hypotheses within declared budget | return residual uncertainty and explicit next probe/approval options |
 | `ERR-AGENT-PROTOCOL-001` | presentation attempted an unregistered verb/view or changed semantic meaning | reject and repair registry/transport drift |
 | `ERR-AGENT-HIDDEN-STATE-001` | required mission state exists only in conversation or caller memory | persist typed mission/workspace/case/plan/finding/handoff state before proceeding |
+
+## Subordinate dependency audit diagnostic registry (DEP-AUD)
+
+The `DEP-AUD-*` namespace provides stable, structured diagnostics emitted during repository policy,
+dependency auditing, and build gate qualification (`GATE-000`, `QL-POLICY-001`). Unlike runtime
+agent operational errors (`ERR-*`), `DEP-AUD-*` diagnostics identify static configuration, manifest,
+target root, or resolved dependency closure violations before compilation and release qualification.
+
+Every `DEP-AUD` finding has a reviewed canonical definition, stable severity, parameter schema,
+triggering condition, affected qualification gate, remediation guidance, and exit behavior. Unknown
+or drifted IDs are rejected by the policy lane (`scripts/check-policy.py`).
+
+| ID | Severity | Trigger condition | Remediation guidance | Gate effect | Retry policy |
+|---|---|---|---|---|---|
+| `DEP-AUD-001` | error | required-true dependency-policy key is absent or not true | correct the reviewed allowlist policy value or amend the constitution; never weaken the check | `GATE-000`, `QL-POLICY-001` | repair configuration before re-running qualification |
+| `DEP-AUD-002` | error | required-false dependency-policy key is absent or not false | remove the prohibited allowance or complete a reviewed constitutional change; never weaken the check | `GATE-000`, `QL-POLICY-001` | repair configuration before re-running qualification |
+| `DEP-AUD-010` | error | a declared workspace member manifest is missing | restore/correct the exact member manifest and source fence before dependency claims | `GATE-000`, `QL-POLICY-001` | restore missing Cargo.toml before re-running qualification |
+| `DEP-AUD-011` | error | a dependency section is not a TOML table | repair the manifest shape; do not ignore or coerce malformed dependency declarations | `GATE-000`, `QL-POLICY-001` | reformat dependency section before re-running qualification |
+| `DEP-AUD-012` | error | a path dependency escapes the frozen repository or sibling closure | move it into the authorized closure or explicitly admit and pin the dependency | `GATE-000`, `QL-POLICY-001` | retarget path dependency before re-running qualification |
+| `DEP-AUD-013` | error | a Git dependency lacks an exact 40-hex revision | pin an immutable reviewed commit and retain source/provenance evidence | `GATE-000`, `QL-POLICY-001` | pin 40-hex git revision before re-running qualification |
+| `DEP-AUD-014` | error | a build dependency is present without constitutional admission | remove it or complete the explicit dependency/ADR/security admission; no implicit build scripts | `GATE-000`, `QL-POLICY-001` | remove build-dependencies before re-running qualification |
+| `DEP-AUD-015` | error | a direct dependency names a forbidden crate | remove the forbidden crate and repair the design without an unsafe/foreign substitute | `GATE-000`, `QL-POLICY-001` | remove forbidden crate before re-running qualification |
+| `DEP-AUD-016` | error | a direct external dependency is outside the closed allowlist | remove it or add a reviewed exact allowlist/DEP/ADR admission with closure proof | `GATE-000`, `QL-POLICY-001` | admit or remove dependency before re-running qualification |
+| `DEP-AUD-017` | error | an external dependency does not disable default features | set default-features=false and explicitly admit only audited features | `GATE-000`, `QL-POLICY-001` | set default-features = false before re-running qualification |
+| `DEP-AUD-018` | error | workspace-inherited dependency resolution failure or missing workspace key | define the dependency in [workspace.dependencies] or remove workspace = true | `GATE-000`, `QL-POLICY-001` | configure workspace dependency before re-running qualification |
+| `DEP-AUD-019` | error | an undeclared non-member path crate was detected within the repository tree | declare the path crate in workspace members or remove it from the repository tree | `GATE-000`, `QL-POLICY-001` | declare member or remove crate before re-running qualification |
+| `DEP-AUD-020` | error | a crate has no inspectable Rust target root | restore/register the target root so unsafe and production-boundary policy is verifiable | `GATE-000`, `QL-POLICY-001` | add target root before re-running qualification |
+| `DEP-AUD-021` | error | a Rust target root lacks unconditional forbid unsafe_code | add the unconditional crate-level prohibition; no local exception path exists | `GATE-000`, `QL-POLICY-001` | add #![forbid(unsafe_code)] before re-running qualification |
+| `DEP-AUD-022` | error | FSS Rust source contains a forbidden production construct | remove unsafe, native/dynamic/foreign runtime, second executor, or prohibited construct | `GATE-000`, `QL-POLICY-001` | remove forbidden construct before re-running qualification |
+| `DEP-AUD-024` | error | workspace membership duplicate or ambiguous across glob and explicit patterns | ensure each member directory and crate name is uniquely declared once in workspace.members | `GATE-000`, `QL-POLICY-001` | eliminate duplicate members before re-running qualification |
+| `DEP-AUD-025` | error | declared workspace root manifest lacks [workspace] table | add [workspace] table to root Cargo.toml or correct the workspace path | `GATE-000`, `QL-POLICY-001` | add [workspace] table before re-running qualification |
+| `DEP-AUD-030` | error | a forbidden package is reachable in resolved Cargo metadata | remove it from the entire transitive closure and regenerate locked evidence | `GATE-000`, `QL-POLICY-001` | remove transitive forbidden dependency before re-running qualification |
+| `DEP-AUD-031` | error | a resolved package has a custom build target | remove or constitutionally admit the build script with exact offline/security proof; pure-Rust production | `GATE-000`, `QL-POLICY-001` | remove or admit build script before re-running qualification |
+| `DEP-AUD-032` | error | a resolved package declares native links | remove native linkage or complete a constitutional architecture change; pure-Rust production | `GATE-000`, `QL-POLICY-001` | eliminate native links before re-running qualification |
+| `DEP-AUD-033` | error | a resolved Git package source is not commit-resolved | pin and lock an immutable exact commit with source/provenance evidence | `GATE-000`, `QL-POLICY-001` | lock exact commit revision before re-running qualification |
+| `DEP-AUD-040` | error | required pinned-nightly offline Cargo metadata is unavailable | restore exact toolchain/cache/lock/sibling closure and rerun; policy-only execution cannot certify release | `GATE-000`, `QL-POLICY-001` | restore toolchain/cache before re-running qualification |
+| `DEP-AUD-041` | warning | target census drift between reference model and cargo metadata | reconcile target roots with cargo metadata to ensure no target is hidden or missing | `GATE-000`, `QL-POLICY-001` | reconcile target roots before re-running qualification |

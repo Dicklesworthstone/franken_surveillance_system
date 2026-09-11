@@ -246,8 +246,56 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
             fail(f"invalid Cargo.lock: {exc}")
 
     for finding in findings:
+        if finding.code not in dependency_audit.DIAGNOSTIC_REGISTRY:
+            fail(f"unregistered dependency audit diagnostic code: {finding.code} ({finding.path})")
         if finding.severity == "error":
             fail(f"{finding.code}: {finding.message} ({finding.path})")
+
+
+def diagnostic_policy() -> None:
+    errors_path = ROOT / "registries/ERRORS.md"
+    if not errors_path.is_file():
+        fail("registries/ERRORS.md is missing")
+        return
+    text = errors_path.read_text(encoding="utf-8")
+
+    err_matches = re.findall(r"^\| `(ERR-[A-Z0-9-]+)` \| (.*?) \| (.*?) \|$", text, flags=re.MULTILINE)
+    seen_err: set[str] = set()
+    for err_id, meaning, retry in err_matches:
+        if err_id in seen_err:
+            fail(f"duplicate error ID in registries/ERRORS.md: {err_id}")
+        seen_err.add(err_id)
+        if not re.fullmatch(r"ERR-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}", err_id):
+            fail(f"invalid error ID format in registries/ERRORS.md: {err_id}")
+
+    dep_aud_matches = re.findall(
+        r"^\| `(DEP-AUD-[0-9]{3})` \| `?([a-z]+)`? \| (.*?) \| (.*?) \| (.*?) \| (.*?) \|$",
+        text,
+        flags=re.MULTILINE,
+    )
+    seen_dep_aud: dict[str, tuple[str, str]] = {}
+    for code, severity, trigger, remediation, gate, retry in dep_aud_matches:
+        if code in seen_dep_aud:
+            fail(f"duplicate DEP-AUD diagnostic ID in registries/ERRORS.md: {code}")
+        seen_dep_aud[code] = (severity, trigger)
+        if not re.fullmatch(r"DEP-AUD-[0-9]{3}", code):
+            fail(f"invalid DEP-AUD diagnostic ID format: {code}")
+
+    registry_codes = set(dependency_audit.DIAGNOSTIC_REGISTRY.keys())
+    markdown_codes = set(seen_dep_aud.keys())
+
+    for code in sorted(registry_codes - markdown_codes):
+        fail(f"DEP-AUD diagnostic emitted by dependency_audit is missing from registries/ERRORS.md: {code}")
+    for code in sorted(markdown_codes - registry_codes):
+        fail(f"registries/ERRORS.md registers unknown DEP-AUD diagnostic: {code}")
+
+    for code in sorted(registry_codes & markdown_codes):
+        diag = dependency_audit.DIAGNOSTIC_REGISTRY[code]
+        sev, trig = seen_dep_aud[code]
+        if diag.severity != sev:
+            fail(f"DEP-AUD diagnostic {code} severity mismatch: code={diag.severity}, markdown={sev}")
+        if diag.trigger != trig:
+            fail(f"DEP-AUD diagnostic {code} trigger mismatch: code={diag.trigger!r}, markdown={trig!r}")
 
 
 def workflow_policy() -> None:
@@ -1138,6 +1186,7 @@ def main() -> int:
     canonical_mirror_policy()
     resolve_markdown_links()
     workflow_policy()
+    diagnostic_policy()
 
     manifest_entries = 0 if args.skip_manifest else validate_manifest()
 

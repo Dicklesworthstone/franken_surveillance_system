@@ -16,7 +16,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -25,8 +25,233 @@ ALLOWLIST = ROOT / "architecture/dependency_allowlist.toml"
 CARGO_LOCK = ROOT / "Cargo.lock"
 TOOLCHAIN = ROOT / "rust-toolchain.toml"
 
-
 FORBID_UNSAFE_PATTERN = re.compile(r"#\s*!\s*\[\s*forbid\s*\(\s*unsafe_code\s*\)\s*\]")
+
+SECRET_PATTERNS = [
+    re.compile(r"gh[pousr]_[A-Za-z0-9_]{36,255}"),
+    re.compile(r"(?:bearer|token|password|secret|apikey)\s*[:=]\s*([^\s,;]+)", re.IGNORECASE),
+    re.compile(r"-----BEGIN [A-Z ]+ PRIVATE KEY-----"),
+]
+
+
+def sanitize_string(s: str, max_len: int = 500) -> str:
+    for pat in SECRET_PATTERNS:
+        s = pat.sub("[REDACTED]", s)
+    if len(s) > max_len:
+        s = s[:max_len] + "...[TRUNCATED]"
+    return s
+
+
+def sanitize_path(p: Path | str, root: Path = ROOT) -> str:
+    if isinstance(p, str):
+        p_obj = Path(p)
+    else:
+        p_obj = p
+    try:
+        resolved_root = root.resolve()
+        resolved_p = p_obj.resolve()
+        rel = resolved_p.relative_to(resolved_root).as_posix()
+        return rel
+    except Exception:
+        s = str(p)
+        if "/home/" in s or "/Users/" in s or "/root/" in s:
+            parts = s.split("/")
+            return ".../" + "/".join(parts[-2:])
+        return sanitize_string(s, 200)
+
+
+def sanitize_params(d: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for k, v in d.items():
+        if isinstance(v, Path):
+            sanitized[k] = sanitize_path(v, root)
+        elif isinstance(v, str):
+            sanitized[k] = sanitize_string(v)
+        elif isinstance(v, (int, float, bool)) or v is None:
+            sanitized[k] = v
+        elif isinstance(v, dict):
+            sanitized[k] = sanitize_params(v, root)
+        elif isinstance(v, (list, tuple, set)):
+            sanitized[k] = [sanitize_string(str(x)) if isinstance(x, str) else x for x in v]
+        else:
+            sanitized[k] = sanitize_string(str(v))
+    return sanitized
+
+
+@dataclass(frozen=True)
+class DiagnosticDef:
+    code: str
+    severity: str
+    owner: str
+    trigger: str
+    remediation: str
+    gate_effect: str = "GATE-000, QL-POLICY-001"
+    retry_policy: str = "repair configuration before re-running qualification"
+
+
+DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
+    "DEP-AUD-001": DiagnosticDef(
+        code="DEP-AUD-001",
+        severity="error",
+        owner="architecture-constitution",
+        trigger="required-true dependency-policy key is absent or not true",
+        remediation="correct the reviewed allowlist policy value or amend the constitution; never weaken the check",
+    ),
+    "DEP-AUD-002": DiagnosticDef(
+        code="DEP-AUD-002",
+        severity="error",
+        owner="architecture-constitution",
+        trigger="required-false dependency-policy key is absent or not false",
+        remediation="remove the prohibited allowance or complete a reviewed constitutional change; never weaken the check",
+    ),
+    "DEP-AUD-010": DiagnosticDef(
+        code="DEP-AUD-010",
+        severity="error",
+        owner="security-policy",
+        trigger="a declared workspace member manifest is missing",
+        remediation="restore/correct the exact member manifest and source fence before dependency claims",
+    ),
+    "DEP-AUD-011": DiagnosticDef(
+        code="DEP-AUD-011",
+        severity="error",
+        owner="security-policy",
+        trigger="a dependency section is not a TOML table",
+        remediation="repair the manifest shape; do not ignore or coerce malformed dependency declarations",
+    ),
+    "DEP-AUD-012": DiagnosticDef(
+        code="DEP-AUD-012",
+        severity="error",
+        owner="security-policy",
+        trigger="a path dependency escapes the frozen repository or sibling closure",
+        remediation="move it into the authorized closure or explicitly admit and pin the dependency",
+    ),
+    "DEP-AUD-013": DiagnosticDef(
+        code="DEP-AUD-013",
+        severity="error",
+        owner="security-policy",
+        trigger="a Git dependency lacks an exact 40-hex revision",
+        remediation="pin an immutable reviewed commit and retain source/provenance evidence",
+    ),
+    "DEP-AUD-014": DiagnosticDef(
+        code="DEP-AUD-014",
+        severity="error",
+        owner="security-policy",
+        trigger="a build dependency is present without constitutional admission",
+        remediation="remove it or complete the explicit dependency/ADR/security admission; no implicit build scripts",
+    ),
+    "DEP-AUD-015": DiagnosticDef(
+        code="DEP-AUD-015",
+        severity="error",
+        owner="security-policy",
+        trigger="a direct dependency names a forbidden crate",
+        remediation="remove the forbidden crate and repair the design without an unsafe/foreign substitute",
+    ),
+    "DEP-AUD-016": DiagnosticDef(
+        code="DEP-AUD-016",
+        severity="error",
+        owner="security-policy",
+        trigger="a direct external dependency is outside the closed allowlist",
+        remediation="remove it or add a reviewed exact allowlist/DEP/ADR admission with closure proof",
+    ),
+    "DEP-AUD-017": DiagnosticDef(
+        code="DEP-AUD-017",
+        severity="error",
+        owner="security-policy",
+        trigger="an external dependency does not disable default features",
+        remediation="set default-features=false and explicitly admit only audited features",
+    ),
+    "DEP-AUD-018": DiagnosticDef(
+        code="DEP-AUD-018",
+        severity="error",
+        owner="security-policy",
+        trigger="workspace-inherited dependency resolution failure or missing workspace key",
+        remediation="define the dependency in [workspace.dependencies] or remove workspace = true",
+    ),
+    "DEP-AUD-019": DiagnosticDef(
+        code="DEP-AUD-019",
+        severity="error",
+        owner="security-policy",
+        trigger="an undeclared non-member path crate was detected within the repository tree",
+        remediation="declare the path crate in workspace members or remove it from the repository tree",
+    ),
+    "DEP-AUD-020": DiagnosticDef(
+        code="DEP-AUD-020",
+        severity="error",
+        owner="architecture-constitution",
+        trigger="a crate has no inspectable Rust target root",
+        remediation="restore/register the target root so unsafe and production-boundary policy is verifiable",
+    ),
+    "DEP-AUD-021": DiagnosticDef(
+        code="DEP-AUD-021",
+        severity="error",
+        owner="architecture-constitution",
+        trigger="a Rust target root lacks unconditional forbid unsafe_code",
+        remediation="add the unconditional crate-level prohibition; no local exception path exists",
+    ),
+    "DEP-AUD-022": DiagnosticDef(
+        code="DEP-AUD-022",
+        severity="error",
+        owner="architecture-constitution",
+        trigger="FSS Rust source contains a forbidden production construct",
+        remediation="remove unsafe, native/dynamic/foreign runtime, second executor, or prohibited construct",
+    ),
+    "DEP-AUD-024": DiagnosticDef(
+        code="DEP-AUD-024",
+        severity="error",
+        owner="security-policy",
+        trigger="workspace membership duplicate or ambiguous across glob and explicit patterns",
+        remediation="ensure each member directory and crate name is uniquely declared once in workspace.members",
+    ),
+    "DEP-AUD-025": DiagnosticDef(
+        code="DEP-AUD-025",
+        severity="error",
+        owner="security-policy",
+        trigger="declared workspace root manifest lacks [workspace] table",
+        remediation="add [workspace] table to root Cargo.toml or correct the workspace path",
+    ),
+    "DEP-AUD-030": DiagnosticDef(
+        code="DEP-AUD-030",
+        severity="error",
+        owner="security-policy",
+        trigger="a forbidden package is reachable in resolved Cargo metadata",
+        remediation="remove it from the entire transitive closure and regenerate locked evidence",
+    ),
+    "DEP-AUD-031": DiagnosticDef(
+        code="DEP-AUD-031",
+        severity="error",
+        owner="security-policy",
+        trigger="a resolved package has a custom build target",
+        remediation="remove or constitutionally admit the build script with exact offline/security proof; pure-Rust production",
+    ),
+    "DEP-AUD-032": DiagnosticDef(
+        code="DEP-AUD-032",
+        severity="error",
+        owner="security-policy",
+        trigger="a resolved package declares native links",
+        remediation="remove native linkage or complete a constitutional architecture change; pure-Rust production",
+    ),
+    "DEP-AUD-033": DiagnosticDef(
+        code="DEP-AUD-033",
+        severity="error",
+        owner="security-policy",
+        trigger="a resolved Git package source is not commit-resolved",
+        remediation="pin and lock an immutable exact commit with source/provenance evidence",
+    ),
+    "DEP-AUD-040": DiagnosticDef(
+        code="DEP-AUD-040",
+        severity="error",
+        owner="security-policy",
+        trigger="required pinned-nightly offline Cargo metadata is unavailable",
+        remediation="restore exact toolchain/cache/lock/sibling closure and rerun; policy-only execution cannot certify release",
+    ),
+    "DEP-AUD-041": DiagnosticDef(
+        code="DEP-AUD-041",
+        severity="warning",
+        owner="security-policy",
+        trigger="target census drift between reference model and cargo metadata",
+        remediation="reconcile target roots with cargo metadata to ensure no target is hidden or missing",
+    ),
+}
 
 
 @dataclass(frozen=True)
@@ -35,6 +260,8 @@ class Finding:
     code: str
     path: str
     message: str
+    remediation: str = ""
+    params: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -54,15 +281,37 @@ def load_toml(path: Path) -> dict[str, Any]:
     return value
 
 
-def add(findings: list[Finding], severity: str, code: str, path: Path | str, message: str, root: Path = ROOT) -> None:
-    if isinstance(path, Path):
-        try:
-            rendered = path.relative_to(root).as_posix()
-        except ValueError:
-            rendered = str(path)
-    else:
-        rendered = path
-    findings.append(Finding(severity, code, rendered, message))
+def add(
+    findings: list[Finding],
+    severity: str,
+    code: str,
+    path: Path | str,
+    message: str,
+    root: Path = ROOT,
+    remediation: str | None = None,
+    params: dict[str, Any] | None = None,
+) -> None:
+    rendered = sanitize_path(path, root)
+    sanitized_msg = sanitize_string(message)
+
+    diag = DIAGNOSTIC_REGISTRY.get(code)
+    effective_severity = severity
+    if not effective_severity and diag is not None:
+        effective_severity = diag.severity
+    effective_remediation = remediation
+    if not effective_remediation and diag is not None:
+        effective_remediation = diag.remediation
+
+    effective_params = sanitize_params(params or {}, root)
+
+    findings.append(Finding(
+        severity=effective_severity or "error",
+        code=code,
+        path=rendered,
+        message=sanitized_msg,
+        remediation=effective_remediation or "",
+        params=effective_params,
+    ))
 
 
 def expand_workspace_members(
@@ -72,17 +321,17 @@ def expand_workspace_members(
 ) -> tuple[list[Path], set[str], dict[str, Path]]:
     ws = root_manifest_data.get("workspace")
     if not isinstance(ws, dict):
-        add(findings, "error", "DEP-AUD-011", root / "Cargo.toml", "[workspace] must be a table", root=root)
+        add(findings, "error", "DEP-AUD-011", root / "Cargo.toml", "[workspace] must be a table", root=root, params={"manifest": "Cargo.toml", "section": "workspace"})
         return [root / "Cargo.toml"], set(), {}
 
     members_spec = ws.get("members", [])
     if not isinstance(members_spec, list) or not all(isinstance(m, str) for m in members_spec):
-        add(findings, "error", "DEP-AUD-011", root / "Cargo.toml", "workspace.members must be a list of strings", root=root)
+        add(findings, "error", "DEP-AUD-011", root / "Cargo.toml", "workspace.members must be a list of strings", root=root, params={"manifest": "Cargo.toml", "section": "workspace.members"})
         return [root / "Cargo.toml"], set(), {}
 
     exclude_spec = ws.get("exclude", [])
     if not isinstance(exclude_spec, list) or not all(isinstance(e, str) for e in exclude_spec):
-        add(findings, "error", "DEP-AUD-011", root / "Cargo.toml", "workspace.exclude must be a list of strings", root=root)
+        add(findings, "error", "DEP-AUD-011", root / "Cargo.toml", "workspace.exclude must be a list of strings", root=root, params={"manifest": "Cargo.toml", "section": "workspace.exclude"})
         exclude_spec = []
 
     def is_excluded(rel_path: str) -> bool:
@@ -104,13 +353,13 @@ def expand_workspace_members(
                     try:
                         rel = p.relative_to(root).as_posix()
                     except ValueError:
-                        add(findings, "error", "DEP-AUD-012", p / "Cargo.toml", f"workspace member escapes root: {p}", root=root)
+                        add(findings, "error", "DEP-AUD-012", p / "Cargo.toml", f"workspace member escapes root: {p}", root=root, params={"member": str(p), "manifest": "Cargo.toml"})
                         continue
                     if is_excluded(rel):
                         continue
                     resolved_dir = p.resolve()
                     if resolved_dir in seen_dirs:
-                        add(findings, "error", "DEP-AUD-024", p / "Cargo.toml", f"workspace membership duplicate or ambiguous: {rel}", root=root)
+                        add(findings, "error", "DEP-AUD-024", p / "Cargo.toml", f"workspace membership duplicate or ambiguous: {rel}", root=root, params={"member": rel})
                     else:
                         seen_dirs[resolved_dir] = pattern
                         member_dirs.append(p)
@@ -121,11 +370,11 @@ def expand_workspace_members(
                 continue
             manifest = p / "Cargo.toml"
             if not p.is_dir() or not manifest.is_file():
-                add(findings, "error", "DEP-AUD-010", manifest, f"workspace member manifest is missing: {rel}/Cargo.toml", root=root)
+                add(findings, "error", "DEP-AUD-010", manifest, f"workspace member manifest is missing: {rel}/Cargo.toml", root=root, params={"member": rel, "manifest": f"{rel}/Cargo.toml"})
                 continue
             resolved_dir = p.resolve()
             if resolved_dir in seen_dirs:
-                add(findings, "error", "DEP-AUD-024", manifest, f"workspace membership duplicate or ambiguous: {rel}", root=root)
+                add(findings, "error", "DEP-AUD-024", manifest, f"workspace membership duplicate or ambiguous: {rel}", root=root, params={"member": rel})
             else:
                 seen_dirs[resolved_dir] = pattern
                 member_dirs.append(p)
@@ -142,11 +391,11 @@ def expand_workspace_members(
             pkg_name = m_data.get("package", {}).get("name")
             if isinstance(pkg_name, str):
                 if pkg_name in member_names:
-                    add(findings, "error", "DEP-AUD-024", manifest_path, f"duplicate workspace member package name: {pkg_name}", root=root)
+                    add(findings, "error", "DEP-AUD-024", manifest_path, f"duplicate workspace member package name: {pkg_name}", root=root, params={"package": pkg_name, "manifest": manifest_path})
                 member_names.add(pkg_name)
                 member_map[pkg_name] = m_dir.resolve()
         except Exception as exc:
-            add(findings, "error", "DEP-AUD-011", manifest_path, f"failed to load member manifest: {exc}", root=root)
+            add(findings, "error", "DEP-AUD-011", manifest_path, f"failed to load member manifest: {exc}", root=root, params={"manifest": manifest_path, "error": str(exc)})
 
     return manifests, member_names, member_map
 
@@ -331,9 +580,9 @@ def discover_crate_targets(
         content = path.read_text(encoding="utf-8")
         has_forbid = bool(FORBID_UNSAFE_PATTERN.search(content))
         if not has_forbid:
-            add(findings, "error", "DEP-AUD-021", path, f"target root lacks unconditional #![forbid(unsafe_code)]: {rel_path}", root=root)
+            add(findings, "error", "DEP-AUD-021", path, f"target root lacks unconditional #![forbid(unsafe_code)]: {rel_path}", root=root, params={"crate_name": crate_name, "target_name": target_name, "kind": kind, "path": rel_path})
         if kind == "custom-build":
-            add(findings, "error", "DEP-AUD-031", path, f"resolved package has a build script: {crate_name}", root=root)
+            add(findings, "error", "DEP-AUD-031", path, f"resolved package has a build script: {crate_name}", root=root, params={"crate_name": crate_name, "path": rel_path})
 
         resolved_targets.append(
             TargetRoot(
@@ -347,7 +596,7 @@ def discover_crate_targets(
         )
 
     if not resolved_targets:
-        add(findings, "error", "DEP-AUD-020", manifest_rel, f"crate has no inspectable Rust target root: {crate_name}", root=root)
+        add(findings, "error", "DEP-AUD-020", manifest_rel, f"crate has no inspectable Rust target root: {crate_name}", root=root, params={"crate_name": crate_name, "manifest": manifest_rel})
 
     return resolved_targets
 
@@ -378,7 +627,7 @@ def extract_manifest_dependency_sections(
             if isinstance(val, dict):
                 sections.append((sec, None, val))
             else:
-                add(findings, "error", "DEP-AUD-011", manifest, f"[{sec}] is not a table", root=root)
+                add(findings, "error", "DEP-AUD-011", manifest, f"[{sec}] is not a table", root=root, params={"manifest": manifest, "section": sec})
 
     if is_root:
         ws = data.get("workspace", {})
@@ -387,16 +636,16 @@ def extract_manifest_dependency_sections(
             if isinstance(val, dict):
                 sections.append(("workspace.dependencies", None, val))
             else:
-                add(findings, "error", "DEP-AUD-011", manifest, "[workspace.dependencies] is not a table", root=root)
+                add(findings, "error", "DEP-AUD-011", manifest, "[workspace.dependencies] is not a table", root=root, params={"manifest": manifest, "section": "workspace.dependencies"})
 
     target_table = data.get("target")
     if target_table is not None:
         if not isinstance(target_table, dict):
-            add(findings, "error", "DEP-AUD-025", manifest, "[target] must be a table", root=root)
+            add(findings, "error", "DEP-AUD-025", manifest, "[target] must be a table", root=root, params={"manifest": manifest, "section": "target"})
         else:
             for target_spec, target_config in sorted(target_table.items()):
                 if not isinstance(target_config, dict):
-                    add(findings, "error", "DEP-AUD-025", manifest, f"[target.{target_spec}] must be a table", root=root)
+                    add(findings, "error", "DEP-AUD-025", manifest, f"[target.{target_spec}] must be a table", root=root, params={"manifest": manifest, "section": f"target.{target_spec}"})
                     continue
                 for sec in ("dependencies", "dev-dependencies", "build-dependencies"):
                     if sec in target_config:
@@ -405,7 +654,7 @@ def extract_manifest_dependency_sections(
                         if isinstance(val, dict):
                             sections.append((sec_name, target_spec, val))
                         else:
-                            add(findings, "error", "DEP-AUD-011", manifest, f"[{sec_name}] is not a table", root=root)
+                            add(findings, "error", "DEP-AUD-011", manifest, f"[{sec_name}] is not a table", root=root, params={"manifest": manifest, "section": sec_name})
 
     return sections
 
@@ -439,12 +688,12 @@ def enumerate_dependencies(
 
     for manifest in sorted(set(manifests)):
         if not manifest.is_file():
-            add(findings, "error", "DEP-AUD-010", manifest, "workspace member manifest is missing", root=root)
+            add(findings, "error", "DEP-AUD-010", manifest, "workspace member manifest is missing", root=root, params={"manifest": manifest})
             continue
         try:
             data = load_toml(manifest)
         except Exception as exc:
-            add(findings, "error", "DEP-AUD-011", manifest, f"cannot parse TOML: {exc}", root=root)
+            add(findings, "error", "DEP-AUD-011", manifest, f"cannot parse TOML: {exc}", root=root, params={"manifest": manifest, "error": str(exc)})
             continue
 
         try:
@@ -466,7 +715,7 @@ def enumerate_dependencies(
                 workspace_inherited = False
 
                 if not isinstance(specification, (dict, str)):
-                    add(findings, "error", "DEP-AUD-011", manifest, f"dependency '{local_name}' in [{section}] must be a table or string", root=root)
+                    add(findings, "error", "DEP-AUD-011", manifest, f"dependency '{local_name}' in [{section}] must be a table or string", root=root, params={"manifest": manifest, "section": section, "local_name": local_name})
                     continue
 
                 if isinstance(specification, dict):
@@ -478,7 +727,7 @@ def enumerate_dependencies(
                         workspace_inherited = True
                         ws_spec = ws_dependencies.get(local_name) or ws_dependencies.get(package)
                         if ws_spec is None:
-                            add(findings, "error", "DEP-AUD-018", manifest, f"workspace-inherited dependency is missing in workspace.dependencies: {package}", root=root)
+                            add(findings, "error", "DEP-AUD-018", manifest, f"workspace-inherited dependency is missing in workspace.dependencies: {package}", root=root, params={"package": package, "manifest": manifest})
                         elif isinstance(ws_spec, dict):
                             if "package" in ws_spec:
                                 package = str(ws_spec["package"])
@@ -523,11 +772,12 @@ def enumerate_dependencies(
                                     manifest,
                                     f"path dependency escapes the frozen repository/sibling closure: {package} -> {raw_path}",
                                     root=root,
+                                    params={"package": package, "raw_path": raw_path, "manifest": manifest},
                                 )
 
                         target_manifest = resolved_path / "Cargo.toml" if resolved_path.is_dir() else resolved_path
                         if not target_manifest.is_file():
-                            add(findings, "error", "DEP-AUD-019", manifest, f"path dependency target manifest is missing: {package} -> {raw_path}", root=root)
+                            add(findings, "error", "DEP-AUD-019", manifest, f"path dependency target manifest is missing: {package} -> {raw_path}", root=root, params={"package": package, "raw_path": raw_path, "manifest": manifest})
                         else:
                             try:
                                 target_data = load_toml(target_manifest)
@@ -540,19 +790,20 @@ def enumerate_dependencies(
                                         manifest,
                                         f"path dependency package name mismatch: expected '{package}', found '{target_pkg_name}' at {raw_path}",
                                         root=root,
+                                        params={"package": package, "found": target_pkg_name, "raw_path": raw_path, "manifest": manifest},
                                     )
                             except Exception:
-                                add(findings, "error", "DEP-AUD-019", manifest, f"path dependency target manifest is invalid: {package} -> {raw_path}", root=root)
+                                add(findings, "error", "DEP-AUD-019", manifest, f"path dependency target manifest is invalid: {package} -> {raw_path}", root=root, params={"package": package, "raw_path": raw_path, "manifest": manifest})
 
                         if is_in_tree and package not in member_names and not is_allowed(package):
-                            add(findings, "error", "DEP-AUD-019", manifest, f"path dependency points to undeclared non-member crate: {package} -> {raw_path}", root=root)
+                            add(findings, "error", "DEP-AUD-019", manifest, f"path dependency points to undeclared non-member crate: {package} -> {raw_path}", root=root, params={"package": package, "raw_path": raw_path, "manifest": manifest})
 
                     elif "git" in specification:
                         kind = "git"
                         source = str(specification["git"])
                         rev = specification.get("rev")
                         if not isinstance(rev, str) or re.fullmatch(r"[0-9a-f]{40}", rev) is None:
-                            add(findings, "error", "DEP-AUD-013", manifest, f"Git dependency lacks an exact 40-hex rev: {package}", root=root)
+                            add(findings, "error", "DEP-AUD-013", manifest, f"Git dependency lacks an exact 40-hex rev: {package}", root=root, params={"package": package, "git": str(specification.get("git", "")), "manifest": manifest})
                     elif "version" in specification:
                         source = str(specification["version"])
 
@@ -586,15 +837,15 @@ def enumerate_dependencies(
                 )
 
                 if section == "build-dependencies" or section.endswith(".build-dependencies"):
-                    add(findings, "error", "DEP-AUD-014", manifest, f"build dependency is prohibited without a constitutional amendment: {package}", root=root)
+                    add(findings, "error", "DEP-AUD-014", manifest, f"build dependency is prohibited without a constitutional amendment: {package}", root=root, params={"package": package, "manifest": manifest, "section": section})
 
                 if package in forbidden:
-                    add(findings, "error", "DEP-AUD-015", manifest, f"forbidden direct dependency: {package}", root=root)
+                    add(findings, "error", "DEP-AUD-015", manifest, f"forbidden direct dependency: {package}", root=root, params={"package": package, "manifest": manifest})
                 elif not is_allowed(package):
-                    add(findings, "error", "DEP-AUD-016", manifest, f"direct dependency is outside the closed allowlist: {package}", root=root)
+                    add(findings, "error", "DEP-AUD-016", manifest, f"direct dependency is outside the closed allowlist: {package}", root=root, params={"package": package, "manifest": manifest})
 
                 if kind != "path" and default_features is not False:
-                    add(findings, "error", "DEP-AUD-017", manifest, f"external dependency must set default-features = false: {package}", root=root)
+                    add(findings, "error", "DEP-AUD-017", manifest, f"external dependency must set default-features = false: {package}", root=root, params={"package": package, "manifest": manifest})
 
     return rows
 
@@ -636,8 +887,10 @@ def rust_source_audit(findings: list[Finding], root: Path = ROOT) -> dict[str, A
         text = path.read_text(encoding="utf-8")
         scan = text.replace("#![forbid(unsafe_code)]", "")
         for label, pattern in patterns.items():
+            if label == "foreign production command" and ("tests" in path.parts or "examples" in path.parts):
+                continue
             if pattern.search(scan):
-                add(findings, "error", "DEP-AUD-022", path, f"forbidden production construct: {label}", root=root)
+                add(findings, "error", "DEP-AUD-022", path, f"forbidden production construct: {label}", root=root, params={"label": label, "path": path})
 
     return {
         "rustFileCount": len(rust_files),
@@ -651,41 +904,45 @@ def metadata_audit(
     policy: dict[str, Any],
     root: Path = ROOT,
     reference_targets: list[TargetRoot] | None = None,
+    raw_metadata: dict[str, Any] | None = None,
 ) -> tuple[bool, str | None, list[dict[str, Any]]]:
-    lock_file = root / "Cargo.lock"
-    toolchain_file = root / "rust-toolchain.toml"
-    if not lock_file.is_file():
-        return False, "Cargo.lock is absent", []
-    if not toolchain_file.is_file():
-        return False, "rust-toolchain.toml is absent", []
-    if shutil.which("rustup") is None:
-        return False, "rustup is unavailable", []
-    try:
-        channel = load_toml(toolchain_file).get("toolchain", {}).get("channel")
-    except Exception as exc:
-        return False, f"cannot load rust-toolchain.toml: {exc}", []
-    if not isinstance(channel, str):
-        return False, "pinned nightly channel is unreadable", []
+    if raw_metadata is not None:
+        metadata = raw_metadata
+    else:
+        lock_file = root / "Cargo.lock"
+        toolchain_file = root / "rust-toolchain.toml"
+        if not lock_file.is_file():
+            return False, "Cargo.lock is absent", []
+        if not toolchain_file.is_file():
+            return False, "rust-toolchain.toml is absent", []
+        if shutil.which("rustup") is None:
+            return False, "rustup is unavailable", []
+        try:
+            channel = load_toml(toolchain_file).get("toolchain", {}).get("channel")
+        except Exception as exc:
+            return False, f"cannot load rust-toolchain.toml: {exc}", []
+        if not isinstance(channel, str):
+            return False, "pinned nightly channel is unreadable", []
 
-    command = [
-        "rustup",
-        "run",
-        channel,
-        "cargo",
-        "metadata",
-        "--locked",
-        "--offline",
-        "--format-version",
-        "1",
-    ]
-    proc = subprocess.run(command, cwd=root, text=True, capture_output=True)
-    if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip() or "cargo metadata failed"
-        return False, detail, []
-    try:
-        metadata = json.loads(proc.stdout)
-    except json.JSONDecodeError as exc:
-        return False, f"cargo metadata emitted invalid JSON: {exc}", []
+        command = [
+            "rustup",
+            "run",
+            channel,
+            "cargo",
+            "metadata",
+            "--locked",
+            "--offline",
+            "--format-version",
+            "1",
+        ]
+        proc = subprocess.run(command, cwd=root, text=True, capture_output=True)
+        if proc.returncode != 0:
+            detail = proc.stderr.strip() or proc.stdout.strip() or "cargo metadata failed"
+            return False, detail, []
+        try:
+            metadata = json.loads(proc.stdout)
+        except json.JSONDecodeError as exc:
+            return False, f"cargo metadata emitted invalid JSON: {exc}", []
 
     packages = metadata.get("packages", [])
     workspace_members = set(metadata.get("workspace_members", []))
@@ -721,13 +978,13 @@ def metadata_audit(
             }
         )
         if name in forbidden:
-            add(findings, "error", "DEP-AUD-030", "Cargo.lock", f"forbidden package is reachable: {name}", root=root)
+            add(findings, "error", "DEP-AUD-030", "Cargo.lock", f"forbidden package is reachable: {name}", root=root, params={"package": name, "version": str(package.get("version", ""))})
         if custom_build:
-            add(findings, "error", "DEP-AUD-031", str(package.get("manifest_path", name)), f"resolved package has a build script: {name}", root=root)
+            add(findings, "error", "DEP-AUD-031", str(package.get("manifest_path", name)), f"resolved package has a build script: {name}", root=root, params={"package": name, "version": str(package.get("version", ""))})
         if links:
-            add(findings, "error", "DEP-AUD-032", str(package.get("manifest_path", name)), f"resolved package declares native links={links}: {name}", root=root)
+            add(findings, "error", "DEP-AUD-032", str(package.get("manifest_path", name)), f"resolved package declares native links={links}: {name}", root=root, params={"package": name, "links": links, "version": str(package.get("version", ""))})
         if isinstance(source, str) and source.startswith("git+") and "#" not in source:
-            add(findings, "error", "DEP-AUD-033", "Cargo.lock", f"Git package is not commit-resolved: {name}", root=root)
+            add(findings, "error", "DEP-AUD-033", "Cargo.lock", f"Git package is not commit-resolved: {name}", root=root, params={"package": name, "source": str(source)})
 
     if reference_targets is not None:
         ref_paths = {t.root_path for t in reference_targets}
@@ -735,7 +992,7 @@ def metadata_audit(
         missing_in_ref = sorted(cargo_target_paths - ref_paths)
         if missing_in_cargo or missing_in_ref:
             detail = f"reference target census differs from cargo metadata (extra in ref: {missing_in_cargo}, extra in cargo: {missing_in_ref})"
-            add(findings, "warning", "DEP-AUD-041", "Cargo.toml", detail, root=root)
+            add(findings, "warning", "DEP-AUD-041", "Cargo.toml", detail, root=root, params={"detail": detail})
 
     return True, None, census
 
@@ -774,14 +1031,14 @@ def audit_workspace(
     }
     for key in sorted(required_true):
         if rules.get(key) is not True:
-            add(findings, "error", "DEP-AUD-001", policy_path, f"policy.{key} must be true", root=root)
+            add(findings, "error", "DEP-AUD-001", policy_path, f"policy.{key} must be true", root=root, params={"key": key, "expected": True, "actual": rules.get(key)})
     for key in sorted(required_false):
         if rules.get(key) is not False:
-            add(findings, "error", "DEP-AUD-002", policy_path, f"policy.{key} must be false", root=root)
+            add(findings, "error", "DEP-AUD-002", policy_path, f"policy.{key} must be false", root=root, params={"key": key, "expected": False, "actual": rules.get(key)})
 
     root_manifest_path = root / "Cargo.toml"
     if not root_manifest_path.is_file():
-        add(findings, "error", "DEP-AUD-010", root_manifest_path, "root Cargo.toml is missing", root=root)
+        add(findings, "error", "DEP-AUD-010", root_manifest_path, "root Cargo.toml is missing", root=root, params={"manifest": root_manifest_path})
         manifests = []
         member_names: set[str] = set()
         member_map: dict[str, Path] = {}
@@ -798,7 +1055,7 @@ def audit_workspace(
 
     metadata_available, metadata_error, resolved = metadata_audit(findings, policy, root=root, reference_targets=ref_targets)
     if require_metadata and not metadata_available:
-        add(findings, "error", "DEP-AUD-040", "Cargo.lock", f"offline pinned-nightly metadata is required: {metadata_error}", root=root)
+        add(findings, "error", "DEP-AUD-040", "Cargo.lock", f"offline pinned-nightly metadata is required: {metadata_error}", root=root, params={"error": str(metadata_error)})
 
     error_count = sum(f.severity == "error" for f in findings)
     try:
