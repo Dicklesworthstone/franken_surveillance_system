@@ -9,7 +9,7 @@ use fss_core::hydration::{
     HandleAvailability, HydrationLevel, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
 };
 use fss_core::{
-    BudgetVector, Completeness, CompressionCompleteness, CompressionLossClass,
+    BudgetError, BudgetVector, Completeness, CompressionCompleteness, CompressionLossClass,
     CompressionStopReason, CompressionTransform, CompressionTransformKind, ContentDigest,
     ContextBindingError, ContextExpansionBinding, ContextExpansionBindingSet, ContextItem,
     ContractBasis, ContractBasisRegistryBytes, ContractError, CriticalPreservation,
@@ -29,7 +29,7 @@ fn basis() -> ContractBasis {
     ))
 }
 
-fn exact_cost() -> BudgetVector {
+fn exact_cost() -> Result<BudgetVector, BudgetError> {
     BudgetVector::builder()
         .latency_ms(25)
         .tokens(128)
@@ -38,7 +38,6 @@ fn exact_cost() -> BudgetVector {
         .storage_operations(1)
         .privacy_exposure(0.1)
         .build()
-        .expect("valid budget")
 }
 
 fn descriptor(anchor: &LedgerAnchor) -> Result<SemanticHandle, Box<dyn Error>> {
@@ -65,7 +64,7 @@ fn descriptor(anchor: &LedgerAnchor) -> Result<SemanticHandle, Box<dyn Error>> {
         ]),
         estimated_costs: BTreeMap::from([
             (HydrationLevel::H0, BudgetVector::default()),
-            (HydrationLevel::H1, exact_cost()),
+            (HydrationLevel::H1, exact_cost()?),
         ]),
         laboratory_access: LaboratoryAccess::Unavailable,
         debug_capability: None,
@@ -125,7 +124,7 @@ fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt
         expansion_handles: vec![ExpansionHandle {
             handle: "slot:receipt:knowledge".to_owned(),
             purpose: "Hydrate omitted knowledge context.".to_owned(),
-            estimated_cost: exact_cost(),
+            estimated_cost: exact_cost()?,
         }],
         selection_frontier_digest: Some(ContentDigest::sha256(b"selection-frontier")),
         stop_reason: CompressionStopReason::TargetBudget,

@@ -125,7 +125,7 @@ fn make_request(
         allow_lower_level: false,
         available_capabilities: capabilities().into_values().flatten().collect(),
         authorized_privacy_classes: BTreeSet::from(["private:property".to_owned()]),
-        budget: costs()
+        budget: costs()?
             .get(&level)
             .copied()
             .ok_or(HydrationError::LevelUnavailable)?,
