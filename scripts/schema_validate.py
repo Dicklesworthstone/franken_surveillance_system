@@ -1020,6 +1020,76 @@ class Validator:
                             )
 
 
+def strip_rust_comments(source: str) -> str:
+    """Deterministic Rust comment stripper preserving newlines and line numbers."""
+    result: list[str] = []
+    i = 0
+    n = len(source)
+    while i < n:
+        if source[i] == 'r' and (i + 1 < n and (source[i+1] == '"' or source[i+1] == '#')):
+            m = re.match(r'r(#*)"', source[i:])
+            if m:
+                hashes = m.group(1)
+                end_pat = f'"{hashes}'
+                end_idx = source.find(end_pat, i + len(m.group(0)))
+                if end_idx != -1:
+                    result.append(source[i : end_idx + len(end_pat)])
+                    i = end_idx + len(end_pat)
+                    continue
+        if source[i] == '"':
+            start = i
+            i += 1
+            while i < n:
+                if source[i] == '\\':
+                    i += 2
+                elif source[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+            result.append(source[start:i])
+            continue
+        if source[i] == "'":
+            start = i
+            i += 1
+            while i < n and i < start + 5:
+                if source[i] == '\\':
+                    i += 2
+                elif source[i] == "'":
+                    i += 1
+                    break
+                else:
+                    i += 1
+            result.append(source[start:i])
+            continue
+        if source[i:i+2] == '//':
+            nl_idx = source.find('\n', i)
+            if nl_idx == -1:
+                break
+            result.append('\n')
+            i = nl_idx + 1
+            continue
+        if source[i:i+2] == '/*':
+            depth = 1
+            i += 2
+            while i < n and depth > 0:
+                if source[i:i+2] == '/*':
+                    depth += 1
+                    i += 2
+                elif source[i:i+2] == '*/':
+                    depth -= 1
+                    i += 2
+                elif source[i] == '\n':
+                    result.append('\n')
+                    i += 1
+                else:
+                    i += 1
+            continue
+        result.append(source[i])
+        i += 1
+    return "".join(result)
+
+
 def scan_rust_schema_owners(crates_dir: Path) -> dict[str, RustOwner]:
     """Scan crates/fss-core/src (or crates directory) to discover Rust types encoding schemas."""
     owners: dict[str, RustOwner] = {}
@@ -1031,10 +1101,17 @@ def scan_rust_schema_owners(crates_dir: Path) -> dict[str, RustOwner]:
             return owners
 
     for rs_path in sorted(fss_core_src.rglob("*.rs")):
+        rs_name = rs_path.name
+        if rs_name == "tests.rs" or rs_name.endswith("_test.rs") or rs_name.endswith("_tests.rs"):
+            continue
+        if any(p in ("tests", "benches", "examples") for p in rs_path.parts):
+            continue
+
         try:
-            text = rs_path.read_text(encoding="utf-8")
+            raw_text = rs_path.read_text(encoding="utf-8")
         except OSError:
             continue
+        text = strip_rust_comments(raw_text)
         lines = text.splitlines()
         rel_path = rs_path.as_posix()
         if "crates/" in rel_path:
@@ -1042,10 +1119,24 @@ def scan_rust_schema_owners(crates_dir: Path) -> dict[str, RustOwner]:
 
         current_type = None
         brace_depth = 0
+        in_test_cfg = False
+        test_cfg_depth = 0
 
         for line_no, line in enumerate(lines, 1):
             stripped = line.strip()
-            if stripped.startswith("//") or stripped.startswith("/*") or stripped.startswith("*"):
+            if not stripped:
+                continue
+
+            if "#[cfg(test)]" in stripped:
+                in_test_cfg = True
+                test_cfg_depth = brace_depth
+
+            if in_test_cfg:
+                open_b = line.count("{")
+                close_b = line.count("}")
+                brace_depth += open_b - close_b
+                if brace_depth <= test_cfg_depth:
+                    in_test_cfg = False
                 continue
 
             if brace_depth == 0:
@@ -1247,6 +1338,13 @@ def validate_schema_constitution(
             seen_names[sname] = lno
 
         if fpath != "CLI output":
+            if not (fpath.startswith("schemas/") or fpath.startswith("architecture/")):
+                validator.emit(
+                    CODE_MALFORMED_REGISTRY_ROW,
+                    schemas_md_path.as_posix(),
+                    f"#{lno}/File",
+                    f"schema file path '{fpath}' must reside in schemas/ directory",
+                )
             if fpath in seen_files:
                 validator.emit(
                     CODE_MALFORMED_REGISTRY_ROW,
@@ -1317,8 +1415,13 @@ def validate_schema_constitution(
     rust_owners = scan_rust_schema_owners(crates_dir)
 
     declarations: list[SchemaDeclaration] = []
+    seen_decl_ids: set[str] = set()
     for row in raw_rows:
         sid = row["id"]
+        if sid in seen_decl_ids:
+            continue
+        seen_decl_ids.add(sid)
+
         sname = row["schema"]
         fpath = row["file"]
         auth = row["authority"]
@@ -1334,6 +1437,8 @@ def validate_schema_constitution(
                     f"#{sname}",
                     f"Rust owner file does not exist: {owner.file}",
                 )
+                status = "declared"
+                owner = None
             elif owner.type_name == "Unknown":
                 validator.emit(
                     CODE_UNOWNED_IMPLEMENTED_SCHEMA,
@@ -1341,7 +1446,10 @@ def validate_schema_constitution(
                     f"#{sname}",
                     f"schema '{sname}' has unknown Rust owner type in {owner.file}",
                 )
-            status = "implemented"
+                status = "declared"
+                owner = None
+            else:
+                status = "implemented"
         else:
             status = "declared"
 
