@@ -68,6 +68,7 @@ operation states rather than generic errors.
 | `ERR-OP-RECONCILIATION-REQUIRED-001` | pending unresolved operation must be reconciled before further mutation | reconcile pending sequence before retry |
 | `ERR-OP-ID-MALFORMED-001` | error identity does not conform to stable ERR pattern | fix error identity to match stable registry format |
 | `ERR-OP-INVALID-OUTCOME-001` | operation outcome state transition or representation is invalid | inspect outcome payload and repair state machine |
+| `ERR-LEDGER-LENGTH-OVERFLOW-001` | journal byte offset or file length exceeds addressable 64-bit bounds | archive or rotate journal; no in-place append possible |
 
 ## Subordinate dependency audit diagnostic registry (DEP-AUD)
 

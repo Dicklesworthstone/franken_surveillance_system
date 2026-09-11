@@ -72,6 +72,8 @@ pub enum JournalError {
     },
     /// Sequence space is exhausted.
     SequenceExhausted,
+    /// Journal byte offset or file length exceeds addressable 64-bit bounds.
+    LengthOverflow,
     /// An append may or may not have crossed its durable commit boundary.
     AppendIndeterminate {
         /// Sequence assigned to the attempted record.
@@ -94,7 +96,32 @@ pub enum JournalError {
         expected_len: u64,
         /// Byte length observed on disk.
         observed_len: u64,
+        /// Kind of divergence observed on disk.
+        kind: ExternalMutationKind,
     },
+}
+
+/// Classification of external journal mutation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalMutationKind {
+    /// File length on disk differs from expected committed length.
+    LengthDivergence,
+    /// File length matches, but committed bytes or trailer have been modified.
+    ContentDivergence,
+}
+
+/// Registered stable error ID for 64-bit journal length overflow.
+pub const ERR_LEDGER_LENGTH_OVERFLOW_001: &str = "ERR-LEDGER-LENGTH-OVERFLOW-001";
+
+impl JournalError {
+    /// Stable registered error identity if defined.
+    #[must_use]
+    pub const fn stable_id(&self) -> Option<&'static str> {
+        match self {
+            Self::LengthOverflow => Some(ERR_LEDGER_LENGTH_OVERFLOW_001),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for JournalError {
@@ -114,6 +141,9 @@ impl fmt::Display for JournalError {
                 )
             }
             Self::SequenceExhausted => formatter.write_str("journal sequence space exhausted"),
+            Self::LengthOverflow => formatter.write_str(
+                "journal byte length exceeds 64-bit bounds (ERR-LEDGER-LENGTH-OVERFLOW-001)",
+            ),
             Self::AppendIndeterminate {
                 sequence,
                 phase,
@@ -132,9 +162,10 @@ impl fmt::Display for JournalError {
             Self::ExternalMutation {
                 expected_len,
                 observed_len,
+                kind,
             } => write!(
                 formatter,
-                "journal changed outside this writer: expected length {expected_len}, observed {observed_len}"
+                "journal changed outside this writer ({kind:?}): expected length {expected_len}, observed {observed_len}"
             ),
         }
     }

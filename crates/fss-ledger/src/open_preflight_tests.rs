@@ -18,7 +18,7 @@ fn temp_journal(name: &str) -> std::path::PathBuf {
 
 fn append_torn_suffix(path: &std::path::Path) -> Result<u64, Box<dyn Error>> {
     let mut raw = OpenOptions::new().append(true).open(path)?;
-    raw.write_all(b"torn-tail")?;
+    raw.write_all(&crate::format::RECORD_MAGIC)?;
     raw.sync_all()?;
     Ok(fs::metadata(path)?.len())
 }

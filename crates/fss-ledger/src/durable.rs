@@ -10,12 +10,9 @@ use fss_core::{
 };
 
 use crate::{
-    AppendReconciliation, BatchCodecError, IncompleteTailPolicy, Journal, JournalError,
-    RecoveryReport, decode_batch, encode_batch,
+    AppendPhase, AppendReconciliation, BatchCodecError, ExternalMutationKind, IncompleteTailPolicy,
+    Journal, JournalError, RecoveryReport, decode_batch, encode_batch,
 };
-
-#[cfg(test)]
-use crate::AppendPhase;
 
 const EVIDENCE_BATCH_RECORD_KIND: u16 = 1;
 
@@ -146,9 +143,15 @@ impl DurableReferenceLedger {
             && (report.last_root() != preflight.last_root()
                 || report.committed_len() != preflight.committed_len())
         {
+            let kind = if report.committed_len() != preflight.committed_len() {
+                ExternalMutationKind::LengthDivergence
+            } else {
+                ExternalMutationKind::ContentDivergence
+            };
             return Err(JournalError::ExternalMutation {
                 expected_len: preflight.committed_len(),
                 observed_len: report.committed_len(),
+                kind,
             }
             .into());
         }
@@ -261,14 +264,27 @@ impl DurableReferenceLedger {
         }
     }
 
-    /// Re-verifies the reconciled durable prefix and journal root.
+    /// Re-verifies the reconciled durable prefix and journal root with full semantic batch validation.
     pub fn verify_storage(&mut self) -> Result<ContentDigest, DurableLedgerError> {
         let report = self.journal.verify()?;
+        let replayed = replay_report(&report, &self.ledger.current().anchor.site_lineage)?;
+        if report.last_root() != self.journal.last_root()
+            || replayed.current() != self.ledger.current()
+        {
+            return Err(DurableLedgerError::Journal(
+                JournalError::ExternalMutation {
+                    expected_len: self.journal.committed_len(),
+                    observed_len: self.journal.committed_len(),
+                    kind: ExternalMutationKind::ContentDivergence,
+                },
+            ));
+        }
         Ok(report.last_root())
     }
 
-    #[cfg(test)]
-    pub(crate) fn fail_journal_after_phase(&mut self, phase: AppendPhase) {
+    /// Injects a failure into the underlying journal for testing.
+    #[doc(hidden)]
+    pub fn fail_journal_after_phase(&mut self, phase: AppendPhase) {
         self.journal.fail_after_phase(phase);
     }
 }

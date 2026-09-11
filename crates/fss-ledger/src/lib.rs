@@ -23,9 +23,11 @@ mod tests;
 
 pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
 pub use durable::{DurableAppendReconciliation, DurableLedgerError, DurableReferenceLedger};
-pub use error::{AppendPhase, CorruptionKind, JournalError};
+pub use error::{
+    AppendPhase, CorruptionKind, ERR_LEDGER_LENGTH_OVERFLOW_001, ExternalMutationKind, JournalError,
+};
 pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
-pub use recovery::{JournalRecord, RecoveryReport, inspect};
+pub use recovery::{JournalRecord, RecoveryReport, inspect, recover_bytes};
 
 /// Maximum payload accepted by one reference-journal record.
 pub const MAX_RECORD_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;

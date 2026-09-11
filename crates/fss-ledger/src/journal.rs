@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use fss_core::{ContentDigest, DigestAlgorithm, sha256};
 
 use crate::MAX_RECORD_PAYLOAD_BYTES;
-use crate::error::{AppendPhase, JournalError};
+use crate::error::{AppendPhase, ExternalMutationKind, JournalError};
 use crate::format::{
     COMMIT_MAGIC, FORMAT_VERSION, HEADER_LEN, RECORD_MAGIC, TRAILER_LEN, record_root,
 };
@@ -57,7 +57,6 @@ pub struct Journal {
     last_root: [u8; 32],
     committed_len: u64,
     pending: Option<PendingAppend>,
-    #[cfg(test)]
     fail_after: Option<AppendPhase>,
 }
 
@@ -106,7 +105,6 @@ impl Journal {
             last_root: recovery.last_root.bytes(),
             committed_len: recovery.committed_len,
             pending: None,
-            #[cfg(test)]
             fail_after: None,
         })
     }
@@ -121,6 +119,12 @@ impl Journal {
     #[must_use]
     pub const fn last_root(&self) -> ContentDigest {
         ContentDigest::new(DigestAlgorithm::Sha256, self.last_root)
+    }
+
+    /// Reconciled byte length of the committed journal prefix.
+    #[must_use]
+    pub const fn committed_len(&self) -> u64 {
+        self.committed_len
     }
 
     /// Sequence requiring reconciliation, if an append outcome is unresolved.
@@ -152,7 +156,28 @@ impl Journal {
             return Err(JournalError::ExternalMutation {
                 expected_len: self.committed_len,
                 observed_len,
+                kind: ExternalMutationKind::LengthDivergence,
             });
+        }
+        if self.committed_len > 0 {
+            if self.committed_len < TRAILER_LEN as u64 {
+                return Err(JournalError::ExternalMutation {
+                    expected_len: self.committed_len,
+                    observed_len,
+                    kind: ExternalMutationKind::ContentDivergence,
+                });
+            }
+            let trailer_offset = self.committed_len - TRAILER_LEN as u64;
+            let mut trailer_buf = [0_u8; TRAILER_LEN];
+            self.file.seek(SeekFrom::Start(trailer_offset))?;
+            self.file.read_exact(&mut trailer_buf)?;
+            if trailer_buf[..8] != COMMIT_MAGIC || trailer_buf[8..40] != self.last_root {
+                return Err(JournalError::ExternalMutation {
+                    expected_len: self.committed_len,
+                    observed_len,
+                    kind: ExternalMutationKind::ContentDivergence,
+                });
+            }
         }
 
         let sequence = self.next_sequence;
@@ -197,7 +222,7 @@ impl Journal {
         let expected_end = self
             .committed_len
             .checked_add(encoded_len)
-            .ok_or(JournalError::SequenceExhausted)?;
+            .ok_or(JournalError::LengthOverflow)?;
         let record = JournalRecord {
             sequence,
             kind,
@@ -219,28 +244,24 @@ impl Journal {
         if let Err(source) = self.file.write_all(&body) {
             return Err(self.indeterminate(AppendPhase::BodyWrite, source));
         }
-        #[cfg(test)]
         if let Err(source) = self.maybe_fail(AppendPhase::BodyWrite) {
             return Err(self.indeterminate(AppendPhase::BodyWrite, source));
         }
         if let Err(source) = self.file.sync_data() {
             return Err(self.indeterminate(AppendPhase::BodySync, source));
         }
-        #[cfg(test)]
         if let Err(source) = self.maybe_fail(AppendPhase::BodySync) {
             return Err(self.indeterminate(AppendPhase::BodySync, source));
         }
         if let Err(source) = self.file.write_all(&trailer) {
             return Err(self.indeterminate(AppendPhase::CommitWrite, source));
         }
-        #[cfg(test)]
         if let Err(source) = self.maybe_fail(AppendPhase::CommitWrite) {
             return Err(self.indeterminate(AppendPhase::CommitWrite, source));
         }
         if let Err(source) = self.file.sync_all() {
             return Err(self.indeterminate(AppendPhase::CommitSync, source));
         }
-        #[cfg(test)]
         if let Err(source) = self.maybe_fail(AppendPhase::CommitSync) {
             return Err(self.indeterminate(AppendPhase::CommitSync, source));
         }
@@ -268,19 +289,36 @@ impl Journal {
         }
         let report = recover_bytes(&bytes)?;
 
-        let expected_committed = report.incomplete_tail.is_none()
-            && report.committed_len == pending.expected_end
+        let committed_match = report.committed_len == pending.expected_end
             && report.last_root == pending.record.root
             && report
                 .records
                 .last()
                 .is_some_and(|record| record == &pending.record);
-        if expected_committed {
-            if let Err(source) = self.file.sync_all() {
-                return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
+        if committed_match {
+            if let Some(offset) = report.incomplete_tail {
+                if tail_policy == IncompleteTailPolicy::Reject {
+                    return Err(JournalError::IncompleteTail { offset });
+                }
+                if let Err(source) = self.file.set_len(pending.expected_end) {
+                    return Err(self.indeterminate(AppendPhase::ReconcileTruncate, source));
+                }
+                if let Err(source) = self.file.sync_all() {
+                    return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
+                }
+                if let Err(source) = self.file.seek(SeekFrom::Start(pending.expected_end)) {
+                    return Err(self.indeterminate(AppendPhase::ReconcileSeek, source));
+                }
+                let record = self.commit_pending(pending);
+                return Ok(AppendReconciliation::Committed(record));
             }
-            let record = self.commit_pending(pending);
-            return Ok(AppendReconciliation::Committed(record));
+            if bytes.len() as u64 == pending.expected_end {
+                if let Err(source) = self.file.sync_all() {
+                    return Err(self.indeterminate(AppendPhase::ReconcileSync, source));
+                }
+                let record = self.commit_pending(pending);
+                return Ok(AppendReconciliation::Committed(record));
+            }
         }
 
         let previous_prefix = report.last_root.bytes() == pending.previous_root
@@ -312,9 +350,15 @@ impl Journal {
             }
         }
 
+        let kind = if bytes.len() as u64 != pending.expected_end {
+            ExternalMutationKind::LengthDivergence
+        } else {
+            ExternalMutationKind::ContentDivergence
+        };
         Err(JournalError::ExternalMutation {
             expected_len: pending.expected_end,
             observed_len: bytes.len() as u64,
+            kind,
         })
     }
 
@@ -335,9 +379,15 @@ impl Journal {
         }
         if report.last_root.bytes() != self.last_root || report.committed_len != self.committed_len
         {
+            let kind = if report.committed_len != self.committed_len {
+                ExternalMutationKind::LengthDivergence
+            } else {
+                ExternalMutationKind::ContentDivergence
+            };
             return Err(JournalError::ExternalMutation {
                 expected_len: self.committed_len,
                 observed_len: report.committed_len,
+                kind,
             });
         }
         self.file.seek(SeekFrom::Start(self.committed_len))?;
@@ -364,7 +414,6 @@ impl Journal {
         }
     }
 
-    #[cfg(test)]
     fn maybe_fail(&mut self, phase: AppendPhase) -> io::Result<()> {
         if self.fail_after == Some(phase) {
             self.fail_after = None;
@@ -376,8 +425,36 @@ impl Journal {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn fail_after_phase(&mut self, phase: AppendPhase) {
+    /// Injects a failure after the specified phase during testing.
+    #[doc(hidden)]
+    pub fn fail_after_phase(&mut self, phase: AppendPhase) {
         self.fail_after = Some(phase);
+    }
+
+    /// Sets the committed length for testing boundary conditions.
+    #[doc(hidden)]
+    pub fn set_committed_len_for_test(&mut self, len: u64) {
+        self.committed_len = len;
+    }
+
+    /// Validates whether an append of the given payload length fits within 64-bit length bounds.
+    #[doc(hidden)]
+    pub fn check_append_capacity_for_test(&self, payload_len: usize) -> Result<u64, JournalError> {
+        let encoded_len = u64::try_from(
+            HEADER_LEN
+                .checked_add(payload_len)
+                .and_then(|l| l.checked_add(TRAILER_LEN))
+                .ok_or(JournalError::PayloadTooLarge {
+                    length: payload_len,
+                    maximum: MAX_RECORD_PAYLOAD_BYTES,
+                })?,
+        )
+        .map_err(|_| JournalError::PayloadTooLarge {
+            length: payload_len,
+            maximum: MAX_RECORD_PAYLOAD_BYTES,
+        })?;
+        self.committed_len
+            .checked_add(encoded_len)
+            .ok_or(JournalError::LengthOverflow)
     }
 }

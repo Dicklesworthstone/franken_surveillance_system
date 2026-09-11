@@ -101,7 +101,8 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<RecoveryReport, JournalError> {
     recover_bytes(&bytes)
 }
 
-pub(crate) fn recover_bytes(bytes: &[u8]) -> Result<RecoveryReport, JournalError> {
+/// Recovers committed journal records and detects incomplete tails or corruption from raw bytes.
+pub fn recover_bytes(bytes: &[u8]) -> Result<RecoveryReport, JournalError> {
     let mut offset = 0_usize;
     let mut expected_sequence = 1_u64;
     let mut previous_root = [0_u8; 32];
@@ -109,11 +110,12 @@ pub(crate) fn recover_bytes(bytes: &[u8]) -> Result<RecoveryReport, JournalError
 
     while offset < bytes.len() {
         let start = offset;
-        if bytes.len() - offset < HEADER_LEN {
-            return Ok(report(records, start, Some(start), previous_root));
-        }
-        if bytes[offset..offset + 8] != RECORD_MAGIC {
+        let remaining = bytes.len() - offset;
+        if remaining >= 8 && bytes[offset..offset + 8] != RECORD_MAGIC {
             return Err(corrupt(start, CorruptionKind::RecordMagic));
+        }
+        if remaining < HEADER_LEN {
+            return Ok(report(records, start, Some(start), previous_root));
         }
         offset += 8;
         if read_u16(bytes, &mut offset) != FORMAT_VERSION {
