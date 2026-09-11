@@ -11,6 +11,7 @@ mod error;
 mod format;
 mod journal;
 mod recovery;
+mod repair;
 
 #[cfg(test)]
 mod durable_reconciliation_tests;
@@ -28,6 +29,11 @@ pub use error::{
 };
 pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
 pub use recovery::{JournalRecord, RecoveryReport, inspect, recover_bytes};
+pub use repair::{
+    DoctorReport, ForeignRange, JournalDoctorReport, RepairDoctorReport, RepairError, RepairPlan,
+    RepairReceipt, SealedRepairPlan, apply, doctor, doctor_path, plan, plan_with_cut,
+    quarantine_path_for,
+};
 
 /// Maximum payload accepted by one reference-journal record.
 pub const MAX_RECORD_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
