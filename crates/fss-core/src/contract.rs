@@ -756,6 +756,9 @@ pub struct BudgetVector {
 }
 
 impl BudgetVector {
+    /// Maximum permitted byte size for JSON budget payload (64 KiB).
+    pub const MAX_JSON_BUDGET_BYTES: usize = 64 * 1024;
+
     /// Zero budget across all dimensions.
     pub const ZERO: Self = Self {
         latency_ms: 0,
@@ -1491,97 +1494,202 @@ impl BudgetVector {
         ContentDigest::sha256(&encoder.finish())
     }
 
+    #[inline]
+    const fn is_json_ws(b: u8) -> bool {
+        matches!(b, b' ' | b'\t' | b'\n' | b'\r')
+    }
+
+    /// Strictly validates whether an ASCII byte sequence conforms to RFC 8259 number grammar:
+    /// `^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`
+    fn validate_rfc8259_number(bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
+            return false;
+        }
+        let mut i = 0;
+        let len = bytes.len();
+
+        // 1. Optional minus sign
+        if bytes[i] == b'-' {
+            i += 1;
+            if i == len {
+                return false; // Bare '-'
+            }
+        }
+
+        // 2. Integer part: either '0' (not followed by any digit), or '1'..='9' followed by digits
+        if bytes[i] == b'0' {
+            i += 1;
+            // If next char is a digit, that's a leading zero (e.g. "01", "00"), which RFC 8259 forbids
+            if i < len && bytes[i].is_ascii_digit() {
+                return false;
+            }
+        } else if bytes[i].is_ascii_digit() {
+            while i < len && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+        } else {
+            return false;
+        }
+
+        // 3. Optional fractional part: '.' followed by 1 or more digits
+        if i < len && bytes[i] == b'.' {
+            i += 1;
+            if i == len || !bytes[i].is_ascii_digit() {
+                return false; // "1." or trailing dot or no digits after dot
+            }
+            while i < len && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+
+        // 4. Optional exponent part: ('e' | 'E') optionally ('+' | '-') followed by 1 or more digits
+        if i < len && (bytes[i] == b'e' || bytes[i] == b'E') {
+            i += 1;
+            if i < len && (bytes[i] == b'+' || bytes[i] == b'-') {
+                i += 1;
+            }
+            if i == len || !bytes[i].is_ascii_digit() {
+                return false; // "1e", "1e+", "1E-" without digits
+            }
+            while i < len && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+        }
+
+        i == len
+    }
+
+    /// Scans a double-quoted JSON string according to RFC 8259 Section 7.
+    ///
+    /// Validates that:
+    /// - Unescaped control characters (< 0x20) are rejected with `InvalidEncoding`.
+    /// - Valid escape characters (`"`, `\`, `/`, `b`, `f`, `n`, `r`, `t`) are accepted.
+    /// - Unicode escapes (`\uXXXX`) have exactly 4 hexadecimal digits.
+    ///
+    /// Returns the byte range `(start, end)` of the string content inside quotes.
+    fn scan_json_string(bytes: &[u8], pos: &mut usize) -> Result<(usize, usize), BudgetError> {
+        if *pos >= bytes.len() || bytes[*pos] != b'"' {
+            return Err(BudgetError::InvalidEncoding {
+                reason: "expected double-quoted string in JSON budget",
+            });
+        }
+        *pos += 1; // skip opening '"'
+        let start = *pos;
+        while *pos < bytes.len() {
+            let b = bytes[*pos];
+            if b < 0x20 {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "unescaped control character in JSON string",
+                });
+            }
+            if b == b'"' {
+                let end = *pos;
+                *pos += 1; // consume closing '"'
+                return Ok((start, end));
+            }
+            if b == b'\\' {
+                *pos += 1;
+                if *pos >= bytes.len() {
+                    return Err(BudgetError::InvalidEncoding {
+                        reason: "unterminated escape sequence in JSON string",
+                    });
+                }
+                match bytes[*pos] {
+                    b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {
+                        *pos += 1;
+                    }
+                    b'u' => {
+                        *pos += 1;
+                        if *pos + 4 > bytes.len() {
+                            return Err(BudgetError::InvalidEncoding {
+                                reason: "incomplete \\u escape sequence in JSON string",
+                            });
+                        }
+                        for _ in 0..4 {
+                            if !bytes[*pos].is_ascii_hexdigit() {
+                                return Err(BudgetError::InvalidEncoding {
+                                    reason: "invalid hex digit in \\u escape sequence",
+                                });
+                            }
+                            *pos += 1;
+                        }
+                    }
+                    _ => {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "invalid escape character in JSON string",
+                        });
+                    }
+                }
+            } else {
+                *pos += 1;
+            }
+        }
+        Err(BudgetError::InvalidEncoding {
+            reason: "unterminated string in JSON budget",
+        })
+    }
+
     /// Decodes a BudgetVector from JSON bytes without external dependencies.
     pub fn decode_json_slice(bytes: &[u8]) -> Result<Self, BudgetError> {
+        if bytes.len() > Self::MAX_JSON_BUDGET_BYTES {
+            return Err(BudgetError::InvalidEncoding {
+                reason: "budget JSON exceeds maximum permitted size",
+            });
+        }
+
         let text = core::str::from_utf8(bytes).map_err(|_| BudgetError::InvalidEncoding {
             reason: "JSON bytes must be valid UTF-8",
         })?;
-        let trimmed = text.trim();
-        if !trimmed.starts_with('{') || !trimmed.ends_with('}') {
+
+        let mut pos = 0;
+        let len = bytes.len();
+
+        while pos < len && Self::is_json_ws(bytes[pos]) {
+            pos += 1;
+        }
+        if pos == len || bytes[pos] != b'{' {
             return Err(BudgetError::InvalidEncoding {
                 reason: "JSON budget must be an object enclosed in braces",
             });
         }
-        let inner = &trimmed[1..trimmed.len() - 1];
-        let inner_bytes = inner.as_bytes();
-        let len = inner_bytes.len();
-        let mut pos = 0;
+        pos += 1; // consume '{'
 
-        let skip_ws = |pos: &mut usize| {
-            while *pos < len && matches!(inner_bytes[*pos], b' ' | b'\t' | b'\n' | b'\r') {
-                *pos += 1;
-            }
-        };
-
-        skip_ws(&mut pos);
+        while pos < len && Self::is_json_ws(bytes[pos]) {
+            pos += 1;
+        }
+        if pos < len && bytes[pos] == b'}' {
+            return Err(BudgetError::InvalidEncoding {
+                reason: "empty JSON object is not a valid budget specification",
+            });
+        }
         if pos == len {
-            return Self::builder().build();
+            return Err(BudgetError::InvalidEncoding {
+                reason: "unterminated JSON object",
+            });
         }
 
         let mut builder = Self::builder();
         let mut seen_dimensions: u16 = 0;
-        let mut expect_comma = false;
 
-        while pos < len {
-            skip_ws(&mut pos);
-            if pos == len {
-                break;
-            }
-
-            if expect_comma {
-                if inner_bytes[pos] != b',' {
-                    return Err(BudgetError::InvalidEncoding {
-                        reason: "expected comma between object members in JSON budget",
-                    });
-                }
+        loop {
+            while pos < len && Self::is_json_ws(bytes[pos]) {
                 pos += 1;
-                skip_ws(&mut pos);
-                if pos == len {
-                    return Err(BudgetError::InvalidEncoding {
-                        reason: "trailing comma in JSON budget",
-                    });
-                }
-                if inner_bytes[pos] == b',' {
-                    return Err(BudgetError::InvalidEncoding {
-                        reason: "consecutive commas in JSON budget",
-                    });
-                }
-            } else if inner_bytes[pos] == b',' {
+            }
+            if pos == len {
                 return Err(BudgetError::InvalidEncoding {
-                    reason: "unexpected comma in JSON budget",
+                    reason: "unterminated JSON object",
                 });
             }
 
             // Key must be a double-quoted string
-            if inner_bytes[pos] != b'"' {
+            if bytes[pos] != b'"' {
                 return Err(BudgetError::InvalidEncoding {
                     reason: "JSON keys must be double-quoted strings",
                 });
             }
-            pos += 1; // skip opening "
-            let key_start = pos;
-            let mut key_end = None;
-            while pos < len {
-                if inner_bytes[pos] == b'\\' {
-                    pos += 2;
-                    continue;
-                }
-                if inner_bytes[pos] == b'"' {
-                    key_end = Some(pos);
-                    pos += 1;
-                    break;
-                }
-                pos += 1;
-            }
 
-            let key_str = match key_end {
-                Some(end) => &inner[key_start..end],
-                None => {
-                    return Err(BudgetError::InvalidEncoding {
-                        reason: "unterminated string key in JSON budget",
-                    });
-                }
-            };
+            let (key_start, key_end) = Self::scan_json_string(bytes, &mut pos)?;
+            let key_str = &text[key_start..key_end];
 
             let dimension =
                 BudgetDimension::parse(key_str).ok_or(BudgetError::InvalidEncoding {
@@ -1597,14 +1705,19 @@ impl BudgetVector {
             seen_dimensions |= bit;
 
             // Colon separator
-            skip_ws(&mut pos);
-            if pos >= len || inner_bytes[pos] != b':' {
+            while pos < len && Self::is_json_ws(bytes[pos]) {
+                pos += 1;
+            }
+            if pos >= len || bytes[pos] != b':' {
                 return Err(BudgetError::InvalidEncoding {
                     reason: "missing colon after key in JSON budget",
                 });
             }
-            pos += 1; // skip :
-            skip_ws(&mut pos);
+            pos += 1; // consume ':'
+
+            while pos < len && Self::is_json_ws(bytes[pos]) {
+                pos += 1;
+            }
             if pos >= len {
                 return Err(BudgetError::InvalidEncoding {
                     reason: "missing value in JSON budget",
@@ -1612,59 +1725,32 @@ impl BudgetVector {
             }
 
             // Value parsing: reject nested structures or leading '+'
-            if inner_bytes[pos] == b'{' || inner_bytes[pos] == b'[' {
+            if bytes[pos] == b'{' || bytes[pos] == b'[' {
                 return Err(BudgetError::InvalidEncoding {
                     reason: "nested structure not permitted in flat budget JSON",
                 });
             }
 
-            if inner_bytes[pos] == b'+' {
-                return Err(BudgetError::InvalidEncoding {
-                    reason: "leading plus sign is forbidden in JSON numbers",
-                });
-            }
-
-            let (raw_val, is_quoted) = if inner_bytes[pos] == b'"' || inner_bytes[pos] == b'\'' {
-                let quote = inner_bytes[pos];
-                pos += 1;
-                let val_start = pos;
-                let mut val_end = None;
-                while pos < len {
-                    if inner_bytes[pos] == b'\\' {
-                        pos += 2;
-                        continue;
-                    }
-                    if inner_bytes[pos] == quote {
-                        val_end = Some(pos);
-                        pos += 1;
-                        break;
-                    }
-                    pos += 1;
-                }
-                let val_slice = match val_end {
-                    Some(end) => &inner[val_start..end],
-                    None => {
-                        return Err(BudgetError::InvalidEncoding {
-                            reason: "unterminated string value in JSON budget",
-                        });
-                    }
-                };
-                (val_slice.trim(), true)
+            let (raw_val, is_quoted) = if bytes[pos] == b'"' {
+                let (val_start, val_end) = Self::scan_json_string(bytes, &mut pos)?;
+                let val_str = &text[val_start..val_end];
+                (val_str, true)
             } else {
                 let val_start = pos;
                 while pos < len
-                    && inner_bytes[pos] != b','
-                    && !matches!(inner_bytes[pos], b' ' | b'\t' | b'\n' | b'\r')
+                    && bytes[pos] != b','
+                    && bytes[pos] != b'}'
+                    && !Self::is_json_ws(bytes[pos])
                 {
-                    if inner_bytes[pos] == b'{' || inner_bytes[pos] == b'[' {
+                    if bytes[pos] == b'{' || bytes[pos] == b'[' {
                         return Err(BudgetError::InvalidEncoding {
                             reason: "nested structure not permitted in flat budget JSON",
                         });
                     }
                     pos += 1;
                 }
-                let val_slice = &inner[val_start..pos];
-                (val_slice.trim(), false)
+                let val_str = &text[val_start..pos];
+                (val_str, false)
             };
 
             if raw_val == "NaN" || raw_val == "nan" {
@@ -1698,149 +1784,182 @@ impl BudgetVector {
                 });
             }
 
+            // Validate against strict RFC 8259 number grammar
+            if !Self::validate_rfc8259_number(raw_val.as_bytes()) {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "invalid JSON number format",
+                });
+            }
+
             match dimension {
-                BudgetDimension::LatencyMs => {
-                    if raw_val.starts_with('-') {
-                        return Err(BudgetError::negative_quantity(dimension, -1.0));
-                    }
-                    let v: u64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
-                    })?;
-                    builder = builder.latency_ms(v);
-                }
-                BudgetDimension::Tokens => {
-                    if raw_val.starts_with('-') {
-                        return Err(BudgetError::negative_quantity(dimension, -1.0));
-                    }
-                    let v: u64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
-                    })?;
-                    builder = builder.tokens(v);
-                }
-                BudgetDimension::Bytes => {
-                    if raw_val.starts_with('-') {
-                        return Err(BudgetError::negative_quantity(dimension, -1.0));
-                    }
-                    let v: u64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
-                    })?;
-                    builder = builder.bytes(v);
-                }
-                BudgetDimension::ModelCalls => {
-                    if raw_val.starts_with('-') {
-                        return Err(BudgetError::negative_quantity(dimension, -1.0));
-                    }
-                    let v: u32 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
-                    })?;
-                    builder = builder.model_calls(v);
-                }
-                BudgetDimension::CpuMillis => {
-                    if raw_val.starts_with('-') {
-                        return Err(BudgetError::negative_quantity(dimension, -1.0));
-                    }
-                    let v: u64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
-                    })?;
-                    builder = builder.cpu_millis(v);
-                }
-                BudgetDimension::AcceleratorMillis => {
-                    if raw_val.starts_with('-') {
-                        return Err(BudgetError::negative_quantity(dimension, -1.0));
-                    }
-                    let v: u64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
-                    })?;
-                    builder = builder.accelerator_millis(v);
-                }
-                BudgetDimension::EnergyMillijoules => {
-                    if raw_val.starts_with('-') {
-                        return Err(BudgetError::negative_quantity(dimension, -1.0));
-                    }
-                    let v: u64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
-                    })?;
-                    builder = builder.energy_millijoules(v);
-                }
-                BudgetDimension::NetworkBytes => {
-                    if raw_val.starts_with('-') {
-                        return Err(BudgetError::negative_quantity(dimension, -1.0));
-                    }
-                    let v: u64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
-                    })?;
-                    builder = builder.network_bytes(v);
-                }
-                BudgetDimension::StorageOperations => {
-                    if raw_val.starts_with('-') {
-                        return Err(BudgetError::negative_quantity(dimension, -1.0));
-                    }
-                    let v: u64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
-                    })?;
-                    builder = builder.storage_operations(v);
-                }
                 BudgetDimension::PrivacyExposure => {
-                    let v: f64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
+                    let v: f64 = raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                        reason: "invalid float literal",
                     })?;
-                    if v < 0.0 {
-                        return Err(BudgetError::negative_quantity(dimension, v));
+                    if v.is_infinite() {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "number exponent overflow",
+                        });
                     }
                     if v.is_nan() {
                         return Err(BudgetError::NaNQuantity { dimension });
                     }
-                    if v.is_infinite() {
-                        return Err(BudgetError::InfiniteQuantity {
-                            dimension,
-                            is_negative: v.is_sign_negative(),
-                        });
+                    if v < 0.0 {
+                        return Err(BudgetError::negative_quantity(dimension, v));
                     }
                     builder = builder.privacy_exposure(v);
                 }
                 BudgetDimension::OperatorAttentionSeconds => {
-                    let v: f64 = raw_val.parse().map_err(|_| BudgetError::IncompatibleUnit {
-                        dimension,
-                        expected_unit: dimension.unit(),
-                        found_unit: raw_val.to_owned(),
+                    let v: f64 = raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                        reason: "invalid float literal",
                     })?;
-                    if v < 0.0 {
-                        return Err(BudgetError::negative_quantity(dimension, v));
+                    if v.is_infinite() {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "number exponent overflow",
+                        });
                     }
                     if v.is_nan() {
                         return Err(BudgetError::NaNQuantity { dimension });
                     }
-                    if v.is_infinite() {
-                        return Err(BudgetError::InfiniteQuantity {
-                            dimension,
-                            is_negative: v.is_sign_negative(),
-                        });
+                    if v < 0.0 {
+                        return Err(BudgetError::negative_quantity(dimension, v));
                     }
                     builder = builder.operator_attention_seconds(v);
                 }
+                _ => {
+                    if raw_val.contains('e') || raw_val.contains('E') {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "scientific notation / exponent not permitted for integer budget dimension",
+                        });
+                    }
+                    if raw_val.contains('.') {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "fractional number not permitted for integer budget dimension",
+                        });
+                    }
+                    if raw_val.starts_with('-') {
+                        return Err(BudgetError::negative_quantity(dimension, -1.0));
+                    }
+
+                    match dimension {
+                        BudgetDimension::LatencyMs => {
+                            let v: u64 =
+                                raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                                    reason: "integer quantity out of range",
+                                })?;
+                            builder = builder.latency_ms(v);
+                        }
+                        BudgetDimension::Tokens => {
+                            let v: u64 =
+                                raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                                    reason: "integer quantity out of range",
+                                })?;
+                            builder = builder.tokens(v);
+                        }
+                        BudgetDimension::Bytes => {
+                            let v: u64 =
+                                raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                                    reason: "integer quantity out of range",
+                                })?;
+                            builder = builder.bytes(v);
+                        }
+                        BudgetDimension::ModelCalls => {
+                            let v: u32 =
+                                raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                                    reason: "integer quantity out of range",
+                                })?;
+                            builder = builder.model_calls(v);
+                        }
+                        BudgetDimension::CpuMillis => {
+                            let v: u64 =
+                                raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                                    reason: "integer quantity out of range",
+                                })?;
+                            builder = builder.cpu_millis(v);
+                        }
+                        BudgetDimension::AcceleratorMillis => {
+                            let v: u64 =
+                                raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                                    reason: "integer quantity out of range",
+                                })?;
+                            builder = builder.accelerator_millis(v);
+                        }
+                        BudgetDimension::EnergyMillijoules => {
+                            let v: u64 =
+                                raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                                    reason: "integer quantity out of range",
+                                })?;
+                            builder = builder.energy_millijoules(v);
+                        }
+                        BudgetDimension::NetworkBytes => {
+                            let v: u64 =
+                                raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                                    reason: "integer quantity out of range",
+                                })?;
+                            builder = builder.network_bytes(v);
+                        }
+                        BudgetDimension::StorageOperations => {
+                            let v: u64 =
+                                raw_val.parse().map_err(|_| BudgetError::InvalidEncoding {
+                                    reason: "integer quantity out of range",
+                                })?;
+                            builder = builder.storage_operations(v);
+                        }
+                        _ => unreachable!(),
+                    }
+                }
             }
 
-            expect_comma = true;
+            // Member delimiter: ',' or '}'
+            while pos < len && Self::is_json_ws(bytes[pos]) {
+                pos += 1;
+            }
+            if pos >= len {
+                return Err(BudgetError::InvalidEncoding {
+                    reason: "unterminated JSON object",
+                });
+            }
+            match bytes[pos] {
+                b',' => {
+                    pos += 1;
+                    while pos < len && Self::is_json_ws(bytes[pos]) {
+                        pos += 1;
+                    }
+                    if pos >= len {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "trailing comma in JSON budget",
+                        });
+                    }
+                    if bytes[pos] == b',' {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "consecutive commas in JSON budget",
+                        });
+                    }
+                    if bytes[pos] == b'}' {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "trailing comma in JSON budget",
+                        });
+                    }
+                }
+                b'}' => {
+                    pos += 1;
+                    // Check for trailing garbage after closing brace
+                    while pos < len && Self::is_json_ws(bytes[pos]) {
+                        pos += 1;
+                    }
+                    if pos < len {
+                        return Err(BudgetError::InvalidEncoding {
+                            reason: "trailing content after JSON budget object",
+                        });
+                    }
+                    break;
+                }
+                _ => {
+                    return Err(BudgetError::InvalidEncoding {
+                        reason: "expected comma or closing brace after object member",
+                    });
+                }
+            }
         }
 
         builder.build()

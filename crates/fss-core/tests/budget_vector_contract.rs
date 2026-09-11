@@ -625,10 +625,7 @@ fn json_decode_rejects_negative_nan_and_infinities() {
     let json_overflow = br#"{"privacyExposure": 1e999}"#;
     assert!(matches!(
         BudgetVector::decode_json_slice(json_overflow),
-        Err(BudgetError::InfiniteQuantity {
-            dimension: BudgetDimension::PrivacyExposure,
-            ..
-        })
+        Err(BudgetError::InvalidEncoding { .. })
     ));
 
     // Malformed JSON not an object
@@ -1113,6 +1110,218 @@ fn test_f6_checked_scale_does_not_blame_latency_when_vector_has_no_latency()
     assert!(
         is_neg_non_latency,
         "scaling factor error should not blame LatencyMs on a pure privacy budget"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Defects found by PinkCoast adversarial review (fss-x4a.8.13 v3)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn defect_empty_object_silently_accepted() -> Result<(), Box<dyn std::error::Error>> {
+    let json = br#"{}"#;
+    let res = BudgetVector::decode_json_slice(json);
+    assert!(
+        matches!(res, Err(BudgetError::InvalidEncoding { .. })),
+        "empty object {{}} must be rejected with InvalidEncoding, got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn defect_whitespace_only_object_silently_accepted() -> Result<(), Box<dyn std::error::Error>> {
+    let json = b"{   \t\n\r  }";
+    let res = BudgetVector::decode_json_slice(json);
+    assert!(
+        matches!(res, Err(BudgetError::InvalidEncoding { .. })),
+        "whitespace-only object must be rejected with InvalidEncoding, got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn defect_malformed_numbers_float_dims_silently_accepted() -> Result<(), Box<dyn std::error::Error>>
+{
+    let invalid_floats = [
+        ("1.", br#"{"privacyExposure": 1.}"# as &[u8]),
+        (".5", br#"{"privacyExposure": .5}"#),
+        ("01", br#"{"privacyExposure": 01}"#),
+    ];
+    for (label, json) in invalid_floats {
+        let res = BudgetVector::decode_json_slice(json);
+        assert!(
+            matches!(res, Err(BudgetError::InvalidEncoding { .. })),
+            "malformed float number '{label}' must be rejected with InvalidEncoding, got: {res:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn defect_malformed_numbers_integer_dims_silently_accepted()
+-> Result<(), Box<dyn std::error::Error>> {
+    let json = br#"{"tokens": 01}"#;
+    let res = BudgetVector::decode_json_slice(json);
+    assert!(
+        matches!(res, Err(BudgetError::InvalidEncoding { .. })),
+        "leading zero '01' must be rejected with InvalidEncoding, got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn defect_illegal_whitespace_formfeed_and_vtab_silently_accepted()
+-> Result<(), Box<dyn std::error::Error>> {
+    let json_formfeed = b"{\"tokens\": 100\x0c, \"bytes\": 200}";
+    let res_ff = BudgetVector::decode_json_slice(json_formfeed);
+    assert!(
+        matches!(res_ff, Err(BudgetError::InvalidEncoding { .. })),
+        "form feed \\f whitespace must be rejected with InvalidEncoding, got: {res_ff:?}"
+    );
+
+    let json_vtab = b"{\"tokens\": 100\x0b, \"bytes\": 200}";
+    let res_vt = BudgetVector::decode_json_slice(json_vtab);
+    assert!(
+        matches!(res_vt, Err(BudgetError::InvalidEncoding { .. })),
+        "vertical tab \\v whitespace must be rejected with InvalidEncoding, got: {res_vt:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn defect_malformed_numbers_misclassified_as_incompatible_unit()
+-> Result<(), Box<dyn std::error::Error>> {
+    let malformed_numbers = [
+        ("1e", br#"{"tokens": 1e}"# as &[u8]),
+        ("1e+", br#"{"tokens": 1e+}"#),
+        ("1_000", br#"{"tokens": 1_000}"#),
+        ("0x10", br#"{"tokens": 0x10}"#),
+    ];
+    for (label, json) in malformed_numbers {
+        let res = BudgetVector::decode_json_slice(json);
+        assert!(
+            matches!(res, Err(BudgetError::InvalidEncoding { .. })),
+            "malformed number '{label}' must be InvalidEncoding, got: {res:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn defect_bare_minus_misclassified_as_negative_quantity() -> Result<(), Box<dyn std::error::Error>>
+{
+    let json = br#"{"tokens": -}"#;
+    let res = BudgetVector::decode_json_slice(json);
+    assert!(
+        matches!(res, Err(BudgetError::InvalidEncoding { .. })),
+        "bare minus '-' must be InvalidEncoding, got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn defect_overflowing_exponent_misclassified_for_float_and_int()
+-> Result<(), Box<dyn std::error::Error>> {
+    let json_float = br#"{"privacyExposure": 1e400}"#;
+    let res_float = BudgetVector::decode_json_slice(json_float);
+    assert!(
+        matches!(res_float, Err(BudgetError::InvalidEncoding { .. })),
+        "1e400 for float dim must be InvalidEncoding, got: {res_float:?}"
+    );
+
+    let json_int = br#"{"tokens": 1e400}"#;
+    let res_int = BudgetVector::decode_json_slice(json_int);
+    assert!(
+        matches!(res_int, Err(BudgetError::InvalidEncoding { .. })),
+        "1e400 for integer dim must be InvalidEncoding, got: {res_int:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn defect_boolean_and_null_values_misclassified() -> Result<(), Box<dyn std::error::Error>> {
+    let non_numbers = [
+        ("true int", br#"{"tokens": true}"# as &[u8]),
+        ("null int", br#"{"tokens": null}"#),
+        ("true float", br#"{"privacyExposure": true}"#),
+        ("null float", br#"{"privacyExposure": null}"#),
+    ];
+    for (label, json) in non_numbers {
+        let res = BudgetVector::decode_json_slice(json);
+        assert!(
+            matches!(res, Err(BudgetError::InvalidEncoding { .. })),
+            "value '{label}' must be InvalidEncoding, got: {res:?}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn defect_trailing_garbage_after_brace_misclassified() -> Result<(), Box<dyn std::error::Error>> {
+    let json = br#"{"tokens": 100} ;}"#;
+    let res = BudgetVector::decode_json_slice(json);
+    assert!(
+        matches!(res, Err(BudgetError::InvalidEncoding { .. })),
+        "trailing garbage after closing brace must be InvalidEncoding, got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn defect_unescaped_control_chars_and_invalid_unicode_escape()
+-> Result<(), Box<dyn std::error::Error>> {
+    // Unescaped control character in key
+    let json_ctrl_in_key = b"{\"tok\x00ens\": 100}";
+    let res_key = BudgetVector::decode_json_slice(json_ctrl_in_key);
+    assert!(
+        matches!(res_key, Err(BudgetError::InvalidEncoding { .. })),
+        "unescaped control char in key must be InvalidEncoding, got: {res_key:?}"
+    );
+
+    // Unescaped control character in string value
+    let json_ctrl_in_val = b"{\"tokens\": \"val\x1f\"}";
+    let res_val = BudgetVector::decode_json_slice(json_ctrl_in_val);
+    assert!(
+        matches!(res_val, Err(BudgetError::InvalidEncoding { .. })),
+        "unescaped control char in value must be InvalidEncoding, got: {res_val:?}"
+    );
+
+    // Invalid \u escape (not 4 hex digits)
+    let json_bad_u = br#"{"tokens\u002g": 100}"#;
+    let res_u = BudgetVector::decode_json_slice(json_bad_u);
+    assert!(
+        matches!(res_u, Err(BudgetError::InvalidEncoding { .. })),
+        "invalid \\u escape must be InvalidEncoding, got: {res_u:?}"
+    );
+
+    // Incomplete \u escape
+    let json_short_u = br#"{"tokens\u00": 100}"#;
+    let res_short = BudgetVector::decode_json_slice(json_short_u);
+    assert!(
+        matches!(res_short, Err(BudgetError::InvalidEncoding { .. })),
+        "short \\u escape must be InvalidEncoding, got: {res_short:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn defect_input_exceeding_max_json_budget_bytes() -> Result<(), Box<dyn std::error::Error>> {
+    assert_eq!(BudgetVector::MAX_JSON_BUDGET_BYTES, 64 * 1024);
+    let max_bytes = BudgetVector::MAX_JSON_BUDGET_BYTES;
+    let mut large_json = Vec::with_capacity(max_bytes + 10);
+    large_json.extend_from_slice(b"{\"tokens\": 1, ");
+    while large_json.len() <= max_bytes {
+        large_json.extend_from_slice(b" ");
+    }
+    large_json.extend_from_slice(b"\"bytes\": 2}");
+    assert!(large_json.len() > max_bytes);
+
+    let res = BudgetVector::decode_json_slice(&large_json);
+    assert!(
+        matches!(res, Err(BudgetError::InvalidEncoding { reason }) if reason.contains("maximum permitted size")),
+        "input exceeding MAX_JSON_BUDGET_BYTES must be rejected with InvalidEncoding, got: {res:?}"
     );
     Ok(())
 }
