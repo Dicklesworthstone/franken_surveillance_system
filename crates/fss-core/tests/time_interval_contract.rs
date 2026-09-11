@@ -21,6 +21,116 @@ use fss_core::{
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
 // -----------------------------------------------------------------------------
+// 0. PinkCoast Cross-Review Defect Tests (F1–F5)
+// -----------------------------------------------------------------------------
+
+#[test]
+fn pinkcoast_f1_checked_shift_rigid_translation_cannot_narrow() -> TestResult {
+    let interval = CaptureInterval::new(TimestampNs(100), TimestampNs(200))?;
+    let shifted = interval.checked_shift(50)?;
+    assert_eq!(shifted.uncertainty_ns(), interval.uncertainty_ns());
+    assert_eq!(shifted.earliest, TimestampNs(150));
+    assert_eq!(shifted.latest, TimestampNs(250));
+
+    let shifted_neg = interval.checked_shift(-30)?;
+    assert_eq!(shifted_neg.uncertainty_ns(), interval.uncertainty_ns());
+    assert_eq!(shifted_neg.earliest, TimestampNs(70));
+    assert_eq!(shifted_neg.latest, TimestampNs(170));
+
+    assert!(shifted.uncertainty_ns() >= interval.uncertainty_ns());
+    assert!(shifted_neg.uncertainty_ns() >= interval.uncertainty_ns());
+    Ok(())
+}
+
+#[test]
+fn pinkcoast_f2_abuts_containment_union_agreement() -> TestResult {
+    let a = CaptureInterval::new(TimestampNs(100), TimestampNs(200))?;
+    let b = CaptureInterval::new(TimestampNs(201), TimestampNs(300))?;
+
+    assert_eq!(a.intersection(b), None);
+    assert!(a.abuts(b));
+    assert!(b.abuts(a));
+    assert_eq!(a.classify_containment(b), IntervalContainment::Abutting);
+    assert_eq!(b.classify_containment(a), IntervalContainment::Abutting);
+
+    let u = a.union(b);
+    assert!(
+        u.is_contiguous(),
+        "union reports contiguous while containment reports abutting"
+    );
+    assert_eq!(u.gap_ns(), 0);
+    let contig = u.into_contiguous()?;
+    assert_eq!(contig.earliest, TimestampNs(100));
+    assert_eq!(contig.latest, TimestampNs(300));
+
+    let c = CaptureInterval::new(TimestampNs(205), TimestampNs(300))?;
+    assert!(!a.abuts(c));
+    assert_eq!(
+        a.classify_containment(c),
+        IntervalContainment::Disjoint { gap_ns: 4 }
+    );
+    Ok(())
+}
+
+#[test]
+fn pinkcoast_f3_touching_intervals_precedence_before_or_at() -> TestResult {
+    let a = CaptureInterval::new(TimestampNs(100), TimestampNs(200))?;
+    let b = CaptureInterval::new(TimestampNs(200), TimestampNs(300))?;
+
+    assert!(!a.abuts(b));
+    assert!(a.overlaps(b));
+    assert_eq!(
+        a.intersection(b),
+        Some(CaptureInterval::point(TimestampNs(200)))
+    );
+
+    let prec_ab = a.temporal_precedence(b);
+    assert_eq!(
+        prec_ab,
+        TemporalPrecedence::BeforeOrAt {
+            point: TimestampNs(200)
+        }
+    );
+    assert!(prec_ab.is_before_or_at());
+    assert!(prec_ab.is_weakly_before());
+    assert!(!prec_ab.is_indeterminate());
+
+    let prec_ba = b.temporal_precedence(a);
+    assert_eq!(
+        prec_ba,
+        TemporalPrecedence::AfterOrAt {
+            point: TimestampNs(200)
+        }
+    );
+    assert!(prec_ba.is_after_or_at());
+    assert!(prec_ba.is_weakly_after());
+    assert!(!prec_ba.is_indeterminate());
+    Ok(())
+}
+
+#[test]
+fn pinkcoast_f4_rng_span_abs_diff_no_overflow_on_full_i128_range() -> TestResult {
+    let min = i128::MIN;
+    let max = i128::MAX;
+    let span = max.abs_diff(min);
+    assert_eq!(span, u128::MAX);
+
+    let mut rng = DeterministicRng::new(42);
+    let sample = rng.next_i128_range(min, max);
+    assert!(sample >= min && sample <= max);
+    Ok(())
+}
+
+#[test]
+fn pinkcoast_f5_clock_basis_unknown_tag_returns_unknown_identity() -> TestResult {
+    for bad_tag in [0_u8, 5_u8, 99_u8, 255_u8] {
+        let err = ClockBasis::from_canonical_bytes(&[bad_tag]);
+        assert_eq!(err, Err(ContractError::UnknownClockBasis(bad_tag)));
+    }
+    Ok(())
+}
+
+// -----------------------------------------------------------------------------
 // 1. Explicit Unknown / Indeterminate Outcomes: Union
 // -----------------------------------------------------------------------------
 
@@ -224,27 +334,25 @@ fn interval_temporal_precedence_outcomes() -> TestResult {
     assert!(p_abut.is_definitely_before());
     assert_eq!(p_abut, TemporalPrecedence::Before { gap_ns: 0 });
 
-    // Boundary contact (touching at exact boundary point 200ns)
+    // Touching intervals (touching at exact boundary point 200ns)
     let touching = CaptureInterval::new(TimestampNs(200), TimestampNs(300))?;
     let p_touch = a.temporal_precedence(touching);
-    assert!(p_touch.is_boundary_contact());
+    assert!(p_touch.is_before_or_at());
     assert!(p_touch.is_weakly_before());
     assert!(!p_touch.is_indeterminate());
     assert_eq!(
         p_touch,
-        TemporalPrecedence::BoundaryContact {
+        TemporalPrecedence::BeforeOrAt {
             point: TimestampNs(200),
-            self_precedes: true,
         }
     );
     let p_touch_rev = touching.temporal_precedence(a);
-    assert!(p_touch_rev.is_boundary_contact());
+    assert!(p_touch_rev.is_after_or_at());
     assert!(p_touch_rev.is_weakly_after());
     assert_eq!(
         p_touch_rev,
-        TemporalPrecedence::BoundaryContact {
+        TemporalPrecedence::AfterOrAt {
             point: TimestampNs(200),
-            self_precedes: false,
         }
     );
 
@@ -253,7 +361,8 @@ fn interval_temporal_precedence_outcomes() -> TestResult {
     assert!(p_ov.is_indeterminate());
     assert!(!p_ov.is_definitely_before());
     assert!(!p_ov.is_definitely_after());
-    assert!(!p_ov.is_boundary_contact());
+    assert!(!p_ov.is_before_or_at());
+    assert!(!p_ov.is_after_or_at());
     assert_eq!(
         p_ov,
         TemporalPrecedence::Indeterminate {
@@ -284,7 +393,7 @@ fn checked_i128_arithmetic_overflow_fails_closed() -> TestResult {
     );
     assert_eq!(
         t_max.checked_add_ns(1),
-        Err(ContractError::InvertedTimeInterval)
+        Err(ContractError::ArithmeticOverflow)
     );
 
     // Underflow on checked_sub
@@ -294,7 +403,7 @@ fn checked_i128_arithmetic_overflow_fails_closed() -> TestResult {
     );
     assert_eq!(
         t_min.checked_sub_ns(1),
-        Err(ContractError::InvertedTimeInterval)
+        Err(ContractError::ArithmeticOverflow)
     );
 
     // Valid checked_duration_since near boundaries
@@ -323,8 +432,8 @@ fn checked_i128_arithmetic_overflow_fails_closed() -> TestResult {
     // Overflow during interval checked_shift fails closed
     let interval = CaptureInterval::new(TimestampNs(i128::MAX - 10), TimestampNs(i128::MAX - 5))?;
     assert_eq!(
-        interval.checked_shift(0, 10),
-        Err(ContractError::InvertedTimeInterval)
+        interval.checked_shift(10),
+        Err(ContractError::ArithmeticOverflow)
     );
     Ok(())
 }
@@ -467,24 +576,18 @@ fn uncertainty_widening_is_strictly_monotone() -> TestResult {
     assert!(hull.contains(a));
     assert!(hull.contains(b));
 
-    // Checked shift narrowing is rejected with NonMonotoneUncertaintyNarrowing
-    assert_eq!(
-        orig.checked_shift(500, 0),
-        Err(ContractError::from(
-            TimeIntervalError::NonMonotoneUncertaintyNarrowing
-        ))
-    );
-
     // Rigid translation preserves width exactly
     let translated = orig.checked_translate(500)?;
     assert_eq!(translated.uncertainty_ns(), orig.uncertainty_ns());
     assert_eq!(translated.earliest, TimestampNs(1_500));
     assert_eq!(translated.latest, TimestampNs(2_500));
 
-    // Non-narrowing checked_shift succeeds
-    let widened_shift = orig.checked_shift(-100, 200)?;
-    assert_eq!(widened_shift.uncertainty_ns(), 1_300);
-    assert!(widened_shift.uncertainty_ns() >= orig.uncertainty_ns());
+    // Rigid checked_shift preserves width exactly
+    let shifted = orig.checked_shift(500)?;
+    assert_eq!(shifted.uncertainty_ns(), orig.uncertainty_ns());
+    assert_eq!(shifted.earliest, TimestampNs(1_500));
+    assert_eq!(shifted.latest, TimestampNs(2_500));
+    assert!(shifted.uncertainty_ns() >= orig.uncertainty_ns());
     Ok(())
 }
 
@@ -515,11 +618,11 @@ fn canonical_encoding_round_trip_for_all_types() -> TestResult {
         assert_eq!(b_decoded, basis);
     }
 
-    // Invalid ClockBasis tags fail closed with InvalidIdentifier
+    // Invalid ClockBasis tags fail closed with UnknownClockBasis
     for bad_tag in [0_u8, 5_u8, 99_u8, 255_u8] {
         assert_eq!(
             ClockBasis::from_canonical_bytes(&[bad_tag]),
-            Err(ContractError::InvalidIdentifier)
+            Err(ContractError::UnknownClockBasis(bad_tag))
         );
     }
 
@@ -616,11 +719,16 @@ fn verify_interval_pair_invariants(
 
     let def_before = p_ab.is_definitely_before();
     let def_after = p_ab.is_definitely_after();
-    let boundary = p_ab.is_boundary_contact();
+    let before_or_at = p_ab.is_before_or_at();
+    let after_or_at = p_ab.is_after_or_at();
     let indet = p_ab.is_indeterminate();
 
-    // Exactly one of the four states must hold
-    let count = (def_before as u8) + (def_after as u8) + (boundary as u8) + (indet as u8);
+    // Exactly one of the five states must hold
+    let count = (def_before as u8)
+        + (def_after as u8)
+        + (before_or_at as u8)
+        + (after_or_at as u8)
+        + (indet as u8);
     assert_eq!(count, 1);
 
     // Antisymmetry of precedence
@@ -628,21 +736,23 @@ fn verify_interval_pair_invariants(
         assert!(p_ba.is_definitely_after());
     } else if def_after {
         assert!(p_ba.is_definitely_before());
-    } else if boundary {
-        assert!(p_ba.is_boundary_contact());
+    } else if before_or_at {
+        assert!(p_ba.is_after_or_at());
         if let (
-            TemporalPrecedence::BoundaryContact {
-                point: pt_ab,
-                self_precedes: sp_ab,
-            },
-            TemporalPrecedence::BoundaryContact {
-                point: pt_ba,
-                self_precedes: sp_ba,
-            },
+            TemporalPrecedence::BeforeOrAt { point: pt_ab },
+            TemporalPrecedence::AfterOrAt { point: pt_ba },
         ) = (p_ab, p_ba)
         {
             assert_eq!(pt_ab, pt_ba);
-            assert_ne!(sp_ab, sp_ba);
+        }
+    } else if after_or_at {
+        assert!(p_ba.is_before_or_at());
+        if let (
+            TemporalPrecedence::AfterOrAt { point: pt_ab },
+            TemporalPrecedence::BeforeOrAt { point: pt_ba },
+        ) = (p_ab, p_ba)
+        {
+            assert_eq!(pt_ab, pt_ba);
         }
     } else {
         assert!(p_ba.is_indeterminate());
@@ -692,12 +802,21 @@ fn verify_interval_pair_invariants(
 fn property_test_interval_algebra_invariants() -> TestResult {
     let mut rng = DeterministicRng::new(0xDEAD_BEEF_CAFE_BABE);
 
+    let mut part1_count = 0usize;
+    let mut part2_count = 0usize;
+    let mut part3_count = 0usize;
+    let mut part4_count = 0usize;
+    let mut part5_count = 0usize;
+    let mut part6_count = 0usize;
+    let mut part7_count = 0usize;
+
     // Partition 1: Standard uniform random intervals (300 pairs)
     for _ in 0..300 {
         let a = rng.next_interval(-1_000_000, 1_000_000)?;
         let b = rng.next_interval(-1_000_000, 1_000_000)?;
         let skew = (rng.next_u64() % 10_000) as u128;
         verify_interval_pair_invariants(a, b, skew)?;
+        part1_count += 1;
     }
 
     // Partition 2: Realistic Unix timestamps ~1.72e18 ns (100 pairs)
@@ -706,6 +825,7 @@ fn property_test_interval_algebra_invariants() -> TestResult {
         let a = rng.next_interval(unix_base, unix_base + 1_000_000_000)?;
         let b = rng.next_interval(unix_base, unix_base + 1_000_000_000)?;
         verify_interval_pair_invariants(a, b, 500)?;
+        part2_count += 1;
     }
 
     // Partition 3: Synthetic abutting pairs [t1, t2] and [t2 + 1, t3] (50 pairs)
@@ -717,6 +837,7 @@ fn property_test_interval_algebra_invariants() -> TestResult {
         let b = CaptureInterval::new(TimestampNs(t2 + 1), TimestampNs(t3))?;
         assert!(a.abuts(b));
         verify_interval_pair_invariants(a, b, 100)?;
+        part3_count += 1;
     }
 
     // Partition 4: Synthetic boundary-touching pairs [t1, t2] and [t2, t3] (50 pairs)
@@ -728,12 +849,12 @@ fn property_test_interval_algebra_invariants() -> TestResult {
         let b = CaptureInterval::new(TimestampNs(t2), TimestampNs(t3))?;
         assert_eq!(
             a.temporal_precedence(b),
-            TemporalPrecedence::BoundaryContact {
+            TemporalPrecedence::BeforeOrAt {
                 point: TimestampNs(t2),
-                self_precedes: true,
             }
         );
         verify_interval_pair_invariants(a, b, 100)?;
+        part4_count += 1;
     }
 
     // Partition 5: Concentric intervals (50 pairs)
@@ -746,6 +867,7 @@ fn property_test_interval_algebra_invariants() -> TestResult {
         let inner = CaptureInterval::new(TimestampNs(t2), TimestampNs(t3))?;
         assert!(outer.contains(inner));
         verify_interval_pair_invariants(outer, inner, 100)?;
+        part5_count += 1;
     }
 
     // Partition 6: Point intervals (50 pairs)
@@ -757,12 +879,33 @@ fn property_test_interval_algebra_invariants() -> TestResult {
         assert_eq!(a.uncertainty_ns(), 0);
         assert_eq!(b.uncertainty_ns(), 0);
         verify_interval_pair_invariants(a, b, 50)?;
+        part6_count += 1;
     }
 
-    // Partition 7: Boundary values near i128::MIN and i128::MAX
+    // Partition 7: Boundary values (MIN, MAX, 0, ±1)
     let near_min = CaptureInterval::new(TimestampNs(i128::MIN), TimestampNs(i128::MIN + 1_000))?;
     let near_max = CaptureInterval::new(TimestampNs(i128::MAX - 1_000), TimestampNs(i128::MAX))?;
     verify_interval_pair_invariants(near_min, near_max, 0)?;
+    part7_count += 1;
+
+    let neg_one_zero = CaptureInterval::new(TimestampNs(-1), TimestampNs(0))?;
+    let zero_pos_one = CaptureInterval::new(TimestampNs(0), TimestampNs(1))?;
+    verify_interval_pair_invariants(neg_one_zero, zero_pos_one, 0)?;
+    part7_count += 1;
+
+    let zero_point = CaptureInterval::point(TimestampNs::ZERO);
+    let one_point = CaptureInterval::point(TimestampNs(1));
+    verify_interval_pair_invariants(zero_point, one_point, 0)?;
+    part7_count += 1;
+
+    // Assert that each partition ran at least once
+    assert!(part1_count > 0, "partition 1 must run at least once");
+    assert!(part2_count > 0, "partition 2 must run at least once");
+    assert!(part3_count > 0, "partition 3 must run at least once");
+    assert!(part4_count > 0, "partition 4 must run at least once");
+    assert!(part5_count > 0, "partition 5 must run at least once");
+    assert!(part6_count > 0, "partition 6 must run at least once");
+    assert!(part7_count > 0, "partition 7 must run at least once");
 
     Ok(())
 }

@@ -2142,6 +2142,12 @@ pub enum ContractError {
     InvertedTimeInterval,
     /// Probability interval is malformed.
     InvalidProbabilityInterval,
+    /// Arithmetic overflow in timestamp or interval calculation.
+    ArithmeticOverflow,
+    /// Uncertainty narrowing attempted in monotone widening operation.
+    NonMonotoneUncertaintyNarrowing,
+    /// Unrecognized canonical encoding tag for clock basis.
+    UnknownClockBasis(u8),
     /// A transition requires retained evidence.
     EvidenceRequired,
     /// A transition requires independent corroboration.
@@ -2186,6 +2192,9 @@ impl ContractError {
             Self::UnsupportedDigestAlgorithm => "unsupported_digest_algorithm",
             Self::InvertedTimeInterval => "inverted_time_interval",
             Self::InvalidProbabilityInterval => "invalid_probability_interval",
+            Self::ArithmeticOverflow => "arithmetic_overflow",
+            Self::NonMonotoneUncertaintyNarrowing => "non_monotone_uncertainty_narrowing",
+            Self::UnknownClockBasis(_) => "unknown_clock_basis",
             Self::EvidenceRequired => "evidence_required",
             Self::CorroborationRequired => "corroboration_required",
             Self::NonCanonicalOrdering => "noncanonical_ordering",

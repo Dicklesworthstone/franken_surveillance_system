@@ -581,17 +581,17 @@ fn time_interval_bounds_and_uncertainty_contract() -> Result<(), ContractError> 
         CaptureInterval::new(TimestampNs(10), TimestampNs(80))?
     );
 
-    // Checked shift
-    let shifted = interval.checked_shift(5, 10)?;
+    // Checked shift (rigid translation)
+    let shifted = interval.checked_shift(5)?;
     assert_eq!(
         shifted,
-        CaptureInterval::new(TimestampNs(15), TimestampNs(50))?
+        CaptureInterval::new(TimestampNs(15), TimestampNs(45))?
     );
 
-    // Checked shift causing inversion fails
+    // Checked shift causing arithmetic overflow fails closed
     assert_eq!(
-        interval.checked_shift(100, 0),
-        Err(ContractError::InvertedTimeInterval)
+        interval.checked_shift(i128::MAX),
+        Err(ContractError::ArithmeticOverflow)
     );
 
     // Canonical ordering: sorted by earliest, then latest

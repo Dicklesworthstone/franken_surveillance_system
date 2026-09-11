@@ -24,12 +24,12 @@ impl TimestampNs {
     /// Maximum representable timestamp.
     pub const MAX: Self = Self(i128::MAX);
 
-    /// Adds nanoseconds with overflow check, failing closed on overflow.
+    /// Adds nanoseconds with overflow check, failing closed on overflow with [`ContractError::ArithmeticOverflow`].
     pub fn checked_add_ns(self, delta_ns: i128) -> Result<Self, ContractError> {
         self.0
             .checked_add(delta_ns)
             .map(Self)
-            .ok_or(ContractError::InvertedTimeInterval)
+            .ok_or(ContractError::ArithmeticOverflow)
     }
 
     /// Adds nanoseconds with explicit [`TimeIntervalError`] on overflow.
@@ -40,12 +40,12 @@ impl TimestampNs {
             .ok_or(TimeIntervalError::ArithmeticOverflow)
     }
 
-    /// Subtracts nanoseconds with overflow check, failing closed on overflow.
+    /// Subtracts nanoseconds with overflow check, failing closed on overflow with [`ContractError::ArithmeticOverflow`].
     pub fn checked_sub_ns(self, delta_ns: i128) -> Result<Self, ContractError> {
         self.0
             .checked_sub(delta_ns)
             .map(Self)
-            .ok_or(ContractError::InvertedTimeInterval)
+            .ok_or(ContractError::ArithmeticOverflow)
     }
 
     /// Subtracts nanoseconds with explicit [`TimeIntervalError`] on overflow.
@@ -111,7 +111,7 @@ impl CanonicalDecode for ClockBasis {
             2 => Ok(Self::DeviceMonotonic),
             3 => Ok(Self::HostMonotonic),
             4 => Ok(Self::Estimated),
-            other => Err(ContractError::from(TimeIntervalError::UnknownClockBasis(other))),
+            other => Err(ContractError::UnknownClockBasis(other)),
         }
     }
 }
@@ -185,14 +185,14 @@ impl std::error::Error for TimeIntervalError {}
 impl From<TimeIntervalError> for ContractError {
     fn from(err: TimeIntervalError) -> Self {
         match err {
-            TimeIntervalError::InvertedInterval { .. }
-            | TimeIntervalError::ArithmeticOverflow
-            | TimeIntervalError::NonMonotoneUncertaintyNarrowing => {
-                ContractError::InvertedTimeInterval
+            TimeIntervalError::InvertedInterval { .. } => ContractError::InvertedTimeInterval,
+            TimeIntervalError::ArithmeticOverflow => ContractError::ArithmeticOverflow,
+            TimeIntervalError::NonMonotoneUncertaintyNarrowing => {
+                ContractError::NonMonotoneUncertaintyNarrowing
             }
             TimeIntervalError::ClockBasisMismatch { .. } => ContractError::GenerationConflict,
             TimeIntervalError::DisjointIntervals { .. } => ContractError::CoverageUncertified,
-            TimeIntervalError::UnknownClockBasis(_) => ContractError::InvalidIdentifier,
+            TimeIntervalError::UnknownClockBasis(tag) => ContractError::UnknownClockBasis(tag),
         }
     }
 }
@@ -297,11 +297,12 @@ impl IntervalContainment {
 }
 
 /// Temporal precedence relation between two conservative capture intervals.
+/// Temporal precedence relation between two conservative capture intervals.
 ///
 /// If intervals have interior overlap, the true event instant in one could have occurred
 /// before, at, or after the true event instant in the other (`Indeterminate`).
 /// If intervals touch at an exact boundary point, the earlier interval cannot occur after
-/// the later interval (`BoundaryContact`).
+/// the later interval (`BeforeOrAt`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum TemporalPrecedence {
     /// Self is definitely and strictly before other, separated by `gap_ns`.
@@ -314,14 +315,17 @@ pub enum TemporalPrecedence {
         /// Uncovered gap in nanoseconds between other.latest and self.earliest.
         gap_ns: u128,
     },
-    /// Intervals touch at an exact boundary point (`self.latest == other.earliest` or `other.latest == self.earliest`).
-    /// In this configuration, the earlier interval can never occur after the later interval;
-    /// they are weakly ordered with at most coincident timing at `point`.
-    BoundaryContact {
-        /// The exact boundary point in nanoseconds.
+    /// Intervals touch at an exact boundary point (`self.latest == other.earliest`);
+    /// self cannot have occurred after other.
+    BeforeOrAt {
+        /// The exact boundary point in nanoseconds where self.latest == other.earliest.
         point: TimestampNs,
-        /// True if self is before-or-at other (`self.latest == other.earliest`).
-        self_precedes: bool,
+    },
+    /// Intervals touch at an exact boundary point (`self.earliest == other.latest`);
+    /// self cannot have occurred before other.
+    AfterOrAt {
+        /// The exact boundary point in nanoseconds where self.earliest == other.latest.
+        point: TimestampNs,
     },
     /// Intervals have interior overlap (> 0 duration overlap); relative temporal order
     /// of the underlying events is indeterminate (could be before, at, or after).
@@ -344,10 +348,16 @@ impl TemporalPrecedence {
         matches!(self, Self::After { .. })
     }
 
-    /// Returns true if intervals touch at an exact boundary point.
+    /// Returns true if intervals touch at boundary and self cannot be after other.
     #[must_use]
-    pub const fn is_boundary_contact(&self) -> bool {
-        matches!(self, Self::BoundaryContact { .. })
+    pub const fn is_before_or_at(&self) -> bool {
+        matches!(self, Self::BeforeOrAt { .. })
+    }
+
+    /// Returns true if intervals touch at boundary and self cannot be before other.
+    #[must_use]
+    pub const fn is_after_or_at(&self) -> bool {
+        matches!(self, Self::AfterOrAt { .. })
     }
 
     /// Returns true if relative order is indeterminate due to interior overlap.
@@ -356,22 +366,16 @@ impl TemporalPrecedence {
         matches!(self, Self::Indeterminate { .. })
     }
 
-    /// Returns true if self weakly precedes other (cannot occur after other).
+    /// Returns true if self weakly precedes other (strictly before or touching at boundary).
     #[must_use]
     pub const fn is_weakly_before(&self) -> bool {
-        matches!(
-            self,
-            Self::Before { .. } | Self::BoundaryContact { self_precedes: true, .. }
-        )
+        matches!(self, Self::Before { .. } | Self::BeforeOrAt { .. })
     }
 
-    /// Returns true if self weakly succeeds other (cannot occur before other).
+    /// Returns true if self weakly succeeds other (strictly after or touching at boundary).
     #[must_use]
     pub const fn is_weakly_after(&self) -> bool {
-        matches!(
-            self,
-            Self::After { .. } | Self::BoundaryContact { self_precedes: false, .. }
-        )
+        matches!(self, Self::After { .. } | Self::AfterOrAt { .. })
     }
 }
 
@@ -480,36 +484,38 @@ impl CaptureInterval {
     /// For gap-preserving semantic combination, use [`CaptureInterval::union`].
     #[must_use]
     pub fn hull(self, other: Self) -> Self {
-        Self {
+        let res = Self {
             earliest: self.earliest.min(other.earliest),
             latest: self.latest.max(other.latest),
-        }
+        };
+        // Debug-independent assertion that convex hull never narrows uncertainty
+        assert!(
+            res.uncertainty_ns() >= self.uncertainty_ns()
+                && res.uncertainty_ns() >= other.uncertainty_ns(),
+            "convex hull narrowed uncertainty"
+        );
+        res
+    }
+
+    /// Rigidly shifts both interval bounds by `delta_ns`, preserving interval width.
+    ///
+    /// Fails closed on arithmetic overflow with [`ContractError::ArithmeticOverflow`].
+    pub fn checked_shift(self, delta_ns: i128) -> Result<Self, ContractError> {
+        let earliest = self.earliest.checked_add_ns(delta_ns)?;
+        let latest = self.latest.checked_add_ns(delta_ns)?;
+        let res = Self::new(earliest, latest)?;
+        // Debug-independent assertion that rigid shift preserves uncertainty
+        assert_eq!(
+            res.uncertainty_ns(),
+            self.uncertainty_ns(),
+            "rigid shift narrowed uncertainty"
+        );
+        Ok(res)
     }
 
     /// Rigidly shifts both bounds by `delta_ns`, preserving interval width.
     pub fn checked_translate(self, delta_ns: i128) -> Result<Self, ContractError> {
-        let earliest = self.earliest.checked_add_ns(delta_ns)?;
-        let latest = self.latest.checked_add_ns(delta_ns)?;
-        Self::new(earliest, latest)
-    }
-
-    /// Shifts interval bounds by separate offsets, validating non-inversion and monotone widening.
-    ///
-    /// An operation may NEVER narrow an interval's uncertainty.
-    pub fn checked_shift(
-        self,
-        earliest_offset_ns: i128,
-        latest_offset_ns: i128,
-    ) -> Result<Self, ContractError> {
-        let earliest = self.earliest.checked_add_ns(earliest_offset_ns)?;
-        let latest = self.latest.checked_add_ns(latest_offset_ns)?;
-        let result = Self::new(earliest, latest)?;
-        if result.uncertainty_ns() < self.uncertainty_ns() {
-            return Err(ContractError::from(
-                TimeIntervalError::NonMonotoneUncertaintyNarrowing,
-            ));
-        }
-        Ok(result)
+        self.checked_shift(delta_ns)
     }
 
     /// Computes the union of two intervals.
@@ -520,10 +526,17 @@ impl CaptureInterval {
     #[must_use]
     pub fn union(self, other: Self) -> IntervalUnion {
         if self.overlaps(other) || self.abuts(other) {
-            IntervalUnion::Contiguous(Self {
+            let res = Self {
                 earliest: self.earliest.min(other.earliest),
                 latest: self.latest.max(other.latest),
-            })
+            };
+            // Debug-independent assertion that contiguous union never narrows uncertainty
+            assert!(
+                res.uncertainty_ns() >= self.uncertainty_ns()
+                    && res.uncertainty_ns() >= other.uncertainty_ns(),
+                "contiguous union narrowed uncertainty"
+            );
+            IntervalUnion::Contiguous(res)
         } else if self.latest < other.earliest {
             let diff = other.earliest.0.abs_diff(self.latest.0);
             let gap_ns = diff.saturating_sub(1);
@@ -584,14 +597,10 @@ impl CaptureInterval {
             let gap_ns = diff.saturating_sub(1);
             TemporalPrecedence::After { gap_ns }
         } else if self.latest == other.earliest {
-            TemporalPrecedence::BoundaryContact {
-                point: self.latest,
-                self_precedes: true,
-            }
+            TemporalPrecedence::BeforeOrAt { point: self.latest }
         } else if self.earliest == other.latest {
-            TemporalPrecedence::BoundaryContact {
+            TemporalPrecedence::AfterOrAt {
                 point: self.earliest,
-                self_precedes: false,
             }
         } else {
             let earliest = self.earliest.max(other.earliest);
