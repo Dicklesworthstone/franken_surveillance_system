@@ -182,7 +182,11 @@ fn stable_id_canonical_encoding_distinct_from_json() -> Result<(), ContractError
 
     // Canonical encoding starts with 64-bit big-endian length prefix (8 bytes)
     assert_eq!(canonical_bytes.len(), 8 + "cam-front-01".len());
-    let len_prefix = u64::from_be_bytes(canonical_bytes[..8].try_into().unwrap());
+    let len_prefix = u64::from_be_bytes(
+        canonical_bytes[..8]
+            .try_into()
+            .map_err(|_| ContractError::InvalidDigest)?,
+    );
     assert_eq!(len_prefix, "cam-front-01".len() as u64);
     assert_eq!(&canonical_bytes[8..], b"cam-front-01");
 
@@ -428,7 +432,9 @@ fn tombstone_rules_and_lifecycle_state_machine() -> Result<(), ContractError> {
     );
 
     // Retained tombstone proof inspection
-    let retrieved = registry.get_tombstone(&obj_id).unwrap();
+    let retrieved = registry
+        .get_tombstone(&obj_id)
+        .ok_or(ContractError::NotFound)?;
     assert_eq!(retrieved, &tombstone);
     assert_eq!(retrieved.witness_digest, witness);
     assert_eq!(retrieved.payload_digest, payload);
@@ -440,8 +446,8 @@ fn tombstone_rules_and_lifecycle_state_machine() -> Result<(), ContractError> {
 }
 
 #[test]
-fn tombstone_record_invalid_generations_rejected() {
-    let obj_id = ObjectId::parse("obj-bad-gen").unwrap();
+fn tombstone_record_invalid_generations_rejected() -> Result<(), ContractError> {
+    let obj_id = ObjectId::parse("obj-bad-gen")?;
     let payload = ContentDigest::sha256(b"tombstone");
 
     // tombstone_gen == prior_gen rejected
@@ -476,6 +482,7 @@ fn tombstone_record_invalid_generations_rejected() {
         payload,
     );
     assert_eq!(res_skipped, Err(ContractError::GenerationConflict));
+    Ok(())
 }
 
 #[test]
@@ -664,7 +671,7 @@ fn version_envelope_fail_closed_unknown_version() -> Result<(), ContractError> {
 }
 
 #[test]
-fn decoder_fault_matrix() {
+fn decoder_fault_matrix() -> Result<(), ContractError> {
     // 1. Truncated EOF on u32
     let short_bytes = [1_u8, 2_u8];
     let mut decoder = CanonicalDecoder::new(&short_bytes);
@@ -694,7 +701,7 @@ fn decoder_fault_matrix() {
     // 6. Trailing unconsumed bytes in ensure_finished
     let trailing = [0_u8, 1_u8];
     let mut decoder = CanonicalDecoder::new(&trailing);
-    assert_eq!(decoder.u8().unwrap(), 0);
+    assert_eq!(decoder.u8()?, 0);
     assert_eq!(
         decoder.ensure_finished(),
         Err(ContractError::NonCanonicalOrdering)
@@ -720,6 +727,7 @@ fn decoder_fault_matrix() {
     let big_bytes = big_encoder.finish();
     let mut big_decoder = CanonicalDecoder::new(&big_bytes);
     assert_eq!(big_decoder.bytes(), Err(ContractError::InvalidDigest));
+    Ok(())
 }
 
 #[test]
@@ -848,7 +856,7 @@ fn finding_6_and_7_encoder_fail_closed_and_real_text_bound() -> Result<(), Contr
     // 8-byte big-endian length prefix = MAX_CANONICAL_TEXT_BYTES + 1
     raw_buf.extend_from_slice(&((MAX_CANONICAL_TEXT_BYTES + 1) as u64).to_be_bytes());
     // Actual payload of MAX_CANONICAL_TEXT_BYTES + 1 valid ASCII bytes
-    raw_buf.extend(std::iter::repeat(b'x').take(MAX_CANONICAL_TEXT_BYTES + 1));
+    raw_buf.extend(std::iter::repeat_n(b'x', MAX_CANONICAL_TEXT_BYTES + 1));
 
     let mut dec = CanonicalDecoder::new(&raw_buf);
     // Must return InvalidIdentifier because length exceeds MAX_CANONICAL_TEXT_BYTES,
