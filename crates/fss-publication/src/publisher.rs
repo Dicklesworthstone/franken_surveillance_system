@@ -76,9 +76,11 @@ impl<'a, C: VerifiedObjectCatalog> AuthorityPublisher<'a, C> {
             .batches()
             .iter()
             .find(|b| b.batch_id == batch.batch_id)
-            && committed == &batch
         {
-            return Ok(committed.new_anchor.clone());
+            if committed == &batch {
+                return Ok(committed.new_anchor.clone());
+            }
+            return Err(PublicationError::DuplicateBatchId(batch.batch_id));
         }
 
         let anchor = self.ledger.append(batch)?.anchor.clone();

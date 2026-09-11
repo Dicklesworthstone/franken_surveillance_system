@@ -150,3 +150,63 @@ fn retry_append_of_already_committed_batch_must_be_idempotent() -> Result<(), Bo
     let _ = fs::remove_file(path);
     Ok(())
 }
+
+/// PinkCoast finding 2: Conflicting batch carrying an already-committed BatchId must be
+/// rejected with typed PublicationError::DuplicateBatchId.
+#[test]
+fn conflicting_batch_with_same_batch_id_is_rejected() -> Result<(), Box<dyn Error>> {
+    let journal_path = temp_journal("duplicate-batch-id");
+    let _ = fs::remove_file(&journal_path);
+
+    let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 8192));
+    let payload_1 = store.put_verified(b"payload-1")?;
+    let payload_2 = store.put_verified(b"payload-2")?;
+    let mut ledger =
+        DurableReferenceLedger::open(&journal_path, "site:one", IncompleteTailPolicy::Reject)?;
+
+    let mut publisher = AuthorityPublisher::new(&store, &mut ledger);
+    let batch_id = BatchId::parse("batch:test:duplicate-id")?;
+
+    let delta_1 = EvidenceDelta {
+        delta_id: "delta:1".to_owned(),
+        family: "sensor_capsule".to_owned(),
+        object_id: ObjectId::parse("object:sensor-capsule:1")?,
+        prior_generation: None,
+        new_generation: 1,
+        validity: CaptureInterval::new(TimestampNs(100), TimestampNs(120))?,
+        plane: Plane::Authority,
+        payload_digest: payload_1,
+        witness_digest: None,
+        operation_id: None,
+    };
+
+    let batch_1 = publisher.prepare_batch(batch_id.clone(), vec![delta_1], [payload_1])?;
+    let _anchor_1 = publisher.append(batch_1)?;
+
+    // Construct batch_2 with the SAME batch_id but DIFFERENT payload:
+    let delta_2 = EvidenceDelta {
+        delta_id: "delta:2".to_owned(),
+        family: "sensor_capsule".to_owned(),
+        object_id: ObjectId::parse("object:sensor-capsule:2")?,
+        prior_generation: None,
+        new_generation: 1,
+        validity: CaptureInterval::new(TimestampNs(130), TimestampNs(150))?,
+        plane: Plane::Authority,
+        payload_digest: payload_2,
+        witness_digest: None,
+        operation_id: None,
+    };
+
+    let batch_2 = publisher.prepare_batch(batch_id.clone(), vec![delta_2], [payload_2])?;
+
+    // publisher.append(batch_2) MUST return Err(PublicationError::DuplicateBatchId):
+    let append_2_result = publisher.append(batch_2);
+    let _ = fs::remove_file(&journal_path);
+    match append_2_result {
+        Err(PublicationError::DuplicateBatchId(id)) if id == batch_id => Ok(()),
+        other => Err(format!(
+            "expected PublicationError::DuplicateBatchId({batch_id}), got: {other:?}"
+        )
+        .into()),
+    }
+}

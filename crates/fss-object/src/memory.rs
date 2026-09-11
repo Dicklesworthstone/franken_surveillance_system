@@ -194,10 +194,18 @@ impl InMemoryObjectStore {
 
     /// Publishes a manifest root after proving all referenced children verified.
     ///
+    /// # Root-Last Publication and Bottom-Up Ordering
+    /// Manifests must be published bottom-up: every referenced sub-manifest must be published
+    /// before any parent manifest that references it. `verify_closure` descends ONLY into children
+    /// present in `visible_manifests`; a child not present in `visible_manifests` is treated
+    /// strictly as an opaque leaf. An opaque leaf whose payload bytes happen to parse as an
+    /// `ObjectManifest` does not trigger closure descent unless it was explicitly published.
+    ///
     /// The manifest object is staged and verified before its root enters `visible_manifests`.
     /// Re-publication of the same canonical manifest is idempotent.
-    /// On failure during closure verification, the staged manifest object and consumed quota
-    /// are rolled back cleanly.
+    /// On any failure during staging, verification, collision check, or closure verification,
+    /// any newly staged object and allocated quota are rolled back cleanly, and any pre-existing
+    /// object state (such as [`ObjectState::Staged`]) is preserved and restored.
     pub fn publish_manifest(
         &mut self,
         manifest: ObjectManifest,
@@ -206,45 +214,61 @@ impl InMemoryObjectStore {
             return Err(ObjectError::Corrupt(manifest.root()));
         }
         self.require_all_verified(manifest.children())?;
+        let root = manifest.root();
         let manifest_bytes = manifest.canonical_bytes();
-        let was_present = self.objects.contains_key(&manifest.root());
-        let root = self.stage(&manifest_bytes)?;
-        if root != manifest.root() {
-            return Err(ObjectError::Corrupt(manifest.root()));
-        }
-        self.verify(root)?;
+        let prior_state = self.objects.get(&root).map(|object| object.state);
+        let was_visible = self.visible_manifests.contains_key(&root);
 
-        if let Some(existing) = self.visible_manifests.get(&root) {
-            if existing == &manifest {
-                return Ok(PublicationReceipt {
-                    root,
-                    child_count: manifest.children().len(),
-                    closure_object_count: self.verify_closure(root)?,
-                });
+        let stage_and_publish = |store: &mut Self| -> Result<PublicationReceipt, ObjectError> {
+            let staged_root = store.stage(&manifest_bytes)?;
+            if staged_root != root {
+                return Err(ObjectError::Corrupt(root));
             }
-            return Err(ObjectError::DigestCollision(root));
-        }
+            store.verify(root)?;
 
-        self.visible_manifests.insert(root, manifest);
-        let closure_object_count = match self.verify_closure(root) {
-            Ok(count) => count,
-            Err(error) => {
-                self.visible_manifests.remove(&root);
-                if !was_present {
-                    self.objects.remove(&root);
-                    self.total_bytes = self.total_bytes.saturating_sub(manifest_bytes.len() as u64);
+            if let Some(existing) = store.visible_manifests.get(&root) {
+                if existing == &manifest {
+                    return Ok(PublicationReceipt {
+                        root,
+                        child_count: manifest.children().len(),
+                        closure_object_count: store.verify_closure(root)?,
+                    });
                 }
-                return Err(error);
+                return Err(ObjectError::DigestCollision(root));
             }
+
+            store.visible_manifests.insert(root, manifest.clone());
+            let closure_object_count = store.verify_closure(root)?;
+
+            Ok(PublicationReceipt {
+                root,
+                child_count: manifest.children().len(),
+                closure_object_count,
+            })
         };
-        Ok(PublicationReceipt {
-            root,
-            child_count: self
-                .visible_manifests
-                .get(&root)
-                .map_or(0, |visible| visible.children().len()),
-            closure_object_count,
-        })
+
+        match stage_and_publish(self) {
+            Ok(receipt) => Ok(receipt),
+            Err(error) => {
+                if !was_visible {
+                    self.visible_manifests.remove(&root);
+                }
+                match prior_state {
+                    None => {
+                        if self.objects.remove(&root).is_some() {
+                            self.total_bytes =
+                                self.total_bytes.saturating_sub(manifest_bytes.len() as u64);
+                        }
+                    }
+                    Some(state) => {
+                        if let Some(object) = self.objects.get_mut(&root) {
+                            object.state = state;
+                        }
+                    }
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Returns a published manifest by exact root, re-verifying content identity and custody.
@@ -260,7 +284,10 @@ impl InMemoryObjectStore {
         Ok(manifest)
     }
 
-    /// Verifies the complete reachable closure, descending into every manifest-shaped child.
+    /// Verifies the complete reachable closure and returns unique object count including roots.
+    ///
+    /// Descends ONLY into children present in `visible_manifests`. A child not present in
+    /// `visible_manifests` is an opaque leaf; opaque leaf bytes are never trial-parsed as manifests.
     pub fn verify_closure(&self, root: ContentDigest) -> Result<usize, ObjectError> {
         if !self.visible_manifests.contains_key(&root) {
             return Err(ObjectError::ManifestNotPublished(root));
@@ -273,13 +300,6 @@ impl InMemoryObjectStore {
             }
             self.require_verified(digest)?;
             if let Some(manifest) = self.visible_manifests.get(&digest) {
-                for child in manifest.children().iter().rev() {
-                    self.require_verified(*child)?;
-                    pending.push(*child);
-                }
-            } else if let Ok(bytes) = self.read_verified(digest)
-                && let Ok(manifest) = ObjectManifest::from_canonical_bytes(bytes)
-            {
                 for child in manifest.children().iter().rev() {
                     self.require_verified(*child)?;
                     pending.push(*child);

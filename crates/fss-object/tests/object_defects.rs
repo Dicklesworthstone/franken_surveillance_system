@@ -6,29 +6,31 @@ use std::error::Error;
 use fss_core::{CanonicalEncode, ContentDigest};
 use fss_object::{InMemoryObjectStore, MAX_MANIFEST_CHILDREN, ObjectLimits, ObjectManifest};
 
-/// F2: verify_closure must descend into manifest-shaped child objects even if they
-/// were only put via put_verified and not published in visible_manifests.
+/// F2: Sub-manifests must be published bottom-up. When a sub-manifest is published in
+/// visible_manifests, parent manifest publication descends into the sub-manifest closure
+/// and verifies all reachable leaves. If a leaf in the sub-manifest is missing or corrupt,
+/// parent publication fails.
 #[test]
-fn sub_manifest_missing_leaf_must_prevent_parent_manifest_publication() -> Result<(), Box<dyn Error>>
-{
+fn sub_manifests_must_be_published_bottom_up_and_closure_verified() -> Result<(), Box<dyn Error>> {
     let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 8192));
-    let missing_leaf = ContentDigest::sha256(b"missing-leaf-object");
+    let leaf = store.put_verified(b"leaf-content")?;
 
-    // Construct a child manifest referencing missing_leaf:
-    let child_manifest = ObjectManifest::new("clip", [missing_leaf], None)?;
-    let child_root = child_manifest.root();
+    // Child manifest published bottom-up first:
+    let child_manifest = ObjectManifest::new("clip", [leaf], None)?;
+    let child_receipt = store.publish_manifest(child_manifest.clone())?;
+    if child_receipt.closure_object_count != 2 {
+        return Err("expected child manifest closure to have 2 objects (child + leaf)".into());
+    }
 
-    // Stage and verify the child manifest bytes as an opaque object, but DO NOT publish it:
-    store.put_verified(&child_manifest.canonical_bytes())?;
+    // Corrupt leaf in child manifest:
+    store.corrupt_for_test(leaf)?;
 
-    // Parent manifest references the child manifest root:
-    let parent_manifest = ObjectManifest::new("incident", [child_root], None)?;
-
+    // Parent manifest referencing child manifest:
+    let parent_manifest = ObjectManifest::new("incident", [child_manifest.root()], None)?;
     let publish_result = store.publish_manifest(parent_manifest);
     if publish_result.is_ok() {
         return Err(
-            "F2 defect confirmed: parent manifest published despite sub-manifest missing leaf"
-                .into(),
+            "expected parent publication to fail because child manifest's leaf is corrupt".into(),
         );
     }
 
@@ -148,6 +150,71 @@ fn failed_manifest_publication_must_not_leak_staged_object_or_quota() -> Result<
     if store.state(parent_root).is_some() {
         return Err(
             "F7 defect confirmed: parent manifest root object still present in store".into(),
+        );
+    }
+
+    Ok(())
+}
+
+/// PinkCoast finding 1: An opaque leaf whose payload bytes happen to parse as an ObjectManifest
+/// must NOT cause closure descent. It is an opaque leaf because it is not in visible_manifests.
+#[test]
+fn opaque_leaf_shaped_like_manifest_does_not_cause_closure_descent() -> Result<(), Box<dyn Error>> {
+    let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 8192));
+    let non_existent_digest = ContentDigest::sha256(b"does-not-exist-in-store");
+
+    // Construct a payload whose serialized bytes happen to parse as an ObjectManifest:
+    let fake_manifest = ObjectManifest::new("clip", [non_existent_digest], None)?;
+    let leaf_bytes = fake_manifest.canonical_bytes();
+
+    // Store this payload as an opaque verified leaf object:
+    let leaf_digest = store.put_verified(&leaf_bytes)?;
+
+    // A valid parent manifest references the opaque leaf object:
+    let parent_manifest = ObjectManifest::new("incident", [leaf_digest], None)?;
+
+    // Publication MUST succeed because leaf_digest is verified and present in store,
+    // and opaque leaves are not trial-parsed as manifests.
+    let receipt = store.publish_manifest(parent_manifest)?;
+    assert_eq!(receipt.closure_object_count, 2);
+    Ok(())
+}
+
+/// PinkCoast finding 3: Pre-existing Staged object must not remain promoted to Verified
+/// when publish_manifest fails.
+#[test]
+fn pre_existing_staged_object_is_not_promoted_to_verified_on_publish_failure()
+-> Result<(), Box<dyn Error>> {
+    use fss_object::ObjectState;
+
+    let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 8192));
+    let leaf = store.put_verified(b"leaf-1")?;
+
+    // Create a child manifest, published so it is in visible_manifests:
+    let child_manifest = ObjectManifest::new("clip", [leaf], None)?;
+    store.publish_manifest(child_manifest.clone())?;
+
+    // Corrupt leaf so closure verification of parent will fail:
+    store.corrupt_for_test(leaf)?;
+
+    // Parent manifest referencing child_manifest:
+    let parent_manifest = ObjectManifest::new("incident", [child_manifest.root()], None)?;
+    let parent_root = parent_manifest.root();
+    let parent_bytes = parent_manifest.canonical_bytes();
+
+    // Stage parent bytes in advance so it exists in ObjectState::Staged:
+    store.stage(&parent_bytes)?;
+    assert_eq!(store.state(parent_root), Some(ObjectState::Staged));
+
+    // publish_manifest should fail because leaf is corrupt:
+    let res = store.publish_manifest(parent_manifest);
+    assert!(res.is_err());
+
+    // Invariant: The pre-existing staged parent manifest must NOT remain in ObjectState::Verified!
+    // It must be restored to ObjectState::Staged.
+    if store.state(parent_root) != Some(ObjectState::Staged) {
+        return Err(
+            "pre-existing staged object was left promoted to Verified after publish failure".into(),
         );
     }
 

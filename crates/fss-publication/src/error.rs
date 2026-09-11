@@ -3,6 +3,7 @@
 use std::error::Error;
 use std::fmt;
 
+use fss_core::BatchId;
 use fss_ledger::DurableLedgerError;
 use fss_object::ObjectError;
 
@@ -13,6 +14,8 @@ pub enum PublicationError {
     Object(ObjectError),
     /// Durable authority publication or reconciliation failed.
     Ledger(DurableLedgerError),
+    /// A different batch carrying an already-committed batch ID was submitted.
+    DuplicateBatchId(BatchId),
 }
 
 impl fmt::Display for PublicationError {
@@ -20,6 +23,9 @@ impl fmt::Display for PublicationError {
         match self {
             Self::Object(error) => write!(formatter, "publication object error: {error}"),
             Self::Ledger(error) => write!(formatter, "publication ledger error: {error}"),
+            Self::DuplicateBatchId(batch_id) => {
+                write!(formatter, "publication duplicate batch ID: {batch_id}")
+            }
         }
     }
 }
@@ -29,6 +35,7 @@ impl Error for PublicationError {
         match self {
             Self::Object(error) => Some(error),
             Self::Ledger(error) => Some(error),
+            Self::DuplicateBatchId(_) => None,
         }
     }
 }
