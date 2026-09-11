@@ -197,6 +197,11 @@ fn diagnostic_structure_and_redaction_are_verified() {
     assert!(human.contains("[REDACTED]"));
     assert!(json.contains("[REDACTED]"));
 
+    // Assert Display implementation does not leak secrets
+    let err_display = err.to_string();
+    assert!(!err_display.contains("supersecretpassword123"));
+    assert!(err_display.contains("[REDACTED]"));
+
     // Assert structured log contains all required fields
     assert!(json.contains("\"schema\":\"fss.cli_diagnostic.v1\""));
     assert!(json.contains("\"phase\":\"argument_parsing\""));
@@ -212,6 +217,44 @@ fn diagnostic_structure_and_redaction_are_verified() {
     assert!(json.contains("\"recovery_class\":\"never_unchanged\""));
     assert!(json.contains("\"correlation_id\":\"corr-fss-ERR-CLI-UNKNOWN-OPTION-001-1\""));
     assert!(json.contains("\"proof_handle\":\"fss://proof/cli/parse-failure\""));
+}
+
+#[test]
+fn diagnostic_json_is_valid_for_hostile_characters() {
+    let tricky_cases = [
+        fss_cli::CliError::UnknownOption {
+            option: "--opt=\"quoted\"".to_owned(),
+            command: Some("status".to_owned()),
+            index: 1,
+        },
+        fss_cli::CliError::TrailingArgument {
+            argument: "path\\with\\backslashes".to_owned(),
+            index: 2,
+            command: Some("doctor".to_owned()),
+        },
+        fss_cli::CliError::UnexpectedPositional {
+            argument: "line1\nline2\ttab".to_owned(),
+            index: 1,
+            command: None,
+        },
+        fss_cli::CliError::InvalidUnicode {
+            index: 0,
+            byte_length: 5,
+            redacted_repr: "\\x80\\x81\\x82".to_owned(),
+        },
+        fss_cli::CliError::UnknownCommand {
+            command: "--token=secret12345".to_owned(),
+            context: None,
+            index: 0,
+        },
+    ];
+
+    for err in tricky_cases {
+        let (human, json) = render_diagnostic(&err, "fss", None);
+        assert!(!human.is_empty());
+        assert!(!json.is_empty());
+        assert_valid_json_payload(&json);
+    }
 }
 
 #[test]
@@ -309,6 +352,9 @@ fn real_process_execution_tests() -> Result<(), Box<dyn std::error::Error>> {
         vec!["capabilities", "--xml"],
         vec!["unknown_cmd"],
         vec!["--json", "capabilities"],
+        vec!["status", "--json", "extra\"with\"quotes"],
+        vec!["doctor", "--password=supersecret"],
+        vec!["capabilities", "--dir=C:\\Windows\\System32"],
     ];
 
     for args in failure_cases {
@@ -332,6 +378,37 @@ fn real_process_execution_tests() -> Result<(), Box<dyn std::error::Error>> {
             stderr.contains("\"effect_started\":false"),
             "stderr must certify effect_started false"
         );
+        assert!(
+            !stderr.contains("supersecret"),
+            "stderr must not leak sensitive passwords"
+        );
+        for line in stderr.lines() {
+            if line.contains("\"schema\":\"fss.cli_diagnostic.v1\"") {
+                assert_valid_json_payload(line);
+            }
+        }
     }
     Ok(())
+}
+
+fn assert_valid_json_payload(json_str: &str) {
+    if let Ok(mut child) = Command::new("python3")
+        .args(["-c", "import json, sys; json.loads(sys.stdin.read())"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(json_str.as_bytes());
+        }
+        if let Ok(output) = child.wait_with_output() {
+            assert!(
+                output.status.success(),
+                "rendered diagnostic is not valid JSON:\n{json_str}\nstderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 }

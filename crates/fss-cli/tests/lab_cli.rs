@@ -173,6 +173,35 @@ fn real_process_lab_execution() -> Result<(), Box<dyn std::error::Error>> {
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr)?;
     assert!(stderr.contains("ERR-CLI-MALFORMED-VALUE-001"));
+    assert!(stderr.contains("\"schema\":\"fss.cli_diagnostic.v1\""));
+
+    for line in stderr.lines() {
+        if line.contains("\"schema\":\"fss.cli_diagnostic.v1\"") {
+            assert_valid_json_payload(line);
+        }
+    }
 
     Ok(())
+}
+
+fn assert_valid_json_payload(json_str: &str) {
+    if let Ok(mut child) = Command::new("python3")
+        .args(["-c", "import json, sys; json.loads(sys.stdin.read())"])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        if let Some(mut stdin) = child.stdin.take() {
+            use std::io::Write;
+            let _ = stdin.write_all(json_str.as_bytes());
+        }
+        if let Ok(output) = child.wait_with_output() {
+            assert!(
+                output.status.success(),
+                "rendered diagnostic is not valid JSON:\n{json_str}\nstderr: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+    }
 }

@@ -9,6 +9,28 @@ use crate::redact::redact_argument;
 const CONTRACT_BASIS: &str = "fss/1";
 const PROOF_HANDLE: &str = "fss://proof/cli/parse-failure";
 
+/// Escapes a string slice for safe inclusion inside a JSON string literal according to RFC 8259.
+#[must_use]
+pub fn escape_json_str(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    for ch in input.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\x08' => out.push_str("\\b"),
+            '\x0C' => out.push_str("\\f"),
+            c if (c as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Formats the human-readable diagnostic message and the machine-readable JSON log.
 #[must_use]
 pub fn render_diagnostic(
@@ -28,7 +50,7 @@ pub fn render_diagnostic(
     );
 
     let cmd_json = match effective_command {
-        Some(cmd) => format!("\"{}\"", redact_argument(cmd)),
+        Some(cmd) => format!("\"{}\"", escape_json_str(&redact_argument(cmd))),
         None => "null".to_owned(),
     };
 
@@ -48,10 +70,11 @@ pub fn render_diagnostic(
         CliError::TrailingArgument { argument, .. } => redact_argument(argument),
     };
 
+    let safe_redacted_input = escape_json_str(&redacted_input);
     let correlation_id = format!("corr-{binary_name}-{error_id}-{}", arg_index.unwrap_or(0));
 
     let structured_json = format!(
-        "{{\"schema\":\"fss.cli_diagnostic.v1\",\"phase\":\"argument_parsing\",\"binary\":\"{binary_name}\",\"command\":{cmd_json},\"argument_index\":{idx_json},\"redacted_input\":\"{redacted_input}\",\"error_id\":\"{error_id}\",\"exit_id\":\"{}\",\"exit_code\":{},\"contract_basis\":\"{CONTRACT_BASIS}\",\"effect_started\":false,\"retryable\":false,\"recovery_class\":\"never_unchanged\",\"correlation_id\":\"{correlation_id}\",\"proof_handle\":\"{PROOF_HANDLE}\"}}",
+        "{{\"schema\":\"fss.cli_diagnostic.v1\",\"phase\":\"argument_parsing\",\"binary\":\"{binary_name}\",\"command\":{cmd_json},\"argument_index\":{idx_json},\"redacted_input\":\"{safe_redacted_input}\",\"error_id\":\"{error_id}\",\"exit_id\":\"{}\",\"exit_code\":{},\"contract_basis\":\"{CONTRACT_BASIS}\",\"effect_started\":false,\"retryable\":false,\"recovery_class\":\"never_unchanged\",\"correlation_id\":\"{correlation_id}\",\"proof_handle\":\"{PROOF_HANDLE}\"}}",
         exit_id.identifier, exit_id.code
     );
 

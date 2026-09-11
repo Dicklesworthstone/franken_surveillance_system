@@ -52,7 +52,7 @@ pub fn sanitize_and_truncate(input: &str, max_len: usize) -> String {
             '\t' => out.push_str("\\t"),
             '\0' => out.push_str("\\0"),
             c if c.is_control() => {
-                out.push_str(&format!("\\u{{{:04x}}}", c as u32));
+                out.push_str(&format!("\\u{:04x}", c as u32));
             }
             c => out.push(c),
         }

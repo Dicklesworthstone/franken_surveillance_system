@@ -2,7 +2,10 @@
 //! Stable error and exit identities for the FSS command-line interface.
 
 use core::fmt;
+
 use fss_core::RecoveryClass;
+
+use crate::redact::redact_argument;
 
 /// Stable error identity for unknown commands.
 pub const ERR_CLI_UNKNOWN_COMMAND: &str = "ERR-CLI-UNKNOWN-COMMAND-001";
@@ -202,28 +205,42 @@ impl CliError {
         match self {
             Self::UnknownCommand { command, .. } => {
                 format!(
-                    "command `{command}` is not recognized; run `fss help` for the current design-skeleton surface"
+                    "command `{}` is not recognized; run with `help` or `--help` to view supported commands",
+                    redact_argument(command)
                 )
             }
             Self::UnknownOption {
                 option, command, ..
             } => {
+                let safe_opt = redact_argument(option);
                 if let Some(cmd) = command {
-                    format!("option `{option}` is not supported for command `{cmd}`")
+                    format!(
+                        "option `{safe_opt}` is not supported for command `{}`",
+                        redact_argument(cmd)
+                    )
                 } else {
-                    format!("option `{option}` is not recognized")
+                    format!("option `{safe_opt}` is not recognized")
                 }
             }
             Self::MissingValue {
                 option, expected, ..
             } => {
-                format!("provide a value for `{option}`; expected {expected}")
+                format!(
+                    "provide a value for `{}`; expected {expected}",
+                    redact_argument(option)
+                )
             }
             Self::DuplicateOption { option, .. } => {
-                format!("option `{option}` was provided more than once; specify it at most once")
+                format!(
+                    "option `{}` was provided more than once; specify it at most once",
+                    redact_argument(option)
+                )
             }
             Self::MalformedValue { option, reason, .. } => {
-                format!("provide a valid value for `{option}`: {reason}")
+                format!(
+                    "provide a valid value for `{}`: {reason}",
+                    redact_argument(option)
+                )
             }
             Self::InvalidUnicode { index, .. } => {
                 format!(
@@ -233,22 +250,28 @@ impl CliError {
             Self::UnexpectedPositional {
                 argument, command, ..
             } => {
+                let safe_arg = redact_argument(argument);
                 if let Some(cmd) = command {
-                    format!("command `{cmd}` does not accept positional argument `{argument}`")
+                    format!(
+                        "command `{}` does not accept positional argument `{safe_arg}`",
+                        redact_argument(cmd)
+                    )
                 } else {
-                    format!("unexpected positional argument `{argument}`")
+                    format!("unexpected positional argument `{safe_arg}`")
                 }
             }
             Self::TrailingArgument {
                 argument, command, ..
             } => {
+                let safe_arg = redact_argument(argument);
                 if let Some(cmd) = command {
                     format!(
-                        "command `{cmd}` grammar was fully satisfied; remove trailing argument `{argument}`"
+                        "command `{}` grammar was fully satisfied; remove trailing argument `{safe_arg}`",
+                        redact_argument(cmd)
                     )
                 } else {
                     format!(
-                        "command grammar was fully satisfied; remove trailing argument `{argument}`"
+                        "command grammar was fully satisfied; remove trailing argument `{safe_arg}`"
                     )
                 }
             }
@@ -308,24 +331,37 @@ impl fmt::Display for CliError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::UnknownCommand { command, .. } => {
-                write!(f, "unknown or incomplete command: {command}")
+                write!(
+                    f,
+                    "unknown or incomplete command: {}",
+                    redact_argument(command)
+                )
             }
             Self::UnknownOption {
                 option, command, ..
             } => {
+                let safe_opt = redact_argument(option);
                 if let Some(cmd) = command {
-                    write!(f, "unknown option `{option}` for command `{cmd}`")
+                    write!(
+                        f,
+                        "unknown option `{safe_opt}` for command `{}`",
+                        redact_argument(cmd)
+                    )
                 } else {
-                    write!(f, "unknown option `{option}`")
+                    write!(f, "unknown option `{safe_opt}`")
                 }
             }
             Self::MissingValue {
                 option, expected, ..
             } => {
-                write!(f, "missing value for `{option}`; expected {expected}")
+                write!(
+                    f,
+                    "missing value for `{}`; expected {expected}",
+                    redact_argument(option)
+                )
             }
             Self::DuplicateOption { option, .. } => {
-                write!(f, "duplicate option: `{option}`")
+                write!(f, "duplicate option: `{}`", redact_argument(option))
             }
             Self::MalformedValue {
                 option,
@@ -333,26 +369,35 @@ impl fmt::Display for CliError {
                 reason,
                 ..
             } => {
-                write!(f, "malformed value `{value}` for `{option}`: {reason}")
+                write!(
+                    f,
+                    "malformed value `{}` for `{}`: {reason}",
+                    redact_argument(value),
+                    redact_argument(option)
+                )
             }
             Self::InvalidUnicode {
-                index, byte_length, ..
+                index,
+                byte_length,
+                redacted_repr,
             } => {
                 write!(
                     f,
-                    "argument at index {index} is not valid UTF-8 ({byte_length} bytes)"
+                    "argument at index {index} is not valid UTF-8 ({byte_length} bytes): {redacted_repr}"
                 )
             }
             Self::UnexpectedPositional {
                 argument, command, ..
             } => {
+                let safe_arg = redact_argument(argument);
                 if let Some(cmd) = command {
                     write!(
                         f,
-                        "unexpected positional argument `{argument}` for command `{cmd}`"
+                        "unexpected positional argument `{safe_arg}` for command `{}`",
+                        redact_argument(cmd)
                     )
                 } else {
-                    write!(f, "unexpected positional argument `{argument}`")
+                    write!(f, "unexpected positional argument `{safe_arg}`")
                 }
             }
             Self::TrailingArgument {
@@ -361,15 +406,17 @@ impl fmt::Display for CliError {
                 command,
                 ..
             } => {
+                let safe_arg = redact_argument(argument);
                 if let Some(cmd) = command {
                     write!(
                         f,
-                        "unexpected trailing argument `{argument}` at index {index} for command `{cmd}`"
+                        "unexpected trailing argument `{safe_arg}` at index {index} for command `{}`",
+                        redact_argument(cmd)
                     )
                 } else {
                     write!(
                         f,
-                        "unexpected trailing argument `{argument}` at index {index}"
+                        "unexpected trailing argument `{safe_arg}` at index {index}"
                     )
                 }
             }

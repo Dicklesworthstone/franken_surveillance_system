@@ -38,7 +38,6 @@ fn main() -> ExitCode {
             }
         },
         Err(error) => {
-            eprintln!("fss-lab: {error}");
             emit_diagnostic(&error, "fss-lab", None);
             ExitCode::from(error.exit_identity().code)
         }

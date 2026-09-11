@@ -13,7 +13,7 @@ pub mod lab_cmd;
 pub mod redact;
 pub mod token;
 
-pub use diagnostic::{emit_diagnostic, render_diagnostic};
+pub use diagnostic::{emit_diagnostic, escape_json_str, render_diagnostic};
 pub use error::{
     CliError, ERR_CLI_DUPLICATE_OPTION, ERR_CLI_INVALID_UNICODE, ERR_CLI_MALFORMED_VALUE,
     ERR_CLI_MISSING_VALUE, ERR_CLI_TRAILING_ARGUMENT, ERR_CLI_UNEXPECTED_POSITIONAL,
