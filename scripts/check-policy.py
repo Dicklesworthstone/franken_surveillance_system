@@ -14,6 +14,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import dependency_audit
+import slo_validate
 
 MANIFEST_FILES = {Path("MANIFEST.sha256"), Path("MANIFEST.delta.sha256")}
 EXCLUDED_TOP_LEVEL = {
@@ -836,6 +837,12 @@ def main() -> int:
         fail("agent WorldEnvelope qualification family is missing")
     if "SLO-AGENT-ROBUSTNESS-001" not in slos_text:
         fail("agent WorldEnvelope robustness SLO is missing")
+
+    slo_valid, slo_findings, _ = slo_validate.validate_slos(ROOT)
+    if not slo_valid:
+        for finding in slo_findings:
+            if finding.severity == "error":
+                fail(f"{finding.code}: {finding.message} ({finding.path})")
 
     release_doc = load_json("architecture/release_qualification.json")
     lanes = unique_rows(release_doc.get("lanes"), "id", "architecture/release_qualification.json")

@@ -25,8 +25,17 @@ COSTS_PATH = ROOT / "architecture/operation_cost_registry.toml"
 SLOS_PATH = ROOT / "registries/SLOS.md"
 
 SLO_ID_REGEX = re.compile(r"^SLO-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}$")
-SLO_TABLE_ROW_REGEX = re.compile(r"^\|\s*`((?:SLO)-[A-Z0-9-]+)`\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$", re.MULTILINE)
-TOMBSTONE_REGEX = re.compile(r"^tombstone:\s*superseded\s*by\s*`((?:SLO)-[A-Z0-9-]+)`", re.IGNORECASE)
+SLO_TABLE_ROW_5COL_REGEX = re.compile(
+    r"^\|\s*`((?:SLO)-[A-Z0-9-]+)`\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$",
+    re.MULTILINE,
+)
+SLO_TABLE_ROW_3COL_REGEX = re.compile(
+    r"^\|\s*`((?:SLO)-[A-Z0-9-]+)`\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$",
+    re.MULTILINE,
+)
+TOMBSTONE_REGEX = re.compile(r"tombstone:\s*superseded\s*by\s*`((?:SLO)-[A-Z0-9-]+)`", re.IGNORECASE)
+VALID_STATUSES = frozenset({"target", "tombstone", "achieved"})
+NON_PROOF_ROOTS = frozenset({"-", "none", "null", "n/a", "na", ""})
 
 
 class SloResolutionError(Exception):
@@ -49,37 +58,100 @@ class InvalidTombstoneError(SloResolutionError):
     """Raised when a tombstone crosswalk is invalid or cyclic."""
 
 
+class InvalidSloStatusError(SloResolutionError):
+    """Raised when an SLO has an invalid status."""
+
+
+class UnverifiedAchievedSloError(SloResolutionError):
+    """Raised when an SLO is marked achieved without a verified retained proof root."""
+
+
 def parse_slos_markdown(markdown_text: str) -> dict[str, dict[str, Any]]:
     """Parse SLO rows from markdown text.
-    
-    Returns a dict mapping SLO ID to its row metadata:
-    {
-        "id": "SLO-...",
-        "target": "...",
-        "scope": "...",
-        "is_tombstone": bool,
-        "superseded_by": Optional[str],
-    }
+
+    Supports both standard 5-column (| ID | Target | Measurement surface | Status | Proof root |)
+    and legacy 3-column (| ID | Target | Scope/condition |) formats.
     """
     slos: dict[str, dict[str, Any]] = {}
-    for match in SLO_TABLE_ROW_REGEX.finditer(markdown_text):
-        slo_id, target, scope = match.group(1).strip(), match.group(2).strip(), match.group(3).strip()
-        if not SLO_ID_REGEX.match(slo_id):
-            raise MalformedSloError(f"Malformed SLO ID: '{slo_id}'")
-        if slo_id in slos:
-            raise DuplicateSloError(f"Duplicate SLO ID: '{slo_id}'")
-        
-        tombstone_match = TOMBSTONE_REGEX.search(target)
-        is_tombstone = tombstone_match is not None
-        superseded_by = tombstone_match.group(1) if tombstone_match else None
-        
-        slos[slo_id] = {
-            "id": slo_id,
-            "target": target,
-            "scope": scope,
-            "is_tombstone": is_tombstone,
-            "superseded_by": superseded_by,
-        }
+
+    for line in markdown_text.splitlines():
+        line = line.strip()
+        if not line.startswith("|") or not line.endswith("|"):
+            continue
+
+        # Check 5-column format: | ID | Target | Measurement surface | Status | Proof root |
+        match_5col = re.match(
+            r"^\|\s*`((?:SLO)-[A-Z0-9-]+)`\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$",
+            line,
+        )
+        if match_5col:
+            slo_id = match_5col.group(1).strip()
+            target = match_5col.group(2).strip()
+            scope = match_5col.group(3).strip()
+            status = match_5col.group(4).strip().lower()
+            proof_root = match_5col.group(5).strip()
+
+            if not SLO_ID_REGEX.match(slo_id):
+                raise MalformedSloError(f"Malformed SLO ID: '{slo_id}'")
+            if slo_id in slos:
+                raise DuplicateSloError(f"Duplicate SLO ID: '{slo_id}'")
+            if status not in VALID_STATUSES:
+                raise InvalidSloStatusError(f"Invalid status '{status}' for SLO {slo_id}")
+            if status == "achieved" and proof_root in NON_PROOF_ROOTS:
+                raise UnverifiedAchievedSloError(
+                    f"SLO {slo_id} marked 'achieved' without a retained proof root (found '{proof_root}')"
+                )
+
+            tombstone_match = TOMBSTONE_REGEX.search(target) or TOMBSTONE_REGEX.search(scope)
+            is_tombstone = tombstone_match is not None or status == "tombstone"
+            superseded_by = tombstone_match.group(1) if tombstone_match else None
+
+            slos[slo_id] = {
+                "id": slo_id,
+                "target": target,
+                "scope": scope,
+                "measurement_surface": scope,
+                "status": status,
+                "proof_root": proof_root,
+                "is_tombstone": is_tombstone,
+                "superseded_by": superseded_by,
+            }
+            continue
+
+        # Fallback to 3-column format: | ID | Target | Scope/condition |
+        match_3col = re.match(
+            r"^\|\s*`((?:SLO)-[A-Z0-9-]+)`\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|$",
+            line,
+        )
+        if match_3col:
+            slo_id = match_3col.group(1).strip()
+            target = match_3col.group(2).strip()
+            scope = match_3col.group(3).strip()
+            status = "target"
+            proof_root = "-"
+
+            if not SLO_ID_REGEX.match(slo_id):
+                raise MalformedSloError(f"Malformed SLO ID: '{slo_id}'")
+            if slo_id in slos:
+                raise DuplicateSloError(f"Duplicate SLO ID: '{slo_id}'")
+
+            tombstone_match = TOMBSTONE_REGEX.search(target) or TOMBSTONE_REGEX.search(scope)
+            is_tombstone = tombstone_match is not None
+            superseded_by = tombstone_match.group(1) if tombstone_match else None
+            if is_tombstone:
+                status = "tombstone"
+
+            slos[slo_id] = {
+                "id": slo_id,
+                "target": target,
+                "scope": scope,
+                "measurement_surface": scope,
+                "status": status,
+                "proof_root": proof_root,
+                "is_tombstone": is_tombstone,
+                "superseded_by": superseded_by,
+            }
+
     return slos
 
 
@@ -282,6 +354,42 @@ class SloOperationCostConsistencyTests(unittest.TestCase):
         with self.assertRaises(InvalidTombstoneError):
             audit_slo_references(self.real_costs_text, planted_slos)
 
+    def test_all_five_columns_parsed(self) -> None:
+        """Verify all 5 columns are parsed for all live registry entries."""
+        slos = parse_slos_markdown(self.real_slos_text)
+        self.assertGreaterEqual(len(slos), 29)
+        for slo_id, slo_data in slos.items():
+            self.assertIn("id", slo_data)
+            self.assertIn("target", slo_data)
+            self.assertIn("measurement_surface", slo_data)
+            self.assertIn("status", slo_data)
+            self.assertIn("proof_root", slo_data)
+            self.assertIn(slo_data["status"], VALID_STATUSES)
+            self.assertTrue(bool(slo_data["target"].strip()))
+            self.assertTrue(bool(slo_data["measurement_surface"].strip()))
+            self.assertTrue(bool(slo_data["proof_root"].strip()))
+
+    def test_slo_status_values_valid(self) -> None:
+        """Verify that live SLO statuses are only target or tombstone (never achieved without proof)."""
+        slos = parse_slos_markdown(self.real_slos_text)
+        for slo_id, slo_data in slos.items():
+            self.assertIn(slo_data["status"], {"target", "tombstone"})
+            self.assertEqual(slo_data["proof_root"], "-")
+
+    def test_planted_invalid_slo_status_fails(self) -> None:
+        """Planted invalid SLO status must fail validation."""
+        planted_slos = self.real_slos_text + "\n| `SLO-TEST-001` | target | surface | pending | - |\n"
+        with self.assertRaises(InvalidSloStatusError):
+            parse_slos_markdown(planted_slos)
+
+    def test_planted_achieved_status_without_proof_root_fails(self) -> None:
+        """Planted achieved status with '-' or empty proof root must fail validation."""
+        for empty_proof in ["-", "none", "null", "n/a", "na", " "]:
+            planted_slos = self.real_slos_text + f"\n| `SLO-TEST-001` | target | surface | achieved | {empty_proof} |\n"
+            with self.assertRaises(UnverifiedAchievedSloError):
+                parse_slos_markdown(planted_slos)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
