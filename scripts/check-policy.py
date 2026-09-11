@@ -229,7 +229,7 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
     findings: list[dependency_audit.Finding] = []
     manifests, member_names, member_map = dependency_audit.expand_workspace_members(ROOT, root_cargo, findings)
     rows = dependency_audit.enumerate_dependencies(ROOT, manifests, member_names, member_map, dependency_policy, findings)
-    source_census = dependency_audit.rust_source_audit(findings, root=ROOT)
+    source_census = dependency_audit.rust_source_audit(findings, root=ROOT, manifests=manifests)
 
     forbidden = set(dependency_policy.get("forbidden", {}).get("crates", []))
     lock_path = ROOT / "Cargo.lock"
@@ -241,7 +241,7 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
             for package in lock.get("package", []):
                 name = package.get("name")
                 if isinstance(name, str) and name in forbidden:
-                    fail(f"forbidden crate is reachable in Cargo.lock: {name}")
+                    fail(f"DEP-AUD-030: forbidden crate is reachable in Cargo.lock: {name}")
         except Exception as exc:
             fail(f"invalid Cargo.lock: {exc}")
 

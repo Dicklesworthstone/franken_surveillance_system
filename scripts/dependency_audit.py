@@ -34,7 +34,24 @@ SECRET_PATTERNS = [
 ]
 
 
-def sanitize_string(s: str, max_len: int = 500) -> str:
+def redact_user_paths(s: str) -> str:
+    s = re.sub(r"([/\\]home[/\\])[^/\\\s]+", r"\1[USER]", s)
+    s = re.sub(r"([/\\]Users[/\\])[^/\\\s]+", r"\1[USER]", s)
+    s = re.sub(r"([a-zA-Z]:[/\\](?:Users|home)[/\\])[^/\\\s]+", r"\1[USER]", s, flags=re.IGNORECASE)
+    s = re.sub(r"([/\\]var[/\\]home[/\\])[^/\\\s]+", r"\1[USER]", s)
+    s = re.sub(r"([/\\]root\b)", r"[USER_ROOT]", s)
+    s = re.sub(r"~[a-zA-Z0-9_-]+", "~[USER]", s)
+    return s
+
+
+def sanitize_string(s: str, max_len: int = 500, root: Path = ROOT) -> str:
+    try:
+        resolved_root = str(root.resolve())
+        if resolved_root in s:
+            s = s.replace(resolved_root + "/", "").replace(resolved_root + "\\", "").replace(resolved_root, "")
+    except Exception:
+        pass
+    s = redact_user_paths(s)
     for pat in SECRET_PATTERNS:
         s = pat.sub("[REDACTED]", s)
     if len(s) > max_len:
@@ -42,22 +59,22 @@ def sanitize_string(s: str, max_len: int = 500) -> str:
     return s
 
 
+def is_windows_or_unc_path(s: str) -> bool:
+    return (len(s) >= 3 and s[0].isalpha() and s[1] == ":" and s[2] in "/\\") or s.startswith(("\\\\", "//"))
+
+
 def sanitize_path(p: Path | str, root: Path = ROOT) -> str:
-    if isinstance(p, str):
-        p_obj = Path(p)
-    else:
-        p_obj = p
-    try:
-        resolved_root = root.resolve()
-        resolved_p = p_obj.resolve()
-        rel = resolved_p.relative_to(resolved_root).as_posix()
-        return rel
-    except Exception:
-        s = str(p)
-        if "/home/" in s or "/Users/" in s or "/root/" in s:
-            parts = s.split("/")
-            return ".../" + "/".join(parts[-2:])
-        return sanitize_string(s, 200)
+    s = str(p)
+    if not is_windows_or_unc_path(s):
+        try:
+            p_obj = Path(p) if isinstance(p, str) else p
+            resolved_root = root.resolve()
+            resolved_p = p_obj.resolve()
+            rel = resolved_p.relative_to(resolved_root).as_posix()
+            return redact_user_paths(rel)
+        except Exception:
+            pass
+    return sanitize_string(s, 200, root=root)
 
 
 def sanitize_params(d: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
@@ -66,15 +83,23 @@ def sanitize_params(d: dict[str, Any], root: Path = ROOT) -> dict[str, Any]:
         if isinstance(v, Path):
             sanitized[k] = sanitize_path(v, root)
         elif isinstance(v, str):
-            sanitized[k] = sanitize_string(v)
+            if v.startswith(("/", "\\", ".")) or is_windows_or_unc_path(v) or "/home/" in v or "/Users/" in v or "\\Users\\" in v:
+                sanitized[k] = sanitize_path(v, root)
+            else:
+                sanitized[k] = sanitize_string(v, root=root)
         elif isinstance(v, (int, float, bool)) or v is None:
             sanitized[k] = v
         elif isinstance(v, dict):
             sanitized[k] = sanitize_params(v, root)
         elif isinstance(v, (list, tuple, set)):
-            sanitized[k] = [sanitize_string(str(x)) if isinstance(x, str) else x for x in v]
+            sanitized[k] = [
+                sanitize_path(x, root) if isinstance(x, Path)
+                else (sanitize_path(x, root) if isinstance(x, str) and (x.startswith(("/", "\\", ".")) or is_windows_or_unc_path(x) or "/home/" in x or "/Users/" in x or "\\Users\\" in x)
+                      else sanitize_string(str(x), root=root))
+                for x in v
+            ]
         else:
-            sanitized[k] = sanitize_string(str(v))
+            sanitized[k] = sanitize_string(str(v), root=root)
     return sanitized
 
 
@@ -292,7 +317,7 @@ def add(
     params: dict[str, Any] | None = None,
 ) -> None:
     rendered = sanitize_path(path, root)
-    sanitized_msg = sanitize_string(message)
+    sanitized_msg = sanitize_string(message, root=root)
 
     diag = DIAGNOSTIC_REGISTRY.get(code)
     effective_severity = severity
@@ -321,7 +346,7 @@ def expand_workspace_members(
 ) -> tuple[list[Path], set[str], dict[str, Path]]:
     ws = root_manifest_data.get("workspace")
     if not isinstance(ws, dict):
-        add(findings, "error", "DEP-AUD-011", root / "Cargo.toml", "[workspace] must be a table", root=root, params={"manifest": "Cargo.toml", "section": "workspace"})
+        add(findings, "error", "DEP-AUD-025", root / "Cargo.toml", "declared workspace root manifest lacks [workspace] table", root=root, params={"manifest": "Cargo.toml", "section": "workspace"})
         return [root / "Cargo.toml"], set(), {}
 
     members_spec = ws.get("members", [])
@@ -638,11 +663,11 @@ def extract_manifest_dependency_sections(
     target_table = data.get("target")
     if target_table is not None:
         if not isinstance(target_table, dict):
-            add(findings, "error", "DEP-AUD-025", manifest, "[target] must be a table", root=root, params={"manifest": manifest, "section": "target"})
+            add(findings, "error", "DEP-AUD-011", manifest, "[target] must be a table", root=root, params={"manifest": manifest, "section": "target"})
         else:
             for target_spec, target_config in sorted(target_table.items()):
                 if not isinstance(target_config, dict):
-                    add(findings, "error", "DEP-AUD-025", manifest, f"[target.{target_spec}] must be a table", root=root, params={"manifest": manifest, "section": f"target.{target_spec}"})
+                    add(findings, "error", "DEP-AUD-011", manifest, f"[target.{target_spec}] must be a table", root=root, params={"manifest": manifest, "section": f"target.{target_spec}"})
                     continue
                 for sec in ("dependencies", "dev-dependencies", "build-dependencies"):
                     if sec in target_config:
@@ -720,10 +745,12 @@ def enumerate_dependencies(
                     optional = bool(specification.get("optional", False))
                     default_features = specification.get("default-features")
                     features = [str(item) for item in specification.get("features", [])]
+                    suppress_017 = False
                     if specification.get("workspace") is True:
                         workspace_inherited = True
                         ws_spec = ws_dependencies.get(local_name) or ws_dependencies.get(package)
                         if ws_spec is None:
+                            suppress_017 = True
                             add(findings, "error", "DEP-AUD-018", manifest, f"workspace-inherited dependency is missing in workspace.dependencies: {package}", root=root, params={"package": package, "manifest": manifest})
                         elif isinstance(ws_spec, dict):
                             if "package" in ws_spec:
@@ -841,7 +868,7 @@ def enumerate_dependencies(
                 elif not is_allowed(package):
                     add(findings, "error", "DEP-AUD-016", manifest, f"direct dependency is outside the closed allowlist: {package}", root=root, params={"package": package, "manifest": manifest})
 
-                if kind != "path" and default_features is not False:
+                if not suppress_017 and kind != "path" and default_features is not False:
                     add(findings, "error", "DEP-AUD-017", manifest, f"external dependency must set default-features = false: {package}", root=root, params={"package": package, "manifest": manifest})
 
     return rows
@@ -853,16 +880,21 @@ def direct_dependency_rows(findings: list[Finding], policy: dict[str, Any], root
     return enumerate_dependencies(root, manifests, member_names, member_map, policy, findings)
 
 
-def rust_source_audit(findings: list[Finding], root: Path = ROOT) -> dict[str, Any]:
-    root_manifest = load_toml(root / "Cargo.toml")
-    manifests, _, _ = expand_workspace_members(root, root_manifest, findings)
+def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: list[Path] | None = None) -> dict[str, Any]:
+    if manifests is None:
+        root_manifest = load_toml(root / "Cargo.toml")
+        local_findings: list[Finding] = []
+        manifests, _, _ = expand_workspace_members(root, root_manifest, local_findings)
+        for f in local_findings:
+            if not any(existing.code == f.code and existing.path == f.path for existing in findings):
+                findings.append(f)
     member_manifests = [m for m in manifests if m != root / "Cargo.toml"]
 
     all_targets: list[TargetRoot] = []
     for manifest in member_manifests:
         try:
             data = load_toml(manifest)
-            manifest_rel = manifest.relative_to(root).as_posix()
+            manifest_rel = sanitize_path(manifest, root)
         except Exception:
             continue
         crate_name = data.get("package", {}).get("name", manifest.parent.name)
@@ -1071,16 +1103,13 @@ def audit_workspace(
             try:
                 cand_data = load_toml(cand_cargo)
                 crate_name = cand_data.get("package", {}).get("name", cand_cargo.parent.name)
-                try:
-                    cand_manifest_rel = cand_cargo.relative_to(root).as_posix()
-                except ValueError:
-                    cand_manifest_rel = str(cand_cargo)
+                cand_manifest_rel = sanitize_path(cand_cargo, root)
                 discover_crate_targets(cand_cargo.parent, cand_data, crate_name, cand_manifest_rel, root, findings)
             except Exception as exc:
                 add(findings, "error", "DEP-AUD-011", cand_cargo, f"cannot parse TOML: {exc}", root=root, params={"manifest": cand_cargo, "error": str(exc)})
 
     direct = enumerate_dependencies(root, manifests, member_names, member_map, policy, findings)
-    source_census = rust_source_audit(findings, root=root)
+    source_census = rust_source_audit(findings, root=root, manifests=manifests)
 
     ref_targets: list[TargetRoot] = []
     for tr_dict in source_census.get("targetRoots", []):

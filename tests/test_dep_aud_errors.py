@@ -200,6 +200,20 @@ members = ["crates/fss-missing"]
         self.assertEqual(f011[0].severity, "error")
         self.assertEqual(f011[0].remediation, DIAGNOSTIC_REGISTRY["DEP-AUD-011"].remediation)
 
+        # Target section not a table also emits DEP-AUD-011
+        findings_target: list[Finding] = []
+        (crate_dir / "Cargo.toml").write_text(
+            'target = "not_a_table"\n\n[package]\nname = "fss-a"\nversion = "0.0.1"\nedition = "2024"\n',
+            encoding="utf-8",
+        )
+        dependency_audit.enumerate_dependencies(
+            self.root, manifests, {"fss-a"}, {"fss-a": self.root / "crates" / "fss-a"}, self.policy, findings_target
+        )
+        f011_target = [f for f in findings_target if f.code == "DEP-AUD-011"]
+        self.assertTrue(len(f011_target) >= 1)
+        self.assertEqual(f011_target[0].remediation, DIAGNOSTIC_REGISTRY["DEP-AUD-011"].remediation)
+        self.assertNotIn("DEP-AUD-025", [f.code for f in findings_target])
+
     def test_dep_aud_012_path_dependency_escapes_closure(self) -> None:
         """fss-x4a.1.33.5: DEP-AUD-012 path dependency escapes frozen repository or sibling closure."""
         self._setup_clean_workspace()
@@ -386,6 +400,16 @@ edition = "2024"
         dependency_audit.rust_source_audit(findings_tests, root=self.root)
         f022_tests = [f for f in findings_tests if f.code == "DEP-AUD-022"]
         self.assertEqual(len(f022_tests), 0)
+
+    def test_dep_aud_025_workspace_root_manifest_lacks_workspace_table(self) -> None:
+        """DEP-AUD-025: declared workspace root manifest lacks [workspace] table."""
+        findings: list[Finding] = []
+        manifest_data = {"package": {"name": "fss-root"}}
+        dependency_audit.expand_workspace_members(self.root, manifest_data, findings)
+        f025 = [f for f in findings if f.code == "DEP-AUD-025"]
+        self.assertTrue(len(f025) >= 1)
+        self.assertEqual(f025[0].severity, "error")
+        self.assertEqual(f025[0].remediation, DIAGNOSTIC_REGISTRY["DEP-AUD-025"].remediation)
 
     def test_dep_aud_030_forbidden_package_in_resolved_metadata(self) -> None:
         """fss-x4a.1.33.14: DEP-AUD-030 forbidden package reachable in resolved Cargo metadata."""
@@ -642,6 +666,75 @@ edition = "2024"
         if planted.code not in DIAGNOSTIC_REGISTRY:
             check_policy.fail(f"unregistered dependency audit diagnostic code: {planted.code}")
         self.assertTrue(any("unregistered dependency audit diagnostic code: DEP-AUD-999" in err for err in check_policy.errors))
+
+    def test_finding_3_sanitization_leaks_usernames_and_paths(self) -> None:
+        findings: list[Finding] = []
+        root = Path("/data/projects/franken_surveillance_system")
+        dependency_audit.add(
+            findings,
+            "error",
+            "DEP-AUD-012",
+            "/data/projects/franken_surveillance_system/Cargo.toml",
+            "escapes root: /home/alice/secret/Cargo.toml",
+            root=root,
+            params={
+                "raw_path": "/home/alice/secret/Cargo.toml",
+                "manifest_path": Path("/home/alice/Cargo.toml"),
+                "win_path": Path(r"C:\Users\alice\repo\Cargo.toml"),
+            },
+        )
+        f = findings[0]
+        self.assertNotIn("alice", f.message, f"Message leaked username: {f.message}")
+        self.assertNotIn("alice", str(f.params.get("raw_path")), f"String param leaked username: {f.params}")
+        self.assertNotIn("alice", str(f.params.get("manifest_path")), f"Path param leaked username: {f.params}")
+        self.assertNotIn("alice", str(f.params.get("win_path")), f"Windows path param leaked username: {f.params}")
+
+    def test_finding_4_diagnostic_id_swap_011_vs_025(self) -> None:
+        self._setup_clean_workspace()
+        (self.root / "Cargo.toml").write_text('workspace = "not_a_table"\n', encoding="utf-8")
+        report, rc = dependency_audit.audit_workspace(self.root, self.policy_file)
+        codes = [f["code"] for f in report["findings"]]
+        self.assertIn("DEP-AUD-025", codes, "Missing [workspace] table must emit DEP-AUD-025, not DEP-AUD-011")
+        self.assertNotIn("DEP-AUD-011", codes, "DEP-AUD-011 is for dependency sections, not [workspace]")
+
+    def test_finding_5_check_policy_cargo_lock_missing_dep_aud_id(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            c1 = root / "crates" / "fss-core"
+            c1.mkdir(parents=True)
+            (c1 / "Cargo.toml").write_text('[package]\nname = "fss-core"\nversion = "0.1.0"\nedition = "2024"\n')
+            (c1 / "src").mkdir()
+            (c1 / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\n")
+            (root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/fss-core"]\n[workspace.lints.rust]\nunsafe_code = "forbid"\n')
+            (root / "Cargo.lock").write_text('version = 4\n[[package]]\nname = "tokio"\nversion = "1.0.0"\n')
+
+            policy = {
+                "in_house": {"allowed_families": ["fss-*"]},
+                "fundamental": {"allowed_subject_to_audit": []},
+                "forbidden": {"crates": ["tokio"]},
+            }
+            orig_root = check_policy.ROOT
+            check_policy.ROOT = root
+            check_policy.errors = []
+            try:
+                check_policy.cargo_policy(policy)
+                lock_errors = [e for e in check_policy.errors if "Cargo.lock" in e]
+                self.assertTrue(len(lock_errors) > 0, "Must detect forbidden package in Cargo.lock")
+                for e in lock_errors:
+                    self.assertTrue(e.startswith("DEP-AUD-030:"), f"Error must start with DEP-AUD-030, got: {e!r}")
+            finally:
+                check_policy.ROOT = orig_root
+
+    def test_finding_7_spurious_dep_aud_017_on_missing_workspace_dep(self) -> None:
+        self._setup_clean_workspace()
+        (self.root / "crates" / "fss-a" / "Cargo.toml").write_text(
+            '[package]\nname = "fss-a"\nversion = "0.0.1"\nedition = "2024"\n[dependencies]\nserde = { workspace = true }\n',
+            encoding="utf-8",
+        )
+        report, rc = dependency_audit.audit_workspace(self.root, self.policy_file)
+        codes = [f["code"] for f in report["findings"]]
+        self.assertIn("DEP-AUD-018", codes, "Must emit DEP-AUD-018 for missing workspace-inherited dependency")
+        self.assertNotIn("DEP-AUD-017", codes, "Must NOT emit spurious DEP-AUD-017 when dependency failed to resolve via workspace")
 
 
 if __name__ == "__main__":
