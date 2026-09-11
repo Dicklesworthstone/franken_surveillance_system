@@ -40,18 +40,39 @@ pub enum ReferenceProviderBehavior {
     FailBeforeDelivery,
 }
 
+/// Result of dispatching an intent through the reference alert provider.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ProviderDispatch {
+pub enum ProviderDispatch {
+    /// Provider successfully delivered the message and generated delivery proof.
     Delivered(ContentDigest),
+    /// Acknowledgement was lost after delivery.
     LostAck,
+    /// Known failure before delivery with failure proof.
     KnownFailure(ContentDigest),
+    /// Conflicting intent attempted under an existing idempotency key.
     ConflictingIdempotency,
 }
 
+/// Bounded stable terminal predicate for reference alert obligations.
+pub const REFERENCE_ALERT_TERMINAL_PREDICATE: &str =
+    "provider delivery is independently reconciled";
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ProviderMessage {
+    operation_id: OperationId,
+    effect_class: String,
     request_digest: ContentDigest,
+    precondition_digest: ContentDigest,
     proof_digest: ContentDigest,
+}
+
+impl ProviderMessage {
+    fn matches_intent(&self, intent: &EffectIntent) -> bool {
+        self.operation_id == intent.operation_id
+            && self.effect_class == intent.effect_class
+            && self.request_digest == intent.request_digest
+            && self.precondition_digest == intent.precondition_digest
+    }
 }
 
 /// Deterministic idempotent alert provider oracle.
@@ -75,13 +96,14 @@ impl ReferenceAlertProvider {
         self.messages.len()
     }
 
-    fn dispatch(
+    /// Dispatches an intent to the provider oracle under the requested behavior.
+    pub fn dispatch(
         &mut self,
         intent: &EffectIntent,
         behavior: ReferenceProviderBehavior,
     ) -> ProviderDispatch {
         if let Some(existing) = self.messages.get(&intent.idempotency_key) {
-            return if existing.request_digest == intent.request_digest {
+            return if existing.matches_intent(intent) {
                 ProviderDispatch::Delivered(existing.proof_digest)
             } else {
                 ProviderDispatch::ConflictingIdempotency
@@ -95,7 +117,10 @@ impl ReferenceAlertProvider {
         self.messages.insert(
             intent.idempotency_key.clone(),
             ProviderMessage {
+                operation_id: intent.operation_id.clone(),
+                effect_class: intent.effect_class.clone(),
                 request_digest: intent.request_digest,
+                precondition_digest: intent.precondition_digest,
                 proof_digest,
             },
         );
@@ -108,12 +133,13 @@ impl ReferenceAlertProvider {
         }
     }
 
-    fn lookup(&self, intent: &EffectIntent) -> Result<Option<ContentDigest>, ReferenceError> {
+    /// Looks up prior delivery proof for an intent if present.
+    pub fn lookup(&self, intent: &EffectIntent) -> Result<Option<ContentDigest>, ReferenceError> {
         match self.messages.get(&intent.idempotency_key) {
-            Some(message) if message.request_digest == intent.request_digest => {
-                Ok(Some(message.proof_digest))
-            }
-            Some(_) => Err(ReferenceError::InvalidSpec("provider_idempotency_conflict")),
+            Some(message) if message.matches_intent(intent) => Ok(Some(message.proof_digest)),
+            Some(_) => Err(ReferenceError::Contract(
+                fss_core::ContractError::IdempotencyConflict,
+            )),
             None => Ok(None),
         }
     }
@@ -188,7 +214,7 @@ pub fn prepare_reference_alert(
     let receipt = journal.prepare(
         intent.clone(),
         params.obligation_id,
-        "provider delivery is independently reconciled",
+        REFERENCE_ALERT_TERMINAL_PREDICATE,
         params.now,
     )?;
     let prepared_intent = receipt.intent.clone();
@@ -224,26 +250,12 @@ pub fn dispatch_reference_alert(
     let _ = journal.transition(operation_id, EffectState::Committed, commit_at, None, None)?;
 
     match provider.dispatch(&plan.intent, behavior) {
-        ProviderDispatch::Delivered(proof) => {
-            let _ = journal.transition(
+        ProviderDispatch::Delivered(_proof) => {
+            let receipt = journal.transition(
                 operation_id,
                 EffectState::AdapterAccepted,
                 outcome_at,
                 None,
-                None,
-            )?;
-            let _ = journal.transition(
-                operation_id,
-                EffectState::Observed,
-                outcome_at,
-                Some(proof),
-                None,
-            )?;
-            let receipt = journal.transition(
-                operation_id,
-                EffectState::Verified,
-                outcome_at,
-                Some(proof),
                 None,
             )?;
             Ok(receipt.clone())
@@ -260,10 +272,57 @@ pub fn dispatch_reference_alert(
                 Some("provider_failed_before_delivery".to_owned()),
             )?
             .clone()),
-        ProviderDispatch::ConflictingIdempotency => Ok(journal
-            .mark_indeterminate(operation_id, outcome_at, "provider_idempotency_conflict")?
-            .clone()),
+        ProviderDispatch::ConflictingIdempotency => Err(ReferenceError::Contract(
+            fss_core::ContractError::IdempotencyConflict,
+        )),
     }
+}
+
+/// Records an independent observation of an adapter-accepted alert.
+pub fn observe_reference_alert(
+    plan: &ReferenceAlertPlan,
+    observation_proof: ContentDigest,
+    observed_at: TimestampNs,
+    journal: &mut EffectJournal,
+) -> Result<OperationReceipt, ReferenceError> {
+    validate_reference_alert_plan(plan)?;
+    let receipt = journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Observed,
+        observed_at,
+        Some(observation_proof),
+        None,
+    )?;
+    Ok(receipt.clone())
+}
+
+/// Verifies an observed alert using terminal proof witness.
+pub fn verify_reference_alert(
+    plan: &ReferenceAlertPlan,
+    verified_at: TimestampNs,
+    journal: &mut EffectJournal,
+    provider: &ReferenceAlertProvider,
+) -> Result<OperationReceipt, ReferenceError> {
+    validate_reference_alert_plan(plan)?;
+    let Some(proof_digest) = provider.lookup(&plan.intent)? else {
+        return Err(ReferenceError::InvalidSpec("provider_proof_missing"));
+    };
+    let receipt =
+        journal.reconcile_verified(&plan.intent.operation_id, proof_digest, verified_at)?;
+    Ok(receipt.clone())
+}
+
+/// Reconciles an indeterminate alert to terminal failure using an independent failure proof.
+pub fn reconcile_failed_reference_alert(
+    plan: &ReferenceAlertPlan,
+    proof_digest: ContentDigest,
+    reason: impl Into<String>,
+    now: TimestampNs,
+    journal: &mut EffectJournal,
+) -> Result<OperationReceipt, ReferenceError> {
+    validate_reference_alert_plan(plan)?;
+    let receipt = journal.reconcile_failed(&plan.intent.operation_id, proof_digest, now, reason)?;
+    Ok(receipt.clone())
 }
 
 /// Reconciles an indeterminate alert from independent provider state without resending it.
@@ -351,17 +410,23 @@ fn provider_failure_proof(intent: &EffectIntent) -> ContentDigest {
 
 fn provider_delivery_proof_bytes(intent: &EffectIntent) -> Vec<u8> {
     let mut encoder = CanonicalEncoder::new();
-    encoder.text("fss.reference_alert_provider_message.v1");
+    encoder.text("fss.effect_proof.v1");
+    intent.operation_id.encode_canonical(&mut encoder);
     intent.idempotency_key.encode_canonical(&mut encoder);
+    encoder.text(&intent.effect_class);
     encoder.digest(intent.request_digest);
+    encoder.digest(intent.precondition_digest);
+    encoder.text(REFERENCE_ALERT_TERMINAL_PREDICATE);
     encoder.finish()
 }
 
 fn provider_failure_proof_bytes(intent: &EffectIntent) -> Vec<u8> {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_alert_provider_failure.v1");
+    intent.operation_id.encode_canonical(&mut encoder);
     intent.idempotency_key.encode_canonical(&mut encoder);
     encoder.digest(intent.request_digest);
+    encoder.digest(intent.precondition_digest);
     encoder.text("failed_before_delivery");
     encoder.finish()
 }
@@ -375,9 +440,6 @@ pub(crate) fn reference_alert_terminal_proof_bytes(
     }
     match receipt.state {
         EffectState::Verified => {
-            if receipt.error_code.is_some() {
-                return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
-            }
             let bytes = provider_delivery_proof_bytes(&receipt.intent);
             if receipt.result_digest != Some(ContentDigest::sha256(&bytes)) {
                 return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));

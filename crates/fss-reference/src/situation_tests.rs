@@ -16,9 +16,9 @@ use crate::{
     ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
     ReferencePolicyDecision, ReferenceProviderBehavior, ReferenceSituationRequest,
     VirtualCameraSpec, compile_reference_situation, dispatch_reference_alert,
-    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
-    publish_reference_alert_outcome, publish_reference_event, run_reference_capture,
-    seal_reference_handoff,
+    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
+    prepare_reference_alert, publish_reference_alert_outcome, publish_reference_event,
+    run_reference_capture, seal_reference_handoff, verify_reference_alert,
 };
 
 struct SituationHarness {
@@ -395,6 +395,9 @@ fn canonical_effect_outcome_cannot_be_omitted_from_projection() -> Result<(), Bo
         &mut journal,
         &mut provider,
     )?;
+    let obs_proof = fss_core::ContentDigest::sha256(b"situation-delivery-observation");
+    let _ = observe_reference_alert(&plan, obs_proof, TimestampNs(103), &mut journal)?;
+    let _ = verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;
     let _outcome = publish_reference_alert_outcome(
         &plan,
         &journal,

@@ -76,6 +76,22 @@ impl CanonicalEncode for EffectIntent {
     }
 }
 
+impl EffectIntent {
+    /// Computes the unique canonical terminal proof digest binding full intent and terminal predicate.
+    #[must_use]
+    pub fn terminal_proof(&self, terminal_predicate: &str) -> ContentDigest {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.effect_proof.v1");
+        self.operation_id.encode_canonical(&mut encoder);
+        self.idempotency_key.encode_canonical(&mut encoder);
+        encoder.text(&self.effect_class);
+        encoder.digest(self.request_digest);
+        encoder.digest(self.precondition_digest);
+        encoder.text(terminal_predicate);
+        ContentDigest::sha256(&encoder.finish())
+    }
+}
+
 /// Durable operation receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationReceipt {
@@ -261,8 +277,23 @@ impl EffectJournal {
                     ContractError::InvalidEffectTransition
                 });
             }
-            if next == EffectState::Verified && result_digest.is_none() {
+            if (next == EffectState::Verified || next == EffectState::Cancelled)
+                && result_digest.is_none()
+            {
                 return Err(ContractError::EvidenceRequired);
+            }
+            if next == EffectState::Verified {
+                let obligation = self
+                    .obligations
+                    .values()
+                    .find(|o| o.operation_id == *operation_id)
+                    .ok_or(ContractError::NotFound)?;
+                let expected_proof = receipt
+                    .intent
+                    .terminal_proof(&obligation.terminal_predicate);
+                if result_digest != Some(expected_proof) {
+                    return Err(ContractError::InvalidDigest);
+                }
             }
             if next == EffectState::Failed
                 && (result_digest.is_none() || error_code.as_deref().is_none_or(str::is_empty))
@@ -295,7 +326,12 @@ impl EffectJournal {
                 .filter(|obligation| obligation.operation_id == *operation_id)
             {
                 obligation.state = state;
-                if matches!(state, ObligationState::Verified | ObligationState::Failed) {
+                if matches!(
+                    state,
+                    ObligationState::Verified
+                        | ObligationState::Failed
+                        | ObligationState::Cancelled
+                ) {
                     obligation.proof_digest = result_digest;
                 }
             }
@@ -344,6 +380,17 @@ impl EffectJournal {
             {
                 return Err(ContractError::InvalidEffectTransition);
             }
+            let obligation = self
+                .obligations
+                .values()
+                .find(|o| o.operation_id == *operation_id)
+                .ok_or(ContractError::NotFound)?;
+            let expected_proof = current
+                .intent
+                .terminal_proof(&obligation.terminal_predicate);
+            if proof_digest != expected_proof {
+                return Err(ContractError::InvalidDigest);
+            }
         }
         let receipt = self
             .operations
@@ -352,13 +399,59 @@ impl EffectJournal {
         receipt.state = EffectState::Verified;
         receipt.updated_at = now;
         receipt.result_digest = Some(proof_digest);
-        receipt.error_code = None;
+        // Reconciliation preserves indeterminate error_code in receipt history
         for obligation in self
             .obligations
             .values_mut()
             .filter(|obligation| obligation.operation_id == *operation_id)
         {
             obligation.state = ObligationState::Verified;
+            obligation.proof_digest = Some(proof_digest);
+        }
+        self.operations
+            .get(operation_id)
+            .ok_or(ContractError::NotFound)
+    }
+
+    /// Reconciles an indeterminate or observed operation to a terminal failure using proof.
+    pub fn reconcile_failed(
+        &mut self,
+        operation_id: &OperationId,
+        proof_digest: ContentDigest,
+        now: TimestampNs,
+        reason: impl Into<String>,
+    ) -> Result<&OperationReceipt, ContractError> {
+        let reason = reason.into();
+        if reason.is_empty() {
+            return Err(ContractError::EvidenceRequired);
+        }
+        {
+            let current = self
+                .operations
+                .get(operation_id)
+                .ok_or(ContractError::NotFound)?;
+            if now < current.updated_at {
+                return Err(ContractError::InvertedTimeInterval);
+            }
+            if current.state != EffectState::Indeterminate && current.state != EffectState::Observed
+            {
+                return Err(ContractError::InvalidEffectTransition);
+            }
+        }
+        let receipt = self
+            .operations
+            .get_mut(operation_id)
+            .ok_or(ContractError::NotFound)?;
+        receipt.state = EffectState::Failed;
+        receipt.updated_at = now;
+        receipt.result_digest = Some(proof_digest);
+        receipt.error_code = Some(reason);
+        for obligation in self
+            .obligations
+            .values_mut()
+            .filter(|obligation| obligation.operation_id == *operation_id)
+        {
+            obligation.state = ObligationState::Failed;
             obligation.proof_digest = Some(proof_digest);
         }
         self.operations
@@ -476,7 +569,7 @@ mod tests {
         let effect = intent(b"alert")?;
         let operation_id = effect.operation_id.clone();
         let _ = journal.prepare(
-            effect,
+            effect.clone(),
             ObligationId::parse("obligation:one")?,
             "delivery proved",
             TimestampNs(1),
@@ -499,11 +592,8 @@ mod tests {
             ),
             Err(ContractError::ReconciliationRequired)
         );
-        let _ = journal.reconcile_verified(
-            &operation_id,
-            ContentDigest::sha256(b"provider-delivery"),
-            TimestampNs(5),
-        )?;
+        let proof = effect.terminal_proof("delivery proved");
+        let _ = journal.reconcile_verified(&operation_id, proof, TimestampNs(5))?;
         assert_eq!(
             journal
                 .operation(&operation_id)

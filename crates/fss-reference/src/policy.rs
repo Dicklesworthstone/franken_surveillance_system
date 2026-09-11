@@ -81,9 +81,9 @@ pub struct ReferenceEventReceipt {
 ///
 /// The function intentionally does not fuse model-local probability numbers. Until a calibrated
 /// fusion layer exists, the event probability remains the maximally conservative `[0, 1]`.
-/// Corroboration is based solely on distinct supporting failure domains with no retained alternate
-/// model outcome. Duplicate result objects are rejected so one model receipt cannot be relabeled
-/// into multiple independent witnesses.
+/// Corroboration is based on distinct supporting failure domains and distinct sensor capture
+/// roots with no retained alternate model outcome. Duplicate result objects or multiple models
+/// evaluated against the same capture root cannot be relabeled into multiple independent witnesses.
 pub fn evaluate_unknown_presence(
     event_id: EventId,
     observations: Vec<ReferenceModelObservation>,
@@ -99,6 +99,7 @@ pub fn evaluate_unknown_presence(
     });
     let mut seen_results = BTreeSet::new();
     let mut support_domains = BTreeSet::new();
+    let mut support_capture_roots = BTreeSet::new();
     let mut contradictory = 0_usize;
     let mut unresolved = 0_usize;
     let mut evidence = Vec::with_capacity(observations.len());
@@ -124,6 +125,7 @@ pub fn evaluate_unknown_presence(
                 ..
             } => {
                 support_domains.insert(observation.failure_domain.clone());
+                support_capture_roots.insert(observation.result.input_capture_root);
                 true
             }
             MockModelOutcome::Finding {
@@ -150,7 +152,11 @@ pub fn evaluate_unknown_presence(
         model_receipts.push(result_digest);
     }
 
-    let state = if support_domains.len() >= 2 && contradictory == 0 && unresolved == 0 {
+    let state = if support_capture_roots.len() >= 2
+        && support_domains.len() >= 2
+        && contradictory == 0
+        && unresolved == 0
+    {
         EventState::Corroborated
     } else if !support_domains.is_empty() && contradictory == 0 && unresolved == 0 {
         EventState::Witnessed
@@ -193,7 +199,11 @@ pub fn publish_reference_event(
     }
     let event_bytes = decision.event.canonical_bytes();
     let event_object_digest = objects.put_verified(&event_bytes)?;
-    let event_revision_digest = decision.event.revision_digest();
+    let mut revision_encoder = CanonicalEncoder::new();
+    revision_encoder.text("fss.canonical.v1");
+    revision_encoder.text("fss.event_hypothesis.v1");
+    decision.event.encode_canonical(&mut revision_encoder);
+    let event_revision_digest = objects.put_verified(&revision_encoder.finish())?;
     let event_manifest = ObjectManifest::new(
         "event-revision",
         decision.event.model_receipts.iter().copied(),

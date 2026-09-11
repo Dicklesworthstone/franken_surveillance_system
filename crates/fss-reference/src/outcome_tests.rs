@@ -12,8 +12,9 @@ use crate::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
     ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError, ReferenceModelObservation,
     ReferenceProviderBehavior, VirtualCameraSpec, dispatch_reference_alert,
-    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
-    publish_reference_alert_outcome, publish_reference_event, run_reference_capture,
+    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
+    prepare_reference_alert, publish_reference_alert_outcome, publish_reference_event,
+    run_reference_capture, verify_reference_alert,
 };
 
 struct OutcomeHarness {
@@ -79,6 +80,11 @@ impl OutcomeHarness {
             &mut journal,
             &mut provider,
         )?;
+        if behavior == ReferenceProviderBehavior::Deliver {
+            let obs_proof = fss_core::ContentDigest::sha256(b"delivery-observation");
+            let _ = observe_reference_alert(&plan, obs_proof, TimestampNs(103), &mut journal)?;
+            let _ = verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;
+        }
 
         Ok(Self {
             path,

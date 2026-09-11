@@ -157,27 +157,44 @@ pub fn publish_reference_alert_outcome(
         plan.intent.operation_id.as_str()
     ))?;
 
-    if let Some(current) = ledger.current().objects.get(&effect_object_id) {
-        if current.generation == ALERT_OUTCOME_GENERATION
-            && current.family == ALERT_OUTCOME_FAMILY
-            && current.plane == Plane::Effect
-            && current.payload_digest == outcome_root
-        {
-            let _ = objects.verify_closure(outcome_root)?;
-            return Ok(ReferenceAlertOutcomeReceipt {
-                outcome,
-                effect_object_id,
-                effect_generation: current.generation,
-                outcome_root,
-                outcome_object_digest,
-                authority_anchor: ledger.current().anchor.clone(),
-            });
+    let (prior_generation, new_generation) = match ledger.current().objects.get(&effect_object_id) {
+        Some(current) => {
+            if current.family == ALERT_OUTCOME_FAMILY
+                && current.plane == Plane::Effect
+                && current.payload_digest == outcome_root
+            {
+                let _ = objects.verify_closure(outcome_root)?;
+                return Ok(ReferenceAlertOutcomeReceipt {
+                    outcome,
+                    effect_object_id,
+                    effect_generation: current.generation,
+                    outcome_root,
+                    outcome_object_digest,
+                    authority_anchor: ledger.current().anchor.clone(),
+                });
+            }
+            if current.family != ALERT_OUTCOME_FAMILY || current.plane != Plane::Effect {
+                return Err(fss_core::ContractError::IdempotencyConflict.into());
+            }
+            let next_gen = current
+                .generation
+                .checked_add(1)
+                .ok_or(fss_core::ContractError::ArithmeticOverflow)?;
+            (Some(current.generation), next_gen)
         }
-        return Err(fss_core::ContractError::IdempotencyConflict.into());
-    }
+        None => (None, ALERT_OUTCOME_GENERATION),
+    };
 
     let stored_operation = objects.put_verified(&operation_bytes)?;
     if stored_operation != operation_object_digest {
+        return Err(ReferenceError::DigestMismatch);
+    }
+    let mut receipt_encoder = CanonicalEncoder::new();
+    receipt_encoder.text("fss.canonical.v1");
+    receipt_encoder.text("fss.operation_receipt.v1");
+    operation.encode_canonical(&mut receipt_encoder);
+    let stored_receipt = objects.put_verified(&receipt_encoder.finish())?;
+    if stored_receipt != operation.receipt_digest() {
         return Err(ReferenceError::DigestMismatch);
     }
     if let Some(bytes) = proof_bytes.as_deref() {
@@ -198,11 +215,11 @@ pub fn publish_reference_alert_outcome(
     let validity = CaptureInterval::new(operation.prepared_at, operation.updated_at)?;
     let operation_name = plan.intent.operation_id.as_str();
     let delta = EvidenceDelta {
-        delta_id: format!("delta:alert-outcome:{operation_name}:1"),
+        delta_id: format!("delta:alert-outcome:{operation_name}:{new_generation}"),
         family: ALERT_OUTCOME_FAMILY.to_owned(),
         object_id: effect_object_id.clone(),
-        prior_generation: None,
-        new_generation: ALERT_OUTCOME_GENERATION,
+        prior_generation,
+        new_generation,
         validity,
         plane: Plane::Effect,
         payload_digest: outcome_root,
@@ -212,7 +229,9 @@ pub fn publish_reference_alert_outcome(
     let authority_anchor = {
         let mut publisher = AuthorityPublisher::new(objects, ledger);
         let batch = publisher.prepare_batch(
-            BatchId::parse(format!("batch:alert-outcome:{operation_name}:1"))?,
+            BatchId::parse(format!(
+                "batch:alert-outcome:{operation_name}:{new_generation}"
+            ))?,
             vec![delta],
             [outcome_root],
         )?;
@@ -222,7 +241,7 @@ pub fn publish_reference_alert_outcome(
     Ok(ReferenceAlertOutcomeReceipt {
         outcome,
         effect_object_id,
-        effect_generation: ALERT_OUTCOME_GENERATION,
+        effect_generation: new_generation,
         outcome_root,
         outcome_object_digest,
         authority_anchor,

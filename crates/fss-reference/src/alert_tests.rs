@@ -12,8 +12,9 @@ use crate::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
     ReferenceAlertProvider, ReferenceError, ReferenceModelObservation, ReferencePolicyDecision,
     ReferenceProviderBehavior, VirtualCameraSpec, dispatch_reference_alert,
-    evaluate_unknown_presence, execute_mock_model, prepare_reference_alert,
-    publish_reference_event, reconcile_reference_alert, run_reference_capture,
+    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
+    prepare_reference_alert, publish_reference_event, reconcile_reference_alert,
+    run_reference_capture, verify_reference_alert,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -146,8 +147,20 @@ fn delivered_alert_closes_verified_obligation() -> Result<(), Box<dyn Error>> {
         &mut journal,
         &mut provider,
     )?;
-    assert_eq!(receipt.state, EffectState::Verified);
+    assert_eq!(receipt.state, EffectState::AdapterAccepted);
     assert_eq!(provider.message_count(), 1);
+    let obligation = journal
+        .obligations()
+        .find(|item| item.obligation_id == plan.obligation_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?;
+    assert_eq!(obligation.state, ObligationState::Pending);
+
+    let obs_proof = fss_core::ContentDigest::sha256(b"delivery-observation");
+    let observed = observe_reference_alert(&plan, obs_proof, TimestampNs(103), &mut journal)?;
+    assert_eq!(observed.state, EffectState::Observed);
+
+    let verified = verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;
+    assert_eq!(verified.state, EffectState::Verified);
     let obligation = journal
         .obligations()
         .find(|item| item.obligation_id == plan.obligation_id)

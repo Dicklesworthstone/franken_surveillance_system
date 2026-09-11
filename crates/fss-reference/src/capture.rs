@@ -87,11 +87,15 @@ pub fn run_reference_capture(
     }
     let delivery_trace = DeliveryTrace::from_packets(&delivery_packets);
     let delivery_trace_digest = objects.put_verified(&delivery_trace.canonical_bytes())?;
+    let mut unique_delivery_digests: Vec<_> = delivery_packets
+        .iter()
+        .map(|delivery| delivery.observed_digest)
+        .collect();
+    unique_delivery_digests.sort_unstable();
+    unique_delivery_digests.dedup();
     let delivery_manifest = ObjectManifest::new(
         "virtual-delivery-session",
-        delivery_packets
-            .iter()
-            .map(|delivery| delivery.observed_digest),
+        unique_delivery_digests,
         Some(delivery_trace_digest),
     )?;
     let delivery_root = objects.publish_manifest(delivery_manifest)?.root;
