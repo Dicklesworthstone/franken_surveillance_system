@@ -20,7 +20,7 @@ jobs:
     name: policy contract
     runs-on: [self-hosted, fss-linux-amd64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Execute repository-owned policy lane
         run: bash scripts/qualify.sh --lane policy
 
@@ -28,6 +28,6 @@ jobs:
     name: pinned-nightly Rust contract
     runs-on: [self-hosted, fss-linux-amd64]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Execute repository-owned Rust lane
         run: bash scripts/qualify.sh --lane rust
