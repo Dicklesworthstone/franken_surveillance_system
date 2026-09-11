@@ -255,6 +255,59 @@ fn sha256_length_counter_checked_against_bit_overflow() -> Result<(), ContractEr
     Ok(())
 }
 
+#[test]
+fn no_public_hashing_api_returns_digest_for_over_limit_input() -> Result<(), ContractError> {
+    let over_limit = Sha256Hasher::MAX_MESSAGE_BYTES + 1;
+    let zero_digest = [0_u8; 32];
+
+    // 1. Sha256Hasher initialized beyond limit fails on finalize() with ArithmeticOverflow
+    let hasher = Sha256Hasher::with_total_bytes(over_limit);
+    assert_eq!(hasher.finalize(), Err(ContractError::ArithmeticOverflow));
+
+    // 2. Sha256Hasher overflowing via update() fails on finalize() with ArithmeticOverflow
+    let mut hasher2 = Sha256Hasher::with_total_bytes(Sha256Hasher::MAX_MESSAGE_BYTES);
+    hasher2.update(b"x");
+    assert_eq!(hasher2.finalize(), Err(ContractError::ArithmeticOverflow));
+
+    // 3. Repeated updates after overflow remain latched in error state and never return Ok
+    let mut hasher3 = Sha256Hasher::with_total_bytes(Sha256Hasher::MAX_MESSAGE_BYTES);
+    hasher3.update(b"a");
+    hasher3.update(b"b");
+    assert_eq!(hasher3.finalize(), Err(ContractError::ArithmeticOverflow));
+
+    // 4. Overflow at u64::MAX boundary fails on finalize() with ArithmeticOverflow
+    let mut u64_hasher = Sha256Hasher::with_total_bytes(u64::MAX);
+    u64_hasher.update(b"!");
+    assert_eq!(
+        u64_hasher.finalize(),
+        Err(ContractError::ArithmeticOverflow)
+    );
+
+    // 5. Sha256Hasher::try_digest on valid input succeeds and never fabricates all-zero digest
+    let empty_digest = Sha256Hasher::try_digest(b"")?;
+    assert_ne!(
+        empty_digest, zero_digest,
+        "valid digest must never be fabricated all-zero value"
+    );
+
+    // 6. Sha256Hasher::digest on valid input succeeds and never fabricates all-zero digest
+    let valid_digest = Sha256Hasher::digest(b"evidence payload")?;
+    assert_ne!(
+        valid_digest, zero_digest,
+        "valid digest must never be fabricated all-zero value"
+    );
+
+    // 7. ContentDigest::try_sha256 succeeds and produces correct non-zero digest
+    let content_digest = ContentDigest::try_sha256(b"evidence payload")?;
+    assert_ne!(
+        content_digest.bytes(),
+        zero_digest,
+        "ContentDigest must never fabricate all-zero digest"
+    );
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 2. Canonical Text Formatting and Round-Trip Parsing
 // ---------------------------------------------------------------------------

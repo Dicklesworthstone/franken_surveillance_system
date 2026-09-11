@@ -160,6 +160,12 @@ impl ContentDigest {
         Self::new(DigestAlgorithm::Sha256, sha256(bytes))
     }
 
+    /// Computes the canonical SHA-256 digest of bytes, returning an error on overflow.
+    pub fn try_sha256(bytes: &[u8]) -> Result<Self, ContractError> {
+        let digest_bytes = Sha256Hasher::digest(bytes)?;
+        Ok(Self::new(DigestAlgorithm::Sha256, digest_bytes))
+    }
+
     /// Parses `sha256:<64 lower-case hex>` or `blake3:<64 lower-case hex>`.
     pub fn parse(value: impl AsRef<str>) -> Result<Self, ContractError> {
         value.as_ref().parse()
