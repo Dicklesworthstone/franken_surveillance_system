@@ -5,9 +5,9 @@ use std::collections::BTreeSet;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder,
     Completeness, ContentDigest, ContractBasis, EffectState, EventState, HandoffCapsule, HandoffId,
-    HypothesisDisposition, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObjectId,
-    ObligationId, PossibleWorld, PrincipalId, ProvenanceClass, SessionId, SituationCapsule,
-    SituationFrame, TimestampNs, WorldEnvelope,
+    HandoffPublishParams, HypothesisDisposition, KnowledgeCell, KnowledgeState, LedgerAnchor,
+    MissionId, ObjectId, ObligationId, PossibleWorld, PrincipalId, ProvenanceClass, SessionId,
+    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -457,18 +457,18 @@ pub fn seal_reference_handoff(
     expires_at: TimestampNs,
 ) -> Result<HandoffCapsule, ReferenceError> {
     let situation_root = situation.verify()?;
-    let handoff = HandoffCapsule::publish(
+    let handoff = HandoffCapsule::publish(HandoffPublishParams {
         handoff_id,
-        situation.capsule.mission_id.clone(),
-        situation.capsule.session_id.clone(),
-        situation.capsule.principal_id.clone(),
-        situation.capsule.anchor.clone(),
-        situation_root,
-        situation.proof_roots.iter().copied(),
-        situation.capsule.contract_basis.clone(),
+        mission_id: situation.capsule.mission_id.clone(),
+        source_session_id: situation.capsule.session_id.clone(),
+        source_principal_id: situation.capsule.principal_id.clone(),
+        anchor: situation.capsule.anchor.clone(),
+        situation_capsule_root: situation_root,
+        child_roots: situation.proof_roots.iter().copied(),
+        contract_basis: situation.capsule.contract_basis.clone(),
         created_at,
         expires_at,
-    )?;
+    })?;
     handoff.verify()?;
     Ok(handoff)
 }

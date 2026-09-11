@@ -6,9 +6,9 @@ use fss_core::{
     BudgetVector, CanonicalEncode, CanonicalEncoder, Completeness, CompressionCompleteness,
     CompressionLossClass, CompressionStopReason, CompressionTransform, CompressionTransformKind,
     ContentDigest, ContextItem, ContractError, ControlEnvelope, CriticalPreservation,
-    ExpansionHandle, HandoffCapsule, HandoffId, KnowledgeState, OperationReceipt, ResourcePressure,
-    ResourceState, SemanticCompressionReceipt, SemanticContextPack, TimestampNs,
-    reference_token_count,
+    ExpansionHandle, HandoffCapsule, HandoffId, HandoffPublishParams, KnowledgeState,
+    OperationReceipt, ResourcePressure, ResourceState, SemanticCompressionReceipt,
+    SemanticContextPack, TimestampNs, reference_token_count,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -317,18 +317,18 @@ pub fn seal_reference_publication_handoff(
     children.insert(publication.control_envelope.control_digest());
     children.insert(publication.context_pack.pack_digest);
     children.insert(publication.compression_receipt.receipt_digest());
-    let handoff = HandoffCapsule::publish(
+    let handoff = HandoffCapsule::publish(HandoffPublishParams {
         handoff_id,
-        publication.situation.capsule.mission_id.clone(),
-        publication.situation.capsule.session_id.clone(),
-        publication.situation.capsule.principal_id.clone(),
-        publication.situation.capsule.anchor.clone(),
-        publication_root,
-        children,
-        publication.situation.capsule.contract_basis.clone(),
+        mission_id: publication.situation.capsule.mission_id.clone(),
+        source_session_id: publication.situation.capsule.session_id.clone(),
+        source_principal_id: publication.situation.capsule.principal_id.clone(),
+        anchor: publication.situation.capsule.anchor.clone(),
+        situation_capsule_root: publication_root,
+        child_roots: children,
+        contract_basis: publication.situation.capsule.contract_basis.clone(),
         created_at,
         expires_at,
-    )?;
+    })?;
     handoff.verify()?;
     Ok(handoff)
 }

@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+import dependency_audit
+
+MANIFEST_FILES = {Path("MANIFEST.sha256"), Path("MANIFEST.delta.sha256")}
 EXCLUDED_TOP_LEVEL = {
     ".git",
     ".ee",
@@ -41,6 +45,8 @@ def fail(message: str) -> None:
 
 def included(path: Path) -> bool:
     relative = path.relative_to(ROOT)
+    if relative in MANIFEST_FILES:
+        return False
     if path.name == ".DS_Store" or "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
         return False
     if relative.parts and relative.parts[0] in EXCLUDED_TOP_LEVEL:
@@ -220,53 +226,12 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
     if rust_lints.get("unsafe_code") != "forbid":
         fail("Cargo workspace must set workspace.lints.rust.unsafe_code = 'forbid'")
 
-    allowed_patterns = dependency_policy.get("in_house", {}).get("allowed_families", [])
-    allowed_patterns += dependency_policy.get("fundamental", {}).get("allowed_subject_to_audit", [])
+    findings: list[dependency_audit.Finding] = []
+    manifests, member_names, member_map = dependency_audit.expand_workspace_members(ROOT, root_cargo, findings)
+    rows = dependency_audit.enumerate_dependencies(ROOT, manifests, member_names, member_map, dependency_policy, findings)
+    source_census = dependency_audit.rust_source_audit(findings, root=ROOT)
+
     forbidden = set(dependency_policy.get("forbidden", {}).get("crates", []))
-    workspace_members = set(root_cargo.get("workspace", {}).get("members", []))
-    member_names: set[str] = set()
-    for member in workspace_members:
-        member_manifest = ROOT / member / "Cargo.toml"
-        if not member_manifest.is_file():
-            fail(f"workspace member manifest missing: {member}/Cargo.toml")
-            continue
-        data = load_toml(f"{member}/Cargo.toml")
-        name = data.get("package", {}).get("name")
-        if isinstance(name, str):
-            member_names.add(name)
-
-    def is_allowed(name: str) -> bool:
-        return name in member_names or any(fnmatch.fnmatchcase(name, pattern) for pattern in allowed_patterns)
-
-    for manifest in sorted(ROOT.rglob("Cargo.toml")):
-        if not included(manifest):
-            continue
-        relative = manifest.relative_to(ROOT).as_posix()
-        data = load_toml(relative)
-        for section in ("dependencies", "dev-dependencies", "build-dependencies"):
-            dependencies = data.get(section, {})
-            if not isinstance(dependencies, dict):
-                fail(f"{relative} [{section}] must be a table")
-                continue
-            for local_name, specification in dependencies.items():
-                package_name = local_name
-                path_dependency = False
-                if isinstance(specification, dict):
-                    package_name = str(specification.get("package", local_name))
-                    path_dependency = "path" in specification
-                    if specification.get("git") and not specification.get("rev"):
-                        fail(f"unpinned Git dependency {package_name} in {relative}")
-                    if specification.get("default-features") is not False and not path_dependency:
-                        fail(f"external dependency {package_name} in {relative} must set default-features = false")
-                if path_dependency:
-                    continue
-                if package_name in forbidden:
-                    fail(f"forbidden crate {package_name} in {relative}")
-                elif not is_allowed(package_name):
-                    fail(f"unallowlisted direct crate {package_name} in {relative}")
-        if data.get("build-dependencies"):
-            fail(f"build dependencies are prohibited by default: {relative}")
-
     lock_path = ROOT / "Cargo.lock"
     if not lock_path.is_file():
         fail("Cargo.lock is required for locked/offline qualification")
@@ -280,38 +245,9 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
         except Exception as exc:
             fail(f"invalid Cargo.lock: {exc}")
 
-    for crate_manifest in sorted((ROOT / "crates").glob("*/Cargo.toml")):
-        crate_dir = crate_manifest.parent
-        roots = [crate_dir / "src/lib.rs", crate_dir / "src/main.rs"]
-        data = load_toml(crate_manifest.relative_to(ROOT).as_posix())
-        for target_kind in ("bin", "example", "test", "bench"):
-            targets = data.get(target_kind, [])
-            if isinstance(targets, dict):
-                targets = [targets]
-            if isinstance(targets, list):
-                for target in targets:
-                    if isinstance(target, dict) and isinstance(target.get("path"), str):
-                        roots.append(crate_dir / target["path"])
-        roots = [path for path in roots if path.is_file()]
-        if not roots:
-            fail(f"crate has no inspectable Rust target root: {crate_dir.relative_to(ROOT)}")
-        for path in roots:
-            if "#![forbid(unsafe_code)]" not in path.read_text(encoding="utf-8"):
-                fail(f"Rust target root lacks unconditional unsafe prohibition: {path.relative_to(ROOT)}")
-
-    unsafe_patterns = {
-        "unsafe token": re.compile(r"\bunsafe\b"),
-        "C ABI": re.compile(r"extern\s+\"C\""),
-        "native link attribute": re.compile(r"#\s*\[\s*link\s*\("),
-        "dynamic loader": re.compile(r"\b(?:libloading|dlopen|LoadLibrary)\b"),
-    }
-    for path in source_files(".rs"):
-        text = path.read_text(encoding="utf-8")
-        # The required crate attribute itself contains the word unsafe; remove it before scanning.
-        scan = text.replace("#![forbid(unsafe_code)]", "")
-        for label, pattern in unsafe_patterns.items():
-            if pattern.search(scan):
-                fail(f"{label} in FSS Rust source: {path.relative_to(ROOT)}")
+    for finding in findings:
+        if finding.severity == "error":
+            fail(f"{finding.code}: {finding.message} ({finding.path})")
 
 
 def workflow_policy() -> None:
@@ -331,6 +267,11 @@ def workflow_policy() -> None:
         "cargo test",
         "python3 scripts/check-policy.py",
     ]
+    action_pattern = re.compile(r"^\s*-\s*uses:\s*([^@\s]+)@([0-9a-f]{40})\s+#\s*(\S+)")
+    unpinned_action_pattern = re.compile(r"^\s*-\s*uses:\s*([^@\s]+)@(\S+)")
+    allowed_actions = {
+        "actions/checkout": {"11bd71901bbe5b1630ceea73d27597364c9af683"},
+    }
     for path in workflows:
         text = path.read_text(encoding="utf-8")
         if "scripts/qualify.sh" not in text and "scripts/release_qualify.sh" not in text:
@@ -341,6 +282,16 @@ def workflow_policy() -> None:
         for fragment in forbidden_fragments:
             if fragment in text:
                 fail(f"workflow contains unique setup/qualification logic ({fragment}): {path.relative_to(ROOT)}")
+        for line_number, line in enumerate(text.splitlines(), 1):
+            unpinned = unpinned_action_pattern.search(line)
+            if unpinned:
+                action_name = unpinned.group(1)
+                ref = unpinned.group(2)
+                pinned = action_pattern.search(line)
+                if not pinned:
+                    fail(f"unpinned or comment-lacking workflow action at {path.relative_to(ROOT)}:{line_number}: {line.strip()}")
+                elif action_name not in allowed_actions or ref not in allowed_actions[action_name]:
+                    fail(f"unreviewed workflow action at {path.relative_to(ROOT)}:{line_number}: {action_name}@{ref}")
 
 
 def validate_manifest() -> int:
@@ -585,6 +536,14 @@ def main() -> int:
         r"^\| `((?:COST)-[A-Z0-9-]+)` \|",
     )
     compare_ids(costs, cost_md, "operation-cost")
+    slo_md = markdown_table_rows(
+        "registries/SLOS.md",
+        r"^\| `((?:SLO)-[A-Z0-9-]+)` \|",
+    )
+    for cost_id, cost_row in costs.items():
+        for slo_id in cost_row.get("slo_ids", []):
+            if slo_id not in slo_md:
+                fail(f"operation-cost {cost_id} references unregistered SLO: {slo_id}")
 
     algorithms = unique_rows(load_json("architecture/graph_algorithms.json").get("algorithms"), "id", "architecture/graph_algorithms.json")
     algorithm_md = markdown_table_rows(

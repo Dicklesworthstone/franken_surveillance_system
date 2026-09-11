@@ -373,7 +373,6 @@ impl EffectJournal {
     }
 
     /// Returns all obligations in canonical identity order.
-    #[must_use]
     pub fn obligations(&self) -> impl Iterator<Item = &Obligation> {
         self.obligations.values()
     }

@@ -58,32 +58,47 @@ pub struct SensorCapsule {
     pub gap_before: bool,
 }
 
+/// Parameters for constructing a `SensorCapsule` from raw source bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SensorSourceBytesSpec<'a> {
+    /// Canonical capsule identity.
+    pub capsule_id: CapsuleId,
+    /// Sensor identity.
+    pub sensor_id: SensorId,
+    /// Stream identity.
+    pub stream_id: StreamId,
+    /// Stream sequence number.
+    pub sequence: u64,
+    /// Time interval captured by this capsule.
+    pub capture: CaptureInterval,
+    /// Ingest arrival time.
+    pub receive_time: TimestampNs,
+    /// Clock synchronization state at ingest.
+    pub clock_basis: ClockBasis,
+    /// Exact source payload bytes.
+    pub source: &'a [u8],
+    /// Number of decoded frames represented.
+    pub frame_count: u32,
+    /// Whether a continuity gap precedes this capsule.
+    pub gap_before: bool,
+}
+
 impl SensorCapsule {
     /// Constructs a capsule and binds its identity to exact source bytes.
-    pub fn from_source_bytes(
-        capsule_id: CapsuleId,
-        sensor_id: SensorId,
-        stream_id: StreamId,
-        sequence: u64,
-        capture: CaptureInterval,
-        receive_time: TimestampNs,
-        clock_basis: ClockBasis,
-        source: &[u8],
-        frame_count: u32,
-        gap_before: bool,
-    ) -> Self {
+    #[must_use]
+    pub fn from_source_bytes(spec: SensorSourceBytesSpec<'_>) -> Self {
         Self {
-            capsule_id,
-            sensor_id,
-            stream_id,
-            sequence,
-            capture,
-            receive_time,
-            clock_basis,
-            source_digest: ContentDigest::sha256(source),
-            source_bytes: source.len() as u64,
-            frame_count,
-            gap_before,
+            capsule_id: spec.capsule_id,
+            sensor_id: spec.sensor_id,
+            stream_id: spec.stream_id,
+            sequence: spec.sequence,
+            capture: spec.capture,
+            receive_time: spec.receive_time,
+            clock_basis: spec.clock_basis,
+            source_digest: ContentDigest::sha256(spec.source),
+            source_bytes: spec.source.len() as u64,
+            frame_count: spec.frame_count,
+            gap_before: spec.gap_before,
         }
     }
 

@@ -6,7 +6,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use fss_core::hydration::{HydrationError, HydrationLevel, SemanticHandle};
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, ContextBindingError, ContextExpansionBinding,
-    ContextExpansionBindingSet, ContractError, HandoffCapsule, HandoffId, TimestampNs,
+    ContextExpansionBindingSet, ContractError, HandoffCapsule, HandoffId, HandoffPublishParams,
+    TimestampNs,
 };
 
 use crate::{ReferenceError, ReferenceSituationPublication};
@@ -253,20 +254,20 @@ pub fn seal_bound_reference_publication_handoff(
     expires_at: TimestampNs,
 ) -> Result<HandoffCapsule, ReferenceContextBindingError> {
     let publication_root = publication.verify()?;
-    let handoff = HandoffCapsule::publish(
+    let handoff = HandoffCapsule::publish(HandoffPublishParams {
         handoff_id,
-        publication.publication.situation.capsule.mission_id.clone(),
-        publication.publication.situation.capsule.session_id.clone(),
-        publication
+        mission_id: publication.publication.situation.capsule.mission_id.clone(),
+        source_session_id: publication.publication.situation.capsule.session_id.clone(),
+        source_principal_id: publication
             .publication
             .situation
             .capsule
             .principal_id
             .clone(),
-        publication.publication.situation.capsule.anchor.clone(),
-        publication_root,
-        publication.proof_roots(),
-        publication
+        anchor: publication.publication.situation.capsule.anchor.clone(),
+        situation_capsule_root: publication_root,
+        child_roots: publication.proof_roots(),
+        contract_basis: publication
             .publication
             .situation
             .capsule
@@ -274,7 +275,7 @@ pub fn seal_bound_reference_publication_handoff(
             .clone(),
         created_at,
         expires_at,
-    )?;
+    })?;
     handoff.verify()?;
     Ok(handoff)
 }

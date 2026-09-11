@@ -737,152 +737,6 @@ impl CompressionStopReason {
     }
 }
 
-/// Proof-bearing record of semantic context selection and omission.
-#[derive(Clone, Debug, PartialEq)]
-pub struct SemanticCompressionReceipt {
-    /// Stable receipt identity.
-    pub receipt_id: String,
-    /// Exact source authority anchor.
-    pub source_anchor: LedgerAnchor,
-    /// Registered view identity.
-    pub view_id: String,
-    /// Target output token budget under the reference estimator.
-    pub target_tokens: u64,
-    /// Semantic classes represented in the selected output.
-    pub selected_classes: BTreeSet<String>,
-    /// Optional semantic classes omitted from the selected output.
-    pub omitted_classes: BTreeSet<String>,
-    /// Explicit transforms applied.
-    pub transforms: Vec<CompressionTransform>,
-    /// Domain-by-domain completeness.
-    pub completeness: Vec<CompressionCompleteness>,
-    /// Proof that critical classes were preserved.
-    pub critical_preservation: CriticalPreservation,
-    /// Actual reference token count.
-    pub actual_tokens: u64,
-    /// Actual canonical context-pack byte count.
-    pub actual_bytes: u64,
-    /// Priced expansion handles for omitted optional detail.
-    pub expansion_handles: Vec<ExpansionHandle>,
-    /// Digest of the selector frontier, when retained.
-    pub selection_frontier_digest: Option<ContentDigest>,
-    /// Why selection stopped.
-    pub stop_reason: CompressionStopReason,
-    /// Exact selected context-pack digest.
-    pub output_digest: ContentDigest,
-}
-
-impl SemanticCompressionReceipt {
-    /// Validates the receipt independently of its selected context pack.
-    pub fn validate(&self) -> Result<(), ContractError> {
-        if self.receipt_id.is_empty()
-            || self.view_id.is_empty()
-            || self.actual_tokens > self.target_tokens
-            || !self.critical_preservation.is_lossless()
-            || !self.selected_classes.is_disjoint(&self.omitted_classes)
-            || self.selected_classes.iter().any(|value| value.is_empty())
-            || self.omitted_classes.iter().any(|value| value.is_empty())
-        {
-            return Err(ContractError::BudgetExhausted);
-        }
-        if self.stop_reason == CompressionStopReason::Complete && !self.omitted_classes.is_empty() {
-            return Err(ContractError::EvidenceRequired);
-        }
-        if !self.omitted_classes.is_empty() && self.expansion_handles.is_empty() {
-            return Err(ContractError::EvidenceRequired);
-        }
-        let mut completeness_domains = BTreeSet::new();
-        for row in &self.completeness {
-            if row.domain.is_empty()
-                || !completeness_domains.insert(row.domain.as_str())
-                || row.state == Completeness::Stale
-            {
-                return Err(ContractError::NonCanonicalOrdering);
-            }
-        }
-        let mut handles = BTreeSet::new();
-        for handle in &self.expansion_handles {
-            if handle.handle.is_empty()
-                || handle.purpose.is_empty()
-                || !handle.estimated_cost.is_valid()
-                || !handles.insert(handle.handle.as_str())
-            {
-                return Err(ContractError::EvidenceRequired);
-            }
-        }
-        for transform in &self.transforms {
-            if transform.scope.is_empty() || transform.details.as_deref().is_some_and(str::is_empty)
-            {
-                return Err(ContractError::EvidenceRequired);
-            }
-        }
-        Ok(())
-    }
-
-    /// Cross-checks the receipt against the exact selected context pack.
-    pub fn validate_for(&self, pack: &SemanticContextPack) -> Result<(), ContractError> {
-        self.validate()?;
-        pack.verify()?;
-        let selected_kinds: BTreeSet<_> = pack.items.iter().map(|item| item.kind.clone()).collect();
-        if self.receipt_id != pack.compression_receipt_id
-            || self.source_anchor != pack.anchor
-            || self.view_id != pack.view_id
-            || self.actual_tokens != pack.token_count
-            || self.actual_bytes != pack.encoded_bytes()
-            || self.output_digest != pack.pack_digest
-            || !selected_kinds.is_subset(&self.selected_classes)
-        {
-            return Err(ContractError::DigestMismatch);
-        }
-        Ok(())
-    }
-
-    /// Returns the canonical receipt digest.
-    #[must_use]
-    pub fn receipt_digest(&self) -> ContentDigest {
-        self.canonical_digest("fss.semantic_compression_receipt.v1")
-    }
-}
-
-impl CanonicalEncode for SemanticCompressionReceipt {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        encoder.text(&self.receipt_id);
-        self.source_anchor.encode_canonical(encoder);
-        encoder.text(&self.view_id);
-        encoder.u64(self.target_tokens);
-        encode_text_set(&self.selected_classes, encoder);
-        encode_text_set(&self.omitted_classes, encoder);
-        encoder.u64(self.transforms.len() as u64);
-        for transform in &self.transforms {
-            transform.encode_canonical(encoder);
-        }
-        let mut completeness = self.completeness.clone();
-        completeness.sort_by(|left, right| left.domain.cmp(&right.domain));
-        encoder.u64(completeness.len() as u64);
-        for row in &completeness {
-            row.encode_canonical(encoder);
-        }
-        self.critical_preservation.encode_canonical(encoder);
-        encoder.u64(self.actual_tokens);
-        encoder.u64(self.actual_bytes);
-        let mut handles = self.expansion_handles.clone();
-        handles.sort_by(|left, right| left.handle.cmp(&right.handle));
-        encoder.u64(handles.len() as u64);
-        for handle in &handles {
-            handle.encode_canonical(encoder);
-        }
-        match self.selection_frontier_digest {
-            Some(value) => {
-                encoder.bool(true);
-                encoder.digest(value);
-            }
-            None => encoder.bool(false),
-        }
-        encoder.text(self.stop_reason.as_str());
-        encoder.digest(self.output_digest);
-    }
-}
-
 /// Deterministic dependency-free token estimate used only by the reference selector.
 #[must_use]
 pub fn reference_token_count(items: &[ContextItem]) -> u64 {
@@ -950,10 +804,11 @@ fn completeness_code(value: Completeness) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContractBasis, LedgerAnchor};
+    use crate::agent::ContractBasisRegistryBytes;
+    use crate::{ContractBasis, LedgerAnchor, SemanticCompressionReceipt};
 
     fn basis() -> ContractBasis {
-        ContractBasis::from_registry_bytes(
+        ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
             b"schemas",
             b"operations",
             b"views",
@@ -961,8 +816,7 @@ mod tests {
             b"errors",
             b"costs",
             "fss:test",
-            None,
-        )
+        ))
     }
 
     fn world() -> WorldEnvelope {

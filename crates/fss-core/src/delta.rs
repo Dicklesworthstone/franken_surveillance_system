@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, ContractBasis, ContractError, KnowledgeCell,
-    KnowledgeState, LedgerAnchor, SessionId,
+    LedgerAnchor, SessionId,
 };
 
 /// Semantic class of a mission-relative situation change.
@@ -480,10 +480,11 @@ fn merge_text(left: &[String], right: &[String]) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ProvenanceClass, TimestampNs};
+    use crate::agent::ContractBasisRegistryBytes;
+    use crate::{KnowledgeState, ProvenanceClass, TimestampNs};
 
     fn basis() -> ContractBasis {
-        ContractBasis::from_registry_bytes(
+        ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
             b"schemas",
             b"operations",
             b"views",
@@ -491,8 +492,7 @@ mod tests {
             b"errors",
             b"costs",
             "fss:test",
-            None,
-        )
+        ))
     }
 
     fn anchor(sequence: u64) -> LedgerAnchor {

@@ -33,30 +33,74 @@ pub struct ContractBasis {
     pub accepted_nightly: Option<String>,
 }
 
+/// Exact registry bytes and release identities used to build a contract basis.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ContractBasisRegistryBytes<'a> {
+    /// Exact raw schema catalog bytes.
+    pub schema_catalog: &'a [u8],
+    /// Exact raw operation registry bytes.
+    pub operations: &'a [u8],
+    /// Exact raw view registry bytes.
+    pub views: &'a [u8],
+    /// Exact raw capability registry bytes.
+    pub capabilities: &'a [u8],
+    /// Exact raw error registry bytes.
+    pub errors: &'a [u8],
+    /// Exact raw cost registry bytes.
+    pub costs: &'a [u8],
+    /// Producer release identity.
+    pub producer_release_id: &'a str,
+    /// Accepted dated nightly identity.
+    pub accepted_nightly: Option<&'a str>,
+}
+
+impl<'a> ContractBasisRegistryBytes<'a> {
+    /// Builds a parameter struct with no accepted nightly specified.
+    #[must_use]
+    pub const fn new(
+        schema_catalog: &'a [u8],
+        operations: &'a [u8],
+        views: &'a [u8],
+        capabilities: &'a [u8],
+        errors: &'a [u8],
+        costs: &'a [u8],
+        producer_release_id: &'a str,
+    ) -> Self {
+        Self {
+            schema_catalog,
+            operations,
+            views,
+            capabilities,
+            errors,
+            costs,
+            producer_release_id,
+            accepted_nightly: None,
+        }
+    }
+
+    /// Sets the accepted nightly identifier.
+    #[must_use]
+    pub const fn with_accepted_nightly(mut self, accepted_nightly: &'a str) -> Self {
+        self.accepted_nightly = Some(accepted_nightly);
+        self
+    }
+}
+
 impl ContractBasis {
     /// Builds a deterministic reference basis from exact registry bytes.
     #[must_use]
-    pub fn from_registry_bytes(
-        schema_catalog: &[u8],
-        operations: &[u8],
-        views: &[u8],
-        capabilities: &[u8],
-        errors: &[u8],
-        costs: &[u8],
-        producer_release_id: impl Into<String>,
-        accepted_nightly: Option<String>,
-    ) -> Self {
+    pub fn from_registry_bytes(spec: ContractBasisRegistryBytes<'_>) -> Self {
         Self {
             semantic_protocol: "fss/1".to_owned(),
-            schema_catalog_digest: ContentDigest::sha256(schema_catalog),
+            schema_catalog_digest: ContentDigest::sha256(spec.schema_catalog),
             ontology_generation_id: "ontology:reference:v1".to_owned(),
-            operation_registry_digest: ContentDigest::sha256(operations),
-            view_registry_digest: ContentDigest::sha256(views),
-            capability_registry_digest: ContentDigest::sha256(capabilities),
-            error_registry_digest: ContentDigest::sha256(errors),
-            cost_registry_digest: ContentDigest::sha256(costs),
-            producer_release_id: producer_release_id.into(),
-            accepted_nightly,
+            operation_registry_digest: ContentDigest::sha256(spec.operations),
+            view_registry_digest: ContentDigest::sha256(spec.views),
+            capability_registry_digest: ContentDigest::sha256(spec.capabilities),
+            error_registry_digest: ContentDigest::sha256(spec.errors),
+            cost_registry_digest: ContentDigest::sha256(spec.costs),
+            producer_release_id: spec.producer_release_id.to_owned(),
+            accepted_nightly: spec.accepted_nightly.map(ToOwned::to_owned),
         }
     }
 
@@ -563,40 +607,57 @@ pub struct HandoffCapsule {
     pub expires_at: TimestampNs,
 }
 
+/// Parameters for publishing a root-last `HandoffCapsule`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HandoffPublishParams<I = Vec<ContentDigest>> {
+    /// Stable handoff identifier.
+    pub handoff_id: HandoffId,
+    /// Owning mission identity.
+    pub mission_id: MissionId,
+    /// Producing session identity.
+    pub source_session_id: SessionId,
+    /// Producing principal identity.
+    pub source_principal_id: PrincipalId,
+    /// Authority anchor under which this handoff is sealed.
+    pub anchor: LedgerAnchor,
+    /// Root digest of the referenced situation capsule.
+    pub situation_capsule_root: ContentDigest,
+    /// Child proof roots that must be durable before this handoff is sealed.
+    pub child_roots: I,
+    /// Exact contract basis governing the handoff.
+    pub contract_basis: ContractBasis,
+    /// Creation time.
+    pub created_at: TimestampNs,
+    /// Expiry time.
+    pub expires_at: TimestampNs,
+}
+
 impl HandoffCapsule {
     /// Materializes and seals a complete root-last handoff capsule.
-    pub fn publish(
-        handoff_id: HandoffId,
-        mission_id: MissionId,
-        source_session_id: SessionId,
-        source_principal_id: PrincipalId,
-        anchor: LedgerAnchor,
-        situation_capsule_root: ContentDigest,
-        child_roots: impl IntoIterator<Item = ContentDigest>,
-        contract_basis: ContractBasis,
-        created_at: TimestampNs,
-        expires_at: TimestampNs,
-    ) -> Result<Self, ContractError> {
-        if expires_at < created_at {
+    pub fn publish<I>(params: HandoffPublishParams<I>) -> Result<Self, ContractError>
+    where
+        I: IntoIterator<Item = ContentDigest>,
+    {
+        if params.expires_at < params.created_at {
             return Err(ContractError::InvertedTimeInterval);
         }
-        let mut children: BTreeSet<_> = child_roots.into_iter().collect();
-        children.insert(situation_capsule_root);
+        let mut children: BTreeSet<_> = params.child_roots.into_iter().collect();
+        children.insert(params.situation_capsule_root);
         if children.is_empty() {
             return Err(ContractError::IncompletePublicationGraph);
         }
         let mut capsule = Self {
-            handoff_id,
-            mission_id,
-            source_session_id,
-            source_principal_id,
-            anchor,
-            situation_capsule_root,
+            handoff_id: params.handoff_id,
+            mission_id: params.mission_id,
+            source_session_id: params.source_session_id,
+            source_principal_id: params.source_principal_id,
+            anchor: params.anchor,
+            situation_capsule_root: params.situation_capsule_root,
             child_roots: children,
             handoff_root: ContentDigest::sha256(b"unpublished"),
-            contract_basis,
-            created_at,
-            expires_at,
+            contract_basis: params.contract_basis,
+            created_at: params.created_at,
+            expires_at: params.expires_at,
         };
         capsule.handoff_root = capsule.computed_root();
         Ok(capsule)
@@ -721,32 +782,34 @@ mod tests {
 
     fn basis() -> ContractBasis {
         ContractBasis::from_registry_bytes(
-            b"schemas",
-            b"operations",
-            b"views",
-            b"capabilities",
-            b"errors",
-            b"costs",
-            "fss:0.0.1",
-            Some("nightly-2026-08-31".to_owned()),
+            ContractBasisRegistryBytes::new(
+                b"schemas",
+                b"operations",
+                b"views",
+                b"capabilities",
+                b"errors",
+                b"costs",
+                "fss:0.0.1",
+            )
+            .with_accepted_nightly("nightly-2026-08-31"),
         )
     }
 
     #[test]
     fn handoff_requires_and_verifies_situation_root() -> Result<(), ContractError> {
         let situation_root = ContentDigest::sha256(b"situation");
-        let capsule = HandoffCapsule::publish(
-            HandoffId::parse("handoff:one")?,
-            MissionId::parse("mission:one")?,
-            SessionId::parse("session:one")?,
-            PrincipalId::parse("principal:one")?,
-            LedgerAnchor::genesis("site:one"),
-            situation_root,
-            [ContentDigest::sha256(b"case")],
-            basis(),
-            TimestampNs(10),
-            TimestampNs(20),
-        )?;
+        let capsule = HandoffCapsule::publish(HandoffPublishParams {
+            handoff_id: HandoffId::parse("handoff:one")?,
+            mission_id: MissionId::parse("mission:one")?,
+            source_session_id: SessionId::parse("session:one")?,
+            source_principal_id: PrincipalId::parse("principal:one")?,
+            anchor: LedgerAnchor::genesis("site:one"),
+            situation_capsule_root: situation_root,
+            child_roots: [ContentDigest::sha256(b"case")],
+            contract_basis: basis(),
+            created_at: TimestampNs(10),
+            expires_at: TimestampNs(20),
+        })?;
         assert!(capsule.child_roots.contains(&situation_root));
         capsule.verify()
     }

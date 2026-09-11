@@ -5,8 +5,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::hydration::{HydrationError, HydrationLevel, SemanticHandle};
 use crate::{
-    BudgetVector, CanonicalEncode, CanonicalEncoder, ContentDigest, ContractBasis, ContractError,
-    LedgerAnchor, RecoveryClass, SemanticCompressionReceipt, SemanticContextPack,
+    BudgetVector, CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, LedgerAnchor,
+    RecoveryClass, SemanticCompressionReceipt, SemanticContextPack,
 };
 
 const MAX_BINDINGS: usize = 4_096;
