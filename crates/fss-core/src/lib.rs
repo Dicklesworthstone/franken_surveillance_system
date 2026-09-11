@@ -20,6 +20,7 @@ mod event;
 mod evidence;
 pub mod hydration;
 mod ids;
+mod outcome;
 mod projection;
 mod time;
 
@@ -70,6 +71,14 @@ pub use ids::{
     PrivacyGeneration, PropertyId, SchemaEpoch, SchemaId, SearchGeneration, SensorId, SessionId,
     StreamGeneration, StreamId, TombstoneId, TombstoneReason, TombstoneRecord, TombstoneRegistry,
     TrackId, WorkspaceId,
+};
+
+pub use outcome::{
+    ErrorId, IndeterminateDetail, OperationError, OperationOutcome, RefusalDetail, RefusalReason,
+    validate_error_id, ERR_OP_EXECUTION_FAILED_001, ERR_OP_ID_MALFORMED_001,
+    ERR_OP_INDETERMINATE_001, ERR_OP_INVALID_OUTCOME_001, ERR_OP_NOT_OBSERVABLE_001,
+    ERR_OP_PRECONDITION_FAILED_001, ERR_OP_RECONCILIATION_REQUIRED_001,
+    ERR_OP_TIMEOUT_001, ERR_OP_UNAUTHORIZED_001,
 };
 
 pub use projection::{
