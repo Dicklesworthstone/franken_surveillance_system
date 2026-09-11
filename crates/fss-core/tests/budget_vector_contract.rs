@@ -224,7 +224,17 @@ fn checked_sub_succeeds_and_detects_underflow() -> Result<(), BudgetError> {
         Err(BudgetError::Underflow { dimension, .. }) => {
             assert_eq!(dimension, BudgetDimension::LatencyMs);
         }
-        _ => panic!("expected Underflow error"),
+        _ => panic!("expected Underflow error on LatencyMs"),
+    }
+
+    // Underflow on privacy exposure
+    let v_priv1 = BudgetVector::builder().privacy_exposure(1.0).build()?;
+    let v_priv2 = BudgetVector::builder().privacy_exposure(2.0).build()?;
+    match v_priv1.checked_sub(&v_priv2) {
+        Err(BudgetError::Underflow { dimension, .. }) => {
+            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
+        }
+        _ => panic!("expected Underflow error on PrivacyExposure"),
     }
     Ok(())
 }
@@ -304,16 +314,42 @@ fn authority_enlargement_is_forbidden() -> Result<(), BudgetError> {
         .build()?;
     assert_eq!(sub.assert_authority_unmodified(&prior), Ok(()));
 
-    // Enlarged budget fails authority check
-    let enl = BudgetVector::builder()
+    // Enlarged budget fails authority check on LatencyMs
+    let enl_latency = BudgetVector::builder()
         .latency_ms(600)
         .tokens(200)
         .privacy_exposure(0.8)
         .build()?;
     assert_eq!(
-        enl.assert_authority_unmodified(&prior),
+        enl_latency.assert_authority_unmodified(&prior),
         Err(BudgetError::AuthorityEnlargementForbidden {
             dimension: BudgetDimension::LatencyMs,
+        })
+    );
+
+    // Enlarged budget fails authority check on Tokens
+    let enl_tokens = BudgetVector::builder()
+        .latency_ms(500)
+        .tokens(300)
+        .privacy_exposure(0.8)
+        .build()?;
+    assert_eq!(
+        enl_tokens.assert_authority_unmodified(&prior),
+        Err(BudgetError::AuthorityEnlargementForbidden {
+            dimension: BudgetDimension::Tokens,
+        })
+    );
+
+    // Enlarged budget fails authority check on PrivacyExposure
+    let enl_privacy = BudgetVector::builder()
+        .latency_ms(500)
+        .tokens(250)
+        .privacy_exposure(1.5)
+        .build()?;
+    assert_eq!(
+        enl_privacy.assert_authority_unmodified(&prior),
+        Err(BudgetError::AuthorityEnlargementForbidden {
+            dimension: BudgetDimension::PrivacyExposure,
         })
     );
     Ok(())
@@ -495,6 +531,85 @@ fn json_decode_rejects_negative_nan_and_infinities() {
         }
         _ => panic!("expected InfiniteQuantity for Infinity in JSON"),
     }
+
+    // Negative Infinity in JSON
+    let json_neg_inf = br#"{"privacyExposure": "-Infinity"}"#;
+    match BudgetVector::decode_json_slice(json_neg_inf) {
+        Err(BudgetError::InfiniteQuantity {
+            dimension,
+            is_negative,
+        }) => {
+            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
+            assert!(is_negative);
+        }
+        _ => panic!("expected InfiniteQuantity (negative) in JSON"),
+    }
+
+    // Exponential overflow to infinity (1e999)
+    let json_overflow = br#"{"privacyExposure": 1e999}"#;
+    match BudgetVector::decode_json_slice(json_overflow) {
+        Err(BudgetError::InfiniteQuantity { dimension, .. }) => {
+            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
+        }
+        _ => panic!("expected InfiniteQuantity for exponential overflow in JSON"),
+    }
+
+    // Malformed JSON not an object
+    let json_array = br#"[100, 200]"#;
+    assert_eq!(
+        BudgetVector::decode_json_slice(json_array),
+        Err(BudgetError::InvalidEncoding {
+            reason: "JSON budget must be an object enclosed in braces",
+        })
+    );
+
+    // Unknown dimension in JSON
+    let json_unknown = br#"{"unknownBudgetDimension": 100}"#;
+    assert_eq!(
+        BudgetVector::decode_json_slice(json_unknown),
+        Err(BudgetError::InvalidEncoding {
+            reason: "unknown budget dimension in JSON",
+        })
+    );
+}
+
+#[test]
+fn checked_fits_within_rejects_invalid_operands() {
+    let valid = BudgetVector::ZERO;
+    let mut invalid = BudgetVector::ZERO;
+    invalid.privacy_exposure = -1.0;
+
+    // Invalid self
+    match invalid.checked_fits_within(&valid) {
+        Err(BudgetError::NegativeQuantity { dimension, .. }) => {
+            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
+        }
+        _ => panic!("expected NegativeQuantity for invalid self in checked_fits_within"),
+    }
+
+    // Invalid limit
+    match valid.checked_fits_within(&invalid) {
+        Err(BudgetError::NegativeQuantity { dimension, .. }) => {
+            assert_eq!(dimension, BudgetDimension::PrivacyExposure);
+        }
+        _ => panic!("expected NegativeQuantity for invalid limit in checked_fits_within"),
+    }
+}
+
+#[test]
+fn project_dimensions_preserves_selected_and_zeroes_others() -> Result<(), BudgetError> {
+    let b = BudgetVector::builder()
+        .latency_ms(100)
+        .tokens(200)
+        .privacy_exposure(1.5)
+        .build()?;
+
+    let proj = b.project_dimensions(|d| d == BudgetDimension::PrivacyExposure)?;
+    assert_eq!(proj.latency_ms, 0);
+    assert_eq!(proj.tokens, 0);
+    assert_eq!(proj.privacy_exposure, 1.5);
+    assert!(proj.fits_within(b));
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

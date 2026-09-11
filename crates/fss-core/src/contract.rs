@@ -1037,11 +1037,7 @@ impl BudgetVector {
             return self.checked_sub(cost);
         }
         let remaining = self.checked_sub(cost)?;
-        if !remaining.fits_within(*self) {
-            return Err(BudgetError::AuthorityEnlargementForbidden {
-                dimension: BudgetDimension::LatencyMs,
-            });
-        }
+        remaining.assert_authority_unmodified(self)?;
         Ok(remaining)
     }
 
@@ -1141,9 +1137,59 @@ impl BudgetVector {
     pub fn assert_authority_unmodified(&self, prior: &Self) -> Result<(), BudgetError> {
         self.validate()?;
         prior.validate()?;
-        if !self.fits_within(*prior) {
+        if self.latency_ms > prior.latency_ms {
             return Err(BudgetError::AuthorityEnlargementForbidden {
                 dimension: BudgetDimension::LatencyMs,
+            });
+        }
+        if self.tokens > prior.tokens {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::Tokens,
+            });
+        }
+        if self.bytes > prior.bytes {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::Bytes,
+            });
+        }
+        if self.model_calls > prior.model_calls {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::ModelCalls,
+            });
+        }
+        if self.cpu_millis > prior.cpu_millis {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::CpuMillis,
+            });
+        }
+        if self.accelerator_millis > prior.accelerator_millis {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::AcceleratorMillis,
+            });
+        }
+        if self.energy_millijoules > prior.energy_millijoules {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::EnergyMillijoules,
+            });
+        }
+        if self.network_bytes > prior.network_bytes {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::NetworkBytes,
+            });
+        }
+        if self.storage_operations > prior.storage_operations {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::StorageOperations,
+            });
+        }
+        if self.privacy_exposure > prior.privacy_exposure {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::PrivacyExposure,
+            });
+        }
+        if self.operator_attention_seconds > prior.operator_attention_seconds {
+            return Err(BudgetError::AuthorityEnlargementForbidden {
+                dimension: BudgetDimension::OperatorAttentionSeconds,
             });
         }
         Ok(())
