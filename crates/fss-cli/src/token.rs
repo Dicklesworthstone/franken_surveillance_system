@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 
 use crate::error::CliError;
-use crate::redact::{redact_argument, safe_os_repr};
+use crate::redact::{is_sensitive_standalone_flag, redact_argument, safe_os_repr};
 
 /// Maximum allowed length in bytes for a single argument token.
 pub const MAX_ARG_TOKEN_BYTES: usize = 4096;
@@ -38,12 +38,20 @@ impl ArgToken {
 /// as valid UTF-8, it returns an explicit `CliError::InvalidUnicode`.
 ///
 /// If any argument exceeds `MAX_ARG_TOKEN_BYTES`, it returns `CliError::MalformedValue`.
+///
+/// Tokens following sensitive standalone flags (e.g. `--password`, `-p`, `--token`) are
+/// automatically redacted to `[redacted:Nbytes]`.
 pub fn tokenize_os_args<I>(args: I) -> Result<Vec<ArgToken>, CliError>
 where
     I: IntoIterator<Item = OsString>,
 {
     let mut tokens = Vec::new();
+    let mut prev_was_sensitive = false;
+
     for (index, os_arg) in args.into_iter().enumerate() {
+        let is_sensitive_value = prev_was_sensitive;
+        prev_was_sensitive = false;
+
         match os_arg.to_str() {
             Some(valid_str) => {
                 if valid_str.len() > MAX_ARG_TOKEN_BYTES {
@@ -58,41 +66,63 @@ where
                         index,
                     });
                 }
-                tokens.push(ArgToken::new(index, valid_str.to_owned()));
+                if is_sensitive_value {
+                    tokens.push(ArgToken::new(
+                        index,
+                        format!("[redacted:{}bytes]", valid_str.len()),
+                    ));
+                } else {
+                    if is_sensitive_standalone_flag(valid_str) {
+                        prev_was_sensitive = true;
+                    }
+                    tokens.push(ArgToken::new(index, valid_str.to_owned()));
+                }
             }
             None => {
                 #[cfg(unix)]
                 let (byte_length, redacted_repr) = {
                     use std::os::unix::ffi::OsStrExt;
                     let bytes = os_arg.as_bytes();
-                    (bytes.len(), safe_os_repr(bytes, 32))
+                    if is_sensitive_value {
+                        (bytes.len(), format!("[redacted:{}bytes]", bytes.len()))
+                    } else {
+                        (bytes.len(), safe_os_repr(bytes, 32))
+                    }
                 };
                 #[cfg(windows)]
                 let (byte_length, redacted_repr) = {
                     use std::os::windows::ffi::OsStrExt;
                     let wide: Vec<u16> = os_arg.encode_wide().collect();
                     let byte_length = wide.len() * 2;
-                    let mut repr = String::new();
-                    for &unit in wide.iter().take(32) {
-                        if (0x20..=0x7E).contains(&unit)
-                            && unit != b'\\' as u16
-                            && unit != b'"' as u16
-                        {
-                            repr.push(unit as u8 as char);
-                        } else {
-                            use std::fmt::Write;
-                            let _ = write!(repr, "\\u{{{unit:04x}}}");
+                    if is_sensitive_value {
+                        (byte_length, format!("[redacted:{}bytes]", byte_length))
+                    } else {
+                        let mut repr = String::new();
+                        for &unit in wide.iter().take(32) {
+                            if (0x20..=0x7E).contains(&unit)
+                                && unit != b'\\' as u16
+                                && unit != b'"' as u16
+                            {
+                                repr.push(unit as u8 as char);
+                            } else {
+                                use std::fmt::Write;
+                                let _ = write!(repr, "\\u{{{unit:04x}}}");
+                            }
                         }
+                        if wide.len() > 32 {
+                            repr.push_str("...[truncated]");
+                        }
+                        (byte_length, redact_argument(&repr))
                     }
-                    if wide.len() > 32 {
-                        repr.push_str("...[truncated]");
-                    }
-                    (byte_length, redact_argument(&repr))
                 };
                 #[cfg(all(not(unix), not(windows)))]
                 let (byte_length, redacted_repr) = {
                     let lossy = os_arg.to_string_lossy();
-                    (lossy.len(), redact_argument(&lossy))
+                    if is_sensitive_value {
+                        (lossy.len(), format!("[redacted:{}bytes]", lossy.len()))
+                    } else {
+                        (lossy.len(), redact_argument(&lossy))
+                    }
                 };
 
                 return Err(CliError::InvalidUnicode {

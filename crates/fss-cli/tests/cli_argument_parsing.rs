@@ -453,23 +453,151 @@ fn real_process_execution_tests() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn assert_valid_json_payload(json_str: &str) {
-    if let Ok(mut child) = Command::new("python3")
-        .args(["-c", "import json, sys; json.loads(sys.stdin.read())"])
+    let validation_script = r#"
+import json, os, sys
+
+candidates = [
+    'schemas/cli_diagnostic.v1.json',
+    '../../schemas/cli_diagnostic.v1.json',
+    '../schemas/cli_diagnostic.v1.json',
+    os.path.join(os.environ.get('CARGO_MANIFEST_DIR', '.'), '../../schemas/cli_diagnostic.v1.json'),
+]
+schema_file = next((c for c in candidates if os.path.isfile(c)), None)
+assert schema_file, f'could not find schemas/cli_diagnostic.v1.json in {candidates}'
+with open(schema_file) as f:
+    schema = json.load(f)
+
+raw = sys.stdin.read()
+instance = json.loads(raw)
+
+# Try jsonschema library validation if present
+try:
+    import jsonschema
+    jsonschema.validate(instance=instance, schema=schema)
+except ImportError:
+    pass
+
+# Strictly validate schema structure stdlib-only
+assert isinstance(instance, dict), "instance must be an object"
+required = schema.get("required", [])
+for req in required:
+    assert req in instance, f"missing required field: {req}"
+
+if schema.get("additionalProperties") is False:
+    for k in instance:
+        assert k in schema.get("properties", {}), f"unexpected field: {k}"
+
+for k, v in instance.items():
+    prop = schema.get("properties", {}).get(k, {})
+    if "const" in prop:
+        assert v == prop["const"], f"expected const {prop['const']}, got {v}"
+    if "type" in prop:
+        expected_types = prop["type"] if isinstance(prop["type"], list) else [prop["type"]]
+        match = False
+        for t in expected_types:
+            if t == "string" and isinstance(v, str): match = True
+            elif t == "integer" and isinstance(v, int) and not isinstance(v, bool): match = True
+            elif t == "boolean" and isinstance(v, bool): match = True
+            elif t == "null" and v is None: match = True
+        assert match, f"field {k}={v!r} does not match type {expected_types}"
+"#;
+
+    let mut child = Command::new("python3")
+        .args(["-c", validation_script])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-    {
-        if let Some(mut stdin) = child.stdin.take() {
-            use std::io::Write;
-            let _ = stdin.write_all(json_str.as_bytes());
-        }
-        if let Ok(output) = child.wait_with_output() {
-            assert!(
-                output.status.success(),
-                "rendered diagnostic is not valid JSON:\n{json_str}\nstderr: {}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        .expect("spawn python validator");
+
+    if let Some(mut stdin) = child.stdin.take() {
+        use std::io::Write;
+        stdin
+            .write_all(json_str.as_bytes())
+            .expect("write to python stdin");
     }
+
+    let output = child.wait_with_output().expect("wait for python validator");
+    assert!(
+        output.status.success(),
+        "rendered diagnostic failed schema validation against schemas/cli_diagnostic.v1.json:\n{json_str}\nstderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn test_safe_os_repr_leaks_sensitive_in_second_half_of_non_utf8() {
+    let sensitive_bytes = b"\x80--password=supersecretpassword123";
+    let repr = fss_cli::safe_os_repr(sensitive_bytes, 64);
+    assert!(
+        !repr.contains("supersecretpassword123"),
+        "safe_os_repr leaked sensitive password preceded by non-UTF8 byte: {repr}"
+    );
+}
+
+#[test]
+fn test_unsalted_digest_allows_preimage_brute_force_of_short_secret() {
+    let secret = "849201";
+    let redacted = fss_cli::redact_value_or_digest(secret);
+    assert!(
+        !redacted.contains("sha256:"),
+        "Unsalted SHA-256 digest allowed preimage search of short secret: {redacted}"
+    );
+    assert_eq!(redacted, "[redacted:6bytes]");
+}
+
+#[test]
+fn test_numeric_secret_leaked_in_plaintext_by_is_safe_to_echo() {
+    let pin = "849201";
+    assert!(
+        !fss_cli::is_safe_to_echo(pin),
+        "is_safe_to_echo must not treat arbitrary numeric secrets/PINs as safe identifiers"
+    );
+    let redacted = fss_cli::redact_value_or_digest(pin);
+    assert!(
+        !redacted.contains(pin),
+        "redact_value_or_digest echoed numeric secret in plaintext: {redacted}"
+    );
+}
+
+#[test]
+fn test_unknown_option_with_unregistered_sensitive_flag_leaks_secret() {
+    let err = fss_cli::CliError::UnknownOption {
+        option: "--custom-api-token=supersecret123".to_owned(),
+        command: Some("status".to_owned()),
+        index: 1,
+    };
+    let (human, json) = fss_cli::render_diagnostic(&err, "fss", None);
+    assert!(
+        !human.contains("supersecret123"),
+        "UnknownOption leaked secret value in human diagnostic: {human}"
+    );
+    assert!(
+        !json.contains("supersecret123"),
+        "UnknownOption leaked secret value in JSON diagnostic: {json}"
+    );
+}
+
+#[test]
+fn test_sensitive_standalone_flags_redact_next_token() {
+    let args = [
+        std::ffi::OsString::from("status"),
+        std::ffi::OsString::from("--password"),
+        std::ffi::OsString::from("supersecret123"),
+    ];
+    let tokens = fss_cli::tokenize_os_args(args).expect("valid tokens");
+    assert_eq!(tokens.len(), 3);
+    assert_eq!(tokens[1].raw, "--password");
+    assert_eq!(tokens[2].raw, "[redacted:14bytes]");
+}
+
+#[test]
+fn test_diagnostic_json_validates_against_schema_file() {
+    let err = fss_cli::CliError::UnknownOption {
+        option: "--unknown".to_owned(),
+        command: Some("status".to_owned()),
+        index: 1,
+    };
+    let (_, json_str) = fss_cli::render_diagnostic(&err, "fss", None);
+    assert_valid_json_payload(&json_str);
 }

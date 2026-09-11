@@ -34,45 +34,120 @@ const SENSITIVE_PREFIXES_BYTES: [&[u8]; 12] = [
     b"authorization:",
 ];
 
+/// Known standalone sensitive flags whose following argument token carries a sensitive value.
+pub const SENSITIVE_STANDALONE_FLAGS: [&str; 10] = [
+    "--password",
+    "-p",
+    "--token",
+    "-t",
+    "--secret",
+    "-s",
+    "--key",
+    "-k",
+    "--api-key",
+    "--auth",
+];
+
+/// Checks whether a flag is a known sensitive standalone flag.
+#[must_use]
+pub fn is_sensitive_standalone_flag(flag: &str) -> bool {
+    SENSITIVE_STANDALONE_FLAGS
+        .iter()
+        .any(|&f| f.eq_ignore_ascii_case(flag))
+}
+
+/// Checks whether an option name is a registered public option whose value may be safely echoed.
+#[must_use]
+pub fn is_registered_public_option_with_value(opt_name: &str, val: &str) -> bool {
+    if opt_name == "--scenario" {
+        is_safe_to_echo(val)
+    } else if opt_name == "--repeat" {
+        val.parse::<usize>().is_ok()
+    } else {
+        false
+    }
+}
+
 /// Redacts sensitive values, escapes control characters, and truncates to a bounded length.
+/// For any unknown option containing '=', redacts the value part unconditionally.
 #[must_use]
 pub fn redact_argument(input: &str) -> String {
     let sanitized = redact_sensitive_prefixes(input);
+    if sanitized != input {
+        return sanitize_and_truncate(&sanitized, DEFAULT_BOUND_LEN);
+    }
+    if (input.starts_with("--") || input.starts_with('-')) && input.contains('=') {
+        if let Some((opt_name, val)) = input.split_once('=') {
+            if !is_registered_public_option_with_value(opt_name, val) {
+                let redacted_opt = format!("{opt_name}=[redacted:{}bytes]", val.len());
+                return sanitize_and_truncate(&redacted_opt, DEFAULT_BOUND_LEN);
+            }
+        }
+    }
     sanitize_and_truncate(&sanitized, DEFAULT_BOUND_LEN)
 }
 
-/// Redacts the value portion of options matching sensitive prefix patterns.
+/// Redacts the value portion of options matching sensitive prefix patterns anywhere in the string.
 fn redact_sensitive_prefixes(input: &str) -> String {
     let lower = input.to_ascii_lowercase();
+    let mut earliest: Option<(usize, usize)> = None;
     for prefix in SENSITIVE_PREFIXES {
-        if lower.starts_with(prefix) {
-            let actual_prefix = &input[..prefix.len()];
-            return format!("{actual_prefix}[REDACTED]");
+        if let Some(pos) = lower.find(prefix) {
+            match earliest {
+                Some((best_pos, _)) if pos < best_pos => {
+                    earliest = Some((pos, prefix.len()));
+                }
+                None => {
+                    earliest = Some((pos, prefix.len()));
+                }
+                _ => {}
+            }
         }
+    }
+    if let Some((pos, prefix_len)) = earliest {
+        let actual_prefix = &input[..pos + prefix_len];
+        return format!("{actual_prefix}[REDACTED]");
     }
     input.to_owned()
 }
 
-/// Redacts the sensitive value portion of raw byte slices matching known sensitive prefixes.
+/// Redacts the sensitive value portion of raw byte slices matching known sensitive prefixes anywhere in the slice.
 #[must_use]
 pub fn redact_sensitive_bytes(bytes: &[u8]) -> Vec<u8> {
+    let mut earliest: Option<(usize, usize)> = None;
     for &prefix in &SENSITIVE_PREFIXES_BYTES {
         if bytes.len() >= prefix.len() {
-            let matches = bytes[..prefix.len()]
-                .iter()
-                .zip(prefix.iter())
-                .all(|(&b, &p)| b.to_ascii_lowercase() == p);
-            if matches {
-                let mut out = bytes[..prefix.len()].to_vec();
-                out.extend_from_slice(b"[REDACTED]");
-                return out;
+            for (i, window) in bytes.windows(prefix.len()).enumerate() {
+                let matches = window
+                    .iter()
+                    .zip(prefix.iter())
+                    .all(|(&b, &p)| b.to_ascii_lowercase() == p);
+                if matches {
+                    match earliest {
+                        Some((best_pos, _)) if i < best_pos => {
+                            earliest = Some((i, prefix.len()));
+                        }
+                        None => {
+                            earliest = Some((i, prefix.len()));
+                        }
+                        _ => {}
+                    }
+                    break;
+                }
             }
         }
+    }
+
+    if let Some((pos, prefix_len)) = earliest {
+        let mut out = bytes[..pos + prefix_len].to_vec();
+        out.extend_from_slice(b"[REDACTED]");
+        return out;
     }
     bytes.to_vec()
 }
 
-/// Checks whether a token is an allowed safe identifier (registered command name, option, scenario, or bounded numeric).
+/// Checks whether a token is an allowed safe identifier (registered command name, option, scenario).
+/// Arbitrary numeric strings are NOT considered safe identifiers (F3).
 #[must_use]
 pub fn is_safe_to_echo(token: &str) -> bool {
     const SAFE_IDENTIFIERS: &[&str] = &[
@@ -93,6 +168,8 @@ pub fn is_safe_to_echo(token: &str) -> bool {
         "--json",
         "--scenario",
         "--repeat",
+        "--strict",
+        "--timeout-ms",
         "quiet",
         "raccoon",
         "intrusion",
@@ -109,28 +186,28 @@ pub fn is_safe_to_echo(token: &str) -> bool {
         return true;
     }
 
-    if !token.is_empty() && token.len() <= 10 && token.chars().all(|c| c.is_ascii_digit()) {
-        return true;
-    }
-
     if let Some(val) = token.strip_prefix("--scenario=") {
-        return is_safe_to_echo(val);
-    }
-    if let Some(val) = token.strip_prefix("--repeat=") {
-        return is_safe_to_echo(val);
+        return SAFE_IDENTIFIERS.contains(&val);
     }
 
     false
 }
 
-/// Redacts sensitive values or arbitrary unrecognized values to a bounded length+digest form.
+/// Redacts sensitive values or arbitrary unrecognized values to an opaque bounded length form.
+/// Emits deterministic `[redacted:Nbytes]` with NO preimage-derived digest (F2).
 #[must_use]
 pub fn redact_value_or_digest(input: &str) -> String {
-    let lower = input.to_ascii_lowercase();
-    for prefix in SENSITIVE_PREFIXES {
-        if lower.starts_with(prefix) {
-            let actual_prefix = &input[..prefix.len()];
-            return format!("{actual_prefix}[REDACTED]");
+    let sanitized = redact_sensitive_prefixes(input);
+    if sanitized != input {
+        return sanitize_and_truncate(&sanitized, DEFAULT_BOUND_LEN);
+    }
+
+    if (input.starts_with("--") || input.starts_with('-')) && input.contains('=') {
+        if let Some((opt_name, val)) = input.split_once('=') {
+            if !is_registered_public_option_with_value(opt_name, val) {
+                let redacted_opt = format!("{opt_name}=[redacted:{}bytes]", val.len());
+                return sanitize_and_truncate(&redacted_opt, DEFAULT_BOUND_LEN);
+            }
         }
     }
 
@@ -138,23 +215,16 @@ pub fn redact_value_or_digest(input: &str) -> String {
         return sanitize_and_truncate(input, DEFAULT_BOUND_LEN);
     }
 
-    let digest = fss_core::sha256(input.as_bytes());
-    let mut hex = String::with_capacity(64);
-    for b in digest {
-        use std::fmt::Write;
-        let _ = write!(hex, "{b:02x}");
-    }
-    format!("[redacted:{}bytes:sha256:{hex}]", input.len())
+    format!("[redacted:{}bytes]", input.len())
 }
 
 /// Escapes control characters and truncates strings exceeding `max_len`.
 #[must_use]
 pub fn sanitize_and_truncate(input: &str, max_len: usize) -> String {
     let mut out = String::new();
-    let mut char_count = 0;
     let mut truncated = false;
 
-    for ch in input.chars() {
+    for (char_count, ch) in input.chars().enumerate() {
         if char_count >= max_len {
             truncated = true;
             break;
@@ -169,7 +239,6 @@ pub fn sanitize_and_truncate(input: &str, max_len: usize) -> String {
             }
             c => out.push(c),
         }
-        char_count += 1;
     }
 
     if truncated {
@@ -179,17 +248,16 @@ pub fn sanitize_and_truncate(input: &str, max_len: usize) -> String {
 }
 
 /// Renders a safe representation of arbitrary raw bytes, formatting non-ASCII as hex escapes.
-/// Redacts sensitive prefixes before formatting.
+/// Redacts sensitive prefixes anywhere in the byte slice before formatting.
 #[must_use]
 pub fn safe_os_repr(bytes: &[u8], max_len: usize) -> String {
     let redacted_bytes = redact_sensitive_bytes(bytes);
     let bytes = &redacted_bytes[..];
 
     let mut out = String::new();
-    let mut byte_count = 0;
     let mut truncated = false;
 
-    for &byte in bytes {
+    for (byte_count, &byte) in bytes.iter().enumerate() {
         if byte_count >= max_len {
             truncated = true;
             break;
@@ -205,7 +273,6 @@ pub fn safe_os_repr(bytes: &[u8], max_len: usize) -> String {
                 out.push_str(&format!("\\x{b:02x}"));
             }
         }
-        byte_count += 1;
     }
 
     if truncated {
@@ -259,17 +326,17 @@ mod tests {
     }
 
     #[test]
-    fn is_safe_to_echo_recognizes_commands_and_numerics() {
+    fn is_safe_to_echo_recognizes_commands_and_not_arbitrary_numerics() {
         assert!(is_safe_to_echo("status"));
-        assert!(is_safe_to_echo("42"));
+        assert!(!is_safe_to_echo("42"));
         assert!(is_safe_to_echo("--repeat"));
         assert!(!is_safe_to_echo("secret_token"));
     }
 
     #[test]
-    fn redact_value_or_digest_hashes_unknown_tokens() {
+    fn redact_value_or_digest_redacts_unknown_tokens_opaquely() {
         let redacted = redact_value_or_digest("my_unknown_secret");
-        assert!(redacted.starts_with("[redacted:17bytes:sha256:"));
+        assert_eq!(redacted, "[redacted:17bytes]");
         assert_eq!(redact_value_or_digest("status"), "status");
     }
 }
