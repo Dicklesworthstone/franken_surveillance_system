@@ -204,15 +204,11 @@ pub fn sha256(input: &[u8]) -> [u8; 32] {
 
     let mut state = SHA256_INITIAL;
     let mut schedule = [0_u32; 64];
-    for block in padded.chunks_exact(64) {
-        for (index, word) in schedule.iter_mut().take(16).enumerate() {
-            let offset = index * 4;
-            *word = u32::from_be_bytes([
-                block[offset],
-                block[offset + 1],
-                block[offset + 2],
-                block[offset + 3],
-            ]);
+    let (blocks, _) = padded.as_chunks::<64>();
+    for block in blocks {
+        let (words, _) = block.as_chunks::<4>();
+        for (word, chunk) in schedule.iter_mut().take(16).zip(words) {
+            *word = u32::from_be_bytes(*chunk);
         }
         for index in 16..64 {
             let s0 = schedule[index - 15].rotate_right(7)
@@ -309,6 +305,22 @@ mod tests {
         assert_eq!(
             ContentDigest::sha256(b"abc").to_text(),
             "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert_eq!(
+            ContentDigest::sha256(b"message digest").to_text(),
+            "sha256:f7846f55cf23e14eebeab5b4e1550cad5b509e3348fbc4efa3a1413d393cb650"
+        );
+        assert_eq!(
+            ContentDigest::sha256(&[b'a'; 64]).to_text(),
+            "sha256:ffe054fe7ae0cb6dc65c3af9b61d5209f439851db43d0ba5997337df154668eb"
+        );
+        assert_eq!(
+            ContentDigest::sha256(&[b'a'; 65]).to_text(),
+            "sha256:635361c48bb9eab14198e76ea8ab7f1a41685d6ad62aa9146d301d4f17eb0ae0"
+        );
+        assert_eq!(
+            ContentDigest::sha256(&[b'a'; 128]).to_text(),
+            "sha256:6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e"
         );
     }
 
