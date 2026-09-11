@@ -1,3 +1,5 @@
+//! Contract tests for sha256 public API.
+
 #![forbid(unsafe_code)]
 
 use core::str::FromStr;
@@ -49,6 +51,26 @@ fn public_sha256_function_test_vectors() {
     assert_eq!(
         ContentDigest::new(DigestAlgorithm::Sha256, digest128).to_text(),
         "sha256:6836cf13bac400e9105071cd6af47084dfacad4e5e302c94bfed24e013afb73e"
+    );
+}
+
+#[test]
+fn public_sha256_nist_standard_vectors_56_byte_and_million_a() {
+    // 56-byte NIST FIPS 180 boundary test vector
+    let msg_56 = b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    assert_eq!(msg_56.len(), 56);
+    let digest_56 = sha256(msg_56);
+    assert_eq!(
+        ContentDigest::new(DigestAlgorithm::Sha256, digest_56).to_text(),
+        "sha256:248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+    );
+
+    // 1,000,000 repetitions of 'a' NIST FIPS 180 multi-block vector
+    let msg_1m = vec![b'a'; 1_000_000];
+    let digest_1m = sha256(&msg_1m);
+    assert_eq!(
+        ContentDigest::new(DigestAlgorithm::Sha256, digest_1m).to_text(),
+        "sha256:cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"
     );
 }
 
@@ -136,6 +158,13 @@ fn public_content_digest_parsing_canonical_and_rejections() -> Result<(), Contra
         Err(ContractError::InvalidDigest)
     );
 
+    // Rejections: uppercase algorithm name
+    let upper_algo = "SHA256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    assert_eq!(
+        ContentDigest::parse(upper_algo),
+        Err(ContractError::UnsupportedDigestAlgorithm)
+    );
+
     // Rejections: unsupported algorithm
     let unsupported = "md5:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
     assert_eq!(
@@ -143,6 +172,21 @@ fn public_content_digest_parsing_canonical_and_rejections() -> Result<(), Contra
         Err(ContractError::UnsupportedDigestAlgorithm)
     );
     Ok(())
+}
+
+#[test]
+fn digest_parser_rejects_uppercase_algorithm_name() {
+    let upper_algo = "SHA256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    assert_eq!(
+        ContentDigest::parse(upper_algo),
+        Err(ContractError::UnsupportedDigestAlgorithm)
+    );
+
+    let upper_blake3 = "BLAKE3:000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f";
+    assert_eq!(
+        ContentDigest::parse(upper_blake3),
+        Err(ContractError::UnsupportedDigestAlgorithm)
+    );
 }
 
 #[test]
