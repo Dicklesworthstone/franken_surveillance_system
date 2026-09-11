@@ -40,9 +40,10 @@ pub use context_binding::{
 };
 pub use continuation::*;
 pub use contract::{
-    BudgetDimension, BudgetError, BudgetLogRecord, BudgetQuantity, BudgetVector,
-    BudgetVectorBuilder, Completeness, ContractError, EvidenceClass, HypothesisDisposition,
-    KnowledgeState, Plane, ProvenanceClass, RecoveryClass, RuntimeOutcome,
+    BudgetDimension, BudgetError, BudgetLogRecord, BudgetQuantitiesSpec, BudgetQuantity,
+    BudgetVector, BudgetVectorBuilder, BudgetVectorSpec, Completeness, ContractError,
+    EvidenceClass, HypothesisDisposition, KnowledgeState, Plane, ProvenanceClass, RecoveryClass,
+    RuntimeOutcome,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, sha256};

@@ -6,8 +6,9 @@
 #![forbid(unsafe_code)]
 
 use fss_core::{
-    BudgetDimension, BudgetError, BudgetLogRecord, BudgetQuantity, BudgetVector,
-    BudgetVectorBuilder, CanonicalDecode, CanonicalEncode, ContractError,
+    BudgetDimension, BudgetError, BudgetLogRecord, BudgetQuantitiesSpec, BudgetQuantity,
+    BudgetVector, BudgetVectorBuilder, BudgetVectorSpec, CanonicalDecode, CanonicalEncode,
+    ContractError,
 };
 
 // ---------------------------------------------------------------------------
@@ -30,7 +31,19 @@ fn zero_budget_is_valid_and_fits_within_itself() {
 
 #[test]
 fn ordinary_valid_budget_construction_via_new_and_builder() -> Result<(), BudgetError> {
-    let budget = BudgetVector::new(100, 200, 1024, 2, 50, 10, 15, 512, 5, 0.5, 1.25)?;
+    let budget = BudgetVector::new(BudgetVectorSpec {
+        latency_ms: 100,
+        tokens: 200,
+        bytes: 1024,
+        model_calls: 2,
+        cpu_millis: 50,
+        accelerator_millis: 10,
+        energy_millijoules: 15,
+        network_bytes: 512,
+        storage_operations: 5,
+        privacy_exposure: 0.5,
+        operator_attention_seconds: 1.25,
+    })?;
     assert!(budget.is_valid());
     assert_eq!(budget.latency_ms, 100);
     assert_eq!(budget.tokens, 200);
@@ -43,6 +56,22 @@ fn ordinary_valid_budget_construction_via_new_and_builder() -> Result<(), Budget
     assert_eq!(budget.storage_operations, 5);
     assert_eq!(budget.privacy_exposure, 0.5);
     assert_eq!(budget.operator_attention_seconds, 1.25);
+
+    // Same via from_quantities
+    let quantities_budget = BudgetVector::from_quantities(BudgetQuantitiesSpec {
+        latency_ms: 100,
+        tokens: 200,
+        bytes: 1024,
+        model_calls: 2,
+        cpu_millis: 50,
+        accelerator_millis: 10,
+        energy_millijoules: 15,
+        network_bytes: 512,
+        storage_operations: 5,
+        privacy_exposure: budget.privacy_quantity()?,
+        operator_attention_seconds: budget.operator_attention_quantity()?,
+    });
+    assert_eq!(budget, quantities_budget);
 
     // Same via builder
     let built = BudgetVectorBuilder::default()
@@ -65,7 +94,11 @@ fn ordinary_valid_budget_construction_via_new_and_builder() -> Result<(), Budget
 #[test]
 fn rejects_negative_floating_quantities_with_typed_error() {
     // Negative privacy_exposure
-    let res = BudgetVector::new(0, 0, 0, 0, 0, 0, 0, 0, 0, -0.001, 1.0);
+    let res = BudgetVector::new(BudgetVectorSpec {
+        privacy_exposure: -0.001,
+        operator_attention_seconds: 1.0,
+        ..Default::default()
+    });
     match res {
         Err(BudgetError::NegativeQuantity { dimension, .. }) => {
             assert_eq!(dimension, BudgetDimension::PrivacyExposure);
@@ -74,7 +107,11 @@ fn rejects_negative_floating_quantities_with_typed_error() {
     }
 
     // Negative operator_attention_seconds
-    let res2 = BudgetVector::new(0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0, -100.0);
+    let res2 = BudgetVector::new(BudgetVectorSpec {
+        privacy_exposure: 1.0,
+        operator_attention_seconds: -100.0,
+        ..Default::default()
+    });
     match res2 {
         Err(BudgetError::NegativeQuantity { dimension, .. }) => {
             assert_eq!(dimension, BudgetDimension::OperatorAttentionSeconds);
@@ -86,7 +123,11 @@ fn rejects_negative_floating_quantities_with_typed_error() {
 #[test]
 fn rejects_nan_floating_quantities_with_typed_error() {
     // Standard NaN
-    let res = BudgetVector::new(0, 0, 0, 0, 0, 0, 0, 0, 0, f64::NAN, 1.0);
+    let res = BudgetVector::new(BudgetVectorSpec {
+        privacy_exposure: f64::NAN,
+        operator_attention_seconds: 1.0,
+        ..Default::default()
+    });
     assert_eq!(
         res,
         Err(BudgetError::NaNQuantity {
@@ -96,7 +137,11 @@ fn rejects_nan_floating_quantities_with_typed_error() {
 
     // NaN payload variant
     let nan_payload = f64::from_bits(0x7ff8_0000_0000_0001);
-    let res2 = BudgetVector::new(0, 0, 0, 0, 0, 0, 0, 0, 0, 1.0, nan_payload);
+    let res2 = BudgetVector::new(BudgetVectorSpec {
+        privacy_exposure: 1.0,
+        operator_attention_seconds: nan_payload,
+        ..Default::default()
+    });
     assert_eq!(
         res2,
         Err(BudgetError::NaNQuantity {
@@ -108,7 +153,11 @@ fn rejects_nan_floating_quantities_with_typed_error() {
 #[test]
 fn rejects_both_infinities_with_typed_error() {
     // Positive infinity
-    let res_pos = BudgetVector::new(0, 0, 0, 0, 0, 0, 0, 0, 0, f64::INFINITY, 0.0);
+    let res_pos = BudgetVector::new(BudgetVectorSpec {
+        privacy_exposure: f64::INFINITY,
+        operator_attention_seconds: 0.0,
+        ..Default::default()
+    });
     assert_eq!(
         res_pos,
         Err(BudgetError::InfiniteQuantity {
@@ -118,7 +167,11 @@ fn rejects_both_infinities_with_typed_error() {
     );
 
     // Negative infinity
-    let res_neg = BudgetVector::new(0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0, f64::NEG_INFINITY);
+    let res_neg = BudgetVector::new(BudgetVectorSpec {
+        privacy_exposure: 0.0,
+        operator_attention_seconds: f64::NEG_INFINITY,
+        ..Default::default()
+    });
     assert_eq!(
         res_neg,
         Err(BudgetError::InfiniteQuantity {
@@ -133,8 +186,18 @@ fn normalizes_negative_zero_deterministically() -> Result<(), BudgetError> {
     let neg_zero = -0.0f64;
     let pos_zero = 0.0f64;
 
-    let v_neg = BudgetVector::new(10, 0, 0, 0, 0, 0, 0, 0, 0, neg_zero, neg_zero)?;
-    let v_pos = BudgetVector::new(10, 0, 0, 0, 0, 0, 0, 0, 0, pos_zero, pos_zero)?;
+    let v_neg = BudgetVector::new(BudgetVectorSpec {
+        latency_ms: 10,
+        privacy_exposure: neg_zero,
+        operator_attention_seconds: neg_zero,
+        ..Default::default()
+    })?;
+    let v_pos = BudgetVector::new(BudgetVectorSpec {
+        latency_ms: 10,
+        privacy_exposure: pos_zero,
+        operator_attention_seconds: pos_zero,
+        ..Default::default()
+    })?;
 
     // Both normalize to +0.0 bits
     assert_eq!(v_neg.privacy_exposure.to_bits(), 0);
@@ -387,7 +450,19 @@ fn budget_quantity_invariants_and_ordering() -> Result<(), BudgetError> {
 
 #[test]
 fn canonical_encode_decode_round_trip() -> Result<(), BudgetError> {
-    let orig = BudgetVector::new(1234, 5678, 9012, 42, 100, 200, 300, 400, 500, 1.75, 4.5)?;
+    let orig = BudgetVector::new(BudgetVectorSpec {
+        latency_ms: 1234,
+        tokens: 5678,
+        bytes: 9012,
+        model_calls: 42,
+        cpu_millis: 100,
+        accelerator_millis: 200,
+        energy_millijoules: 300,
+        network_bytes: 400,
+        storage_operations: 500,
+        privacy_exposure: 1.75,
+        operator_attention_seconds: 4.5,
+    })?;
 
     let canonical_bytes = orig.canonical_bytes();
     assert_eq!(canonical_bytes.len(), 84);
@@ -702,9 +777,20 @@ fn differential_conformance_with_reference_model() -> Result<(), BudgetError> {
         assert_eq!(opt_vec.is_valid(), should_be_valid);
         assert_eq!(opt_vec.validate().is_ok(), should_be_valid);
 
+        let constructor_result = BudgetVector::new(BudgetVectorSpec {
+            latency_ms: lat,
+            tokens: 100,
+            bytes: 1024,
+            model_calls: 1,
+            cpu_millis: 10,
+            accelerator_millis: 5,
+            energy_millijoules: 10,
+            network_bytes: 512,
+            storage_operations: 1,
+            privacy_exposure: priv_exp,
+            operator_attention_seconds: att_sec,
+        });
         if should_be_valid {
-            let constructor_result =
-                BudgetVector::new(lat, 100, 1024, 1, 10, 5, 10, 512, 1, priv_exp, att_sec);
             assert!(constructor_result.is_ok());
 
             let lim = BudgetVector::builder()
@@ -737,8 +823,6 @@ fn differential_conformance_with_reference_model() -> Result<(), BudgetError> {
 
             assert_eq!(opt_vec.fits_within(lim), ref_model.fits_within(&ref_limit));
         } else {
-            let constructor_result =
-                BudgetVector::new(lat, 100, 1024, 1, 10, 5, 10, 512, 1, priv_exp, att_sec);
             assert!(constructor_result.is_err());
         }
     }

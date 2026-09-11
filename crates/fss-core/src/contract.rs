@@ -612,6 +612,94 @@ impl fmt::Display for BudgetQuantity {
     }
 }
 
+/// Typed specification for constructing and validating a [`BudgetVector`].
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BudgetVectorSpec {
+    /// Wall-clock latency budget in milliseconds.
+    pub latency_ms: u64,
+    /// Output token budget.
+    pub tokens: u64,
+    /// Output and transfer byte budget.
+    pub bytes: u64,
+    /// Model invocation budget.
+    pub model_calls: u32,
+    /// CPU budget in milliseconds.
+    pub cpu_millis: u64,
+    /// Accelerator budget in milliseconds.
+    pub accelerator_millis: u64,
+    /// Energy budget in millijoules.
+    pub energy_millijoules: u64,
+    /// Network budget in bytes.
+    pub network_bytes: u64,
+    /// Storage-operation budget.
+    pub storage_operations: u64,
+    /// Privacy-exposure budget in an application-defined monotone scale.
+    pub privacy_exposure: f64,
+    /// Operator-attention budget in seconds.
+    pub operator_attention_seconds: f64,
+}
+
+impl BudgetVectorSpec {
+    /// Zero specification across all dimensions.
+    pub const ZERO: Self = Self {
+        latency_ms: 0,
+        tokens: 0,
+        bytes: 0,
+        model_calls: 0,
+        cpu_millis: 0,
+        accelerator_millis: 0,
+        energy_millijoules: 0,
+        network_bytes: 0,
+        storage_operations: 0,
+        privacy_exposure: 0.0,
+        operator_attention_seconds: 0.0,
+    };
+}
+
+/// Typed specification for constructing a [`BudgetVector`] from pre-validated quantities.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BudgetQuantitiesSpec {
+    /// Wall-clock latency budget in milliseconds.
+    pub latency_ms: u64,
+    /// Output token budget.
+    pub tokens: u64,
+    /// Output and transfer byte budget.
+    pub bytes: u64,
+    /// Model invocation budget.
+    pub model_calls: u32,
+    /// CPU budget in milliseconds.
+    pub cpu_millis: u64,
+    /// Accelerator budget in milliseconds.
+    pub accelerator_millis: u64,
+    /// Energy budget in millijoules.
+    pub energy_millijoules: u64,
+    /// Network budget in bytes.
+    pub network_bytes: u64,
+    /// Storage-operation budget.
+    pub storage_operations: u64,
+    /// Privacy-exposure budget.
+    pub privacy_exposure: BudgetQuantity,
+    /// Operator-attention budget.
+    pub operator_attention_seconds: BudgetQuantity,
+}
+
+impl BudgetQuantitiesSpec {
+    /// Zero specification across all dimensions.
+    pub const ZERO: Self = Self {
+        latency_ms: 0,
+        tokens: 0,
+        bytes: 0,
+        model_calls: 0,
+        cpu_millis: 0,
+        accelerator_millis: 0,
+        energy_millijoules: 0,
+        network_bytes: 0,
+        storage_operations: 0,
+        privacy_exposure: BudgetQuantity::ZERO,
+        operator_attention_seconds: BudgetQuantity::ZERO,
+    };
+}
+
 /// A multi-dimensional resource budget.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct BudgetVector {
@@ -655,38 +743,26 @@ impl BudgetVector {
         operator_attention_seconds: 0.0,
     };
 
-    /// Constructs and validates a budget vector from raw components.
+    /// Constructs and validates a budget vector from a typed parameter specification.
     ///
     /// Rejects negative, NaN, or infinite floating-point quantities with stable typed errors.
     /// Normalizes -0.0 to +0.0.
-    pub fn new(
-        latency_ms: u64,
-        tokens: u64,
-        bytes: u64,
-        model_calls: u32,
-        cpu_millis: u64,
-        accelerator_millis: u64,
-        energy_millijoules: u64,
-        network_bytes: u64,
-        storage_operations: u64,
-        privacy_exposure: f64,
-        operator_attention_seconds: f64,
-    ) -> Result<Self, BudgetError> {
-        let privacy = BudgetQuantity::new(privacy_exposure, BudgetDimension::PrivacyExposure)?;
+    pub fn new(spec: BudgetVectorSpec) -> Result<Self, BudgetError> {
+        let privacy = BudgetQuantity::new(spec.privacy_exposure, BudgetDimension::PrivacyExposure)?;
         let attention = BudgetQuantity::new(
-            operator_attention_seconds,
+            spec.operator_attention_seconds,
             BudgetDimension::OperatorAttentionSeconds,
         )?;
         Ok(Self {
-            latency_ms,
-            tokens,
-            bytes,
-            model_calls,
-            cpu_millis,
-            accelerator_millis,
-            energy_millijoules,
-            network_bytes,
-            storage_operations,
+            latency_ms: spec.latency_ms,
+            tokens: spec.tokens,
+            bytes: spec.bytes,
+            model_calls: spec.model_calls,
+            cpu_millis: spec.cpu_millis,
+            accelerator_millis: spec.accelerator_millis,
+            energy_millijoules: spec.energy_millijoules,
+            network_bytes: spec.network_bytes,
+            storage_operations: spec.storage_operations,
             privacy_exposure: privacy.get(),
             operator_attention_seconds: attention.get(),
         })
@@ -694,31 +770,19 @@ impl BudgetVector {
 
     /// Constructs from validated BudgetQuantity values for continuous dimensions.
     #[must_use]
-    pub fn from_quantities(
-        latency_ms: u64,
-        tokens: u64,
-        bytes: u64,
-        model_calls: u32,
-        cpu_millis: u64,
-        accelerator_millis: u64,
-        energy_millijoules: u64,
-        network_bytes: u64,
-        storage_operations: u64,
-        privacy_exposure: BudgetQuantity,
-        operator_attention_seconds: BudgetQuantity,
-    ) -> Self {
+    pub fn from_quantities(spec: BudgetQuantitiesSpec) -> Self {
         Self {
-            latency_ms,
-            tokens,
-            bytes,
-            model_calls,
-            cpu_millis,
-            accelerator_millis,
-            energy_millijoules,
-            network_bytes,
-            storage_operations,
-            privacy_exposure: privacy_exposure.get(),
-            operator_attention_seconds: operator_attention_seconds.get(),
+            latency_ms: spec.latency_ms,
+            tokens: spec.tokens,
+            bytes: spec.bytes,
+            model_calls: spec.model_calls,
+            cpu_millis: spec.cpu_millis,
+            accelerator_millis: spec.accelerator_millis,
+            energy_millijoules: spec.energy_millijoules,
+            network_bytes: spec.network_bytes,
+            storage_operations: spec.storage_operations,
+            privacy_exposure: spec.privacy_exposure.get(),
+            operator_attention_seconds: spec.operator_attention_seconds.get(),
         }
     }
 
@@ -1260,19 +1324,19 @@ impl BudgetVector {
         let privacy = f64::from_bits(privacy_bits);
         let attention = f64::from_bits(attention_bits);
 
-        Self::new(
+        Self::new(BudgetVectorSpec {
             latency_ms,
             tokens,
-            bytes_count,
+            bytes: bytes_count,
             model_calls,
             cpu_millis,
             accelerator_millis,
             energy_millijoules,
             network_bytes,
             storage_operations,
-            privacy,
-            attention,
-        )
+            privacy_exposure: privacy,
+            operator_attention_seconds: attention,
+        })
     }
 
     /// Quarantines invalid historical data rather than silently normalizing it.
@@ -1525,7 +1589,7 @@ impl CanonicalDecode for BudgetVector {
         let privacy = f64::from_bits(privacy_bits);
         let attention = f64::from_bits(attention_bits);
 
-        Self::new(
+        Self::new(BudgetVectorSpec {
             latency_ms,
             tokens,
             bytes,
@@ -1535,9 +1599,9 @@ impl CanonicalDecode for BudgetVector {
             energy_millijoules,
             network_bytes,
             storage_operations,
-            privacy,
-            attention,
-        )
+            privacy_exposure: privacy,
+            operator_attention_seconds: attention,
+        })
         .map_err(ContractError::from)
     }
 }
@@ -1656,19 +1720,19 @@ impl BudgetVectorBuilder {
 
     /// Validates all dimensions and builds a `BudgetVector`.
     pub fn build(self) -> Result<BudgetVector, BudgetError> {
-        BudgetVector::new(
-            self.latency_ms,
-            self.tokens,
-            self.bytes,
-            self.model_calls,
-            self.cpu_millis,
-            self.accelerator_millis,
-            self.energy_millijoules,
-            self.network_bytes,
-            self.storage_operations,
-            self.privacy_exposure,
-            self.operator_attention_seconds,
-        )
+        BudgetVector::new(BudgetVectorSpec {
+            latency_ms: self.latency_ms,
+            tokens: self.tokens,
+            bytes: self.bytes,
+            model_calls: self.model_calls,
+            cpu_millis: self.cpu_millis,
+            accelerator_millis: self.accelerator_millis,
+            energy_millijoules: self.energy_millijoules,
+            network_bytes: self.network_bytes,
+            storage_operations: self.storage_operations,
+            privacy_exposure: self.privacy_exposure,
+            operator_attention_seconds: self.operator_attention_seconds,
+        })
     }
 }
 
