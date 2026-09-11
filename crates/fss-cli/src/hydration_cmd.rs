@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 
 use crate::error::CliError;
-use crate::token::{ArgToken, tokenize_os_args};
+use crate::token::{ArgToken, is_option_shaped, tokenize_os_args};
 
 /// Closed registry of recognized hydration rehearsal scenarios.
 pub const VALID_HYDRATION_SCENARIOS: [&str; 7] = [
@@ -98,7 +98,7 @@ pub fn parse_hydration_tokens(tokens: &[ArgToken]) -> Result<HydrationAction, Cl
                 });
             }
             let val_tok = &tokens[idx + 1];
-            if val_tok.as_str().starts_with('-') {
+            if is_option_shaped(val_tok.as_str()) {
                 return Err(CliError::MissingValue {
                     option: "--scenario".to_owned(),
                     command: None,
@@ -241,6 +241,36 @@ mod tests {
         assert!(result.is_err());
         if let Err(err) = result {
             assert_eq!(err.error_id(), crate::error::ERR_CLI_MALFORMED_VALUE);
+        }
+    }
+
+    #[test]
+    fn scenario_missing_value_when_followed_by_option() {
+        for opt in ["--verbose", "-p"] {
+            let result = parse_hydration_args([OsString::from("--scenario"), OsString::from(opt)]);
+            assert!(result.is_err());
+            if let Err(err) = result {
+                assert_eq!(
+                    err.error_id(),
+                    crate::error::ERR_CLI_MISSING_VALUE,
+                    "expected MissingValue for --scenario followed by {opt}, got {err:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn scenario_malformed_value_for_negative_and_bare_dash() {
+        for val in ["-5", "-"] {
+            let result = parse_hydration_args([OsString::from("--scenario"), OsString::from(val)]);
+            assert!(result.is_err());
+            if let Err(err) = result {
+                assert_eq!(
+                    err.error_id(),
+                    crate::error::ERR_CLI_MALFORMED_VALUE,
+                    "expected MalformedValue for --scenario followed by {val}, got {err:?}"
+                );
+            }
         }
     }
 }

@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 
 use crate::error::CliError;
-use crate::token::{ArgToken, tokenize_os_args};
+use crate::token::{ArgToken, is_option_shaped, tokenize_os_args};
 
 /// Closed registry of recognized laboratory scenario identifiers.
 pub const VALID_SCENARIOS: [&str; 6] = [
@@ -188,7 +188,7 @@ fn parse_replay_command(tokens: &[ArgToken]) -> Result<LabAction, CliError> {
                 });
             }
             let val_tok = &tokens[idx + 1];
-            if val_tok.as_str().starts_with('-') {
+            if is_option_shaped(val_tok.as_str()) {
                 return Err(CliError::MissingValue {
                     option: "--repeat".to_owned(),
                     command: Some("replay".to_owned()),
@@ -378,6 +378,46 @@ mod tests {
             assert!(result.is_err());
             if let Err(err) = result {
                 assert_eq!(err.error_id(), crate::error::ERR_CLI_MALFORMED_VALUE);
+            }
+        }
+    }
+
+    #[test]
+    fn repeat_missing_value_when_followed_by_option() {
+        for opt in ["--token=x", "-p"] {
+            let result = parse_lab_args([
+                OsString::from("replay"),
+                OsString::from("quiet"),
+                OsString::from("--repeat"),
+                OsString::from(opt),
+            ]);
+            assert!(result.is_err());
+            if let Err(err) = result {
+                assert_eq!(
+                    err.error_id(),
+                    crate::error::ERR_CLI_MISSING_VALUE,
+                    "expected MissingValue for --repeat followed by {opt}, got {err:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn repeat_malformed_value_for_negative_and_bare_dash() {
+        for val in ["-5", "-"] {
+            let result = parse_lab_args([
+                OsString::from("replay"),
+                OsString::from("quiet"),
+                OsString::from("--repeat"),
+                OsString::from(val),
+            ]);
+            assert!(result.is_err());
+            if let Err(err) = result {
+                assert_eq!(
+                    err.error_id(),
+                    crate::error::ERR_CLI_MALFORMED_VALUE,
+                    "expected MalformedValue for --repeat followed by {val}, got {err:?}"
+                );
             }
         }
     }

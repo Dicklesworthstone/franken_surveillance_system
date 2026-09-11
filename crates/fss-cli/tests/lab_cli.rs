@@ -201,6 +201,43 @@ fn public_commands_are_deterministic_integration() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn test_lab_replay_repeat_option_shaped_vs_value() {
+    for opt in ["--token=x", "-p"] {
+        let res = parse_lab_args([
+            OsString::from("replay"),
+            OsString::from("quiet"),
+            OsString::from("--repeat"),
+            OsString::from(opt),
+        ]);
+        assert!(res.is_err());
+        if let Err(err) = res {
+            assert_eq!(
+                err.error_id(),
+                ERR_CLI_MISSING_VALUE,
+                "expected MissingValue for --repeat followed by {opt}, got {err:?}"
+            );
+        }
+    }
+
+    for val in ["-5", "-"] {
+        let res = parse_lab_args([
+            OsString::from("replay"),
+            OsString::from("quiet"),
+            OsString::from("--repeat"),
+            OsString::from(val),
+        ]);
+        assert!(res.is_err());
+        if let Err(err) = res {
+            assert_eq!(
+                err.error_id(),
+                ERR_CLI_MALFORMED_VALUE,
+                "expected MalformedValue for --repeat followed by {val}, got {err:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn real_process_lab_execution() -> Result<(), Box<dyn std::error::Error>> {
     let bin_path = env!("CARGO_BIN_EXE_fss-lab");
 

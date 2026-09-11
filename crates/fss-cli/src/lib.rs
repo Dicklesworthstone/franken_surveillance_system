@@ -34,4 +34,4 @@ pub use redact::{
     is_safe_to_echo, is_sensitive_standalone_flag, redact_argument, redact_sensitive_bytes,
     redact_value_or_digest, safe_os_repr, sanitize_and_truncate,
 };
-pub use token::{ArgToken, MAX_ARG_TOKEN_BYTES, tokenize_os_args};
+pub use token::{ArgToken, MAX_ARG_TOKEN_BYTES, is_option_shaped, tokenize_os_args};

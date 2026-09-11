@@ -32,6 +32,19 @@ impl ArgToken {
     }
 }
 
+/// Returns `true` if a token is shaped like a command-line option:
+/// it starts with `--`, or starts with `-` followed by an ASCII letter (e.g. `-p`, `-t`).
+/// Non-option tokens such as bare `-` or negative numbers (`-5`, `-0.5`) return `false`.
+#[must_use]
+pub fn is_option_shaped(token: &str) -> bool {
+    if token.starts_with("--") {
+        true
+    } else {
+        let mut chars = token.chars();
+        chars.next() == Some('-') && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+    }
+}
+
 /// Tokenizes an iterator of OS-native arguments into validated `ArgToken` records.
 ///
 /// This function never panics on non-UTF-8 inputs. If any argument cannot be decoded
@@ -170,5 +183,21 @@ mod tests {
             assert_eq!(err.error_id(), crate::error::ERR_CLI_INVALID_UNICODE);
             assert_eq!(err.argument_index(), Some(0));
         }
+    }
+
+    #[test]
+    fn test_is_option_shaped() {
+        assert!(is_option_shaped("--token=x"));
+        assert!(is_option_shaped("--repeat"));
+        assert!(is_option_shaped("--"));
+        assert!(is_option_shaped("-p"));
+        assert!(is_option_shaped("-t"));
+        assert!(is_option_shaped("-A"));
+
+        assert!(!is_option_shaped("-5"));
+        assert!(!is_option_shaped("-0.5"));
+        assert!(!is_option_shaped("-"));
+        assert!(!is_option_shaped("quiet"));
+        assert!(!is_option_shaped(""));
     }
 }
