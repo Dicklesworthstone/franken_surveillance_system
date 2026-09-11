@@ -11,6 +11,7 @@ Registry of canonical-digest domain tags used for domain separation in determini
 | `SCHEMA-DOMAIN-CONTINUATION-PAGE-001` | `fss.continuation_page.v1` | Continuation pagination | context/hydration | continuation page boundary digest domain; page range and item digest immutable |
 | `SCHEMA-DOMAIN-CONTINUATION-STREAM-001` | `fss.continuation_stream.v1` | Continuation streaming | context/hydration | continuation stream boundary digest domain; stream sequence and items monotonic |
 | `SCHEMA-DOMAIN-EFFECT-JOURNAL-001` | `fss.effect_journal.v1` | Effect execution | effect truth | effect journal entry digest domain; idempotency and state monotonicity preserved |
+| `SCHEMA-DOMAIN-EFFECT-PROOF-001` | `fss.effect_proof.v1` | Effect execution | effect truth | effect terminal proof canonical digest domain; binds full intent and terminal predicate |
 | `SCHEMA-DOMAIN-REFERENCE-STATE-001` | `fss.reference_state.v1` | Sensor evidence | authority/evidence | reference state witness domain tag; calibration and baseline immutable |
 | `SCHEMA-DOMAIN-HANDLE-DESCRIPTOR-001` | `fss.semantic_handle_descriptor.v1` | Semantic hydration | context/hydration | handle descriptor revision digest domain; level, budget, and ladder policy immutable |
 | `SCHEMA-DOMAIN-HANDLE-IDENTITY-001` | `fss.semantic_handle_identity.v1` | Semantic hydration | context/hydration | semantic handle identity domain tag; immutable across descriptor revisions |
