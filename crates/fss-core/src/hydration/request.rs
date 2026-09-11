@@ -117,6 +117,11 @@ impl HydrationRequest {
     }
 
     fn validate_body(&self) -> Result<(), HydrationError> {
+        if self.available_capabilities.len() > MAX_REQUEST_SET_ITEMS
+            || self.authorized_privacy_classes.len() > MAX_REQUEST_SET_ITEMS
+        {
+            return Err(HydrationError::CapacityExceeded);
+        }
         if self.contract_basis.semantic_protocol != "fss/1"
             || !valid_text(&self.handle_id)
             || !self.budget.is_valid()

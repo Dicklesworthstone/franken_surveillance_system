@@ -316,3 +316,73 @@ fn descriptor_price_cannot_be_rewritten_by_the_context_surface() -> Result<(), B
     ));
     Ok(())
 }
+
+#[test]
+fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), Box<dyn Error>> {
+    let (pack, receipt) = pack_and_receipt()?;
+    let item_handle = handle("item-evidence", 0)?;
+    let receipt_handle = handle("omitted-knowledge", 0)?;
+
+    // Duplicate slot
+    let duplicate_binding1 = ContextExpansionBinding::publish(
+        "slot:item:evidence",
+        &item_handle,
+        HydrationLevel::H1,
+        "Binding 1",
+    )?;
+    let duplicate_binding2 = ContextExpansionBinding::publish(
+        "slot:item:evidence",
+        &item_handle,
+        HydrationLevel::H1,
+        "Binding 2",
+    )?;
+    assert!(matches!(
+        ContextExpansionBindingSet::publish(
+            &pack,
+            &receipt,
+            vec![duplicate_binding1, duplicate_binding2],
+        ),
+        Err(ContextBindingError::DuplicateSlot(slot)) if slot == "slot:item:evidence"
+    ));
+
+    // Non-canonical ordering
+    let item_binding = ContextExpansionBinding::publish(
+        "slot:item:evidence",
+        &item_handle,
+        HydrationLevel::H1,
+        "Item binding",
+    )?;
+    let receipt_binding = ContextExpansionBinding::publish(
+        "slot:receipt:knowledge",
+        &receipt_handle,
+        HydrationLevel::H1,
+        "Receipt binding",
+    )?;
+    // "slot:receipt:knowledge" > "slot:item:evidence", so reversed order is non-canonical
+    assert!(matches!(
+        ContextExpansionBindingSet::publish(
+            &pack,
+            &receipt,
+            vec![receipt_binding, item_binding],
+        ),
+        Err(ContextBindingError::NonCanonicalOrdering(slot)) if slot == "slot:item:evidence"
+    ));
+
+    // Capacity exceeded
+    let excessive_bindings = (0..257)
+        .map(|i| {
+            ContextExpansionBinding::publish(
+                &format!("slot:{i:04}"),
+                &item_handle,
+                HydrationLevel::H1,
+                "Excessive binding",
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(matches!(
+        ContextExpansionBindingSet::publish(&pack, &receipt, excessive_bindings),
+        Err(ContextBindingError::CapacityExceeded)
+    ));
+
+    Ok(())
+}

@@ -7,7 +7,8 @@ use fss_core::hydration::{
     HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationResponse, SemanticHandle,
 };
 use fss_core::{
-    BudgetVector, ContentDigest, ContinuationCursor, ContinuationScope, ContractError, TimestampNs,
+    BudgetVector, ContentDigest, ContinuationCursor, ContinuationScope, ContractError, SessionId,
+    TimestampNs,
 };
 
 /// Explicit storage ceilings for the in-memory reference catalog.
@@ -28,6 +29,21 @@ impl Default for ReferenceHydrationLimits {
     }
 }
 
+/// Reference record of one continuation cursor issued by the catalog.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IssuedCursorRecord {
+    /// Exact canonical digest of the issued cursor.
+    pub cursor_digest: ContentDigest,
+    /// Session authorized to resume this cursor.
+    pub session_id: SessionId,
+    /// Stable handle identity denotable by this cursor.
+    pub handle_id: String,
+    /// Authoritative expiry granted at issuance.
+    pub expires_at: TimestampNs,
+    /// Exact ladder ordinal resumed by this cursor.
+    pub next_ordinal: u8,
+}
+
 /// In-memory oracle with exact historical identities and one current descriptor per handle.
 ///
 /// The caller supplies authority-projected descriptors and request grants. This reference store
@@ -37,6 +53,7 @@ pub struct ReferenceHydrationCatalog {
     descriptors: BTreeMap<(String, ContentDigest), SemanticHandle>,
     current: BTreeMap<String, ContentDigest>,
     artifacts: BTreeMap<(String, ContentDigest, HydrationLevel), HydrationArtifact>,
+    issued_cursors: BTreeMap<ContentDigest, IssuedCursorRecord>,
     limits: ReferenceHydrationLimits,
     stored_payload_bytes: usize,
 }
@@ -64,6 +81,7 @@ impl ReferenceHydrationCatalog {
             descriptors: BTreeMap::new(),
             current: BTreeMap::new(),
             artifacts: BTreeMap::new(),
+            issued_cursors: BTreeMap::new(),
             limits,
             stored_payload_bytes: 0,
         }
@@ -79,6 +97,18 @@ impl ReferenceHydrationCatalog {
     #[must_use]
     pub const fn stored_payload_bytes(&self) -> usize {
         self.stored_payload_bytes
+    }
+
+    /// Returns the issuance record for an exact cursor digest, when issued by this catalog.
+    #[must_use]
+    pub fn issued_cursor(&self, cursor_digest: &ContentDigest) -> Option<&IssuedCursorRecord> {
+        self.issued_cursors.get(cursor_digest)
+    }
+
+    /// Returns the number of active cursor issuance records retained by this catalog.
+    #[must_use]
+    pub fn issued_cursor_count(&self) -> usize {
+        self.issued_cursors.len()
     }
 
     /// Registers an exact revision without allowing rollback, equal-anchor forks, or resurrection.
@@ -193,21 +223,36 @@ impl ReferenceHydrationCatalog {
     /// Replays are deterministic for the same request, catalog, and service time. A retry at a
     /// later time is revalidated rather than replaying cached disclosure past retention expiry.
     pub fn hydrate(
-        &self,
+        &mut self,
         request: &HydrationRequest,
         now: TimestampNs,
     ) -> Result<HydrationResponse, HydrationError> {
         request.verify()?;
-        let descriptor =
-            self.current_exact(&request.handle_id, request.expected_descriptor_digest)?;
-        request.validate_for(descriptor, now)?;
+        let descriptor = self
+            .current_exact(&request.handle_id, request.expected_descriptor_digest)?
+            .clone();
+        request.validate_for(&descriptor, now)?;
         let availability = descriptor.availability_at(now);
         if availability != HandleAvailability::Available {
-            return unavailable_response(request, descriptor, availability, now);
+            return unavailable_response(request, &descriptor, availability, now);
         }
-        if let Some(cursor) = &request.continuation {
+        let prior_record = if let Some(cursor) = &request.continuation {
+            let record = self
+                .issued_cursors
+                .get(&cursor.cursor_digest)
+                .ok_or(HydrationError::WrongContinuation)?
+                .clone();
+            if record.session_id != request.session_id
+                || record.handle_id != descriptor.handle_id
+                || now >= record.expires_at
+            {
+                return Err(HydrationError::WrongContinuation);
+            }
             let ordinal =
                 u8::try_from(cursor.position).map_err(|_| HydrationError::WrongContinuation)?;
+            if ordinal != record.next_ordinal {
+                return Err(HydrationError::WrongContinuation);
+            }
             let prior_level = ordinal
                 .checked_sub(1)
                 .and_then(HydrationLevel::from_ordinal)
@@ -224,7 +269,10 @@ impl ReferenceHydrationCatalog {
             if cursor.selection_witness != prior.artifact_digest {
                 return Err(HydrationError::WrongContinuation);
             }
-        }
+            Some(record)
+        } else {
+            None
+        };
         let minimum = if request.allow_lower_level {
             0
         } else {
@@ -239,11 +287,11 @@ impl ReferenceHydrationCatalog {
                 descriptor.descriptor_digest,
                 level,
             );
-            let Some(artifact) = self.artifacts.get(&key) else {
+            let Some(artifact) = self.artifacts.get(&key).cloned() else {
                 first_failure.get_or_insert(HydrationError::LevelUnavailable);
                 continue;
             };
-            let cost = match request.validate_delivery(descriptor, artifact, now) {
+            let cost = match request.validate_delivery(&descriptor, &artifact, now) {
                 Ok(cost) => cost,
                 Err(
                     error @ (HydrationError::LevelUnavailable
@@ -256,7 +304,8 @@ impl ReferenceHydrationCatalog {
                 }
                 Err(error) => return Err(error),
             };
-            let continuation = self.next_cursor(request, descriptor, artifact, now)?;
+            let continuation =
+                self.next_cursor(request, &descriptor, &artifact, prior_record.as_ref(), now)?;
             let mut proof_roots = artifact.proof_roots.clone();
             proof_roots.extend([
                 artifact.artifact_digest,
@@ -277,15 +326,29 @@ impl ReferenceHydrationCatalog {
                 completeness: artifact.completeness_for(request.requested_level),
                 artifact_digest: Some(artifact.artifact_digest),
                 proof_roots,
-                continuation,
-                invalidators: invalidators(descriptor, level, request.requested_level),
+                continuation: continuation.clone(),
+                invalidators: invalidators(&descriptor, Some(level), request.requested_level),
                 issued_at: now,
             })?;
             let response = HydrationResponse {
-                artifact: Some(artifact.clone()),
+                artifact: Some(artifact),
                 receipt,
             };
-            response.validate_for(request, descriptor)?;
+            response.validate_for(request, &descriptor)?;
+            if let Some(cursor) = &continuation {
+                let next_ordinal =
+                    u8::try_from(cursor.position).map_err(|_| HydrationError::WrongContinuation)?;
+                self.issued_cursors.insert(
+                    cursor.cursor_digest,
+                    IssuedCursorRecord {
+                        cursor_digest: cursor.cursor_digest,
+                        session_id: request.session_id.clone(),
+                        handle_id: descriptor.handle_id.clone(),
+                        expires_at: cursor.expires_at,
+                        next_ordinal,
+                    },
+                );
+            }
             return Ok(response);
         }
         Err(first_failure.unwrap_or(HydrationError::LevelUnavailable))
@@ -310,6 +373,7 @@ impl ReferenceHydrationCatalog {
         request: &HydrationRequest,
         descriptor: &SemanticHandle,
         artifact: &HydrationArtifact,
+        prior_record: Option<&IssuedCursorRecord>,
         now: TimestampNs,
     ) -> Result<Option<ContinuationCursor>, HydrationError> {
         let Some(next) = artifact.level.successor() else {
@@ -331,12 +395,9 @@ impl ReferenceHydrationCatalog {
             .continuation
             .as_ref()
             .map(|prior| prior.cursor_digest);
-        let expiry = request
-            .continuation
-            .as_ref()
-            .map_or(descriptor.retention_until, |prior| {
-                prior.expires_at.min(descriptor.retention_until)
-            });
+        let expiry = prior_record.map_or(descriptor.retention_until, |record| {
+            record.expires_at.min(descriptor.retention_until)
+        });
         Ok(Some(ContinuationCursor::publish(
             ContinuationScope::EvidenceHydration,
             descriptor.handle_id.clone(),
@@ -380,7 +441,7 @@ fn unavailable_response(
             request.request_digest,
         ]),
         continuation: None,
-        invalidators: invalidators(descriptor, HydrationLevel::H0, request.requested_level),
+        invalidators: invalidators(descriptor, None, request.requested_level),
         issued_at: now,
     })?;
     let response = HydrationResponse {
@@ -393,7 +454,7 @@ fn unavailable_response(
 
 fn invalidators(
     descriptor: &SemanticHandle,
-    delivered: HydrationLevel,
+    delivered: Option<HydrationLevel>,
     requested: HydrationLevel,
 ) -> BTreeSet<String> {
     let mut values = BTreeSet::from([
@@ -402,12 +463,14 @@ fn invalidators(
         format!("retention:until:{}", descriptor.retention_until.0),
         format!("privacy-class:{}", descriptor.privacy_class),
     ]);
-    if delivered != requested {
-        values.insert(format!(
-            "explicit-downgrade:{}-to-{}",
-            requested.as_str(),
-            delivered.as_str()
-        ));
+    if let Some(delivered) = delivered {
+        if delivered != requested {
+            values.insert(format!(
+                "explicit-downgrade:{}-to-{}",
+                requested.as_str(),
+                delivered.as_str()
+            ));
+        }
     }
     values
 }

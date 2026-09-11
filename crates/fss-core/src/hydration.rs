@@ -11,6 +11,8 @@ use crate::{
 
 const MAX_TEXT_BYTES: usize = 4 * 1024;
 const MAX_ARTIFACT_BYTES: usize = 64 * 1024 * 1024;
+/// Maximum number of capability grants or authorized privacy classes in one hydration request.
+pub const MAX_REQUEST_SET_ITEMS: usize = 1_024;
 /// Registered hydration view used by exact continuation cursors.
 pub const HYDRATION_VIEW_ID: &str = "AVIEW-HYDRATION";
 

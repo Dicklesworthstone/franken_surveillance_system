@@ -63,7 +63,7 @@ fn run(scenario: String) -> Result<(), Box<dyn Error>> {
 }
 
 fn rehearse(scenario: &str) -> Result<String, Box<dyn Error>> {
-    let (catalog, handle) = fixture()?;
+    let (mut catalog, handle) = fixture()?;
     let level = match scenario {
         "success" => HydrationLevel::H2,
         "budget-fallback" => HydrationLevel::H3,

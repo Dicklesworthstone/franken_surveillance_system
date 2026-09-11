@@ -19,12 +19,16 @@ pub enum ContextBindingError {
     Contract(ContractError),
     /// Semantic-hydration descriptor failure.
     Hydration(HydrationError),
+    /// Bounded capacity of expansion bindings was exceeded.
+    CapacityExceeded,
     /// A pack or receipt expansion slot has no exact descriptor binding.
     MissingSlot(String),
     /// A binding names a slot absent from both the pack and compression receipt.
     UnexpectedSlot(String),
     /// A slot is bound more than once.
     DuplicateSlot(String),
+    /// Expansion slot bindings are not canonically ordered.
+    NonCanonicalOrdering(String),
 }
 
 impl ContextBindingError {
@@ -34,9 +38,11 @@ impl ContextBindingError {
         match self {
             Self::Contract(error) => error.code(),
             Self::Hydration(error) => error.code(),
+            Self::CapacityExceeded => "context_expansion_binding_capacity_exceeded",
             Self::MissingSlot(_) => "context_expansion_binding_missing",
             Self::UnexpectedSlot(_) => "context_expansion_binding_unexpected",
             Self::DuplicateSlot(_) => "context_expansion_binding_duplicate",
+            Self::NonCanonicalOrdering(_) => "context_expansion_binding_non_canonical_ordering",
         }
     }
 
@@ -50,7 +56,10 @@ impl ContextBindingError {
             | Self::MissingSlot(_)
             | Self::UnexpectedSlot(_) => RecoveryClass::RebaseRequired,
             Self::Hydration(error) => error.recovery(),
-            Self::Contract(_) | Self::DuplicateSlot(_) => RecoveryClass::NeverUnchanged,
+            Self::CapacityExceeded => RecoveryClass::OperatorActionRequired,
+            Self::Contract(_) | Self::DuplicateSlot(_) | Self::NonCanonicalOrdering(_) => {
+                RecoveryClass::NeverUnchanged
+            }
         }
     }
 }
@@ -58,9 +67,13 @@ impl ContextBindingError {
 impl fmt::Display for ContextBindingError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingSlot(slot) | Self::UnexpectedSlot(slot) | Self::DuplicateSlot(slot) => {
+            Self::MissingSlot(slot)
+            | Self::UnexpectedSlot(slot)
+            | Self::DuplicateSlot(slot)
+            | Self::NonCanonicalOrdering(slot) => {
                 write!(formatter, "{}:{slot}", self.code())
             }
+            Self::CapacityExceeded => formatter.write_str(self.code()),
             Self::Contract(_) | Self::Hydration(_) => formatter.write_str(self.code()),
         }
     }
@@ -71,7 +84,11 @@ impl std::error::Error for ContextBindingError {
         match self {
             Self::Contract(error) => Some(error),
             Self::Hydration(error) => Some(error),
-            Self::MissingSlot(_) | Self::UnexpectedSlot(_) | Self::DuplicateSlot(_) => None,
+            Self::CapacityExceeded
+            | Self::MissingSlot(_)
+            | Self::UnexpectedSlot(_)
+            | Self::DuplicateSlot(_)
+            | Self::NonCanonicalOrdering(_) => None,
         }
     }
 }
@@ -417,9 +434,11 @@ impl ContextExpansionBindingSet {
         if self.contract_basis_digest != pack.contract_basis.basis_digest()
             || self.pack_digest != pack.pack_digest
             || self.compression_receipt_digest != receipt.receipt_digest()
-            || self.bindings.len() > MAX_BINDINGS
         {
             return Err(ContractError::DigestMismatch.into());
+        }
+        if self.bindings.len() > MAX_BINDINGS {
+            return Err(ContextBindingError::CapacityExceeded);
         }
 
         let required = Self::required_slots(pack, receipt);
@@ -427,8 +446,12 @@ impl ContextExpansionBindingSet {
         let mut prior: Option<&str> = None;
         for binding in &self.bindings {
             binding.verify()?;
-            if prior.is_some_and(|value| value >= binding.slot_id.as_str()) {
-                return Err(ContextBindingError::DuplicateSlot(binding.slot_id.clone()));
+            if let Some(prior_slot) = prior {
+                if prior_slot > binding.slot_id.as_str() {
+                    return Err(ContextBindingError::NonCanonicalOrdering(
+                        binding.slot_id.clone(),
+                    ));
+                }
             }
             prior = Some(&binding.slot_id);
             if !actual.insert(binding.slot_id.clone()) {

@@ -367,3 +367,36 @@ fn cursor_must_keep_the_exact_delivered_artifact_and_parent() -> Result<(), Hydr
     }
     Ok(())
 }
+
+#[test]
+fn request_set_capacity_is_bounded() -> Result<(), HydrationError> {
+    let handle = handle()?;
+    let mut spec = HydrationRequestSpec {
+        contract_basis: handle.contract_basis.clone(),
+        session_id: SessionId::parse("session:admission")?,
+        handle_id: handle.handle_id.clone(),
+        expected_descriptor_digest: handle.descriptor_digest,
+        expected_subject_digest: handle.subject_digest,
+        anchor: handle.anchor.clone(),
+        requested_level: HydrationLevel::H0,
+        allow_lower_level: false,
+        available_capabilities: (0..1_025).map(|i| format!("cap:{i}")).collect(),
+        authorized_privacy_classes: BTreeSet::from([handle.privacy_class.clone()]),
+        budget: BudgetVector::default(),
+        purpose: HydrationPurpose::Routine,
+        continuation: None,
+        issued_at: TimestampNs(10),
+    };
+    assert_eq!(
+        HydrationRequest::publish(spec.clone()),
+        Err(HydrationError::CapacityExceeded)
+    );
+
+    spec.available_capabilities.clear();
+    spec.authorized_privacy_classes = (0..1_025).map(|i| format!("priv:{i}")).collect();
+    assert_eq!(
+        HydrationRequest::publish(spec),
+        Err(HydrationError::CapacityExceeded)
+    );
+    Ok(())
+}

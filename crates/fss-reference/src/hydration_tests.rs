@@ -186,7 +186,7 @@ fn ample_budget() -> Result<BudgetVector, HydrationError> {
 
 #[test]
 fn exact_level_hydration_is_proof_bearing() -> Result<(), Box<dyn Error>> {
-    let (catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
+    let (mut catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
     let request = request(
         &descriptor,
         HydrationLevel::H2,
@@ -212,7 +212,7 @@ fn exact_level_hydration_is_proof_bearing() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn lower_level_delivery_is_explicit_and_bounded() -> Result<(), Box<dyn Error>> {
-    let (catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
+    let (mut catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
     let request = request(
         &descriptor,
         HydrationLevel::H3,
@@ -236,7 +236,7 @@ fn lower_level_delivery_is_explicit_and_bounded() -> Result<(), Box<dyn Error>> 
 
 #[test]
 fn budget_failure_does_not_silently_downgrade() -> Result<(), Box<dyn Error>> {
-    let (catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
+    let (mut catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
     let request = request(
         &descriptor,
         HydrationLevel::H3,
@@ -254,7 +254,7 @@ fn budget_failure_does_not_silently_downgrade() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn privacy_and_capability_denials_are_distinct() -> Result<(), Box<dyn Error>> {
-    let (catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
+    let (mut catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
     let mut privacy_request = request(
         &descriptor,
         HydrationLevel::H1,
@@ -288,7 +288,7 @@ fn privacy_and_capability_denials_are_distinct() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn expired_subject_returns_typed_unavailability() -> Result<(), Box<dyn Error>> {
-    let (catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(100))?;
+    let (mut catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(100))?;
     let request = request(
         &descriptor,
         HydrationLevel::H2,
@@ -308,7 +308,7 @@ fn expired_subject_returns_typed_unavailability() -> Result<(), Box<dyn Error>> 
 
 #[test]
 fn h4_requires_qualification_or_explicit_debug_grant() -> Result<(), Box<dyn Error>> {
-    let (catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
+    let (mut catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
     let routine = request(
         &descriptor,
         HydrationLevel::H4,
@@ -358,7 +358,7 @@ fn h4_requires_qualification_or_explicit_debug_grant() -> Result<(), Box<dyn Err
 
 #[test]
 fn continuation_is_exactly_bound_to_the_next_level() -> Result<(), Box<dyn Error>> {
-    let (catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
+    let (mut catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
     let first = request(
         &descriptor,
         HydrationLevel::H1,
@@ -401,7 +401,7 @@ fn continuation_is_exactly_bound_to_the_next_level() -> Result<(), Box<dyn Error
 
 #[test]
 fn stale_descriptor_revision_is_not_retargeted() -> Result<(), Box<dyn Error>> {
-    let (catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
+    let (mut catalog, descriptor) = catalog(HandleAvailability::Available, TimestampNs(10_000))?;
     let mut request = request(
         &descriptor,
         HydrationLevel::H1,

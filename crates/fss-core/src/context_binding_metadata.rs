@@ -21,12 +21,20 @@ impl ContextExpansionBindingSet {
             return Err(ContractError::DigestMismatch.into());
         }
         let mut prior: Option<&str> = None;
+        let mut actual = std::collections::BTreeSet::new();
         for binding in &self.bindings {
             binding.verify()?;
-            if prior.is_some_and(|slot| slot >= binding.slot_id.as_str()) {
-                return Err(ContextBindingError::DuplicateSlot(binding.slot_id.clone()));
+            if let Some(prior_slot) = prior {
+                if prior_slot > binding.slot_id.as_str() {
+                    return Err(ContextBindingError::NonCanonicalOrdering(
+                        binding.slot_id.clone(),
+                    ));
+                }
             }
             prior = Some(&binding.slot_id);
+            if !actual.insert(binding.slot_id.clone()) {
+                return Err(ContextBindingError::DuplicateSlot(binding.slot_id.clone()));
+            }
         }
         for expansion in &receipt.expansion_handles {
             let binding = self

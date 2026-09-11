@@ -127,7 +127,7 @@ fn revision(handle: &SemanticHandle, sequence: u64, state: HandleAvailability) -
 
 #[test]
 fn delayed_reads_are_deterministic_but_expiry_is_rechecked() -> Result<(), HydrationError> {
-    let (catalog, handle) = catalog()?;
+    let (mut catalog, handle) = catalog()?;
     let request = request(&handle)?;
     let first = catalog.hydrate(&request, TimestampNs(20))?;
     assert_eq!(first, catalog.hydrate(&request, TimestampNs(20))?);
@@ -197,7 +197,7 @@ fn expiry_cannot_be_reversed_by_a_late_retention_extension() -> Result<(), Hydra
 
 #[test]
 fn unavailable_metadata_still_requires_privacy_scope() -> Result<(), HydrationError> {
-    let (catalog, handle) = catalog()?;
+    let (mut catalog, handle) = catalog()?;
     let mut request = request(&handle)?;
     request.authorized_privacy_classes.clear();
     reseal_request(&mut request);
@@ -210,16 +210,17 @@ fn unavailable_metadata_still_requires_privacy_scope() -> Result<(), HydrationEr
 
 #[test]
 fn continuations_verify_prior_artifact_and_preserve_expiry_ceiling() -> Result<(), HydrationError> {
-    let (catalog, handle) = catalog()?;
+    let (mut catalog, handle) = catalog()?;
     let first_request = request(&handle)?;
     let first = catalog.hydrate(&first_request, TimestampNs(20))?;
-    let mut cursor = first
+    let cursor = first
         .receipt
         .continuation
         .ok_or(HydrationError::WrongContinuation)?;
-    cursor.expires_at = TimestampNs(70);
-    cursor.cursor_digest = cursor.computed_digest();
-    cursor.cursor_id = format!("continuation:{}", cursor.cursor_digest);
+    assert_eq!(cursor.expires_at, TimestampNs(100));
+    assert_eq!(catalog.issued_cursor_count(), 1);
+
+    // Legitimate continuation matches issued cursor and preserves expiry ceiling
     let mut next = request(&handle)?;
     next.requested_level = HydrationLevel::H1;
     next.issued_at = TimestampNs(30);
@@ -232,16 +233,71 @@ fn continuations_verify_prior_artifact_and_preserve_expiry_ceiling() -> Result<(
         .continuation
         .ok_or(HydrationError::WrongContinuation)?;
     assert_eq!(next_cursor.predecessor_digest, Some(cursor.cursor_digest));
-    assert_eq!(next_cursor.expires_at, TimestampNs(70));
+    assert_eq!(next_cursor.expires_at, TimestampNs(100));
 
-    cursor.selection_witness = ContentDigest::sha256(b"invented prior artifact");
-    cursor.cursor_digest = cursor.computed_digest();
-    cursor.cursor_id = format!("continuation:{}", cursor.cursor_digest);
-    next.continuation = Some(cursor);
-    reseal_request(&mut next);
+    // Tampered expiry on cursor produces an unissued digest and is rejected
+    let mut tampered = cursor.clone();
+    tampered.expires_at = TimestampNs(70);
+    tampered.cursor_digest = tampered.computed_digest();
+    tampered.cursor_id = format!("continuation:{}", tampered.cursor_digest);
+    let mut tampered_request = request(&handle)?;
+    tampered_request.requested_level = HydrationLevel::H1;
+    tampered_request.issued_at = TimestampNs(30);
+    tampered_request.continuation = Some(tampered);
+    reseal_request(&mut tampered_request);
     assert_eq!(
-        catalog.hydrate(&next, TimestampNs(40)),
+        catalog.hydrate(&tampered_request, TimestampNs(40)),
         Err(HydrationError::WrongContinuation)
+    );
+
+    // Tampered artifact witness is rejected
+    let mut bad_witness = cursor.clone();
+    bad_witness.selection_witness = ContentDigest::sha256(b"invented prior artifact");
+    bad_witness.cursor_digest = bad_witness.computed_digest();
+    bad_witness.cursor_id = format!("continuation:{}", bad_witness.cursor_digest);
+    let mut bad_witness_request = request(&handle)?;
+    bad_witness_request.requested_level = HydrationLevel::H1;
+    bad_witness_request.issued_at = TimestampNs(30);
+    bad_witness_request.continuation = Some(bad_witness);
+    reseal_request(&mut bad_witness_request);
+    assert_eq!(
+        catalog.hydrate(&bad_witness_request, TimestampNs(40)),
+        Err(HydrationError::WrongContinuation)
+    );
+
+    // Cross-session replay is rejected
+    let mut other_session_request = next.clone();
+    other_session_request.session_id = SessionId::parse("session:other")?;
+    reseal_request(&mut other_session_request);
+    assert_eq!(
+        catalog.hydrate(&other_session_request, TimestampNs(40)),
+        Err(HydrationError::WrongContinuation)
+    );
+
+    // Continuation presented after expiry is rejected
+    assert_eq!(
+        catalog.hydrate(&next, TimestampNs(100)),
+        Err(HydrationError::WrongContinuation)
+    );
+    Ok(())
+}
+
+#[test]
+fn unavailable_receipt_has_no_explicit_downgrade_invalidator() -> Result<(), HydrationError> {
+    let (mut catalog, handle) = catalog()?;
+    let mut request = request(&handle)?;
+    request.requested_level = HydrationLevel::H1;
+    reseal_request(&mut request);
+    let response = catalog.hydrate(&request, TimestampNs(100))?;
+    assert_eq!(response.receipt.delivered_level, None);
+    assert_eq!(response.receipt.availability, HandleAvailability::Expired);
+    assert!(
+        !response
+            .receipt
+            .invalidators
+            .iter()
+            .any(|inv| inv.starts_with("explicit-downgrade")),
+        "unavailable response must not include explicit-downgrade invalidator"
     );
     Ok(())
 }

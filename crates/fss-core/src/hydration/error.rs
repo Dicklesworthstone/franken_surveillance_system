@@ -19,6 +19,8 @@ pub enum HydrationError {
     LaboratoryGrantRequired,
     /// No permitted level fits the declared full resource budget.
     BudgetExceeded,
+    /// A request set exceeds the maximum permitted cardinality.
+    CapacityExceeded,
     /// A progressive cursor belongs to another handle, session, basis, or position.
     WrongContinuation,
 }
@@ -36,6 +38,7 @@ impl HydrationError {
             Self::PrivacyDenied => "hydration_privacy_denied",
             Self::LaboratoryGrantRequired => "hydration_laboratory_grant_required",
             Self::BudgetExceeded => "hydration_budget_exceeded",
+            Self::CapacityExceeded => "hydration_capacity_exceeded",
             Self::WrongContinuation => "hydration_wrong_continuation",
         }
     }
@@ -50,7 +53,8 @@ impl HydrationError {
             Self::CapabilityDenied
             | Self::PrivacyDenied
             | Self::LaboratoryGrantRequired
-            | Self::BudgetExceeded => RecoveryClass::OperatorActionRequired,
+            | Self::BudgetExceeded
+            | Self::CapacityExceeded => RecoveryClass::OperatorActionRequired,
             Self::Contract(_) | Self::HandleRebound | Self::LevelUnavailable => {
                 RecoveryClass::NeverUnchanged
             }
@@ -75,6 +79,7 @@ impl std::error::Error for HydrationError {
             | Self::PrivacyDenied
             | Self::LaboratoryGrantRequired
             | Self::BudgetExceeded
+            | Self::CapacityExceeded
             | Self::WrongContinuation => None,
         }
     }
