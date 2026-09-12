@@ -261,7 +261,7 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Repair the registry under the audited root; slo claims are never checked against a silently skipped registry",
     },
     ERR_CLAIM_CLASS_UNRESOLVED: {
-        "trigger": "A promoted proof bundle's claim class cannot be resolved from its citing claim row (Class column) or a registry, so only the bundle's own class declaration remains",
+        "trigger": "A promoted proof bundle's claim id is bound to a claim class by no registry (SLO ids by registries/SLOS.md grammar, invariant ids by architecture/invariants.json); a citing row's Class column or the bundle's own declaration never resolves a class",
         "remediation": "Declare the class in the citing claim row; a bundle never chooses the class its evidence is checked against",
     },
 }
@@ -1089,11 +1089,43 @@ def _slo_thresholds(target: str) -> list[SloThreshold]:
     return found
 
 
-def _registry_claim_class(claim_id: Any) -> str | None:
-    """The claim class a registry assigns to a claim id: every SLO-grammar id is an 'slo' claim."""
+def _registry_claim_class(claim_id: Any, class_bindings: dict[str, str] | None = None) -> str | None:
+    """The claim class a registry binds to a claim id: every SLO-grammar id is an 'slo' claim
+    (registries/SLOS.md); any other id only through class_bindings, which the audit loads from
+    the owning registries (load_claim_class_bindings). A claim row's Class column never binds."""
     if isinstance(claim_id, str) and slo_validate.SLO_ID_REGEX.match(claim_id.strip().strip("`").strip()):
         return "slo"
+    if isinstance(claim_id, str) and class_bindings:
+        return class_bindings.get(claim_id)
     return None
+
+
+INVARIANT_REGISTRY_FILE = "architecture/invariants.json"
+
+
+def load_claim_class_bindings(root: Path) -> tuple[dict[str, str], list[ClaimFinding]]:
+    """Claim-id -> class bindings from the owning machine registries under root (the repository's
+    own copy when root has none). Invariant ids are bound by architecture/invariants.json; SLO
+    ids are bound by grammar in _registry_claim_class. No repository registry binds proof,
+    bounded_model, statistical, benchmark, compatibility, or agent claim ids yet, so such claims
+    are unresolved until one does."""
+    path, _ = _authority_file(root, INVARIANT_REGISTRY_FILE)
+    data, findings = _read_json_document(path, INVARIANT_REGISTRY_FILE, "invariant registry")
+    if data is None:
+        return {}, findings
+    rows = data.get("invariants")
+    if not isinstance(rows, list) or not rows:
+        return {}, [_finding(ERR_EMPTY_INPUT, INVARIANT_REGISTRY_FILE, "invariants", f"Registry '{INVARIANT_REGISTRY_FILE}' declares no invariants")]
+    bindings: dict[str, str] = {}
+    for idx, row in enumerate(rows):
+        inv_id = _exact_token(row.get("id")) if isinstance(row, dict) else None
+        if inv_id is None:
+            return {}, [_finding(ERR_UNREADABLE_INPUT, INVARIANT_REGISTRY_FILE, f"invariants[{idx}]", f"Invariant row {idx} declares no exact id: {row!r}")]
+        status = row.get("status")
+        if isinstance(status, str) and status.strip().lower() in STALE_STATUSES:
+            continue  # a tombstoned invariant binds no live claim
+        bindings[inv_id] = "invariant"
+    return bindings, []
 
 
 def _scan_nan_inf_negative(obj: Any, path_str: str, location: str, findings: list[ClaimFinding]) -> bool:
@@ -2225,6 +2257,7 @@ def verify_proof_bundle(
     prohibited_promotions: set[str] | None = None,
     now: datetime | None = None,
     claim_generation: str | None = None,
+    class_bindings: dict[str, str] | None = None,
 ) -> tuple[bool, list[ClaimFinding], dict[str, Any] | None]:
     """Verifies one proof bundle (or qualification receipt) against all fail-closed criteria.
     claim_generation is the citing claim row's current generation (Generation column)."""
@@ -2389,20 +2422,20 @@ def verify_proof_bundle(
     _, raw_bundle_class = _single_field(data, CLAIM_CLASS_FIELDS)
     bundle_class = _nonempty_str(raw_bundle_class)
     row_class = _nonempty_str(claim_class)
-    registry_class = _registry_claim_class(expected_claim_id if expected_claim_id is not None else bundle_claim_id)
+    registry_class = _registry_claim_class(expected_claim_id if expected_claim_id is not None else bundle_claim_id, class_bindings)
     if row_class is not None and registry_class is not None and row_class != registry_class:
         findings.append(_finding(
             ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_class",
             f"Citing claim row class '{row_class}' contradicts the registry class '{registry_class}' of its claim",
             {"row_claim_class": row_class, "claim_class": registry_class},
         ))
-    citing_class = registry_class if registry_class is not None else row_class
+    citing_class = registry_class  # a row's Class column alone never resolves a class (review item A)
     unresolved = citing_class is None and _is_promoted_bundle(data, claim_level)
     effective_class = None if unresolved else (citing_class if citing_class is not None else bundle_class)
     if unresolved:
         findings.append(_finding(
             ERR_CLAIM_CLASS_UNRESOLVED, path_str, "claim_class",
-            f"Promoted proof bundle '{path_str}' has no claim class from a citing claim row or registry; "
+            f"Promoted proof bundle '{path_str}' has a claim id no registry binds to a class (row class {row_class!r}); "
             f"its own declaration {raw_bundle_class!r} is not authoritative, so no evidence can be verified",
             {"bundle_claim_class": raw_bundle_class},
         ))
@@ -2547,12 +2580,21 @@ def _new_scan_stats() -> dict[str, int]:
     return {"claim_tables": 0, "rows": 0, "promoted": 0, "bundles_checked": 0, "bundles_passed": 0, "bundles_unpromoted": 0}
 
 
-def _count_bundle(stats: dict[str, int], ok: bool, data: dict[str, Any] | None, claim_level: str | None) -> None:
-    """A bundle counts as verified only when it passes at a promoted level; a passing bundle
-    below it supports no readiness and is counted separately."""
+def _row_promoted(claim_level: str | None) -> bool:
+    """Whether the citing claim row's own status promotes the claim (never the bundle's level)."""
+    if not isinstance(claim_level, str):
+        return False
+    level = claim_level.strip().lower()
+    rank = _rank_of(level)
+    return (rank is not None and rank >= PROMOTION_RANK) or level in ("achieved", "promoted")
+
+
+def _count_bundle(stats: dict[str, int], ok: bool, claim_level: str | None) -> None:
+    """A bundle counts as verified only when it passes and its citing row's status is promoted;
+    a passing bundle cited below that (or by no row) supports no readiness and is counted apart."""
     if not ok:
         return
-    if data is not None and _is_promoted_bundle(data, claim_level):
+    if _row_promoted(claim_level):
         stats["bundles_passed"] += 1
     else:
         stats["bundles_unpromoted"] += 1
@@ -2578,6 +2620,8 @@ def scan_markdown_claim_tables(
     now: datetime | None = None,
     cited_classes: dict[str, set[str | None]] | None = None,
     cited_generations: dict[str, set[str | None]] | None = None,
+    class_bindings: dict[str, str] | None = None,
+    outcomes: dict[str, dict[str, bool]] | None = None,
 ) -> list[ClaimFinding]:
     """Scans markdown tables for status and proof root/bundle citations. A ``Class`` column
     declares each claim row's class and a ``Generation`` column its current generation;
@@ -2692,12 +2736,17 @@ def scan_markdown_claim_tables(
                     claim_level=status_val,
                     claim_class=row_class,
                     claim_generation=row_generation,
+                    class_bindings=class_bindings,
                     known_classes=known_classes,
                     tombstoned_ids=tombstoned_ids,
                     prohibited_promotions=prohibited_promotions,
                     now=now,
                 )
-                _count_bundle(counters, bundle_ok, bundle_data, status_val)
+                _count_bundle(counters, bundle_ok, status_val)
+                if outcomes is not None:
+                    outcome = outcomes.setdefault(_citation_key(root, proof_path), {"ok": True, "promoted": False})
+                    outcome["ok"] = outcome["ok"] and bundle_ok
+                    outcome["promoted"] = outcome["promoted"] or _row_promoted(status_val)
                 if cited_classes is not None:
                     cited_classes.setdefault(_citation_key(root, proof_path), set()).add(row_class)
                 if cited_generations is not None:
@@ -3311,6 +3360,7 @@ def audit_claim_proof_bundles(
     claims_json_path: Path | None = None,
     target_bundle: Path | None = None,
     now: datetime | None = None,
+    class_bindings: dict[str, str] | None = None,
 ) -> tuple[bool, list[ClaimFinding], dict[str, Any]]:
     """Runs full claim/proof-bundle consistency verification across the repository."""
     claims_path = claims_json_path or (root / "architecture/claims.json")
@@ -3329,21 +3379,27 @@ def audit_claim_proof_bundles(
     stats = _new_scan_stats()
     surfaces_scanned: list[str] = []
     receipts = {"inspected": 0, "passed": 0, "nonpassing": 0}
-    cited_classes: dict[str, set[str | None]] = {}
-    cited_generations: dict[str, set[str | None]] = {}
+    # Class bindings come from the owning registries; an explicit binding (Python API only, never
+    # a claim row or bundle) may add ids no registry covers but never overrides a registry.
+    registry_bindings, binding_findings = load_claim_class_bindings(root)
+    findings.extend(binding_findings)
+    bindings: dict[str, str] = {**(class_bindings or {}), **registry_bindings}
+    # One outcome per resolved bundle path: a bundle cited by rows and retained under
+    # qualification-artifacts is checked and counted once (review item C).
+    outcomes: dict[str, dict[str, bool]] = {}
 
     if target_bundle is not None:
-        stats["bundles_checked"] += 1
-        bundle_ok, b_findings, b_data = verify_proof_bundle(
+        bundle_ok, b_findings, _ = verify_proof_bundle(
             bundle_path=target_bundle,
             root=root,
             known_classes=known_classes,
             tombstoned_ids=tombstoned_ids,
             prohibited_promotions=prohibited_promotions,
             now=now,
+            class_bindings=bindings,
         )
         findings.extend(b_findings)
-        _count_bundle(stats, bundle_ok, b_data, None)
+        outcomes[_citation_key(root, target_bundle)] = {"ok": bundle_ok, "promoted": False}
     else:
         for rel_file in MANDATORY_AUTHORITY_FILES:
             full_path = root / rel_file
@@ -3371,8 +3427,8 @@ def audit_claim_proof_bundles(
                 require_claim_table=rel_file in CLAIM_TABLE_REQUIRED_SURFACES,
                 stats=stats,
                 now=now,
-                cited_classes=cited_classes,
-                cited_generations=cited_generations,
+                class_bindings=bindings,
+                outcomes=outcomes,
             ))
             surfaces_scanned.append(rel_file)
 
@@ -3400,21 +3456,20 @@ def audit_claim_proof_bundles(
                         elif r_status is not None and r_status != "passed":
                             receipts["nonpassing"] += 1
                     elif name.endswith(BUNDLE_SUFFIXES):
-                        stats["bundles_checked"] += 1
-                        citing = cited_classes.get(_citation_key(root, f_path), set())
-                        citing_generations = cited_generations.get(_citation_key(root, f_path), set())
-                        bundle_ok, b_findings, b_data = verify_proof_bundle(
+                        key = _citation_key(root, f_path)
+                        if key in outcomes:
+                            continue  # verified as cited by its claim row(s); never checked or counted twice
+                        bundle_ok, b_findings, _ = verify_proof_bundle(
                             bundle_path=f_path,
                             root=root,
-                            claim_class=next(iter(citing)) if len(citing) == 1 else None,
-                            claim_generation=next(iter(citing_generations)) if len(citing_generations) == 1 else None,
                             known_classes=known_classes,
                             tombstoned_ids=tombstoned_ids,
                             prohibited_promotions=prohibited_promotions,
                             now=now,
+                            class_bindings=bindings,
                         )
                         findings.extend(b_findings)
-                        _count_bundle(stats, bundle_ok, b_data, None)
+                        outcomes[key] = {"ok": bundle_ok, "promoted": False}  # no citing row: never verified
 
     error_count = sum(1 for f in findings if f.severity == "error")
     warning_count = sum(1 for f in findings if f.severity == "warning")
@@ -3424,9 +3479,9 @@ def audit_claim_proof_bundles(
         "status": "pass" if is_valid else "fail",
         "error_count": error_count,
         "warning_count": warning_count,
-        "verified_bundles_count": stats["bundles_passed"],
-        "unpromoted_bundles_count": stats["bundles_unpromoted"],
-        "bundles_checked": stats["bundles_checked"],
+        "verified_bundles_count": sum(1 for o in outcomes.values() if o["ok"] and o["promoted"]),
+        "unpromoted_bundles_count": sum(1 for o in outcomes.values() if o["ok"] and not o["promoted"]),
+        "bundles_checked": len(outcomes),
         "authoritative_classes_count": len(known_classes),
         "prohibited_promotions_count": len(prohibited_promotions),
         "tombstoned_ids_count": len(tombstoned_ids),
