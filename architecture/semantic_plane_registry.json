@@ -70,7 +70,7 @@
     "crates/fss-core/src/projection.rs": "cognition",
     "crates/fss-core/src/region.rs": "authority",
     "crates/fss-core/src/sensor_capsule.rs": "authority",
-    "crates/fss-core/src/temporal_verifier.rs": "support",
+    "crates/fss-core/src/temporal_verifier.rs": "authority",
     "crates/fss-core/src/test_event.rs": "support",
     "crates/fss-core/src/time.rs": "support",
     "crates/fss-reference/src/alert.rs": "effect",
