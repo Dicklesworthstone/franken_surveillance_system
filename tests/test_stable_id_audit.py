@@ -351,10 +351,10 @@ def test_code_fences_and_prose_exclusions() -> None:
 In standard prose: UTF-8, RFC-7231, and ISO-8601 are valid technical standards and not stable IDs.
 
 ```text
-# This code fence has example IDs that must not cause dangling reference errors:
+# Fenced stable-ID examples must resolve to live definitions; non-family tokens are ignored:
 FOO-001
-GOAL-999
-INV-999
+GOAL-001
+NS-1
 ```
 
 Reference to GOAL-001 again.
@@ -479,7 +479,7 @@ def test_loophole_1_fenced_code_block_collision_and_extractor_consistency() -> N
         doc1 = root / "doc1.md"
         doc2 = root / "doc2.md"
         doc1.write_text("### `INV-001` — First Meaning\n", encoding="utf-8")
-        doc2.write_text("```markdown\n### `INV-001` — Example in Code Fence\n```\n", encoding="utf-8")
+        doc2.write_text("```markdown\n### `INV-001` — First Meaning\n```\n", encoding="utf-8")
         res_file = root / "resolution.json"
         res_file.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": []}), encoding="utf-8")
         report = module.census_markdown_sources([doc1, doc2], res_file)
@@ -754,6 +754,345 @@ def test_census_markdown_sources_silently_skips_missing_files() -> None:
             raise AssertionError("missing file in census_markdown_sources must fail closed")
 
 
+# ---------------------------------------------------------------------------
+# review-440 (fss-x4a.6.21): fenced examples must still resolve; fenced
+# heading-shaped definitions must not launder conflicting semantics.
+# ---------------------------------------------------------------------------
+
+
+def expect_audit_error(error_ids: tuple[str, ...], fn, *args, **kwargs) -> Exception:
+    try:
+        fn(*args, **kwargs)
+    except module.AuditError as exc:
+        assert exc.error_id in error_ids, f"expected one of {error_ids}, got {exc.error_id}: {exc}"
+        return exc
+    raise AssertionError(f"expected AuditError in {error_ids}, but call succeeded")
+
+
+def empty_resolution(root: Path) -> Path:
+    res = root / "resolution.json"
+    res.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": []}), encoding="utf-8")
+    return res
+
+
+def test_review440_tombstoned_id_in_code_fence_must_be_rejected() -> None:
+    """review-440 failing test 1: a fenced example naming a tombstoned ID is an error."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        doc = root / "doc.md"
+        doc.write_text(
+            "```markdown\nHere is an example referencing a tombstoned ID: `INV-999`\n```\n",
+            encoding="utf-8",
+        )
+        res = root / "resolution.json"
+        res.write_text(
+            json.dumps({
+                "schema": "fss.stable_id_resolution.v1",
+                "resolutions": [
+                    {
+                        "legacyId": "INV-999",
+                        "title": "Tombstoned Invariant",
+                        "canonicalId": "INV-999",
+                        "titleDigest": module._title_digest("INV-999", "Tombstoned Invariant"),
+                        "status": "tombstone",
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        expect_audit_error((module.ERR_TOMBSTONE_REFERENCE,), module.census_markdown_sources, [doc], res)
+
+
+def test_review440_dangling_id_in_code_fence_must_be_rejected() -> None:
+    """review-440 failing test 2: a fenced example naming an unregistered ID is an error."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        doc = root / "doc.md"
+        doc.write_text("```markdown\nExample with fictitious ID: `INV-8888`\n```\n", encoding="utf-8")
+        res = empty_resolution(root)
+        expect_audit_error((module.ERR_DANGLING_REFERENCE,), module.census_markdown_sources, [doc], res)
+
+
+def test_review440_conflicting_definition_inside_code_fence_must_not_be_laundered() -> None:
+    """review-440 failing test 3: a fenced heading that conflicts with a live definition collides."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        doc1 = root / "doc1.md"
+        doc2 = root / "doc2.md"
+        doc1.write_text("### `INV-001` — Deterministic Execution Requirement\n", encoding="utf-8")
+        doc2.write_text("```markdown\n### `INV-001` — Conflicting Fallback Policy\n```\n", encoding="utf-8")
+        res = empty_resolution(root)
+        expect_audit_error((module.ERR_COLLISION,), module.census_markdown_sources, [doc1, doc2], res)
+
+
+def test_fenced_example_of_old_fixture_is_now_dangling() -> None:
+    """The fixture formerly accepted by test_code_fences_and_prose_exclusions must now fail closed."""
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        plan, resolution = write_fixture(
+            root,
+            """### `GOAL-001` — First
+### Scenario NS-1 — One
+
+```text
+FOO-001
+GOAL-999
+INV-999
+```
+""",
+            [],
+            ["GOAL-001"],
+            ["NS-1"],
+        )
+        exc = expect_audit_error((module.ERR_DANGLING_REFERENCE,), module.audit, plan, resolution)
+        assert "GOAL-999" in str(exc)
+        assert "example" in str(exc)
+
+
+def test_plan_audit_rejects_tombstoned_fenced_example() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        plan, resolution = write_fixture(
+            root,
+            """### `GOAL-001` — First
+### Scenario NS-1 — One
+
+```text
+see GOAL-002
+```
+""",
+            [],
+            ["GOAL-001"],
+            ["NS-1"],
+        )
+        scan = module._scan_markdown(plan.read_text(encoding="utf-8"), "plan.md")
+        assert [e.raw_id for e in scan.examples] == ["GOAL-002"]
+        expect_audit_error(
+            (module.ERR_TOMBSTONE_REFERENCE,),
+            module._validate_fenced_occurrences,
+            scan,
+            valid_targets={"GOAL-001", "GOAL-002", "NS-1"},
+            tombstoned_ids={"GOAL-002"},
+            live_titles={},
+        )
+
+
+def test_plan_audit_rejects_conflicting_fenced_heading() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        plan, resolution = write_fixture(
+            root,
+            """### `GOAL-001` — First
+### Scenario NS-1 — One
+
+```markdown
+### `GOAL-001` — Something Else Entirely
+```
+""",
+            [],
+            ["GOAL-001"],
+            ["NS-1"],
+        )
+        exc = expect_audit_error((module.ERR_COLLISION,), module.audit, plan, resolution)
+        assert "GOAL-001" in str(exc)
+
+
+def test_plan_audit_accepts_matching_fenced_heading_and_counts_examples() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        plan, resolution = write_fixture(
+            root,
+            """### `GOAL-001` — First
+### Scenario NS-1 — One
+
+```markdown
+### `GOAL-001` — First
+Scenario NS-1 is referenced here.
+```
+""",
+            [],
+            ["GOAL-001"],
+            ["NS-1"],
+        )
+        report = module.audit(plan, resolution)
+        assert report["status"] == "passed"
+        assert report["sourceDefinitionCount"] == 2
+        assert report["exampleCount"] == 2
+        assert report["fencedDefinitionCount"] == 1
+
+
+def test_fenced_heading_without_live_title_fails_closed() -> None:
+    """A fenced heading whose ID resolves only via a title-less registry cannot be verified."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        doc = root / "doc.md"
+        doc.write_text("```markdown\n### `INV-001` — Unverifiable Title\n```\n", encoding="utf-8")
+        scan = module._scan_markdown(doc.read_text(encoding="utf-8"), str(doc))
+        assert [d.legacy_id for d in scan.fenced_definitions] == ["INV-001"]
+        expect_audit_error(
+            (module.ERR_COLLISION,),
+            module._validate_fenced_occurrences,
+            scan,
+            valid_targets={"INV-001"},
+            tombstoned_ids=set(),
+            live_titles={},
+        )
+
+
+def test_fenced_non_family_tokens_are_not_examples() -> None:
+    scan = module._scan_markdown("```sh\nexport FOO-001=1\ncurl http-2\n```\n", "doc.md")
+    assert scan.examples == []
+    assert scan.fenced_definitions == []
+
+
+# ---------------------------------------------------------------------------
+# review-440 findings 5/6/7: residual holes found while re-verifying.
+# ---------------------------------------------------------------------------
+
+
+def test_finding5_architecture_json_delimiterless_near_miss_rejected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        arch = root / "architecture"
+        arch.mkdir()
+        (arch / "reg.json").write_text(json.dumps({"id": "INV001"}), encoding="utf-8")
+        expect_audit_error((module.ERR_MALFORMED_WIDTH,), module._load_repository_definitions, root)
+
+
+def test_finding5_registry_table_delimiterless_near_miss_rejected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        reg = root / "registries"
+        reg.mkdir()
+        (reg / "REG.md").write_text("| ID | Title |\n|---|---|\n| `INV001` | Missing hyphen |\n", encoding="utf-8")
+        expect_audit_error((module.ERR_MALFORMED_WIDTH,), module._load_repository_definitions, root)
+
+
+def test_finding5_unbackticked_near_miss_heading_rejected_in_census() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        doc = root / "doc.md"
+        doc.write_text("### INV001 — Missing hyphen, no backticks\n", encoding="utf-8")
+        res = empty_resolution(root)
+        expect_audit_error((module.ERR_MALFORMED_WIDTH,), module.census_markdown_sources, [doc], res)
+
+
+def test_finding5_lowercase_underscore_near_miss_rejected() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        doc = root / "doc.md"
+        doc.write_text("Prose that cites goal_001 by mistake.\n", encoding="utf-8")
+        res = empty_resolution(root)
+        expect_audit_error(
+            (module.ERR_MALFORMED_CASE, module.ERR_MALFORMED_WIDTH), module.census_markdown_sources, [doc], res
+        )
+
+
+def test_finding5_noncanonical_goal_heading_not_silently_dropped_from_plan() -> None:
+    for text in (
+        "### GOAL-001 — Missing backticks\n",
+        "## `GOAL-001` — Wrong heading level\n",
+        "### Scenario `NS-1` — Backticked scenario\n",
+    ):
+        expect_audit_error((module.ERR_CENSUS_DRIFT,), module._extract_plan_definitions, text)
+
+
+def test_finding6_tombstone_status_is_case_insensitive() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        arch = root / "architecture"
+        arch.mkdir()
+        (arch / "goals.json").write_text(
+            json.dumps({"rows": [{"id": "GOAL-098", "status": "Tombstoned"}, {"id": "GOAL-097", "disposition": " SUPERSEDED "}]}),
+            encoding="utf-8",
+        )
+        known = module._load_repository_definitions(root)
+        assert "GOAL-098" not in known
+        assert "GOAL-097" not in known
+        index = module._load_repository_index(root)
+        assert {"GOAL-098", "GOAL-097"} <= index.tombstoned
+
+
+def test_finding6_architecture_tombstones_surface_as_tombstone_references() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        arch = root / "architecture"
+        arch.mkdir()
+        (arch / "goals.json").write_text(
+            json.dumps({"rows": [{"id": "GOAL-099", "disposition": "tombstone"}, {"id": "GOAL-099", "status": "active"}]}),
+            encoding="utf-8",
+        )
+        index = module._load_repository_index(root)
+        # A tombstone anywhere wins over a live row elsewhere: superseded entries remain tombstoned.
+        assert "GOAL-099" in index.tombstoned
+        scan = module._scan_markdown("Refers to GOAL-099.\n", "doc.md")
+        expect_audit_error(
+            (module.ERR_TOMBSTONE_REFERENCE,),
+            module._validate_references,
+            scan.references,
+            valid_targets=index.known,
+            tombstoned_ids=index.tombstoned,
+        )
+
+
+def test_finding6_non_string_status_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        arch = root / "architecture"
+        arch.mkdir()
+        (arch / "goals.json").write_text(json.dumps({"id": "GOAL-096", "status": {"state": "tombstone"}}), encoding="utf-8")
+        expect_audit_error((module.ERR_SCHEMA_ERROR,), module._load_repository_definitions, root)
+
+
+def test_finding7_plan_title_drift_reports_fingerprint_mismatch() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        plan, resolution = write_fixture(
+            root,
+            """### `GOAL-001` — Drifted Title
+### Scenario NS-1 — One
+""",
+            [row("GOAL-001", "First", "GOAL-001")],
+            ["GOAL-001"],
+            ["NS-1"],
+        )
+        exc = expect_audit_error((module.ERR_FINGERPRINT_MISMATCH,), module.audit, plan, resolution)
+        assert "Drifted Title" in str(exc)
+
+
+def test_finding7_census_resolution_rows_are_strictly_typed() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        doc = root / "doc.md"
+        doc.write_text("### `GOAL-001` — First\n", encoding="utf-8")
+        res = root / "res.json"
+        bad_rows = [
+            {"legacyId": "GOAL-001", "title": 123, "canonicalId": "GOAL-001", "titleDigest": "sha256:" + "0" * 64},
+            {"legacyId": "GOAL-001", "title": "First", "titleDigest": module._title_digest("GOAL-001", "First")},
+        ]
+        for bad in bad_rows:
+            res.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": [bad]}), encoding="utf-8")
+            expect_audit_error((module.ERR_SCHEMA_ERROR,), module.census_markdown_sources, [doc], res)
+        res.write_text(json.dumps({"schema": "fss.bogus.v9", "resolutions": []}), encoding="utf-8")
+        expect_audit_error((module.ERR_SCHEMA_ERROR,), module.census_markdown_sources, [doc], res)
+
+
+def test_finding7_census_title_drift_against_canonical_alias() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        doc = root / "doc.md"
+        doc.write_text("### `GOAL-024` — Not The Remapped Title\n", encoding="utf-8")
+        res = root / "res.json"
+        res.write_text(
+            json.dumps({
+                "schema": "fss.stable_id_resolution.v1",
+                "resolutions": [row("GOAL-019", "Agent epistemic ergonomics", "GOAL-024")],
+            }),
+            encoding="utf-8",
+        )
+        expect_audit_error((module.ERR_FINGERPRINT_MISMATCH,), module.census_markdown_sources, [doc], res)
+
+
 def main() -> None:
     test_baseline_duplicate_collision_and_resolution()
     test_unresolved_collision_rejected()
@@ -784,6 +1123,26 @@ def main() -> None:
     test_tombstone_disposition_leak_in_architecture_json()
     test_markdown_title_drift_silently_passed_in_census_sources()
     test_census_markdown_sources_silently_skips_missing_files()
+    test_review440_tombstoned_id_in_code_fence_must_be_rejected()
+    test_review440_dangling_id_in_code_fence_must_be_rejected()
+    test_review440_conflicting_definition_inside_code_fence_must_not_be_laundered()
+    test_fenced_example_of_old_fixture_is_now_dangling()
+    test_plan_audit_rejects_tombstoned_fenced_example()
+    test_plan_audit_rejects_conflicting_fenced_heading()
+    test_plan_audit_accepts_matching_fenced_heading_and_counts_examples()
+    test_fenced_heading_without_live_title_fails_closed()
+    test_fenced_non_family_tokens_are_not_examples()
+    test_finding5_architecture_json_delimiterless_near_miss_rejected()
+    test_finding5_registry_table_delimiterless_near_miss_rejected()
+    test_finding5_unbackticked_near_miss_heading_rejected_in_census()
+    test_finding5_lowercase_underscore_near_miss_rejected()
+    test_finding5_noncanonical_goal_heading_not_silently_dropped_from_plan()
+    test_finding6_tombstone_status_is_case_insensitive()
+    test_finding6_architecture_tombstones_surface_as_tombstone_references()
+    test_finding6_non_string_status_fails_closed()
+    test_finding7_plan_title_drift_reports_fingerprint_mismatch()
+    test_finding7_census_resolution_rows_are_strictly_typed()
+    test_finding7_census_title_drift_against_canonical_alias()
     print("all stable-ID audit tests passed")
 
 
