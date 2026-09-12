@@ -990,67 +990,377 @@ fn test_latest_generation_cannot_be_built_without_test_support_feature() {
     }
 }
 
+fn strip_comments(text: &str) -> String {
+    let mut clean = String::with_capacity(text.len());
+    for line in text.lines() {
+        let mut in_quote = false;
+        let mut quote_char = ' ';
+        let mut line_clean = String::new();
+        for ch in line.chars() {
+            if ch == '"' || ch == '\'' {
+                if !in_quote {
+                    in_quote = true;
+                    quote_char = ch;
+                } else if quote_char == ch {
+                    in_quote = false;
+                }
+            } else if ch == '#' && !in_quote {
+                break;
+            }
+            line_clean.push(ch);
+        }
+        clean.push_str(&line_clean);
+        clean.push('\n');
+    }
+    clean
+}
+
+fn split_toml_sections(clean_text: &str) -> Vec<(String, String)> {
+    let mut sections = Vec::new();
+    let mut current_header = String::new();
+    let mut current_body = String::new();
+
+    for line in clean_text.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') && !trimmed.starts_with("[[") {
+            let header = trimmed[1..trimmed.len() - 1].trim().to_string();
+            sections.push((current_header, current_body));
+            current_header = header;
+            current_body = String::new();
+        } else {
+            current_body.push_str(line);
+            current_body.push('\n');
+        }
+    }
+    sections.push((current_header, current_body));
+    sections
+}
+
+fn is_dev_dependencies_table(header: &str) -> bool {
+    if header == "dev-dependencies" || header.starts_with("dev-dependencies.") {
+        return true;
+    }
+    if header.starts_with("target.") {
+        match header.find(".dev-dependencies") {
+            Some(dev_idx) => {
+                let rest = &header[dev_idx + ".dev-dependencies".len()..];
+                return rest.is_empty() || rest.starts_with('.');
+            }
+            None => return false,
+        }
+    }
+    false
+}
+
+fn extract_bracketed_tokens(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    if let Some(bracket_start) = text.find('[') {
+        let after_bracket = &text[bracket_start + 1..];
+        if let Some(bracket_end) = after_bracket.find(']') {
+            let inside = &after_bracket[..bracket_end];
+            let mut in_quote = false;
+            let mut quote_char = ' ';
+            let mut current_token = String::new();
+            for ch in inside.chars() {
+                if ch == '"' || ch == '\'' {
+                    if !in_quote {
+                        in_quote = true;
+                        quote_char = ch;
+                        current_token.clear();
+                    } else if quote_char == ch {
+                        in_quote = false;
+                        tokens.push(current_token.clone());
+                        current_token.clear();
+                    }
+                } else if in_quote {
+                    current_token.push(ch);
+                }
+            }
+        }
+    }
+    tokens
+}
+
+fn extract_features_from_slice(text: &str) -> Vec<String> {
+    let mut all_features = Vec::new();
+    let mut cursor = text;
+    while let Some(pos) = cursor.find("features") {
+        let after = &cursor[pos + "features".len()..];
+        cursor = after;
+        let trimmed = after.trim_start();
+        if let Some(stripped_eq) = trimmed.strip_prefix('=') {
+            let tokens = extract_bracketed_tokens(stripped_eq);
+            all_features.extend(tokens);
+        }
+    }
+    all_features
+}
+
+fn find_fss_core_entry(body: &str) -> Option<String> {
+    for line_start in body.split('\n') {
+        let trimmed = line_start.trim();
+        let is_fss_core = trimmed.starts_with("fss-core")
+            || trimmed.starts_with("\"fss-core\"")
+            || trimmed.starts_with("'fss-core'");
+        if !is_fss_core {
+            continue;
+        }
+        let Some(eq_pos) = trimmed.find('=') else {
+            continue;
+        };
+        let key_part = trimmed[..eq_pos].trim();
+        if key_part != "fss-core" && key_part != "\"fss-core\"" && key_part != "'fss-core'" {
+            continue;
+        }
+        let Some(start_idx) = body.find(line_start) else {
+            continue;
+        };
+        let from_start = &body[start_idx..];
+        if let Some(brace_start) = from_start.find('{') {
+            let before_brace = &from_start[..brace_start];
+            if !before_brace.contains('\n') || before_brace.trim().ends_with('=') {
+                let mut depth = 0;
+                let mut end_idx = brace_start;
+                for (i, ch) in from_start[brace_start..].char_indices() {
+                    if ch == '{' {
+                        depth += 1;
+                    } else if ch == '}' {
+                        depth -= 1;
+                        if depth == 0 {
+                            end_idx = brace_start + i + 1;
+                            break;
+                        }
+                    }
+                }
+                return Some(from_start[..end_idx].to_string());
+            }
+        }
+        let mut entry_lines = Vec::new();
+        for (idx, l) in from_start.lines().enumerate() {
+            if idx > 0 {
+                let t = l.trim();
+                if t.starts_with('[') || (t.contains('=') && !t.starts_with('#')) {
+                    break;
+                }
+            }
+            entry_lines.push(l);
+        }
+        return Some(entry_lines.join("\n"));
+    }
+    None
+}
+
+fn check_toml_for_test_support(content: &str) -> Result<(), String> {
+    let clean = strip_comments(content);
+    let sections = split_toml_sections(&clean);
+
+    for (header, body) in &sections {
+        if is_dev_dependencies_table(header) {
+            continue;
+        }
+
+        // Case 1: Header specifically targets fss-core dependency
+        if header.ends_with(".fss-core")
+            && (header.contains("dependencies") || header.contains("workspace.dependencies"))
+        {
+            let feats = extract_features_from_slice(body);
+            if feats.iter().any(|f| f == "test-support") {
+                return Err(format!(
+                    "Table '[{header}]' enables 'test-support' on fss-core outside dev-dependencies"
+                ));
+            }
+        }
+
+        // Case 2: General dependency table
+        if header.contains("dependencies") {
+            let Some(fss_core_def) = find_fss_core_entry(body) else {
+                continue;
+            };
+            let feats = extract_features_from_slice(&fss_core_def);
+            if feats.iter().any(|f| f == "test-support") {
+                return Err(format!(
+                    "Dependency 'fss-core' in '[{header}]' enables 'test-support' outside dev-dependencies"
+                ));
+            }
+        }
+
+        // Case 3: features table default
+        if header == "features" {
+            let Some(def_idx) = body.find("default") else {
+                continue;
+            };
+            let def_slice = &body[def_idx + "default".len()..];
+            let trimmed = def_slice.trim_start();
+            if let Some(stripped_eq) = trimmed.strip_prefix('=') {
+                let tokens = extract_bracketed_tokens(stripped_eq);
+                if tokens.iter().any(|f| f == "test-support") {
+                    return Err(
+                        "Feature 'test-support' must not be in default features".to_string()
+                    );
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 #[test]
-fn test_test_support_feature_restricted_to_dev_dependencies_only() {
+fn test_test_support_feature_restricted_to_dev_dependencies_only()
+-> Result<(), Box<dyn std::error::Error>> {
     let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let root = manifest_dir
         .parent()
-        .expect("crates dir")
+        .ok_or("missing crates parent")?
         .parent()
-        .expect("repo root");
+        .ok_or("missing repo root")?;
 
-    // 1. Root Cargo.toml: workspace.dependencies cannot enable test-support
-    let root_cargo =
-        std::fs::read_to_string(root.join("Cargo.toml")).expect("read root Cargo.toml");
-    assert!(
-        !root_cargo.contains(r#"features = ["test-support"]"#)
-            && !root_cargo.contains(r#"features = ['test-support']"#),
-        "root Cargo.toml [workspace.dependencies] must never enable test-support"
-    );
+    // 1. Root Cargo.toml
+    let root_cargo = std::fs::read_to_string(root.join("Cargo.toml"))?;
+    if let Err(err) = check_toml_for_test_support(&root_cargo) {
+        return Err(format!("Root Cargo.toml failed validation: {err}").into());
+    }
 
-    // 2. fss-core Cargo.toml: test-support must be declared and NOT in default
-    let core_cargo =
-        std::fs::read_to_string(manifest_dir.join("Cargo.toml")).expect("read fss-core Cargo.toml");
-    assert!(
-        core_cargo.contains("test-support = []"),
-        "fss-core Cargo.toml must declare optional 'test-support = []' feature"
-    );
-    assert!(
-        !core_cargo.contains("default = [\"test-support\"]"),
-        "test-support must not be a default feature in fss-core"
-    );
+    // 2. fss-core Cargo.toml
+    let core_cargo = std::fs::read_to_string(manifest_dir.join("Cargo.toml"))?;
+    if !core_cargo.contains("test-support = []") {
+        return Err("fss-core Cargo.toml must declare optional 'test-support = []' feature".into());
+    }
+    if let Err(err) = check_toml_for_test_support(&core_cargo) {
+        return Err(format!("fss-core Cargo.toml failed validation: {err}").into());
+    }
 
-    // 3. All other crate Cargo.toml files: test-support only allowed in [dev-dependencies]
-    let crates_dir = manifest_dir.parent().expect("crates dir");
-    for entry in std::fs::read_dir(crates_dir).expect("read crates dir") {
-        let entry = entry.expect("valid entry");
-        if !entry.file_type().expect("file type").is_dir() {
+    // 3. All member crate manifests
+    let crates_dir = manifest_dir.parent().ok_or("missing crates dir")?;
+    for entry in std::fs::read_dir(crates_dir)? {
+        let entry = entry?;
+        if !entry.file_type()?.is_dir() {
             continue;
         }
         let crate_cargo_path = entry.path().join("Cargo.toml");
         if !crate_cargo_path.is_file() || entry.file_name() == "fss-core" {
             continue;
         }
-        let content = std::fs::read_to_string(&crate_cargo_path).expect("read crate Cargo.toml");
-        if content.contains("test-support") {
-            let mut current_section = "";
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                    current_section = trimmed;
-                }
-                if trimmed.contains("test-support") {
-                    assert!(
-                        current_section == "[dev-dependencies]"
-                            || (current_section.starts_with("[target.")
-                                && current_section.ends_with(".dev-dependencies]")),
-                        "In {}, 'test-support' feature found in non-dev section '{}': {}",
-                        entry.path().display(),
-                        current_section,
-                        trimmed
-                    );
-                }
-            }
+        let content = std::fs::read_to_string(&crate_cargo_path)?;
+        if let Err(err) = check_toml_for_test_support(&content) {
+            return Err(format!(
+                "Manifest at '{}' failed validation: {err}",
+                crate_cargo_path.display()
+            )
+            .into());
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_multi_feature_dependency_rejected()
+-> Result<(), Box<dyn std::error::Error>> {
+    // 1. Single-line multi-feature under [dependencies]
+    let t1 = r#"
+[dependencies]
+fss-core = { path = "../fss-core", features = ["std", "test-support"] }
+"#;
+    if check_toml_for_test_support(t1).is_ok() {
+        return Err(
+            "Planted negative failed: single-line multi-feature in [dependencies] was accepted"
+                .into(),
+        );
+    }
+
+    // 2. Multi-line array under [dependencies]
+    let t2 = r#"
+[dependencies]
+fss-core = {
+    path = "../fss-core",
+    features = [
+        "std",
+        "test-support",
+    ],
+}
+"#;
+    if check_toml_for_test_support(t2).is_ok() {
+        return Err(
+            "Planted negative failed: multi-line array in [dependencies] was accepted".into(),
+        );
+    }
+
+    // 3. Multi-line array under [workspace.dependencies]
+    let t3 = r#"
+[workspace.dependencies]
+fss-core = { path = "crates/fss-core", features = [
+    "serde",
+    "test-support"
+] }
+"#;
+    if check_toml_for_test_support(t3).is_ok() {
+        return Err(
+            "Planted negative failed: multi-feature in [workspace.dependencies] was accepted"
+                .into(),
+        );
+    }
+
+    // 4. Target dependencies with multi-features
+    let t4 = r#"
+[target.'cfg(unix)'.dependencies]
+fss-core = { features = ["test-support", "std"] }
+"#;
+    if check_toml_for_test_support(t4).is_ok() {
+        return Err(
+            "Planted negative failed: target dependencies with multi-feature was accepted".into(),
+        );
+    }
+
+    // 5. Table section [dependencies.fss-core]
+    let t5 = r#"
+[dependencies.fss-core]
+path = "../fss-core"
+features = [
+    "std",
+    "test-support"
+]
+"#;
+    if check_toml_for_test_support(t5).is_ok() {
+        return Err(
+            "Planted negative failed: table section dependencies.fss-core was accepted".into(),
+        );
+    }
+
+    // 6. [features] default containing test-support
+    let t6 = r#"
+[features]
+default = ["std", "test-support"]
+"#;
+    if check_toml_for_test_support(t6).is_ok() {
+        return Err(
+            "Planted negative failed: [features] default containing test-support was accepted"
+                .into(),
+        );
+    }
+
+    // 7. Positive control: dev-dependencies with multi-features must pass
+    let t7 = r#"
+[dev-dependencies]
+fss-core = { path = "../fss-core", features = ["std", "test-support"] }
+"#;
+    if let Err(err) = check_toml_for_test_support(t7) {
+        return Err(
+            format!("Positive control failed: valid dev-dependencies rejected: {err}").into(),
+        );
+    }
+
+    // 8. Positive control: target dev-dependencies must pass
+    let t8 = r#"
+[target.'cfg(unix)'.dev-dependencies]
+fss-core = { path = "../fss-core", features = ["test-support"] }
+"#;
+    if let Err(err) = check_toml_for_test_support(t8) {
+        return Err(format!(
+            "Positive control failed: valid target dev-dependencies rejected: {err}"
+        )
+        .into());
+    }
+
+    Ok(())
 }
