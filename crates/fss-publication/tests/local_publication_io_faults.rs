@@ -5,15 +5,23 @@
 //! rename are injected as typed I/O errors (not crashes) through the test-only constructor
 //! [`LocalRootPublisher::open_with_injected_io_fault`]. Every test owns one real directory under
 //! `CARGO_TARGET_TMPDIR`, named after the test.
+//!
+//! Interrupted root-record writes (fss-x4a.7.5) are injected through the other test seam,
+//! [`LocalRootPublisher::open_with_io`] with a `FaultInjectingSpoolIo`, whose write occurrence
+//! numbers are derived from a plan-free probe run, never hard-coded.
 
 use std::error::Error;
 use std::fmt::Debug;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use fss_core::ContentDigest;
-use fss_object::{ObjectManifest, SpoolLimits, SpoolObjectState};
+use fss_object::{
+    FaultInjectingSpoolIo, MAX_INTERRUPTED_ATTEMPTS, ObjectManifest, SpoolFaultPlan, SpoolIoCall,
+    SpoolLimits, SpoolObjectState,
+};
 use fss_publication::{
     BlockReason, InjectedIoFault, IoFaultPoint, LOCAL_ROOTS_DIR, LocalIoOperation,
     LocalPublicationError, LocalPublicationGuidance, LocalPublicationLimits, LocalPublicationState,
@@ -321,4 +329,236 @@ fn directory_fsync_fault_fires_only_when_the_rename_is_reached() -> TestResult {
         LocalPublicationState::Visible
     );
     Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Interrupted root-record writes (bounded EINTR retry)
+// ---------------------------------------------------------------------------------------------
+
+/// Consecutive interrupted attempts at one offset that fail a root-record write.
+fn interrupt_bound() -> u64 {
+    u64::from(MAX_INTERRUPTED_ATTEMPTS)
+}
+
+fn open_faulted(
+    root: &Path,
+    plan: SpoolFaultPlan,
+) -> Result<(LocalRootPublisher, Arc<FaultInjectingSpoolIo>), Box<dyn Error>> {
+    let io = Arc::new(FaultInjectingSpoolIo::new(plan));
+    let publisher = LocalRootPublisher::open_with_io(root, limits(), io.clone())?;
+    Ok((publisher, io))
+}
+
+/// Occurrence number of the root temporary record's first write, from a plan-free probe run of
+/// open + fixture staging + one publish on a separate root.
+fn root_temp_write_occurrence(test_name: &str) -> Result<u64, Box<dyn Error>> {
+    let root = fresh_root(&format!("{test_name}_probe"))?;
+    let (mut publisher, io) = open_faulted(&root, SpoolFaultPlan::new())?;
+    let (_, manifest) = stage_fixture(&mut publisher)?;
+    let before_publish = io.calls(SpoolIoCall::Write);
+    publisher.publish(&slot("event-0001")?, &manifest)?;
+    let after_publish = io.calls(SpoolIoCall::Write);
+    assert_eq!(
+        after_publish,
+        before_publish + 2,
+        "publish writes the manifest body into the spool, then the root temporary record"
+    );
+    Ok(after_publish)
+}
+
+/// Checks a publish that retried interrupted root-record writes: the record is exact, Durable,
+/// has no temporary left, and a host reopen admits exactly it.
+fn assert_published_exactly(
+    root: &Path,
+    publisher: LocalRootPublisher,
+    slot_name: &SlotName,
+    manifest: &ObjectManifest,
+) -> TestResult {
+    let record = root_record_bytes(slot_name, manifest.root(), 3)?;
+    let visible = publisher
+        .root(slot_name)
+        .ok_or("a published root must be visible")?;
+    assert_eq!(visible.state, LocalPublicationState::Durable);
+    assert_eq!(visible.record_digest, ContentDigest::sha256(&record));
+    assert_eq!(fs::read(root_file(root, "event-0001"))?, record);
+    assert!(!root_temp(root, "event-0001").exists());
+    drop(publisher);
+
+    let reopened = LocalRootPublisher::open(root, limits())?;
+    let report = reopened.recovery_report();
+    assert!(
+        report.is_clean(),
+        "unexpected recovery findings: {report:?}"
+    );
+    assert_eq!(
+        report.roots,
+        vec![VisibleRoot {
+            slot: slot_name.clone(),
+            root: manifest.root(),
+            record_digest: ContentDigest::sha256(&record),
+            child_count: 3,
+            state: LocalPublicationState::Durable,
+        }]
+    );
+    Ok(())
+}
+
+#[test]
+fn interrupted_root_record_writes_below_the_bound_publish_durable() -> TestResult {
+    let name = "interrupted_root_record_writes_below_the_bound_publish_durable";
+    let temp_write = root_temp_write_occurrence(name)?;
+    let interruptions = interrupt_bound() - 1;
+    let root = fresh_root(name)?;
+    let slot_name = slot("event-0001")?;
+    let plan = SpoolFaultPlan::new().interrupted(SpoolIoCall::Write, temp_write, interruptions);
+    let (mut publisher, io) = open_faulted(&root, plan)?;
+    let (_, manifest) = stage_fixture(&mut publisher)?;
+
+    let receipt = publisher.publish(&slot_name, &manifest)?;
+    assert_eq!(receipt.outcome, PublishOutcome::Published);
+    assert_eq!(receipt.claims.local, LocalPublicationState::Durable);
+    assert_eq!(receipt.transitions, FULL_TRANSITIONS.to_vec());
+    assert!(io.all_fired());
+    assert_eq!(io.calls(SpoolIoCall::Write), temp_write + interruptions);
+    assert!(!publisher.is_poisoned());
+    assert_published_exactly(&root, publisher, &slot_name, &manifest)?;
+    log_scenario(
+        name,
+        "fault=root_temp_write_interrupted times=bound-1 retried=durable",
+    );
+    Ok(())
+}
+
+#[test]
+fn interrupted_root_record_writes_at_the_bound_fail_typed_and_publish_nothing() -> TestResult {
+    let name = "interrupted_root_record_writes_at_the_bound_fail_typed_and_publish_nothing";
+    let temp_write = root_temp_write_occurrence(name)?;
+    let root = fresh_root(name)?;
+    let slot_name = slot("event-0001")?;
+    let plan = SpoolFaultPlan::new().interrupted(SpoolIoCall::Write, temp_write, interrupt_bound());
+    let (mut publisher, io) = open_faulted(&root, plan)?;
+    let (children, manifest) = stage_fixture(&mut publisher)?;
+
+    let error = expect_err(publisher.publish(&slot_name, &manifest))?;
+    assert_eq!(
+        error,
+        LocalPublicationError::Io {
+            operation: LocalIoOperation::WriteTemp,
+            path: root_temp(&root, "event-0001"),
+            kind: io::ErrorKind::Interrupted,
+        }
+    );
+    assert_eq!(error.code(), "ERR-PUBLICATION-LOCAL-IO-001");
+    assert!(
+        error.to_string().contains("write_temp"),
+        "the error must name the operation: {error}"
+    );
+    assert!(io.all_fired());
+    assert_eq!(
+        io.calls(SpoolIoCall::Write),
+        temp_write + interrupt_bound() - 1,
+        "the record write must stop at the bound, never retry past it"
+    );
+    assert!(!publisher.is_poisoned());
+    assert!(publisher.root(&slot_name).is_none());
+    assert_eq!(publisher.visible_roots().count(), 0);
+    assert!(
+        dir_names(&root.join(LOCAL_ROOTS_DIR))?.is_empty(),
+        "neither a root record nor its temporary may remain after an interrupted write"
+    );
+    assert_eq!(
+        publisher.spool().state(manifest.root()),
+        Some(SpoolObjectState::Verified),
+        "the manifest body is custody in the spool, not visibility"
+    );
+    assert_eq!(publisher.spool().orphaned_staging().count(), 0);
+    let in_session_bytes = publisher.spool().occupied_bytes()?;
+    drop(publisher);
+
+    let mut reopened = LocalRootPublisher::open(&root, limits())?;
+    let report = reopened.recovery_report().clone();
+    assert!(report.roots.is_empty());
+    assert!(report.broken_roots.is_empty());
+    assert!(report.orphaned_temps.is_empty());
+    let mut unreferenced = children;
+    unreferenced.push(manifest.root());
+    unreferenced.sort_unstable();
+    assert_eq!(report.unreferenced_objects, unreferenced);
+    assert_eq!(reopened.spool().occupied_bytes()?, in_session_bytes);
+    assert_eq!(reopened.spool().orphaned_staging().count(), 0);
+
+    for digest in &unreferenced {
+        reopened.verify_object(*digest)?;
+    }
+    let receipt = reopened.publish(&slot_name, &manifest)?;
+    assert_eq!(receipt.outcome, PublishOutcome::Published);
+    assert_eq!(receipt.claims.local, LocalPublicationState::Durable);
+    assert_published_exactly(&root, reopened, &slot_name, &manifest)?;
+    log_scenario(
+        name,
+        "fault=root_temp_write_interrupted times=bound visible=0 reopened_roots=0 retried=durable",
+    );
+    Ok(())
+}
+
+#[test]
+fn interrupted_root_record_write_resumes_at_the_partial_write_offset() -> TestResult {
+    let name = "interrupted_root_record_write_resumes_at_the_partial_write_offset";
+    let temp_write = root_temp_write_occurrence(name)?;
+    let bound = interrupt_bound();
+    let root = fresh_root(name)?;
+    let slot_name = slot("event-0001")?;
+    // 5 bytes land; bound-1 interruptions at offset 5; 3 more land; bound-1 interruptions at
+    // offset 8; the final write lands the rest. Progress resets the per-offset count.
+    let plan = SpoolFaultPlan::new()
+        .short_write(temp_write, 5)
+        .interrupted(SpoolIoCall::Write, temp_write + 1, bound - 1)
+        .short_write(temp_write + bound, 3)
+        .interrupted(SpoolIoCall::Write, temp_write + bound + 1, bound - 1);
+    let (mut publisher, io) = open_faulted(&root, plan)?;
+    let (_, manifest) = stage_fixture(&mut publisher)?;
+
+    let receipt = publisher.publish(&slot_name, &manifest)?;
+    assert_eq!(receipt.outcome, PublishOutcome::Published);
+    assert_eq!(receipt.claims.local, LocalPublicationState::Durable);
+    assert!(io.all_fired());
+    assert_eq!(io.calls(SpoolIoCall::Write), temp_write + 2 * bound);
+    assert_published_exactly(&root, publisher, &slot_name, &manifest)?;
+    log_scenario(
+        name,
+        "fault=root_temp_partial_write_then_interrupted resumed=exact durable=true",
+    );
+    Ok(())
+}
+
+#[test]
+fn interrupted_root_record_write_after_a_partial_write_is_bounded_at_that_offset() -> TestResult {
+    let name = "interrupted_root_record_write_after_a_partial_write_is_bounded_at_that_offset";
+    let temp_write = root_temp_write_occurrence(name)?;
+    let bound = interrupt_bound();
+    let root = fresh_root(name)?;
+    let slot_name = slot("event-0001")?;
+    let plan = SpoolFaultPlan::new()
+        .short_write(temp_write, 5)
+        .interrupted(SpoolIoCall::Write, temp_write + 1, bound);
+    let (mut publisher, io) = open_faulted(&root, plan)?;
+    let (_, manifest) = stage_fixture(&mut publisher)?;
+
+    assert_eq!(
+        expect_err(publisher.publish(&slot_name, &manifest))?,
+        LocalPublicationError::Io {
+            operation: LocalIoOperation::WriteTemp,
+            path: root_temp(&root, "event-0001"),
+            kind: io::ErrorKind::Interrupted,
+        }
+    );
+    assert!(io.all_fired());
+    assert_eq!(io.calls(SpoolIoCall::Write), temp_write + bound);
+    assert!(!publisher.is_poisoned());
+    assert_eq!(publisher.visible_roots().count(), 0);
+    assert!(dir_names(&root.join(LOCAL_ROOTS_DIR))?.is_empty());
+
+    let receipt = publisher.publish(&slot_name, &manifest)?;
+    assert_eq!(receipt.claims.local, LocalPublicationState::Durable);
+    assert_published_exactly(&root, publisher, &slot_name, &manifest)
 }

@@ -16,10 +16,10 @@ use std::sync::Arc;
 
 use fss_core::ContentDigest;
 use fss_object::{
-    FaultInjectingSpoolIo, ObjectError, OrphanedStaging, SPOOL_OBJECT_HEADER_LEN,
-    SPOOL_OBJECTS_DIR, SPOOL_STAGING_DIR, SpoolError, SpoolFaultPlan, SpoolIoCall,
-    SpoolIoOperation, SpoolLimits, SpoolObjectState, StageOutcome, StagePhase, StagingSpool,
-    VerifiedObjectCatalog,
+    FaultInjectingSpoolIo, MAX_INTERRUPTED_ATTEMPTS, ObjectError, OrphanedStaging,
+    SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECTS_DIR, SPOOL_STAGING_DIR, SpoolError, SpoolFaultPlan,
+    SpoolIoCall, SpoolIoOperation, SpoolLimits, SpoolObjectState, StageOutcome, StagePhase,
+    StagingSpool, VerifiedObjectCatalog,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -566,6 +566,119 @@ fn partial_writes_are_resumed_and_read_back() -> TestResult {
     );
     assert_eq!(spool.read(digest())?, PAYLOAD.to_vec());
     assert_eq!(spool.occupied_bytes()?, payload_len());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// Interrupted writes (bounded EINTR retry)
+// ---------------------------------------------------------------------------------------------
+
+/// Consecutive interrupted attempts at one offset that fail a staging write.
+fn interrupt_bound() -> u64 {
+    u64::from(MAX_INTERRUPTED_ATTEMPTS)
+}
+
+/// Checks a successful ingest: the exact bytes are admitted, read back, charged once, and
+/// admitted identically by a host reopen, with no staging file left behind.
+fn assert_staged_exactly(root: &Path, spool: StagingSpool) -> TestResult {
+    let digest = digest();
+    assert_eq!(spool.state(digest), Some(SpoolObjectState::Staged));
+    assert_eq!(
+        fs::metadata(object_file(root, digest))?.len(),
+        HEADER + payload_len()
+    );
+    assert_eq!(spool.read(digest)?, PAYLOAD.to_vec());
+    assert_eq!(spool.occupied_bytes()?, payload_len());
+    assert_eq!(spool.orphaned_staging().count(), 0);
+    assert!(dir_names(&root.join(SPOOL_STAGING_DIR))?.is_empty());
+    drop(spool);
+
+    let mut reopened = StagingSpool::open(root, roomy())?;
+    assert!(reopened.recovery_report().is_clean());
+    assert_eq!(reopened.recovery_report().admitted, vec![digest]);
+    assert_eq!(reopened.occupied_bytes()?, payload_len());
+    assert_eq!(reopened.verify(digest)?, SpoolObjectState::Verified);
+    assert_eq!(reopened.read(digest)?, PAYLOAD.to_vec());
+    Ok(())
+}
+
+#[test]
+fn interrupted_writes_below_the_bound_are_retried_and_read_back() -> TestResult {
+    let name = "interrupted_writes_below_the_bound_are_retried_and_read_back";
+    for interruptions in 1..interrupt_bound() {
+        let root = fresh_root(&format!("{name}_{interruptions}"))?;
+        let plan = SpoolFaultPlan::new().interrupted(SpoolIoCall::Write, 1, interruptions);
+        let (mut spool, io) = open_faulted(&root, plan)?;
+        let receipt = spool.stage(digest(), PAYLOAD)?;
+        assert_eq!(receipt.outcome, StageOutcome::NewlyStaged);
+        assert_eq!(receipt.state, SpoolObjectState::Staged);
+        assert!(
+            io.all_fired(),
+            "{interruptions} interruptions did not all fire"
+        );
+        assert_eq!(io.calls(SpoolIoCall::Write), interruptions + 1);
+        assert_eq!(io.calls(SpoolIoCall::SyncFile), 1);
+        assert_staged_exactly(&root, spool)?;
+    }
+    Ok(())
+}
+
+#[test]
+fn interrupted_writes_at_the_bound_fail_typed_and_admit_nothing() -> TestResult {
+    let name = "interrupted_writes_at_the_bound_fail_typed_and_admit_nothing";
+    let plan = SpoolFaultPlan::new().interrupted(SpoolIoCall::Write, 1, interrupt_bound());
+    let (io, orphans) = run_pre_rename_failure(name, plan, |root| SpoolError::Io {
+        operation: SpoolIoOperation::WriteStaging,
+        path: staging_file(root, digest(), 0),
+        kind: ErrorKind::Interrupted,
+    })?;
+    assert!(orphans.is_empty());
+    assert_eq!(
+        io.calls(SpoolIoCall::Write),
+        interrupt_bound(),
+        "the write loop must stop at the bound, never retry past it"
+    );
+    assert_eq!(io.calls(SpoolIoCall::SyncFile), 0);
+    assert_eq!(io.calls(SpoolIoCall::Rename), 0);
+    assert_eq!(io.calls(SpoolIoCall::RemoveFile), 1);
+    Ok(())
+}
+
+#[test]
+fn interrupted_writes_resume_at_the_partial_write_offset() -> TestResult {
+    let root = fresh_root("interrupted_writes_resume_at_the_partial_write_offset")?;
+    let bound = interrupt_bound();
+    // 7 bytes land; bound-1 interruptions at offset 7; 5 more land; bound-1 interruptions at
+    // offset 12; the final write lands the rest. Progress resets the per-offset count, so 2 *
+    // (bound-1) interruptions in one write are absorbed.
+    let plan = SpoolFaultPlan::new()
+        .short_write(1, 7)
+        .interrupted(SpoolIoCall::Write, 2, bound - 1)
+        .short_write(bound + 1, 5)
+        .interrupted(SpoolIoCall::Write, bound + 2, bound - 1);
+    let (mut spool, io) = open_faulted(&root, plan)?;
+    let receipt = spool.stage(digest(), PAYLOAD)?;
+    assert_eq!(receipt.outcome, StageOutcome::NewlyStaged);
+    assert!(io.all_fired());
+    assert_eq!(io.calls(SpoolIoCall::Write), 2 * bound + 1);
+    assert_staged_exactly(&root, spool)
+}
+
+#[test]
+fn interrupted_writes_after_a_partial_write_are_bounded_at_that_offset() -> TestResult {
+    let name = "interrupted_writes_after_a_partial_write_are_bounded_at_that_offset";
+    let bound = interrupt_bound();
+    let plan = SpoolFaultPlan::new()
+        .short_write(1, 7)
+        .interrupted(SpoolIoCall::Write, 2, bound);
+    let (io, orphans) = run_pre_rename_failure(name, plan, |root| SpoolError::Io {
+        operation: SpoolIoOperation::WriteStaging,
+        path: staging_file(root, digest(), 0),
+        kind: ErrorKind::Interrupted,
+    })?;
+    assert!(orphans.is_empty());
+    assert_eq!(io.calls(SpoolIoCall::Write), bound + 1);
+    assert_eq!(io.calls(SpoolIoCall::SyncFile), 0);
     Ok(())
 }
 

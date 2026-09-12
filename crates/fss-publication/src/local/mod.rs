@@ -76,8 +76,9 @@ use std::sync::Arc;
 
 use fss_core::{CanonicalEncode, ContentDigest, TombstoneRecord};
 use fss_object::{
-    HostSpoolIo, MAX_MANIFEST_CHILDREN, ObjectManifest, SpoolError, SpoolIo, SpoolLimits,
-    SpoolObjectState, SpoolRecoveryReport, StagingSpool, VerifiedObjectCatalog,
+    HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, MAX_MANIFEST_CHILDREN, ObjectManifest, SpoolError,
+    SpoolIo, SpoolLimits, SpoolObjectState, SpoolRecoveryReport, StagingSpool,
+    VerifiedObjectCatalog,
 };
 
 pub use error::{
@@ -1545,20 +1546,35 @@ fn ensure_subdirectory(io: &dyn SpoolIo, path: &Path) -> Result<(), LocalPublica
 
 /// Writes all of `bytes` through `io`, resuming after partial writes.
 ///
-/// A write that accepts zero bytes is [`io::ErrorKind::WriteZero`]. Any error, including
-/// [`io::ErrorKind::Interrupted`], is returned rather than retried, as the spool's own staging
-/// write does, so the loop is bounded: every iteration advances by at least one byte.
+/// A write that accepts zero bytes is [`io::ErrorKind::WriteZero`]. An
+/// [`io::ErrorKind::Interrupted`] write transferred nothing, so it is retried at the same offset,
+/// exactly as the spool's own staging write does; the [`MAX_INTERRUPTED_ATTEMPTS`]-th consecutive
+/// interruption at one offset is returned, and the caller reports it as
+/// [`LocalIoOperation::WriteTemp`]. Any other error is returned at once. The loop is bounded:
+/// every iteration either advances by at least one byte or spends one of the interrupted attempts
+/// allowed at the current offset.
 fn write_all(io: &dyn SpoolIo, file: &mut File, bytes: &[u8]) -> io::Result<()> {
     let mut written = 0_usize;
+    let mut interrupted = 0_u32;
     while let Some(rest) = bytes.get(written..).filter(|rest| !rest.is_empty()) {
-        match io.write(file, rest)? {
-            0 => {
+        match io.write(file, rest) {
+            Ok(0) => {
                 return Err(io::Error::new(
                     io::ErrorKind::WriteZero,
                     "failed to write whole buffer",
                 ));
             }
-            accepted => written = written.saturating_add(accepted.min(rest.len())),
+            Ok(accepted) => {
+                written = written.saturating_add(accepted.min(rest.len()));
+                interrupted = 0;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                interrupted = interrupted.saturating_add(1);
+                if interrupted >= MAX_INTERRUPTED_ATTEMPTS {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
         }
     }
     Ok(())

@@ -65,6 +65,22 @@ pub const SPOOL_STAGING_DIR: &str = "staging";
 pub const SPOOL_LOCK_FILE: &str = "LOCK";
 /// Upper bound on distinct staging names tried for one digest.
 pub const MAX_STAGING_NAME_ATTEMPTS: u32 = 16;
+/// Consecutive [`io::ErrorKind::Interrupted`] write attempts at one buffer offset after which a
+/// write loop gives up and returns a typed error instead of retrying.
+///
+/// `std::io::Write::write_all` retries `EINTR` without limit; the workspace forbids unbounded
+/// retry, so the spool's staging write and the local publisher's record write retry an
+/// interrupted attempt at most `MAX_INTERRUPTED_ATTEMPTS - 1` times at the same offset. A write
+/// that accepts at least one byte resets the count, so a burst of signals during a long write is
+/// absorbed at every offset while total work stays bounded by
+/// `buffer_len * MAX_INTERRUPTED_ATTEMPTS` calls.
+///
+/// Eight is a deliberately small margin. An interrupted write has transferred nothing, so a
+/// retry is always safe, and a single signal (for example `SIGCHLD` or a profiling timer)
+/// interrupts at most one attempt; several coinciding signals are still absorbed. Eight
+/// consecutive interruptions at the same offset mean the process is under a sustained signal
+/// storm, and failing typed then is more useful to an operator than spinning.
+pub const MAX_INTERRUPTED_ATTEMPTS: u32 = 8;
 
 const STAGING_SUFFIX: &str = ".tmp";
 const ROOT_SCAN_BOUND: usize = 64;
@@ -619,8 +635,12 @@ impl StagingSpool {
 
     /// Writes the whole envelope, resuming after partial writes, then fsyncs the file.
     ///
-    /// A write that accepts zero bytes is a [`SpoolError::ShortWrite`]. The loop is bounded: every
-    /// iteration advances by at least one byte.
+    /// A write that accepts zero bytes is a [`SpoolError::ShortWrite`]. An
+    /// [`io::ErrorKind::Interrupted`] write transferred nothing, so it is retried at the same
+    /// offset; the [`MAX_INTERRUPTED_ATTEMPTS`]-th consecutive interruption at one offset is
+    /// returned as [`SpoolError::Io`] with [`SpoolIoOperation::WriteStaging`]. Any other error is
+    /// returned at once. The loop is bounded: every iteration either advances by at least one byte
+    /// or spends one of the interrupted attempts allowed at the current offset.
     fn write_staging(
         &self,
         file: &mut File,
@@ -628,6 +648,7 @@ impl StagingSpool {
         encoded: &[u8],
     ) -> Result<(), SpoolError> {
         let mut written = 0_usize;
+        let mut interrupted = 0_u32;
         while let Some(rest) = encoded.get(written..).filter(|rest| !rest.is_empty()) {
             match self.io.write(file, rest) {
                 Ok(0) => {
@@ -639,7 +660,16 @@ impl StagingSpool {
                 }
                 // A capability claiming more than it was offered is clamped; read-back
                 // verification still rejects bytes that did not land.
-                Ok(accepted) => written = written.saturating_add(accepted.min(rest.len())),
+                Ok(accepted) => {
+                    written = written.saturating_add(accepted.min(rest.len()));
+                    interrupted = 0;
+                }
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => {
+                    interrupted = interrupted.saturating_add(1);
+                    if interrupted >= MAX_INTERRUPTED_ATTEMPTS {
+                        return Err(io_error(SpoolIoOperation::WriteStaging, path, &error));
+                    }
+                }
                 Err(error) => {
                     return Err(io_error(SpoolIoOperation::WriteStaging, path, &error));
                 }

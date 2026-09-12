@@ -20,11 +20,11 @@ pub use manifest::ObjectManifest;
 pub use memory::{InMemoryObjectStore, ObjectLimits};
 pub use spool::{
     CorruptObject, CorruptionKind, DiscardReceipt, FaultInjectingSpoolIo, ForeignEntry,
-    ForeignReason, HostSpoolIo, MAX_STAGING_NAME_ATTEMPTS, OrphanedStaging, SPOOL_LOCK_FILE,
-    SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC, SPOOL_OBJECTS_DIR,
-    SPOOL_STAGING_DIR, SpoolError, SpoolFaultPlan, SpoolIo, SpoolIoCall, SpoolIoOperation,
-    SpoolLimitViolation, SpoolLimits, SpoolObjectState, SpoolRecoveryReport, StageOutcome,
-    StagePhase, StageReceipt, StagingSpool,
+    ForeignReason, HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, MAX_STAGING_NAME_ATTEMPTS,
+    OrphanedStaging, SPOOL_LOCK_FILE, SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_HEADER_LEN,
+    SPOOL_OBJECT_MAGIC, SPOOL_OBJECTS_DIR, SPOOL_STAGING_DIR, SpoolError, SpoolFaultPlan, SpoolIo,
+    SpoolIoCall, SpoolIoOperation, SpoolLimitViolation, SpoolLimits, SpoolObjectState,
+    SpoolRecoveryReport, StageOutcome, StagePhase, StageReceipt, StagingSpool,
 };
 
 use fss_core::ContentDigest;

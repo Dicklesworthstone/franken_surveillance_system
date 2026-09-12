@@ -284,6 +284,25 @@ impl SpoolFaultPlan {
         self.with(SpoolIoCall::Write, occurrence, Fault::ShortWrite(accepted))
     }
 
+    /// Fails `times` consecutive `call`s with [`io::ErrorKind::Interrupted`], starting at the
+    /// `first` occurrence, without performing them; later calls succeed unless another rule
+    /// matches.
+    ///
+    /// This models a signal arriving before any byte is transferred, which is when POSIX reports
+    /// `EINTR`: an interrupted call has no effect. Each interruption is one one-shot rule, so
+    /// [`FaultInjectingSpoolIo::all_fired`] is true only once all `times` calls were made.
+    #[must_use]
+    pub fn interrupted(mut self, call: SpoolIoCall, first: u64, times: u64) -> Self {
+        for offset in 0..times {
+            self = self.fail(
+                call,
+                first.saturating_add(offset),
+                io::ErrorKind::Interrupted,
+            );
+        }
+        self
+    }
+
     fn with(mut self, call: SpoolIoCall, occurrence: u64, fault: Fault) -> Self {
         self.rules.push(FaultRule {
             call,
