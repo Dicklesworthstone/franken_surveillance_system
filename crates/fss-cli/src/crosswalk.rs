@@ -6,7 +6,7 @@
 //! carrying stable error identities and exit identities.
 
 use core::fmt;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error;
 
 use crate::error::ExitIdentity;
@@ -388,6 +388,11 @@ pub enum CrosswalkValidationError {
         /// Rationale for failure.
         reason: String,
     },
+    /// Duplicate operation ID detected in the crosswalk registry.
+    DuplicateOperation {
+        /// The duplicate operation ID.
+        operation_id: String,
+    },
 }
 
 impl fmt::Display for CrosswalkValidationError {
@@ -457,11 +462,53 @@ impl fmt::Display for CrosswalkValidationError {
             } => {
                 write!(f, "operation '{operation_id}' is stale: {reason}")
             }
+            Self::DuplicateOperation { operation_id } => {
+                write!(f, "duplicate operation ID '{operation_id}' in crosswalk")
+            }
         }
     }
 }
 
 impl Error for CrosswalkValidationError {}
+
+/// Canonical registered process exit identities matching `registries/ERRORS.md`.
+pub static REGISTERED_EXIT_IDENTITIES: &[&str] = &[
+    "EXIT-OK-000",
+    "EXIT-CLI-RUNTIME-FAILURE-001",
+    "EXIT-CLI-UNKNOWN-COMMAND-002",
+    "EXIT-CLI-UNKNOWN-OPTION-002",
+    "EXIT-CLI-MISSING-VALUE-002",
+    "EXIT-CLI-DUPLICATE-OPTION-002",
+    "EXIT-CLI-MALFORMED-VALUE-002",
+    "EXIT-CLI-INVALID-UNICODE-002",
+    "EXIT-CLI-UNEXPECTED-POSITIONAL-002",
+    "EXIT-CLI-TRAILING-ARGUMENT-002",
+];
+
+fn normalize_identifier(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut prev_was_sep = false;
+    for c in s.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+            prev_was_sep = false;
+        } else if !prev_was_sep && !out.is_empty() {
+            out.push('_');
+            prev_was_sep = true;
+        }
+    }
+    if out.ends_with('_') {
+        out.pop();
+    }
+    out
+}
+
+fn normalize_cli_command(cmd: &str) -> String {
+    cmd.split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_ascii_lowercase()
+}
 
 /// Validates that a given slice of crosswalk entries is well-formed, bijective, and collision-free.
 pub fn validate_crosswalk_entries(
@@ -472,97 +519,139 @@ pub fn validate_crosswalk_entries(
         return Err(CrosswalkValidationError::EmptyRegistry);
     }
 
-    let mut cli_map: HashSet<&str> = HashSet::new();
-    let mut mcp_map: HashSet<&str> = HashSet::new();
-    let mut lib_map: HashSet<&str> = HashSet::new();
+    let mut op_ids: HashSet<&str> = HashSet::new();
+    let mut cli_map: HashMap<String, &'static str> = HashMap::new();
+    let mut mcp_map: HashMap<String, &'static str> = HashMap::new();
+    let mut lib_map: HashMap<String, &'static str> = HashMap::new();
 
     let allowed_set: HashSet<&str> = allowed_error_ids.iter().copied().collect();
 
     for entry in entries {
-        if entry.cli_command.is_empty() {
+        if !op_ids.insert(entry.operation_id) {
+            return Err(CrosswalkValidationError::DuplicateOperation {
+                operation_id: entry.operation_id.to_string(),
+            });
+        }
+
+        if entry.status == "tombstone" || entry.status == "deprecated" {
+            return Err(CrosswalkValidationError::StaleEntry {
+                operation_id: entry.operation_id.to_string(),
+                reason: format!("operation has status '{}'", entry.status),
+            });
+        }
+
+        if entry.cli_command.trim().is_empty() {
             return Err(CrosswalkValidationError::MissingSurfaceMapping {
                 operation_id: entry.operation_id.to_string(),
                 surface: "cli_command",
             });
         }
-        if entry.mcp_tool_name.is_empty() {
+        if entry.mcp_tool_name.trim().is_empty() {
             return Err(CrosswalkValidationError::MissingSurfaceMapping {
                 operation_id: entry.operation_id.to_string(),
                 surface: "mcp_tool_name",
             });
         }
-        if entry.library_entry_point.is_empty() {
+        if entry.library_entry_point.trim().is_empty() {
             return Err(CrosswalkValidationError::MissingSurfaceMapping {
                 operation_id: entry.operation_id.to_string(),
                 surface: "library_entry_point",
             });
         }
+        if entry.primary_error_id.trim().is_empty() {
+            return Err(CrosswalkValidationError::MissingSurfaceMapping {
+                operation_id: entry.operation_id.to_string(),
+                surface: "primary_error_id",
+            });
+        }
 
-        if !cli_map.insert(entry.cli_command) {
-            let first = entries
-                .iter()
-                .find(|e| {
-                    e.cli_command == entry.cli_command && e.operation_id != entry.operation_id
-                })
-                .map(|e| e.operation_id)
-                .unwrap_or("unknown");
+        let norm_cli = normalize_cli_command(entry.cli_command);
+        if let Some(first_id) = cli_map.get(&norm_cli) {
             return Err(CrosswalkValidationError::CliCommandCollision {
                 command: entry.cli_command.to_string(),
-                first_id: first.to_string(),
+                first_id: (*first_id).to_string(),
                 second_id: entry.operation_id.to_string(),
             });
         }
-
-        if !mcp_map.insert(entry.mcp_tool_name) {
-            let first = entries
-                .iter()
-                .find(|e| {
-                    e.mcp_tool_name == entry.mcp_tool_name && e.operation_id != entry.operation_id
-                })
-                .map(|e| e.operation_id)
-                .unwrap_or("unknown");
-            return Err(CrosswalkValidationError::McpToolCollision {
-                tool_name: entry.mcp_tool_name.to_string(),
-                first_id: first.to_string(),
-                second_id: entry.operation_id.to_string(),
-            });
-        }
-
-        if !lib_map.insert(entry.library_entry_point) {
-            let first = entries
-                .iter()
-                .find(|e| {
-                    e.library_entry_point == entry.library_entry_point
-                        && e.operation_id != entry.operation_id
-                })
-                .map(|e| e.operation_id)
-                .unwrap_or("unknown");
-            return Err(CrosswalkValidationError::LibraryEntryCollision {
-                entry_point: entry.library_entry_point.to_string(),
-                first_id: first.to_string(),
-                second_id: entry.operation_id.to_string(),
-            });
-        }
-
-        if !allowed_set.is_empty() {
-            if !allowed_set.contains(entry.primary_error_id) {
-                return Err(CrosswalkValidationError::UnregisteredError {
-                    operation_id: entry.operation_id.to_string(),
-                    error_id: entry.primary_error_id.to_string(),
+        let curr_tokens: Vec<&str> = norm_cli.split_whitespace().collect();
+        for (prev_cmd, prev_id) in &cli_map {
+            let prev_tokens: Vec<&str> = prev_cmd.split_whitespace().collect();
+            if (curr_tokens.len() < prev_tokens.len() && prev_tokens.starts_with(&curr_tokens))
+                || (prev_tokens.len() < curr_tokens.len() && curr_tokens.starts_with(&prev_tokens))
+            {
+                return Err(CrosswalkValidationError::CliCommandCollision {
+                    command: entry.cli_command.to_string(),
+                    first_id: (*prev_id).to_string(),
+                    second_id: entry.operation_id.to_string(),
                 });
             }
-            for err in entry.error_identities {
-                if !allowed_set.contains(err) {
-                    return Err(CrosswalkValidationError::UnregisteredError {
-                        operation_id: entry.operation_id.to_string(),
-                        error_id: (*err).to_string(),
-                    });
-                }
+        }
+        cli_map.insert(norm_cli, entry.operation_id);
+
+        let norm_mcp = normalize_identifier(entry.mcp_tool_name);
+        if let Some(first_id) = mcp_map.get(&norm_mcp) {
+            return Err(CrosswalkValidationError::McpToolCollision {
+                tool_name: entry.mcp_tool_name.to_string(),
+                first_id: (*first_id).to_string(),
+                second_id: entry.operation_id.to_string(),
+            });
+        }
+        mcp_map.insert(norm_mcp, entry.operation_id);
+
+        let norm_lib = normalize_identifier(entry.library_entry_point);
+        if let Some(first_id) = lib_map.get(&norm_lib) {
+            return Err(CrosswalkValidationError::LibraryEntryCollision {
+                entry_point: entry.library_entry_point.to_string(),
+                first_id: (*first_id).to_string(),
+                second_id: entry.operation_id.to_string(),
+            });
+        }
+        lib_map.insert(norm_lib, entry.operation_id);
+
+        if !entry.primary_error_id.starts_with("ERR-") {
+            return Err(CrosswalkValidationError::UnregisteredError {
+                operation_id: entry.operation_id.to_string(),
+                error_id: entry.primary_error_id.to_string(),
+            });
+        }
+        if !allowed_set.is_empty() && !allowed_set.contains(entry.primary_error_id) {
+            return Err(CrosswalkValidationError::UnregisteredError {
+                operation_id: entry.operation_id.to_string(),
+                error_id: entry.primary_error_id.to_string(),
+            });
+        }
+
+        if entry.error_identities.is_empty() {
+            return Err(CrosswalkValidationError::MissingSurfaceMapping {
+                operation_id: entry.operation_id.to_string(),
+                surface: "error_identities",
+            });
+        }
+        for err in entry.error_identities {
+            if !err.starts_with("ERR-") {
+                return Err(CrosswalkValidationError::UnregisteredError {
+                    operation_id: entry.operation_id.to_string(),
+                    error_id: (*err).to_string(),
+                });
+            }
+            if !allowed_set.is_empty() && !allowed_set.contains(err) {
+                return Err(CrosswalkValidationError::UnregisteredError {
+                    operation_id: entry.operation_id.to_string(),
+                    error_id: (*err).to_string(),
+                });
             }
         }
 
+        if entry.exit_identities.is_empty() {
+            return Err(CrosswalkValidationError::MissingSurfaceMapping {
+                operation_id: entry.operation_id.to_string(),
+                surface: "exit_identities",
+            });
+        }
         for exit in entry.exit_identities {
-            if !exit.identifier.starts_with("EXIT-") {
+            if !exit.identifier.starts_with("EXIT-")
+                || !REGISTERED_EXIT_IDENTITIES.contains(&exit.identifier)
+            {
                 return Err(CrosswalkValidationError::InvalidExitIdentity {
                     operation_id: entry.operation_id.to_string(),
                     identity: exit.identifier.to_string(),
