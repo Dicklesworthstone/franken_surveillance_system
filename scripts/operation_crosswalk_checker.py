@@ -57,31 +57,45 @@ class ValidationResult:
 
 
 def parse_markdown_table(file_path: Path) -> list[dict[str, str]]:
-    """Parses a GitHub-flavored Markdown table into a list of row dictionaries."""
+    """Parses GitHub-flavored Markdown tables into a list of row dictionaries."""
     if not file_path.is_file():
         return []
 
-    lines = file_path.read_text(encoding="utf-8").splitlines()
+    try:
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return []
+
     header: list[str] = []
     rows: list[dict[str, str]] = []
 
-    for line in lines:
+    idx = 0
+    while idx < len(lines):
+        line = lines[idx]
         stripped = line.strip()
         if not stripped.startswith("|") or not stripped.endswith("|"):
+            idx += 1
             continue
         if DELIMITER_ROW_RE.match(stripped):
+            idx += 1
+            continue
+
+        # Check if the next line is a delimiter row indicating this is a header row
+        next_stripped = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
+        if DELIMITER_ROW_RE.match(next_stripped):
+            cells = [cell.strip() for cell in stripped[1:-1].split("|")]
+            clean_cells = [INLINE_CODE_RE.sub(r"\1", cell).strip() for cell in cells]
+            header = [c.lower().replace(" ", "_") for c in clean_cells]
+            idx += 2
             continue
 
         cells = [cell.strip() for cell in stripped[1:-1].split("|")]
-        # Strip backticks from cells
         clean_cells = [INLINE_CODE_RE.sub(r"\1", cell).strip() for cell in cells]
 
-        if not header:
-            header = [c.lower().replace(" ", "_") for c in clean_cells]
-            continue
-
-        if len(clean_cells) == len(header):
+        if header and len(clean_cells) == len(header):
             rows.append(dict(zip(header, clean_cells)))
+
+        idx += 1
 
     return rows
 
@@ -101,6 +115,34 @@ def parse_error_registry(file_path: Path) -> tuple[set[str], set[str]]:
                 tombstones.add(eid)
 
     return all_errors, tombstones
+
+
+def parse_exit_registry(file_path: Path) -> set[str]:
+    """Parses registries/ERRORS.md returning all registered exit IDs."""
+    rows = parse_markdown_table(file_path)
+    exit_ids: set[str] = set()
+    for row in rows:
+        eid = row.get("exit_id", "").strip()
+        if eid:
+            exit_ids.add(eid)
+    return exit_ids
+
+
+def safe_str(val: Any) -> str:
+    """Safely extracts a stripped string or returns empty string."""
+    if isinstance(val, str):
+        return val.strip()
+    return ""
+
+
+def normalize_identifier(s: str) -> str:
+    """Normalizes identifier by lowercasing and converting non-alphanumeric separators to underscore."""
+    return re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+
+
+def normalize_cli_command(cmd: str) -> str:
+    """Normalizes CLI command by collapsing whitespace and lowercasing."""
+    return " ".join(cmd.lower().split())
 
 
 def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
@@ -123,8 +165,9 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
             return result
 
     try:
-        agent_ops_data = json.loads(agent_ops_path.read_text(encoding="utf-8"))
-    except Exception as exc:
+        agent_ops_raw = agent_ops_path.read_text(encoding="utf-8")
+        agent_ops_data = json.loads(agent_ops_raw)
+    except (OSError, json.JSONDecodeError) as exc:
         result.add_error(
             ERR_CROSSWALK_CORRUPT_FILE,
             "architecture/agent_operations.json",
@@ -134,13 +177,32 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
         return result
 
     try:
-        crosswalk_data = json.loads(crosswalk_json_path.read_text(encoding="utf-8"))
-    except Exception as exc:
+        crosswalk_raw = crosswalk_json_path.read_text(encoding="utf-8")
+        crosswalk_data = json.loads(crosswalk_raw)
+    except (OSError, json.JSONDecodeError) as exc:
         result.add_error(
             ERR_CROSSWALK_CORRUPT_FILE,
             "architecture/operation_crosswalk.json",
             "#",
             f"Failed to parse operation_crosswalk.json: {exc}",
+        )
+        return result
+
+    if not isinstance(agent_ops_data, dict):
+        result.add_error(
+            ERR_CROSSWALK_CORRUPT_FILE,
+            "architecture/agent_operations.json",
+            "#",
+            "Root of agent_operations.json must be a JSON object",
+        )
+        return result
+
+    if not isinstance(crosswalk_data, dict):
+        result.add_error(
+            ERR_CROSSWALK_CORRUPT_FILE,
+            "architecture/operation_crosswalk.json",
+            "#",
+            "Root of operation_crosswalk.json must be a JSON object",
         )
         return result
 
@@ -150,21 +212,23 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
             ERR_CROSSWALK_CORRUPT_FILE,
             "architecture/operation_crosswalk.json",
             "#/crosswalk",
-            "Crosswalk entries collection is missing or empty",
+            "Crosswalk entries collection is missing, not a list, or empty",
         )
         return result
 
     registered_ops: dict[str, dict[str, Any]] = {}
     for op in agent_ops_data.get("operations", []):
-        opid = op.get("id")
-        if opid:
-            registered_ops[opid] = op
+        if isinstance(op, dict):
+            opid = safe_str(op.get("id"))
+            if opid:
+                registered_ops[opid] = op
 
     all_errors, tombstoned_errors = parse_error_registry(errors_md_path)
+    registered_exit_ids = parse_exit_registry(errors_md_path)
     md_rows = parse_markdown_table(crosswalk_md_path)
     md_map: dict[str, dict[str, str]] = {}
     for r in md_rows:
-        oid = r.get("operation_id", "").strip()
+        oid = safe_str(r.get("operation_id"))
         if oid:
             md_map[oid] = r
 
@@ -174,15 +238,24 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
     library_entries: dict[str, str] = {}
 
     for idx, entry in enumerate(crosswalk_entries):
-        op_id = entry.get("operation_id", "").strip()
-        op_name = entry.get("operation_name", "").strip()
-        cli_cmd = entry.get("cli_command", "").strip()
-        lib_entry = entry.get("library_entry_point", "").strip()
-        mcp_tool = entry.get("mcp_tool_name", "").strip()
-        primary_err = entry.get("primary_error_id", "").strip()
-        error_ids = entry.get("error_identities", [])
-        exit_ids = entry.get("exit_identities", [])
-        status = entry.get("status", "").strip()
+        if not isinstance(entry, dict):
+            result.add_error(
+                ERR_CROSSWALK_CORRUPT_FILE,
+                "architecture/operation_crosswalk.json",
+                f"#/crosswalk[{idx}]",
+                "Crosswalk entry must be a JSON object",
+            )
+            continue
+
+        op_id = safe_str(entry.get("operation_id"))
+        op_name = safe_str(entry.get("operation_name"))
+        cli_cmd = safe_str(entry.get("cli_command"))
+        lib_entry = safe_str(entry.get("library_entry_point"))
+        mcp_tool = safe_str(entry.get("mcp_tool_name"))
+        primary_err = safe_str(entry.get("primary_error_id"))
+        error_ids = entry.get("error_identities")
+        exit_ids = entry.get("exit_identities")
+        status = safe_str(entry.get("status"))
 
         if not op_id:
             result.add_error(
@@ -190,6 +263,15 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
                 "architecture/operation_crosswalk.json",
                 f"#/crosswalk[{idx}]",
                 "Crosswalk entry missing operation_id",
+            )
+            continue
+
+        if op_id in crosswalk_map:
+            result.add_error(
+                ERR_CROSSWALK_NAME_COLLISION,
+                "architecture/operation_crosswalk.json",
+                f"#/crosswalk/{op_id}",
+                f"Duplicate operation_id in crosswalk: {op_id}",
             )
             continue
 
@@ -209,39 +291,66 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
                     f"Operation '{op_id}' missing mandatory surface mapping: {field_name}",
                 )
 
-        # Check collisions
+        # Check CLI collisions including normalization and prefix collision
         if cli_cmd:
-            if cli_cmd in cli_commands:
-                result.add_error(
-                    ERR_CROSSWALK_NAME_COLLISION,
-                    "architecture/operation_crosswalk.json",
-                    f"#/crosswalk/{op_id}/cli_command",
-                    f"CLI command '{cli_cmd}' collision between '{cli_commands[cli_cmd]}' and '{op_id}'",
-                )
-            else:
-                cli_commands[cli_cmd] = op_id
+            norm_cli = normalize_cli_command(cli_cmd)
+            curr_tokens = tuple(norm_cli.split())
+            collision_found = False
+            for prev_norm, prev_op in cli_commands.items():
+                prev_tokens = tuple(prev_norm.split())
+                if curr_tokens == prev_tokens:
+                    result.add_error(
+                        ERR_CROSSWALK_NAME_COLLISION,
+                        "architecture/operation_crosswalk.json",
+                        f"#/crosswalk/{op_id}/cli_command",
+                        f"CLI command '{cli_cmd}' collision between '{prev_op}' and '{op_id}'",
+                    )
+                    collision_found = True
+                    break
+                elif len(curr_tokens) < len(prev_tokens) and prev_tokens[:len(curr_tokens)] == curr_tokens:
+                    result.add_error(
+                        ERR_CROSSWALK_NAME_COLLISION,
+                        "architecture/operation_crosswalk.json",
+                        f"#/crosswalk/{op_id}/cli_command",
+                        f"CLI command '{cli_cmd}' prefix collision: prefix of '{prev_op}' ('{prev_norm}')",
+                    )
+                    collision_found = True
+                    break
+                elif len(prev_tokens) < len(curr_tokens) and curr_tokens[:len(prev_tokens)] == prev_tokens:
+                    result.add_error(
+                        ERR_CROSSWALK_NAME_COLLISION,
+                        "architecture/operation_crosswalk.json",
+                        f"#/crosswalk/{op_id}/cli_command",
+                        f"CLI command '{cli_cmd}' prefix collision: prefixed by '{prev_op}' ('{prev_norm}')",
+                    )
+                    collision_found = True
+                    break
+            if not collision_found:
+                cli_commands[norm_cli] = op_id
 
         if mcp_tool:
-            if mcp_tool in mcp_tools:
+            norm_mcp = normalize_identifier(mcp_tool)
+            if norm_mcp in mcp_tools:
                 result.add_error(
                     ERR_CROSSWALK_NAME_COLLISION,
                     "architecture/operation_crosswalk.json",
                     f"#/crosswalk/{op_id}/mcp_tool_name",
-                    f"MCP tool name '{mcp_tool}' collision between '{mcp_tools[mcp_tool]}' and '{op_id}'",
+                    f"MCP tool name '{mcp_tool}' collision between '{mcp_tools[norm_mcp]}' and '{op_id}'",
                 )
             else:
-                mcp_tools[mcp_tool] = op_id
+                mcp_tools[norm_mcp] = op_id
 
         if lib_entry:
-            if lib_entry in library_entries:
+            norm_lib = normalize_identifier(lib_entry)
+            if norm_lib in library_entries:
                 result.add_error(
                     ERR_CROSSWALK_NAME_COLLISION,
                     "architecture/operation_crosswalk.json",
                     f"#/crosswalk/{op_id}/library_entry_point",
-                    f"Library entry point '{lib_entry}' collision between '{library_entries[lib_entry]}' and '{op_id}'",
+                    f"Library entry point '{lib_entry}' collision between '{library_entries[norm_lib]}' and '{op_id}'",
                 )
             else:
-                library_entries[lib_entry] = op_id
+                library_entries[norm_lib] = op_id
 
         # Check operation existence in agent_operations.json
         if op_id not in registered_ops:
@@ -253,8 +362,7 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
             )
         else:
             reg_op = registered_ops[op_id]
-            # Check status match
-            reg_status = reg_op.get("status", "").strip()
+            reg_status = safe_str(reg_op.get("status"))
             if status != reg_status:
                 result.add_error(
                     ERR_CROSSWALK_STALE_ENTRY,
@@ -262,35 +370,72 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
                     f"#/crosswalk/{op_id}/status",
                     f"Operation '{op_id}' status mismatch: crosswalk has '{status}', agent_operations has '{reg_status}'",
                 )
-
-        # Check error codes
-        if primary_err:
-            if primary_err not in all_errors:
-                result.add_error(
-                    ERR_CROSSWALK_UNREGISTERED_ERROR,
-                    "architecture/operation_crosswalk.json",
-                    f"#/crosswalk/{op_id}/primary_error_id",
-                    f"Operation '{op_id}' references unregistered primary error ID: {primary_err}",
-                )
-            elif primary_err in tombstoned_errors:
+            if reg_status in ("tombstone", "deprecated") or status in ("tombstone", "deprecated"):
                 result.add_error(
                     ERR_CROSSWALK_STALE_ENTRY,
                     "architecture/operation_crosswalk.json",
-                    f"#/crosswalk/{op_id}/primary_error_id",
-                    f"Operation '{op_id}' references tombstoned error ID: {primary_err}",
+                    f"#/crosswalk/{op_id}/status",
+                    f"Operation '{op_id}' is tombstoned/deprecated but has an active crosswalk mapping",
                 )
 
-        for err_id in error_ids:
-            if err_id not in all_errors:
-                result.add_error(
-                    ERR_CROSSWALK_UNREGISTERED_ERROR,
-                    "architecture/operation_crosswalk.json",
-                    f"#/crosswalk/{op_id}/error_identities",
-                    f"Operation '{op_id}' references unregistered error ID: {err_id}",
-                )
+        # Check error codes
+        if not primary_err:
+            result.add_error(
+                ERR_CROSSWALK_SURFACE_MISSING,
+                "architecture/operation_crosswalk.json",
+                f"#/crosswalk/{op_id}/primary_error_id",
+                f"Operation '{op_id}' missing mandatory primary_error_id",
+            )
+        elif primary_err not in all_errors:
+            result.add_error(
+                ERR_CROSSWALK_UNREGISTERED_ERROR,
+                "architecture/operation_crosswalk.json",
+                f"#/crosswalk/{op_id}/primary_error_id",
+                f"Operation '{op_id}' references unregistered primary error ID: {primary_err}",
+            )
+        elif primary_err in tombstoned_errors:
+            result.add_error(
+                ERR_CROSSWALK_STALE_ENTRY,
+                "architecture/operation_crosswalk.json",
+                f"#/crosswalk/{op_id}/primary_error_id",
+                f"Operation '{op_id}' references tombstoned error ID: {primary_err}",
+            )
+
+        if not isinstance(error_ids, list):
+            result.add_error(
+                ERR_CROSSWALK_CORRUPT_FILE,
+                "architecture/operation_crosswalk.json",
+                f"#/crosswalk/{op_id}/error_identities",
+                f"Operation '{op_id}' error_identities must be a list",
+            )
+        else:
+            for err_id in error_ids:
+                if not isinstance(err_id, str):
+                    result.add_error(
+                        ERR_CROSSWALK_CORRUPT_FILE,
+                        "architecture/operation_crosswalk.json",
+                        f"#/crosswalk/{op_id}/error_identities",
+                        f"Operation '{op_id}' error identity must be a string",
+                    )
+                    continue
+                err_id_str = err_id.strip()
+                if err_id_str not in all_errors:
+                    result.add_error(
+                        ERR_CROSSWALK_UNREGISTERED_ERROR,
+                        "architecture/operation_crosswalk.json",
+                        f"#/crosswalk/{op_id}/error_identities",
+                        f"Operation '{op_id}' references unregistered error ID: {err_id_str}",
+                    )
+                elif err_id_str in tombstoned_errors:
+                    result.add_error(
+                        ERR_CROSSWALK_STALE_ENTRY,
+                        "architecture/operation_crosswalk.json",
+                        f"#/crosswalk/{op_id}/error_identities",
+                        f"Operation '{op_id}' references tombstoned error ID: {err_id_str}",
+                    )
 
         # Check exit identities
-        if not exit_ids:
+        if not isinstance(exit_ids, list) or len(exit_ids) == 0:
             result.add_error(
                 ERR_CROSSWALK_SURFACE_MISSING,
                 "architecture/operation_crosswalk.json",
@@ -299,15 +444,31 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
             )
         else:
             for exit_id in exit_ids:
-                if not exit_id.startswith("EXIT-"):
+                if not isinstance(exit_id, str):
                     result.add_error(
                         ERR_CROSSWALK_CORRUPT_FILE,
                         "architecture/operation_crosswalk.json",
                         f"#/crosswalk/{op_id}/exit_identities",
-                        f"Operation '{op_id}' invalid exit identity format: {exit_id}",
+                        f"Operation '{op_id}' exit identity must be a string",
+                    )
+                    continue
+                exit_id_str = exit_id.strip()
+                if not exit_id_str.startswith("EXIT-"):
+                    result.add_error(
+                        ERR_CROSSWALK_CORRUPT_FILE,
+                        "architecture/operation_crosswalk.json",
+                        f"#/crosswalk/{op_id}/exit_identities",
+                        f"Operation '{op_id}' invalid exit identity format: {exit_id_str}",
+                    )
+                elif exit_id_str not in registered_exit_ids:
+                    result.add_error(
+                        ERR_CROSSWALK_UNREGISTERED_ERROR,
+                        "architecture/operation_crosswalk.json",
+                        f"#/crosswalk/{op_id}/exit_identities",
+                        f"Operation '{op_id}' references unregistered exit identity: {exit_id_str}",
                     )
 
-        # Check markdown table parity
+        # Check markdown table parity (forward check)
         if op_id not in md_map:
             result.add_error(
                 ERR_CROSSWALK_DIVERGENCE,
@@ -338,6 +499,16 @@ def validate_crosswalk(repo_root: Path = ROOT) -> ValidationResult:
                     f"#{op_id}/library_entry_point",
                     f"Operation '{op_id}' library entry mismatch: markdown '{md_row.get('library_entry_point')}' != json '{lib_entry}'",
                 )
+
+    # Check reverse markdown table parity
+    for md_op_id in md_map:
+        if md_op_id not in crosswalk_map:
+            result.add_error(
+                ERR_CROSSWALK_DIVERGENCE,
+                "registries/OPERATION_CROSSWALK.md",
+                f"#{md_op_id}",
+                f"Operation '{md_op_id}' present in registries/OPERATION_CROSSWALK.md but missing from JSON crosswalk",
+            )
 
     # Check for operations in agent_operations.json missing from crosswalk
     for reg_id in registered_ops:
