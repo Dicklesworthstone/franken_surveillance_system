@@ -180,8 +180,15 @@ def strip_rust_comments_and_strings(src: str) -> str:
             i += 1
             while i < n:
                 if src[i] == "\\":
-                    out.append("  ")
-                    i += 2
+                    if i + 1 < n and src[i + 1] == "\n":
+                        out.append(" \n")
+                        i += 2
+                    elif i + 2 < n and src[i + 1] == "\r" and src[i + 2] == "\n":
+                        out.append("  \n")
+                        i += 3
+                    else:
+                        out.append("  ")
+                        i += 2
                 elif src[i] == '"':
                     out.append(" ")
                     i += 1
@@ -196,21 +203,35 @@ def strip_rust_comments_and_strings(src: str) -> str:
 
         # Character literal: 'x' (distinguished from lifetime 'a)
         if c == "'" and i + 1 < n:
-            j = i + 1
-            found_char = False
-            while j < min(n, i + 8):
-                if src[j] == "\n":
-                    break
-                if src[j] == "\\":
-                    j += 2
-                    continue
-                if src[j] == "'":
-                    found_char = True
-                    break
-                j += 1
-            if found_char:
-                out.append(" " * (j - i + 1))
-                i = j + 1
+            is_char = False
+            char_len = 0
+            if src[i + 1] != "\\" and src[i + 1] != "'" and src[i + 1] != "\n":
+                if i + 2 < n and src[i + 2] == "'":
+                    is_char = True
+                    char_len = 3
+            elif src[i + 1] == "\\":
+                if i + 2 < n:
+                    esc = src[i + 2]
+                    if esc in "'\"\\nrt0" and i + 3 < n and src[i + 3] == "'":
+                        is_char = True
+                        char_len = 4
+                    elif esc == "x" and i + 5 < n and src[i + 5] == "'":
+                        if all(ch in "0123456789abcdefABCDEF" for ch in src[i + 3 : i + 5]):
+                            is_char = True
+                            char_len = 6
+                    elif esc == "u" and i + 3 < n and src[i + 3] == "{":
+                        close_brace = src.find("}", i + 4)
+                        if (
+                            close_brace != -1
+                            and close_brace < min(n - 1, i + 11)
+                            and src[close_brace + 1] == "'"
+                        ):
+                            is_char = True
+                            char_len = close_brace + 2 - i
+
+            if is_char:
+                out.append(" " * char_len)
+                i += char_len
                 continue
 
         out.append(c)
@@ -240,6 +261,7 @@ def run_cargo_metadata(
     if proc.returncode != 0:
         # If cargo is wrapped via rustup or rust-toolchain.toml, try with rustup
         toolchain_file = root / "rust-toolchain.toml"
+        rustup_exc: Exception | None = None
         if toolchain_file.is_file() and shutil.which("rustup"):
             try:
                 tc_data = tomllib.loads(toolchain_file.read_text(encoding="utf-8"))
@@ -247,11 +269,12 @@ def run_cargo_metadata(
                 if channel:
                     rustup_cmd = ["rustup", "run", channel] + cmd
                     proc = subprocess.run(rustup_cmd, cwd=root, capture_output=True, text=True)
-            except Exception:
-                pass
+            except (OSError, tomllib.TOMLDecodeError, subprocess.SubprocessError) as exc:
+                rustup_exc = exc
 
     if proc.returncode != 0:
-        err_msg = proc.stderr.strip() or proc.stdout.strip() or "cargo metadata command failed"
+        base_err = proc.stderr.strip() or proc.stdout.strip() or "cargo metadata command failed"
+        err_msg = f"{base_err} (rustup fallback error: {rustup_exc})" if rustup_exc else base_err
         return None, err_msg
 
     try:
@@ -259,7 +282,7 @@ def run_cargo_metadata(
         if not isinstance(data, dict):
             return None, "cargo metadata root must be a JSON object"
         return data, None
-    except Exception as exc:
+    except json.JSONDecodeError as exc:
         return None, f"cargo metadata output is invalid JSON: {exc}"
 
 
@@ -296,7 +319,7 @@ def check_manifest_lints(
                 .get("unsafe_code")
             )
             workspace_forbids_unsafe = ws_unsafe_lint == "forbid"
-        except Exception as exc:
+        except (OSError, tomllib.TOMLDecodeError) as exc:
             findings.append(
                 UnsafeFinding(
                     code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
@@ -337,7 +360,7 @@ def check_manifest_lints(
 
         try:
             pkg_toml = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception as exc:
+        except (OSError, tomllib.TOMLDecodeError) as exc:
             findings.append(
                 UnsafeFinding(
                     code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
@@ -402,6 +425,71 @@ def check_manifest_lints(
     return findings
 
 
+def find_rust_attributes(src: str) -> list[tuple[int, int, bool, str]]:
+    """Extracts all Rust outer (#[...]) and inner (#![...]) attributes from stripped source.
+
+    Returns list of (start_idx, end_idx, is_inner, attribute_content).
+    """
+    attributes: list[tuple[int, int, bool, str]] = []
+    i = 0
+    n = len(src)
+    while i < n:
+        if src[i] == "#":
+            start_idx = i
+            j = i + 1
+            while j < n and src[j] in " \t\r\n":
+                j += 1
+            is_inner = False
+            if j < n and src[j] == "!":
+                is_inner = True
+                j += 1
+                while j < n and src[j] in " \t\r\n":
+                    j += 1
+            if j < n and src[j] == "[":
+                bracket_depth = 1
+                k = j + 1
+                while k < n and bracket_depth > 0:
+                    if src[k] == "[":
+                        bracket_depth += 1
+                    elif src[k] == "]":
+                        bracket_depth -= 1
+                    k += 1
+                if bracket_depth == 0:
+                    end_idx = k
+                    content = src[j + 1 : end_idx - 1]
+                    attributes.append((start_idx, end_idx, is_inner, content))
+                    i = end_idx
+                    continue
+        i += 1
+    return attributes
+
+
+def is_unsafe_permitting_attribute(content: str) -> bool:
+    """Returns True if attribute content permits or tolerates unsafe_code."""
+    if not re.search(r"\bunsafe_code\b", content):
+        return False
+    # Check for allow(unsafe_code), warn(unsafe_code), expect(unsafe_code)
+    # across newlines, inside cfg_attr, or among multiple lints
+    if re.search(r"\b(?:allow|warn|expect)\s*\([^)]*\bunsafe_code\b", content, re.DOTALL):
+        return True
+    # Also balance parentheses to catch nested arguments e.g. allow(nested(a, b), unsafe_code)
+    for m in re.finditer(r"\b(?:allow|warn|expect)\s*\(", content):
+        start_paren = m.end() - 1
+        depth = 1
+        k = start_paren + 1
+        while k < len(content) and depth > 0:
+            if content[k] == "(":
+                depth += 1
+            elif content[k] == ")":
+                depth -= 1
+            k += 1
+        if depth == 0:
+            arg_content = content[start_paren + 1 : k - 1]
+            if re.search(r"\bunsafe_code\b", arg_content):
+                return True
+    return False
+
+
 def check_target_roots(
     packages: list[dict[str, Any]],
     workspace_members: set[str],
@@ -410,6 +498,7 @@ def check_target_roots(
     """Verifies that every target root file declares unconditional #![forbid(unsafe_code)]."""
     findings: list[UnsafeFinding] = []
     enumerated_targets: list[dict[str, Any]] = []
+    seen_target_paths: set[Path] = set()
 
     for pkg in packages:
         pkg_id = pkg.get("id", "")
@@ -425,63 +514,195 @@ def check_target_roots(
             if not src_path_str:
                 continue
 
-            src_path = Path(src_path_str)
+            src_path = Path(src_path_str).resolve()
+            seen_target_paths.add(src_path)
             rel_src = sanitize_path(src_path, root)
-            kind_str = ",".join(t_kinds)
 
             enumerated_targets.append({
                 "crate": pkg_name,
                 "target_name": t_name,
                 "kinds": t_kinds,
                 "src_path": rel_src,
+                "path": src_path,
             })
 
-            if not src_path.is_file():
-                findings.append(
-                    UnsafeFinding(
-                        code=ERR_TARGET_ROOT_MISSING_FORBID,
-                        file=rel_src,
-                        location="target_root",
-                        message=f"Target root file does not exist: '{rel_src}'",
-                        remediation=DIAGNOSTIC_REGISTRY[ERR_TARGET_ROOT_MISSING_FORBID]["remediation"],
-                        params={"crate": pkg_name, "target": t_name, "kind": kind_str},
-                    )
-                )
-                continue
+        # Also inspect package directory for target files that might be omitted from cargo metadata
+        # (e.g. autotests = false, autoexamples = false, autobenches = false, or build helpers)
+        manifest_str = pkg.get("manifest_path")
+        if manifest_str:
+            pkg_dir = Path(manifest_str).parent
+            if pkg_dir.is_dir():
+                # tests/
+                test_dir = pkg_dir / "tests"
+                if test_dir.is_dir():
+                    for p in sorted(test_dir.iterdir()):
+                        if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
+                            seen_target_paths.add(p.resolve())
+                            enumerated_targets.append({
+                                "crate": pkg_name,
+                                "target_name": p.stem,
+                                "kinds": ["test"],
+                                "src_path": sanitize_path(p, root),
+                                "path": p.resolve(),
+                            })
+                        elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
+                            main_p = (p / "main.rs").resolve()
+                            seen_target_paths.add(main_p)
+                            enumerated_targets.append({
+                                "crate": pkg_name,
+                                "target_name": p.name,
+                                "kinds": ["test"],
+                                "src_path": sanitize_path(main_p, root),
+                                "path": main_p,
+                            })
 
-            try:
-                raw_text = src_path.read_text(encoding="utf-8")
-            except OSError as exc:
-                findings.append(
-                    UnsafeFinding(
-                        code=ERR_TARGET_ROOT_MISSING_FORBID,
-                        file=rel_src,
-                        location="target_root",
-                        message=f"Could not read target root '{rel_src}': {exc}",
-                        remediation=DIAGNOSTIC_REGISTRY[ERR_TARGET_ROOT_MISSING_FORBID]["remediation"],
-                        params={"crate": pkg_name, "target": t_name, "kind": kind_str},
-                    )
-                )
-                continue
+                # examples/
+                ex_dir = pkg_dir / "examples"
+                if ex_dir.is_dir():
+                    for p in sorted(ex_dir.iterdir()):
+                        if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
+                            seen_target_paths.add(p.resolve())
+                            enumerated_targets.append({
+                                "crate": pkg_name,
+                                "target_name": p.stem,
+                                "kinds": ["example"],
+                                "src_path": sanitize_path(p, root),
+                                "path": p.resolve(),
+                            })
+                        elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
+                            main_p = (p / "main.rs").resolve()
+                            seen_target_paths.add(main_p)
+                            enumerated_targets.append({
+                                "crate": pkg_name,
+                                "target_name": p.name,
+                                "kinds": ["example"],
+                                "src_path": sanitize_path(main_p, root),
+                                "path": main_p,
+                            })
 
-            # Check stripped content for inner #![forbid(unsafe_code)]
-            stripped = strip_rust_comments_and_strings(raw_text)
-            if not FORBID_UNSAFE_RE.search(stripped):
-                findings.append(
-                    UnsafeFinding(
-                        code=ERR_TARGET_ROOT_MISSING_FORBID,
-                        file=rel_src,
-                        location="target_root",
-                        message=(
-                            f"Target root '{rel_src}' ({pkg_name}::{t_name} [{kind_str}]) "
-                            f"lacks unconditional #![forbid(unsafe_code)]"
-                        ),
-                        remediation=DIAGNOSTIC_REGISTRY[ERR_TARGET_ROOT_MISSING_FORBID]["remediation"],
-                        params={"crate": pkg_name, "target": t_name, "kind": kind_str},
-                    )
-                )
+                # benches/
+                bench_dir = pkg_dir / "benches"
+                if bench_dir.is_dir():
+                    for p in sorted(bench_dir.iterdir()):
+                        if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
+                            seen_target_paths.add(p.resolve())
+                            enumerated_targets.append({
+                                "crate": pkg_name,
+                                "target_name": p.stem,
+                                "kinds": ["bench"],
+                                "src_path": sanitize_path(p, root),
+                                "path": p.resolve(),
+                            })
+                        elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
+                            main_p = (p / "main.rs").resolve()
+                            seen_target_paths.add(main_p)
+                            enumerated_targets.append({
+                                "crate": pkg_name,
+                                "target_name": p.name,
+                                "kinds": ["bench"],
+                                "src_path": sanitize_path(main_p, root),
+                                "path": main_p,
+                            })
 
-    return findings, enumerated_targets
+                # build.rs
+                build_rs = pkg_dir / "build.rs"
+                if build_rs.is_file() and build_rs.resolve() not in seen_target_paths:
+                    seen_target_paths.add(build_rs.resolve())
+                    enumerated_targets.append({
+                        "crate": pkg_name,
+                        "target_name": f"{pkg_name}-build",
+                        "kinds": ["custom-build"],
+                        "src_path": sanitize_path(build_rs, root),
+                        "path": build_rs.resolve(),
+                    })
+
+                # build helper directories (e.g. build/, build_helper/, build_helpers/)
+                for helper_name in ("build", "build_helper", "build_helpers"):
+                    helper_dir = pkg_dir / helper_name
+                    if helper_dir.is_dir():
+                        for p in sorted(helper_dir.iterdir()):
+                            if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
+                                seen_target_paths.add(p.resolve())
+                                enumerated_targets.append({
+                                    "crate": pkg_name,
+                                    "target_name": p.stem,
+                                    "kinds": ["build-helper"],
+                                    "src_path": sanitize_path(p, root),
+                                    "path": p.resolve(),
+                                })
+                            elif p.is_dir() and (p / "mod.rs").is_file() and (p / "mod.rs").resolve() not in seen_target_paths:
+                                mod_p = (p / "mod.rs").resolve()
+                                seen_target_paths.add(mod_p)
+                                enumerated_targets.append({
+                                    "crate": pkg_name,
+                                    "target_name": p.name,
+                                    "kinds": ["build-helper"],
+                                    "src_path": sanitize_path(mod_p, root),
+                                    "path": mod_p,
+                                })
+
+    for target_info in enumerated_targets:
+        src_path: Path = target_info["path"]
+        rel_src: str = target_info["src_path"]
+        pkg_name = target_info["crate"]
+        t_name = target_info["target_name"]
+        kind_str = ",".join(target_info["kinds"])
+
+        if not src_path.is_file():
+            findings.append(
+                UnsafeFinding(
+                    code=ERR_TARGET_ROOT_MISSING_FORBID,
+                    file=rel_src,
+                    location="target_root",
+                    message=f"Target root file does not exist: '{rel_src}'",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_TARGET_ROOT_MISSING_FORBID]["remediation"],
+                    params={"crate": pkg_name, "target": t_name, "kind": kind_str},
+                )
+            )
+            continue
+
+        try:
+            raw_text = src_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            findings.append(
+                UnsafeFinding(
+                    code=ERR_TARGET_ROOT_MISSING_FORBID,
+                    file=rel_src,
+                    location="target_root",
+                    message=f"Could not read target root '{rel_src}': {exc}",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_TARGET_ROOT_MISSING_FORBID]["remediation"],
+                    params={"crate": pkg_name, "target": t_name, "kind": kind_str},
+                )
+            )
+            continue
+
+        # Check stripped content for inner #![forbid(unsafe_code)]
+        stripped = strip_rust_comments_and_strings(raw_text)
+        if not FORBID_UNSAFE_RE.search(stripped):
+            findings.append(
+                UnsafeFinding(
+                    code=ERR_TARGET_ROOT_MISSING_FORBID,
+                    file=rel_src,
+                    location="target_root",
+                    message=(
+                        f"Target root '{rel_src}' ({pkg_name}::{t_name} [{kind_str}]) "
+                        f"lacks unconditional #![forbid(unsafe_code)]"
+                    ),
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_TARGET_ROOT_MISSING_FORBID]["remediation"],
+                    params={"crate": pkg_name, "target": t_name, "kind": kind_str},
+                )
+            )
+
+    clean_targets = [
+        {
+            "crate": t["crate"],
+            "target_name": t["target_name"],
+            "kinds": t["kinds"],
+            "src_path": t["src_path"],
+        }
+        for t in enumerated_targets
+    ]
+    return findings, clean_targets
 
 
 def check_rust_source_file(rs_path: Path, root: Path) -> list[UnsafeFinding]:
@@ -503,35 +724,37 @@ def check_rust_source_file(rs_path: Path, root: Path) -> list[UnsafeFinding]:
         )
         return findings
 
-    # 1. Check for unsafe-permitting attributes
     stripped = strip_rust_comments_and_strings(raw_text)
+    attributes = find_rust_attributes(stripped)
 
-    for line_idx, line in enumerate(stripped.splitlines(), start=1):
-        match = UNSAFE_PERMIT_ATTR_RE.search(line)
-        if match:
+    # 1. Check for unsafe-permitting attributes (single-line, multiline, nested, cfg_attr)
+    for start_idx, end_idx, _is_inner, content in attributes:
+        if is_unsafe_permitting_attribute(content):
+            line_idx = raw_text[:start_idx].count("\n") + 1
+            raw_snippet = raw_text[start_idx:end_idx].strip()
             findings.append(
                 UnsafeFinding(
                     code=ERR_UNSAFE_ATTRIBUTE_PERMITTED,
                     file=rel_path,
                     location=f"line:{line_idx}",
                     message=(
-                        f"Unsafe-permitting attribute '{match.group().strip()}' found at line {line_idx}. "
+                        f"Unsafe-permitting attribute '{raw_snippet}' found at line {line_idx}. "
                         f"AGENTS.md strictly forbids allow/warn/expect on unsafe_code."
                     ),
                     remediation=DIAGNOSTIC_REGISTRY[ERR_UNSAFE_ATTRIBUTE_PERMITTED]["remediation"],
-                    params={"line": line_idx, "attribute": match.group().strip()},
+                    params={"line": line_idx, "attribute": raw_snippet},
                 )
             )
 
     # 2. Check for unsafe constructs in code
-    # Mask out valid forbid(unsafe_code) attributes first so they don't trigger \bunsafe\b
-    code_without_forbid = GENERIC_FORBID_ATTR_RE.sub(
-        lambda m: " " * len(m.group()), stripped
-    )
-    # Also mask any unsafe-permitting attributes to avoid double-reporting on the attribute itself
-    code_without_attrs = UNSAFE_PERMIT_ATTR_RE.sub(
-        lambda m: " " * len(m.group()), code_without_forbid
-    )
+    # Mask out ALL attributes so their contents (including valid forbid(unsafe_code))
+    # do not trigger \bunsafe\b checks. Preserve newlines so line numbers remain exact.
+    mask_chars = list(stripped)
+    for start_idx, end_idx, _, _ in attributes:
+        for k in range(start_idx, end_idx):
+            if mask_chars[k] != "\n":
+                mask_chars[k] = " "
+    code_without_attrs = "".join(mask_chars)
 
     lines = code_without_attrs.splitlines()
     raw_lines = raw_text.splitlines()
@@ -583,9 +806,18 @@ def check_rust_source_file(rs_path: Path, root: Path) -> list[UnsafeFinding]:
 
 
 def discover_rust_files(root: Path, packages: list[dict[str, Any]] | None = None) -> list[Path]:
-    """Discovers all Rust source files in workspace packages or under root."""
+    """Discovers all Rust source files in workspace packages and under repository root."""
     rust_files: set[Path] = set()
 
+    # Always scan the repository root (excluding excluded dirs)
+    if root.is_dir():
+        for dirpath, dirnames, filenames in os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIR_NAMES]
+            for f in filenames:
+                if f.endswith(".rs"):
+                    rust_files.add(Path(dirpath) / f)
+
+    # Also scan any package directories outside root if any
     if packages:
         for pkg in packages:
             manifest_str = pkg.get("manifest_path")
@@ -597,13 +829,6 @@ def discover_rust_files(root: Path, packages: list[dict[str, Any]] | None = None
                         for f in filenames:
                             if f.endswith(".rs"):
                                 rust_files.add(Path(dirpath) / f)
-
-    if not rust_files:
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIR_NAMES]
-            for f in filenames:
-                if f.endswith(".rs"):
-                    rust_files.add(Path(dirpath) / f)
 
     return sorted(rust_files)
 
@@ -641,9 +866,28 @@ def audit_unsafe_prohibition(
             "crate_count": 0,
             "rust_file_count": 0,
         }
+    packages = metadata.get("packages") if isinstance(metadata, dict) else None
+    if not isinstance(packages, list) or len(packages) == 0:
+        findings.append(
+            UnsafeFinding(
+                code=ERR_METADATA_UNREADABLE,
+                file=sanitize_path(manifest_path or (root / "Cargo.toml"), root),
+                location="metadata",
+                message="Cargo metadata contains no packages or is empty/degenerate",
+                remediation=DIAGNOSTIC_REGISTRY[ERR_METADATA_UNREADABLE]["remediation"],
+                params={"error": "empty_or_missing_packages"},
+            )
+        )
+        summary = {
+            "status": "fail",
+            "error_count": 1,
+            "target_count": 0,
+            "crate_count": 0,
+            "rust_file_count": 0,
+            "workspace_members_count": 0,
+        }
         return False, findings, summary
 
-    packages = metadata.get("packages", [])
     workspace_members = set(metadata.get("workspace_members", []))
     workspace_root_str = metadata.get("workspace_root")
     workspace_root = Path(workspace_root_str) if workspace_root_str else root

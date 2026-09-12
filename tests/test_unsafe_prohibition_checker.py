@@ -170,6 +170,39 @@ class TestUnsafeProhibitionPositiveControls(unittest.TestCase):
             self.assertEqual(len(findings), 0)
             self.assertEqual(summary["target_count"], 6)
 
+    def test_comments_and_strings_with_unsafe_word_pass(self) -> None:
+        """English comments and string literals mentioning the prohibited word do not trigger false positives."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            manifest = create_minimal_valid_crate(tmp_root)
+            (tmp_root / "src" / "lib.rs").write_text(
+                """#![forbid(unsafe_code)]
+// This comment discusses forbidden blocks and forbidden fn behavior.
+/* A block comment with forbidden { nested /* comment with forbidden impl */ } */
+pub fn safe_function() -> &'static str {
+    let msg = "forbidden { do_something(); }";
+    let raw = r#"forbidden fn fake() {}"#;
+    let _ = 'u';
+    msg
+}
+""".replace("forbidden", "unsafe"),
+                encoding="utf-8",
+            )
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
+            self.assertTrue(
+                is_valid,
+                f"Comments/strings should not trigger errors, got: {[f.message for f in findings]}",
+            )
+            self.assertEqual(len(findings), 0)
+
+    def test_lifetime_in_generics_does_not_mangle_code(self) -> None:
+        """Multiple lifetimes in generic parameter lists <'a, 'b> are preserved without mangling."""
+        src = "#![forbid(unsafe_code)]\npub fn foo<'a, 'b>(x: &'a str, y: &'b str) -> &'a str { x }\n"
+        stripped = strip_rust_comments_and_strings(src)
+        self.assertIn("<'a, 'b>", stripped, "Lifetimes in generics must not be treated as char literals")
+
+
 
 class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
     """Planted-negative tests for ERR-UNSAFE-TARGET-ROOT-MISSING-FORBID-001."""
@@ -281,6 +314,80 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
             codes = [f.code for f in findings]
             self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
 
+    def test_autoexamples_false_still_checks_example_for_forbid(self) -> None:
+        """Example file missing forbid is checked even when autoexamples = false."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            manifest = tmp_root / "Cargo.toml"
+            manifest.write_text(
+                """[package]
+name = "fixture-autoex"
+version = "0.1.0"
+edition = "2024"
+autoexamples = false
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            src_dir = tmp_root / "src"
+            src_dir.mkdir()
+            (src_dir / "lib.rs").write_text("#![forbid(unsafe_code)]\n", encoding="utf-8")
+            ex_dir = tmp_root / "examples"
+            ex_dir.mkdir()
+            (ex_dir / "ex1.rs").write_text("fn main() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+
+    def test_autotests_false_still_checks_test_for_forbid(self) -> None:
+        """Test file missing forbid is checked even when autotests = false."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            manifest = tmp_root / "Cargo.toml"
+            manifest.write_text(
+                """[package]
+name = "fixture-autotest"
+version = "0.1.0"
+edition = "2024"
+autotests = false
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            src_dir = tmp_root / "src"
+            src_dir.mkdir()
+            (src_dir / "lib.rs").write_text("#![forbid(unsafe_code)]\n", encoding="utf-8")
+            t_dir = tmp_root / "tests"
+            t_dir.mkdir()
+            (t_dir / "t1.rs").write_text("fn test() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+
+    def test_build_helper_missing_forbid_fails(self) -> None:
+        """Build helper file under build/ missing forbid is detected and rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            manifest = create_minimal_valid_crate(tmp_root)
+            (tmp_root / "build.rs").write_text("#![forbid(unsafe_code)]\nfn main() {}\n", encoding="utf-8")
+            build_dir = tmp_root / "build"
+            build_dir.mkdir()
+            (build_dir / "helper.rs").write_text("pub fn helper() {}\n", encoding="utf-8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+
+
 
 class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
     """Planted-negative tests for ERR-UNSAFE-ATTRIBUTE-PERMITTED-001."""
@@ -358,6 +465,63 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
             self.assertFalse(is_valid)
             codes = [f.code for f in findings]
             self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+
+    def test_planted_cfg_attr_allow_unsafe_code_fails(self) -> None:
+        """#[cfg_attr(..., allow(unsafe_code))] must be detected and rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            manifest = create_minimal_valid_crate(tmp_root)
+            (tmp_root / "src" / "lib.rs").write_text(
+                "![forbid(unsafe_code)]\n#[cfg_attr(test, allow(unsafe_code))]\npub fn bypass() {}\n".replace("![", "#!["),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
+            self.assertFalse(is_valid, "cfg_attr allowing unsafe_code was not detected")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+
+    def test_planted_cfg_attr_inner_allow_unsafe_code_fails(self) -> None:
+        """#![cfg_attr(..., allow(unsafe_code))] inner attribute must be detected and rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            manifest = create_minimal_valid_crate(tmp_root)
+            (tmp_root / "src" / "lib.rs").write_text(
+                "![forbid(unsafe_code)]\n![cfg_attr(all(), allow(unsafe_code))]\npub fn bypass() {}\n".replace("![", "#!["),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
+            self.assertFalse(is_valid, "inner cfg_attr allowing unsafe_code was not detected")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+
+    def test_planted_multiline_allow_unsafe_code_fails(self) -> None:
+        """Multiline #[allow(...)] must be detected and rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            manifest = create_minimal_valid_crate(tmp_root)
+            (tmp_root / "src" / "lib.rs").write_text(
+                "![forbid(unsafe_code)]\n#[allow(\n    unsafe_code\n)]\npub fn bypass() {}\n".replace("![", "#!["),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
+            self.assertFalse(is_valid, "Multiline allow(unsafe_code) was not detected")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+
+    def test_planted_multiline_cfg_attr_fails(self) -> None:
+        """Multiline #[cfg_attr(..., allow(...))] must be detected and rejected."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            manifest = create_minimal_valid_crate(tmp_root)
+            (tmp_root / "src" / "lib.rs").write_text(
+                "![forbid(unsafe_code)]\n#[cfg_attr(\n    test,\n    allow(\n        unsafe_code\n    )\n)]\npub fn bypass() {}\n".replace("![", "#!["),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
+            self.assertFalse(is_valid, "Multiline cfg_attr allowing unsafe_code was not detected")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+
 
 
 class TestPlantedNegativeUnsafeConstructs(unittest.TestCase):
@@ -442,31 +606,29 @@ class TestPlantedNegativeUnsafeConstructs(unittest.TestCase):
             codes = [f.code for f in findings]
             self.assertIn(ERR_UNSAFE_CONSTRUCT_DETECTED, codes)
 
-    def test_comments_and_strings_with_unsafe_word_pass(self) -> None:
-        """English comments and string literals mentioning 'unsafe' do not trigger false positives."""
+    def test_string_continuation_preserves_line_number(self) -> None:
+        """String continuation \\ must not alter line count in stripped source."""
+        src = 'let s = "hello \\\nworld";\n// line 3\nunsafe { bar(); }\n'
+        with tempfile.NamedTemporaryFile(suffix=".rs", mode="w", delete=False) as f:
+            f.write(src)
+            f.flush()
+            findings = check_rust_source_file(Path(f.name), Path(f.name).parent)
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0].location, "line:4:col:1")
+
+    def test_root_level_rust_file_scanned_when_packages_exist(self) -> None:
+        """Rust files at root/scripts must be discovered even when workspace packages exist."""
         with tempfile.TemporaryDirectory() as td:
             tmp_root = Path(td)
             manifest = create_minimal_valid_crate(tmp_root)
-            (tmp_root / "src" / "lib.rs").write_text(
-                """#![forbid(unsafe_code)]
-// This comment discusses unsafe blocks and unsafe fn behavior.
-/* A block comment with unsafe { nested /* comment with unsafe impl */ } */
-pub fn safe_function() -> &'static str {
-    let msg = "unsafe { do_something(); }";
-    let raw = r#"unsafe fn fake() {}"#;
-    let _ = 'u';
-    msg
-}
-""",
-                encoding="utf-8",
-            )
-
+            script_dir = tmp_root / "scripts"
+            script_dir.mkdir()
+            (script_dir / "helper.rs").write_text("unsafe fn evil() {}\n", encoding="utf-8")
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
-            self.assertTrue(
-                is_valid,
-                f"Comments/strings should not trigger errors, got: {[f.message for f in findings]}",
-            )
-            self.assertEqual(len(findings), 0)
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNSAFE_CONSTRUCT_DETECTED, codes)
+
 
 
 class TestPlantedNegativeManifestLints(unittest.TestCase):
@@ -606,6 +768,19 @@ class TestPlantedNegativeMetadataUnreadable(unittest.TestCase):
             self.assertFalse(is_valid)
             codes = [f.code for f in findings]
             self.assertIn(ERR_METADATA_UNREADABLE, codes)
+
+    def test_empty_metadata_fails_closed(self) -> None:
+        """Degenerate empty metadata dict must not pass verification."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            is_valid, findings, summary = audit_unsafe_prohibition(
+                root=tmp_root, raw_metadata={}
+            )
+            self.assertFalse(is_valid, "Empty metadata must fail closed")
+            self.assertGreater(len(findings), 0)
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_METADATA_UNREADABLE, codes)
+
 
     def test_cli_fails_on_corrupt_manifest_arg(self) -> None:
         """CLI invocation with --manifest-path pointing to corrupt file exits with code 1."""
