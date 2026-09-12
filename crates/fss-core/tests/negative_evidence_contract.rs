@@ -17,8 +17,6 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use fss_core::acquisition::{CaptureDeviceTuple, CaptureRouteKind, Neg001ScenarioLog};
-use fss_core::contract::{Completeness, HypothesisDisposition, KnowledgeState, ProvenanceClass};
-use fss_core::digest::DigestAlgorithm;
 use fss_core::negative_evidence::{
     MAX_FAILURE_DOMAINS, MAX_NEG_TEXT_LEN, NEGATIVE_EVIDENCE_FORMAT_VERSION,
     NEGATIVE_EVIDENCE_LEDGER_MAGIC, NegativeDecision, NegativeEvidenceEntry,
@@ -26,7 +24,8 @@ use fss_core::negative_evidence::{
     initial_negative_evidence_ledger, provenance_class_as_str,
 };
 use fss_core::{
-    ContentDigest, CoverageContinuity, CoverageStopReason, CoverageWitness, LedgerAnchor,
+    Completeness, ContentDigest, CoverageContinuity, CoverageStopReason, CoverageWitness,
+    DigestAlgorithm, HypothesisDisposition, KnowledgeState, LedgerAnchor, ProvenanceClass,
     Sha256Hasher, TombstoneReason,
 };
 
