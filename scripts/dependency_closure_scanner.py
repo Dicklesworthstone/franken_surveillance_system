@@ -133,7 +133,13 @@ def sanitize_path(path: Path | str, root: Path) -> str:
 def is_forbidden_dji_sdk(name: str) -> bool:
     """True if crate or dependency name declares or implies DJI Mobile/Flip SDK (NEG-001)."""
     lower = name.lower()
-    return "dji" in lower and ("sdk" in lower or "mobile" in lower or "flip" in lower)
+    if (
+        ("dji" in lower and ("sdk" in lower or "mobile" in lower or "flip" in lower or "msdk" in lower))
+        or ("flip" in lower and ("sdk" in lower or "msdk" in lower))
+        or lower in ("msdk", "dji-sdk", "dji_sdk", "dji-mobile-sdk", "dji_mobile_sdk")
+    ):
+        return True
+    return False
 
 
 def audit_adapter_registry(adapter_path: Path, root: Path) -> list[ClosureFinding]:
@@ -209,9 +215,13 @@ def audit_adapter_registry(adapter_path: Path, root: Path) -> list[ClosureFindin
         adapter_id = row[0]
         row_text = " ".join(row).lower()
 
-        if "dji" in row_text:
-            has_sdk = bool(re.search(r"\bmobile[-_ ]*sdk\b", row_text)) or (
-                bool(re.search(r"\bsdk\b", row_text)) and not bool(re.search(r"\b(non[-_ ]*sdk|no[-_ ]*sdk)\b", row_text))
+        if "dji" in row_text or "flip" in row_text:
+            is_explicit_non_sdk = bool(re.search(r"\b(non[-_ ]*sdk|no[-_ ]*sdk)\b", row_text))
+            has_sdk = not is_explicit_non_sdk and (
+                bool(re.search(r"\bmobile[-_ ]*sdk\b", row_text))
+                or bool(re.search(r"\bmsdk\b", row_text))
+                or bool(re.search(r"\bsdk\b", row_text))
+                or "msdk" in row_text
             )
             if has_sdk:
                 findings.append(
@@ -228,7 +238,7 @@ def audit_adapter_registry(adapter_path: Path, root: Path) -> list[ClosureFindin
                         params={"adapter_id": adapter_id, "row": row},
                     )
                 )
-            if "streaming" in row_text or "live stream" in row_text:
+            if any(term in row_text for term in ("streaming", "live stream", "live capture", "live feed", "rtsp")):
                 findings.append(
                     ClosureFinding(
                         code=ERR_ADAPTER_DJI_SDK_FORBIDDEN,
@@ -244,7 +254,7 @@ def audit_adapter_registry(adapter_path: Path, root: Path) -> list[ClosureFindin
                     )
                 )
             current_state = row[3].lower() if len(row) > 3 else ""
-            if any(term in current_state for term in ("ready", "qualified", "streaming", "accepted")):
+            if any(term in current_state for term in ("ready", "qualified", "streaming", "accepted", "production", "implemented", "verified")):
                 findings.append(
                     ClosureFinding(
                         code=ERR_ADAPTER_DJI_SDK_FORBIDDEN,
@@ -631,16 +641,19 @@ def scan_manifest_dependencies(
 
     for section_name, table in dep_tables:
         for dep_name, dep_spec in table.items():
-            if is_forbidden_dji_sdk(dep_name):
+            package_name = dep_name
+            if isinstance(dep_spec, dict) and "package" in dep_spec:
+                package_name = str(dep_spec["package"])
+            if is_forbidden_dji_sdk(dep_name) or is_forbidden_dji_sdk(package_name):
                 findings.append(
                     ClosureFinding(
                         code=ERR_DJI_SDK_DEPENDENCY_FORBIDDEN,
                         file=rel_manifest,
                         location=f"{section_name}.{dep_name}",
-                        message=f"DJI Mobile SDK dependency '{dep_name}' in '{rel_manifest}' is forbidden by NEG-001",
+                        message=f"DJI Mobile SDK dependency '{dep_name}' (package '{package_name}') in '{rel_manifest}' is forbidden by NEG-001",
                         severity="error",
                         remediation=DIAGNOSTIC_REGISTRY[ERR_DJI_SDK_DEPENDENCY_FORBIDDEN]["remediation"],
-                        params={"dependency": dep_name, "file": rel_manifest},
+                        params={"dependency": dep_name, "package": package_name, "file": rel_manifest},
                     )
                 )
             if isinstance(dep_spec, dict):
@@ -716,6 +729,37 @@ def scan_manifest_dependencies(
                                 params={"dependency": dep_name, "error": str(exc), "file": rel_manifest},
                             )
                         )
+    features = data.get("features")
+    if isinstance(features, dict):
+        for feat_name, feat_targets in features.items():
+            if is_forbidden_dji_sdk(feat_name):
+                findings.append(
+                    ClosureFinding(
+                        code=ERR_DJI_SDK_DEPENDENCY_FORBIDDEN,
+                        file=rel_manifest,
+                        location=f"features.{feat_name}",
+                        message=f"Feature '{feat_name}' in '{rel_manifest}' declares or implies forbidden DJI SDK",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_DJI_SDK_DEPENDENCY_FORBIDDEN]["remediation"],
+                        params={"feature": feat_name, "file": rel_manifest},
+                    )
+                )
+            if isinstance(feat_targets, list):
+                for target in feat_targets:
+                    if isinstance(target, str):
+                        target_clean = target.removeprefix("dep:").split("/")[0]
+                        if is_forbidden_dji_sdk(target_clean):
+                            findings.append(
+                                ClosureFinding(
+                                    code=ERR_DJI_SDK_DEPENDENCY_FORBIDDEN,
+                                    file=rel_manifest,
+                                    location=f"features.{feat_name}",
+                                    message=f"Feature '{feat_name}' target '{target}' in '{rel_manifest}' declares or implies forbidden DJI SDK",
+                                    severity="error",
+                                    remediation=DIAGNOSTIC_REGISTRY[ERR_DJI_SDK_DEPENDENCY_FORBIDDEN]["remediation"],
+                                    params={"feature": feat_name, "target": target, "file": rel_manifest},
+                                )
+                            )
 
     return findings
 
@@ -808,7 +852,10 @@ def audit_dependency_closure(
 
     # Enumerate and inspect [workspace.dependencies] table
     for dep_name, dep_spec in sorted(workspace_deps.items()):
-        if is_forbidden_dji_sdk(dep_name):
+        package_name = dep_name
+        if isinstance(dep_spec, dict) and "package" in dep_spec:
+            package_name = str(dep_spec["package"])
+        if is_forbidden_dji_sdk(dep_name) or is_forbidden_dji_sdk(package_name):
             findings.append(
                 ClosureFinding(
                     code=ERR_DJI_SDK_DEPENDENCY_FORBIDDEN,
