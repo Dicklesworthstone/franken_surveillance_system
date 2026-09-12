@@ -13,12 +13,13 @@ use fss_core::{
 use fss_reference::{
     ADR_0004_ID, ADR_0004_TITLE, CorroboratedModelFinding, CorroborationStatus,
     MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT, MAX_EMBEDDING_DIM, MAX_FAULT_REASON_LEN,
-    MAX_INPUT_PAYLOAD_BYTES, MAX_MODEL_GENERATION_BYTES, MockDetection, MockEmbedding,
-    MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
-    MockModelOutput, MockModelScript, MockModelSpec, MockOutputDigestRequest, MockSemanticLabel,
-    ModelGenerationDescriptor, ReferenceError, VirtualClock, compare_model_embeddings,
-    compare_model_scores, compute_output_digest, encode_coord_to_basis_point,
-    evaluate_corroboration, fuse_model_embeddings, fuse_model_scores, is_latest_generation,
+    MAX_INPUT_PAYLOAD_BYTES, MAX_MODEL_GENERATION_BYTES, MockAbstentionReason, MockDetection,
+    MockEmbedding, MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
+    MockModelOutcome, MockModelOutput, MockModelScript, MockModelSpec, MockOutputDigestRequest,
+    MockSemanticLabel, ModelGenerationDescriptor, ReferenceError, VirtualClock,
+    compare_model_embeddings, compare_model_scores, compute_output_digest,
+    encode_coord_to_basis_point, evaluate_corroboration, fuse_model_embeddings, fuse_model_scores,
+    is_latest_generation,
 };
 
 fn sample_capsule(
@@ -1831,6 +1832,70 @@ fn test_defect_invalid_probability_preserves_inner_error() -> Result<(), Box<dyn
             ContractError::InvalidProbabilityInterval,
         ))
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_model_abstention_and_failure_never_negative_evidence() -> Result<(), Box<dyn Error>> {
+    // 1. MockModelOutcome::Abstained fails closed
+    let abstained = MockModelOutcome::Abstained {
+        reason: MockAbstentionReason::DeliveryDegraded,
+    };
+    let err = abstained.assert_not_negative_evidence();
+    assert!(matches!(
+        err,
+        Err(MockModelError::AbstentionCannotBeNegativeEvidence { .. })
+    ));
+
+    // 2. MockModelOutcome::Finding succeeds
+    let finding = MockModelOutcome::Finding {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.8, 0.9)?,
+    };
+    assert!(finding.assert_not_negative_evidence().is_ok());
+
+    // 3. MockExecutorOutcome failures fail closed
+    let crashed = MockExecutorOutcome::Crashed {
+        reason: "segfault in tensor kernel".to_string(),
+    };
+    assert!(matches!(
+        crashed.assert_not_negative_evidence(),
+        Err(MockModelError::AbstentionCannotBeNegativeEvidence { .. })
+    ));
+
+    let timed_out = MockExecutorOutcome::TimedOut {
+        virtual_timeout_ns: 50_000_000,
+        virtual_elapsed_ns: 50_000_001,
+    };
+    assert!(matches!(
+        timed_out.assert_not_negative_evidence(),
+        Err(MockModelError::AbstentionCannotBeNegativeEvidence { .. })
+    ));
+
+    let malformed = MockExecutorOutcome::MalformedOutput {
+        detail: "NaN in output tensor".to_string(),
+    };
+    assert!(matches!(
+        malformed.assert_not_negative_evidence(),
+        Err(MockModelError::AbstentionCannotBeNegativeEvidence { .. })
+    ));
+
+    // 4. MockExecutorOutcome with zero detections is failure to detect, NOT negative evidence
+    let zero_detections_output = MockModelOutput {
+        generation: ModelGeneration::parse("model:detector:v1")?,
+        sensor_id: SensorId::parse("sensor:cam01")?,
+        timestamp_ns: TimestampNs::from_nanos(100),
+        detections: vec![],
+        embedding: None,
+        raw_output_root: ContentDigest::sha256(b"raw"),
+        execution_receipt_digest: ContentDigest::sha256(b"receipt"),
+    };
+    let zero_detections = MockExecutorOutcome::Success(Box::new(zero_detections_output));
+    assert!(matches!(
+        zero_detections.assert_not_negative_evidence(),
+        Err(MockModelError::AbstentionCannotBeNegativeEvidence { .. })
+    ));
 
     Ok(())
 }
