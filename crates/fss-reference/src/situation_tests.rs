@@ -794,3 +794,169 @@ fn event_state_projection_is_pinned_for_every_state() -> Result<(), Box<dyn Erro
     }
     Ok(())
 }
+
+// fss-deir9: a published alert outcome is recomputed from its own body before it is projected.
+
+type VerifiedFixture = (
+    SituationHarness,
+    ReferencePolicyDecision,
+    ReferenceEventReceipt,
+    crate::ReferenceAlertPlan,
+    crate::ReferenceAlertOutcomeReceipt,
+);
+
+/// Publishes a delivered-and-verified alert outcome and returns what compile needs.
+fn verified_outcome_fixture(name: &str) -> Result<VerifiedFixture, Box<dyn Error>> {
+    let mut harness = SituationHarness::new(name)?;
+    let (decision, event_receipt) = harness.publish_decision(
+        name,
+        &[
+            (MockSemanticLabel::PersonLike, "power:alpha"),
+            (MockSemanticLabel::PersonLike, "power:beta"),
+        ],
+    )?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &harness.authority,
+            operation_id: OperationId::parse(format!("operation:situation:{name}"))?,
+            idempotency_key: IdempotencyKey::parse(format!("idempotency:situation:{name}"))?,
+            obligation_id: ObligationId::parse(format!("obligation:situation:{name}"))?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
+        &mut journal,
+    )?;
+    let mut provider =
+        ReferenceAlertProvider::with_provider_id(format!("provider:test:situation:{name}"));
+    let _ = dispatch_reference_alert(
+        &plan,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    )?;
+    let provider_receipt = provider
+        .lookup(&plan.intent)?
+        .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+    let _ = observe_reference_alert(
+        &plan,
+        provider_receipt.receipt_digest(),
+        TimestampNs(103),
+        &mut journal,
+        &provider,
+    )?;
+    let _ = verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;
+    let outcome = publish_reference_alert_outcome(
+        &plan,
+        &journal,
+        &mut harness.objects,
+        &mut harness.authority,
+        &provider,
+    )?;
+    Ok((harness, decision, event_receipt, plan, outcome))
+}
+
+/// A Verified (or Failed) receipt without its result digest is refused instead of publishing an
+/// evidence-less `known` effect cell.
+#[test]
+fn terminal_effect_outcome_without_result_digest_is_refused() -> Result<(), Box<dyn Error>> {
+    let (harness, decision, event_receipt, plan, outcome) = verified_outcome_fixture("digestless")?;
+    assert_eq!(
+        outcome.outcome.operation_receipt.state,
+        fss_core::EffectState::Verified
+    );
+    for state in [
+        fss_core::EffectState::Verified,
+        fss_core::EffectState::Failed,
+    ] {
+        let mut tampered = outcome.clone();
+        tampered.outcome.operation_receipt.state = state;
+        tampered.outcome.operation_receipt.result_digest = None;
+        let mut compile_request = request(
+            &decision,
+            &event_receipt,
+            capabilities(&["capability:alert.commit"]),
+        )?;
+        compile_request.alert_plan = Some(&plan);
+        compile_request.alert_outcome = Some(&tampered);
+        compile_request.previous_anchor = Some(event_receipt.authority_anchor.clone());
+        let compiled = compile_reference_situation(compile_request, &harness.authority);
+        assert!(
+            matches!(
+                compiled,
+                Err(ReferenceError::InvalidSpec("situation_effect_outcome"))
+            ),
+            "{state:?} without result digest: {compiled:?}"
+        );
+    }
+    harness.cleanup();
+    Ok(())
+}
+
+/// `validate_request` binds the receipt to the ledger only through `outcome_root`, so the root must
+/// be recomputed from the outcome body: an edited result digest is refused even when every digest
+/// the caller holds is re-derived to match it.
+#[test]
+fn forged_result_digest_is_refused() -> Result<(), Box<dyn Error>> {
+    use fss_core::CanonicalEncode;
+
+    let (harness, decision, event_receipt, plan, outcome) = verified_outcome_fixture("forged")?;
+    let forged = ContentDigest::sha256(b"forged-provider-proof");
+    for rederive in [false, true] {
+        let mut tampered = outcome.clone();
+        tampered.outcome.operation_receipt.result_digest = Some(forged);
+        if rederive {
+            tampered.outcome.proof_object_digest = Some(forged);
+            tampered.outcome.operation_object_digest =
+                ContentDigest::sha256(&tampered.outcome.operation_receipt.canonical_bytes());
+            tampered.outcome_object_digest =
+                ContentDigest::sha256(&tampered.outcome.canonical_bytes());
+        }
+        let mut compile_request = request(
+            &decision,
+            &event_receipt,
+            capabilities(&["capability:alert.commit"]),
+        )?;
+        compile_request.alert_plan = Some(&plan);
+        compile_request.alert_outcome = Some(&tampered);
+        compile_request.previous_anchor = Some(event_receipt.authority_anchor.clone());
+        let compiled = compile_reference_situation(compile_request, &harness.authority);
+        assert!(
+            matches!(compiled, Err(ReferenceError::DigestMismatch)),
+            "forged result digest (re-derived: {rederive}): {compiled:?}"
+        );
+    }
+    // The genuine outcome still compiles, and its effect evidence is a retained proof root.
+    let mut compile_request = request(
+        &decision,
+        &event_receipt,
+        capabilities(&["capability:alert.commit"]),
+    )?;
+    compile_request.alert_plan = Some(&plan);
+    compile_request.alert_outcome = Some(&outcome);
+    compile_request.previous_anchor = Some(event_receipt.authority_anchor.clone());
+    let situation = compile_reference_situation(compile_request, &harness.authority)?;
+    let effect = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.starts_with("claim:effect:"))
+        .ok_or(ReferenceError::InvalidSpec("missing_effect_cell"))?;
+    assert_eq!(effect.knowledge_state, KnowledgeState::Known);
+    assert!(!effect.evidence.is_empty());
+    assert!(
+        effect
+            .evidence
+            .iter()
+            .all(|root| situation.proof_roots.contains(root)),
+        "{:?}",
+        effect.evidence
+    );
+    harness.cleanup();
+    Ok(())
+}

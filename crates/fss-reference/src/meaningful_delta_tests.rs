@@ -29,6 +29,8 @@ struct Variant {
     effect_contradicted: bool,
     effect_hypothesis: Option<HypothesisDisposition>,
     effect_valid_until: Option<TimestampNs>,
+    effect_evidence_retained: bool,
+    created_at: Option<TimestampNs>,
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
 }
@@ -51,6 +53,8 @@ impl Variant {
             effect_contradicted: false,
             effect_hypothesis: None,
             effect_valid_until: None,
+            effect_evidence_retained: true,
+            created_at: None,
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
         })
@@ -217,13 +221,22 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
         obligations: variant.obligations.clone(),
         affordances,
         completeness: variant.completeness,
-        created_at: TimestampNs(1_000 + i128::from(variant.sequence)),
+        created_at: variant
+            .created_at
+            .unwrap_or(TimestampNs(1_000 + i128::from(variant.sequence))),
         mission_state: None,
     };
     capsule.validate()?;
+    // Situation compilation retains a published outcome's proof object as a proof root, so the
+    // fixture retains the effect evidence too unless a test withholds it.
+    let mut proof_roots = BTreeSet::from([evidence]);
+    if variant.effect_state.is_some() && variant.effect_evidence && variant.effect_evidence_retained
+    {
+        proof_roots.insert(ContentDigest::sha256(b"effect-outcome"));
+    }
     let situation = ReferenceSituation {
         capsule,
-        proof_roots: BTreeSet::from([evidence]),
+        proof_roots,
     };
     project_reference_situation(
         situation,
@@ -1332,6 +1345,304 @@ fn unproved_effect_stays_effect_uncertainty_in_every_delta() -> Result<(), Box<d
             &delta,
             state,
             &format!("unchanged {} effect", state.as_str()),
+        )?;
+    }
+    Ok(())
+}
+
+// fss-deir9 rework: removal, clock order, retained proof roots, and the pinned guards.
+
+fn removed_line() -> String {
+    format!(
+        "effect uncertainty remains: effect {EFFECT_CLAIM} disappeared from the result frame without a proved outcome"
+    )
+}
+
+fn removed_coverage(state: KnowledgeState) -> String {
+    format!(
+        "unproved effect {EFFECT_CLAIM} disappeared from the result frame while {}",
+        state.as_str()
+    )
+}
+
+/// Asserts that an unproved effect in `state` removed from the result is reported as effect
+/// uncertainty and lost coverage, never as silence or a terminal transition.
+fn assert_unproved_effect_removal_reported(
+    delta: &fss_core::MeaningfulDelta,
+    state: KnowledgeState,
+    context: &str,
+) -> Result<(), Box<dyn Error>> {
+    assert!(
+        delta.silence_certificate.is_none(),
+        "{context}: removing an unproved effect is never silence: {:?}",
+        delta.classes
+    );
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{context}: removing an unproved effect is not terminal: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::EffectUncertainty),
+        "{context}: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta.effect_uncertainty_changes.contains(&removed_line()),
+        "{context}: missing {:?} in {:?}",
+        removed_line(),
+        delta.effect_uncertainty_changes
+    );
+    assert!(
+        !delta
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change.contains("resolved")),
+        "{context}: {:?}",
+        delta.effect_uncertainty_changes
+    );
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+        "{context}: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta.coverage_changes.contains(&removed_coverage(state)),
+        "{context}: missing {:?} in {:?}",
+        removed_coverage(state),
+        delta.coverage_changes
+    );
+    assert_eq!(delta.priority, DeltaPriority::Critical);
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn unestablished_effect_removed_is_effect_uncertainty_not_silence() -> Result<(), Box<dyn Error>> {
+    for (prior, evidence) in [
+        (KnowledgeState::Unknown, true),
+        (KnowledgeState::Stale, true),
+        (KnowledgeState::Redacted, true),
+        (KnowledgeState::NotObservable, true),
+        (KnowledgeState::Conflicted, true),
+        (KnowledgeState::NotApplicable, true),
+        (KnowledgeState::Estimated, true),
+        (KnowledgeState::Known, false),
+    ] {
+        let mut basis_variant = Variant::baseline()?;
+        basis_variant.effect_state = Some(prior);
+        basis_variant.effect_evidence = evidence;
+        let basis = publication(&basis_variant)?;
+        let mut result_variant = basis_variant.clone();
+        result_variant.sequence = 2;
+        result_variant.effect_state = None;
+        let result = publication(&result_variant)?;
+        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+        assert_unproved_effect_removal_reported(
+            &delta,
+            prior,
+            &format!("{} effect removed", prior.as_str()),
+        )?;
+    }
+    Ok(())
+}
+
+#[test]
+fn indeterminate_effect_laundered_through_unknown_then_dropped_is_never_silent()
+-> Result<(), Box<dyn Error>> {
+    let mut first = Variant::baseline()?;
+    first.effect_state = Some(KnowledgeState::Indeterminate);
+    let mut second = first.clone();
+    second.sequence = 2;
+    second.effect_state = Some(KnowledgeState::Unknown);
+    let mut third = second.clone();
+    third.sequence = 3;
+    third.effect_state = None;
+    let first = publication(&first)?;
+    let second = publication(&second)?;
+    let third = publication(&third)?;
+
+    let step_one = classify_reference_meaningful_delta(&first, &second)?;
+    assert_effect_unresolved(
+        &step_one,
+        &became(KnowledgeState::Unknown),
+        Some(&degraded_to(KnowledgeState::Unknown)),
+    )?;
+    // Step two cannot see the indeterminate history; the unproved basis cell alone must report it.
+    let step_two = classify_reference_meaningful_delta(&second, &third)?;
+    assert_unproved_effect_removal_reported(
+        &step_two,
+        KnowledgeState::Unknown,
+        "laundering step unknown->absent",
+    )?;
+    let end_to_end = classify_reference_meaningful_delta(&first, &third)?;
+    assert_effect_unresolved(
+        &end_to_end,
+        &format!(
+            "effect uncertainty remains: indeterminate effect {EFFECT_CLAIM} disappeared from the result frame without a proved outcome"
+        ),
+        Some(&format!(
+            "unproved effect {EFFECT_CLAIM} disappeared from the result frame while indeterminate"
+        )),
+    )
+}
+
+/// Asserts that a comparison was refused because the result clock runs before the basis clock.
+fn assert_backdated_refused(
+    comparison: Result<fss_core::MeaningfulDelta, Box<dyn Error>>,
+    context: &str,
+) -> Result<(), Box<dyn Error>> {
+    match comparison {
+        Ok(delta) => Err(format!(
+            "{context}: a backdated result must be refused: {:?}",
+            delta.classes
+        )
+        .into()),
+        Err(error) => {
+            assert!(
+                matches!(
+                    error.downcast_ref::<crate::ReferenceError>(),
+                    Some(crate::ReferenceError::Contract(
+                        fss_core::ContractError::InvalidAnchorSuccessor
+                    ))
+                ),
+                "{context}: unexpected refusal {error}"
+            );
+            Ok(())
+        }
+    }
+}
+
+#[test]
+fn backdated_result_created_at_is_refused() -> Result<(), Box<dyn Error>> {
+    // The basis clock is 1_001; validity 1_001 is closed at the fixture result clock 1_002, and a
+    // result back-dated to 500 must not re-open it.
+    let terminal = effect_transition_delta(
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Known),
+        |variant| {
+            variant.effect_valid_until = Some(TimestampNs(1_001));
+            variant.created_at = Some(TimestampNs(500));
+        },
+    );
+    assert_backdated_refused(terminal, "unknown->known back-dated")?;
+    let resolution = indeterminate_effect_delta(Some(KnowledgeState::Known), |variant| {
+        variant.effect_valid_until = Some(TimestampNs(1_001));
+        variant.created_at = Some(TimestampNs(500));
+    });
+    assert_backdated_refused(resolution, "indeterminate->known back-dated")?;
+    // A result at exactly the basis clock is still a successor, and validity 1_001 is open there.
+    let same_clock = effect_transition_delta(
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Known),
+        |variant| {
+            variant.effect_valid_until = Some(TimestampNs(1_001));
+            variant.created_at = Some(TimestampNs(1_001));
+        },
+    )?;
+    assert!(
+        same_clock
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        same_clock.classes
+    );
+    same_clock.validate()?;
+    Ok(())
+}
+
+#[test]
+fn validity_window_is_inclusive_at_the_result_anchor() -> Result<(), Box<dyn Error>> {
+    let at_limit = effect_transition_delta(
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Known),
+        |variant| variant.effect_valid_until = Some(TimestampNs(1_002)),
+    )?;
+    assert!(
+        at_limit
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        at_limit.classes
+    );
+    let one_past = effect_transition_delta(
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Known),
+        |variant| variant.effect_valid_until = Some(TimestampNs(1_001)),
+    )?;
+    assert!(
+        !one_past
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        one_past.classes
+    );
+    Ok(())
+}
+
+#[test]
+fn known_effect_whose_evidence_is_not_a_proof_root_is_not_terminal() -> Result<(), Box<dyn Error>> {
+    let delta = effect_transition_delta(
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Known),
+        |variant| variant.effect_evidence_retained = false,
+    )?;
+    assert_unproved_known_effect_not_terminal(&delta, "unknown->known with unretained evidence")?;
+    let resolution = indeterminate_effect_delta(Some(KnowledgeState::Known), |variant| {
+        variant.effect_evidence_retained = false;
+    })?;
+    assert_effect_unresolved(
+        &resolution,
+        &became(KnowledgeState::Known),
+        Some(&degraded_to(KnowledgeState::Known)),
+    )
+}
+
+/// Guards the "basis did not already pass" condition: an effect that already carried a proved
+/// outcome in the basis is not a new terminal transition.
+#[test]
+fn already_proved_effect_is_not_terminal_again() -> Result<(), Box<dyn Error>> {
+    let unchanged = effect_transition_delta(
+        Some(KnowledgeState::Known),
+        Some(KnowledgeState::Known),
+        keep_effect_evidence,
+    )?;
+    assert!(
+        unchanged.silence_certificate.is_some(),
+        "{:?}",
+        unchanged.classes
+    );
+    let rehypothesised = effect_transition_delta(
+        Some(KnowledgeState::Known),
+        Some(KnowledgeState::Known),
+        |variant| variant.effect_hypothesis = Some(HypothesisDisposition::Live),
+    )?;
+    assert!(
+        !rehypothesised
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        rehypothesised.classes
+    );
+    Ok(())
+}
+
+/// Second guard for a terminal hypothesis disposition re-admitted into effect terminalization.
+#[test]
+fn absent_effect_becoming_unproved_known_with_terminal_hypothesis_is_not_terminal()
+-> Result<(), Box<dyn Error>> {
+    for hypothesis in TERMINAL_HYPOTHESES {
+        let delta = effect_transition_delta(None, Some(KnowledgeState::Known), |variant| {
+            variant.effect_evidence = false;
+            variant.effect_hypothesis = Some(hypothesis);
+        })?;
+        assert_unproved_known_effect_not_terminal(
+            &delta,
+            &format!("absent->unproved known with hypothesis {hypothesis:?}"),
         )?;
     }
     Ok(())

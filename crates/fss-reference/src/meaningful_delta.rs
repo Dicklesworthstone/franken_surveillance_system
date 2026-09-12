@@ -58,18 +58,46 @@ enum IndeterminateEffectSuccessor {
     Unresolved,
 }
 
+/// The bar a proved effect outcome clears in one publication: the full irreversible-effect premise
+/// at the capsule's `created_at`, with every evidence root among the publication's retained proof
+/// roots, so a caller-supplied digest that nothing retains cannot prove an outcome (fss-deir9).
+#[derive(Clone, Copy)]
+struct ProofBar<'a> {
+    now: TimestampNs,
+    proof_roots: &'a BTreeSet<ContentDigest>,
+}
+
+impl<'a> ProofBar<'a> {
+    fn of(publication: &'a ReferenceSituationPublication) -> Self {
+        Self {
+            now: publication.situation.capsule.created_at,
+            proof_roots: &publication.situation.proof_roots,
+        }
+    }
+
+    /// Returns whether `cell` carries a proved outcome under this bar.
+    fn proves(self, cell: &KnowledgeCell) -> bool {
+        cell.is_irreversible_effect_premise(self.now)
+            && cell
+                .evidence
+                .iter()
+                .all(|root| self.proof_roots.contains(root))
+    }
+}
+
 /// Classifies the result cell of an effect that was `Indeterminate` in the basis, at the result
 /// capsule's time `now`.
 ///
 /// Only a cell that clears the full irreversible-effect premise bar resolves the uncertainty:
 /// `KnowledgeCell::is_irreversible_effect_premise` requires `KSTATE-001` `known`, a valid state
 /// basis, retained evidence roots, no contradicting roots, and a validity window still open at
-/// `now`. Every other state leaves the outcome unproved, so it is never flattened into a resolution
+/// `now`, with every evidence root retained by the result publication (see [`ProofBar`]). Every
+/// other state leaves the outcome unproved, so it is never flattened into a resolution
 /// or a terminal transition. The match is exhaustive so a new state must be classified here rather
 /// than silently resolving.
 fn indeterminate_effect_successor(
     current: &KnowledgeCell,
-    now: TimestampNs,
+    bar: ProofBar<'_>,
 ) -> IndeterminateEffectSuccessor {
     let unresolved = IndeterminateEffectSuccessor::Unresolved;
     match current.knowledge_state {
@@ -77,7 +105,7 @@ fn indeterminate_effect_successor(
         // roots, with contradicting roots, with an invalid state basis, or whose validity window has
         // already closed does not establish what happened.
         KnowledgeState::Known => {
-            if current.is_irreversible_effect_premise(now) {
+            if bar.proves(current) {
                 IndeterminateEffectSuccessor::Resolved
             } else {
                 unresolved
@@ -123,8 +151,8 @@ pub fn classify_reference_meaningful_delta(
     let result_capsule = &result.situation.capsule;
     let basis_frame = &basis_capsule.frame;
     let result_frame = &result_capsule.frame;
-    let basis_now = basis_capsule.created_at;
-    let result_now = result_capsule.created_at;
+    let basis_bar = ProofBar::of(basis);
+    let result_bar = ProofBar::of(result);
     let mut classes = BTreeSet::new();
     let changed_cells = changed_cells(&basis_frame.knowledge_cells, &result_frame.knowledge_cells);
     let mut invalidated_assumptions = Vec::new();
@@ -293,7 +321,7 @@ pub fn classify_reference_meaningful_delta(
             .iter()
             .find(|candidate| candidate.claim_id == *claim_id)
         {
-            Some(current) => match indeterminate_effect_successor(current, result_now) {
+            Some(current) => match indeterminate_effect_successor(current, result_bar) {
                 IndeterminateEffectSuccessor::Resolved => {
                     effect_resolved = true;
                     effect_uncertainty_changes.push(format!(
@@ -332,7 +360,7 @@ pub fn classify_reference_meaningful_delta(
     // coverage rather than a quiet terminal state (fss-deir9). A basis-indeterminate cell was
     // classified above.
     for cell in &changed_cells {
-        if unproved_known_effect(cell, result_now)
+        if unproved_known_effect(cell, result_bar)
             && !basis_indeterminate.contains(cell.claim_id.as_str())
         {
             reported_effects.insert(cell.claim_id.as_str());
@@ -346,11 +374,33 @@ pub fn classify_reference_meaningful_delta(
             ));
         }
     }
+    // An effect cell that disappears from the result without a proved outcome in the basis leaves
+    // its outcome unproved, whatever state it was in, so it is reported as effect uncertainty and
+    // lost coverage, never silence (fss-deir9). A basis-indeterminate cell was classified above.
+    for prior in &basis_frame.knowledge_cells {
+        if unproved_effect(prior, basis_bar)
+            && !basis_indeterminate.contains(prior.claim_id.as_str())
+            && !result_frame
+                .knowledge_cells
+                .iter()
+                .any(|cell| cell.claim_id == prior.claim_id)
+        {
+            let claim_id = &prior.claim_id;
+            let state = prior.knowledge_state.as_str();
+            effect_uncertainty_changes.push(format!(
+                "effect uncertainty remains: effect {claim_id} disappeared from the result frame without a proved outcome"
+            ));
+            classes.insert(MeaningfulDeltaClass::CoverageLoss);
+            coverage_changes.push(format!(
+                "unproved effect {claim_id} disappeared from the result frame while {state}"
+            ));
+        }
+    }
     // An effect whose outcome is still unproved stays reported as uncertain in every delta until a
     // proved outcome terminalizes it, so parking it in any unproved state (not_applicable,
     // estimated, unknown, ...) never lets a later delta certify silence (fss-hmfs5).
     for cell in &result_frame.knowledge_cells {
-        if unproved_effect(cell, result_now) && !reported_effects.contains(cell.claim_id.as_str()) {
+        if unproved_effect(cell, result_bar) && !reported_effects.contains(cell.claim_id.as_str()) {
             let claim_id = &cell.claim_id;
             let state = cell.knowledge_state.as_str();
             effect_uncertainty_changes.push(format!(
@@ -402,12 +452,12 @@ pub fn classify_reference_meaningful_delta(
         || result_frame.knowledge_cells.iter().any(|cell| {
             is_effect_claim(cell)
                 && !basis_indeterminate.contains(cell.claim_id.as_str())
-                && cell.is_irreversible_effect_premise(result_now)
+                && result_bar.proves(cell)
                 && basis_frame
                     .knowledge_cells
                     .iter()
                     .find(|b| b.claim_id == cell.claim_id)
-                    .is_none_or(|b| !b.is_irreversible_effect_premise(basis_now))
+                    .is_none_or(|b| !basis_bar.proves(b))
         });
     // An effect cell is terminal only through the premise bar applied above, so a terminal
     // hypothesis disposition on any effect cell never terminalizes it here.
@@ -508,7 +558,7 @@ pub fn classify_reference_meaningful_delta(
             // effect cell that does not clear the irreversible-effect premise bar has not
             // established its outcome in any state, `known`, `estimated` and `not_applicable`
             // included, so it is degraded too (fss-hmfs5, fss-deir9).
-            unproved_effect(cell, result_now)
+            unproved_effect(cell, result_bar)
                 || matches!(
                     cell.knowledge_state,
                     KnowledgeState::NotObservable
@@ -642,6 +692,12 @@ fn validate_comparison_basis(
     {
         return Err(ContractError::InvalidAnchorSuccessor.into());
     }
+    // The premise bar reads validity windows at each capsule's `created_at`, so a result clock
+    // earlier than the basis clock would re-open a window the basis already saw closed
+    // (fss-deir9).
+    if result_capsule.created_at < basis_capsule.created_at {
+        return Err(ContractError::InvalidAnchorSuccessor.into());
+    }
     Ok(())
 }
 
@@ -682,16 +738,16 @@ fn is_effect_claim(cell: &KnowledgeCell) -> bool {
 }
 
 /// Returns whether `cell` is an effect claim in `KSTATE-001` `known` that does not clear the full
-/// irreversible-effect premise bar at `now` (valid state basis, retained evidence, no
+/// irreversible-effect premise bar under `bar` (valid state basis, retained evidence roots, no
 /// contradictions, open validity window): it asserts an outcome it has not proved.
-fn unproved_known_effect(cell: &KnowledgeCell, now: TimestampNs) -> bool {
-    cell.knowledge_state == KnowledgeState::Known && unproved_effect(cell, now)
+fn unproved_known_effect(cell: &KnowledgeCell, bar: ProofBar<'_>) -> bool {
+    cell.knowledge_state == KnowledgeState::Known && unproved_effect(cell, bar)
 }
 
-/// Returns whether `cell` is an effect claim that does not clear the full irreversible-effect
-/// premise bar at `now`: whatever its state, its outcome is not proved.
-fn unproved_effect(cell: &KnowledgeCell, now: TimestampNs) -> bool {
-    is_effect_claim(cell) && !cell.is_irreversible_effect_premise(now)
+/// Returns whether `cell` is an effect claim that does not clear `bar`: whatever its state, its
+/// outcome is not proved.
+fn unproved_effect(cell: &KnowledgeCell, bar: ProofBar<'_>) -> bool {
+    is_effect_claim(cell) && !bar.proves(cell)
 }
 
 fn indeterminate_effect_claims(cells: &[KnowledgeCell]) -> BTreeSet<&str> {

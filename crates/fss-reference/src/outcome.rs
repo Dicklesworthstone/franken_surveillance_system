@@ -16,6 +16,8 @@ use crate::{
 /// Canonical evidence delta family for published alert effect outcomes.
 pub const ALERT_OUTCOME_FAMILY: &str = "alert_effect_outcome";
 const ALERT_OUTCOME_GENERATION: u64 = 1;
+/// Root-manifest kind of a published alert outcome; `validate_request` recomputes the root with it.
+pub(crate) const ALERT_OUTCOME_MANIFEST_KIND: &str = "alert-effect-outcome";
 
 /// Immutable semantic record tying one alert operation to its event basis and terminal evidence.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -149,7 +151,7 @@ pub fn publish_reference_alert_outcome(
         children.push(proof);
     }
     let outcome_manifest = ObjectManifest::new(
-        "alert-effect-outcome",
+        ALERT_OUTCOME_MANIFEST_KIND,
         children,
         Some(outcome_object_digest),
     )?;

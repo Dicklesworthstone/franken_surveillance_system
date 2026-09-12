@@ -12,6 +12,7 @@ use fss_core::{
     TimestampNs, WorldEnvelope,
 };
 use fss_ledger::DurableReferenceLedger;
+use fss_object::ObjectManifest;
 
 use crate::{
     ReferenceAlertOutcomeReceipt, ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt,
@@ -350,13 +351,6 @@ pub fn compile_reference_situation(
 
     if let Some(outcome) = request.alert_outcome {
         let operation = &outcome.outcome.operation_receipt;
-        // A terminal outcome may be published as `known` only with its retained proof root
-        // (KSTATE-001); without it the effect cell would carry no evidence (fss-deir9).
-        if matches!(operation.state, EffectState::Verified | EffectState::Failed)
-            && operation.result_digest.is_none()
-        {
-            return Err(ReferenceError::InvalidSpec("situation_effect_outcome"));
-        }
         let (knowledge_state, statement) = match operation.state {
             EffectState::Verified => (
                 KnowledgeState::Known,
@@ -785,6 +779,7 @@ fn validate_request(
                     {
                         return Err(ReferenceError::InvalidSpec("situation_effect_outcome"));
                     }
+                    verify_outcome_body(outcome)?;
                 }
                 None if authority.current().objects.contains_key(&effect_object_id) => {
                     return Err(ReferenceError::InvalidSpec(
@@ -795,6 +790,42 @@ fn validate_request(
             }
         }
         (None, None) => {}
+    }
+    Ok(())
+}
+
+/// Recomputes a published alert outcome's root from the receipt's own outcome body.
+///
+/// `validate_request` binds `outcome_root` to the authority object, but that binding covers the
+/// receipt only once the root is recomputed from the body it describes: the operation receipt
+/// digest, its terminal proof root (which must be the receipt's result digest), the outcome object
+/// digest, and the root manifest. Otherwise an edited receipt, such as a forged result digest or a
+/// changed state, rides on a genuine root and publishes a `known` effect whose evidence nothing
+/// retains (fss-deir9).
+fn verify_outcome_body(outcome: &ReferenceAlertOutcomeReceipt) -> Result<(), ReferenceError> {
+    let record = &outcome.outcome;
+    let operation = &record.operation_receipt;
+    // A terminal outcome may be published as `known` only with its retained proof root
+    // (KSTATE-001); without it the effect cell would carry no evidence.
+    if matches!(operation.state, EffectState::Verified | EffectState::Failed)
+        && operation.result_digest.is_none()
+    {
+        return Err(ReferenceError::InvalidSpec("situation_effect_outcome"));
+    }
+    let mut children = vec![record.event_root, record.operation_object_digest];
+    children.extend(record.proof_object_digest);
+    let root = ObjectManifest::new(
+        crate::outcome::ALERT_OUTCOME_MANIFEST_KIND,
+        children,
+        Some(outcome.outcome_object_digest),
+    )?
+    .root();
+    if ContentDigest::sha256(&operation.canonical_bytes()) != record.operation_object_digest
+        || record.proof_object_digest != operation.result_digest
+        || ContentDigest::sha256(&record.canonical_bytes()) != outcome.outcome_object_digest
+        || root != outcome.outcome_root
+    {
+        return Err(ReferenceError::DigestMismatch);
     }
     Ok(())
 }
