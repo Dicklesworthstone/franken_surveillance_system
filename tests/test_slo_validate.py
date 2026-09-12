@@ -238,6 +238,30 @@ class SloValidatePlantedFaultTests(unittest.TestCase):
             if proof_file.exists():
                 proof_file.unlink()
 
+    def test_achieved_with_valid_proof_bundle_passes(self) -> None:
+        """SLO validation accepts a valid fss.proof_bundle.v1 proof root (resolving fss-gyqyz)."""
+        proof_dir = ROOT / "qualification-artifacts"
+        proof_dir.mkdir(parents=True, exist_ok=True)
+        proof_file = proof_dir / "SLO-TEST-002-proof.bundle.json"
+        bundle_data = {
+            "schema": "fss.proof_bundle.v1",
+            "bundle_id": "BUNDLE-SLO-TEST-002",
+            "claim_id": "SLO-TEST-002",
+            "claim_class": "slo",
+            "supported_level": "achieved",
+            "generation": "gen:fss1:operation-cost-v1",
+            "status": "passed",
+        }
+        proof_file.write_text(json.dumps(bundle_data, indent=2) + "\n", encoding="utf-8")
+        try:
+            real_proof_root = "qualification-artifacts/SLO-TEST-002-proof.bundle.json"
+            planted = self.real_slos_text + f"\n| `SLO-TEST-002` | latency <= 5 ms | edge-GPU | achieved | {real_proof_root} |\n"
+            is_valid, findings = self._validate_with_planted_slos(planted)
+            self.assertTrue(is_valid, f"Expected success with valid proof bundle, got findings: {[f.message for f in findings]}")
+        finally:
+            if proof_file.exists():
+                proof_file.unlink()
+
     # SLO-VAL-006: Missing target
     def test_planted_missing_target_fails(self) -> None:
         for bad_target in ["", "   ", "-", "none", "null", "n/a", "na"]:

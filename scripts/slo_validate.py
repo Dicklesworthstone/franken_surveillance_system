@@ -740,15 +740,46 @@ def parse_slos(
 
                                 if isinstance(receipt_json, dict):
                                     receipt_schema = receipt_json.get("schema")
-                                    if receipt_schema != "fss.release_qualification_receipt.v1":
+                                    if receipt_schema not in ("fss.release_qualification_receipt.v1", "fss.proof_bundle.v1"):
                                         findings.append(SloFinding(
                                             severity="error",
                                             code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
                                             path=path_str,
-                                            message=f"SLO {slo_id} referenced proof root '{proof_root}' schema is '{receipt_schema}'; expected 'fss.release_qualification_receipt.v1'",
-                                            remediation="Qualification receipt must specify schema 'fss.release_qualification_receipt.v1'",
+                                            message=f"SLO {slo_id} referenced proof root '{proof_root}' schema is '{receipt_schema}'; expected 'fss.release_qualification_receipt.v1' or 'fss.proof_bundle.v1'",
+                                            remediation="Proof root must specify schema 'fss.release_qualification_receipt.v1' or 'fss.proof_bundle.v1'",
                                             params={"slo_id": slo_id, "proof_root": proof_root, "schema": str(receipt_schema)},
                                         ))
+                                    elif receipt_schema == "fss.proof_bundle.v1":
+                                        bundle_req = ["schema", "status"]
+                                        missing_keys = [k for k in bundle_req if k not in receipt_json]
+                                        bound_claim = receipt_json.get("claim_id") or receipt_json.get("claimId")
+                                        if missing_keys:
+                                            findings.append(SloFinding(
+                                                severity="error",
+                                                code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                                path=path_str,
+                                                message=f"SLO {slo_id} proof bundle '{proof_root}' missing required fields: {missing_keys}",
+                                                remediation="Proof bundle must satisfy fss.proof_bundle.v1 schema",
+                                                params={"slo_id": slo_id, "missing": missing_keys},
+                                            ))
+                                        elif bound_claim != slo_id:
+                                            findings.append(SloFinding(
+                                                severity="error",
+                                                code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                                path=path_str,
+                                                message=f"SLO {slo_id} proof bundle '{proof_root}' claim_id is '{bound_claim}'; expected '{slo_id}'",
+                                                remediation="Proof bundle must bind the citing SLO ID",
+                                                params={"slo_id": slo_id, "claim_id": str(bound_claim)},
+                                            ))
+                                        elif receipt_json.get("status") != "passed":
+                                            findings.append(SloFinding(
+                                                severity="error",
+                                                code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                                path=path_str,
+                                                message=f"SLO {slo_id} proof bundle '{proof_root}' status is '{receipt_json.get('status')}'; must be 'passed'",
+                                                remediation="Achieved SLO must reference a passed proof bundle",
+                                                params={"slo_id": slo_id, "status": str(receipt_json.get("status"))},
+                                            ))
                                     else:
                                         receipt_req = [
                                             "receiptId", "laneId", "sourceCommit", "sourceTree",
