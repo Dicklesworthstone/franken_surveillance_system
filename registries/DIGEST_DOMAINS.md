@@ -36,4 +36,5 @@ Registry of canonical-digest domain tags used for domain separation in determini
 | `SCHEMA-DOMAIN-QUIESCENCE-PROOF-001` | `fss.quiescence_proof.v1` | Runtime region ownership tree | authority/region | quiescence proof domain tag; covers region ID, kind, parent ID, closed timestamp, task count, and obligation counts |
 | `SCHEMA-DOMAIN-BELIEF-INTERVAL-001` | `fss.belief_interval.v1` | Belief interval | authority/epistemic | deterministic belief interval canonical digest domain; lower and upper probability bounds, calibration generation, and micro-probability range preserved |
 | `SCHEMA-DOMAIN-CONTRADICTION-001` | `fss.contradiction.v1` | Physical contradiction | authority/epistemic | first-class contradiction canonical digest domain; conflicting evidence roots, independent failure domains, unresolved possible worlds, and orthogonal epistemic coordinates preserved |
+| `SCHEMA-DOMAIN-ALERT-EFFECT-RECORD-001` | `fss.alert_effect_record.v1` | Event lifecycle alert attempt | authority/event | alert effect record canonical digest domain; binds operation ID, obligation ID, event revision and digest, effect state, timestamp, channel, and receipt or failure reason |
 
