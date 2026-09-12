@@ -16,13 +16,13 @@ use std::fmt::Debug;
 
 use fss_core::{
     CanonicalEncode, CaptureInterval, Completeness, ContentDigest, Contradiction,
-    ContradictionParams, CoverageContinuity, CoverageStopReason, CoverageWitness,
-    DecisionPath, EventEvidence, EventHypothesis, EventId, EventKind, EventReadResult,
-    EventRevisionStore, EventState, EventStoreError, EventTransitionParams,
-    EvidenceClass, EvidenceEdgeRelation, EvidenceGraph, EvidenceNode, EvidenceNodeKind,
-    GraphReadResult, HypothesisDisposition, KnowledgeState, LedgerAnchor,
-    LineageReadResult, NotObservableReason, ProbabilityInterval, ProvenanceClass,
-    RuntimeOutcome, TimestampNs, MAX_CONTRADICTIONS_PER_EVENT, MAX_GRAPHS_PER_REVISION,
+    ContradictionParams, CoverageContinuity, CoverageStopReason, CoverageWitness, DecisionPath,
+    EventEvidence, EventHypothesis, EventId, EventKind, EventReadResult, EventRevisionStore,
+    EventState, EventStoreError, EventTransitionParams, EvidenceClass, EvidenceEdgeRelation,
+    EvidenceGraph, EvidenceNode, EvidenceNodeKind, GraphReadResult, HypothesisDisposition,
+    KnowledgeState, LedgerAnchor, LineageReadResult, MAX_CONTRADICTIONS_PER_EVENT,
+    MAX_GRAPHS_PER_REVISION, NotObservableReason, ProbabilityInterval, ProvenanceClass,
+    RuntimeOutcome, TimestampNs,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -274,7 +274,10 @@ fn criterion_1_append_only_monotonic_revisions_and_non_rewriting_history() -> Te
         EventReadResult::Found(rev) => {
             assert_eq!(rev.revision, 2);
             assert_eq!(rev.state, EventState::Witnessed);
-            assert_eq!(rev.supersedes, Some(genesis.canonical_digest(EventHypothesis::SCHEMA)));
+            assert_eq!(
+                rev.supersedes,
+                Some(genesis.canonical_digest(EventHypothesis::SCHEMA))
+            );
         }
         other => return Err(format!("expected Found for rev 2, got {other:?}").into()),
     }
@@ -632,12 +635,10 @@ fn criterion_5_explicit_coverage_boundary_and_not_observable_reads() -> TestResu
     match store.read_event(&absent_id, None)? {
         EventReadResult::NotObservable { domain, reason } => {
             assert_eq!(domain, "unknown");
-            assert_eq!(reason, NotObservableReason::NoCoverageWitness);
+            assert_eq!(reason, NotObservableReason::UnknownDomain);
         }
         other => {
-            return Err(
-                format!("expected NotObservable with NoCoverageWitness, got {other:?}").into(),
-            );
+            return Err(format!("expected NotObservable with UnknownDomain, got {other:?}").into());
         }
     }
 
@@ -691,9 +692,10 @@ fn criterion_5_explicit_coverage_boundary_and_not_observable_reads() -> TestResu
             assert_eq!(reason, NotObservableReason::CoverageWitnessGapped);
         }
         other => {
-            return Err(
-                format!("expected NotObservable with CoverageWitnessGapped, got {other:?}").into(),
-            );
+            return Err(format!(
+                "expected NotObservable with CoverageWitnessGapped, got {other:?}"
+            )
+            .into());
         }
     }
 
@@ -737,7 +739,9 @@ fn criterion_5_explicit_coverage_boundary_and_not_observable_reads() -> TestResu
             );
         }
         other => {
-            return Err(format!("expected NotObservable with ExcludedDomain, got {other:?}").into());
+            return Err(
+                format!("expected NotObservable with ExcludedDomain, got {other:?}").into(),
+            );
         }
     }
 
@@ -961,6 +965,77 @@ fn criterion_8_deterministic_canonical_commit_digests() -> TestResult {
     assert_eq!(g_digest_a, g_digest_b);
     assert_eq!(store_a.current_anchor(), store_b.current_anchor());
     assert_eq!(store_a, store_b);
+
+    Ok(())
+}
+
+#[test]
+fn unknown_domain_never_yields_absent_with_coverage() -> TestResult {
+    let genesis_anchor = LedgerAnchor::genesis("site-coverage-unknown-check");
+    let mut store = EventRevisionStore::new(genesis_anchor);
+
+    // Register a CoverageWitness that observes domain "unknown" and certifies absence
+    let witness = sample_coverage_witness("unknown", true, true, false)?;
+
+    store.register_coverage_witness(store.current_anchor().clone(), witness, TimestampNs(1_000))?;
+
+    // An event that was never registered has no known domain.
+    // Querying it must NEVER return AbsentWithCoverage, even if a witness observed "unknown"!
+    let unknown_id = EventId::parse("evt:test:unknown_never_registered")?;
+
+    match store.read_event(&unknown_id, None)? {
+        EventReadResult::NotObservable { domain, reason } => {
+            assert_eq!(domain, "unknown");
+            assert_eq!(reason, NotObservableReason::UnknownDomain);
+        }
+        EventReadResult::AbsentWithCoverage(_) => {
+            return Err("absence claimed without known coverage domain".into());
+        }
+        other => {
+            return Err(format!("expected NotObservable with UnknownDomain, got {other:?}").into());
+        }
+    }
+
+    match store.read_lineage(&unknown_id)? {
+        LineageReadResult::NotObservable { domain, reason } => {
+            assert_eq!(domain, "unknown");
+            assert_eq!(reason, NotObservableReason::UnknownDomain);
+        }
+        LineageReadResult::AbsentWithCoverage(_) => {
+            return Err("lineage absence claimed without known coverage domain".into());
+        }
+        other => {
+            return Err(format!("expected NotObservable with UnknownDomain, got {other:?}").into());
+        }
+    }
+
+    // Querying with an explicitly empty domain in read_event_in_domain must also return NotObservable(UnknownDomain)
+    match store.read_event_in_domain(&unknown_id, "", None)? {
+        EventReadResult::NotObservable { domain, reason } => {
+            assert_eq!(domain, "");
+            assert_eq!(reason, NotObservableReason::UnknownDomain);
+        }
+        EventReadResult::AbsentWithCoverage(_) => {
+            return Err("absence claimed for empty domain".into());
+        }
+        other => {
+            return Err(format!("expected NotObservable with UnknownDomain, got {other:?}").into());
+        }
+    }
+
+    // Querying with domain "unknown" in read_event_in_domain must also return NotObservable(UnknownDomain)
+    match store.read_event_in_domain(&unknown_id, "unknown", None)? {
+        EventReadResult::NotObservable { domain, reason } => {
+            assert_eq!(domain, "unknown");
+            assert_eq!(reason, NotObservableReason::UnknownDomain);
+        }
+        EventReadResult::AbsentWithCoverage(_) => {
+            return Err("absence claimed for unknown domain".into());
+        }
+        other => {
+            return Err(format!("expected NotObservable with UnknownDomain, got {other:?}").into());
+        }
+    }
 
     Ok(())
 }

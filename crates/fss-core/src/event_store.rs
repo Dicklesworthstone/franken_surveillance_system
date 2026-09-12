@@ -18,12 +18,10 @@ use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::Completeness;
 use crate::digest::ContentDigest;
 use crate::event::{
-    EventDecodeError, EventHypothesis, EventLineage, EventState,
-    EventTransitionError, EventTransitionParams, EvidenceGraph, MAX_LINEAGE_DEPTH,
+    EventDecodeError, EventHypothesis, EventLineage, EventState, EventTransitionError,
+    EventTransitionParams, EvidenceGraph, MAX_LINEAGE_DEPTH,
 };
-use crate::evidence::{
-    CoverageContinuity, CoverageStopReason, CoverageWitness, LedgerAnchor,
-};
+use crate::evidence::{CoverageContinuity, CoverageStopReason, CoverageWitness, LedgerAnchor};
 use crate::ids::EventId;
 use crate::time::TimestampNs;
 
@@ -57,9 +55,9 @@ pub enum EventStoreError {
     /// Commit attempted against a stale or non-matching basis anchor.
     StaleAnchor {
         /// Expected basis anchor.
-        expected: LedgerAnchor,
+        expected: Box<LedgerAnchor>,
         /// Actual anchor provided by caller.
-        actual: LedgerAnchor,
+        actual: Box<LedgerAnchor>,
     },
     /// Event lineage depth strictly exceeds hard bound.
     LineageDepthExceeded {
@@ -474,6 +472,8 @@ pub enum NotObservableReason {
         /// Excluded domain string.
         domain: String,
     },
+    /// The event domain is unknown; absence cannot be certified without a declared domain.
+    UnknownDomain,
 }
 
 impl fmt::Display for NotObservableReason {
@@ -499,6 +499,12 @@ impl fmt::Display for NotObservableReason {
             }
             Self::ExcludedDomain { domain } => {
                 write!(f, "domain '{domain}' is explicitly excluded in coverage")
+            }
+            Self::UnknownDomain => {
+                write!(
+                    f,
+                    "event domain is unknown; absence cannot be certified without a domain"
+                )
             }
         }
     }
@@ -1000,18 +1006,37 @@ impl EventRevisionStore {
                 Some(target_rev) => {
                     if let Some(rev) = lineage.history().iter().find(|r| r.revision == target_rev) {
                         Ok(EventReadResult::Found(rev))
+                    } else if let Some(domain) = self.event_domains.get(event_id) {
+                        if domain.trim().is_empty() || domain == "unknown" {
+                            Ok(EventReadResult::NotObservable {
+                                domain: domain.clone(),
+                                reason: NotObservableReason::UnknownDomain,
+                            })
+                        } else {
+                            Ok(self.evaluate_coverage_for_absent(domain))
+                        }
                     } else {
-                        let domain = self
-                            .event_domains
-                            .get(event_id)
-                            .cloned()
-                            .unwrap_or_default();
-                        Ok(self.evaluate_coverage_for_absent(&domain))
+                        Ok(EventReadResult::NotObservable {
+                            domain: "unknown".to_string(),
+                            reason: NotObservableReason::UnknownDomain,
+                        })
                     }
                 }
             }
+        } else if let Some(domain) = self.event_domains.get(event_id) {
+            if domain.trim().is_empty() || domain == "unknown" {
+                Ok(EventReadResult::NotObservable {
+                    domain: domain.clone(),
+                    reason: NotObservableReason::UnknownDomain,
+                })
+            } else {
+                Ok(self.evaluate_coverage_for_absent(domain))
+            }
         } else {
-            Ok(self.evaluate_coverage_for_absent("unknown"))
+            Ok(EventReadResult::NotObservable {
+                domain: "unknown".to_string(),
+                reason: NotObservableReason::UnknownDomain,
+            })
         }
     }
 
@@ -1045,24 +1070,31 @@ impl EventRevisionStore {
     ) -> Result<LineageReadResult<'_>, EventStoreError> {
         if let Some(lineage) = self.lineages.get(event_id) {
             Ok(LineageReadResult::Found(lineage))
-        } else {
-            let domain = self
-                .event_domains
-                .get(event_id)
-                .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
-            match self.evaluate_coverage_for_absent(&domain) {
-                EventReadResult::AbsentWithCoverage(w) => {
-                    Ok(LineageReadResult::AbsentWithCoverage(w))
+        } else if let Some(domain) = self.event_domains.get(event_id) {
+            if domain.trim().is_empty() || domain == "unknown" {
+                Ok(LineageReadResult::NotObservable {
+                    domain: domain.clone(),
+                    reason: NotObservableReason::UnknownDomain,
+                })
+            } else {
+                match self.evaluate_coverage_for_absent(domain) {
+                    EventReadResult::AbsentWithCoverage(w) => {
+                        Ok(LineageReadResult::AbsentWithCoverage(w))
+                    }
+                    EventReadResult::NotObservable { domain, reason } => {
+                        Ok(LineageReadResult::NotObservable { domain, reason })
+                    }
+                    EventReadResult::Found(_) => Ok(LineageReadResult::NotObservable {
+                        domain: domain.clone(),
+                        reason: NotObservableReason::NoCoverageWitness,
+                    }),
                 }
-                EventReadResult::NotObservable { domain, reason } => {
-                    Ok(LineageReadResult::NotObservable { domain, reason })
-                }
-                EventReadResult::Found(_) => Ok(LineageReadResult::NotObservable {
-                    domain,
-                    reason: NotObservableReason::NoCoverageWitness,
-                }),
             }
+        } else {
+            Ok(LineageReadResult::NotObservable {
+                domain: "unknown".to_string(),
+                reason: NotObservableReason::UnknownDomain,
+            })
         }
     }
 
@@ -1153,8 +1185,8 @@ impl EventRevisionStore {
             }
             if commit.basis_anchor != store.current_anchor {
                 return Err(EventStoreError::StaleAnchor {
-                    expected: store.current_anchor.clone(),
-                    actual: commit.basis_anchor.clone(),
+                    expected: Box::new(store.current_anchor.clone()),
+                    actual: Box::new(commit.basis_anchor.clone()),
                 });
             }
 
@@ -1207,8 +1239,8 @@ impl EventRevisionStore {
             // Verify the rebuilt state anchor matches the recorded new_anchor
             if store.current_anchor != commit.new_anchor {
                 return Err(EventStoreError::StaleAnchor {
-                    expected: commit.new_anchor.clone(),
-                    actual: store.current_anchor.clone(),
+                    expected: Box::new(commit.new_anchor.clone()),
+                    actual: Box::new(store.current_anchor.clone()),
                 });
             }
         }
@@ -1218,8 +1250,8 @@ impl EventRevisionStore {
     fn check_basis_anchor(&self, basis_anchor: &LedgerAnchor) -> Result<(), EventStoreError> {
         if *basis_anchor != self.current_anchor {
             return Err(EventStoreError::StaleAnchor {
-                expected: self.current_anchor.clone(),
-                actual: basis_anchor.clone(),
+                expected: Box::new(self.current_anchor.clone()),
+                actual: Box::new(basis_anchor.clone()),
             });
         }
         Ok(())
@@ -1263,6 +1295,13 @@ impl EventRevisionStore {
     }
 
     fn evaluate_coverage_for_absent(&self, domain: &str) -> EventReadResult<'_> {
+        if domain.trim().is_empty() || domain == "unknown" {
+            return EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::UnknownDomain,
+            };
+        }
+
         let candidate = self
             .coverage_witnesses
             .iter()
