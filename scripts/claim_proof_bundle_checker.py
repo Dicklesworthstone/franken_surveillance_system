@@ -51,6 +51,7 @@ import os
 import re
 import sys
 import tomllib
+import unicodedata
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -89,6 +90,8 @@ ERR_PROOF_FORMAL_ARTIFACT_MISSING = "ERR-CLAIM-PROOF-FORMAL-ARTIFACT-MISSING-001
 ERR_PROOF_TESTS_ONLY = "ERR-CLAIM-PROOF-TESTS-ONLY-001"
 ERR_PROOF_TOOLCHAIN_UNBOUND = "ERR-CLAIM-PROOF-TOOLCHAIN-UNBOUND-001"
 ERR_PROOF_CHECK_RECEIPT_INVALID = "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001"
+ERR_PROOF_UNPROVEN_PLACEHOLDER = "ERR-CLAIM-PROOF-UNPROVEN-PLACEHOLDER-001"
+ERR_CLAIM_GENERATION_UNBOUND = "ERR-CLAIM-GENERATION-UNBOUND-001"
 ERR_BOUND_DERIVATION_UNBOUND = "ERR-CLAIM-BOUND-DERIVATION-UNBOUND-001"
 ERR_BOUND_EXPRESSION_UNBOUND = "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001"
 ERR_BOUND_UNITS_MISSING = "ERR-CLAIM-BOUND-UNITS-MISSING-001"
@@ -196,6 +199,14 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_PROOF_CHECK_RECEIPT_INVALID: {
         "trigger": "A 'proof' claim's check receipt is missing, malformed, non-passing, or not bound to the claim ID, the formal model, and the formal artifact digest",
         "remediation": "Re-run the formal checker and retain a passing fss.proof_check_receipt.v1 bound to the claim, model, and artifact",
+    },
+    ERR_PROOF_UNPROVEN_PLACEHOLDER: {
+        "trigger": "A 'proof' claim's formal artifact contains an unproven placeholder outside comments (Lean sorry/sorryAx/admit, TLAPS OMITTED)",
+        "remediation": "Complete the proof; a placeholder is never a checked proof",
+    },
+    ERR_CLAIM_GENERATION_UNBOUND: {
+        "trigger": "A promoted 'proof' claim is cited by no claim row declaring its current generation (Generation column), or its citing rows declare conflicting generations",
+        "remediation": "Declare the claim's current generation in its claim row and bind the proof bundle to exactly that generation",
     },
     ERR_BOUND_DERIVATION_UNBOUND: {
         "trigger": "A promoted 'bounded_model' claim retains no single fss.bound_derivation.v1 derivation, or it is not on disk, not digest-bound, malformed, has no derivation steps, or is not bound to the claim ID and generation",
@@ -1555,11 +1566,75 @@ def _is_test_evidence(value: str) -> bool:
     return any(tok in TEST_EVIDENCE_TOKENS for tok in _EVIDENCE_TOKEN_SPLIT_RE.split(value.strip().lower()))
 
 
+_EXACT_TOKEN_RE = re.compile(r"[\x21-\x7e]+")
+# A concrete checker release: major.minor[.patch[.build]] with an optional numbered pre-release,
+# or a dated nightly. Ranges, wildcards, channels, and aliases ('*', '>=2.0', '2.x', 'stable',
+# 'nightly', 'dev', 'HEAD', 'unknown', 'latest') never identify what actually checked a proof.
+_CONCRETE_VERSION_RE = re.compile(r"v?\d+(?:\.\d+){1,3}(?:-(?:rc|alpha|beta)\.?\d+)?|nightly-\d{4}-\d{2}-\d{2}")
+_THEOREM_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_'.]*")
+FORMAL_SUFFIX_LANGUAGES: dict[str, str] = {".lean": "lean", ".tla": "tla"}
+_TLA_HEADER_RE = re.compile(r"\A\s*-{4,}[ \t]*MODULE[ \t]+[A-Za-z0-9_]+[ \t]*-{4,}[ \t]*$", re.M)
+_TLA_FOOTER_RE = re.compile(r"^={4,}[ \t]*\s*\Z", re.M)
+_COMMENT_RES: dict[str, tuple[re.Pattern[str], ...]] = {
+    "tla": (re.compile(r"\(\*.*?\*\)", re.S), re.compile(r"\\\*[^\n]*")),
+    "lean": (re.compile(r"/-.*?-/", re.S), re.compile(r"--[^\n]*")),
+}
+_PLACEHOLDER_RES: dict[str, re.Pattern[str]] = {
+    "lean": re.compile(r"(?<![A-Za-z0-9_'.])(?:sorryAx|sorry|admit)(?![A-Za-z0-9_'])"),
+    "tla": re.compile(r"\bOMITTED\b"),
+}
+_TEST_DIR_NAMES: frozenset[str] = frozenset({"test", "tests", "testing"})
+_TEST_STEM_RE = re.compile(r"^[Tt]ests?(?:[_\-.]|$)|[_\-][Tt]ests?$|[a-z0-9]Tests?$")
+
+
+def _exact_token(value: Any) -> str | None:
+    """An identity token compared byte for byte: printable ASCII with no whitespace of any kind.
+    A non-breaking, zero-width, or other invisible character is never stripped into a match."""
+    return value if isinstance(value, str) and _EXACT_TOKEN_RE.fullmatch(value) else None
+
+
+def _exact_text(value: Any) -> str | None:
+    """Human text compared exactly: non-empty, no leading or trailing space, and no whitespace,
+    control, or format character other than U+0020. Nothing is stripped."""
+    if not isinstance(value, str) or not value.strip(" ") or value != value.strip(" "):
+        return None
+    for ch in value:
+        if ch != " " and (ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf", "Zs", "Zl", "Zp")):
+            return None
+    return value
+
+
+def _bind_claim_row_generation(
+    bundle_generation: str | None,
+    claim_generation: Any,
+    path_str: str,
+    params: dict[str, Any],
+    findings: list[ClaimFinding],
+) -> None:
+    """The bundle generation must be the citing claim row's current generation, never merely
+    consistent with the bundle's own artifacts."""
+    label = f"'{params['claim_class']}' claim '{params['claim_id']}'"
+    row_generation = _exact_token(claim_generation)
+    if row_generation is None:
+        findings.append(_finding(
+            ERR_CLAIM_GENERATION_UNBOUND, path_str, "claim_generation",
+            f"{label} is cited by no claim row declaring its current generation (got {claim_generation!r}); "
+            "the bundle generation cannot be bound to the claim",
+            params,
+        ))
+    elif bundle_generation is not None and bundle_generation != row_generation:
+        findings.append(_finding(
+            ERR_STALE_GENERATION, path_str, "generation",
+            f"{label} bundle generation '{bundle_generation}' is not the claim row's current generation '{row_generation}'",
+            {**params, "bundle_generation": bundle_generation, "claim_generation": row_generation},
+        ))
+
+
 def _classify_checker(value: Any, where: str, path_str: str, params: dict[str, Any], findings: list[ClaimFinding]) -> str | None:
     """Returns the normalized checker when it is a registered formal checker, else records why not."""
-    checker = _nonempty_str(value)
+    checker = _exact_token(value)
     if checker is None:
-        findings.append(_finding(ERR_PROOF_TOOLCHAIN_UNBOUND, path_str, where, f"'proof' claim '{params['claim_id']}' {where} names no formal checker", params))
+        findings.append(_finding(ERR_PROOF_TOOLCHAIN_UNBOUND, path_str, where, f"'proof' claim '{params['claim_id']}' {where} names no exact formal checker (got {value!r})", params))
         return None
     norm = checker.lower()
     if _is_test_evidence(norm):
@@ -1580,15 +1655,87 @@ def _classify_checker(value: Any, where: str, path_str: str, params: dict[str, A
 
 
 def _classify_version(value: Any, where: str, path_str: str, params: dict[str, Any], findings: list[ClaimFinding]) -> str | None:
-    version = _nonempty_str(value)
-    if version is None or is_latest_generation(version):
+    version = _exact_token(value)
+    if version is None or _CONCRETE_VERSION_RE.fullmatch(version) is None:
         findings.append(_finding(
             ERR_PROOF_TOOLCHAIN_UNBOUND, path_str, where,
-            f"'proof' claim '{params['claim_id']}' {where} must pin an exact checker version (got {value!r})",
+            f"'proof' claim '{params['claim_id']}' {where} must pin a concrete checker release such as '2.19' or "
+            f"'v4.9.0' (got {value!r}); ranges, wildcards, channels, and aliases are refused",
             params,
         ))
         return None
     return version
+
+
+def _test_path_marker(locator: str) -> str | None:
+    """Why a formal-artifact path is test code in disguise, checked before any suffix gate."""
+    parts = Path(locator).parts
+    if any(part.lower() in _TEST_DIR_NAMES for part in parts[:-1]):
+        return "lives under a test directory"
+    name = parts[-1] if parts else locator
+    stem = name.split(".", 1)[0]
+    if _is_test_evidence(stem) or _TEST_STEM_RE.search(stem):
+        return "is a test-named file"
+    inner = [s.lower() for s in Path(name).suffixes[:-1]]
+    if any(s in TEST_SOURCE_SUFFIXES for s in inner):
+        return f"hides a {inner} source behind a formal suffix"
+    return None
+
+
+def _declares_theorem(language: str, code: str, name: str) -> bool:
+    escaped = re.escape(name)
+    if language == "tla":
+        pattern = rf"(?m)^[ \t]*(?:THEOREM|LEMMA|PROPOSITION|COROLLARY)[ \t]+{escaped}[ \t]*=="
+    else:
+        pattern = rf"(?m)^[ \t]*(?:@\[[^\]\n]*\][ \t]*)?(?:(?:private|protected|noncomputable)[ \t]+)*(?:theorem|lemma)[ \t]+{escaped}(?=[\s:({{\[]|$)"
+    return re.search(pattern, code) is not None
+
+
+def _check_formal_content(
+    raw: bytes,
+    locator: str,
+    language: str,
+    theorem_name: str | None,
+    path_str: str,
+    params: dict[str, Any],
+    findings: list[ClaimFinding],
+) -> None:
+    """The artifact must be source in its suffix's formal language, declare the claimed theorem
+    outside comments, and contain no unproven placeholder."""
+    label = f"'proof' claim '{params['claim_id']}'"
+    loc = "artifacts[role=formal_artifact]"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, loc, f"{label} formal artifact '{locator}' is not UTF-8 formal source text", params))
+        return
+    has_tla_header = _TLA_HEADER_RE.search(text) is not None
+    if language == "tla" and not (has_tla_header and _TLA_FOOTER_RE.search(text) is not None):
+        findings.append(_finding(
+            ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, loc,
+            f"{label} formal artifact '{locator}' is not a TLA+ module ('---- MODULE Name ----' header and '====' terminator)",
+            params,
+        ))
+        return
+    if language == "lean" and has_tla_header:
+        findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, loc, f"{label} formal artifact '{locator}' is a TLA+ module, not Lean source", params))
+        return
+    code = text
+    for pattern in _COMMENT_RES[language]:
+        code = pattern.sub(" ", code)
+    placeholder = _PLACEHOLDER_RES[language].search(code)
+    if placeholder is not None:
+        findings.append(_finding(
+            ERR_PROOF_UNPROVEN_PLACEHOLDER, path_str, loc,
+            f"{label} formal artifact '{locator}' contains the unproven placeholder '{placeholder.group(0)}'; it proves nothing",
+            params,
+        ))
+    if theorem_name is not None and not _declares_theorem(language, code, theorem_name):
+        findings.append(_finding(
+            ERR_PROOF_THEOREM_UNBOUND, path_str, loc,
+            f"{label} formal artifact '{locator}' does not declare the claimed theorem '{theorem_name}' outside comments",
+            params,
+        ))
 
 
 def _verify_proof_claim_evidence(
@@ -1597,48 +1744,65 @@ def _verify_proof_claim_evidence(
     path_str: str,
     expected_claim_id: str | None,
     findings: list[ClaimFinding],
+    claim_generation: str | None = None,
 ) -> None:
     """Opens and validates the evidence the 'proof' row demands; every gap fails closed.
 
+    Identity fields (claim, model, generation, checker, version, theorem name, digests) are
+    compared byte for byte; nothing is stripped.
+
+    0. Generation: the bundle generation is the citing claim row's current generation.
     1. Assumptions: non-empty, each a named {id, statement}.
-    2. Theorem: a statement bound to the claim ID.
-    3. Toolchain identity: a registered formal checker pinned to an exact version.
+    2. Theorem: {claim_id, name, statement} bound to the claim ID.
+    3. Toolchain identity: a registered formal checker pinned to a concrete release.
     4. Declared formal model: {model_id, generation} whose retained fss.formal_model.v1
        manifest exists, names the same model, is declared for this claim, has a
-       digest-bound model source on disk, and carries the claim's exact generation.
-    5. Formal artifact: exactly one, on disk, digest-bound, non-empty, written in the
-       declared checker's formal language; test sources/results never substitute for it.
+       digest-bound model source on disk, and carries the bundle generation.
+    5. Formal artifact: exactly one, on disk, digest-bound, not test code (path markers are
+       checked before the suffix), a single case-exact formal suffix, source in that language,
+       declaring the named theorem outside comments, with no unproven placeholder.
     6. Check receipt: a passing fss.proof_check_receipt.v1 bound to the claim, model
-       (id + generation), theorem statement, toolchain, and formal artifact digest.
+       (id, generation, source digest), theorem (name, statement), toolchain, and formal
+       artifact digest.
     """
     claim_id = _bound_claim_id(bundle_data, expected_claim_id)
     params: dict[str, Any] = {"claim_class": "proof", "claim_id": claim_id}
     label = f"'proof' claim '{claim_id}'"
-    claim_generation = _nonempty_str(bundle_data.get("generation"))
-    if claim_generation is None:
+    bundle_generation = _exact_token(bundle_data.get("generation"))
+    if bundle_generation is None:
         findings.append(_finding(
             ERR_PROOF_MODEL_GENERATION_MISMATCH, path_str, "generation",
-            f"{label} declares no generation; its formal model generation cannot be bound to it",
+            f"{label} declares no exact generation (got {bundle_data.get('generation')!r}); its formal model generation cannot be bound to it",
             params,
         ))
+    _bind_claim_row_generation(bundle_generation, claim_generation, path_str, params, findings)
 
     # 1. Assumptions.
     _check_assumptions(bundle_data, path_str, params, findings)
 
-    # 2. Theorem statement bound to the claim.
+    # 2. Theorem bound to the claim.
     theorem = bundle_data.get("theorem")
     statement: str | None = None
+    theorem_name: str | None = None
     if not isinstance(theorem, dict):
-        findings.append(_finding(ERR_PROOF_THEOREM_UNBOUND, path_str, "theorem", f"{label} declares no theorem {{claim_id, statement}}", params))
+        findings.append(_finding(ERR_PROOF_THEOREM_UNBOUND, path_str, "theorem", f"{label} declares no theorem {{claim_id, name, statement}}", params))
     else:
-        statement = _nonempty_str(theorem.get("statement"))
+        statement = _exact_text(theorem.get("statement"))
         if statement is None:
-            findings.append(_finding(ERR_PROOF_THEOREM_UNBOUND, path_str, "theorem.statement", f"{label} theorem has no statement", params))
-        theorem_claim = _nonempty_str(theorem.get("claim_id"))
+            findings.append(_finding(ERR_PROOF_THEOREM_UNBOUND, path_str, "theorem.statement", f"{label} theorem has no exact statement (got {theorem.get('statement')!r})", params))
+        theorem_name = _exact_token(theorem.get("name"))
+        if theorem_name is None or _THEOREM_NAME_RE.fullmatch(theorem_name) is None:
+            findings.append(_finding(
+                ERR_PROOF_THEOREM_UNBOUND, path_str, "theorem.name",
+                f"{label} theorem declares no formal name the artifact can declare (got {theorem.get('name')!r})",
+                params,
+            ))
+            theorem_name = None
+        theorem_claim = _exact_token(theorem.get("claim_id"))
         if theorem_claim != claim_id:
             findings.append(_finding(
                 ERR_PROOF_THEOREM_UNBOUND, path_str, "theorem.claim_id",
-                f"{label} theorem is bound to claim {theorem_claim!r}, not '{claim_id}'",
+                f"{label} theorem is bound to claim {theorem.get('claim_id')!r}, not '{claim_id}'",
                 params,
             ))
 
@@ -1654,68 +1818,68 @@ def _verify_proof_claim_evidence(
             params,
         ))
     else:
-        declared_checker = (_nonempty_str(toolchain.get("checker")) or "").lower() or None
-        declared_version = _nonempty_str(toolchain.get("version"))
+        declared_checker = (_exact_token(toolchain.get("checker")) or "").lower() or None
         checker = _classify_checker(toolchain.get("checker"), "toolchain_identity.checker", path_str, params, findings)
-        _classify_version(toolchain.get("version"), "toolchain_identity.version", path_str, params, findings)
+        declared_version = _classify_version(toolchain.get("version"), "toolchain_identity.version", path_str, params, findings)
 
     # 4. Declared formal model, opened and bound to the claim.
     declared_model = bundle_data.get("formal_model")
     declared_model_id: str | None = None
     declared_model_gen: str | None = None
-    if not isinstance(declared_model, dict) or _nonempty_str(declared_model.get("model_id")) is None:
+    if not isinstance(declared_model, dict) or _exact_token(declared_model.get("model_id")) is None:
         findings.append(_finding(
             ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model",
-            f"{label} declares no formal model reference {{model_id, generation}}",
+            f"{label} declares no exact formal model reference {{model_id, generation}} (got {declared_model!r})",
             params,
         ))
     else:
-        declared_model_id = _nonempty_str(declared_model.get("model_id"))
-        declared_model_gen = _nonempty_str(declared_model.get("generation"))
+        declared_model_id = _exact_token(declared_model.get("model_id"))
+        declared_model_gen = _exact_token(declared_model.get("generation"))
         if declared_model_gen is None:
             findings.append(_finding(
                 ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.generation",
-                f"{label} formal model reference declares no generation",
+                f"{label} formal model reference declares no exact generation",
                 params,
             ))
-        elif claim_generation is not None and declared_model_gen != claim_generation:
+        elif bundle_generation is not None and declared_model_gen != bundle_generation:
             findings.append(_finding(
                 ERR_PROOF_MODEL_GENERATION_MISMATCH, path_str, "formal_model.generation",
-                f"{label} formal model generation '{declared_model_gen}' differs from the claim generation '{claim_generation}'",
-                {**params, "model_generation": declared_model_gen, "claim_generation": claim_generation},
+                f"{label} formal model generation '{declared_model_gen}' differs from the claim generation '{bundle_generation}'",
+                {**params, "model_generation": declared_model_gen, "claim_generation": bundle_generation},
             ))
 
     manifest, reason = _open_role_document(bundle_data, root, "formal_model", FORMAL_MODEL_SCHEMA)
     model_id: str | None = declared_model_id
     model_gen: str | None = declared_model_gen
+    source_digest: str | None = None
     if manifest is None:
         findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "artifacts[role=formal_model]", f"{label} formal model: {reason}", params))
     else:
-        manifest_id = _nonempty_str(manifest.get("model_id"))
-        manifest_gen = _nonempty_str(manifest.get("generation"))
+        manifest_id = _exact_token(manifest.get("model_id"))
+        manifest_gen = _exact_token(manifest.get("generation"))
         manifest_claims = manifest.get("claim_ids")
         if manifest_id is None:
-            findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.model_id", f"{label} formal model manifest declares no model_id", params))
+            findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.model_id", f"{label} formal model manifest declares no exact model_id", params))
         elif declared_model_id is not None and manifest_id != declared_model_id:
             findings.append(_finding(
                 ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.model_id",
                 f"{label} declares formal model '{declared_model_id}' but the retained manifest is model '{manifest_id}'",
                 params,
             ))
-        if not isinstance(manifest_claims, list) or claim_id not in [c.strip() for c in manifest_claims if isinstance(c, str)]:
+        if not isinstance(manifest_claims, list) or claim_id not in [c for c in manifest_claims if isinstance(c, str)]:
             findings.append(_finding(
                 ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.claim_ids",
                 f"{label} formal model manifest is not declared for this claim (claim_ids={manifest_claims!r})",
                 params,
             ))
         if manifest_gen is None:
-            findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.generation", f"{label} formal model manifest declares no generation", params))
+            findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.generation", f"{label} formal model manifest declares no exact generation", params))
         else:
-            if claim_generation is not None and manifest_gen != claim_generation:
+            if bundle_generation is not None and manifest_gen != bundle_generation:
                 findings.append(_finding(
                     ERR_PROOF_MODEL_GENERATION_MISMATCH, path_str, "formal_model.generation",
-                    f"{label} retained formal model generation '{manifest_gen}' differs from the claim generation '{claim_generation}'",
-                    {**params, "model_generation": manifest_gen, "claim_generation": claim_generation},
+                    f"{label} retained formal model generation '{manifest_gen}' differs from the claim generation '{bundle_generation}'",
+                    {**params, "model_generation": manifest_gen, "claim_generation": bundle_generation},
                 ))
             if declared_model_gen is not None and manifest_gen != declared_model_gen:
                 findings.append(_finding(
@@ -1732,15 +1896,18 @@ def _verify_proof_claim_evidence(
                 findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.source", f"{label} formal model source {source_reason}", params))
             elif not source_bytes.strip():
                 findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.source", f"{label} formal model source is empty", params))
+            else:
+                source_digest = compute_sha256(source_bytes)
         model_id = manifest_id or declared_model_id
         model_gen = manifest_gen or declared_model_gen
 
     # 5. Formal artifact: the checked proof itself; tests never substitute for it.
     formal_entries = _role_artifacts(bundle_data, "formal_artifact")
     formal_digest: str | None = None
+    art_loc = "artifacts[role=formal_artifact]"
     if len(formal_entries) != 1:
         findings.append(_finding(
-            ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, "artifacts[role=formal_artifact]",
+            ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, art_loc,
             f"{label} requires exactly one retained 'formal_artifact', found {len(formal_entries)}",
             params,
         ))
@@ -1759,26 +1926,29 @@ def _verify_proof_claim_evidence(
         locator = _artifact_locator(formal_entries[0])
         raw, art_reason = _open_retained_file(root, locator, formal_entries[0].get("digest"))
         if raw is None:
-            findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, "artifacts[role=formal_artifact]", f"{label} formal artifact {art_reason}", params))
+            findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, art_loc, f"{label} formal artifact {art_reason}", params))
         elif not raw.strip():
-            findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, "artifacts[role=formal_artifact]", f"{label} formal artifact '{locator}' is empty", params))
+            findings.append(_finding(ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, art_loc, f"{label} formal artifact '{locator}' is empty", params))
         else:
             allowed = FORMAL_PROOF_CHECKERS[checker] if checker is not None else tuple(sorted({s for v in FORMAL_PROOF_CHECKERS.values() for s in v}))
-            suffix = Path(str(locator)).suffix.lower()
-            if suffix in allowed:
-                formal_digest = compute_sha256(raw)
-            elif suffix in TEST_SOURCE_SUFFIXES or _is_test_evidence(str(locator)):
+            marker = _test_path_marker(str(locator))
+            suffixes = Path(str(locator)).suffixes
+            if marker is not None:
                 findings.append(_finding(
-                    ERR_PROOF_TESTS_ONLY, path_str, "artifacts[role=formal_artifact]",
-                    f"{label} formal artifact '{locator}' is test code, not a formal proof; tests cannot prove a theorem",
+                    ERR_PROOF_TESTS_ONLY, path_str, art_loc,
+                    f"{label} formal artifact '{locator}' {marker}; tests cannot prove a theorem",
+                    params,
+                ))
+            elif len(suffixes) != 1 or suffixes[0] not in allowed:
+                findings.append(_finding(
+                    ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, art_loc,
+                    f"{label} formal artifact '{locator}' is not a single-suffix formal source for checker {checker!r} "
+                    f"(expected exactly one of {list(allowed)}, case-sensitive)",
                     params,
                 ))
             else:
-                findings.append(_finding(
-                    ERR_PROOF_FORMAL_ARTIFACT_MISSING, path_str, "artifacts[role=formal_artifact]",
-                    f"{label} formal artifact '{locator}' is not a formal source for checker {checker!r} (expected {list(allowed)})",
-                    params,
-                ))
+                formal_digest = compute_sha256(raw)
+                _check_formal_content(raw, str(locator), FORMAL_SUFFIX_LANGUAGES[suffixes[0]], theorem_name, path_str, params, findings)
 
     # 6. Check receipt bound to claim, model, theorem, toolchain, and artifact.
     receipt, receipt_reason = _open_role_document(bundle_data, root, "proof_check_receipt", PROOF_CHECK_RECEIPT_SCHEMA)
@@ -1787,9 +1957,9 @@ def _verify_proof_claim_evidence(
         return
     r_loc = "proof_check_receipt"
     r_status = receipt.get("status")
-    if not isinstance(r_status, str) or r_status.strip().lower() not in PASSING_PROOF_CHECK_STATUSES:
+    if r_status not in PASSING_PROOF_CHECK_STATUSES:
         findings.append(_finding(ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, f"{r_loc}.status", f"{label} check receipt status {r_status!r} is not passing", params))
-    if _nonempty_str(receipt.get("claim_id")) != claim_id:
+    if _exact_token(receipt.get("claim_id")) != claim_id:
         findings.append(_finding(
             ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, f"{r_loc}.claim_id",
             f"{label} check receipt is bound to claim {receipt.get('claim_id')!r}",
@@ -1809,35 +1979,54 @@ def _verify_proof_claim_evidence(
             f"{label} check receipt checker version '{r_version}' differs from the declared toolchain version '{declared_version}'",
             params,
         ))
-    r_model = _nonempty_str(receipt.get("model_id"))
+    r_model = _exact_token(receipt.get("model_id"))
     if r_model is None or (model_id is not None and r_model != model_id):
         findings.append(_finding(
             ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, f"{r_loc}.model_id",
             f"{label} check receipt checked model {receipt.get('model_id')!r}, not '{model_id}'",
             params,
         ))
-    r_model_gen = _nonempty_str(receipt.get("model_generation"))
+    r_model_gen = _exact_token(receipt.get("model_generation"))
     if r_model_gen is None or (model_gen is not None and r_model_gen != model_gen):
         findings.append(_finding(
             ERR_PROOF_MODEL_GENERATION_MISMATCH, path_str, f"{r_loc}.model_generation",
             f"{label} check receipt checked model generation {receipt.get('model_generation')!r}, not '{model_gen}'",
             {**params, "receipt_model_generation": receipt.get("model_generation"), "model_generation": model_gen},
         ))
-    r_digest = receipt.get("formal_artifact_digest")
-    r_digest_norm = r_digest.strip().lower() if isinstance(r_digest, str) else None
-    if r_digest_norm is None or SHA256_DIGEST_RE.match(r_digest_norm) is None:
-        findings.append(_finding(ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, f"{r_loc}.formal_artifact_digest", f"{label} check receipt binds no formal artifact digest", params))
-    elif formal_digest is not None and r_digest_norm != formal_digest:
+    r_source = _exact_token(receipt.get("model_source_digest"))
+    if r_source is None or SHA256_DIGEST_RE.fullmatch(r_source) is None:
+        findings.append(_finding(
+            ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, f"{r_loc}.model_source_digest",
+            f"{label} check receipt records no model source digest (got {receipt.get('model_source_digest')!r})",
+            params,
+        ))
+    elif source_digest is not None and r_source != source_digest:
+        findings.append(_finding(
+            ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, f"{r_loc}.model_source_digest",
+            f"{label} check receipt checked model source '{r_source}', not the retained model source '{source_digest}'",
+            params,
+        ))
+    r_digest = _exact_token(receipt.get("formal_artifact_digest"))
+    if r_digest is None or SHA256_DIGEST_RE.fullmatch(r_digest) is None:
+        findings.append(_finding(ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, f"{r_loc}.formal_artifact_digest", f"{label} check receipt binds no exact formal artifact digest", params))
+    elif formal_digest is not None and r_digest != formal_digest:
         findings.append(_finding(
             ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, f"{r_loc}.formal_artifact_digest",
             f"{label} check receipt checked artifact '{r_digest}', not the retained formal artifact '{formal_digest}'",
             params,
         ))
-    r_statement = _nonempty_str(receipt.get("theorem_statement"))
+    r_statement = _exact_text(receipt.get("theorem_statement"))
     if statement is not None and r_statement != statement:
         findings.append(_finding(
             ERR_PROOF_THEOREM_UNBOUND, path_str, f"{r_loc}.theorem_statement",
             f"{label} check receipt checked theorem {receipt.get('theorem_statement')!r}, not the claimed statement",
+            params,
+        ))
+    r_name = _exact_token(receipt.get("theorem_name"))
+    if theorem_name is not None and r_name != theorem_name:
+        findings.append(_finding(
+            ERR_PROOF_THEOREM_UNBOUND, path_str, f"{r_loc}.theorem_name",
+            f"{label} check receipt checked theorem {receipt.get('theorem_name')!r}, not '{theorem_name}'",
             params,
         ))
 
@@ -2035,8 +2224,10 @@ def verify_proof_bundle(
     tombstoned_ids: set[str] | None = None,
     prohibited_promotions: set[str] | None = None,
     now: datetime | None = None,
+    claim_generation: str | None = None,
 ) -> tuple[bool, list[ClaimFinding], dict[str, Any] | None]:
-    """Verifies one proof bundle (or qualification receipt) against all fail-closed criteria."""
+    """Verifies one proof bundle (or qualification receipt) against all fail-closed criteria.
+    claim_generation is the citing claim row's current generation (Generation column)."""
     findings: list[ClaimFinding] = []
     path_str = sanitize_path(bundle_path, root)
 
@@ -2270,7 +2461,7 @@ def verify_proof_bundle(
         if effective_class == "slo" and _is_promoted_bundle(data, claim_level):
             _verify_slo_claim_evidence(data, root, path_str, expected_claim_id, effective_now, findings)
         elif effective_class == "proof" and _is_promoted_bundle(data, claim_level):
-            _verify_proof_claim_evidence(data, root, path_str, expected_claim_id, findings)
+            _verify_proof_claim_evidence(data, root, path_str, expected_claim_id, findings, claim_generation)
         elif effective_class == "bounded_model" and _is_promoted_bundle(data, claim_level):
             _verify_bounded_model_claim_evidence(data, root, path_str, expected_claim_id, findings)
 
@@ -2386,10 +2577,12 @@ def scan_markdown_claim_tables(
     stats: dict[str, int] | None = None,
     now: datetime | None = None,
     cited_classes: dict[str, set[str | None]] | None = None,
+    cited_generations: dict[str, set[str | None]] | None = None,
 ) -> list[ClaimFinding]:
     """Scans markdown tables for status and proof root/bundle citations. A ``Class`` column
-    declares each claim row's class; cited_classes records, per cited bundle, the classes its
-    citing rows declare (the retention walk inherits them)."""
+    declares each claim row's class and a ``Generation`` column its current generation;
+    cited_classes / cited_generations record, per cited bundle, what its citing rows declare
+    (the retention walk inherits them)."""
     findings: list[ClaimFinding] = []
     counters = stats if stats is not None else _new_scan_stats()
     for key, value in _new_scan_stats().items():
@@ -2409,7 +2602,7 @@ def scan_markdown_claim_tables(
     claim_tables_here = 0
     for headers, data_rows in parse_markdown_tables(raw_text):
         normalized_headers = [normalize_cell(h).lower() for h in headers]
-        columns: dict[str, list[int]] = {"status": [], "proof": [], "id": [], "class": []}
+        columns: dict[str, list[int]] = {"status": [], "proof": [], "id": [], "class": [], "generation": []}
         for col_idx, col_name in enumerate(normalized_headers):
             if col_name == "status":
                 columns["status"].append(col_idx)
@@ -2419,6 +2612,8 @@ def scan_markdown_claim_tables(
                 columns["id"].append(col_idx)
             elif col_name in ("class", "claim class", "claim_class"):
                 columns["class"].append(col_idx)
+            elif col_name in ("generation", "claim generation", "claim_generation"):
+                columns["generation"].append(col_idx)
 
         if not columns["status"] and not columns["proof"]:
             continue
@@ -2434,6 +2629,7 @@ def scan_markdown_claim_tables(
         proof_col = columns["proof"][0] if columns["proof"] else None
         id_col = columns["id"][0] if columns["id"] else None
         class_col = columns["class"][0] if columns["class"] else None
+        generation_col = columns["generation"][0] if columns["generation"] else None
 
         for r_idx, row in enumerate(data_rows):
             counters["rows"] += 1
@@ -2448,6 +2644,8 @@ def scan_markdown_claim_tables(
             proof_val = normalize_cell(row[proof_col]) if proof_col is not None and proof_col < len(row) else ""
             class_val = normalize_cell(row[class_col]).lower() if class_col is not None and class_col < len(row) else ""
             row_class = class_val if class_val not in NON_PROOF_ROOTS else None
+            generation_val = normalize_cell(row[generation_col]) if generation_col is not None and generation_col < len(row) else ""
+            row_generation = generation_val if generation_val.lower() not in NON_PROOF_ROOTS else None
 
             claimed_rank: int | None = None
             if status_val is not None and status_val not in NON_CLAIMING_STATES:
@@ -2493,6 +2691,7 @@ def scan_markdown_claim_tables(
                     expected_claim_id=row_id,
                     claim_level=status_val,
                     claim_class=row_class,
+                    claim_generation=row_generation,
                     known_classes=known_classes,
                     tombstoned_ids=tombstoned_ids,
                     prohibited_promotions=prohibited_promotions,
@@ -2501,6 +2700,8 @@ def scan_markdown_claim_tables(
                 _count_bundle(counters, bundle_ok, bundle_data, status_val)
                 if cited_classes is not None:
                     cited_classes.setdefault(_citation_key(root, proof_path), set()).add(row_class)
+                if cited_generations is not None:
+                    cited_generations.setdefault(_citation_key(root, proof_path), set()).add(row_generation)
                 for bf in bundle_findings:
                     findings.append(ClaimFinding(
                         code=bf.code,
@@ -3129,6 +3330,7 @@ def audit_claim_proof_bundles(
     surfaces_scanned: list[str] = []
     receipts = {"inspected": 0, "passed": 0, "nonpassing": 0}
     cited_classes: dict[str, set[str | None]] = {}
+    cited_generations: dict[str, set[str | None]] = {}
 
     if target_bundle is not None:
         stats["bundles_checked"] += 1
@@ -3170,6 +3372,7 @@ def audit_claim_proof_bundles(
                 stats=stats,
                 now=now,
                 cited_classes=cited_classes,
+                cited_generations=cited_generations,
             ))
             surfaces_scanned.append(rel_file)
 
@@ -3199,10 +3402,12 @@ def audit_claim_proof_bundles(
                     elif name.endswith(BUNDLE_SUFFIXES):
                         stats["bundles_checked"] += 1
                         citing = cited_classes.get(_citation_key(root, f_path), set())
+                        citing_generations = cited_generations.get(_citation_key(root, f_path), set())
                         bundle_ok, b_findings, b_data = verify_proof_bundle(
                             bundle_path=f_path,
                             root=root,
                             claim_class=next(iter(citing)) if len(citing) == 1 else None,
+                            claim_generation=next(iter(citing_generations)) if len(citing_generations) == 1 else None,
                             known_classes=known_classes,
                             tombstoned_ids=tombstoned_ids,
                             prohibited_promotions=prohibited_promotions,

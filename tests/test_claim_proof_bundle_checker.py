@@ -20,6 +20,7 @@ Enforces fail-closed verification:
 
 from __future__ import annotations
 
+import inspect
 import json
 import subprocess
 import sys
@@ -206,7 +207,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
-            findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` |"))
+            findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
             self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
             self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (1, 1, 1))
 
@@ -224,7 +225,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = build_fixture_root(Path(tmpdir))
             write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
-            append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` |"))
+            append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
             ok, findings, summary = audit_claim_proof_bundles(root, now=FIXED_NOW)
             self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
             self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (2, 2))
@@ -2942,6 +2943,7 @@ PROOF_CLAIM_ID = "FORMAL-002"
 PROOF_GENERATION = "gen:fss1:formal-publication-v1"
 PROOF_MODEL_ID = "MODEL-TLA-PUBLICATION-001"
 PROOF_THEOREM = "Root manifest is never visible before all referenced objects are durable"
+PROOF_THEOREM_NAME = "RootLast"
 PROOF_MODEL_REL = "proofs/tla/publication.model.json"
 PROOF_MODEL_SOURCE_REL = "proofs/tla/Publication.tla"
 PROOF_ARTIFACT_REL = "proofs/tla/PublicationProof.tla"
@@ -3001,6 +3003,8 @@ def build_proof_fixture(
         "model_generation": PROOF_GENERATION,
         "formal_artifact_digest": artifact_digest,
         "theorem_statement": PROOF_THEOREM,
+        "theorem_name": PROOF_THEOREM_NAME,
+        "model_source_digest": source_digest,
     }
     receipt_doc.update(receipt or {})
     receipt_digest = _write_doc(root, PROOF_RECEIPT_REL, receipt_doc)
@@ -3019,7 +3023,7 @@ def build_proof_fixture(
         "generation": PROOF_GENERATION,
         "status": "passed",
         "retained_evidence": list(PROOF_EVIDENCE),
-        "theorem": {"claim_id": PROOF_CLAIM_ID, "statement": PROOF_THEOREM},
+        "theorem": {"claim_id": PROOF_CLAIM_ID, "name": PROOF_THEOREM_NAME, "statement": PROOF_THEOREM},
         "formal_model": {"model_id": PROOF_MODEL_ID, "generation": PROOF_GENERATION},
         "assumptions": [
             {"id": "ASSUME-PUT-ATOMIC", "statement": "each object-store PUT is atomic per object"},
@@ -3036,16 +3040,27 @@ def build_proof_fixture(
     return data
 
 
+# The citing claim row's generation reaches verify_proof_bundle only where the checker accepts it,
+# so a checker without row-generation binding fails these tests by accepting bypasses rather than
+# by a TypeError; test_6_verify_accepts_the_claim_row_generation pins that it is accepted.
+_VERIFY_ACCEPTS_CLAIM_GENERATION = "claim_generation" in inspect.signature(verify_proof_bundle).parameters
+
+
 def verify_class_bundle(
     root: Path,
     data: dict,
     claim_id: str,
     claim_level: str | None = "verified",
     claim_class: str | None = None,
+    claim_generation: object = _DROP,
 ):
     """Verifies data as cited by the claim row claim_id; the row's class is claim_class, else
-    the class of that fixture claim (CLAIM_ROW_CLASSES), never the bundle's own declaration."""
+    the class of that fixture claim (CLAIM_ROW_CLASSES), never the bundle's own declaration.
+    The row's generation is claim_generation, else that fixture claim's (CLAIM_ROW_GENERATIONS)."""
     path = write_json(root / "qualification-artifacts/claim.bundle.json", seal(data))
+    extra: dict = {}
+    if _VERIFY_ACCEPTS_CLAIM_GENERATION:
+        extra["claim_generation"] = CLAIM_ROW_GENERATIONS.get(claim_id) if claim_generation is _DROP else claim_generation
     return verify_proof_bundle(
         bundle_path=path,
         root=root,
@@ -3055,6 +3070,7 @@ def verify_class_bundle(
         known_classes=_known_classes(),
         tombstoned_ids=set(),
         prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS),
+        **extra,
     )
 
 
@@ -3278,6 +3294,7 @@ BOUND_BUNDLE_REL = "qualification-artifacts/bounds/ingest-latency.bundle.json"
 PROOF_BUNDLE_REL = "qualification-artifacts/proof/formal-002.bundle.json"
 # The class each fixture claim row declares (claim tables carry it in their Class column).
 CLAIM_ROW_CLASSES = {PROOF_CLAIM_ID: "proof", BOUND_CLAIM_ID: "bounded_model"}
+CLAIM_ROW_GENERATIONS = {PROOF_CLAIM_ID: PROOF_GENERATION, BOUND_CLAIM_ID: BOUND_GENERATION}
 BOUND_ASSUMPTIONS = [
     {"id": "ASSUME-QUEUE-BOUND", "statement": "the ingest queue holds at most Q_max = 8 frames"},
     {"id": "ASSUME-DECODE-WCET", "statement": "decode worst-case execution time is at most 40 ms"},
@@ -3507,7 +3524,7 @@ OVERSIZED_INT_TEXT = "1" + "0" * 5000  # beyond CPython's int-parsing digit limi
 
 
 def class_table(*rows: str) -> str:
-    return "| ID | Class | Status | Proof root |\n|---|---|---|---|\n" + "".join(r + "\n" for r in rows)
+    return "| ID | Class | Status | Proof root | Generation |\n|---|---|---|---|---|\n" + "".join(r + "\n" for r in rows)
 
 
 def scan_with_stats(root: Path, text: str, name: str = "table.md") -> tuple[list, dict]:
@@ -3574,7 +3591,7 @@ class TestCrossClassReviewFailOpens(unittest.TestCase):
             with self.subTest(relabel=relabel), tempfile.TemporaryDirectory() as tmpdir:
                 root = Path(tmpdir)
                 write_json(root / PROOF_BUNDLE_REL, seal(relabelled_proof(root, relabel)))
-                findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` |"))
+                findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
                 self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED])
                 self.assertEqual(stats["bundles_passed"], 0)
 
@@ -3589,7 +3606,7 @@ class TestCrossClassReviewFailOpens(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = build_fixture_root(Path(tmpdir))
             write_json(root / PROOF_BUNDLE_REL, seal(relabelled_proof(root, "statistical")))
-            append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` |"))
+            append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
             ok, findings, summary = audit_claim_proof_bundles(root, now=FIXED_NOW)
             self.assertFalse(ok, "relabelled proof bundle passed the repository audit")
             self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED])
@@ -3671,6 +3688,225 @@ class TestCrossClassReviewFailOpens(unittest.TestCase):
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
             self.assertIn("ERR-CLAIM-SLO-ACTUAL-INVALID-001", result.stdout)
 
+
+
+# ---------------------------------------------------------------------------
+# 'proof' independent-review findings 1-6 (fss-x4a.30.87.2)
+# ---------------------------------------------------------------------------
+
+NBSP = " "
+LEAN_ARTIFACT_REL = "proofs/lean4/Publication.lean"
+LEAN_OK_BYTES = b"import Mathlib.Order.Basic\n\n-- a comment may mention sorry without proving anything\ntheorem RootLast : True := by\n  trivial\n"
+LEAN_TOOLCHAIN = {"checker": "lean4", "version": "v4.9.0"}
+LEAN_RECEIPT = {"checker": "lean4", "checker_version": "v4.9.0"}
+
+
+def lean_fixture(**kwargs: object) -> dict:
+    """Overrides that turn the canonical TLA+ proof fixture into a Lean 4 one."""
+    bundle = dict(kwargs.pop("bundle", {}) or {})
+    bundle.setdefault("toolchain_identity", dict(LEAN_TOOLCHAIN))
+    receipt = dict(LEAN_RECEIPT)
+    receipt.update(kwargs.pop("receipt", {}) or {})
+    out = {"artifact_rel": LEAN_ARTIFACT_REL, "artifact_bytes": LEAN_OK_BYTES, "bundle": bundle, "receipt": receipt}
+    out.update(kwargs)
+    return out
+
+
+class TestProofReviewFindings(unittest.TestCase):
+    """Each 'proof' bypass from the independent review fails closed with an exact finding-id set."""
+
+    def _run(self, claim_generation: object = _DROP, **kwargs: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_proof_fixture(root, **kwargs)
+            return verify_class_bundle(root, data, PROOF_CLAIM_ID, claim_generation=claim_generation)
+
+    def assertRefused(self, result, expected: list[str]) -> None:
+        is_valid, findings, _ = result
+        self.assertFalse(is_valid, "planted bypass was accepted: " + repr([f"{f.code}: {f.message}" for f in findings]))
+        self.assertEqual(error_code_set(findings), sorted(set(expected)), [f"{f.code}: {f.message}" for f in findings])
+
+    def assertAccepted(self, result) -> None:
+        is_valid, findings, _ = result
+        self.assertTrue(is_valid, [f"{f.code}: {f.message}" for f in findings])
+        self.assertEqual(findings, [])
+
+    def test_review_finding_ids_are_registered(self) -> None:
+        errors_md = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8")
+        for name, code in {
+            "ERR_CLAIM_GENERATION_UNBOUND": "ERR-CLAIM-GENERATION-UNBOUND-001",
+            "ERR_PROOF_UNPROVEN_PLACEHOLDER": "ERR-CLAIM-PROOF-UNPROVEN-PLACEHOLDER-001",
+        }.items():
+            self.assertEqual(_code(name), code)
+            self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+            self.assertEqual(errors_md.count(f"| `{code}` |"), 1, code)
+
+    # Positive controls ------------------------------------------------------
+
+    def test_lean_proof_with_complete_evidence_passes(self) -> None:
+        self.assertAccepted(self._run(**lean_fixture()))
+
+    def test_tla_proof_with_complete_evidence_passes(self) -> None:
+        self.assertAccepted(self._run())
+
+    # (1) Formal artifact content --------------------------------------------
+
+    def test_1_one_byte_tla_artifact_fails(self) -> None:
+        self.assertRefused(self._run(artifact_bytes=b"x"), [ERR_PROOF_FORMAL_ARTIFACT_MISSING_CODE()])
+
+    def test_1_tla_module_without_declared_theorem_fails(self) -> None:
+        body = b"---- MODULE PublicationProof ----\nEXTENDS Publication\nRootLast == TRUE\n====\n"
+        self.assertRefused(self._run(artifact_bytes=body), [_code("ERR_PROOF_THEOREM_UNBOUND")])
+
+    def test_1_tla_module_declaring_another_theorem_fails(self) -> None:
+        body = b"---- MODULE PublicationProof ----\nTHEOREM Other == TRUE\n====\n"
+        self.assertRefused(self._run(artifact_bytes=body), [_code("ERR_PROOF_THEOREM_UNBOUND")])
+
+    def test_1_theorem_only_inside_a_tla_comment_fails(self) -> None:
+        body = b"---- MODULE PublicationProof ----\n\\* THEOREM RootLast == TRUE\n(* THEOREM RootLast == TRUE *)\n====\n"
+        self.assertRefused(self._run(artifact_bytes=body), [_code("ERR_PROOF_THEOREM_UNBOUND")])
+
+    def test_1_lean_sorry_fails(self) -> None:
+        result = self._run(**lean_fixture(artifact_bytes=b"theorem RootLast : False := by sorry\n"))
+        self.assertRefused(result, [_code("ERR_PROOF_UNPROVEN_PLACEHOLDER")])
+
+    def test_1_lean_admit_fails(self) -> None:
+        result = self._run(**lean_fixture(artifact_bytes=b"theorem RootLast : False := by\n  admit\n"))
+        self.assertRefused(result, [_code("ERR_PROOF_UNPROVEN_PLACEHOLDER")])
+
+    def test_1_tlaps_omitted_proof_fails(self) -> None:
+        body = b"---- MODULE PublicationProof ----\nTHEOREM RootLast == TRUE\nPROOF OMITTED\n====\n"
+        result = self._run(
+            artifact_bytes=body,
+            bundle={"toolchain_identity": {"checker": "tlaps", "version": "1.5.0"}},
+            receipt={"checker": "tlaps", "checker_version": "1.5.0"},
+        )
+        self.assertRefused(result, [_code("ERR_PROOF_UNPROVEN_PLACEHOLDER")])
+
+    def test_1_bundle_theorem_without_formal_name_fails(self) -> None:
+        result = self._run(bundle={"theorem": {"claim_id": PROOF_CLAIM_ID, "statement": PROOF_THEOREM}})
+        self.assertRefused(result, [_code("ERR_PROOF_THEOREM_UNBOUND")])
+
+    def test_1_receipt_checked_another_theorem_name_fails(self) -> None:
+        self.assertRefused(self._run(receipt={"theorem_name": "Other"}), [_code("ERR_PROOF_THEOREM_UNBOUND")])
+
+    # (2) Receipt binds the model source --------------------------------------
+
+    def test_2_garbage_model_source_with_unchanged_receipt_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_proof_fixture(root)
+            model_doc = json.loads((root / PROOF_MODEL_REL).read_text(encoding="utf-8"))
+            model_doc["source"]["digest"] = _write_bytes(root, PROOF_MODEL_SOURCE_REL, b"garbage, not the checked model\n")
+            data["artifacts"][0]["digest"] = _write_doc(root, PROOF_MODEL_REL, model_doc)
+            result = verify_class_bundle(root, data, PROOF_CLAIM_ID)
+        self.assertRefused(result, [_code("ERR_PROOF_CHECK_RECEIPT_INVALID")])
+
+    def test_2_receipt_without_model_source_digest_fails(self) -> None:
+        self.assertRefused(self._run(receipt={"model_source_digest": None}), [_code("ERR_PROOF_CHECK_RECEIPT_INVALID")])
+
+    # (3) Tests disguised by extension ----------------------------------------
+
+    def test_3_test_directory_lean_file_fails(self) -> None:
+        result = self._run(**lean_fixture(artifact_rel="tests/test_publication.lean"))
+        self.assertRefused(result, [_code("ERR_PROOF_TESTS_ONLY")])
+
+    def test_3_double_suffix_py_tla_fails(self) -> None:
+        self.assertRefused(self._run(artifact_rel="proofs/tla/PublicationProof.py.tla"), [_code("ERR_PROOF_TESTS_ONLY")])
+
+    def test_3_test_named_tla_module_fails(self) -> None:
+        self.assertRefused(self._run(artifact_rel="proofs/tla/PublicationTest.tla"), [_code("ERR_PROOF_TESTS_ONLY")])
+
+    def test_3_lean_text_in_tla_file_fails(self) -> None:
+        self.assertRefused(self._run(artifact_bytes=LEAN_OK_BYTES), [ERR_PROOF_FORMAL_ARTIFACT_MISSING_CODE()])
+
+    def test_3_uppercase_lean_suffix_fails(self) -> None:
+        result = self._run(**lean_fixture(artifact_rel="proofs/lean4/Publication.LEAN"))
+        self.assertRefused(result, [ERR_PROOF_FORMAL_ARTIFACT_MISSING_CODE()])
+
+    # (4) Concrete toolchain version ------------------------------------------
+
+    def test_4_floating_or_unknown_versions_fail(self) -> None:
+        for version in ("*", "any", ">=2.0", "unknown", "dev", "2.x", "stable", "nightly", "HEAD", "2"):
+            with self.subTest(version=version):
+                result = self._run(
+                    bundle={"toolchain_identity": {"checker": "tlc", "version": version}},
+                    receipt={"checker_version": version},
+                )
+                self.assertRefused(result, [_code("ERR_PROOF_TOOLCHAIN_UNBOUND")])
+
+    # (5) No stripping of non-breaking or other whitespace ---------------------
+
+    def test_5_non_breaking_space_is_never_stripped(self) -> None:
+        cases = (
+            ("receipt claim id", {"receipt": {"claim_id": PROOF_CLAIM_ID + NBSP}}, "ERR_PROOF_CHECK_RECEIPT_INVALID"),
+            ("toolchain version", {
+                "bundle": {"toolchain_identity": {"checker": "tlc", "version": "2.19" + NBSP}},
+                "receipt": {"checker_version": "2.19" + NBSP},
+            }, "ERR_PROOF_TOOLCHAIN_UNBOUND"),
+            ("theorem statement", {
+                "bundle": {"theorem": {"claim_id": PROOF_CLAIM_ID, "name": PROOF_THEOREM_NAME, "statement": PROOF_THEOREM + NBSP}},
+                "receipt": {"theorem_statement": PROOF_THEOREM + NBSP},
+            }, "ERR_PROOF_THEOREM_UNBOUND"),
+            ("declared model id", {
+                "bundle": {"formal_model": {"model_id": NBSP + PROOF_MODEL_ID, "generation": PROOF_GENERATION}},
+            }, "ERR_PROOF_FORMAL_MODEL_UNBOUND"),
+            ("receipt model generation", {"receipt": {"model_generation": PROOF_GENERATION + NBSP}}, "ERR_PROOF_MODEL_GENERATION_MISMATCH"),
+        )
+        for label, overrides, code_name in cases:
+            with self.subTest(field=label):
+                self.assertRefused(self._run(**overrides), [_code(code_name)])
+
+    # (6) Generation bound to the claim row -----------------------------------
+
+    def test_6_verify_accepts_the_claim_row_generation(self) -> None:
+        self.assertIn("claim_generation", inspect.signature(verify_proof_bundle).parameters)
+
+    def test_6_self_consistent_old_generation_fails(self) -> None:
+        stale = "gen:fss1:formal-publication-v0"
+        result = self._run(
+            model={"generation": stale},
+            receipt={"model_generation": stale},
+            bundle={"generation": stale, "formal_model": {"model_id": PROOF_MODEL_ID, "generation": stale}},
+        )
+        self.assertRefused(result, [ERR_STALE_GENERATION])
+
+    def test_6_claim_row_without_generation_fails(self) -> None:
+        self.assertRefused(self._run(claim_generation=None), [_code("ERR_CLAIM_GENERATION_UNBOUND")])
+
+    def test_6_markdown_row_generation_governs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
+            row = f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | gen:fss1:formal-publication-v0 |"
+            findings, stats = scan_with_stats(root, class_table(row))
+            self.assertEqual(error_code_set(findings), [ERR_STALE_GENERATION], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual(stats["bundles_passed"], 0)
+
+    def test_6_markdown_row_without_generation_cell_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
+            findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` |"))
+            self.assertEqual(error_code_set(findings), [_code("ERR_CLAIM_GENERATION_UNBOUND")], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual(stats["bundles_passed"], 0)
+
+    def test_6_retention_walk_inherits_the_row_generation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
+            row = f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | gen:fss1:formal-publication-v0 |"
+            append_readme_table(root, class_table(row))
+            ok, findings, summary = audit_claim_proof_bundles(root, now=FIXED_NOW)
+            self.assertFalse(ok)
+            self.assertEqual(error_code_set(findings), [ERR_STALE_GENERATION], [f"{f.code}: {f.message}" for f in findings])
+            stale = [f for f in findings if f.code == ERR_STALE_GENERATION]
+            self.assertEqual(len(stale), 2, "both the citing row scan and the retention walk must refuse it")
+            self.assertEqual(summary["verified_bundles_count"], 0)
+
+
+def ERR_PROOF_FORMAL_ARTIFACT_MISSING_CODE() -> str:
+    return _code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")
 
 if __name__ == "__main__":
     unittest.main()
