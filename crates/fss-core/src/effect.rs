@@ -49,6 +49,26 @@ impl EffectState {
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Verified | Self::Cancelled | Self::Failed)
     }
+
+    /// Returns true if this state can legally transition to the target state.
+    #[must_use]
+    pub const fn can_transition_to(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Prepared, Self::Committed)
+                | (Self::Prepared, Self::Cancelled)
+                | (Self::Prepared, Self::Failed)
+                | (Self::Committed, Self::AdapterAccepted)
+                | (Self::Committed, Self::Indeterminate)
+                | (Self::Committed, Self::Failed)
+                | (Self::AdapterAccepted, Self::Observed)
+                | (Self::AdapterAccepted, Self::Indeterminate)
+                | (Self::AdapterAccepted, Self::Failed)
+                | (Self::Observed, Self::Verified)
+                | (Self::Observed, Self::Indeterminate)
+                | (Self::Indeterminate, Self::Observed)
+        )
+    }
 }
 
 impl CanonicalEncode for EffectState {
@@ -678,7 +698,10 @@ impl EffectJournal {
             if now <= current.updated_at {
                 return Err(ContractError::InvertedTimeInterval);
             }
-            if current.state != EffectState::Indeterminate {
+            if current.state != EffectState::Indeterminate
+                && current.state != EffectState::Committed
+                && current.state != EffectState::AdapterAccepted
+            {
                 return Err(ContractError::InvalidEffectTransition);
             }
         }
@@ -703,6 +726,147 @@ impl EffectJournal {
             .ok_or(ContractError::NotFound)
     }
 
+    /// Pre-validates a prepare request without mutating the journal.
+    /// Returns `Ok(Some(receipt))` if this is an idempotent retry of an existing identical prepare,
+    /// or `Ok(None)` if it is a valid new prepare.
+    pub fn validate_prepare(
+        &self,
+        intent: &EffectIntent,
+        obligation_id: &ObligationId,
+    ) -> Result<Option<&OperationReceipt>, ContractError> {
+        if let Some(existing_id) = self.idempotency.get(&intent.idempotency_key) {
+            let existing = self
+                .operations
+                .get(existing_id)
+                .ok_or(ContractError::NotFound)?;
+            if &existing.intent == intent {
+                return Ok(Some(existing));
+            }
+            return Err(ContractError::IdempotencyConflict);
+        }
+        if self.operations.contains_key(&intent.operation_id) {
+            return Err(ContractError::IdempotencyConflict);
+        }
+        if self.obligations.contains_key(obligation_id) {
+            return Err(ContractError::ObligationConflict);
+        }
+        Ok(None)
+    }
+
+    /// Pre-validates a transition without mutating the journal.
+    pub fn validate_transition(
+        &self,
+        operation_id: &OperationId,
+        next: EffectState,
+        now: TimestampNs,
+        result_digest: Option<ContentDigest>,
+        error_code: Option<&str>,
+    ) -> Result<&OperationReceipt, ContractError> {
+        let receipt = self
+            .operations
+            .get(operation_id)
+            .ok_or(ContractError::NotFound)?;
+        if now <= receipt.updated_at {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+        if !receipt.state.can_transition_to(next) {
+            return Err(if receipt.state == EffectState::Indeterminate {
+                ContractError::ReconciliationRequired
+            } else {
+                ContractError::InvalidEffectTransition
+            });
+        }
+        if (next == EffectState::Observed
+            || next == EffectState::Verified
+            || next == EffectState::Cancelled)
+            && result_digest.is_none()
+        {
+            return Err(ContractError::EvidenceRequired);
+        }
+        if next == EffectState::Verified {
+            let obs_digest = receipt
+                .result_digest
+                .ok_or(ContractError::EvidenceRequired)?;
+            if result_digest != Some(obs_digest) {
+                return Err(ContractError::InvalidDigest);
+            }
+        }
+        if next == EffectState::Failed
+            && (result_digest.is_none() || error_code.as_deref().is_none_or(str::is_empty))
+        {
+            return Err(ContractError::EvidenceRequired);
+        }
+        Ok(receipt)
+    }
+
+    /// Pre-validates reconcile_verified without mutating the journal.
+    /// Returns `Ok(Some(receipt))` if this is an idempotent no-op (already Verified with matching proof),
+    /// or `Ok(None)` if it is a valid transition from Observed to Verified.
+    pub fn validate_reconcile_verified(
+        &self,
+        operation_id: &OperationId,
+        proof_digest: ContentDigest,
+        now: TimestampNs,
+    ) -> Result<Option<&OperationReceipt>, ContractError> {
+        let current = self
+            .operations
+            .get(operation_id)
+            .ok_or(ContractError::NotFound)?;
+        if current.state == EffectState::Verified {
+            if current.result_digest == Some(proof_digest) {
+                return Ok(Some(current));
+            }
+            return Err(ContractError::IdempotencyConflict);
+        }
+        if now <= current.updated_at {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+        if current.state != EffectState::Observed {
+            return Err(ContractError::InvalidEffectTransition);
+        }
+        let obs_digest = current
+            .result_digest
+            .ok_or(ContractError::EvidenceRequired)?;
+        if proof_digest != obs_digest {
+            return Err(ContractError::InvalidDigest);
+        }
+        Ok(None)
+    }
+
+    /// Pre-validates reconcile_failed without mutating the journal.
+    /// Returns `Ok(Some(receipt))` if this is an idempotent no-op (already Failed with matching proof/reason),
+    /// or `Ok(None)` if it is a valid failure reconciliation.
+    pub fn validate_reconcile_failed(
+        &self,
+        operation_id: &OperationId,
+        proof_digest: ContentDigest,
+        now: TimestampNs,
+        reason: &str,
+    ) -> Result<Option<&OperationReceipt>, ContractError> {
+        let current = self
+            .operations
+            .get(operation_id)
+            .ok_or(ContractError::NotFound)?;
+        if current.state == EffectState::Failed {
+            if current.result_digest == Some(proof_digest)
+                && current.error_code.as_deref() == Some(reason)
+            {
+                return Ok(Some(current));
+            }
+            return Err(ContractError::IdempotencyConflict);
+        }
+        if now <= current.updated_at {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+        if current.state != EffectState::Indeterminate
+            && current.state != EffectState::Committed
+            && current.state != EffectState::AdapterAccepted
+        {
+            return Err(ContractError::InvalidEffectTransition);
+        }
+        Ok(None)
+    }
+
     /// Returns one operation receipt.
     #[must_use]
     pub fn operation(&self, operation_id: &OperationId) -> Option<&OperationReceipt> {
@@ -725,51 +889,42 @@ impl EffectJournal {
     ) -> Result<Self, ContractError> {
         let mut journal = Self::new();
         for transition in transitions {
-            journal.apply_transition(transition)?;
+            let _receipt = journal.apply_transition(transition)?;
         }
         Ok(journal)
     }
 
-    /// Applies one transition to the journal, returning error on invariant failure.
+    /// Applies one transition to the journal, returning receipt or error on invariant failure.
     pub fn apply_transition(
         &mut self,
         transition: EffectJournalTransition,
-    ) -> Result<(), ContractError> {
+    ) -> Result<&OperationReceipt, ContractError> {
         match transition {
             EffectJournalTransition::Prepare {
                 intent,
                 obligation_id,
                 terminal_predicate,
                 now,
-            } => {
-                let _ = self.prepare(intent, obligation_id, terminal_predicate, now)?;
-            }
+            } => self.prepare(intent, obligation_id, terminal_predicate, now),
             EffectJournalTransition::Transition {
                 operation_id,
                 next,
                 now,
                 result_digest,
                 error_code,
-            } => {
-                let _ = self.transition(&operation_id, next, now, result_digest, error_code)?;
-            }
+            } => self.transition(&operation_id, next, now, result_digest, error_code),
             EffectJournalTransition::ReconcileVerified {
                 operation_id,
                 proof_digest,
                 now,
-            } => {
-                let _ = self.reconcile_verified(&operation_id, proof_digest, now)?;
-            }
+            } => self.reconcile_verified(&operation_id, proof_digest, now),
             EffectJournalTransition::ReconcileFailed {
                 operation_id,
                 proof_digest,
                 now,
                 reason,
-            } => {
-                let _ = self.reconcile_failed(&operation_id, proof_digest, now, reason)?;
-            }
+            } => self.reconcile_failed(&operation_id, proof_digest, now, reason),
         }
-        Ok(())
     }
 
     /// Computes a canonical journal root.
@@ -805,22 +960,8 @@ impl EffectJournal {
     }
 }
 
-fn valid_transition(current: EffectState, next: EffectState) -> bool {
-    matches!(
-        (current, next),
-        (EffectState::Prepared, EffectState::Committed)
-            | (EffectState::Prepared, EffectState::Cancelled)
-            | (EffectState::Prepared, EffectState::Failed)
-            | (EffectState::Committed, EffectState::AdapterAccepted)
-            | (EffectState::Committed, EffectState::Indeterminate)
-            | (EffectState::Committed, EffectState::Failed)
-            | (EffectState::AdapterAccepted, EffectState::Observed)
-            | (EffectState::AdapterAccepted, EffectState::Indeterminate)
-            | (EffectState::AdapterAccepted, EffectState::Failed)
-            | (EffectState::Observed, EffectState::Verified)
-            | (EffectState::Observed, EffectState::Indeterminate)
-            | (EffectState::Indeterminate, EffectState::Observed)
-    )
+pub const fn valid_transition(current: EffectState, next: EffectState) -> bool {
+    current.can_transition_to(next)
 }
 
 #[cfg(test)]

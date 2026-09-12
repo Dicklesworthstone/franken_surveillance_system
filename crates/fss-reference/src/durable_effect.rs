@@ -121,8 +121,8 @@ impl DurableEffectJournal {
 
         let preflight = if path.exists() {
             let report = inspect(&path)?;
-            let _ = replay_report(&report)?;
-            Some(report)
+            let preflight_journal = replay_report(&report)?;
+            Some((report, preflight_journal.journal_root()))
         } else {
             None
         };
@@ -130,7 +130,7 @@ impl DurableEffectJournal {
         let journal = Journal::open(&path, tail_policy)?;
         let report = inspect(journal.path())?;
 
-        if let Some(preflight) = preflight
+        if let Some((preflight, _preflight_root)) = preflight
             && (report.last_root() != preflight.last_root()
                 || report.committed_len() != preflight.committed_len())
         {
@@ -199,31 +199,23 @@ impl DurableEffectJournal {
         terminal_predicate: impl Into<String>,
         now: TimestampNs,
     ) -> Result<&OperationReceipt, DurableEffectError> {
-        let mut candidate = self.memory.clone();
         let terminal_predicate_str = terminal_predicate.into();
-        let op_id = intent.operation_id.clone();
-        let _ = candidate.prepare(
-            intent.clone(),
-            obligation_id.clone(),
-            terminal_predicate_str.clone(),
-            now,
-        )?;
-
-        if candidate != self.memory {
-            let transition = EffectJournalTransition::Prepare {
-                intent,
-                obligation_id,
-                terminal_predicate: terminal_predicate_str,
-                now,
-            };
-            let bytes = transition.try_canonical_bytes()?;
-            self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
-            self.memory = candidate;
+        if let Some(existing) = self.memory.validate_prepare(&intent, &obligation_id)? {
+            return Ok(existing);
         }
 
-        self.memory
-            .operation(&op_id)
-            .ok_or_else(|| ContractError::NotFound.into())
+        let transition = EffectJournalTransition::Prepare {
+            intent: intent.clone(),
+            obligation_id: obligation_id.clone(),
+            terminal_predicate: terminal_predicate_str.clone(),
+            now,
+        };
+        let bytes = transition.try_canonical_bytes()?;
+        self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
+        let receipt = self
+            .memory
+            .prepare(intent, obligation_id, terminal_predicate_str, now)?;
+        Ok(receipt)
     }
 
     /// Transitions an operation state durably.
@@ -235,25 +227,27 @@ impl DurableEffectJournal {
         result_digest: Option<ContentDigest>,
         error_code: Option<String>,
     ) -> Result<&OperationReceipt, DurableEffectError> {
-        let mut candidate = self.memory.clone();
-        let _ = candidate.transition(operation_id, next, now, result_digest, error_code.clone())?;
+        let _validated = self.memory.validate_transition(
+            operation_id,
+            next,
+            now,
+            result_digest,
+            error_code.as_deref(),
+        )?;
 
-        if candidate != self.memory {
-            let transition = EffectJournalTransition::Transition {
-                operation_id: operation_id.clone(),
-                next,
-                now,
-                result_digest,
-                error_code,
-            };
-            let bytes = transition.try_canonical_bytes()?;
-            self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
-            self.memory = candidate;
-        }
-
-        self.memory
-            .operation(operation_id)
-            .ok_or_else(|| ContractError::NotFound.into())
+        let transition = EffectJournalTransition::Transition {
+            operation_id: operation_id.clone(),
+            next,
+            now,
+            result_digest,
+            error_code: error_code.clone(),
+        };
+        let bytes = transition.try_canonical_bytes()?;
+        self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
+        let receipt = self
+            .memory
+            .transition(operation_id, next, now, result_digest, error_code)?;
+        Ok(receipt)
     }
 
     /// Marks an operation indeterminate after dispatch without a trustworthy terminal result.
@@ -283,23 +277,24 @@ impl DurableEffectJournal {
         proof_digest: ContentDigest,
         now: TimestampNs,
     ) -> Result<&OperationReceipt, DurableEffectError> {
-        let mut candidate = self.memory.clone();
-        let _ = candidate.reconcile_verified(operation_id, proof_digest, now)?;
-
-        if candidate != self.memory {
-            let transition = EffectJournalTransition::ReconcileVerified {
-                operation_id: operation_id.clone(),
-                proof_digest,
-                now,
-            };
-            let bytes = transition.try_canonical_bytes()?;
-            self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
-            self.memory = candidate;
+        if let Some(existing) =
+            self.memory
+                .validate_reconcile_verified(operation_id, proof_digest, now)?
+        {
+            return Ok(existing);
         }
 
-        self.memory
-            .operation(operation_id)
-            .ok_or_else(|| ContractError::NotFound.into())
+        let transition = EffectJournalTransition::ReconcileVerified {
+            operation_id: operation_id.clone(),
+            proof_digest,
+            now,
+        };
+        let bytes = transition.try_canonical_bytes()?;
+        self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
+        let receipt = self
+            .memory
+            .reconcile_verified(operation_id, proof_digest, now)?;
+        Ok(receipt)
     }
 
     /// Reconciles an indeterminate operation to terminal failure using proof.
@@ -311,24 +306,25 @@ impl DurableEffectJournal {
         reason: impl Into<String>,
     ) -> Result<&OperationReceipt, DurableEffectError> {
         let reason_str = reason.into();
-        let mut candidate = self.memory.clone();
-        let _ = candidate.reconcile_failed(operation_id, proof_digest, now, reason_str.clone())?;
-
-        if candidate != self.memory {
-            let transition = EffectJournalTransition::ReconcileFailed {
-                operation_id: operation_id.clone(),
-                proof_digest,
-                now,
-                reason: reason_str,
-            };
-            let bytes = transition.try_canonical_bytes()?;
-            self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
-            self.memory = candidate;
+        if let Some(existing) =
+            self.memory
+                .validate_reconcile_failed(operation_id, proof_digest, now, &reason_str)?
+        {
+            return Ok(existing);
         }
 
-        self.memory
-            .operation(operation_id)
-            .ok_or_else(|| ContractError::NotFound.into())
+        let transition = EffectJournalTransition::ReconcileFailed {
+            operation_id: operation_id.clone(),
+            proof_digest,
+            now,
+            reason: reason_str.clone(),
+        };
+        let bytes = transition.try_canonical_bytes()?;
+        self.journal.append(EFFECT_TRANSITION_RECORD_KIND, &bytes)?;
+        let receipt = self
+            .memory
+            .reconcile_failed(operation_id, proof_digest, now, reason_str)?;
+        Ok(receipt)
     }
 
     /// Dispatches a reference alert durably, guaranteeing commitment is journaled before provider dispatch.
@@ -341,14 +337,31 @@ impl DurableEffectJournal {
         provider: &mut ReferenceAlertProvider,
     ) -> Result<OperationReceipt, DurableEffectError> {
         crate::alert::validate_reference_alert_plan(plan)?;
-        // Step 1: Durably commit first. Refuses blind retry if already Indeterminate!
-        self.transition(
-            &plan.intent.operation_id,
-            EffectState::Committed,
-            committed_at,
-            None,
-            None,
-        )?;
+        let current_state = self
+            .operation(&plan.intent.operation_id)
+            .map(|r| r.state)
+            .ok_or(ContractError::NotFound)?;
+
+        match current_state {
+            EffectState::Prepared => {
+                // Step 1: Durably commit first. Refuses blind retry if already Indeterminate!
+                self.transition(
+                    &plan.intent.operation_id,
+                    EffectState::Committed,
+                    committed_at,
+                    None,
+                    None,
+                )?;
+            }
+            EffectState::Committed => {
+                // Idempotent continuation after restart: commitment already journaled.
+            }
+            EffectState::Indeterminate => {
+                // Indeterminate effects must be reconciled, not blindly retried!
+                return Err(ContractError::ReconciliationRequired.into());
+            }
+            _ => return Err(ContractError::InvalidEffectTransition.into()),
+        }
 
         // Step 2: Provider interaction only after durable commitment:
         match provider.dispatch(&plan.intent, behavior) {
@@ -456,6 +469,36 @@ impl DurableEffectJournal {
             EffectState::Observed => {
                 let receipt =
                     self.reconcile_verified(op, provider_receipt.receipt_digest(), now)?;
+                Ok(Some(receipt.clone()))
+            }
+            EffectState::AdapterAccepted => {
+                let obs_time = now;
+                let ver_time = TimestampNs(now.0.saturating_add(1));
+                self.transition(
+                    op,
+                    EffectState::Observed,
+                    obs_time,
+                    Some(provider_receipt.receipt_digest()),
+                    None,
+                )?;
+                let receipt =
+                    self.reconcile_verified(op, provider_receipt.receipt_digest(), ver_time)?;
+                Ok(Some(receipt.clone()))
+            }
+            EffectState::Committed => {
+                let acc_time = now;
+                let obs_time = TimestampNs(now.0.saturating_add(1));
+                let ver_time = TimestampNs(now.0.saturating_add(2));
+                self.transition(op, EffectState::AdapterAccepted, acc_time, None, None)?;
+                self.transition(
+                    op,
+                    EffectState::Observed,
+                    obs_time,
+                    Some(provider_receipt.receipt_digest()),
+                    None,
+                )?;
+                let receipt =
+                    self.reconcile_verified(op, provider_receipt.receipt_digest(), ver_time)?;
                 Ok(Some(receipt.clone()))
             }
             EffectState::Indeterminate => {
