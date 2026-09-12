@@ -14,8 +14,8 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::belief::{BeliefError, Contradiction};
-use crate::canonical::{CanonicalEncode, CanonicalEncoder};
-use crate::contract::Completeness;
+use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
+use crate::contract::{Completeness, ContractError};
 use crate::digest::ContentDigest;
 use crate::event::{
     EventDecodeError, EventHypothesis, EventLineage, EventState, EventTransitionError,
@@ -178,6 +178,24 @@ pub enum EventStoreError {
         /// Actual sequence number.
         actual: u64,
     },
+    /// Commit digest does not match commit contents or computed digest.
+    CommitDigestMismatch {
+        /// Sequence number of the commit.
+        sequence: u64,
+        /// Expected commit digest.
+        expected: ContentDigest,
+        /// Actual commit digest found in history.
+        actual: ContentDigest,
+    },
+    /// Successor state root or anchor diverged during history replay.
+    StateRootMismatch {
+        /// Sequence number where divergence occurred.
+        sequence: u64,
+        /// Expected successor anchor from history.
+        expected: Box<LedgerAnchor>,
+        /// Actual rebuilt anchor.
+        actual: Box<LedgerAnchor>,
+    },
     /// Underlying event hypothesis failed validation.
     InvalidHypothesis(EventDecodeError),
     /// Underlying evidence graph failed validation.
@@ -309,6 +327,27 @@ impl fmt::Display for EventStoreError {
                     "commit sequence not monotonic: expected {expected}, actual {actual}"
                 )
             }
+            Self::CommitDigestMismatch {
+                sequence,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "commit {sequence} digest mismatch: expected {expected}, actual {actual}"
+                )
+            }
+            Self::StateRootMismatch {
+                sequence,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "rebuild state root mismatch at seq {sequence}: expected {}, actual {}",
+                    expected.commit_sequence, actual.commit_sequence
+                )
+            }
             Self::InvalidHypothesis(err) => {
                 write!(f, "invalid event hypothesis: {err:?}")
             }
@@ -396,6 +435,43 @@ impl CanonicalEncode for EventStoreEntry {
     }
 }
 
+impl CanonicalDecode for EventStoreEntry {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let tag = decoder.u8()?;
+        match tag {
+            1 => {
+                let revision = EventHypothesis::decode_canonical(decoder)?;
+                let coverage_domain = decoder.text()?.to_string();
+                Ok(Self::GenesisRevision {
+                    revision,
+                    coverage_domain,
+                })
+            }
+            2 => {
+                let revision = EventHypothesis::decode_canonical(decoder)?;
+                Ok(Self::SupersedeRevision { revision })
+            }
+            3 => {
+                let graph = EvidenceGraph::decode_canonical(decoder)?;
+                Ok(Self::AttachEvidenceGraph { graph })
+            }
+            4 => {
+                let event_id = EventId::decode_canonical(decoder)?;
+                let contradiction = Contradiction::decode_canonical(decoder)?;
+                Ok(Self::RecordContradiction {
+                    event_id,
+                    contradiction,
+                })
+            }
+            5 => {
+                let witness = CoverageWitness::decode_canonical(decoder)?;
+                Ok(Self::RegisterCoverageWitness { witness })
+            }
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
 /// One immutable commit in the append-only canonical history of the store.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventStoreCommit {
@@ -446,6 +522,29 @@ impl CanonicalEncode for EventStoreCommit {
     }
 }
 
+impl CanonicalDecode for EventStoreCommit {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let domain = decoder.text()?;
+        if domain != EVENT_STORE_COMMIT_DOMAIN {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let sequence = decoder.u64()?;
+        let basis_anchor = LedgerAnchor::decode_canonical(decoder)?;
+        let new_anchor = LedgerAnchor::decode_canonical(decoder)?;
+        let commit_time = TimestampNs::decode_canonical(decoder)?;
+        let entry = EventStoreEntry::decode_canonical(decoder)?;
+        let commit_digest = decoder.digest()?;
+        Ok(Self {
+            sequence,
+            basis_anchor,
+            new_anchor,
+            commit_time,
+            entry,
+            commit_digest,
+        })
+    }
+}
+
 /// Specific reason why a read of an event, lineage, or graph is not observable.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NotObservableReason {
@@ -474,6 +573,11 @@ pub enum NotObservableReason {
     },
     /// The event domain is unknown; absence cannot be certified without a declared domain.
     UnknownDomain,
+    /// Target revision was not found in the recorded event lineage.
+    RevisionNotFound {
+        /// Requested revision number.
+        revision: u64,
+    },
 }
 
 impl fmt::Display for NotObservableReason {
@@ -505,6 +609,9 @@ impl fmt::Display for NotObservableReason {
                     f,
                     "event domain is unknown; absence cannot be certified without a domain"
                 )
+            }
+            Self::RevisionNotFound { revision } => {
+                write!(f, "revision {revision} not found in recorded lineage")
             }
         }
     }
@@ -787,6 +894,14 @@ impl EventRevisionStore {
             .get(&revision.event_id)
             .ok_or_else(|| EventStoreError::EventNotFound(revision.event_id.clone()))?;
 
+        if lineage.len() >= MAX_STORE_LINEAGE_DEPTH {
+            return Err(EventStoreError::LineageDepthExceeded {
+                event_id: revision.event_id.clone(),
+                limit: MAX_STORE_LINEAGE_DEPTH,
+                actual: lineage.len() + 1,
+            });
+        }
+
         let current = lineage.current();
         if current.state.is_terminal() {
             return Err(EventStoreError::TerminalStateImmutable {
@@ -838,9 +953,24 @@ impl EventRevisionStore {
         let mut updated_lineage = lineage.clone();
         updated_lineage
             .transition(transition_params)
-            .map_err(|err| EventStoreError::IllegalStateTransition {
-                event_id: revision.event_id.clone(),
-                detail: err,
+            .map_err(|err| match err {
+                EventTransitionError::OverLimitLength { .. } => {
+                    EventStoreError::LineageDepthExceeded {
+                        event_id: revision.event_id.clone(),
+                        limit: MAX_STORE_LINEAGE_DEPTH,
+                        actual: lineage.len() + 1,
+                    }
+                }
+                EventTransitionError::TerminalStateImmutable { state } => {
+                    EventStoreError::TerminalStateImmutable {
+                        event_id: revision.event_id.clone(),
+                        state,
+                    }
+                }
+                other => EventStoreError::IllegalStateTransition {
+                    event_id: revision.event_id.clone(),
+                    detail: other,
+                },
             })?;
 
         let entry = EventStoreEntry::SupersedeRevision {
@@ -1006,19 +1136,17 @@ impl EventRevisionStore {
                 Some(target_rev) => {
                     if let Some(rev) = lineage.history().iter().find(|r| r.revision == target_rev) {
                         Ok(EventReadResult::Found(rev))
-                    } else if let Some(domain) = self.event_domains.get(event_id) {
-                        if domain.trim().is_empty() || domain == "unknown" {
-                            Ok(EventReadResult::NotObservable {
-                                domain: domain.clone(),
-                                reason: NotObservableReason::UnknownDomain,
-                            })
-                        } else {
-                            Ok(self.evaluate_coverage_for_absent(domain))
-                        }
                     } else {
+                        let domain = self
+                            .event_domains
+                            .get(event_id)
+                            .cloned()
+                            .unwrap_or_else(|| "unknown".to_string());
                         Ok(EventReadResult::NotObservable {
-                            domain: "unknown".to_string(),
-                            reason: NotObservableReason::UnknownDomain,
+                            domain,
+                            reason: NotObservableReason::RevisionNotFound {
+                                revision: target_rev,
+                            },
                         })
                     }
                 }
@@ -1054,7 +1182,12 @@ impl EventRevisionStore {
                     if let Some(rev) = lineage.history().iter().find(|r| r.revision == target_rev) {
                         Ok(EventReadResult::Found(rev))
                     } else {
-                        Ok(self.evaluate_coverage_for_absent(domain))
+                        Ok(EventReadResult::NotObservable {
+                            domain: domain.to_string(),
+                            reason: NotObservableReason::RevisionNotFound {
+                                revision: target_rev,
+                            },
+                        })
                     }
                 }
             }
@@ -1137,10 +1270,17 @@ impl EventRevisionStore {
                 }
             }
             Ok(graphs)
-        } else if !self.lineages.contains_key(event_id) {
-            Err(EventStoreError::EventNotFound(event_id.clone()))
+        } else if let Some(lineage) = self.lineages.get(event_id) {
+            if lineage.history().iter().any(|r| r.revision == revision) {
+                Ok(Vec::new())
+            } else {
+                Err(EventStoreError::RevisionNotFound {
+                    event_id: event_id.clone(),
+                    revision,
+                })
+            }
         } else {
-            Ok(Vec::new())
+            Err(EventStoreError::EventNotFound(event_id.clone()))
         }
     }
 
@@ -1238,9 +1378,25 @@ impl EventRevisionStore {
 
             // Verify the rebuilt state anchor matches the recorded new_anchor
             if store.current_anchor != commit.new_anchor {
-                return Err(EventStoreError::StaleAnchor {
+                return Err(EventStoreError::StateRootMismatch {
+                    sequence: commit.sequence,
                     expected: Box::new(commit.new_anchor.clone()),
                     actual: Box::new(store.current_anchor.clone()),
+                });
+            }
+
+            // Verify the commit digest matches the rebuilt commit
+            let Some(rebuilt_commit) = store.history.last() else {
+                return Err(EventStoreError::StoreCommitCapacityExceeded {
+                    limit: 0,
+                    actual: 0,
+                });
+            };
+            if commit.commit_digest != rebuilt_commit.commit_digest {
+                return Err(EventStoreError::CommitDigestMismatch {
+                    sequence: commit.sequence,
+                    expected: rebuilt_commit.commit_digest,
+                    actual: commit.commit_digest,
                 });
             }
         }

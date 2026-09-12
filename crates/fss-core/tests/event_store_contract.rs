@@ -15,13 +15,14 @@ use std::error::Error;
 use std::fmt::Debug;
 
 use fss_core::{
-    CanonicalEncode, CaptureInterval, Completeness, ContentDigest, Contradiction,
-    ContradictionParams, CoverageContinuity, CoverageStopReason, CoverageWitness, DecisionPath,
-    EventEvidence, EventHypothesis, EventId, EventKind, EventReadResult, EventRevisionStore,
-    EventState, EventStoreError, EventTransitionParams, EvidenceClass, EvidenceEdgeRelation,
-    EvidenceGraph, EvidenceNode, EvidenceNodeKind, GraphReadResult, HypothesisDisposition,
-    KnowledgeState, LedgerAnchor, LineageReadResult, MAX_CONTRADICTIONS_PER_EVENT,
-    MAX_GRAPHS_PER_REVISION, NotObservableReason, ProbabilityInterval, ProvenanceClass,
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
+    Completeness, ContentDigest, Contradiction, ContradictionParams, CoverageContinuity,
+    CoverageStopReason, CoverageWitness, DecisionPath, EventEvidence, EventHypothesis, EventId,
+    EventKind, EventReadResult, EventRevisionStore, EventState, EventStoreCommit, EventStoreEntry,
+    EventStoreError, EventTransitionParams, EvidenceClass, EvidenceEdgeRelation, EvidenceGraph,
+    EvidenceNode, EvidenceNodeKind, GraphReadResult, HypothesisDisposition, KnowledgeState,
+    LedgerAnchor, LineageReadResult, MAX_CONTRADICTIONS_PER_EVENT, MAX_GRAPHS_PER_REVISION,
+    MAX_STORE_LINEAGE_DEPTH, NotObservableReason, ProbabilityInterval, ProvenanceClass,
     RuntimeOutcome, TimestampNs,
 };
 
@@ -1036,6 +1037,256 @@ fn unknown_domain_never_yields_absent_with_coverage() -> TestResult {
             return Err(format!("expected NotObservable with UnknownDomain, got {other:?}").into());
         }
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_missing_revision_of_existing_event_must_not_return_absent_with_coverage() -> TestResult {
+    let genesis_anchor = LedgerAnchor::genesis("site-test");
+    let mut store = EventRevisionStore::new(genesis_anchor.clone());
+    let genesis = sample_genesis("evt_present_001")?;
+    store.append_genesis(
+        genesis_anchor,
+        genesis,
+        "domain.monitored_gate",
+        TimestampNs(1_000),
+    )?;
+    let witness = sample_coverage_witness("domain.monitored_gate", true, true, false)?;
+    store.register_coverage_witness(store.current_anchor().clone(), witness, TimestampNs(2_000))?;
+
+    let present_id = EventId::parse("evt_present_001")?;
+    let result = store.read_event(&present_id, Some(999))?;
+    assert!(
+        !matches!(result, EventReadResult::AbsentWithCoverage(_)),
+        "non-existent revision of an existing event must not return AbsentWithCoverage; got: {result:?}"
+    );
+
+    let domain_result =
+        store.read_event_in_domain(&present_id, "domain.monitored_gate", Some(999))?;
+    assert!(
+        !matches!(domain_result, EventReadResult::AbsentWithCoverage(_)),
+        "non-existent revision in read_event_in_domain must not return AbsentWithCoverage; got: {domain_result:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_rebuild_from_history_must_fail_on_corrupt_commit_digest() -> TestResult {
+    let genesis_anchor = LedgerAnchor::genesis("site-test");
+    let mut store = EventRevisionStore::new(genesis_anchor.clone());
+    let genesis = sample_genesis("evt_rebuild_001")?;
+    store.append_genesis(
+        genesis_anchor.clone(),
+        genesis,
+        "domain.test",
+        TimestampNs(1_000),
+    )?;
+
+    let mut corrupted_history = store.history().to_vec();
+    corrupted_history[0].commit_digest = ContentDigest::sha256(b"tampered_or_forged_digest");
+
+    let res = EventRevisionStore::rebuild_from_history(genesis_anchor, &corrupted_history);
+    assert!(
+        res.is_err(),
+        "rebuild_from_history must fail closed when commit_digest does not match commit contents"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_read_evidence_graphs_nonexistent_revision_returns_revision_not_found() -> TestResult {
+    let genesis_anchor = LedgerAnchor::genesis("site-test");
+    let mut store = EventRevisionStore::new(genesis_anchor.clone());
+    let genesis = sample_genesis("evt_graph_001")?;
+    store.append_genesis(genesis_anchor, genesis, "domain.test", TimestampNs(1_000))?;
+
+    let event_id = EventId::parse("evt_graph_001")?;
+    let res = store.read_evidence_graphs(&event_id, 999);
+    assert!(
+        matches!(
+            res,
+            Err(EventStoreError::RevisionNotFound { revision: 999, .. })
+        ),
+        "read_evidence_graphs must return RevisionNotFound for uncommitted revision, not Ok(vec![]), got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_rebuild_state_root_mismatch_returns_dedicated_error() -> TestResult {
+    let genesis_anchor = LedgerAnchor::genesis("site-test");
+    let mut store = EventRevisionStore::new(genesis_anchor.clone());
+    let genesis = sample_genesis("evt_anchor_001")?;
+    store.append_genesis(
+        genesis_anchor.clone(),
+        genesis,
+        "domain.test",
+        TimestampNs(1_000),
+    )?;
+
+    let mut corrupted_history = store.history().to_vec();
+    corrupted_history[0].new_anchor = LedgerAnchor::genesis("divergent-site");
+
+    let res = EventRevisionStore::rebuild_from_history(genesis_anchor, &corrupted_history);
+    assert!(
+        !matches!(res, Err(EventStoreError::StaleAnchor { .. })),
+        "rebuild successor anchor mismatch must emit a state root divergence error, not StaleAnchor, got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_append_revision_at_max_depth_returns_lineage_depth_exceeded() -> TestResult {
+    let genesis_anchor = LedgerAnchor::genesis("site-test");
+    let mut store = EventRevisionStore::new(genesis_anchor.clone());
+    let genesis = sample_genesis("evt_depth_001")?;
+    let event_id = genesis.event_id.clone();
+    store.append_genesis(genesis_anchor, genesis, "domain.test", TimestampNs(1_000))?;
+
+    // Append transitions up to MAX_STORE_LINEAGE_DEPTH
+    for i in 1..MAX_STORE_LINEAGE_DEPTH {
+        let params = EventTransitionParams {
+            target_state: EventState::Indeterminate,
+            kind: EventKind::PerimeterBreach,
+            interval: CaptureInterval::new(
+                TimestampNs(1_000_000_000 + i as i128),
+                TimestampNs(1_005_000_000 + i as i128),
+            )?,
+            uncertainty_reason: Some("ongoing tracking".to_string()),
+            zone_ids: vec![],
+            track_ids: vec![],
+            probability: ProbabilityInterval::new(0.5, 0.5)?,
+            evidence: vec![EventEvidence {
+                digest: ContentDigest::sha256(format!("evidence-{i}").as_bytes()),
+                class: EvidenceClass::Observed,
+                failure_domain: "sensor.cam_01".to_string(),
+                relation: EvidenceEdgeRelation::Supports,
+                supports: true,
+                capsule_digest: None,
+                identity_digest: None,
+            }],
+            model_receipts: vec![],
+            decision_path: DecisionPath {
+                policy_generation: ContentDigest::sha256(b"policy:test-v1"),
+                fingerprint: ContentDigest::sha256(format!("fingerprint-{i}").as_bytes()),
+                abstained: false,
+                abstention_reason: None,
+            },
+            urgent_single_sensor: false,
+        };
+        store.append_transition(
+            store.current_anchor().clone(),
+            &event_id,
+            params,
+            TimestampNs(2_000_000_000 + i as i128),
+        )?;
+    }
+
+    assert_eq!(store.commit_count(), MAX_STORE_LINEAGE_DEPTH);
+
+    // Now lineage is at MAX_STORE_LINEAGE_DEPTH. An append_revision must fail with LineageDepthExceeded!
+    let current = store.read_event(&event_id, None)?;
+    let EventReadResult::Found(current_hyp) = current else {
+        return Err("expected Found".into());
+    };
+    let next_hyp = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.to_string(),
+        event_id: event_id.clone(),
+        revision: current_hyp.revision + 1,
+        supersedes: Some(current_hyp.canonical_digest(EventHypothesis::SCHEMA)),
+        state: EventState::Indeterminate,
+        kind: EventKind::PerimeterBreach,
+        interval: current_hyp.interval,
+        uncertainty_reason: Some("ongoing tracking".to_string()),
+        zone_ids: vec![],
+        track_ids: vec![],
+        probability: ProbabilityInterval::new(0.5, 0.5)?,
+        evidence: vec![EventEvidence {
+            digest: ContentDigest::sha256(b"overflow-evidence"),
+            class: EvidenceClass::Observed,
+            failure_domain: "sensor.cam_01".to_string(),
+            relation: EvidenceEdgeRelation::Supports,
+            supports: true,
+            capsule_digest: None,
+            identity_digest: None,
+        }],
+        model_receipts: vec![],
+        decision_path: DecisionPath {
+            policy_generation: ContentDigest::sha256(b"policy:test-v1"),
+            fingerprint: ContentDigest::sha256(b"fingerprint:overflow"),
+            abstained: false,
+            abstention_reason: None,
+        },
+    };
+
+    let res = store.append_revision(
+        store.current_anchor().clone(),
+        next_hyp,
+        TimestampNs(99_000_000_000),
+    );
+    assert!(
+        matches!(res, Err(EventStoreError::LineageDepthExceeded { .. })),
+        "append_revision at max lineage depth must return LineageDepthExceeded, got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_commit_and_entry_must_support_canonical_decode() -> TestResult {
+    // 1. EventStoreEntry::GenesisRevision
+    let genesis = sample_genesis("evt_decode_001")?;
+    let entry_genesis = EventStoreEntry::GenesisRevision {
+        revision: genesis.clone(),
+        coverage_domain: "domain.test".to_string(),
+    };
+    let mut encoder = CanonicalEncoder::new();
+    entry_genesis.encode_canonical(&mut encoder);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let decoded_entry = EventStoreEntry::decode_canonical(&mut decoder)
+        .map_err(|e| format!("decode_canonical for GenesisRevision failed: {e:?}"))?;
+    assert!(decoder.is_empty());
+    assert_eq!(decoded_entry, entry_genesis);
+
+    // 2. EventStoreEntry::RegisterCoverageWitness
+    let witness = sample_coverage_witness("domain.test", true, true, false)?;
+    let entry_witness = EventStoreEntry::RegisterCoverageWitness {
+        witness: witness.clone(),
+    };
+    let mut encoder = CanonicalEncoder::new();
+    entry_witness.encode_canonical(&mut encoder);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let decoded_witness_entry = EventStoreEntry::decode_canonical(&mut decoder)
+        .map_err(|e| format!("decode_canonical for RegisterCoverageWitness failed: {e:?}"))?;
+    assert!(decoder.is_empty());
+    assert_eq!(decoded_witness_entry, entry_witness);
+
+    // 3. EventStoreCommit
+    let anchor_basis = LedgerAnchor::genesis("site-test");
+    let mut anchor_new = anchor_basis.clone();
+    anchor_new.commit_sequence = 1;
+    let commit = EventStoreCommit {
+        sequence: 1,
+        basis_anchor: anchor_basis,
+        new_anchor: anchor_new,
+        commit_time: TimestampNs(1_000_000),
+        entry: entry_genesis,
+        commit_digest: ContentDigest::sha256(b"test-commit-digest"),
+    };
+
+    let mut encoder = CanonicalEncoder::new();
+    commit.encode_canonical(&mut encoder);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let decoded_commit = EventStoreCommit::decode_canonical(&mut decoder)
+        .map_err(|e| format!("decode_canonical for EventStoreCommit failed: {e:?}"))?;
+    assert!(decoder.is_empty());
+    assert_eq!(decoded_commit, commit);
 
     Ok(())
 }

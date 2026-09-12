@@ -3,8 +3,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    BatchId, CanonicalEncode, CanonicalEncoder, CapsuleId, CaptureInterval, Completeness,
-    ContentDigest, ContractError, ObjectId, OperationId, Plane, SensorId, StreamId, TimestampNs,
+    BatchId, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CapsuleId,
+    CaptureInterval, Completeness, ContentDigest, ContractError, ObjectId, OperationId, Plane,
+    SensorId, StreamId, TimestampNs,
 };
 
 /// Clock basis used by a source capsule.
@@ -188,6 +189,29 @@ impl CanonicalEncode for LedgerAnchor {
         encoder.u64(self.policy_epoch);
         encoder.u64(self.privacy_epoch);
         encoder.digest(self.state_root);
+    }
+}
+
+impl CanonicalDecode for LedgerAnchor {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let site_lineage = decoder.text()?.to_string();
+        let ledger_epoch = decoder.u64()?;
+        let commit_sequence = decoder.u64()?;
+        let adapter_registry_epoch = decoder.u64()?;
+        let schema_epoch = decoder.u64()?;
+        let policy_epoch = decoder.u64()?;
+        let privacy_epoch = decoder.u64()?;
+        let state_root = decoder.digest()?;
+        Ok(Self {
+            site_lineage,
+            ledger_epoch,
+            commit_sequence,
+            adapter_registry_epoch,
+            schema_epoch,
+            policy_epoch,
+            privacy_epoch,
+            state_root,
+        })
     }
 }
 
@@ -601,11 +625,71 @@ impl CanonicalEncode for CoverageWitness {
     }
 }
 
+impl CanonicalDecode for CoverageWitness {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let anchor = LedgerAnchor::decode_canonical(decoder)?;
+        let authorized_domain = decode_set(decoder)?;
+        let observed_domain = decode_set(decoder)?;
+        let excluded_domain = decode_set(decoder)?;
+        let continuity = match decoder.u8()? {
+            1 => CoverageContinuity::Continuous,
+            2 => CoverageContinuity::Gapped,
+            3 => CoverageContinuity::Unknown,
+            _ => return Err(ContractError::InvalidIdentifier),
+        };
+        let completeness = match decoder.u8()? {
+            1 => Completeness::Complete,
+            2 => Completeness::Bounded,
+            3 => Completeness::Partial,
+            4 => Completeness::Unknown,
+            5 => Completeness::NotObservable,
+            6 => Completeness::Unauthorized,
+            7 => Completeness::Stale,
+            _ => return Err(ContractError::InvalidIdentifier),
+        };
+        let negative_predicate = decoder.text()?.to_string();
+        let stop_reason = match decoder.u8()? {
+            1 => CoverageStopReason::Complete,
+            2 => CoverageStopReason::BudgetExhausted,
+            3 => CoverageStopReason::Cancelled,
+            4 => CoverageStopReason::SourceGap,
+            5 => CoverageStopReason::AuthorizationFiltered,
+            6 => CoverageStopReason::Unsupported,
+            7 => CoverageStopReason::Error,
+            _ => return Err(ContractError::InvalidIdentifier),
+        };
+        let authorized_generation = decoder.u64()?;
+        let observed_generation = decoder.u64()?;
+        Ok(Self {
+            anchor,
+            authorized_domain,
+            observed_domain,
+            excluded_domain,
+            continuity,
+            completeness,
+            negative_predicate,
+            stop_reason,
+            authorized_generation,
+            observed_generation,
+        })
+    }
+}
+
 fn encode_set(values: &BTreeSet<String>, encoder: &mut CanonicalEncoder) {
     encoder.u64(values.len() as u64);
     for value in values {
         encoder.text(value);
     }
+}
+
+fn decode_set(decoder: &mut CanonicalDecoder<'_>) -> Result<BTreeSet<String>, ContractError> {
+    let len = decoder.u64()?;
+    let len = usize::try_from(len).map_err(|_| ContractError::InvalidIdentifier)?;
+    let mut set = BTreeSet::new();
+    for _ in 0..len {
+        set.insert(decoder.text()?.to_string());
+    }
+    Ok(set)
 }
 
 fn apply_deltas(
