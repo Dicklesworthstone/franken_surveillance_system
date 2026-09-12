@@ -834,5 +834,267 @@ class RustLexerTests(unittest.TestCase):
         self.assertNotIn("serde", masked)
 
 
+NET_CODE = "DEP-AUD-026"
+OFFLINE_CODE = "DEP-AUD-027"
+
+
+class BuildScriptNetworkTests(unittest.TestCase):
+    """fss-x4a.26.3 (FSS-183): static deny-list of network-capable constructs in build scripts.
+
+    A pass is not a proof of network absence: only literal tokens in comment/literal-masked source
+    are matched; macro expansion, non-literal Command::new arguments, and indirect I/O are not seen.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.policy_path = make_clean_policy(self.root)
+        (self.root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly-2026-08-31"\n', encoding="utf-8")
+        (self.root / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+        (self.root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n', encoding="utf-8")
+        self.crate = self.root / "crates" / "crate-a"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def audit_build(self, body: str, manifest_extra: str = "", build_rel: str = "build.rs") -> tuple[dict, int]:
+        make_valid_crate(self.crate, "crate-a", extra_manifest=manifest_extra)
+        script = self.crate / build_rel
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text("#![forbid(unsafe_code)]\n" + body, encoding="utf-8")
+        return dependency_audit.audit_workspace(self.root, self.policy_path)
+
+    @staticmethod
+    def net(report: dict) -> list[dict]:
+        return [f for f in report["findings"] if f["code"] == NET_CODE]
+
+    def test_positive_control_offline_build_script_has_no_network_finding(self) -> None:
+        body = 'fn main() {\n    println!("cargo:rerun-if-changed=build.rs");\n    let _ = std::env::var("OUT_DIR");\n}\n'
+        report, rc = self.audit_build(body)
+        self.assertEqual(self.net(report), [])
+        # Build scripts stay constitutionally refused (DEP-AUD-031) whether or not they touch the network.
+        self.assertIn("DEP-AUD-031", [f["code"] for f in report["findings"]])
+        self.assertEqual(rc, 1)
+
+    def test_each_network_pattern_fails_with_file_and_line(self) -> None:
+        cases = {
+            "std::net": ("use std::net::TcpStream as _;\nfn main() {}\n", 2),
+            "grouped std net": ("use std::{io, net};\nfn main() {}\n", 2),
+            "TcpStream": ('fn main() {\n    let _ = TcpStream::connect("127.0.0.1:1");\n}\n', 3),
+            "TcpListener": ('fn main() { let _ = TcpListener::bind("0.0.0.0:0"); }\n', 2),
+            "UdpSocket": ('fn main() { let _ = UdpSocket::bind("0.0.0.0:0"); }\n', 2),
+            "ToSocketAddrs": ("fn main() { fn f<T: ToSocketAddrs>(_: T) {} }\n", 2),
+            "curl": ('fn main() { let _ = std::process::Command::new("curl").arg("-O"); }\n', 2),
+            "wget": ('fn main() { let _ = Command::new("wget"); }\n', 2),
+            "git": ('fn main() {\n\n    let _ = Command::new( "git" ).arg("fetch");\n}\n', 4),
+            "ssh": ('fn main() { let _ = Command::new("ssh"); }\n', 2),
+            "nc": ('fn main() { let _ = Command::new("nc"); }\n', 2),
+            "absolute curl path": ('fn main() { let _ = Command::new("/usr/bin/curl"); }\n', 2),
+            "raw string command": ('fn main() { let _ = Command::new(r"wget"); }\n', 2),
+            "https literal": ('fn main() { let _u = "https://example.invalid/blob"; }\n', 2),
+            "http literal inside macro": ('fn main() {\n    let _u = concat!(\n        "http://example.invalid"\n    );\n}\n', 4),
+        }
+        for label, (body, line) in cases.items():
+            with self.subTest(label=label):
+                report, rc = self.audit_build(body)
+                self.assertEqual(rc, 1)
+                hits = self.net(report)
+                self.assertTrue(
+                    any(f"crates/crate-a/build.rs:{line}" in f["message"] and f["params"].get("line") == line for f in hits),
+                    (label, hits),
+                )
+
+    def test_commented_or_quoted_network_tokens_do_not_fail(self) -> None:
+        body = (
+            "// TcpStream::connect and std::net are only mentioned here\n"
+            '/* Command::new("curl") https://example.invalid */\n'
+            "/// see https://doc.rust-lang.org/cargo/reference/build-scripts.html\n"
+            "fn main() {\n"
+            '    println!("cargo:warning=TcpStream UdpSocket std::net are only words here");\n'
+            '    let _ = std::process::Command::new(env!("RUSTC")).arg("-V");\n'
+            '    let _ = std::process::Command::new("rustc").arg("curl");\n'
+            "}\n"
+        )
+        report, _ = self.audit_build(body)
+        self.assertEqual(self.net(report), [])
+
+    def test_custom_build_path_is_scanned(self) -> None:
+        report, rc = self.audit_build(
+            "fn main() { let _ = std::net::UdpSocket::bind(\"0.0.0.0:0\"); }\n",
+            manifest_extra='build = "tools/gen.rs"\n',
+            build_rel="tools/gen.rs",
+        )
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("crates/crate-a/tools/gen.rs:2" in f["message"] for f in self.net(report)), self.net(report))
+
+    def test_build_true_scans_default_build_rs(self) -> None:
+        report, rc = self.audit_build("fn main() { let _ = TcpStream::connect(\"x:1\"); }\n", manifest_extra="build = true\n")
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("crates/crate-a/build.rs:2" in f["message"] for f in self.net(report)), self.net(report))
+        self.assertIn("DEP-AUD-031", [f["code"] for f in report["findings"]])
+
+    def test_build_false_disables_default_build_rs(self) -> None:
+        report, _ = self.audit_build("fn main() { let _ = TcpStream::connect(\"x:1\"); }\n", manifest_extra="build = false\n")
+        self.assertEqual(self.net(report), [])
+
+    def test_declared_but_missing_build_script_fails_closed(self) -> None:
+        make_valid_crate(self.crate, "crate-a", extra_manifest='build = "tools/missing.rs"\n')
+        report, rc = dependency_audit.audit_workspace(self.root, self.policy_path)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("tools/missing.rs" in f["message"] for f in self.net(report)), self.net(report))
+
+    def test_undeclared_crate_build_script_is_scanned(self) -> None:
+        make_valid_crate(self.crate, "crate-a")
+        rogue = self.root / "crates" / "crate-a" / "nested-rogue"
+        make_valid_crate(rogue, "nested-rogue")
+        (rogue / "build.rs").write_text('#![forbid(unsafe_code)]\nfn main() { let _ = Command::new("curl"); }\n', encoding="utf-8")
+        report, rc = dependency_audit.audit_workspace(self.root, self.policy_path)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any("nested-rogue/build.rs:2" in f["message"] for f in self.net(report)), self.net(report))
+
+    def test_resolved_package_build_script_from_metadata_is_scanned(self) -> None:
+        external = self.root / "vendor-src" / "netty-1.0.0"
+        external.mkdir(parents=True)
+        (external / "build.rs").write_text('fn main() { let _ = std::net::TcpStream::connect("x:1"); }\n', encoding="utf-8")
+        raw_metadata = {
+            "workspace_members": [],
+            "packages": [
+                {
+                    "id": "netty 1.0.0",
+                    "name": "netty",
+                    "version": "1.0.0",
+                    "source": "registry+https://github.com/rust-lang/crates.io-index",
+                    "manifest_path": str(external / "Cargo.toml"),
+                    "targets": [{"kind": ["custom-build"], "name": "build-script-build", "src_path": str(external / "build.rs")}],
+                }
+            ],
+        }
+        findings: list = []
+        paths: list = []
+        dependency_audit.metadata_audit(findings, {}, root=self.root, raw_metadata=raw_metadata, build_script_paths=paths)
+        dependency_audit.build_script_network_audit(findings, root=self.root, extra_paths=paths)
+        codes = [f.code for f in findings]
+        self.assertIn("DEP-AUD-031", codes)
+        self.assertTrue(any(f.code == NET_CODE and "vendor-src/netty-1.0.0/build.rs:1" in f.message for f in findings), findings)
+
+    def test_network_tokens_outside_build_scripts_are_out_of_scope(self) -> None:
+        make_valid_crate(self.crate, "crate-a")
+        (self.crate / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\npub use std::net::TcpStream;\n", encoding="utf-8")
+        report, _ = dependency_audit.audit_workspace(self.root, self.policy_path)
+        self.assertEqual(self.net(report), [])
+
+
+SEALED_QUALIFY = (
+    "#!/usr/bin/env bash\n"
+    "set -Eeuo pipefail\n"
+    "export CARGO_NET_OFFLINE=true\n"
+    "# cargo build is mentioned in a comment only\n"
+    "rust_lane() {\n"
+    '  run cargo-version rustup run "$tc" cargo --offline -V\n'
+    '  run metadata rustup run "$tc" cargo metadata --locked --offline --format-version 1\n'
+    '  run fmt rustup run "$tc" cargo --offline fmt --all --check\n'
+    '  run test rustup run "$tc" cargo test --locked \\\n'
+    "    --offline --workspace\n"
+    "}\n"
+    'run manifest python3 scripts/check.py --cargo-lock "$ROOT/Cargo.lock"\n'
+)
+
+
+class QualifyOfflineTests(unittest.TestCase):
+    """fss-x4a.26.3 (FSS-183): scripts/qualify.sh must run every cargo invocation sealed offline.
+
+    This is Cargo resolution sealing (--offline plus CARGO_NET_OFFLINE=true), not OS-level network
+    isolation: no network namespace (`unshare -n`) is required or claimed.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.script = self.root / "scripts" / "qualify.sh"
+        self.script.parent.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def audit(self, text: str | None) -> list:
+        if text is not None:
+            self.script.write_text(text, encoding="utf-8")
+        findings: list = []
+        dependency_audit.qualify_offline_audit(findings, self.script, root=self.root)
+        return [f for f in findings if f.code == OFFLINE_CODE]
+
+    def test_positive_control_sealed_script_passes(self) -> None:
+        self.assertEqual(self.audit(SEALED_QUALIFY), [])
+
+    def test_cargo_invocation_without_offline_fails_with_line(self) -> None:
+        hits = self.audit(SEALED_QUALIFY + '  run clippy rustup run "$tc" cargo clippy --locked --workspace\n')
+        self.assertEqual(len(hits), 1, hits)
+        self.assertIn("scripts/qualify.sh:13", hits[0].message)
+        self.assertEqual(hits[0].params.get("line"), 13)
+
+    def test_fmt_without_offline_is_not_exempt(self) -> None:
+        hits = self.audit(SEALED_QUALIFY.replace("cargo --offline fmt", "cargo fmt"))
+        self.assertTrue(any("scripts/qualify.sh:8" in f.message for f in hits), hits)
+
+    def test_version_query_without_offline_fails(self) -> None:
+        hits = self.audit(SEALED_QUALIFY.replace("cargo --offline -V", "cargo -V"))
+        self.assertTrue(any("scripts/qualify.sh:6" in f.message for f in hits), hits)
+
+    def test_missing_export_fails(self) -> None:
+        hits = self.audit(SEALED_QUALIFY.replace("export CARGO_NET_OFFLINE=true\n", ""))
+        self.assertTrue(any("CARGO_NET_OFFLINE" in f.message for f in hits), hits)
+
+    def test_export_not_at_top_level_before_first_cargo_fails(self) -> None:
+        moved = SEALED_QUALIFY.replace("export CARGO_NET_OFFLINE=true\n", "").replace("rust_lane() {\n", "rust_lane() {\n  export CARGO_NET_OFFLINE=true\n")
+        self.assertTrue(self.audit(moved))
+        late = SEALED_QUALIFY.replace("export CARGO_NET_OFFLINE=true\n", "") + "export CARGO_NET_OFFLINE=true\n"
+        self.assertTrue(self.audit(late))
+
+    def test_override_or_unset_fails(self) -> None:
+        for extra in (
+            "unset CARGO_NET_OFFLINE\n",
+            'CARGO_NET_OFFLINE=false rustup run "$tc" cargo build --offline\n',
+            'env -u CARGO_NET_OFFLINE rustup run "$tc" cargo build --offline\n',
+            "export CARGO_NET_OFFLINE=false\n",
+        ):
+            with self.subTest(extra=extra):
+                self.assertTrue(self.audit(SEALED_QUALIFY + extra))
+
+    def test_cargo_inside_quoted_bash_c_is_checked(self) -> None:
+        self.assertTrue(self.audit(SEALED_QUALIFY + "run build bash -c 'cargo build --locked'\n"))
+
+    def test_offline_in_a_later_command_does_not_satisfy(self) -> None:
+        self.assertTrue(self.audit(SEALED_QUALIFY + 'rustup run "$tc" cargo build --locked && echo --offline\n'))
+
+    def test_absolute_cargo_path_is_checked(self) -> None:
+        self.assertTrue(self.audit(SEALED_QUALIFY + '"$HOME/.cargo/bin/cargo" build --locked\n'))
+
+    def test_missing_script_fails_closed(self) -> None:
+        hits = self.audit(None)
+        self.assertEqual(len(hits), 1)
+        self.assertIn("missing", hits[0].message)
+
+    def test_audit_workspace_wires_qualify_script(self) -> None:
+        make_clean_policy(self.root)
+        (self.root / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+        (self.root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n', encoding="utf-8")
+        make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
+        self.script.write_text(SEALED_QUALIFY.replace("cargo test --locked", "cargo test --locked --no-run").replace("--offline --workspace", "--workspace"), encoding="utf-8")
+        policy = self.root / "architecture" / "dependency_allowlist.toml"
+        report, rc = dependency_audit.audit_workspace(self.root, policy, qualify_script=self.script)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any(f["code"] == OFFLINE_CODE and "scripts/qualify.sh:9" in f["message"] for f in report["findings"]), report["findings"])
+
+    def test_live_qualify_script_is_sealed_offline(self) -> None:
+        findings: list = []
+        dependency_audit.qualify_offline_audit(findings, ROOT / "scripts" / "qualify.sh", root=ROOT)
+        self.assertEqual(findings, [])
+
+    def test_live_repository_audit_with_qualify_script_passes(self) -> None:
+        report, rc = dependency_audit.audit_workspace(ROOT, ROOT / "architecture/dependency_allowlist.toml", qualify_script=ROOT / "scripts" / "qualify.sh")
+        self.assertEqual([f for f in report["findings"] if f["severity"] == "error"], [])
+        self.assertEqual(rc, 0)
+
+
 if __name__ == "__main__":
     unittest.main()

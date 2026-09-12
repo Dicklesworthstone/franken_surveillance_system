@@ -232,6 +232,7 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
     rows = dependency_audit.enumerate_dependencies(ROOT, manifests, member_names, member_map, dependency_policy, findings)
     source_census = dependency_audit.rust_source_audit(findings, root=ROOT, manifests=manifests)
     dependency_audit.serde_durable_bytes_audit(findings, root=ROOT, direct_rows=rows, manifests=manifests)
+    dependency_audit.build_script_network_audit(findings, root=ROOT, manifests=manifests)
 
     forbidden = set(dependency_policy.get("forbidden", {}).get("crates", []))
     lock_path = ROOT / "Cargo.lock"
@@ -252,6 +253,17 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
             fail(f"unregistered dependency audit diagnostic code: {finding.code} ({finding.path})")
         if finding.severity == "error":
             fail(f"{finding.code}: {finding.message} ({finding.path})")
+
+
+def qualify_offline_policy() -> None:
+    """DEP-AUD-027 (fss-x4a.26.3): scripts/qualify.sh must seal every cargo invocation offline.
+
+    Cargo resolution sealing only (--offline plus a top-level CARGO_NET_OFFLINE=true export); this
+    is not OS-level network isolation. A missing script fails closed."""
+    findings: list[dependency_audit.Finding] = []
+    dependency_audit.qualify_offline_audit(findings, ROOT / "scripts/qualify.sh", root=ROOT)
+    for finding in findings:
+        fail(f"{finding.code}: {finding.message} ({finding.path})")
 
 
 def diagnostic_policy() -> None:
@@ -1204,6 +1216,7 @@ def main() -> int:
     canonical_mirror_policy()
     resolve_markdown_links()
     workflow_policy()
+    qualify_offline_policy()
     diagnostic_policy()
 
     manifest_entries = 0 if args.skip_manifest else validate_manifest()

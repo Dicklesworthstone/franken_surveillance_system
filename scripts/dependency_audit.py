@@ -9,6 +9,12 @@ DEP-AUD-023 (fss-x4a.9.17, FSS-110) refuses Serde-family codec crates in any FSS
 dependency table or Cargo.lock, and Serde derives/paths/attributes in FSS Rust source. Source is
 scanned after masking comments and string/char literals (``mask_rust_source``); this is a
 lexer-level deny-list, not a Rust parser, so macro-generated or ``include!``-spliced code is not seen.
+
+DEP-AUD-026 (fss-x4a.26.3, FSS-183) scans every build script (implicit ``build.rs``, ``build = true``,
+``build = "path"``, undeclared nested crates, and custom-build ``src_path`` values from resolved cargo
+metadata) for network-capable constructs. It is a STATIC DENY-LIST, NOT A PROOF OF ABSENCE.
+DEP-AUD-027 requires ``scripts/qualify.sh`` to export ``CARGO_NET_OFFLINE=true`` at top level and to pass
+``--offline`` to every cargo invocation. That seals Cargo resolution; it is not OS-level network isolation.
 """
 from __future__ import annotations
 
@@ -246,6 +252,20 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
         owner="security-policy",
         trigger="declared workspace root manifest lacks [workspace] table",
         remediation="add [workspace] table to root Cargo.toml or correct the workspace path",
+    ),
+    "DEP-AUD-026": DiagnosticDef(
+        code="DEP-AUD-026",
+        severity="error",
+        owner="security-policy",
+        trigger="a build script contains a network-capable construct on the static deny-list",
+        remediation="remove the network access; build scripts must run offline and stay refused by DEP-AUD-031 (static deny-list, not proof of absence)",
+    ),
+    "DEP-AUD-027": DiagnosticDef(
+        code="DEP-AUD-027",
+        severity="error",
+        owner="security-policy",
+        trigger="the qualification entrypoint does not seal Cargo offline (missing top-level CARGO_NET_OFFLINE=true export, an override, or a cargo invocation without --offline)",
+        remediation="export CARGO_NET_OFFLINE=true at top level and pass --offline to every cargo invocation in scripts/qualify.sh; this is Cargo sealing, not OS network isolation",
     ),
     "DEP-AUD-030": DiagnosticDef(
         code="DEP-AUD-030",
@@ -599,7 +619,7 @@ def discover_crate_targets(
         pass
     elif isinstance(build_spec, str):
         candidate_targets[(crate_dir / build_spec).resolve()] = ("custom-build", f"{crate_name}-build")
-    elif build_spec is None:
+    elif build_spec is None or build_spec is True:
         cand_build = crate_dir / "build.rs"
         if cand_build.is_file():
             candidate_targets[cand_build.resolve()] = ("custom-build", f"{crate_name}-build")
@@ -1193,6 +1213,194 @@ def serde_durable_bytes_audit(
     return len(files)
 
 
+# Network-capable constructs refused in build scripts (fss-x4a.26.3 / FSS-183). STATIC DENY-LIST:
+# token-level matching over comment/literal-masked source; a clean result is not a proof of absence.
+BUILD_SCRIPT_NETWORK_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("std::net", re.compile(r"\bstd\s*::\s*net\b")),
+    ("grouped std::{..net..} import", re.compile(r"\bstd\s*::\s*\{[^{}]*\bnet\b")),
+    ("TcpStream", re.compile(r"\bTcpStream\b")),
+    ("TcpListener", re.compile(r"\bTcpListener\b")),
+    ("UdpSocket", re.compile(r"\bUdpSocket\b")),
+    ("ToSocketAddrs", re.compile(r"\bToSocketAddrs\b")),
+)
+BUILD_SCRIPT_NETWORK_COMMANDS = frozenset(
+    {"curl", "wget", "git", "ssh", "nc", "ncat", "netcat", "scp", "sftp", "rsync", "ftp", "telnet"}
+)
+_COMMAND_NEW_CALL = re.compile(r"\bCommand\s*::\s*new\s*\(\s*")
+_URL_SCHEME = re.compile(r"\b(?:https?|ftp|sftp|ssh|git|wss?)://", re.IGNORECASE)
+
+
+def scan_build_script_network(text: str) -> list[tuple[int, str]]:
+    """Return sorted ``(line, label)`` deny-list hits in one build script's source text."""
+    masked, literals = mask_rust_source(text)
+    by_start = {literal.start: literal for literal in literals}
+    hits: set[tuple[int, str]] = set()
+    for label, pattern in BUILD_SCRIPT_NETWORK_PATTERNS:
+        for match in pattern.finditer(masked):
+            hits.add((source_line(masked, match.start()), label))
+    for match in _COMMAND_NEW_CALL.finditer(masked):
+        literal = by_start.get(match.end())
+        if literal is None:
+            continue  # non-literal program (e.g. env!("RUSTC")) is not resolved: see docstring
+        program = re.split(r"[\\/]", literal.content.strip())[-1].lower()
+        if program.endswith(".exe"):
+            program = program[: -len(".exe")]
+        if program in BUILD_SCRIPT_NETWORK_COMMANDS:
+            hits.add((source_line(masked, match.start()), f'Command::new("{program}")'))
+    for literal in literals:
+        match = _URL_SCHEME.search(literal.content)
+        if match:
+            hits.add((literal.line + literal.content.count("\n", 0, match.start()), f"URL literal {match.group(0)}"))
+    return sorted(hits)
+
+
+def build_script_network_audit(
+    findings: list[Finding],
+    root: Path = ROOT,
+    manifests: list[Path] | None = None,
+    extra_paths: list[Path] | None = None,
+) -> int:
+    """Refuse network-capable constructs in build scripts (DEP-AUD-026, fss-x4a.26.3 / FSS-183).
+
+    Build scripts are the implicit ``build.rs`` (unless ``build = false``), ``build = true``, or
+    ``build = "path"`` of every package manifest in ``manifests``, plus ``extra_paths`` (custom-build
+    ``src_path`` values from resolved cargo metadata, which covers non-workspace packages). A declared
+    but missing or unreadable build script fails closed. Each hit is reported as ``file:line``.
+
+    STATIC DENY-LIST, NOT A PROOF OF ABSENCE. The scan matches ``BUILD_SCRIPT_NETWORK_PATTERNS``,
+    ``Command::new`` of a literal program in ``BUILD_SCRIPT_NETWORK_COMMANDS``, and URL-scheme string
+    literals, after comments and literals are masked. It does not see macro-generated code, files
+    pulled in by ``include!``/``mod``/``#[path]``, non-literal ``Command::new`` arguments, network use
+    inside crates the build script calls, or a spawned program not named literally. Build scripts stay
+    refused outright by DEP-AUD-031; this check adds file:line evidence and keeps the network rule
+    meaningful if a build script is ever constitutionally admitted. Returns the number scanned.
+    """
+    scripts: dict[Path, Path] = {}
+    for manifest in manifests or []:
+        try:
+            data = load_toml(manifest)
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError):
+            continue  # unreadable manifests are reported as DEP-AUD-010/011 by the manifest walk
+        package = data.get("package")
+        if not isinstance(package, dict):
+            continue
+        spec = package.get("build")
+        if spec is False:
+            continue
+        if spec is None or spec is True:
+            candidate, declared = manifest.parent / "build.rs", spec is True
+        elif isinstance(spec, str):
+            candidate, declared = manifest.parent / spec, True
+        else:
+            rel = display_path(manifest, root)
+            add(findings, "error", "DEP-AUD-026", manifest, f"{rel}: package.build must be a boolean or a path string; build-script network absence is unproven", root=root, params={"path": rel, "line": None})
+            continue
+        if not candidate.is_file():
+            if declared:
+                rel = display_path(candidate, root)
+                add(findings, "error", "DEP-AUD-026", candidate, f"{rel}: declared build script is missing; build-script network absence is unproven", root=root, params={"path": rel, "line": None})
+            continue
+        scripts.setdefault(candidate.resolve(), candidate)
+    for extra in extra_paths or []:
+        if not extra.is_file():
+            rel = display_path(extra, root)
+            add(findings, "error", "DEP-AUD-026", extra, f"{rel}: resolved build script source is not readable; build-script network absence is unproven", root=root, params={"path": rel, "line": None})
+            continue
+        scripts.setdefault(extra.resolve(), extra)
+
+    for resolved in sorted(scripts, key=str):
+        script = scripts[resolved]
+        rel = display_path(script, root)
+        try:
+            script_text = script.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            add(findings, "error", "DEP-AUD-026", script, f"{rel}: unreadable build script; network absence is unproven: {exc}", root=root, params={"path": rel, "line": None})
+            continue
+        for line, label in scan_build_script_network(script_text):
+            add(
+                findings,
+                "error",
+                "DEP-AUD-026",
+                script,
+                f"{rel}:{line}: build script uses network-capable construct {label} (static deny-list)",
+                root=root,
+                params={"path": rel, "line": line, "label": label},
+            )
+    return len(scripts)
+
+
+_SHELL_CARGO_WORD = re.compile(r"(?<![\w.-])cargo(?![\w.-])")
+_SHELL_OFFLINE_FLAG = re.compile(r"(?<![\w-])--offline(?![\w-])")
+_SHELL_COMMAND_BREAK = re.compile(r"&&|\|\||;|\|")
+_SEALED_OFFLINE_EXPORT = re.compile(r"""^export\s+CARGO_NET_OFFLINE=(?:true|"true"|'true')\s*$""")
+_CARGO_NET_OFFLINE_WORD = re.compile(r"\bCARGO_NET_OFFLINE\b")
+
+
+def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = ROOT) -> int:
+    """Require sealed-offline Cargo use in the qualification entrypoint (DEP-AUD-027, fss-x4a.26.3).
+
+    Refused, each with ``file:line`` where one exists:
+    - a missing/unreadable script;
+    - no unindented top-level ``export CARGO_NET_OFFLINE=true`` textually before the first cargo
+      invocation (qualify.sh dispatches its lanes at the bottom, so the export runs first);
+    - any other non-comment line naming ``CARGO_NET_OFFLINE`` (unset, override, ``env -u``, re-export);
+    - any shell word ``cargo`` (also ``/path/to/cargo``, inside quoted ``bash -c`` strings, and inside
+      heredoc bodies) whose own command segment (up to ``&&``/``||``/``;``/``|``) lacks ``--offline``.
+      There is no ``cargo fmt`` exemption: the script uses ``cargo --offline fmt``.
+    Full-line ``#`` comments are ignored and ``\\``-continued lines are joined. This seals Cargo's own
+    resolution and fetching only. It is NOT OS-level network isolation (no network namespace or
+    ``unshare -n``), it does not govern network use by non-cargo commands or by scripts that qualify.sh
+    calls, and it inspects only this one file. Returns the number of cargo invocations checked.
+    """
+    rel = display_path(script, root)
+    if not script.is_file():
+        add(findings, "error", "DEP-AUD-027", script, f"{rel}: qualification script is missing; sealed-offline qualification is unproven", root=root, params={"path": rel, "line": None})
+        return 0
+    try:
+        script_text = script.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        add(findings, "error", "DEP-AUD-027", script, f"{rel}: unreadable qualification script: {exc}", root=root, params={"path": rel, "line": None})
+        return 0
+
+    logical: list[tuple[int, str]] = []
+    pending: list[str] = []
+    start = 1
+    for number, raw_line in enumerate(script_text.splitlines(), 1):
+        if not pending:
+            start = number
+        if raw_line.endswith("\\"):
+            pending.append(raw_line[:-1])
+            continue
+        pending.append(raw_line)
+        logical.append((start, " ".join(pending)))
+        pending = []
+    if pending:
+        logical.append((start, " ".join(pending)))
+
+    export_line: int | None = None
+    first_cargo_line: int | None = None
+    invocations = 0
+    for number, line in logical:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if export_line is None and _SEALED_OFFLINE_EXPORT.match(line):
+            export_line = number
+            continue
+        if _CARGO_NET_OFFLINE_WORD.search(line):
+            add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: CARGO_NET_OFFLINE may be set only once, by the top-level `export CARGO_NET_OFFLINE=true`: {stripped[:160]}", root=root, params={"path": rel, "line": number})
+        for match in _SHELL_CARGO_WORD.finditer(line):
+            invocations += 1
+            if first_cargo_line is None:
+                first_cargo_line = number
+            segment = _SHELL_COMMAND_BREAK.split(line[match.end():], maxsplit=1)[0]
+            if not _SHELL_OFFLINE_FLAG.search(segment):
+                add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: cargo invocation lacks --offline: {stripped[:160]}", root=root, params={"path": rel, "line": number})
+    if export_line is None or (first_cargo_line is not None and export_line > first_cargo_line):
+        add(findings, "error", "DEP-AUD-027", script, f"{rel}: no unindented top-level `export CARGO_NET_OFFLINE=true` precedes the first cargo invocation", root=root, params={"path": rel, "line": export_line})
+    return invocations
+
+
 def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: list[Path] | None = None) -> dict[str, Any]:
     if manifests is None:
         root_manifest = load_toml(root / "Cargo.toml")
@@ -1247,6 +1455,7 @@ def metadata_audit(
     root: Path = ROOT,
     reference_targets: list[TargetRoot] | None = None,
     raw_metadata: dict[str, Any] | None = None,
+    build_script_paths: list[Path] | None = None,
 ) -> tuple[bool, str | None, list[dict[str, Any]]]:
     if raw_metadata is not None:
         metadata = raw_metadata
@@ -1323,6 +1532,10 @@ def metadata_audit(
             add(findings, "error", "DEP-AUD-030", "Cargo.lock", f"forbidden package is reachable: {name}", root=root, params={"package": name, "version": str(package.get("version", ""))})
         if custom_build:
             add(findings, "error", "DEP-AUD-031", str(package.get("manifest_path", name)), f"resolved package has a build script: {name}", root=root, params={"package": name, "version": str(package.get("version", ""))})
+            if build_script_paths is not None:
+                for target in targets:
+                    if isinstance(target, dict) and "custom-build" in target.get("kind", []) and isinstance(target.get("src_path"), str):
+                        build_script_paths.append(Path(target["src_path"]))
         if links:
             add(findings, "error", "DEP-AUD-032", str(package.get("manifest_path", name)), f"resolved package declares native links={links}: {name}", root=root, params={"package": name, "links": links, "version": str(package.get("version", ""))})
         if isinstance(source, str) and source.startswith("git+") and "#" not in source:
@@ -1343,6 +1556,7 @@ def audit_workspace(
     root: Path = ROOT,
     policy_path: Path = ALLOWLIST,
     require_metadata: bool = False,
+    qualify_script: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     findings: list[Finding] = []
     try:
@@ -1399,11 +1613,13 @@ def audit_workspace(
                     known_manifests.add((excl_path / "Cargo.toml").resolve())
 
     vendored_fixture_dirs = set(policy.get("fixtures", {}).get("directories", []) or policy.get("vendored_fixtures", {}).get("directories", []))
+    undeclared_manifests: list[Path] = []
     for cand_cargo in sorted(root.rglob("Cargo.toml")):
         parts = cand_cargo.parts
         if "target" in parts or ".git" in parts or any(v in parts for v in vendored_fixture_dirs):
             continue
         if cand_cargo.resolve() not in known_manifests:
+            undeclared_manifests.append(cand_cargo)
             add(
                 findings,
                 "error",
@@ -1429,8 +1645,12 @@ def audit_workspace(
     for tr_dict in source_census.get("targetRoots", []):
         ref_targets.append(TargetRoot(**tr_dict))
 
-    metadata_available, metadata_error, resolved = metadata_audit(findings, policy, root=root, reference_targets=ref_targets)
+    resolved_build_scripts: list[Path] = []
+    metadata_available, metadata_error, resolved = metadata_audit(findings, policy, root=root, reference_targets=ref_targets, build_script_paths=resolved_build_scripts)
     serde_durable_bytes_audit(findings, root=root, resolved_names=[str(row.get("name", "")) for row in resolved])
+    build_script_network_audit(findings, root=root, manifests=manifests + undeclared_manifests, extra_paths=resolved_build_scripts)
+    if qualify_script is not None:
+        qualify_offline_audit(findings, qualify_script, root=root)
     if not metadata_available:
         lock_file = root / "Cargo.lock"
         if lock_file.is_file():
@@ -1511,7 +1731,12 @@ def main() -> int:
     parser.add_argument("--output", type=Path, help="also write the JSON report to this path")
     args = parser.parse_args()
 
-    report, rc = audit_workspace(root=ROOT, policy_path=ALLOWLIST, require_metadata=args.require_metadata)
+    report, rc = audit_workspace(
+        root=ROOT,
+        policy_path=ALLOWLIST,
+        require_metadata=args.require_metadata,
+        qualify_script=ROOT / "scripts/qualify.sh",
+    )
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     print(rendered, end="")
     if args.output is not None:
