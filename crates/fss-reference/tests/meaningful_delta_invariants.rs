@@ -10,10 +10,11 @@ use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
     ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, CoverageContinuity,
     CoverageStopReason, CoverageWitness, DeltaPriority, EffectJournal, EventId,
-    HypothesisDisposition, IdempotencyKey, KnowledgeCell, KnowledgeState, LedgerAnchor,
-    MeaningfulDeltaClass, MissionId, MissionLifecycleState, ObligationId, OperationId, PrincipalId,
-    ProbabilityInterval, ProvenanceClass, ResourcePressure, SensorId, SessionId,
-    SilenceCertificate, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    HypothesisDisposition, IdempotencyKey, KnowledgeCell, KnowledgeState, KnowledgeStateBasis,
+    LedgerAnchor, MeaningfulDeltaClass, MissionId, MissionLifecycleState, ObligationId,
+    OperationId, PrincipalId, ProbabilityInterval, ProvenanceClass, ReconciliationBasis,
+    ResourcePressure, SensorId, SessionId, SilenceCertificate, SituationCapsule, SituationFrame,
+    TimestampNs, WorldEnvelope,
 };
 
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
@@ -410,7 +411,11 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
             evidence: vec![ContentDigest::sha256(b"effect-outcome")],
             contradictions: Vec::new(),
             valid_until: None,
-            state_basis: None,
+            state_basis: (effect_state == KnowledgeState::Indeterminate).then(|| {
+                KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(
+                    ContentDigest::sha256(b"effect-outcome"),
+                ))
+            }),
         });
     }
     knowledge_cells.extend(variant.custom_cells.iter().cloned());

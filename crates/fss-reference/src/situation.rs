@@ -6,9 +6,10 @@ use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder,
     Completeness, ContentDigest, ContractBasis, CoverageContinuity, CoverageStopReason,
     CoverageWitness, EffectState, EventKind, EventState, HandoffCapsule, HandoffId,
-    HandoffPublishParams, HypothesisDisposition, KnowledgeCell, KnowledgeState, LedgerAnchor,
-    MissionId, ObjectId, ObligationId, PossibleWorld, PrincipalId, ProvenanceClass, SessionId,
-    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    HandoffPublishParams, HypothesisDisposition, KnowledgeCell, KnowledgeState,
+    KnowledgeStateBasis, LedgerAnchor, MissionId, ObjectId, ObligationId, PossibleWorld,
+    PrincipalId, ProvenanceClass, ReconciliationBasis, SessionId, SituationCapsule, SituationFrame,
+    TimestampNs, WorldEnvelope,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -177,7 +178,7 @@ pub fn compile_reference_situation(
         evidence: supporting.clone(),
         contradictions: contradicting.clone(),
         valid_until: None,
-        state_basis: None,
+        state_basis: reconciliation_basis_for(physical_state, event_revision_digest),
     });
 
     let mut coverage_proof_root = None;
@@ -373,7 +374,7 @@ pub fn compile_reference_situation(
             evidence: operation.result_digest.into_iter().collect(),
             contradictions: Vec::new(),
             valid_until: None,
-            state_basis: None,
+            state_basis: reconciliation_basis_for(knowledge_state, operation.receipt_digest()),
         });
     }
 
@@ -1111,6 +1112,15 @@ fn policy_statement(decision: &ReferencePolicyDecision) -> &'static str {
             "The reference policy retained the event lifecycle state without granting effect authority."
         }
     }
+}
+
+/// Reconciliation basis for an `indeterminate` cell whose unresolved outcome is rooted at `root`.
+fn reconciliation_basis_for(
+    state: KnowledgeState,
+    root: ContentDigest,
+) -> Option<KnowledgeStateBasis> {
+    (state == KnowledgeState::Indeterminate)
+        .then(|| KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(root)))
 }
 
 fn physical_statement(state: EventState) -> &'static str {

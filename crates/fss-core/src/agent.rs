@@ -252,6 +252,78 @@ impl CanonicalEncode for StaleBasis {
     }
 }
 
+/// One outcome branch kept open while a consequential external outcome is unresolved.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum ReconciliationBranch {
+    /// The consequential external outcome occurred.
+    Occurred,
+    /// The consequential external outcome did not occur.
+    NotOccurred,
+    /// The consequential external outcome occurred only in part.
+    PartiallyOccurred,
+}
+
+impl ReconciliationBranch {
+    /// Returns the stable schema spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Occurred => "occurred",
+            Self::NotOccurred => "not_occurred",
+            Self::PartiallyOccurred => "partially_occurred",
+        }
+    }
+}
+
+/// Typed reconciliation basis for an `indeterminate` proposition (KSTATE-008).
+///
+/// Names the attempt or revision whose consequential external outcome is unresolved and the
+/// branches that planning must keep open until that outcome is proved or safely negated.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReconciliationBasis {
+    /// Root of the attempt receipt or event revision whose outcome is unresolved.
+    pub unresolved_outcome_root: ContentDigest,
+    /// Reconciliation branches kept open until the outcome is proved or safely negated.
+    pub branches: BTreeSet<ReconciliationBranch>,
+}
+
+impl ReconciliationBasis {
+    /// Keeps both the occurred and the not-occurred branch open for `unresolved_outcome_root`.
+    #[must_use]
+    pub fn occurred_or_not(unresolved_outcome_root: ContentDigest) -> Self {
+        Self {
+            unresolved_outcome_root,
+            branches: BTreeSet::from([
+                ReconciliationBranch::Occurred,
+                ReconciliationBranch::NotOccurred,
+            ]),
+        }
+    }
+
+    /// Refuses a basis that dropped the occurred or the not-occurred branch.
+    ///
+    /// An outcome that is neither proved nor safely negated keeps both branches open.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.branches.contains(&ReconciliationBranch::Occurred)
+            && self.branches.contains(&ReconciliationBranch::NotOccurred)
+        {
+            Ok(())
+        } else {
+            Err(ContractError::ReconciliationBranchesIncomplete)
+        }
+    }
+}
+
+impl CanonicalEncode for ReconciliationBasis {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.digest(self.unresolved_outcome_root);
+        encoder.u64(self.branches.len() as u64);
+        for branch in &self.branches {
+            encoder.text(branch.as_str());
+        }
+    }
+}
+
 /// Typed state-specific basis that a knowledge cell must carry when its state names one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KnowledgeStateBasis {
@@ -259,6 +331,8 @@ pub enum KnowledgeStateBasis {
     Redaction(RedactionMarker),
     /// Older anchor or generation required by `stale` (KSTATE-005).
     Stale(StaleBasis),
+    /// Reconciliation basis and branches required by `indeterminate` (KSTATE-008).
+    Reconciliation(ReconciliationBasis),
 }
 
 impl KnowledgeStateBasis {
@@ -268,6 +342,7 @@ impl KnowledgeStateBasis {
         match self {
             Self::Redaction(_) => KnowledgeState::Redacted,
             Self::Stale(_) => KnowledgeState::Stale,
+            Self::Reconciliation(_) => KnowledgeState::Indeterminate,
         }
     }
 
@@ -276,6 +351,7 @@ impl KnowledgeStateBasis {
         match self {
             Self::Redaction(_) => Ok(()),
             Self::Stale(basis) => basis.validate(),
+            Self::Reconciliation(basis) => basis.validate(),
         }
     }
 }
@@ -291,6 +367,10 @@ impl CanonicalEncode for KnowledgeStateBasis {
                 encoder.u8(2);
                 basis.encode_canonical(encoder);
             }
+            Self::Reconciliation(basis) => {
+                encoder.u8(3);
+                basis.encode_canonical(encoder);
+            }
         }
     }
 }
@@ -300,12 +380,12 @@ const fn required_basis_error(state: KnowledgeState) -> Option<ContractError> {
     match state {
         KnowledgeState::Redacted => Some(ContractError::RedactionMarkerRequired),
         KnowledgeState::Stale => Some(ContractError::StaleBasisRequired),
+        KnowledgeState::Indeterminate => Some(ContractError::ReconciliationBasisRequired),
         KnowledgeState::Known
         | KnowledgeState::Estimated
         | KnowledgeState::Unknown
         | KnowledgeState::Conflicted
         | KnowledgeState::NotObservable
-        | KnowledgeState::Indeterminate
         | KnowledgeState::NotApplicable => None,
     }
 }

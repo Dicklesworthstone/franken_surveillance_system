@@ -733,4 +733,13 @@ mod tests {
             Err(ContractError::StaleBasisRequired)
         );
     }
+
+    #[test]
+    fn changed_cells_refuse_indeterminate_cell_without_reconciliation_basis() {
+        let cells = [cell(KnowledgeState::Indeterminate)];
+        assert_eq!(
+            validate_changed_cells(&cells),
+            Err(ContractError::ReconciliationBasisRequired)
+        );
+    }
 }

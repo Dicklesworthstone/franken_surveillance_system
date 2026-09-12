@@ -66,7 +66,7 @@ pub enum KnowledgeState {
     NotObservable,
     /// Policy intentionally withheld the value.
     Redacted,
-    /// An external effect or observation has unresolved outcome.
+    /// A consequential external outcome may have occurred but is not yet proved or safely negated.
     Indeterminate,
     /// The proposition does not apply to the current domain.
     NotApplicable,
@@ -2478,6 +2478,10 @@ pub enum ContractError {
     StaleBasisRequired,
     /// A stale basis is not strictly older than the current anchor or generation it names.
     StaleBasisNotOlder,
+    /// An `indeterminate` knowledge cell lacks its typed reconciliation basis.
+    ReconciliationBasisRequired,
+    /// A reconciliation basis dropped the occurred or the not-occurred branch.
+    ReconciliationBranchesIncomplete,
 }
 
 impl ContractError {
@@ -2515,6 +2519,8 @@ impl ContractError {
             Self::KnowledgeStateBasisMismatch => "knowledge_state_basis_mismatch",
             Self::StaleBasisRequired => "stale_basis_required",
             Self::StaleBasisNotOlder => "stale_basis_not_older",
+            Self::ReconciliationBasisRequired => "reconciliation_basis_required",
+            Self::ReconciliationBranchesIncomplete => "reconciliation_branches_incomplete",
         }
     }
 }

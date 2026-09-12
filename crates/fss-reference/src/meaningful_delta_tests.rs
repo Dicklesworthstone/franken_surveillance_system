@@ -5,8 +5,9 @@ use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest, ContractBasis,
     ContractBasisRegistryBytes, DeltaPriority, Generation, KnowledgeCell, KnowledgeState,
     KnowledgeStateBasis, LedgerAnchor, MeaningfulDeltaClass, MissionId, ObligationId, PrincipalId,
-    PrivacyGeneration, ProvenanceClass, RedactionMarker, RedactionReason, ResourcePressure,
-    SessionId, SituationCapsule, SituationFrame, StaleBasis, TimestampNs, WorldEnvelope,
+    PrivacyGeneration, ProvenanceClass, ReconciliationBasis, RedactionMarker, RedactionReason,
+    ResourcePressure, SessionId, SituationCapsule, SituationFrame, StaleBasis, TimestampNs,
+    WorldEnvelope,
 };
 
 use crate::{
@@ -70,6 +71,7 @@ fn basis() -> ContractBasis {
 /// Typed state basis a fixture cell in `state` must carry so that it validates.
 fn fixture_state_basis(
     state: KnowledgeState,
+    root: ContentDigest,
 ) -> Result<Option<KnowledgeStateBasis>, fss_core::ContractError> {
     Ok(match state {
         KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(RedactionMarker {
@@ -80,6 +82,9 @@ fn fixture_state_basis(
             valid_at: Generation::from_u64(1),
             current: Generation::from_u64(2),
         })),
+        KnowledgeState::Indeterminate => Some(KnowledgeStateBasis::Reconciliation(
+            ReconciliationBasis::occurred_or_not(root),
+        )),
         _ => None,
     })
 }
@@ -142,7 +147,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
         evidence: vec![evidence],
         contradictions: variant.premise_contradictions.clone(),
         valid_until: None,
-        state_basis: fixture_state_basis(variant.premise_state)?,
+        state_basis: fixture_state_basis(variant.premise_state, evidence)?,
     }];
     if let Some(effect_state) = variant.effect_state {
         knowledge_cells.push(KnowledgeCell {
@@ -171,7 +176,10 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
                 Vec::new()
             },
             valid_until: None,
-            state_basis: fixture_state_basis(effect_state)?,
+            state_basis: fixture_state_basis(
+                effect_state,
+                ContentDigest::sha256(b"effect-outcome"),
+            )?,
         });
     }
     let next = affordances

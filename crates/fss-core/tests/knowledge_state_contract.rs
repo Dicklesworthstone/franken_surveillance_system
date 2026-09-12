@@ -20,8 +20,8 @@ use std::str::FromStr;
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
     ContractError, Generation, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
-    PrivacyGeneration, ProvenanceClass, REDACTED_STATEMENT_MARKER, RedactionMarker,
-    RedactionReason, StaleBasis, TimestampNs,
+    PrivacyGeneration, ProvenanceClass, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
+    ReconciliationBranch, RedactionMarker, RedactionReason, StaleBasis, TimestampNs,
 };
 
 #[test]
@@ -971,7 +971,8 @@ fn test_indeterminate_knowledge_cell_reconciliation_and_hard_gate() -> Result<()
     let now = TimestampNs(1_000_000_000);
     let ambiguous_receipt = ContentDigest::sha256(b"inconclusive_actuator_acknowledgement");
 
-    // Construct a cell with KnowledgeState::Indeterminate
+    // Evidence present, no contradictions, unexpired validity, and a typed reconciliation
+    // basis naming the unresolved attempt with both outcome branches open.
     let cell = KnowledgeCell {
         claim_id: "claim:gate:lock:001".to_string(),
         statement: "Gate lock command sent but physical latch closure unverified due to timeout"
@@ -982,8 +983,11 @@ fn test_indeterminate_knowledge_cell_reconciliation_and_hard_gate() -> Result<()
         evidence: vec![ambiguous_receipt],
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
-        state_basis: None,
-    };
+        state_basis: Some(KnowledgeStateBasis::Reconciliation(
+            ReconciliationBasis::occurred_or_not(ambiguous_receipt),
+        )),
+    }
+    .validated()?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_indeterminate());
@@ -1001,6 +1005,13 @@ fn test_indeterminate_knowledge_cell_reconciliation_and_hard_gate() -> Result<()
         !cell.is_irreversible_effect_premise(now),
         "Indeterminate knowledge state must NEVER authorize irreversible effects"
     );
+
+    // Once reconciled to a proved outcome (Known, basis dropped) the same fixture is a
+    // premise, so the refusal above came from the knowledge state alone.
+    let mut reconciled = cell;
+    reconciled.knowledge_state = KnowledgeState::Known;
+    reconciled.state_basis = None;
+    assert!(reconciled.is_irreversible_effect_premise(now));
 
     Ok(())
 }
@@ -1142,6 +1153,9 @@ fn valid_basis_for(state: KnowledgeState) -> Result<Option<KnowledgeStateBasis>,
     Ok(match state {
         KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(redaction_marker()?)),
         KnowledgeState::Stale => Some(KnowledgeStateBasis::Stale(older_anchor_basis())),
+        KnowledgeState::Indeterminate => Some(KnowledgeStateBasis::Reconciliation(
+            ReconciliationBasis::occurred_or_not(ContentDigest::sha256(b"ambiguous_receipt")),
+        )),
         _ => None,
     })
 }
@@ -1471,6 +1485,102 @@ fn test_stale_cell_cannot_pass_as_current() -> Result<(), Box<dyn Error>> {
     revalidated.knowledge_state = KnowledgeState::Known;
     revalidated.state_basis = None;
     assert_ne!(stale.cell_digest(), revalidated.cell_digest());
+
+    Ok(())
+}
+
+/// A valid indeterminate cell for the unresolved attempt rooted at `root`.
+fn indeterminate_cell(basis: ReconciliationBasis) -> KnowledgeCell {
+    KnowledgeCell {
+        claim_id: "claim:gate:lock:002".to_string(),
+        statement: "Gate lock outcome awaits reconciliation".to_string(),
+        knowledge_state: KnowledgeState::Indeterminate,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(
+            b"inconclusive_actuator_acknowledgement",
+        )],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: Some(KnowledgeStateBasis::Reconciliation(basis)),
+    }
+}
+
+#[test]
+fn test_indeterminate_cell_without_reconciliation_basis_is_refused() -> Result<(), Box<dyn Error>> {
+    let root = ContentDigest::sha256(b"attempt_receipt_root");
+    let mut cell = indeterminate_cell(ReconciliationBasis::occurred_or_not(root));
+    cell.validate()?;
+    cell.state_basis = None;
+
+    assert_eq!(
+        cell.validate(),
+        Err(ContractError::ReconciliationBasisRequired)
+    );
+    assert_eq!(
+        cell.clone().validated(),
+        Err(ContractError::ReconciliationBasisRequired)
+    );
+    assert_eq!(
+        ContractError::ReconciliationBasisRequired.code(),
+        "reconciliation_basis_required"
+    );
+    assert!(!cell.is_irreversible_effect_premise(TimestampNs(1_000_000_000)));
+
+    // A reconciliation basis attached to a Known cell is incoherent and refused.
+    let mut known = gate_isolating_cell(KnowledgeState::Known)?;
+    known.state_basis = Some(KnowledgeStateBasis::Reconciliation(
+        ReconciliationBasis::occurred_or_not(root),
+    ));
+    assert_eq!(
+        known.validate(),
+        Err(ContractError::KnowledgeStateBasisMismatch)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_reconciliation_basis_keeps_occurred_and_not_occurred_branches_open()
+-> Result<(), Box<dyn Error>> {
+    let root = ContentDigest::sha256(b"attempt_receipt_root");
+    let with_branches = |branches: &[ReconciliationBranch]| ReconciliationBasis {
+        unresolved_outcome_root: root,
+        branches: branches.iter().copied().collect(),
+    };
+
+    // Accepted: both outcome branches open, optionally with a partial-outcome branch.
+    indeterminate_cell(ReconciliationBasis::occurred_or_not(root)).validate()?;
+    indeterminate_cell(with_branches(&[
+        ReconciliationBranch::Occurred,
+        ReconciliationBranch::NotOccurred,
+        ReconciliationBranch::PartiallyOccurred,
+    ]))
+    .validate()?;
+
+    // Refused: an unresolved outcome may not drop either branch.
+    let refused: [&[ReconciliationBranch]; 4] = [
+        &[],
+        &[ReconciliationBranch::Occurred],
+        &[ReconciliationBranch::NotOccurred],
+        &[
+            ReconciliationBranch::NotOccurred,
+            ReconciliationBranch::PartiallyOccurred,
+        ],
+    ];
+    for branches in refused {
+        assert_eq!(
+            indeterminate_cell(with_branches(branches)).validate(),
+            Err(ContractError::ReconciliationBranchesIncomplete)
+        );
+    }
+
+    // The unresolved attempt root is bound into the digest.
+    let first = indeterminate_cell(ReconciliationBasis::occurred_or_not(root));
+    let second = indeterminate_cell(ReconciliationBasis::occurred_or_not(ContentDigest::sha256(
+        b"other_attempt_receipt_root",
+    )));
+    assert_ne!(first.cell_digest(), second.cell_digest());
 
     Ok(())
 }
