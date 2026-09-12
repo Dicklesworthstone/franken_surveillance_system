@@ -1,5 +1,9 @@
 #![forbid(unsafe_code)]
 //! Deterministic reference surveillance laboratory CLI.
+//!
+//! Laboratory scenarios use in-memory state tracking (`ledger.rs`).
+//! Canonical crash-safe append journaling and durable recovery are owned
+//! normatively by `fss_ledger::Journal` and `fss_ledger::DurableReferenceLedger`.
 
 mod digest;
 mod effects;
