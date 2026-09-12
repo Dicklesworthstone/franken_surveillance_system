@@ -379,21 +379,20 @@ impl ClockOffsetSkewEstimator {
         }
 
         // Check contradiction against current active estimate if within validity
-        if let Some(ref estimate) = self.active_estimate {
-            if let Err(err) =
+        if let Some(ref estimate) = self.active_estimate
+            && let Err(err) =
                 estimate.validate_sample(&sample, self.config.contradiction_tolerance_ns)
-            {
-                let prior = estimate.clone();
-                let reason = format!("{err}");
-                self.state = EstimatorState::Invalidated {
-                    prior_estimate: prior,
-                    contradicting_sample: sample.clone(),
-                    reason,
-                };
-                self.active_estimate = None;
-                self.samples.push(sample);
-                return Err(err);
-            }
+        {
+            let prior = estimate.clone();
+            let reason = format!("{err}");
+            self.state = EstimatorState::Invalidated {
+                prior_estimate: prior,
+                contradicting_sample: sample.clone(),
+                reason,
+            };
+            self.active_estimate = None;
+            self.samples.push(sample);
+            return Err(err);
         }
 
         self.samples.push(sample);
@@ -610,10 +609,10 @@ impl ClockOffsetSkewEstimator {
                 contradicting_sample,
                 ..
             } => {
-                if let Some(last) = self.samples.last() {
-                    if last == contradicting_sample {
-                        self.samples.pop();
-                    }
+                if let Some(last) = self.samples.last()
+                    && last == contradicting_sample
+                {
+                    self.samples.pop();
                 }
                 Some(prior_estimate.clone())
             }
