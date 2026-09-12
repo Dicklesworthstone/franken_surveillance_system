@@ -621,3 +621,108 @@ fn test_inv092_planted_negative_verify_rejects_omitted_critical_item() -> Result
 
     Ok(())
 }
+
+#[test]
+fn test_contradiction_dedup_must_not_drop_independent_sensor_evidence() -> Result<(), Box<dyn Error>>
+{
+    let anchor = LedgerAnchor::genesis("site:inv092:adv1");
+    let evidence_cam1 = ContentDigest::sha256(b"cam1-raw-frame-evidence");
+    let evidence_cam2 = ContentDigest::sha256(b"cam2-raw-frame-evidence");
+    let contra_root = ContentDigest::sha256(b"door-badge-reader-contradiction");
+
+    let world = PossibleWorld {
+        world_id: "world:adv:1".to_owned(),
+        description: "World 1".to_owned(),
+        claim_ids: BTreeSet::from(["claim:cam1".to_owned()]),
+        evidence: vec![evidence_cam1],
+        consequence_severity: 4,
+        protected: true,
+    };
+    let envelope = WorldEnvelope {
+        envelope_id: "envelope:adv:1".to_owned(),
+        objective_id: "objective:adv:1".to_owned(),
+        anchor: anchor.clone(),
+        nominal_claim_ids: BTreeSet::from(["claim:cam1".to_owned()]),
+        certified_core_claim_ids: BTreeSet::new(),
+        alternatives: vec![world],
+        adversarial_residuals: Vec::new(),
+        common_invariants: BTreeSet::new(),
+        coverage_boundary_handles: BTreeSet::new(),
+    };
+
+    // Two independent cameras observe the same subject, contradicted by the badge reader.
+    // Cam 1 has evidence_cam1; Cam 2 has evidence_cam2.
+    let cell_cam1 = KnowledgeCell {
+        claim_id: "claim:cam1".to_owned(),
+        statement: "Subject identified as authorized personnel".to_owned(),
+        knowledge_state: KnowledgeState::Conflicted,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![evidence_cam1],
+        contradictions: vec![contra_root],
+        valid_until: None,
+    };
+    let cell_cam2 = KnowledgeCell {
+        claim_id: "claim:cam2".to_owned(),
+        statement: "Subject identified as authorized personnel".to_owned(),
+        knowledge_state: KnowledgeState::Conflicted,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![evidence_cam2],
+        contradictions: vec![contra_root],
+        valid_until: None,
+    };
+
+    let frame = SituationFrame {
+        frame_id: "frame:adv:1".to_owned(),
+        objective_id: "objective:adv:1".to_owned(),
+        anchor: anchor.clone(),
+        world_envelope: envelope,
+        knowledge_cells: vec![cell_cam1, cell_cam2],
+        now: vec!["Monitoring".to_owned()],
+        changed: Vec::new(),
+        why: Vec::new(),
+        unknown: Vec::new(),
+        at_risk: Vec::new(),
+        next: Vec::new(),
+        evidence_handles: BTreeSet::new(),
+    };
+    let capsule = SituationCapsule {
+        capsule_id: "situation:adv:1".to_owned(),
+        revision: 1,
+        contract_basis: test_basis(),
+        mission_id: MissionId::parse("mission:adv:1")?,
+        session_id: SessionId::parse("session:adv:1")?,
+        principal_id: PrincipalId::parse("principal:adv")?,
+        anchor,
+        previous_anchor: None,
+        frame,
+        obligations: Vec::new(),
+        affordances: Vec::new(),
+        completeness: Completeness::Partial,
+        created_at: TimestampNs(1_000_000),
+        mission_state: None,
+    };
+    let situation = ReferenceSituation {
+        capsule,
+        proof_roots: BTreeSet::from([evidence_cam1, evidence_cam2]),
+    };
+
+    let publ = project_reference_situation(situation, &test_spec(10_000)?)?;
+
+    // Cam 2 was dropped as a duplicate of Cam 1!
+    // INV-092 forbids dropping evidence that can affect consequential action.
+    // The context pack must preserve Cam 2's evidence root in the retained basis or items:
+    let contra_item = publ
+        .context_pack
+        .items
+        .iter()
+        .find(|item| item.kind == "contradiction")
+        .expect("contradiction item missing");
+
+    assert!(
+        contra_item.basis.contains(&evidence_cam2.to_string()),
+        "Independent sensor evidence for contradicted claim was dropped during deduplication!"
+    );
+    Ok(())
+}

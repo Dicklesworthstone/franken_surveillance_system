@@ -652,11 +652,18 @@ fn context_candidates(
             if let Some((_, prev_item_id)) = seen_contradictions.iter().find(|(c, _)| {
                 c.statement == cell.statement && c.contradictions == cell.contradictions
             }) {
+                if let Some(existing) = candidates.get_mut(prev_item_id) {
+                    existing.item.basis.insert(cell.claim_id.clone());
+                    existing
+                        .item
+                        .basis
+                        .extend(cell.evidence.iter().map(ToString::to_string));
+                }
                 redundancy.push(RedundancyRecord {
                     dropped_item_id: item_id,
                     retained_item_id: prev_item_id.clone(),
                     kind: "contradiction".to_owned(),
-                    reason: "duplicate contradiction with identical statement and contradicting evidence roots; retained earlier representative".to_owned(),
+                    reason: "duplicate contradiction with identical statement and contradicting evidence roots; retained earlier representative with merged evidence basis".to_owned(),
                 });
             } else {
                 seen_contradictions.push((cell, item_id.clone()));
