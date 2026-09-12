@@ -12,12 +12,12 @@
 //! - Hard size bounds, tested at exact bound and bound+1.
 
 use core::fmt;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::EvidenceClass;
 use crate::time::{CaptureInterval, TimestampNs};
-use crate::{ContentDigest, ContractError, EventId};
+use crate::{ContentDigest, ContractError, EffectState, EventId, ObligationId, OperationId};
 
 /// Canonical schema identifier for event hypothesis / revision v1.
 pub const EVENT_HYPOTHESIS_SCHEMA: &str = EventHypothesis::SCHEMA;
@@ -66,6 +66,16 @@ pub const MAX_MODEL_RECEIPTS_COUNT: usize = 64;
 pub const MAX_ABSTENTION_REASON_LEN: usize = 512;
 /// Maximum byte length for capture uncertainty reason string.
 pub const MAX_UNCERTAINTY_REASON_LEN: usize = 256;
+/// Standard label substring for events advancing under an urgent single-sensor policy exception.
+pub const SINGLE_DOMAIN_UNCONFIRMED_LABEL: &str = "single-domain/unconfirmed";
+/// Maximum depth (number of revisions) allowed in a single event lineage chain.
+pub const MAX_LINEAGE_DEPTH: usize = 256;
+/// Maximum number of alert attempts recorded on a single event lineage.
+pub const MAX_ALERT_ATTEMPTS_COUNT: usize = 64;
+/// Maximum byte length for alert channel identifier string.
+pub const MAX_ALERT_CHANNEL_LEN: usize = 256;
+/// Maximum byte length for alert failure reason string.
+pub const MAX_ALERT_FAILURE_REASON_LEN: usize = 512;
 
 /// Typed decode errors with no default-on-error behavior.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -283,6 +293,447 @@ impl EventState {
                 detail: format!("unknown event state tag {v}"),
             }),
         }
+    }
+
+    /// Returns true if this state is terminal (no forward transitions permitted).
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Resolved | Self::Rejected)
+    }
+
+    /// Returns canonical progression rank (1 for Hypothesized through 6 for Resolved).
+    ///
+    /// Returns `None` for non-canonical alternative states (`Indeterminate`, `Rejected`).
+    #[must_use]
+    pub const fn canonical_rank(self) -> Option<u8> {
+        match self {
+            Self::Hypothesized => Some(1),
+            Self::Witnessed => Some(2),
+            Self::Corroborated => Some(3),
+            Self::Adjudicated => Some(4),
+            Self::AlertDelivered => Some(5),
+            Self::Resolved => Some(6),
+            Self::Indeterminate | Self::Rejected => None,
+        }
+    }
+
+    /// Returns true if this state can legally transition to the target state.
+    #[must_use]
+    pub fn can_transition_to(self, next: Self, urgent_single_sensor: bool) -> bool {
+        is_allowed_event_transition(self, next, urgent_single_sensor)
+    }
+}
+
+/// Static rule governing a legal state transition in the event lifecycle state machine.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EventTransitionRule {
+    /// Origin lifecycle state.
+    pub from: EventState,
+    /// Destination lifecycle state.
+    pub to: EventState,
+    /// Whether this transition requires an explicit urgent single-sensor policy exception.
+    pub requires_urgent_exception: bool,
+    /// Whether the destination state is terminal.
+    pub terminal: bool,
+    /// Semantic description of the transition.
+    pub description: &'static str,
+}
+
+/// Registered canonical event state transition table.
+///
+/// Models the canonical lifecycle:
+/// `Hypothesized -> Witnessed -> Corroborated -> Adjudicated -> AlertDelivered -> Resolved`,
+/// with `Rejected` and `Indeterminate` alternatives.
+pub static EVENT_TRANSITION_TABLE: &[EventTransitionRule] = &[
+    // From Hypothesized
+    EventTransitionRule {
+        from: EventState::Hypothesized,
+        to: EventState::Witnessed,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Initial observation witness attached to candidate hypothesis",
+    },
+    EventTransitionRule {
+        from: EventState::Hypothesized,
+        to: EventState::Indeterminate,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Observation ambiguous or coverage unverified",
+    },
+    EventTransitionRule {
+        from: EventState::Hypothesized,
+        to: EventState::Rejected,
+        requires_urgent_exception: false,
+        terminal: true,
+        description: "Preliminary evaluation refutes hypothesis",
+    },
+    // From Witnessed
+    EventTransitionRule {
+        from: EventState::Witnessed,
+        to: EventState::Corroborated,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Independent corroboration from >= 2 failure domains attached",
+    },
+    EventTransitionRule {
+        from: EventState::Witnessed,
+        to: EventState::Adjudicated,
+        requires_urgent_exception: true,
+        terminal: false,
+        description: "Urgent single-sensor policy exception advances unconfirmed event",
+    },
+    EventTransitionRule {
+        from: EventState::Witnessed,
+        to: EventState::Indeterminate,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Evidence ambiguous, sensor health degraded, or coverage lost",
+    },
+    EventTransitionRule {
+        from: EventState::Witnessed,
+        to: EventState::Rejected,
+        requires_urgent_exception: false,
+        terminal: true,
+        description: "Contradictory evidence refutes candidate",
+    },
+    // From Corroborated
+    EventTransitionRule {
+        from: EventState::Corroborated,
+        to: EventState::Adjudicated,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Policy selects a disposition based on corroborated evidence",
+    },
+    EventTransitionRule {
+        from: EventState::Corroborated,
+        to: EventState::Indeterminate,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Late contradiction or sensor tamper creates uncertainty",
+    },
+    EventTransitionRule {
+        from: EventState::Corroborated,
+        to: EventState::Rejected,
+        requires_urgent_exception: false,
+        terminal: true,
+        description: "Ground truth or contradictory evidence refutes corroborated event",
+    },
+    // From Adjudicated
+    EventTransitionRule {
+        from: EventState::Adjudicated,
+        to: EventState::AlertDelivered,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Alert delivery succeeded with durable provider receipt",
+    },
+    EventTransitionRule {
+        from: EventState::Adjudicated,
+        to: EventState::Resolved,
+        requires_urgent_exception: false,
+        terminal: true,
+        description: "Event resolved without alert dispatch or by policy",
+    },
+    EventTransitionRule {
+        from: EventState::Adjudicated,
+        to: EventState::Indeterminate,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Alert dispatch indeterminate, lost ACK, or outcome unresolved",
+    },
+    EventTransitionRule {
+        from: EventState::Adjudicated,
+        to: EventState::Rejected,
+        requires_urgent_exception: false,
+        terminal: true,
+        description: "Adjudicated event refuted before/during alert action",
+    },
+    // From AlertDelivered
+    EventTransitionRule {
+        from: EventState::AlertDelivered,
+        to: EventState::Resolved,
+        requires_urgent_exception: false,
+        terminal: true,
+        description: "Operator or trusted downstream system resolves delivered alert",
+    },
+    EventTransitionRule {
+        from: EventState::AlertDelivered,
+        to: EventState::Indeterminate,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Post-delivery investigation needed or outcome ambiguous",
+    },
+    EventTransitionRule {
+        from: EventState::AlertDelivered,
+        to: EventState::Rejected,
+        requires_urgent_exception: false,
+        terminal: true,
+        description: "Delivered alert determined to be benign or false positive",
+    },
+    // From Indeterminate (reconciliation transitions)
+    EventTransitionRule {
+        from: EventState::Indeterminate,
+        to: EventState::Witnessed,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Reconciled to witnessed when observation witness confirmed",
+    },
+    EventTransitionRule {
+        from: EventState::Indeterminate,
+        to: EventState::Corroborated,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Reconciled to corroborated with >= 2 failure domain evidence",
+    },
+    EventTransitionRule {
+        from: EventState::Indeterminate,
+        to: EventState::Adjudicated,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Reconciled to adjudicated under policy",
+    },
+    EventTransitionRule {
+        from: EventState::Indeterminate,
+        to: EventState::AlertDelivered,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Reconciled to alert delivered when delivery ACK recovered",
+    },
+    EventTransitionRule {
+        from: EventState::Indeterminate,
+        to: EventState::Resolved,
+        requires_urgent_exception: false,
+        terminal: true,
+        description: "Indeterminate condition resolved by operator or downstream",
+    },
+    EventTransitionRule {
+        from: EventState::Indeterminate,
+        to: EventState::Rejected,
+        requires_urgent_exception: false,
+        terminal: true,
+        description: "Indeterminate candidate refuted by contradictory evidence",
+    },
+    EventTransitionRule {
+        from: EventState::Indeterminate,
+        to: EventState::Indeterminate,
+        requires_urgent_exception: false,
+        terminal: false,
+        description: "Indeterminate candidate updated with new evidence or reconciliation steps",
+    },
+];
+
+/// Returns the registered transition rule between two states, if one exists.
+#[must_use]
+pub fn get_event_transition_rule(
+    from: EventState,
+    to: EventState,
+) -> Option<&'static EventTransitionRule> {
+    EVENT_TRANSITION_TABLE
+        .iter()
+        .find(|r| r.from == from && r.to == to)
+}
+
+/// Returns true if a direct transition between two states is legally allowed.
+#[must_use]
+pub fn is_allowed_event_transition(
+    from: EventState,
+    to: EventState,
+    urgent_single_sensor: bool,
+) -> bool {
+    match get_event_transition_rule(from, to) {
+        Some(rule) => !rule.requires_urgent_exception || urgent_single_sensor,
+        None => false,
+    }
+}
+
+/// Typed event lifecycle and revision lineage transition errors.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EventTransitionError {
+    /// Attempted transition from an immutable terminal state.
+    TerminalStateImmutable {
+        /// The terminal state.
+        state: EventState,
+    },
+    /// Attempted illegal state transition not permitted by the transition table.
+    IllegalStateTransition {
+        /// Origin state.
+        from: EventState,
+        /// Attempted destination state.
+        to: EventState,
+        /// Reason detail.
+        reason: &'static str,
+    },
+    /// Attempted non-monotonic state transition (regressing to a predecessor state).
+    NonMonotonicTransition {
+        /// Origin state.
+        from: EventState,
+        /// Attempted destination state.
+        to: EventState,
+        /// Highest canonical state previously reached in this lineage.
+        highest_reached: EventState,
+    },
+    /// Corroboration required >= 2 distinct failure domains, but fewer were observed.
+    CorroborationRequired {
+        /// Actual distinct failure domain count observed.
+        observed_domains: usize,
+    },
+    /// Evidence is required after initial hypothesis, but none was provided.
+    EvidenceRequired,
+    /// Revision numbering is not strictly monotonic (expected prior + 1).
+    RevisionNotMonotonic {
+        /// Expected revision number.
+        expected: u64,
+        /// Observed revision number.
+        actual: u64,
+    },
+    /// Predecessor revision digest does not match the actual superseded revision.
+    DigestMismatch {
+        /// Expected predecessor digest.
+        expected: ContentDigest,
+        /// Actual digest found in supersedes link.
+        actual: Option<ContentDigest>,
+    },
+    /// Lineage event ID mismatch across revisions.
+    EventIdMismatch {
+        /// Expected event ID.
+        expected: EventId,
+        /// Observed event ID.
+        actual: EventId,
+    },
+    /// Urgent single-sensor policy exception was required for this transition but not asserted.
+    UrgentExceptionRequired,
+    /// Duplicate evidence item attached falsely counting the same evidence twice.
+    DuplicateEvidence {
+        /// Digest of the duplicate evidence item.
+        digest: ContentDigest,
+    },
+    /// A bounded field strictly exceeds its declared hard bound.
+    OverLimitLength {
+        /// Field name.
+        field: &'static str,
+        /// Hard limit bound.
+        limit: usize,
+        /// Actual observed length.
+        actual: usize,
+    },
+    /// Contradictory invariants or assertions.
+    Contradiction {
+        /// Field name.
+        field: &'static str,
+        /// Diagnostic detail.
+        detail: String,
+    },
+    /// Underlying contract error.
+    Contract(ContractError),
+    /// Underlying decode error.
+    Decode(EventDecodeError),
+}
+
+impl fmt::Display for EventTransitionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TerminalStateImmutable { state } => {
+                write!(
+                    f,
+                    "terminal event state '{:?}' is immutable and permits no further transitions",
+                    state
+                )
+            }
+            Self::IllegalStateTransition { from, to, reason } => {
+                write!(
+                    f,
+                    "illegal event transition from '{:?}' to '{:?}': {}",
+                    from, to, reason
+                )
+            }
+            Self::NonMonotonicTransition {
+                from,
+                to,
+                highest_reached,
+            } => {
+                write!(
+                    f,
+                    "non-monotonic event transition from '{:?}' to '{:?}': highest reached state was '{:?}'",
+                    from, to, highest_reached
+                )
+            }
+            Self::CorroborationRequired { observed_domains } => {
+                write!(
+                    f,
+                    "corroboration requires >= 2 distinct failure domains, found {}",
+                    observed_domains
+                )
+            }
+            Self::EvidenceRequired => {
+                write!(
+                    f,
+                    "evidence is required for event states beyond initial hypothesis"
+                )
+            }
+            Self::RevisionNotMonotonic { expected, actual } => {
+                write!(
+                    f,
+                    "event revision must be strictly monotonic: expected {}, got {}",
+                    expected, actual
+                )
+            }
+            Self::DigestMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "superseded digest mismatch: expected {:?}, found {:?}",
+                    expected, actual
+                )
+            }
+            Self::EventIdMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "event ID mismatch: expected {}, found {}",
+                    expected, actual
+                )
+            }
+            Self::UrgentExceptionRequired => {
+                write!(
+                    f,
+                    "urgent single-sensor policy exception required to advance uncorroborated event"
+                )
+            }
+            Self::DuplicateEvidence { digest } => {
+                write!(
+                    f,
+                    "duplicate evidence falsely counted twice: digest {:?}",
+                    digest
+                )
+            }
+            Self::OverLimitLength {
+                field,
+                limit,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "field '{}' length {} exceeds limit {}",
+                    field, actual, limit
+                )
+            }
+            Self::Contradiction { field, detail } => {
+                write!(f, "contradiction in field '{}': {}", field, detail)
+            }
+            Self::Contract(err) => write!(f, "contract violation: {}", err),
+            Self::Decode(err) => write!(f, "decode error: {}", err),
+        }
+    }
+}
+
+impl std::error::Error for EventTransitionError {}
+
+impl From<ContractError> for EventTransitionError {
+    fn from(err: ContractError) -> Self {
+        Self::Contract(err)
+    }
+}
+
+impl From<EventDecodeError> for EventTransitionError {
+    fn from(err: EventDecodeError) -> Self {
+        Self::Decode(err)
     }
 }
 
@@ -1147,11 +1598,9 @@ impl EventHypothesis {
             return Err(EventDecodeError::Contract(ContractError::EvidenceRequired));
         }
 
-        // Corroboration requires >= 2 distinct failure domains among supporting edges
-        if matches!(
-            self.state,
-            EventState::Corroborated | EventState::Adjudicated | EventState::AlertDelivered
-        ) {
+        // Corroboration strictly requires >= 2 distinct failure domains among supporting edges.
+        // AGENTS.md prime directive: one camera's model score is NEVER corroborated.
+        if self.state == EventState::Corroborated {
             let failure_domains: BTreeSet<_> = self
                 .evidence
                 .iter()
@@ -1159,6 +1608,25 @@ impl EventHypothesis {
                 .map(|edge| edge.failure_domain.as_str())
                 .collect();
             if failure_domains.len() < 2 {
+                return Err(EventDecodeError::Contract(
+                    ContractError::CorroborationRequired,
+                ));
+            }
+        }
+
+        // Adjudicated and AlertDelivered require >= 2 distinct failure domains UNLESS
+        // explicitly labeled as single-domain/unconfirmed under an urgent single-sensor policy.
+        if matches!(
+            self.state,
+            EventState::Adjudicated | EventState::AlertDelivered
+        ) {
+            let failure_domains: BTreeSet<_> = self
+                .evidence
+                .iter()
+                .filter(|edge| edge.supports)
+                .map(|edge| edge.failure_domain.as_str())
+                .collect();
+            if failure_domains.len() < 2 && !self.is_single_domain_unconfirmed() {
                 return Err(EventDecodeError::Contract(
                     ContractError::CorroborationRequired,
                 ));
@@ -1174,6 +1642,43 @@ impl EventHypothesis {
             EventDecodeError::Contract(c) => c,
             _ => ContractError::EvidenceRequired,
         })
+    }
+
+    /// Returns true if this revision is explicitly labeled as single-domain/unconfirmed
+    /// under an urgent single-sensor policy exception.
+    #[must_use]
+    pub fn is_single_domain_unconfirmed(&self) -> bool {
+        self.uncertainty_reason
+            .as_deref()
+            .is_some_and(|r| r.contains(SINGLE_DOMAIN_UNCONFIRMED_LABEL))
+    }
+
+    /// Analyzes corroboration and failure domains for this revision's evidence.
+    #[must_use]
+    pub fn analyze_corroboration(&self) -> CorroborationAnalysis {
+        let mut domain_counts = BTreeMap::new();
+        let mut supporting_count = 0;
+        let mut contradicting_count = 0;
+        for edge in &self.evidence {
+            if edge.supports {
+                supporting_count += 1;
+                *domain_counts
+                    .entry(edge.failure_domain.clone())
+                    .or_insert(0) += 1;
+            } else {
+                contradicting_count += 1;
+            }
+        }
+        let distinct_failure_domains: BTreeSet<String> = domain_counts.keys().cloned().collect();
+        let is_corroborated = distinct_failure_domains.len() >= 2;
+        let domain_evidence_counts: Vec<(String, usize)> = domain_counts.into_iter().collect();
+        CorroborationAnalysis {
+            distinct_failure_domains,
+            domain_evidence_counts,
+            supporting_count,
+            contradicting_count,
+            is_corroborated,
+        }
     }
 
     /// Returns the immutable event-revision digest.
@@ -2091,6 +2596,659 @@ impl EventHypothesis {
         };
         event.verify()?;
         Ok(event)
+    }
+}
+
+/// Corroboration and failure-domain analysis for an event revision.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CorroborationAnalysis {
+    /// Set of distinct failure domain identities among supporting evidence edges.
+    pub distinct_failure_domains: BTreeSet<String>,
+    /// Evidence counts grouped by failure domain to expose shared failure modes.
+    pub domain_evidence_counts: Vec<(String, usize)>,
+    /// Total count of supporting edges.
+    pub supporting_count: usize,
+    /// Total count of contradicting edges.
+    pub contradicting_count: usize,
+    /// Whether the strict corroboration rule (>= 2 distinct failure domains) is satisfied.
+    pub is_corroborated: bool,
+}
+
+/// Durable record of an alert effect attempt or outcome associated with an event revision.
+///
+/// Preserves strict orthogonality between event lifecycle state and external effect execution.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AlertEffectRecord {
+    /// Unique operation identity for the alert dispatch.
+    pub operation_id: OperationId,
+    /// Terminal-proof obligation ID.
+    pub obligation_id: ObligationId,
+    /// Event revision number when alert was attempted.
+    pub event_revision: u64,
+    /// Exact digest of the event revision when alert was attempted.
+    pub event_revision_digest: ContentDigest,
+    /// Effect lifecycle state (e.g. Prepared, Committed, AdapterAccepted, Observed, Verified, Indeterminate, Failed).
+    pub effect_state: EffectState,
+    /// Dispatch or observation timestamp.
+    pub timestamp_ns: TimestampNs,
+    /// Bounded alert channel identifier.
+    pub channel: String,
+    /// Provider observation receipt digest, if delivery was verified.
+    pub observation_receipt: Option<ContentDigest>,
+    /// Error code or failure reason if dispatch failed or is indeterminate.
+    pub failure_reason: Option<String>,
+}
+
+impl AlertEffectRecord {
+    /// Validates bounds and invariants on the alert effect record.
+    pub fn verify(&self) -> Result<(), EventTransitionError> {
+        if self.event_revision == 0 {
+            return Err(EventTransitionError::RevisionNotMonotonic {
+                expected: 1,
+                actual: 0,
+            });
+        }
+        if self.channel.len() > MAX_ALERT_CHANNEL_LEN {
+            return Err(EventTransitionError::OverLimitLength {
+                field: "alert_record.channel",
+                limit: MAX_ALERT_CHANNEL_LEN,
+                actual: self.channel.len(),
+            });
+        }
+        if let Some(reason) = &self.failure_reason
+            && reason.len() > MAX_ALERT_FAILURE_REASON_LEN
+        {
+            return Err(EventTransitionError::OverLimitLength {
+                field: "alert_record.failure_reason",
+                limit: MAX_ALERT_FAILURE_REASON_LEN,
+                actual: reason.len(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Serializes this alert record into canonical binary bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.alert_effect_record.v1");
+        self.operation_id.encode_canonical(&mut encoder);
+        self.obligation_id.encode_canonical(&mut encoder);
+        encoder.u64(self.event_revision);
+        encoder.digest(self.event_revision_digest);
+        self.effect_state.encode_canonical(&mut encoder);
+        self.timestamp_ns.encode_canonical(&mut encoder);
+        encoder.text(&self.channel);
+        match &self.observation_receipt {
+            Some(digest) => {
+                encoder.bool(true);
+                encoder.digest(*digest);
+            }
+            None => {
+                encoder.bool(false);
+            }
+        }
+        match &self.failure_reason {
+            Some(reason) => {
+                encoder.bool(true);
+                encoder.text(reason);
+            }
+            None => {
+                encoder.bool(false);
+            }
+        }
+        encoder.finish()
+    }
+
+    /// Computes the canonical content digest of this alert record.
+    #[must_use]
+    pub fn record_digest(&self) -> ContentDigest {
+        ContentDigest::sha256(&self.canonical_bytes())
+    }
+}
+
+/// Parameters for constructing a superseding event revision in an event lineage.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventTransitionParams {
+    /// Target event lifecycle state.
+    pub target_state: EventState,
+    /// Semantic event class.
+    pub kind: EventKind,
+    /// Physical observation time interval.
+    pub interval: CaptureInterval,
+    /// Bounded temporal uncertainty explanation.
+    pub uncertainty_reason: Option<String>,
+    /// Spatial zone identifiers.
+    pub zone_ids: Vec<String>,
+    /// Correlated entity track identifiers.
+    pub track_ids: Vec<String>,
+    /// Calibrated probability interval.
+    pub probability: ProbabilityInterval,
+    /// Evidence edges (supporting and contradicting).
+    pub evidence: Vec<EventEvidence>,
+    /// Model execution receipts.
+    pub model_receipts: Vec<ContentDigest>,
+    /// Evaluated policy decision path.
+    pub decision_path: DecisionPath,
+    /// Whether an explicit urgent single-sensor policy exception is asserted.
+    pub urgent_single_sensor: bool,
+}
+
+/// Deterministic, immutable event revision lineage managing exact state transitions.
+///
+/// Invariants enforced:
+/// - State is monotone within the lineage; corrections supersede earlier revisions.
+/// - Transitions follow the exact registered transition table (`EVENT_TRANSITION_TABLE`).
+/// - Event state and effect outcome remain strictly orthogonal.
+/// - Corroboration strictly requires independent failure domains (>= 2 distinct domains).
+/// - Urgent single-sensor policy exceptions advance while remaining explicitly labeled.
+/// - Duplicate evidence items falsely counted twice are rejected.
+/// - Rejection and Indeterminate retain earlier evidence and obligations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventLineage {
+    chain: Vec<EventHypothesis>,
+    alert_attempts: Vec<AlertEffectRecord>,
+}
+
+impl EventLineage {
+    /// Creates a new event lineage starting from a genesis hypothesis (revision 1).
+    pub fn new(genesis: EventHypothesis) -> Result<Self, EventTransitionError> {
+        if genesis.revision != 1 {
+            return Err(EventTransitionError::RevisionNotMonotonic {
+                expected: 1,
+                actual: genesis.revision,
+            });
+        }
+        if genesis.supersedes.is_some() {
+            return Err(EventTransitionError::Contradiction {
+                field: "supersedes",
+                detail: "genesis revision 1 cannot supersede a prior revision".to_string(),
+            });
+        }
+        if genesis.state != EventState::Hypothesized {
+            return Err(EventTransitionError::IllegalStateTransition {
+                from: EventState::Hypothesized,
+                to: genesis.state,
+                reason: "event lineage genesis must begin in Hypothesized state",
+            });
+        }
+        genesis.verify()?;
+        Ok(Self {
+            chain: vec![genesis],
+            alert_attempts: Vec::new(),
+        })
+    }
+
+    /// Returns the current (latest) event revision.
+    #[must_use]
+    pub fn current(&self) -> &EventHypothesis {
+        &self.chain[self.chain.len() - 1]
+    }
+
+    /// Returns the complete immutable history of event revisions.
+    #[must_use]
+    pub fn history(&self) -> &[EventHypothesis] {
+        &self.chain
+    }
+
+    /// Returns the number of revisions in the lineage.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.chain.len()
+    }
+
+    /// Returns true if the lineage has no revisions (always false for valid lineages).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.chain.is_empty()
+    }
+
+    /// Returns the stable event identifier.
+    #[must_use]
+    pub fn event_id(&self) -> &EventId {
+        &self.chain[0].event_id
+    }
+
+    /// Returns the current lifecycle state.
+    #[must_use]
+    pub fn current_state(&self) -> EventState {
+        self.current().state
+    }
+
+    /// Returns the current revision number.
+    #[must_use]
+    pub fn current_revision(&self) -> u64 {
+        self.current().revision
+    }
+
+    /// Returns the highest canonical progression state reached so far in the lineage.
+    #[must_use]
+    pub fn highest_canonical_state(&self) -> Option<EventState> {
+        let mut highest: Option<(u8, EventState)> = None;
+        for rev in &self.chain {
+            if let Some(rank) = rev.state.canonical_rank() {
+                match highest {
+                    Some((h_rank, _)) if rank > h_rank => {
+                        highest = Some((rank, rev.state));
+                    }
+                    None => {
+                        highest = Some((rank, rev.state));
+                    }
+                    _ => {}
+                }
+            }
+        }
+        highest.map(|(_, s)| s)
+    }
+
+    /// Returns all recorded alert effect attempts.
+    #[must_use]
+    pub fn alert_attempts(&self) -> &[AlertEffectRecord] {
+        &self.alert_attempts
+    }
+
+    /// Analyzes corroboration and failure domains for the current revision.
+    #[must_use]
+    pub fn analyze_corroboration(&self) -> CorroborationAnalysis {
+        self.current().analyze_corroboration()
+    }
+
+    /// Transitions the lineage to a new immutable superseding revision.
+    pub fn transition(
+        &mut self,
+        params: EventTransitionParams,
+    ) -> Result<&EventHypothesis, EventTransitionError> {
+        if self.chain.len() >= MAX_LINEAGE_DEPTH {
+            return Err(EventTransitionError::OverLimitLength {
+                field: "lineage.chain",
+                limit: MAX_LINEAGE_DEPTH,
+                actual: self.chain.len() + 1,
+            });
+        }
+
+        let current = self.current();
+
+        // Terminal state check
+        if current.state.is_terminal() {
+            return Err(EventTransitionError::TerminalStateImmutable {
+                state: current.state,
+            });
+        }
+
+        // Transition table rule check
+        let rule = get_event_transition_rule(current.state, params.target_state).ok_or(
+            EventTransitionError::IllegalStateTransition {
+                from: current.state,
+                to: params.target_state,
+                reason: "transition not permitted by event state machine",
+            },
+        )?;
+
+        // Urgent single-sensor exception check
+        if rule.requires_urgent_exception {
+            if !params.urgent_single_sensor {
+                return Err(EventTransitionError::UrgentExceptionRequired);
+            }
+            if !params
+                .uncertainty_reason
+                .as_deref()
+                .is_some_and(|r| r.contains(SINGLE_DOMAIN_UNCONFIRMED_LABEL))
+            {
+                return Err(EventTransitionError::Contradiction {
+                    field: "uncertainty_reason",
+                    detail: format!(
+                        "urgent single-sensor transition requires uncertainty_reason to contain '{SINGLE_DOMAIN_UNCONFIRMED_LABEL}'"
+                    ),
+                });
+            }
+        }
+
+        // Monotonicity check from Indeterminate
+        if current.state == EventState::Indeterminate
+            && let Some(target_rank) = params.target_state.canonical_rank()
+            && let Some(highest) = self.highest_canonical_state()
+            && let Some(highest_rank) = highest.canonical_rank()
+            && target_rank < highest_rank
+        {
+            return Err(EventTransitionError::NonMonotonicTransition {
+                from: current.state,
+                to: params.target_state,
+                highest_reached: highest,
+            });
+        }
+
+        // Duplicate evidence check
+        let mut seen_digests = BTreeSet::new();
+        for edge in &params.evidence {
+            if !seen_digests.insert(edge.digest) {
+                return Err(EventTransitionError::DuplicateEvidence {
+                    digest: edge.digest,
+                });
+            }
+        }
+
+        // Evidence required after initial hypothesis
+        if params.target_state != EventState::Hypothesized && params.evidence.is_empty() {
+            return Err(EventTransitionError::EvidenceRequired);
+        }
+
+        // Corroboration failure domain check
+        if params.target_state == EventState::Corroborated {
+            let failure_domains: BTreeSet<_> = params
+                .evidence
+                .iter()
+                .filter(|edge| edge.supports)
+                .map(|edge| edge.failure_domain.as_str())
+                .collect();
+            if failure_domains.len() < 2 {
+                return Err(EventTransitionError::CorroborationRequired {
+                    observed_domains: failure_domains.len(),
+                });
+            }
+        }
+
+        let next_revision =
+            current
+                .revision
+                .checked_add(1)
+                .ok_or(EventTransitionError::RevisionNotMonotonic {
+                    expected: u64::MAX,
+                    actual: 0,
+                })?;
+        let prev_digest = current.revision_digest();
+
+        let rev = EventHypothesis {
+            schema: EventHypothesis::SCHEMA.to_string(),
+            event_id: current.event_id.clone(),
+            revision: next_revision,
+            supersedes: Some(prev_digest),
+            state: params.target_state,
+            kind: params.kind,
+            interval: params.interval,
+            uncertainty_reason: params.uncertainty_reason,
+            zone_ids: params.zone_ids,
+            track_ids: params.track_ids,
+            probability: params.probability,
+            evidence: params.evidence,
+            model_receipts: params.model_receipts,
+            decision_path: params.decision_path,
+        };
+
+        rev.verify()?;
+        self.chain.push(rev);
+        Ok(self.current())
+    }
+
+    /// Records an alert effect dispatch attempt without modifying the event lifecycle state.
+    ///
+    /// Preserves strict orthogonality between event state and effect execution.
+    pub fn record_alert_attempt(
+        &mut self,
+        record: AlertEffectRecord,
+    ) -> Result<(), EventTransitionError> {
+        record.verify()?;
+        if self.alert_attempts.len() >= MAX_ALERT_ATTEMPTS_COUNT {
+            return Err(EventTransitionError::OverLimitLength {
+                field: "lineage.alert_attempts",
+                limit: MAX_ALERT_ATTEMPTS_COUNT,
+                actual: self.alert_attempts.len() + 1,
+            });
+        }
+        let current = self.current();
+        if record.event_revision > current.revision {
+            return Err(EventTransitionError::RevisionNotMonotonic {
+                expected: current.revision,
+                actual: record.event_revision,
+            });
+        }
+        self.alert_attempts.push(record);
+        Ok(())
+    }
+
+    /// Reconstructs and validates an immutable event lineage from an ordered slice of event revisions.
+    pub fn from_revisions(revisions: Vec<EventHypothesis>) -> Result<Self, EventTransitionError> {
+        if revisions.is_empty() {
+            return Err(EventTransitionError::Contradiction {
+                field: "revisions",
+                detail: "revision list cannot be empty".to_string(),
+            });
+        }
+        let genesis = revisions[0].clone();
+        let mut lineage = Self::new(genesis)?;
+        for rev in revisions.into_iter().skip(1) {
+            lineage.append_verified_revision(rev)?;
+        }
+        Ok(lineage)
+    }
+
+    /// Appends a verified superseding revision directly, enforcing transition rules.
+    fn append_verified_revision(
+        &mut self,
+        rev: EventHypothesis,
+    ) -> Result<(), EventTransitionError> {
+        rev.verify()?;
+        let current = self.current();
+        if rev.event_id != current.event_id {
+            return Err(EventTransitionError::EventIdMismatch {
+                expected: current.event_id.clone(),
+                actual: rev.event_id,
+            });
+        }
+        let expected_rev = current.revision + 1;
+        if rev.revision != expected_rev {
+            return Err(EventTransitionError::RevisionNotMonotonic {
+                expected: expected_rev,
+                actual: rev.revision,
+            });
+        }
+        let expected_supersedes = current.revision_digest();
+        if rev.supersedes != Some(expected_supersedes) {
+            return Err(EventTransitionError::DigestMismatch {
+                expected: expected_supersedes,
+                actual: rev.supersedes,
+            });
+        }
+        if current.state.is_terminal() {
+            return Err(EventTransitionError::TerminalStateImmutable {
+                state: current.state,
+            });
+        }
+        let urgent = rev.is_single_domain_unconfirmed();
+        if !is_allowed_event_transition(current.state, rev.state, urgent) {
+            return Err(EventTransitionError::IllegalStateTransition {
+                from: current.state,
+                to: rev.state,
+                reason: "transition not permitted by event state machine",
+            });
+        }
+        if current.state == EventState::Indeterminate
+            && let Some(target_rank) = rev.state.canonical_rank()
+            && let Some(highest) = self.highest_canonical_state()
+            && let Some(highest_rank) = highest.canonical_rank()
+            && target_rank < highest_rank
+        {
+            return Err(EventTransitionError::NonMonotonicTransition {
+                from: current.state,
+                to: rev.state,
+                highest_reached: highest,
+            });
+        }
+        let mut seen = BTreeSet::new();
+        for edge in &rev.evidence {
+            if !seen.insert(edge.digest) {
+                return Err(EventTransitionError::DuplicateEvidence {
+                    digest: edge.digest,
+                });
+            }
+        }
+        self.chain.push(rev);
+        Ok(())
+    }
+
+    /// Replays an event lineage from evidence deltas and a revision resolver.
+    pub fn replay_from_deltas<F>(
+        event_id: &EventId,
+        deltas: &[crate::evidence::EvidenceDelta],
+        resolver: F,
+    ) -> Result<Self, EventTransitionError>
+    where
+        F: Fn(&ContentDigest) -> Option<EventHypothesis>,
+    {
+        let mut event_deltas: Vec<&crate::evidence::EvidenceDelta> = deltas
+            .iter()
+            .filter(|d| d.family == "event_revision" && d.object_id.as_str() == event_id.as_str())
+            .collect();
+        event_deltas.sort_by_key(|d| d.new_generation);
+        if event_deltas.is_empty() {
+            return Err(EventTransitionError::Contradiction {
+                field: "deltas",
+                detail: format!("no event_revision deltas found for event {}", event_id),
+            });
+        }
+        let mut revisions = Vec::with_capacity(event_deltas.len());
+        for d in event_deltas {
+            let rev =
+                resolver(&d.payload_digest).ok_or_else(|| EventTransitionError::Contradiction {
+                    field: "payload_digest",
+                    detail: format!(
+                        "revision payload not found for digest {:?}",
+                        d.payload_digest
+                    ),
+                })?;
+            if let Some(w) = d.witness_digest {
+                let actual_digest = rev.revision_digest();
+                if w != actual_digest {
+                    return Err(EventTransitionError::DigestMismatch {
+                        expected: w,
+                        actual: Some(actual_digest),
+                    });
+                }
+            }
+            revisions.push(rev);
+        }
+        Self::from_revisions(revisions)
+    }
+
+    /// Validates the full chain and all state transitions across the lineage.
+    pub fn verify(&self) -> Result<(), EventTransitionError> {
+        if self.chain.is_empty() {
+            return Err(EventTransitionError::Contradiction {
+                field: "chain",
+                detail: "lineage chain cannot be empty".to_string(),
+            });
+        }
+        if self.chain.len() > MAX_LINEAGE_DEPTH {
+            return Err(EventTransitionError::OverLimitLength {
+                field: "chain",
+                limit: MAX_LINEAGE_DEPTH,
+                actual: self.chain.len(),
+            });
+        }
+        if self.alert_attempts.len() > MAX_ALERT_ATTEMPTS_COUNT {
+            return Err(EventTransitionError::OverLimitLength {
+                field: "alert_attempts",
+                limit: MAX_ALERT_ATTEMPTS_COUNT,
+                actual: self.alert_attempts.len(),
+            });
+        }
+        for record in &self.alert_attempts {
+            record.verify()?;
+        }
+        let genesis = &self.chain[0];
+        if genesis.revision != 1 {
+            return Err(EventTransitionError::RevisionNotMonotonic {
+                expected: 1,
+                actual: genesis.revision,
+            });
+        }
+        if genesis.supersedes.is_some() {
+            return Err(EventTransitionError::Contradiction {
+                field: "supersedes",
+                detail: "genesis revision cannot supersede a prior revision".to_string(),
+            });
+        }
+        if genesis.state != EventState::Hypothesized {
+            return Err(EventTransitionError::IllegalStateTransition {
+                from: EventState::Hypothesized,
+                to: genesis.state,
+                reason: "genesis must begin in Hypothesized state",
+            });
+        }
+        genesis.verify()?;
+
+        let mut highest_rank = genesis.state.canonical_rank();
+        let mut highest_state = Some(genesis.state);
+
+        for (i, pair) in self.chain.windows(2).enumerate() {
+            let prev = &pair[0];
+            let curr = &pair[1];
+            curr.verify()?;
+            if curr.event_id != prev.event_id {
+                return Err(EventTransitionError::EventIdMismatch {
+                    expected: prev.event_id.clone(),
+                    actual: curr.event_id.clone(),
+                });
+            }
+            let expected_rev = (i as u64) + 2;
+            if curr.revision != expected_rev {
+                return Err(EventTransitionError::RevisionNotMonotonic {
+                    expected: expected_rev,
+                    actual: curr.revision,
+                });
+            }
+            let prev_digest = prev.revision_digest();
+            if curr.supersedes != Some(prev_digest) {
+                return Err(EventTransitionError::DigestMismatch {
+                    expected: prev_digest,
+                    actual: curr.supersedes,
+                });
+            }
+            if prev.state.is_terminal() {
+                return Err(EventTransitionError::TerminalStateImmutable { state: prev.state });
+            }
+            let urgent = curr.is_single_domain_unconfirmed();
+            if !is_allowed_event_transition(prev.state, curr.state, urgent) {
+                return Err(EventTransitionError::IllegalStateTransition {
+                    from: prev.state,
+                    to: curr.state,
+                    reason: "transition not permitted by event state machine",
+                });
+            }
+            if prev.state == EventState::Indeterminate
+                && let Some(curr_rank) = curr.state.canonical_rank()
+                && let Some(h_rank) = highest_rank
+                && let Some(h_state) = highest_state
+                && curr_rank < h_rank
+            {
+                return Err(EventTransitionError::NonMonotonicTransition {
+                    from: prev.state,
+                    to: curr.state,
+                    highest_reached: h_state,
+                });
+            }
+            if let Some(rank) = curr.state.canonical_rank() {
+                match highest_rank {
+                    Some(h) if rank > h => {
+                        highest_rank = Some(rank);
+                        highest_state = Some(curr.state);
+                    }
+                    None => {
+                        highest_rank = Some(rank);
+                        highest_state = Some(curr.state);
+                    }
+                    _ => {}
+                }
+            }
+            let mut seen = BTreeSet::new();
+            for edge in &curr.evidence {
+                if !seen.insert(edge.digest) {
+                    return Err(EventTransitionError::DuplicateEvidence {
+                        digest: edge.digest,
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 }
 
