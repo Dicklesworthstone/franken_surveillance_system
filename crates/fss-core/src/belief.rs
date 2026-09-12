@@ -969,7 +969,7 @@ impl CanonicalDecode for Contradiction {
 
         let created_at = TimestampNs::decode_canonical(decoder)?;
         let state_str = decoder.text()?;
-        let knowledge_state = parse_knowledge_state(state_str)?;
+        let knowledge_state = KnowledgeState::from_name(state_str)?;
         let provenance = provenance_from_code(decoder.u8()?)?;
         let disposition = disposition_from_code(decoder.u8()?)?;
         let outcome = outcome_from_code(decoder.u8()?)?;
@@ -1103,20 +1103,5 @@ fn outcome_from_code(code: u8) -> Result<RuntimeOutcome, ContractError> {
         6 => Ok(RuntimeOutcome::Indeterminate),
         7 => Ok(RuntimeOutcome::Refused),
         _ => Err(ContractError::NonCanonicalOrdering),
-    }
-}
-
-fn parse_knowledge_state(val: &str) -> Result<KnowledgeState, ContractError> {
-    match val {
-        "known" => Ok(KnowledgeState::Known),
-        "estimated" => Ok(KnowledgeState::Estimated),
-        "unknown" => Ok(KnowledgeState::Unknown),
-        "conflicted" => Ok(KnowledgeState::Conflicted),
-        "stale" => Ok(KnowledgeState::Stale),
-        "not_observable" => Ok(KnowledgeState::NotObservable),
-        "redacted" => Ok(KnowledgeState::Redacted),
-        "indeterminate" => Ok(KnowledgeState::Indeterminate),
-        "not_applicable" => Ok(KnowledgeState::NotApplicable),
-        _ => Err(ContractError::InvalidIdentifier),
     }
 }

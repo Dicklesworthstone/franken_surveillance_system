@@ -932,3 +932,122 @@ fn test_finding_5_decode_bounds_and_error_variants() -> Result<(), Box<dyn Error
 
     Ok(())
 }
+
+/// Hand-encodes a contradiction (no claim, no interval, Derived/Live/Indeterminate) with an
+/// arbitrary knowledge-state spelling so the decoder's state parser can be probed directly.
+fn contradiction_bytes_with_state_text(params: &ContradictionParams, state_text: &str) -> Vec<u8> {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(CONTRADICTION_DOMAIN);
+    encoder.text(&params.contradiction_id);
+    encoder.u64(params.conflicting_evidence.len() as u64);
+    for digest in &params.conflicting_evidence {
+        encoder.digest(*digest);
+    }
+    encoder.u64(params.failure_domains.len() as u64);
+    for domain in &params.failure_domains {
+        encoder.text(domain);
+    }
+    encoder.u64(params.unresolved_worlds.len() as u64);
+    for world in &params.unresolved_worlds {
+        encoder.text(world);
+    }
+    encoder.bool(false);
+    encoder.text(&params.statement);
+    encoder.bool(false);
+    params.created_at.encode_canonical(&mut encoder);
+    encoder.text(state_text);
+    encoder.u8(2);
+    encoder.u8(1);
+    encoder.u8(6);
+    encoder.finish()
+}
+
+#[test]
+fn test_contradiction_knowledge_state_uses_canonical_parser_for_every_name() -> TestResult {
+    let all_states = [
+        (KnowledgeState::Known, "KSTATE-001", "known"),
+        (KnowledgeState::Estimated, "KSTATE-002", "estimated"),
+        (KnowledgeState::Unknown, "KSTATE-003", "unknown"),
+        (KnowledgeState::Conflicted, "KSTATE-004", "conflicted"),
+        (KnowledgeState::Stale, "KSTATE-005", "stale"),
+        (
+            KnowledgeState::NotObservable,
+            "KSTATE-006",
+            "not_observable",
+        ),
+        (KnowledgeState::Redacted, "KSTATE-007", "redacted"),
+        (KnowledgeState::Indeterminate, "KSTATE-008", "indeterminate"),
+        (
+            KnowledgeState::NotApplicable,
+            "KSTATE-009",
+            "not_applicable",
+        ),
+    ];
+
+    let mut base = sample_contradiction_params()?;
+    base.claim_id = None;
+    base.belief_interval = None;
+    base.provenance = ProvenanceClass::Derived;
+    base.disposition = HypothesisDisposition::Live;
+    base.outcome = RuntimeOutcome::Indeterminate;
+
+    for (state, id, name) in all_states {
+        assert_eq!(state.as_str(), name);
+        assert_eq!(state.id(), id);
+        assert_eq!(KnowledgeState::from_name(name)?, state);
+        assert_eq!(KnowledgeState::from_id(id)?, state);
+
+        let mut params = base.clone();
+        params.knowledge_state = state;
+        let contra = Contradiction::new(params.clone())?;
+        let bytes = contradiction_bytes_with_state_text(&params, name);
+        assert_eq!(bytes, contra.to_canonical_bytes(), "{name} framing drifted");
+
+        let decoded = Contradiction::from_canonical_bytes(&bytes)?;
+        assert_eq!(decoded, contra, "{name} did not round-trip");
+        assert_eq!(decoded.knowledge_state(), KnowledgeState::from_name(name)?);
+        assert_eq!(decoded.knowledge_state(), KnowledgeState::from_id(id)?);
+        assert_eq!(decoded.to_canonical_bytes(), bytes);
+    }
+
+    for bogus in [
+        "",
+        "KNOWN",
+        "Known",
+        "not-observable",
+        "notobservable",
+        "redacted ",
+        " redacted",
+        "KSTATE-007",
+        "degraded",
+        "null",
+    ] {
+        assert_eq!(
+            KnowledgeState::from_name(bogus),
+            Err(ContractError::InvalidIdentifier),
+            "from_name must refuse {bogus:?}"
+        );
+        assert_eq!(
+            Contradiction::from_canonical_bytes(&contradiction_bytes_with_state_text(&base, bogus)),
+            Err(ContractError::InvalidIdentifier),
+            "contradiction decoder must refuse {bogus:?}"
+        );
+    }
+
+    for bogus_id in [
+        "",
+        "known",
+        "KSTATE-000",
+        "KSTATE-010",
+        "kstate-001",
+        "KSTATE-1",
+    ] {
+        assert_eq!(
+            KnowledgeState::from_id(bogus_id),
+            Err(ContractError::InvalidIdentifier),
+            "from_id must refuse {bogus_id:?}"
+        );
+    }
+
+    Ok(())
+}

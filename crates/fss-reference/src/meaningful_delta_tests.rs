@@ -354,3 +354,63 @@ fn resource_only_change_is_not_laundered_into_material_world_state() -> Result<(
     delta.validate()?;
     Ok(())
 }
+
+#[test]
+fn redacted_premise_is_reported_as_degraded_epistemic_cell() -> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    let mut result_variant = Variant::baseline()?;
+    result_variant.sequence = 2;
+    result_variant.premise_state = KnowledgeState::Redacted;
+    let result = publication(&result_variant)?;
+    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+
+    assert!(delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss));
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::NoMeaningfulChange)
+    );
+    assert!(delta.silence_certificate.is_none());
+    assert!(delta.coverage_changes.iter().any(|change| {
+        change.contains("epistemic cell degraded") && change.contains("claim:premise")
+    }));
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn every_withheld_or_unestablished_state_is_reported_as_degraded() -> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    for state in [
+        KnowledgeState::Unknown,
+        KnowledgeState::Conflicted,
+        KnowledgeState::Stale,
+        KnowledgeState::NotObservable,
+        KnowledgeState::Redacted,
+        KnowledgeState::Indeterminate,
+    ] {
+        let mut result_variant = Variant::baseline()?;
+        result_variant.sequence = 2;
+        result_variant.premise_state = state;
+        if state == KnowledgeState::Conflicted {
+            result_variant.premise_contradictions = vec![ContentDigest::sha256(b"contradiction")];
+        }
+        let result = publication(&result_variant)?;
+        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+
+        assert!(
+            delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+            "{} premise must be reported as coverage loss",
+            state.as_str()
+        );
+        assert!(
+            delta.coverage_changes.iter().any(|change| {
+                change.contains("epistemic cell degraded") && change.contains("claim:premise")
+            }),
+            "{} premise must be listed as a degraded epistemic cell",
+            state.as_str()
+        );
+        delta.validate()?;
+    }
+    Ok(())
+}

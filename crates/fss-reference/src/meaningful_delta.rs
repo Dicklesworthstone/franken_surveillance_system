@@ -354,6 +354,10 @@ pub fn classify_reference_meaningful_delta(
         .knowledge_cells
         .iter()
         .filter(|cell| {
+            // Every state that leaves the proposition unestablished or withheld for this decision
+            // is degraded. `Known` is established, `Estimated` carries explicit uncertainty and
+            // its Known->Estimated drop is reported as an invalidated premise above, and
+            // `NotApplicable` asserts the proposition has no meaning in scope rather than a gap.
             matches!(
                 cell.knowledge_state,
                 KnowledgeState::NotObservable
@@ -361,6 +365,7 @@ pub fn classify_reference_meaningful_delta(
                     | KnowledgeState::Stale
                     | KnowledgeState::Indeterminate
                     | KnowledgeState::Unknown
+                    | KnowledgeState::Redacted
             )
         })
         .map(|cell| cell.claim_id.clone())
