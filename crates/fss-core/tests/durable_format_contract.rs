@@ -285,7 +285,7 @@ fn unsupported_tag_rejected() -> TestResult {
         .endianness(Endianness::BigEndian)
         .checksum_placement(ChecksumPlacement::Header)
         .checksum_scope(ChecksumScope::PayloadOnly)
-        .build();
+        .build()?;
 
     let payload = b"tag-test";
     let encoded = format.encode(payload)?;
@@ -332,5 +332,250 @@ fn empty_payload_supported() -> TestResult {
     let spool_frame = spool_format.decode(&spool_encoded)?;
     assert_eq!(spool_frame.payload(), b"");
     assert_eq!(spool_frame.checksum(), ContentDigest::sha256(b""));
+    Ok(())
+}
+
+#[test]
+fn finding_1_u32_length_overflow_rejected_at_build_and_encode() -> TestResult {
+    // 1. Builder rejects max_payload_len exceeding u32::MAX when LengthWidth::U32
+    let err = expect_err(
+        DurableFormat::builder(b"TEST")
+            .length_width(LengthWidth::U32)
+            .max_payload_len((u32::MAX as usize) + 1)
+            .build(),
+    )?;
+    assert!(err.is_invalid_format());
+
+    // 2. Format with LengthWidth::U32 and max_payload_len within u32 bounds works
+    let format = DurableFormat::builder(b"TEST")
+        .length_width(LengthWidth::U32)
+        .max_payload_len(1024)
+        .build()?;
+    assert_eq!(format.max_payload_len(), 1024);
+    let payload = b"u32-length-test";
+    let encoded = format.encode(payload)?;
+    let frame = format.decode(&encoded)?;
+    assert_eq!(frame.payload(), payload);
+
+    // 3. Decoding header with declared length exceeding max_payload_len returns OverLimitLength
+    let mut hostile = encoded.clone();
+    let hostile_len: u32 = 2048;
+    hostile[8..12].copy_from_slice(&hostile_len.to_be_bytes());
+    let decode_err = expect_err(format.decode_header(&hostile))?;
+    assert!(decode_err.is_over_limit());
+    Ok(())
+}
+
+#[test]
+fn finding_3_payload_only_checksum_scope_safety_constraints() -> TestResult {
+    // 1. Builder refuses ChecksumScope::PayloadOnly with a multi-version range
+    let err_range = expect_err(
+        DurableFormat::builder(b"TEST")
+            .version_range(1, 2)
+            .checksum_scope(ChecksumScope::PayloadOnly)
+            .build(),
+    )?;
+    assert!(err_range.is_invalid_format());
+
+    // 2. Builder refuses ChecksumScope::PayloadOnly with Trailer placement
+    let err_trailer = expect_err(
+        DurableFormat::builder(b"TEST")
+            .checksum_placement(ChecksumPlacement::Trailer)
+            .checksum_scope(ChecksumScope::PayloadOnly)
+            .build(),
+    )?;
+    assert!(err_trailer.is_invalid_format());
+
+    // 3. HeaderAndPayload checksum scope detects version and header tampering
+    let format = DurableFormat::builder(b"TEST")
+        .version_range(1, 2)
+        .checksum_placement(ChecksumPlacement::Header)
+        .checksum_scope(ChecksumScope::HeaderAndPayload)
+        .build()?;
+    let payload = b"tamper-sensitive-data";
+    let mut encoded = format.encode(payload)?;
+
+    // Flip version in header from 2 to 1 (offset 4..8 is version)
+    encoded[4..8].copy_from_slice(&1_u32.to_be_bytes());
+
+    // decode MUST fail with ChecksumMismatch because header was tampered
+    let decode_err = expect_err(format.decode(&encoded))?;
+    assert!(decode_err.is_checksum_mismatch());
+    Ok(())
+}
+
+#[test]
+fn finding_4_hasher_error_variant_and_display() {
+    let err = DurableError::DigestComputationFailed;
+    assert!(err.is_digest_error());
+    assert_eq!(err.to_string(), "durable format digest computation failed");
+}
+
+#[test]
+fn finding_6_u16_version_overflow_rejected_at_build() -> TestResult {
+    let err = expect_err(
+        DurableFormat::builder(b"TEST")
+            .version_width(VersionWidth::U16)
+            .version(65537)
+            .build(),
+    )?;
+    assert!(err.is_invalid_format());
+    Ok(())
+}
+
+#[test]
+fn finding_7_inverted_version_range_rejected_at_build() -> TestResult {
+    let err = expect_err(
+        DurableFormat::builder(b"TEST")
+            .version_range(5, 2)
+            .build(),
+    )?;
+    assert!(err.is_invalid_format());
+    Ok(())
+}
+
+#[test]
+fn finding_8_encode_writes_max_version_and_supports_explicit_version() -> TestResult {
+    let format = DurableFormat::builder(b"TEST")
+        .version_range(1, 3)
+        .checksum_placement(ChecksumPlacement::Trailer)
+        .checksum_scope(ChecksumScope::HeaderAndPayload)
+        .build()?;
+    let payload = b"version-selection-test";
+
+    // encode writes max_version (3)
+    let encoded = format.encode(payload)?;
+    let frame = format.decode(&encoded)?;
+    assert_eq!(frame.version(), 3);
+
+    // encode_version writes explicit requested version in range
+    let encoded_v2 = format.encode_version(2, payload)?;
+    let frame_v2 = format.decode(&encoded_v2)?;
+    assert_eq!(frame_v2.version(), 2);
+
+    let encoded_v1 = format.encode_version(1, payload)?;
+    let frame_v1 = format.decode(&encoded_v1)?;
+    assert_eq!(frame_v1.version(), 1);
+
+    // encode_version rejects version out of range
+    let err_v0 = expect_err(format.encode_version(0, payload))?;
+    assert!(err_v0.is_unknown_version());
+    let err_v4 = expect_err(format.encode_version(4, payload))?;
+    assert!(err_v4.is_unknown_version());
+
+    Ok(())
+}
+
+#[test]
+fn finding_10_header_checksum_with_header_and_payload_scope_contract() -> TestResult {
+    let format = DurableFormat::builder(b"HEAD")
+        .version(1)
+        .checksum_placement(ChecksumPlacement::Header)
+        .checksum_scope(ChecksumScope::HeaderAndPayload)
+        .max_payload_len(512)
+        .build()?;
+    let payload = b"header-and-payload-checksum-test";
+    let encoded = format.encode(payload)?;
+
+    // Roundtrip
+    let frame = format.decode(&encoded)?;
+    assert_eq!(frame.payload(), payload);
+    assert_eq!(frame.version(), 1);
+
+    // Bit flip in magic
+    let mut corrupted = encoded.clone();
+    corrupted[0] ^= 0x01;
+    assert!(expect_err(format.decode(&corrupted))?.is_bad_magic());
+
+    // Bit flip in version
+    let mut corrupted = encoded.clone();
+    corrupted[5] ^= 0x01;
+    assert!(expect_err(format.decode(&corrupted))?.is_unknown_version());
+
+    // Bit flip in payload
+    let mut corrupted = encoded.clone();
+    corrupted[format.header_len() + 2] ^= 0x01;
+    assert!(expect_err(format.decode(&corrupted))?.is_checksum_mismatch());
+
+    Ok(())
+}
+
+#[test]
+fn finding_10_decode_payload_error_propagation() -> TestResult {
+    let format = DurableFormat::canonical(&CANONICAL_DURABLE_MAGIC, 1, 512);
+    let payload = b"decode-payload-error-test";
+    let encoded = format.encode(payload)?;
+
+    // 1. Bad magic
+    let mut bad_magic = encoded.clone();
+    bad_magic[0] ^= 0xFF;
+    assert!(expect_err(format.decode_payload(&bad_magic))?.is_bad_magic());
+
+    // 2. Unknown version
+    let mut bad_ver = encoded.clone();
+    bad_ver[4..8].copy_from_slice(&99_u32.to_be_bytes());
+    assert!(expect_err(format.decode_payload(&bad_ver))?.is_unknown_version());
+
+    // 3. Truncated
+    assert!(expect_err(format.decode_payload(&encoded[..10]))?.is_truncated());
+
+    // 4. Over limit
+    let mut over_limit = encoded.clone();
+    over_limit[8..16].copy_from_slice(&1000_u64.to_be_bytes());
+    assert!(expect_err(format.decode_payload(&over_limit))?.is_over_limit());
+
+    // 5. Trailing bytes
+    let mut trailing = encoded.clone();
+    trailing.extend_from_slice(b"extra");
+    assert!(expect_err(format.decode_payload(&trailing))?.is_trailing_bytes());
+
+    // 6. Checksum mismatch
+    let mut corrupted_chk = encoded.clone();
+    let last = corrupted_chk.len() - 1;
+    corrupted_chk[last] ^= 0x01;
+    assert!(expect_err(format.decode_payload(&corrupted_chk))?.is_checksum_mismatch());
+
+    Ok(())
+}
+
+#[test]
+fn finding_10_endianness_variations_contract() -> TestResult {
+    // LittleEndian with U32 version and U32 length
+    let format_le = DurableFormat::builder(b"LE32")
+        .version(1)
+        .version_width(VersionWidth::U32)
+        .length_width(LengthWidth::U32)
+        .endianness(Endianness::LittleEndian)
+        .checksum_placement(ChecksumPlacement::Trailer)
+        .checksum_scope(ChecksumScope::HeaderAndPayload)
+        .build()?;
+    let payload = b"little-endian-test";
+    let encoded_le = format_le.encode(payload)?;
+
+    // Verify wire format: magic (4), version 1 in LE (01 00 00 00), length in LE
+    assert_eq!(&encoded_le[..4], b"LE32");
+    assert_eq!(&encoded_le[4..8], &1_u32.to_le_bytes());
+    assert_eq!(&encoded_le[8..12], &(payload.len() as u32).to_le_bytes());
+    let frame_le = format_le.decode(&encoded_le)?;
+    assert_eq!(frame_le.payload(), payload);
+
+    // BigEndian with U16 version and U64 length
+    let format_be = DurableFormat::builder(b"BE16")
+        .version(2)
+        .version_width(VersionWidth::U16)
+        .length_width(LengthWidth::U64)
+        .endianness(Endianness::BigEndian)
+        .checksum_placement(ChecksumPlacement::Trailer)
+        .checksum_scope(ChecksumScope::HeaderAndPayload)
+        .build()?;
+    let encoded_be = format_be.encode(payload)?;
+
+    // Verify wire format: magic (4), version 2 in BE (00 02), length in BE (8 bytes)
+    assert_eq!(&encoded_be[..4], b"BE16");
+    assert_eq!(&encoded_be[4..6], &2_u16.to_be_bytes());
+    assert_eq!(&encoded_be[6..14], &(payload.len() as u64).to_be_bytes());
+    let frame_be = format_be.decode(&encoded_be)?;
+    assert_eq!(frame_be.payload(), payload);
+
     Ok(())
 }

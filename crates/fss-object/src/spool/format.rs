@@ -69,7 +69,7 @@ pub(crate) fn verify_object_bytes(
     let format = spool_durable_format(max_payload);
 
     // Decode and validate the fixed header first to inspect recorded identity and limits
-    let header = match format.decode_header(raw) {
+    let header = match format.decode_header_raw(raw) {
         Ok(h) => h,
         Err(DurableError::BadMagic { .. }) => return Err(CorruptionKind::ForeignFile),
         Err(DurableError::UnknownVersion { actual, .. }) => {
@@ -87,33 +87,23 @@ pub(crate) fn verify_object_bytes(
                 actual_len: actual_len as u64,
             });
         }
-        Err(DurableError::OverLimitLength { limit, actual }) => {
-            return Err(CorruptionKind::DeclaredLengthExceedsLimit {
-                declared: actual as u64,
-                maximum: limit as u64,
-            });
-        }
-        Err(DurableError::TrailingBytes {
-            expected_len,
-            actual_len,
-        }) => {
-            return Err(CorruptionKind::TrailingBytes {
-                expected_len: expected_len as u64,
-                actual_len: actual_len as u64,
-            });
-        }
-        Err(DurableError::ChecksumMismatch {
-            actual: computed, ..
-        }) => {
-            return Err(CorruptionKind::ContentDigestMismatch { computed });
-        }
+        Err(_) => return Err(CorruptionKind::ForeignFile),
     };
 
     // NameDigestMismatch check: envelope records a different digest than the file name claims
+    // Checked BEFORE DeclaredLengthExceedsLimit (Finding 9)
     if let Some(recorded) = header.recorded_checksum()
         && recorded != expected
     {
         return Err(CorruptionKind::NameDigestMismatch { recorded });
+    }
+
+    // Declared length limit check
+    if header.declared_payload_len() > max_payload {
+        return Err(CorruptionKind::DeclaredLengthExceedsLimit {
+            declared: header.declared_payload_len() as u64,
+            maximum: max_payload as u64,
+        });
     }
 
     // Now verify the entire envelope: payload length, trailing bytes, and payload checksum
@@ -149,5 +139,8 @@ pub(crate) fn verify_object_bytes(
         Err(DurableError::ChecksumMismatch {
             actual: computed, ..
         }) => Err(CorruptionKind::ContentDigestMismatch { computed }),
+        Err(DurableError::InvalidFormat { .. } | DurableError::DigestComputationFailed) => {
+            Err(CorruptionKind::ForeignFile)
+        }
     }
 }

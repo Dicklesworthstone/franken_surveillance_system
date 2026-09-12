@@ -80,6 +80,13 @@ pub enum DurableError {
         /// Actual tag value observed.
         actual: u16,
     },
+    /// Invalid format specification or builder configuration.
+    InvalidFormat {
+        /// Rationale for the rejection.
+        reason: &'static str,
+    },
+    /// Cryptographic hashing or digest computation failed.
+    DigestComputationFailed,
 }
 
 impl DurableError {
@@ -117,6 +124,18 @@ impl DurableError {
     #[must_use]
     pub const fn is_checksum_mismatch(&self) -> bool {
         matches!(self, Self::ChecksumMismatch { .. })
+    }
+
+    /// Returns true if this error represents an invalid format configuration.
+    #[must_use]
+    pub const fn is_invalid_format(&self) -> bool {
+        matches!(self, Self::InvalidFormat { .. })
+    }
+
+    /// Returns true if this error represents a digest computation failure.
+    #[must_use]
+    pub const fn is_digest_error(&self) -> bool {
+        matches!(self, Self::DigestComputationFailed)
     }
 }
 
@@ -181,6 +200,12 @@ impl fmt::Display for DurableError {
                     formatter,
                     "durable format unsupported tag: expected {expected}, found {actual}"
                 )
+            }
+            Self::InvalidFormat { reason } => {
+                write!(formatter, "durable format invalid configuration: {reason}")
+            }
+            Self::DigestComputationFailed => {
+                write!(formatter, "durable format digest computation failed")
             }
         }
     }
@@ -353,16 +378,19 @@ impl DurableFormat {
     /// - Trailer checksum (SHA-256) covering header and payload
     #[must_use]
     pub fn canonical(magic: &[u8], version: u32, max_payload_len: usize) -> Self {
-        Self::builder(magic)
-            .version(version)
-            .version_width(VersionWidth::U32)
-            .length_width(LengthWidth::U64)
-            .endianness(Endianness::BigEndian)
-            .checksum_placement(ChecksumPlacement::Trailer)
-            .checksum_scope(ChecksumScope::HeaderAndPayload)
-            .checksum_algorithm(DigestAlgorithm::Sha256)
-            .max_payload_len(max_payload_len)
-            .build()
+        Self {
+            magic: magic.to_vec(),
+            min_version: version,
+            max_version: version,
+            version_width: VersionWidth::U32,
+            length_width: LengthWidth::U64,
+            endianness: Endianness::BigEndian,
+            checksum_placement: ChecksumPlacement::Trailer,
+            checksum_scope: ChecksumScope::HeaderAndPayload,
+            checksum_algorithm: DigestAlgorithm::Sha256,
+            tag_field: None,
+            max_payload_len,
+        }
     }
 
     /// Standard spool object format preset:
@@ -373,17 +401,19 @@ impl DurableFormat {
     /// - Header checksum (SHA-256) covering payload only
     #[must_use]
     pub fn spool_object(magic: &[u8], version: u16, max_payload_len: usize) -> Self {
-        Self::builder(magic)
-            .version(u32::from(version))
-            .version_width(VersionWidth::U16)
-            .tag_field(Some(1))
-            .length_width(LengthWidth::U64)
-            .endianness(Endianness::LittleEndian)
-            .checksum_placement(ChecksumPlacement::Header)
-            .checksum_scope(ChecksumScope::PayloadOnly)
-            .checksum_algorithm(DigestAlgorithm::Sha256)
-            .max_payload_len(max_payload_len)
-            .build()
+        Self {
+            magic: magic.to_vec(),
+            min_version: u32::from(version),
+            max_version: u32::from(version),
+            version_width: VersionWidth::U16,
+            length_width: LengthWidth::U64,
+            endianness: Endianness::LittleEndian,
+            checksum_placement: ChecksumPlacement::Header,
+            checksum_scope: ChecksumScope::PayloadOnly,
+            checksum_algorithm: DigestAlgorithm::Sha256,
+            tag_field: Some(1),
+            max_payload_len,
+        }
     }
 
     /// Magic prefix bytes.
@@ -479,8 +509,8 @@ impl DurableFormat {
         self.header_len().saturating_add(self.trailer_len())
     }
 
-    /// Decodes and semantically validates the envelope header without allocating memory for the payload.
-    pub fn decode_header(&self, raw: &[u8]) -> Result<DurableHeader, DurableError> {
+    /// Decodes the envelope header slice without enforcing configured payload length limits.
+    pub fn decode_header_raw(&self, raw: &[u8]) -> Result<DurableHeader, DurableError> {
         let header_len = self.header_len();
         let min_envelope_len = self.min_envelope_len();
         let magic_len = self.magic.len();
@@ -607,27 +637,15 @@ impl DurableFormat {
                     Endianness::BigEndian => u64::from_be_bytes(bytes),
                     Endianness::LittleEndian => u64::from_le_bytes(bytes),
                 };
-                if val > (usize::MAX as u64) || val > (self.max_payload_len as u64) {
-                    let reported = if val > (usize::MAX as u64) {
-                        usize::MAX
-                    } else {
-                        val as usize
-                    };
+                if val > (usize::MAX as u64) {
                     return Err(DurableError::OverLimitLength {
                         limit: self.max_payload_len,
-                        actual: reported,
+                        actual: usize::MAX,
                     });
                 }
                 val as usize
             }
         };
-
-        if declared_payload_len > self.max_payload_len {
-            return Err(DurableError::OverLimitLength {
-                limit: self.max_payload_len,
-                actual: declared_payload_len,
-            });
-        }
 
         // Checksum if stored in header
         let recorded_checksum = if self.checksum_placement == ChecksumPlacement::Header {
@@ -651,6 +669,18 @@ impl DurableFormat {
             recorded_checksum,
             header_len,
         })
+    }
+
+    /// Decodes and semantically validates the envelope header without allocating memory for the payload.
+    pub fn decode_header(&self, raw: &[u8]) -> Result<DurableHeader, DurableError> {
+        let header = self.decode_header_raw(raw)?;
+        if header.declared_payload_len > self.max_payload_len {
+            return Err(DurableError::OverLimitLength {
+                limit: self.max_payload_len,
+                actual: header.declared_payload_len,
+            });
+        }
+        Ok(header)
     }
 
     /// Decodes and verifies a complete durable envelope from bytes, borrowing the payload without allocations.
@@ -705,13 +735,9 @@ impl DurableFormat {
                             .unwrap_or(&[]);
                         hasher.update(header_before_checksum);
                         hasher.update(payload);
-                        let digest_bytes =
-                            hasher
-                                .finalize()
-                                .map_err(|_| DurableError::OverLimitLength {
-                                    limit: self.max_payload_len,
-                                    actual: usize::MAX,
-                                })?;
+                        let digest_bytes = hasher
+                            .finalize()
+                            .map_err(|_| DurableError::DigestComputationFailed)?;
                         ContentDigest::new(DigestAlgorithm::Sha256, digest_bytes)
                     }
                 };
@@ -781,9 +807,18 @@ impl DurableFormat {
         Ok(())
     }
 
-    /// Encodes one payload into a complete durable envelope.
-    pub fn encode(&self, payload: &[u8]) -> Result<Vec<u8>, DurableError> {
-        if payload.len() > self.max_payload_len {
+    /// Encodes one payload using an explicit format version into a complete durable envelope.
+    pub fn encode_version(&self, version: u32, payload: &[u8]) -> Result<Vec<u8>, DurableError> {
+        if version < self.min_version || version > self.max_version {
+            return Err(DurableError::UnknownVersion {
+                expected_min: self.min_version,
+                expected_max: self.max_version,
+                actual: version,
+            });
+        }
+        if (self.length_width == LengthWidth::U32 && payload.len() > u32::MAX as usize)
+            || payload.len() > self.max_payload_len
+        {
             return Err(DurableError::OverLimitLength {
                 limit: self.max_payload_len,
                 actual: payload.len(),
@@ -808,14 +843,14 @@ impl DurableFormat {
         // 2. Version
         match self.version_width {
             VersionWidth::U16 => {
-                let val = self.min_version as u16;
+                let val = version as u16;
                 match self.endianness {
                     Endianness::BigEndian => out.extend_from_slice(&val.to_be_bytes()),
                     Endianness::LittleEndian => out.extend_from_slice(&val.to_le_bytes()),
                 }
             }
             VersionWidth::U32 => {
-                let val = self.min_version;
+                let val = version;
                 match self.endianness {
                     Endianness::BigEndian => out.extend_from_slice(&val.to_be_bytes()),
                     Endianness::LittleEndian => out.extend_from_slice(&val.to_le_bytes()),
@@ -857,13 +892,9 @@ impl DurableFormat {
                     let mut hasher = Sha256Hasher::new();
                     hasher.update(&out);
                     hasher.update(payload);
-                    let digest_bytes =
-                        hasher
-                            .finalize()
-                            .map_err(|_| DurableError::OverLimitLength {
-                                limit: self.max_payload_len,
-                                actual: payload.len(),
-                            })?;
+                    let digest_bytes = hasher
+                        .finalize()
+                        .map_err(|_| DurableError::DigestComputationFailed)?;
                     ContentDigest::new(DigestAlgorithm::Sha256, digest_bytes)
                 }
             };
@@ -885,13 +916,28 @@ impl DurableFormat {
         Ok(out)
     }
 
-    /// Encodes a payload with an explicit/pre-computed checksum into a complete durable envelope.
-    pub fn encode_with_checksum(
+    /// Encodes one payload into a complete durable envelope using the maximum supported version.
+    pub fn encode(&self, payload: &[u8]) -> Result<Vec<u8>, DurableError> {
+        self.encode_version(self.max_version, payload)
+    }
+
+    /// Encodes a payload with an explicit/pre-computed checksum using an explicit format version.
+    pub fn encode_version_with_checksum(
         &self,
+        version: u32,
         payload: &[u8],
         checksum: ContentDigest,
     ) -> Result<Vec<u8>, DurableError> {
-        if payload.len() > self.max_payload_len {
+        if version < self.min_version || version > self.max_version {
+            return Err(DurableError::UnknownVersion {
+                expected_min: self.min_version,
+                expected_max: self.max_version,
+                actual: version,
+            });
+        }
+        if (self.length_width == LengthWidth::U32 && payload.len() > u32::MAX as usize)
+            || payload.len() > self.max_payload_len
+        {
             return Err(DurableError::OverLimitLength {
                 limit: self.max_payload_len,
                 actual: payload.len(),
@@ -914,14 +960,14 @@ impl DurableFormat {
 
         match self.version_width {
             VersionWidth::U16 => {
-                let val = self.min_version as u16;
+                let val = version as u16;
                 match self.endianness {
                     Endianness::BigEndian => out.extend_from_slice(&val.to_be_bytes()),
                     Endianness::LittleEndian => out.extend_from_slice(&val.to_le_bytes()),
                 }
             }
             VersionWidth::U32 => {
-                let val = self.min_version;
+                let val = version;
                 match self.endianness {
                     Endianness::BigEndian => out.extend_from_slice(&val.to_be_bytes()),
                     Endianness::LittleEndian => out.extend_from_slice(&val.to_le_bytes()),
@@ -964,6 +1010,15 @@ impl DurableFormat {
         }
 
         Ok(out)
+    }
+
+    /// Encodes a payload with an explicit/pre-computed checksum into a complete durable envelope using the maximum supported version.
+    pub fn encode_with_checksum(
+        &self,
+        payload: &[u8],
+        checksum: ContentDigest,
+    ) -> Result<Vec<u8>, DurableError> {
+        self.encode_version_with_checksum(self.max_version, payload, checksum)
     }
 }
 
@@ -1075,9 +1130,35 @@ impl DurableFormatBuilder {
     }
 
     /// Finalizes and builds the [`DurableFormat`].
-    #[must_use]
-    pub fn build(self) -> DurableFormat {
-        DurableFormat {
+    pub fn build(self) -> Result<DurableFormat, DurableError> {
+        if self.min_version > self.max_version {
+            return Err(DurableError::InvalidFormat {
+                reason: "min_version exceeds max_version in version_range",
+            });
+        }
+        if self.version_width == VersionWidth::U16 && self.max_version > u16::MAX as u32 {
+            return Err(DurableError::InvalidFormat {
+                reason: "version exceeds u16::MAX for VersionWidth::U16",
+            });
+        }
+        if self.length_width == LengthWidth::U32 && self.max_payload_len > u32::MAX as usize {
+            return Err(DurableError::InvalidFormat {
+                reason: "max_payload_len exceeds u32::MAX for LengthWidth::U32",
+            });
+        }
+        if self.checksum_scope == ChecksumScope::PayloadOnly {
+            if self.min_version != self.max_version {
+                return Err(DurableError::InvalidFormat {
+                    reason: "PayloadOnly checksum scope does not authenticate header fields across a version range; use HeaderAndPayload",
+                });
+            }
+            if self.checksum_placement == ChecksumPlacement::Trailer {
+                return Err(DurableError::InvalidFormat {
+                    reason: "PayloadOnly checksum scope with Trailer placement leaves header unauthenticated; use HeaderAndPayload",
+                });
+            }
+        }
+        Ok(DurableFormat {
             magic: self.magic,
             min_version: self.min_version,
             max_version: self.max_version,
@@ -1089,6 +1170,6 @@ impl DurableFormatBuilder {
             checksum_algorithm: self.checksum_algorithm,
             tag_field: self.tag_field,
             max_payload_len: self.max_payload_len,
-        }
+        })
     }
 }

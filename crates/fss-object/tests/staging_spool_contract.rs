@@ -16,6 +16,7 @@ use fss_object::{
     SPOOL_LOCK_FILE, SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC, SPOOL_OBJECTS_DIR,
     SPOOL_STAGING_DIR, SpoolError, SpoolLimitViolation, SpoolLimits, SpoolObjectState,
     StageOutcome, StagePhase, StageReceipt, StagingSpool, VerifiedObjectCatalog,
+    encode_spool_object,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -1009,5 +1010,80 @@ fn spool_matches_the_in_memory_oracle_on_identity_and_bounds() -> TestResult {
         assert_eq!(spool.object_count(), oracle.object_count());
         assert_eq!(spool.occupied_bytes()?, oracle.total_bytes());
     }
+    Ok(())
+}
+
+#[test]
+fn test_name_digest_mismatch_takes_precedence_over_declared_length_limit() -> TestResult {
+    let root = fresh_root("name_digest_mismatch_takes_precedence_over_declared_length_limit")?;
+    let objects_dir = root.join(SPOOL_OBJECTS_DIR);
+    fs::create_dir_all(&objects_dir)?;
+
+    let file_digest = ContentDigest::sha256(b"correct-file-name-payload");
+    let recorded_digest = ContentDigest::sha256(b"mismatched-recorded-digest");
+
+    // Construct an envelope that has BOTH:
+    // 1. Mismatched recorded digest (recorded != file_digest)
+    // 2. Declared length exceeding max_payload
+    let mut bad_envelope = Vec::new();
+    bad_envelope.extend_from_slice(&SPOOL_OBJECT_MAGIC); // b"FSSSPOOL"
+    bad_envelope.extend_from_slice(&1_u16.to_le_bytes()); // version 1
+    bad_envelope.extend_from_slice(&1_u16.to_le_bytes()); // tag 1 (SHA-256)
+    let declared_over_len = 999_999_u64; // exceeding limits(4, 1024) limit of 4096
+    bad_envelope.extend_from_slice(&declared_over_len.to_le_bytes()); // 8 bytes length
+    bad_envelope.extend_from_slice(&recorded_digest.bytes()); // 32 bytes recorded digest
+
+    fs::write(object_file(&root, file_digest), &bad_envelope)?;
+
+    let spool = StagingSpool::open(&root, limits(4, 1024))?;
+    let report = spool.recovery_report();
+    let corrupt = report
+        .corrupt
+        .iter()
+        .find(|c| c.digest == file_digest);
+    match corrupt {
+        Some(c) => match c.kind {
+            CorruptionKind::NameDigestMismatch { recorded } => {
+                assert_eq!(recorded, recorded_digest);
+            }
+            other => {
+                return Err(format!(
+                    "expected NameDigestMismatch to take precedence over DeclaredLengthExceedsLimit, got {other:?}"
+                ).into());
+            }
+        },
+        None => return Err("expected corrupt object in recovery report".into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_encode_spool_object_contract() -> TestResult {
+    let payload = b"critical-sensor-data";
+    let valid_digest = ContentDigest::sha256(payload);
+
+    // Success path encodes valid envelope
+    let encoded = encode_spool_object(valid_digest, payload)?;
+    assert!(encoded.starts_with(&SPOOL_OBJECT_MAGIC));
+
+    // Unsupported algorithm tag rejected with typed error
+    let blake3_digest = ContentDigest::new(DigestAlgorithm::Blake3, valid_digest.bytes());
+    let err_algo = encode_spool_object(blake3_digest, payload);
+    assert_eq!(
+        err_algo,
+        Err(SpoolError::UnsupportedAlgorithm(DigestAlgorithm::Blake3))
+    );
+
+    // Digest mismatch rejected with typed error (never empty vector)
+    let wrong_digest = ContentDigest::sha256(b"other-payload");
+    let err_mismatch = encode_spool_object(wrong_digest, payload);
+    assert_eq!(
+        err_mismatch,
+        Err(SpoolError::DigestMismatch {
+            declared: wrong_digest,
+            computed: valid_digest,
+        })
+    );
+
     Ok(())
 }
