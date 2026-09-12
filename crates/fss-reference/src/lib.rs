@@ -90,9 +90,9 @@ pub use outcome::{
 pub use packet_fault::{
     DeterministicFaultPrng, FaultInjectionJournal, FaultRule, FaultStreamItem,
     InjectedFaultEvidence, InjectedGapWitness, MAX_BUFFER_CAPACITY, MAX_DUPLICATE_COPIES,
-    MAX_GAP_LENGTH, MAX_REORDER_WINDOW, MAX_SCHEDULE_RULES, PacketFaultError,
-    PacketFaultInjector, PacketFaultSchedule, ScheduledGap, SequencedPacket,
-    StochasticFaultProfile, inject_packets, inject_stream,
+    MAX_GAP_LENGTH, MAX_REORDER_WINDOW, MAX_SCHEDULE_RULES, PacketFaultError, PacketFaultInjector,
+    PacketFaultSchedule, ScheduledGap, SequencedPacket, StochasticFaultProfile, inject_packets,
+    inject_stream,
 };
 pub use policy::{
     ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,

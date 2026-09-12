@@ -141,16 +141,28 @@ impl fmt::Display for PacketFaultError {
                 write!(f, "reorder window {requested} exceeds maximum bound {max}")
             }
             Self::DuplicateCopiesExceedsBound { requested, max } => {
-                write!(f, "duplicate copies {requested} exceeds maximum bound {max}")
+                write!(
+                    f,
+                    "duplicate copies {requested} exceeds maximum bound {max}"
+                )
             }
             Self::BufferCapacityExceedsBound { requested, max } => {
-                write!(f, "configured buffer capacity {requested} exceeds maximum bound {max}")
+                write!(
+                    f,
+                    "configured buffer capacity {requested} exceeds maximum bound {max}"
+                )
             }
             Self::BufferCapacityExceeded { current, capacity } => {
-                write!(f, "runtime buffer capacity exceeded (current: {current}, limit: {capacity})")
+                write!(
+                    f,
+                    "runtime buffer capacity exceeded (current: {current}, limit: {capacity})"
+                )
             }
             Self::ScheduleCapacityExceeded { current, max } => {
-                write!(f, "schedule rules count {current} exceeds maximum bound {max}")
+                write!(
+                    f,
+                    "schedule rules count {current} exceeds maximum bound {max}"
+                )
             }
             Self::GapLengthExceedsBound { requested, max } => {
                 write!(f, "gap length {requested} exceeds maximum bound {max}")
@@ -945,8 +957,7 @@ impl<P: SequencedPacket> PacketFaultInjector<P> {
                 && profile.max_reorder_delay > 0
                 && self.prng.check_rate_ppm(profile.reorder_rate_ppm)
             {
-                let delay =
-                    (self.prng.next_bounded(profile.max_reorder_delay as u64) as usize) + 1;
+                let delay = (self.prng.next_bounded(profile.max_reorder_delay as u64) as usize) + 1;
                 Some(FaultRule::Reorder { delay_steps: delay })
             } else {
                 None
@@ -1014,12 +1025,13 @@ impl<P: SequencedPacket> PacketFaultInjector<P> {
                         .total_emitted_items
                         .checked_add(1)
                         .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                    self.fault_evidence.push(InjectedFaultEvidence::Duplication {
-                        sequence,
-                        sensor_id: packet.sensor_id().clone(),
-                        copy_index: c,
-                        total_copies: copies,
-                    });
+                    self.fault_evidence
+                        .push(InjectedFaultEvidence::Duplication {
+                            sequence,
+                            sensor_id: packet.sensor_id().clone(),
+                            copy_index: c,
+                            total_copies: copies,
+                        });
                     emitted.push(FaultStreamItem::Packet {
                         packet: packet.clone(),
                         delivery_index: self.delivery_counter,
