@@ -3,6 +3,9 @@
 
 use std::error::Error;
 use std::fs;
+use std::io::ErrorKind;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fss_core::{
     BatchId, CaptureInterval, ContentDigest, EvidenceDelta, ObjectId, Plane, TimestampNs,
@@ -11,11 +14,53 @@ use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectError, ObjectLimits};
 use fss_publication::{AuthorityPublisher, PublicationError};
 
-fn temp_journal(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "fss-pub-defect-{}-{name}.journal",
-        std::process::id()
-    ))
+/// Upper bound on distinct directory names tried by [`RunDir::new`].
+const MAX_RUN_DIR_ATTEMPTS: u32 = 64;
+
+/// Exclusive per-run directory under `CARGO_TARGET_TMPDIR`, removed on drop.
+///
+/// `create_dir` fails when the name exists, so a directory is never shared with another test or
+/// run; the bounded retry only moves on to the next distinct name. No global state is involved.
+struct RunDir {
+    path: PathBuf,
+}
+
+impl RunDir {
+    fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+        let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let pid = std::process::id();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        for attempt in 0..MAX_RUN_DIR_ATTEMPTS {
+            let path = base.join(format!("fss-pub-defect-{pid}-{now}-{attempt}-{name}"));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(format!(
+            "exhausted {MAX_RUN_DIR_ATTEMPTS} attempts creating an exclusive run directory for {name}"
+        )
+        .into())
+    }
+
+    /// A path inside this run's directory; an existing path fails loudly and is never reused.
+    fn fresh(&self, file_name: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let path = self.path.join(file_name);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => Err(format!("refusing to reuse existing path {}", path.display()).into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(path),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
+impl Drop for RunDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn sample_delta(
@@ -39,8 +84,8 @@ fn sample_delta(
 /// F1: Delta payload must be verified in the object catalog before prepare_batch or append succeeds.
 #[test]
 fn delta_payload_missing_from_store_must_block_authority_commit() -> Result<(), Box<dyn Error>> {
-    let path = temp_journal("missing-delta-payload");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("missing-delta-payload")?;
+    let path = run.fresh("ledger.journal")?;
     let store = InMemoryObjectStore::new(ObjectLimits::new(8, 4096));
     let mut ledger = DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
     let missing_payload = ContentDigest::sha256(b"missing-payload");
@@ -77,8 +122,8 @@ fn delta_payload_missing_from_store_must_block_authority_commit() -> Result<(), 
 /// F1: Delta witness digest must be verified in the object catalog before prepare_batch or append succeeds.
 #[test]
 fn delta_witness_missing_from_store_must_block_authority_commit() -> Result<(), Box<dyn Error>> {
-    let path = temp_journal("missing-delta-witness");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("missing-delta-witness")?;
+    let path = run.fresh("ledger.journal")?;
     let mut store = InMemoryObjectStore::new(ObjectLimits::new(8, 4096));
     let payload = store.put_verified(b"payload-bytes")?;
     let mut ledger = DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
@@ -118,8 +163,8 @@ fn delta_witness_missing_from_store_must_block_authority_commit() -> Result<(), 
 /// F6: Retrying append of an identical already-committed batch must be idempotent and succeed.
 #[test]
 fn retry_append_of_already_committed_batch_must_be_idempotent() -> Result<(), Box<dyn Error>> {
-    let path = temp_journal("idempotent-retry");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("idempotent-retry")?;
+    let path = run.fresh("ledger.journal")?;
     let mut store = InMemoryObjectStore::new(ObjectLimits::new(8, 4096));
     let child = store.put_verified(b"child-data")?;
     let mut ledger = DurableReferenceLedger::open(&path, "site:one", IncompleteTailPolicy::Reject)?;
@@ -155,8 +200,8 @@ fn retry_append_of_already_committed_batch_must_be_idempotent() -> Result<(), Bo
 /// rejected with typed PublicationError::DuplicateBatchId.
 #[test]
 fn conflicting_batch_with_same_batch_id_is_rejected() -> Result<(), Box<dyn Error>> {
-    let journal_path = temp_journal("duplicate-batch-id");
-    let _ = fs::remove_file(&journal_path);
+    let run = RunDir::new("duplicate-batch-id")?;
+    let journal_path = run.fresh("ledger.journal")?;
 
     let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 8192));
     let payload_1 = store.put_verified(b"payload-1")?;
