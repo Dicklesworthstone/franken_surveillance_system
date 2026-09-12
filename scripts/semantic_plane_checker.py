@@ -625,18 +625,36 @@ EFFECT_TYPES: set[str] = {
 }
 
 
+AUTHORITY_TYPES: set[str] = {
+    "EffectAuthority",
+}
+
+
 def is_effect_or_authority_type(
     ty_str: str,
     registered_types: dict[str, Any],
     effective_effect_types: set[str] | None = None,
+    alias_map: dict[str, str] | None = None,
 ) -> bool:
     """Checks if a type string refers to an effect or authority plane type."""
     eff = EFFECT_TYPES if effective_effect_types is None else effective_effect_types
     tokens = re.findall(r"\b[A-Za-z0-9_]+\b", ty_str)
-    return any(
-        t in eff or registered_types.get(t, {}).get("plane") in ("effect", "authority")
-        for t in tokens
-    )
+    for t in tokens:
+        if (
+            t in eff
+            or t in AUTHORITY_TYPES
+            or registered_types.get(t, {}).get("plane") in ("effect", "authority")
+        ):
+            return True
+        if alias_map:
+            norm_t = normalise_type_name(t, alias_map)
+            if (
+                norm_t in eff
+                or norm_t in AUTHORITY_TYPES
+                or registered_types.get(norm_t, {}).get("plane") in ("effect", "authority")
+            ):
+                return True
+    return False
 
 
 ABSTENTION_TYPES: set[str] = {
@@ -752,7 +770,8 @@ def split_top_level(text: str, delimiter: str = ",") -> list[str]:
     depth_paren = 0
     depth_bracket = 0
     depth_brace = 0
-    for ch in text:
+    n = len(text)
+    for idx, ch in enumerate(text):
         if ch == "<":
             depth_angle += 1
         elif ch == ">":
@@ -776,6 +795,12 @@ def split_top_level(text: str, delimiter: str = ",") -> list[str]:
             and depth_bracket == 0
             and depth_brace == 0
         ):
+            if delimiter == ":" and (
+                (idx > 0 and text[idx - 1] == ":")
+                or (idx + 1 < n and text[idx + 1] == ":")
+            ):
+                current.append(ch)
+                continue
             part = "".join(current).strip()
             if part:
                 parts.append(part)
@@ -789,8 +814,100 @@ def split_top_level(text: str, delimiter: str = ",") -> list[str]:
     return parts
 
 
+def parse_use_tree(prefix: str, text: str) -> list[tuple[str, str]]:
+    """Recursively parse a use tree into (full_path, alias) pairs for any 'as' renames."""
+    results: list[tuple[str, str]] = []
+    text = text.strip()
+    if not text:
+        return results
+
+    items = split_top_level(text, ",")
+    if len(items) > 1:
+        for item in items:
+            results.extend(parse_use_tree(prefix, item))
+        return results
+
+    item = items[0].strip()
+    brace_idx = item.find("{")
+    if brace_idx != -1 and item.endswith("}"):
+        head = item[:brace_idx].strip()
+        head = re.sub(r"::+$", "", head).strip()
+        body = item[brace_idx + 1 : -1].strip()
+        new_prefix = (prefix + "::" + head).strip(":") if head else prefix
+        results.extend(parse_use_tree(new_prefix, body))
+        return results
+
+    m = re.search(r"\bas\s+([A-Za-z0-9_#]+)$", item)
+    if m:
+        alias = m.group(1).lstrip("r#")
+        raw_path = item[: m.start()].strip()
+        full_path = (prefix + "::" + raw_path).strip(":") if prefix else raw_path
+        results.append((full_path, alias))
+    return results
+
+
+def extract_use_renames(content: str, pub_only: bool = False) -> dict[str, str]:
+    """Extracts 'use ... as ...;' renames from Rust source code.
+
+    Returns dict mapping alias name to target path string.
+    """
+    masked = mask_comments_and_strings(content)
+    renames: dict[str, str] = {}
+    pattern = (
+        r"\bpub(?:\s*\([^)]*\))?\s+use\s+([^;]+);"
+        if pub_only
+        else r"\b(?:pub(?:\s*\([^)]*\))?\s+)?use\s+([^;]+);"
+    )
+    for m in re.finditer(pattern, masked, re.DOTALL):
+        decl = m.group(1).strip()
+        decl = " ".join(decl.split())
+        for path, alias in parse_use_tree("", decl):
+            if alias and alias != "_" and re.fullmatch(r"[A-Za-z0-9_]+", alias):
+                clean_path = re.sub(r"\br#", "", path)
+                renames[alias] = clean_path
+    return renames
+
+
+def normalise_type_name(ty_str: str, alias_map: dict[str, str] | None = None) -> str:
+    """Normalises a type name by stripping references, path prefixes (crate::, super::, self::, ::crate::),
+
+    r# raw identifier prefixes, and resolving use-renames/type aliases.
+    """
+    current = ty_str.strip()
+    if not current:
+        return ""
+
+    current = re.sub(r"^&(?:\s*'[A-Za-z0-9_]+\s+)?(?:\s*mut\s+)?", "", current).strip()
+
+    seen: set[str] = set()
+    for _ in range(10):
+        base = current.split("<")[0].strip()
+        if "::" in base:
+            base = base.split("::")[-1].strip()
+        base = re.sub(r"^r#", "", base)
+
+        if not base or base in seen:
+            break
+        seen.add(base)
+
+        if alias_map and base in alias_map:
+            current = alias_map[base].strip()
+            continue
+        current = base
+        break
+
+    final_base = current.split("<")[0].strip()
+    if "::" in final_base:
+        final_base = final_base.split("::")[-1].strip()
+    final_base = re.sub(r"^r#", "", final_base)
+    return final_base
+
+
 def parse_all_generic_bounds(
-    generics: str, where_clause: str, impl_header: str | None
+    generics: str,
+    where_clause: str,
+    impl_header: str | None,
+    alias_map: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
     """Extracts type bounds from generic parameter list, where clause, and impl header."""
     bounds: dict[str, list[str]] = {}
@@ -802,17 +919,31 @@ def parse_all_generic_bounds(
         for item in split_top_level(g, ","):
             colon_parts = split_top_level(item, ":")
             if len(colon_parts) >= 2:
-                param = colon_parts[0].strip().split()[0]
-                if param and not param.startswith("'"):
-                    b_list = bounds.setdefault(param, [])
-                    rest = ":".join(colon_parts[1:])
-                    for b in split_top_level(rest, "+"):
-                        if b:
-                            b_list.append(b.strip())
+                raw_param = colon_parts[0].strip().split()[0]
+                norm_param = normalise_type_name(raw_param, alias_map)
+                targets = {
+                    p
+                    for p in (raw_param, norm_param)
+                    if p and not p.startswith("'") and re.fullmatch(r"[A-Za-z0-9_]+", p)
+                }
+                rest = ":".join(colon_parts[1:])
+                b_items = [b.strip() for b in split_top_level(rest, "+") if b.strip()]
+                for target in targets:
+                    bounds.setdefault(target, []).extend(b_items)
+                for b in b_items:
+                    m_into = re.search(r"\b(?:Into|TryInto)<([^>]+)>", b)
+                    if m_into:
+                        raw_dest = m_into.group(1).strip()
+                        norm_dest = normalise_type_name(raw_dest, alias_map)
+                        if norm_dest and norm_dest != raw_dest:
+                            for target in targets:
+                                bounds.setdefault(target, []).append(f"Into<{norm_dest}>")
             else:
-                param = item.strip().split()[0] if item.strip() else ""
-                if param and not param.startswith("'"):
-                    bounds.setdefault(param, [])
+                raw_param = item.strip().split()[0] if item.strip() else ""
+                norm_param = normalise_type_name(raw_param, alias_map)
+                for p in (raw_param, norm_param):
+                    if p and not p.startswith("'") and re.fullmatch(r"[A-Za-z0-9_]+", p):
+                        bounds.setdefault(p, [])
 
     def ingest_where_clause(wh_str: str) -> None:
         w = wh_str.strip()
@@ -821,17 +952,44 @@ def parse_all_generic_bounds(
         for item in split_top_level(w, ","):
             colon_parts = split_top_level(item, ":")
             if len(colon_parts) >= 2:
-                target = colon_parts[0].strip()
+                raw_target = colon_parts[0].strip()
+                norm_target = normalise_type_name(raw_target, alias_map)
                 rest = ":".join(colon_parts[1:])
                 b_items = [b.strip() for b in split_top_level(rest, "+") if b.strip()]
-                if re.fullmatch(r"[A-Za-z0-9_]+", target):
+                targets = {
+                    t
+                    for t in (raw_target, norm_target)
+                    if t and re.fullmatch(r"[A-Za-z0-9_]+", t)
+                }
+                for target in targets:
                     bounds.setdefault(target, []).extend(b_items)
+
                 for b in b_items:
-                    m_from = re.match(r"(?:Try)?From<([^>]+)>", b)
+                    m_from = re.search(r"\b(?:From|TryFrom)<([^>]+)>", b)
                     if m_from:
-                        src = m_from.group(1).strip().split("::")[-1].strip()
-                        if re.fullmatch(r"[A-Za-z0-9_]+", src):
-                            bounds.setdefault(src, []).append(f"Into<{target}>")
+                        raw_src = m_from.group(1).strip()
+                        norm_src = normalise_type_name(raw_src, alias_map)
+                        src_targets = {
+                            s
+                            for s in (raw_src, norm_src)
+                            if s and re.fullmatch(r"[A-Za-z0-9_]+", s)
+                        }
+                        target_names = {t for t in (raw_target, norm_target) if t}
+                        for src in src_targets:
+                            for tgt in target_names:
+                                bounds.setdefault(src, []).append(f"Into<{tgt}>")
+
+                    m_into = re.search(r"\b(?:Into|TryInto)<([^>]+)>", b)
+                    if m_into:
+                        raw_dest = m_into.group(1).strip()
+                        norm_dest = normalise_type_name(raw_dest, alias_map)
+                        if norm_dest and norm_dest != raw_dest:
+                            for target in targets:
+                                bounds.setdefault(target, []).append(f"Into<{norm_dest}>")
+                        if norm_dest and re.fullmatch(r"[A-Za-z0-9_]+", norm_dest):
+                            for tgt in (raw_target, norm_target):
+                                if tgt:
+                                    bounds.setdefault(norm_dest, []).append(f"From<{tgt}>")
 
     if generics:
         ingest_generic_params(generics)
@@ -1163,9 +1321,9 @@ def check_module_imports(
         m_abs = root / m_decl
         if m_abs.is_file():
             try:
-                workspace_alias_map.update(
-                    extract_type_aliases(m_abs.read_text(encoding="utf-8"))
-                )
+                m_content = m_abs.read_text(encoding="utf-8")
+                workspace_alias_map.update(extract_type_aliases(m_content))
+                workspace_alias_map.update(extract_use_renames(m_content, pub_only=True))
             except Exception:
                 pass
 
@@ -1205,12 +1363,21 @@ def check_module_imports(
             continue
 
         local_aliases = extract_type_aliases(content)
+        local_use_renames = extract_use_renames(content)
         file_alias_map = dict(workspace_alias_map)
+        file_alias_map.update(local_use_renames)
         file_alias_map.update(local_aliases)
 
         eff_model, eff_effect, eff_absten, eff_neg = build_effective_plane_types(
             file_alias_map, registered_types
         )
+        eff_auth = {
+            ty
+            for ty in eff_effect
+            if ty in AUTHORITY_TYPES
+            or registered_types.get(ty, {}).get("plane") == "authority"
+            or "authority" in ty.lower()
+        }
 
         # Check for functions directly returning EffectAuthority in cognition modules,
         # or bridging model outputs directly to effects, or abstention to negative evidence
@@ -1225,7 +1392,7 @@ def check_module_imports(
             start_pos,
             full_fn,
         ) in extract_rust_functions(content):
-            bounds = parse_all_generic_bounds(generics, where_clause, impl_header)
+            bounds = parse_all_generic_bounds(generics, where_clause, impl_header, file_alias_map)
 
             # NEG-003: Model/VLM output can never reach an effect type directly
             is_model_input = (
@@ -1251,47 +1418,69 @@ def check_module_imports(
             if not is_model_input:
                 param_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", params)
                 for pt in param_tokens:
-                    if pt in bounds:
-                        for b in bounds[pt]:
-                            b_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", b)
-                            if any(bt in eff_model for bt in b_tokens):
-                                is_model_input = True
-                                break
+                    candidates = {pt, normalise_type_name(pt, file_alias_map)}
+                    for cand in candidates:
+                        if cand in bounds:
+                            for b in bounds[cand]:
+                                b_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", b)
+                                if any(
+                                    bt in eff_model
+                                    or normalise_type_name(bt, file_alias_map) in eff_model
+                                    for bt in b_tokens
+                                ):
+                                    is_model_input = True
+                                    break
+                        if is_model_input:
+                            break
                     if is_model_input:
                         break
 
             is_effect_ret = is_effect_or_authority_type(
-                ret_type, registered_types, eff_effect
+                ret_type, registered_types, eff_effect, file_alias_map
             )
             if not is_effect_ret:
                 ret_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", ret_type)
                 for t in ret_tokens:
-                    if t in bounds:
-                        for b in bounds[t]:
-                            m_into = re.search(
-                                r"\b(?:Into|TryInto|AsRef|Borrow)<([^>]+)>", b
-                            )
-                            if m_into:
-                                inner_tokens = re.findall(
-                                    r"\b[A-Za-z0-9_]+\b", m_into.group(1)
+                    candidates = {t, normalise_type_name(t, file_alias_map)}
+                    for cand in candidates:
+                        if cand in bounds:
+                            for b in bounds[cand]:
+                                m_into = re.search(
+                                    r"\b(?:Into|TryInto|AsRef|Borrow)<([^>]+)>", b
                                 )
+                                if m_into:
+                                    inner_tokens = re.findall(
+                                        r"\b[A-Za-z0-9_]+\b", m_into.group(1)
+                                    )
+                                    if any(
+                                        it in eff_effect
+                                        or normalise_type_name(it, file_alias_map) in eff_effect
+                                        or registered_types.get(it, {}).get("plane")
+                                        in ("effect", "authority")
+                                        or registered_types.get(
+                                            normalise_type_name(it, file_alias_map), {}
+                                        ).get("plane")
+                                        in ("effect", "authority")
+                                        for it in inner_tokens
+                                    ):
+                                        is_effect_ret = True
+                                        break
+                                b_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", b)
                                 if any(
-                                    it in eff_effect
-                                    or registered_types.get(it, {}).get("plane")
+                                    bt in eff_effect
+                                    or normalise_type_name(bt, file_alias_map) in eff_effect
+                                    or registered_types.get(bt, {}).get("plane")
                                     in ("effect", "authority")
-                                    for it in inner_tokens
+                                    or registered_types.get(
+                                        normalise_type_name(bt, file_alias_map), {}
+                                    ).get("plane")
+                                    in ("effect", "authority")
+                                    for bt in b_tokens
                                 ):
                                     is_effect_ret = True
                                     break
-                            b_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", b)
-                            if any(
-                                bt in eff_effect
-                                or registered_types.get(bt, {}).get("plane")
-                                in ("effect", "authority")
-                                for bt in b_tokens
-                            ):
-                                is_effect_ret = True
-                                break
+                        if is_effect_ret:
+                            break
                     if is_effect_ret:
                         break
 
@@ -1310,10 +1499,23 @@ def check_module_imports(
                 )
             elif mod_plane == "cognition" and (
                 re.search(r"\bEffectAuthority\b", ret_type)
-                or any(t == "EffectAuthority" for t in re.findall(r"\b[A-Za-z0-9_]+\b", ret_type))
                 or any(
-                    any("EffectAuthority" in b for b in bounds.get(t, []))
+                    t in eff_auth
+                    or normalise_type_name(t, file_alias_map) in eff_auth
                     for t in re.findall(r"\b[A-Za-z0-9_]+\b", ret_type)
+                )
+                or any(
+                    any(
+                        "EffectAuthority" in b
+                        or any(
+                            bt in eff_auth
+                            or normalise_type_name(bt, file_alias_map) in eff_auth
+                            for bt in re.findall(r"\b[A-Za-z0-9_]+\b", b)
+                        )
+                        for b in bounds.get(cand, [])
+                    )
+                    for t in re.findall(r"\b[A-Za-z0-9_]+\b", ret_type)
+                    for cand in (t, normalise_type_name(t, file_alias_map))
                 )
             ):
                 line_no = content[:start_pos].count("\n") + 1
@@ -1369,8 +1571,8 @@ def check_module_imports(
 
         # Check From/Into cross-plane implementations
         for m in from_pattern.finditer(content):
-            from_ty = m.group(1).split("::")[-1].strip().lstrip("&").strip()
-            to_ty = m.group(2).split("::")[-1].strip().lstrip("&").strip()
+            from_ty = normalise_type_name(m.group(1), file_alias_map)
+            to_ty = normalise_type_name(m.group(2), file_alias_map)
             from_plane = registered_types.get(from_ty, {}).get("plane")
             to_plane = registered_types.get(to_ty, {}).get("plane")
 
@@ -1380,7 +1582,7 @@ def check_module_imports(
                 or "model" in from_ty.lower()
             )
             is_effect_type = is_effect_or_authority_type(
-                to_ty, registered_types, eff_effect
+                to_ty, registered_types, eff_effect, file_alias_map
             )
             is_abstention = from_ty in eff_absten or "absten" in from_ty.lower()
             is_negative_evidence = to_ty in eff_neg or to_ty == "CoverageWitness"
@@ -1432,8 +1634,8 @@ def check_module_imports(
                     )
 
         for m in into_pattern.finditer(content):
-            to_ty = m.group(1).split("::")[-1].strip().lstrip("&").strip()
-            from_ty = m.group(2).split("::")[-1].strip().lstrip("&").strip()
+            to_ty = normalise_type_name(m.group(1), file_alias_map)
+            from_ty = normalise_type_name(m.group(2), file_alias_map)
             from_plane = registered_types.get(from_ty, {}).get("plane")
             to_plane = registered_types.get(to_ty, {}).get("plane")
 
@@ -1443,7 +1645,7 @@ def check_module_imports(
                 or "model" in from_ty.lower()
             )
             is_effect_type = is_effect_or_authority_type(
-                to_ty, registered_types, eff_effect
+                to_ty, registered_types, eff_effect, file_alias_map
             )
             is_abstention = from_ty in eff_absten or "absten" in from_ty.lower()
             is_negative_evidence = to_ty in eff_neg or to_ty == "CoverageWitness"
