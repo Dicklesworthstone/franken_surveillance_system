@@ -273,7 +273,10 @@ impl std::error::Error for ModelManifestError {}
 
 impl From<ContractError> for ModelManifestError {
     fn from(err: ContractError) -> Self {
-        Self::Contract(err)
+        match err {
+            ContractError::LatestNotResolvable => Self::LatestNotResolvable,
+            other => Self::Contract(other),
+        }
     }
 }
 

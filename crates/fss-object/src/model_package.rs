@@ -1503,6 +1503,9 @@ impl From<SpoolError> for ModelPackageError {
 
 impl From<ContractError> for ModelPackageError {
     fn from(err: ContractError) -> Self {
-        Self::Contract(err)
+        match err {
+            ContractError::LatestNotResolvable => Self::LatestNotResolvable,
+            other => Self::Contract(other),
+        }
     }
 }

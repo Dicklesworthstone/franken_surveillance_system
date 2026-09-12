@@ -2301,6 +2301,8 @@ pub enum ContractError {
     BudgetExhausted,
     /// A budget quantity is invalid or an operation failed validation.
     InvalidBudget(BudgetError),
+    /// A subsystem generation identifier names a forbidden mutable latest alias (ADR-0004).
+    LatestNotResolvable,
 }
 
 impl ContractError {
@@ -2333,6 +2335,7 @@ impl ContractError {
             Self::NotFound => "not_found",
             Self::BudgetExhausted => "budget_exhausted",
             Self::InvalidBudget(err) => err.code(),
+            Self::LatestNotResolvable => "latest_not_resolvable",
         }
     }
 }

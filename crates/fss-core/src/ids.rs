@@ -55,7 +55,7 @@ pub fn validate_subsystem_generation(value: &str) -> Result<(), ContractError> {
         }
     }
     if is_latest_subsystem_generation_alias(value) {
-        return Err(ContractError::InvalidIdentifier);
+        return Err(ContractError::LatestNotResolvable);
     }
     Ok(())
 }

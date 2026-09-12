@@ -284,15 +284,29 @@ fn test_latest_resolution_rejects_every_form() {
 /// that names `latest`, whether constructed, derived, or decoded.
 #[test]
 fn test_manifest_refuses_latest_bearing_generations() -> TestResult {
+    assert_eq!(
+        ModelGeneration::parse("model:latest:v1"),
+        Err(fss_core::ContractError::LatestNotResolvable)
+    );
+    assert_eq!(
+        CalibrationGeneration::parse("cal:rig:latest"),
+        Err(fss_core::ContractError::LatestNotResolvable)
+    );
+    assert_eq!(
+        ModelGeneration::parse("model:rfdetr:latest"),
+        Err(fss_core::ContractError::LatestNotResolvable)
+    );
+
     let mut latest_gen = sample_parts()?;
-    latest_gen.generation = ModelGeneration::parse("model:latest:v1")?;
+    latest_gen.generation = ModelGeneration::from_unvalidated_for_test("model:latest:v1");
     assert_eq!(
         latest_gen.build(),
         Err(ModelManifestError::LatestNotResolvable)
     );
 
     let mut latest_cal = sample_parts()?;
-    latest_cal.calibration_generation = CalibrationGeneration::parse("cal:rig:latest")?;
+    latest_cal.calibration_generation =
+        CalibrationGeneration::from_unvalidated_for_test("cal:rig:latest");
     assert_eq!(
         latest_cal.build(),
         Err(ModelManifestError::LatestNotResolvable)
@@ -300,7 +314,7 @@ fn test_manifest_refuses_latest_bearing_generations() -> TestResult {
 
     let v1 = sample_manifest()?;
     let successor = v1.create_successor(
-        ModelGeneration::parse("model:rfdetr:latest")?,
+        ModelGeneration::from_unvalidated_for_test("model:rfdetr:latest"),
         v1.weights_digest(),
         v1.calibration_generation().clone(),
         v1.license().clone(),

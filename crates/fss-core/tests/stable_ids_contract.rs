@@ -918,27 +918,27 @@ fn finding_3_signed_i128_byte_order_property_pinned() {
 fn test_subsystem_generation_parse_rejects_latest_aliases() {
     assert_eq!(
         ModelGeneration::parse("model:detector:latest"),
-        Err(ContractError::InvalidIdentifier),
+        Err(ContractError::LatestNotResolvable),
         "ModelGeneration must reject 'latest' generation alias under ADR-0004"
     );
     assert_eq!(
         ModelGeneration::parse("model:yolo:latest.weights"),
-        Err(ContractError::InvalidIdentifier),
+        Err(ContractError::LatestNotResolvable),
         "ModelGeneration must reject 'latest.weights' alias"
     );
     assert_eq!(
         DeviceGeneration::parse("device:sensor:latest"),
-        Err(ContractError::InvalidIdentifier),
+        Err(ContractError::LatestNotResolvable),
         "DeviceGeneration must reject 'latest' alias"
     );
     assert_eq!(
         StreamGeneration::parse("stream:rtsp:latest"),
-        Err(ContractError::InvalidIdentifier),
+        Err(ContractError::LatestNotResolvable),
         "StreamGeneration must reject 'latest' alias"
     );
     assert_eq!(
         AdapterGeneration::parse("adapter:driver:latest"),
-        Err(ContractError::InvalidIdentifier),
+        Err(ContractError::LatestNotResolvable),
         "AdapterGeneration must reject 'latest' alias"
     );
 }
