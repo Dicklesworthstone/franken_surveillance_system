@@ -23,6 +23,12 @@ use crate::{ClockBasis, ContentDigest, ContractError};
 pub const SENSOR_CAPSULE_SCHEMA: &str = SensorCapsuleV1::SCHEMA;
 
 /// Canonical metadata digest domain tag for sensor capsule v1.
+///
+/// Digest input: the canonical encoder frame `text("fss.canonical.v1")`, `text(domain)`,
+/// followed by every [`SensorCapsuleV1`] field in canonical binary order **except**
+/// `integrity.metadata_digest` itself. Excluding the stored digest makes sealing a fixed
+/// point (`seal_metadata_digest` then `metadata_digest` returns the stored value), so
+/// `verify()` can and does require `integrity.metadata_digest == metadata_digest()`.
 pub const SENSOR_CAPSULE_METADATA_DOMAIN: &str = "fss.sensor_capsule.metadata.v1";
 
 /// Format magic header for versioned binary sensor capsule envelopes (`FSSC`).
@@ -102,6 +108,25 @@ pub enum CapsuleDecodeError {
         /// Codepoint value encountered.
         codepoint: u32,
     },
+    /// Mutually contradictory field values, such as omission details present while the
+    /// capsule declares no omission, or an omission whose reason is `none`.
+    Contradiction {
+        /// Name of the offending field.
+        field: &'static str,
+        /// Diagnostic detail.
+        detail: String,
+    },
+    /// A numeric field lies outside its declared inclusive range.
+    OutOfRange {
+        /// Name of the offending field.
+        field: &'static str,
+        /// Inclusive minimum.
+        minimum: u64,
+        /// Inclusive maximum.
+        maximum: u64,
+        /// Observed value.
+        actual: u64,
+    },
     /// Underlying invariant or contract violation.
     Contract(ContractError),
 }
@@ -145,6 +170,20 @@ impl fmt::Display for CapsuleDecodeError {
             }
             Self::InvalidUnicodeEscape { codepoint } => {
                 write!(f, "invalid unicode escape: U+{codepoint:04X}")
+            }
+            Self::Contradiction { field, detail } => {
+                write!(f, "contradictory field '{field}': {detail}")
+            }
+            Self::OutOfRange {
+                field,
+                minimum,
+                maximum,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "field '{field}' out of range: expected {minimum}..={maximum}, found {actual}"
+                )
             }
             Self::Contract(err) => write!(f, "contract error: {err}"),
         }
@@ -553,6 +592,9 @@ pub struct SensorCapsuleV1 {
     pub sequence: u64,
     /// Conservative capture-time interval.
     pub capture_interval: CaptureInterval,
+    /// Why the capture interval is as wide as it is (JSON `captureInterval.uncertaintyReason`);
+    /// 1..=[`MAX_UNCERTAINTY_REASON_LEN`] bytes.
+    pub capture_uncertainty_reason: String,
     /// Host arrival receive time.
     pub receive_time_ns: TimestampNs,
     /// Clock synchronization reference basis.
@@ -613,6 +655,29 @@ impl SensorCapsuleV1 {
                 actual: self.adapter_id.len(),
             });
         }
+        if self.sensor_id.len() > MAX_STR_LEN {
+            return Err(CapsuleDecodeError::OverLimitLength {
+                field: "sensorId",
+                limit: MAX_STR_LEN,
+                actual: self.sensor_id.len(),
+            });
+        }
+        if self.stream_id.len() > MAX_STR_LEN {
+            return Err(CapsuleDecodeError::OverLimitLength {
+                field: "streamId",
+                limit: MAX_STR_LEN,
+                actual: self.stream_id.len(),
+            });
+        }
+        if self.capture_uncertainty_reason.is_empty()
+            || self.capture_uncertainty_reason.len() > MAX_UNCERTAINTY_REASON_LEN
+        {
+            return Err(CapsuleDecodeError::OverLimitLength {
+                field: "captureInterval.uncertaintyReason",
+                limit: MAX_UNCERTAINTY_REASON_LEN,
+                actual: self.capture_uncertainty_reason.len(),
+            });
+        }
         if self.media.codec.is_empty() || self.media.codec.len() > MAX_CODEC_LEN {
             return Err(CapsuleDecodeError::OverLimitLength {
                 field: "media.codec",
@@ -661,6 +726,29 @@ impl SensorCapsuleV1 {
                 field: "omission.policyRule",
                 limit: MAX_POLICY_RULE_LEN,
                 actual: policy_rule.len(),
+            });
+        }
+        for (field, dimension) in [
+            ("media.width", self.media.width),
+            ("media.height", self.media.height),
+        ] {
+            if dimension == Some(0) {
+                return Err(CapsuleDecodeError::OutOfRange {
+                    field,
+                    minimum: 1,
+                    maximum: u64::from(u32::MAX),
+                    actual: 0,
+                });
+            }
+        }
+        if let ExplicitOmission::Omitted {
+            reason: OmissionReason::None,
+            ..
+        } = &self.omission
+        {
+            return Err(CapsuleDecodeError::Contradiction {
+                field: "omission.reason",
+                detail: "an explicit omission must name a reason other than 'none'".to_string(),
             });
         }
 
@@ -725,6 +813,19 @@ impl SensorCapsuleV1 {
             }
         }
 
+        // A capsule is retained under source custody or carries an explicit omission;
+        // never neither (AGENTS.md: no decoded frame without custody or explicit omission).
+        if !self.custody.is_retained() && !self.omission.is_omitted() {
+            return Err(CapsuleDecodeError::Contract(
+                ContractError::EvidenceRequired,
+            ));
+        }
+
+        // The stored metadata digest must be the digest of every other field.
+        if self.integrity.metadata_digest != self.metadata_digest()? {
+            return Err(CapsuleDecodeError::Contract(ContractError::DigestMismatch));
+        }
+
         Ok(())
     }
 
@@ -748,9 +849,25 @@ impl SensorCapsuleV1 {
     }
 
     /// Computes the domain-separated metadata digest for this capsule.
-    #[must_use]
-    pub fn metadata_digest(&self) -> ContentDigest {
-        CanonicalEncode::canonical_digest(self, Self::METADATA_DOMAIN)
+    ///
+    /// Covers every field except `integrity.metadata_digest` (see
+    /// [`SENSOR_CAPSULE_METADATA_DOMAIN`]). Fails closed if a field exceeds the canonical
+    /// encoder limits instead of hashing a truncated or empty encoding.
+    pub fn metadata_digest(&self) -> Result<ContentDigest, CapsuleDecodeError> {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.canonical.v1");
+        encoder.text(Self::METADATA_DOMAIN);
+        self.encode_fields(&mut encoder, MetadataDigestSlot::Excluded);
+        let bytes = encoder
+            .finish_checked()
+            .map_err(CapsuleDecodeError::Contract)?;
+        Ok(ContentDigest::sha256(&bytes))
+    }
+
+    /// Stores [`Self::metadata_digest`] into `integrity.metadata_digest`.
+    pub fn seal_metadata_digest(&mut self) -> Result<(), CapsuleDecodeError> {
+        self.integrity.metadata_digest = self.metadata_digest()?;
+        Ok(())
     }
 
     /// Serializes this capsule into the canonical versioned binary envelope (`FSSC` v1).
@@ -787,7 +904,8 @@ impl SensorCapsuleV1 {
             return Err(CapsuleDecodeError::UnknownVersion { version });
         }
 
-        let mut decoder = CanonicalDecoder::new(&bytes[6..]);
+        let payload = &bytes[6..];
+        let mut decoder = CanonicalDecoder::new(payload);
         let capsule = Self::decode_canonical_checked(&mut decoder)?;
         if !decoder.is_empty() {
             return Err(CapsuleDecodeError::TrailingBytes {
@@ -795,6 +913,17 @@ impl SensorCapsuleV1 {
             });
         }
         capsule.verify()?;
+        // Nested identity decoders normalize alias identifier prefixes; any such
+        // normalization shows up as a payload that does not re-encode bit-identically.
+        let reencoded = capsule
+            .try_canonical_bytes()
+            .map_err(CapsuleDecodeError::Contract)?;
+        if reencoded != payload {
+            return Err(CapsuleDecodeError::NonCanonicalEncoding {
+                detail: "payload does not re-encode bit-identically (non-canonical nested field)"
+                    .to_string(),
+            });
+        }
         Ok(capsule)
     }
 
@@ -811,69 +940,48 @@ impl SensorCapsuleV1 {
                 found: schema.to_string(),
             });
         }
-        let capsule_id_str = decoder.text().map_err(|_| CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?;
-        if capsule_id_str.len() > MAX_CAPSULE_ID_LEN {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "capsuleId",
-                limit: MAX_CAPSULE_ID_LEN,
-                actual: capsule_id_str.len(),
-            });
-        }
-        let capsule_id = CapsuleId::parse(capsule_id_str).map_err(CapsuleDecodeError::Contract)?;
-
-        let source_id_str = decoder.text().map_err(|_| CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?;
-        if source_id_str.len() > MAX_STR_LEN {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "sourceId",
-                limit: MAX_STR_LEN,
-                actual: source_id_str.len(),
-            });
-        }
-        let source_id = SourceId::parse(source_id_str).map_err(CapsuleDecodeError::Contract)?;
-
-        let device_id_str = decoder.text().map_err(|_| CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?;
-        if device_id_str.len() > MAX_STR_LEN {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "deviceId",
-                limit: MAX_STR_LEN,
-                actual: device_id_str.len(),
-            });
-        }
-        let device_id = DeviceId::parse(device_id_str).map_err(CapsuleDecodeError::Contract)?;
-
-        let adapter_id_str = decoder.text().map_err(|_| CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?;
-        if adapter_id_str.len() > MAX_STR_LEN {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "adapterId",
-                limit: MAX_STR_LEN,
-                actual: adapter_id_str.len(),
-            });
-        }
-        let adapter_id = AdapterId::parse(adapter_id_str).map_err(CapsuleDecodeError::Contract)?;
-
-        let sensor_id_str = decoder.text().map_err(|_| CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?;
-        let sensor_id = SensorId::parse(sensor_id_str).map_err(CapsuleDecodeError::Contract)?;
-
-        let stream_id_str = decoder.text().map_err(|_| CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?;
-        let stream_id = StreamId::parse(stream_id_str).map_err(CapsuleDecodeError::Contract)?;
+        let capsule_id_str = read_text(decoder)?;
+        let capsule_id = canonical_id(
+            "capsuleId",
+            MAX_CAPSULE_ID_LEN,
+            capsule_id_str,
+            CapsuleId::parse(capsule_id_str),
+        )?;
+        let source_id_str = read_text(decoder)?;
+        let source_id = canonical_id(
+            "sourceId",
+            MAX_STR_LEN,
+            source_id_str,
+            SourceId::parse(source_id_str),
+        )?;
+        let device_id_str = read_text(decoder)?;
+        let device_id = canonical_id(
+            "deviceId",
+            MAX_STR_LEN,
+            device_id_str,
+            DeviceId::parse(device_id_str),
+        )?;
+        let adapter_id_str = read_text(decoder)?;
+        let adapter_id = canonical_id(
+            "adapterId",
+            MAX_STR_LEN,
+            adapter_id_str,
+            AdapterId::parse(adapter_id_str),
+        )?;
+        let sensor_id_str = read_text(decoder)?;
+        let sensor_id = canonical_id(
+            "sensorId",
+            MAX_STR_LEN,
+            sensor_id_str,
+            SensorId::parse(sensor_id_str),
+        )?;
+        let stream_id_str = read_text(decoder)?;
+        let stream_id = canonical_id(
+            "streamId",
+            MAX_STR_LEN,
+            stream_id_str,
+            StreamId::parse(stream_id_str),
+        )?;
 
         let sequence = decoder.u64().map_err(|_| CapsuleDecodeError::Truncated {
             expected_min: 8,
@@ -881,6 +989,15 @@ impl SensorCapsuleV1 {
         })?;
         let capture_interval =
             CaptureInterval::decode_canonical(decoder).map_err(CapsuleDecodeError::Contract)?;
+        let capture_uncertainty_reason = read_text(decoder)?;
+        if capture_uncertainty_reason.len() > MAX_UNCERTAINTY_REASON_LEN {
+            return Err(CapsuleDecodeError::OverLimitLength {
+                field: "captureInterval.uncertaintyReason",
+                limit: MAX_UNCERTAINTY_REASON_LEN,
+                actual: capture_uncertainty_reason.len(),
+            });
+        }
+        let capture_uncertainty_reason = capture_uncertainty_reason.to_string();
         let receive_time_ns =
             TimestampNs::decode_canonical(decoder).map_err(CapsuleDecodeError::Contract)?;
         let clock_basis = match decoder.u8().map_err(|_| CapsuleDecodeError::Truncated {
@@ -1265,6 +1382,7 @@ impl SensorCapsuleV1 {
             adapter_identity,
             sequence,
             capture_interval,
+            capture_uncertainty_reason,
             receive_time_ns,
             clock_basis,
             custody,
@@ -1329,7 +1447,7 @@ impl SensorCapsuleV1 {
         out.push_str(",\"latestNs\":");
         out.push_str(&self.capture_interval.latest.0.to_string());
         out.push_str(",\"uncertaintyReason\":");
-        json_write_str(&mut out, "conservative_capture_window");
+        json_write_str(&mut out, &self.capture_uncertainty_reason);
         out.push_str("},\"clockBasis\":");
 
         // 5. clockBasis
@@ -1567,30 +1685,17 @@ impl SensorCapsuleV1 {
     }
 
     /// Decodes a sensor capsule from a JSON string.
+    ///
+    /// The JSON projection is closed: unknown, duplicate, or missing keys, alias identifier
+    /// prefixes, and omission/custody detail that contradicts the `isOmitted`/`isRetained`
+    /// flags are typed errors. Nothing is silently normalized, defaulted, or dropped.
     pub fn from_json(json_str: &str) -> Result<Self, CapsuleDecodeError> {
         let mut parser = JsonParser::new(json_str);
         let root = parser.parse_value()?;
         parser.ensure_finished()?;
+        let obj = JsonObject::closed(&root, "capsule", JSON_ROOT_KEYS)?;
 
-        let obj = match root {
-            JsonValue::Object(map) => map,
-            _ => {
-                return Err(CapsuleDecodeError::JsonError {
-                    detail: "root must be an object".to_string(),
-                });
-            }
-        };
-
-        let get_field = |name: &str| -> Result<&JsonValue, CapsuleDecodeError> {
-            obj.iter().find(|(k, _)| k == name).map(|(_, v)| v).ok_or(
-                CapsuleDecodeError::Truncated {
-                    expected_min: 1,
-                    actual: 0,
-                },
-            )
-        };
-
-        let schema_val = get_field("schema")?.as_str()?;
+        let schema_val = obj.str("schema")?;
         if schema_val != Self::SCHEMA {
             return Err(CapsuleDecodeError::SchemaMismatch {
                 expected: Self::SCHEMA,
@@ -1598,454 +1703,90 @@ impl SensorCapsuleV1 {
             });
         }
 
-        let capsule_id_str = get_field("capsuleId")?.as_str()?;
-        if capsule_id_str.len() > MAX_CAPSULE_ID_LEN {
+        let raw = obj.str("capsuleId")?;
+        let capsule_id = canonical_id("capsuleId", MAX_CAPSULE_ID_LEN, raw, CapsuleId::parse(raw))?;
+        let raw = obj.str("sourceId")?;
+        let source_id = canonical_id("sourceId", MAX_STR_LEN, raw, SourceId::parse(raw))?;
+        let raw = obj.str("deviceId")?;
+        let device_id = canonical_id("deviceId", MAX_STR_LEN, raw, DeviceId::parse(raw))?;
+        let raw = obj.str("adapterId")?;
+        let adapter_id = canonical_id("adapterId", MAX_STR_LEN, raw, AdapterId::parse(raw))?;
+        let raw = obj.str("sensorId")?;
+        let sensor_id = canonical_id("sensorId", MAX_STR_LEN, raw, SensorId::parse(raw))?;
+        let raw = obj.str("streamId")?;
+        let stream_id = canonical_id("streamId", MAX_STR_LEN, raw, StreamId::parse(raw))?;
+
+        let sequence = obj.get("sequence")?.as_u64()?;
+
+        let interval = JsonObject::closed(
+            obj.get("captureInterval")?,
+            "captureInterval",
+            JSON_CAPTURE_INTERVAL_KEYS,
+        )?;
+        let capture_interval = CaptureInterval::new(
+            TimestampNs(interval.get("earliestNs")?.as_i128()?),
+            TimestampNs(interval.get("latestNs")?.as_i128()?),
+        )
+        .map_err(CapsuleDecodeError::Contract)?;
+        let capture_uncertainty_reason = interval.str("uncertaintyReason")?;
+        if capture_uncertainty_reason.len() > MAX_UNCERTAINTY_REASON_LEN {
             return Err(CapsuleDecodeError::OverLimitLength {
-                field: "capsuleId",
-                limit: MAX_CAPSULE_ID_LEN,
-                actual: capsule_id_str.len(),
+                field: "captureInterval.uncertaintyReason",
+                limit: MAX_UNCERTAINTY_REASON_LEN,
+                actual: capture_uncertainty_reason.len(),
             });
         }
-        let capsule_id = CapsuleId::parse(capsule_id_str).map_err(CapsuleDecodeError::Contract)?;
+        let capture_uncertainty_reason = capture_uncertainty_reason.to_string();
 
-        let source_id_str = get_field("sourceId")?.as_str()?;
-        if source_id_str.len() > MAX_STR_LEN {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "sourceId",
-                limit: MAX_STR_LEN,
-                actual: source_id_str.len(),
-            });
-        }
-        let source_id = SourceId::parse(source_id_str).map_err(CapsuleDecodeError::Contract)?;
+        let receive_time_ns = TimestampNs(obj.get("receiveTimeNs")?.as_i128()?);
+        let clock_basis = parse_clock_basis(obj.str("clockBasis")?)?;
 
-        let device_id_str = get_field("deviceId")?.as_str()?;
-        if device_id_str.len() > MAX_STR_LEN {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "deviceId",
-                limit: MAX_STR_LEN,
-                actual: device_id_str.len(),
-            });
-        }
-        let device_id = DeviceId::parse(device_id_str).map_err(CapsuleDecodeError::Contract)?;
+        let custody = parse_custody_json(&JsonObject::closed(
+            obj.get("custody")?,
+            "custody",
+            JSON_CUSTODY_KEYS,
+        )?)?;
+        let omission = parse_omission_json(&JsonObject::closed(
+            obj.get("omission")?,
+            "omission",
+            JSON_OMISSION_KEYS,
+        )?)?;
+        let media = parse_media_json(&JsonObject::closed(
+            obj.get("media")?,
+            "media",
+            JSON_MEDIA_KEYS,
+        )?)?;
+        let integrity = parse_integrity_json(&JsonObject::closed(
+            obj.get("integrity")?,
+            "integrity",
+            JSON_INTEGRITY_KEYS,
+        )?)?;
+        let privacy = parse_privacy_json(&JsonObject::closed(
+            obj.get("privacy")?,
+            "privacy",
+            JSON_PRIVACY_KEYS,
+        )?)?;
+        let publication = parse_publication_json(&JsonObject::closed(
+            obj.get("publication")?,
+            "publication",
+            JSON_PUBLICATION_KEYS,
+        )?)?;
 
-        let adapter_id_str = get_field("adapterId")?.as_str()?;
-        if adapter_id_str.len() > MAX_STR_LEN {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "adapterId",
-                limit: MAX_STR_LEN,
-                actual: adapter_id_str.len(),
-            });
-        }
-        let adapter_id = AdapterId::parse(adapter_id_str).map_err(CapsuleDecodeError::Contract)?;
-
-        let sensor_id_str = get_field("sensorId")?.as_str()?;
-        let sensor_id = SensorId::parse(sensor_id_str).map_err(CapsuleDecodeError::Contract)?;
-
-        let stream_id_str = get_field("streamId")?.as_str()?;
-        let stream_id = StreamId::parse(stream_id_str).map_err(CapsuleDecodeError::Contract)?;
-
-        let sequence = get_field("sequence")?.as_u64()?;
-
-        // CaptureInterval
-        let interval_obj = get_field("captureInterval")?.as_object()?;
-        let earliest_ns = interval_obj
-            .iter()
-            .find(|(k, _)| k == "earliestNs")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_i128()?;
-        let latest_ns = interval_obj
-            .iter()
-            .find(|(k, _)| k == "latestNs")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_i128()?;
-        let capture_interval =
-            CaptureInterval::new(TimestampNs(earliest_ns), TimestampNs(latest_ns))
-                .map_err(CapsuleDecodeError::Contract)?;
-
-        let receive_time_ns = TimestampNs(get_field("receiveTimeNs")?.as_i128()?);
-
-        let clock_basis_str = get_field("clockBasis")?.as_str()?;
-        let clock_basis = match clock_basis_str {
-            "utc_disciplined" => ClockBasis::UtcDisciplined,
-            "device_monotonic" => ClockBasis::DeviceMonotonic,
-            "host_monotonic" => ClockBasis::HostMonotonic,
-            "estimated" => ClockBasis::Estimated,
-            _ => {
-                return Err(CapsuleDecodeError::NonCanonicalEncoding {
-                    detail: format!("unknown clock basis '{clock_basis_str}'"),
-                });
-            }
-        };
-
-        // Custody
-        let custody_obj = get_field("custody")?.as_object()?;
-        let is_retained = custody_obj
-            .iter()
-            .find(|(k, _)| k == "isRetained")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_bool()?;
-        let custody = if is_retained {
-            let digest_val = match custody_obj.iter().find(|(k, _)| k == "sourceDigest") {
-                Some((_, v)) => v.as_opt_str()?,
-                None => None,
-            }
-            .ok_or_else(|| CapsuleDecodeError::JsonError {
-                detail: "retained custody requires sourceDigest".to_string(),
-            })?;
-            let source_digest =
-                ContentDigest::parse(digest_val).map_err(CapsuleDecodeError::Contract)?;
-            let source_bytes = custody_obj
-                .iter()
-                .find(|(k, _)| k == "sourceBytes")
-                .ok_or(CapsuleDecodeError::Truncated {
-                    expected_min: 1,
-                    actual: 0,
-                })?
-                .1
-                .as_u64()?;
-            let storage_handle = custody_obj
-                .iter()
-                .find(|(k, _)| k == "storageHandle")
-                .ok_or(CapsuleDecodeError::Truncated {
-                    expected_min: 1,
-                    actual: 0,
-                })?
-                .1
-                .as_str()?
-                .to_string();
-            if storage_handle.len() > MAX_STORAGE_HANDLE_LEN {
-                return Err(CapsuleDecodeError::OverLimitLength {
-                    field: "custody.storageHandle",
-                    limit: MAX_STORAGE_HANDLE_LEN,
-                    actual: storage_handle.len(),
-                });
-            }
-            SourceCustody::Retained {
-                source_digest,
-                source_bytes,
-                storage_handle,
-            }
-        } else {
-            SourceCustody::NotRetained
-        };
-
-        // Omission
-        let omission_obj = get_field("omission")?.as_object()?;
-        let is_omitted = omission_obj
-            .iter()
-            .find(|(k, _)| k == "isOmitted")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_bool()?;
-        let omission = if is_omitted {
-            let reason_str = omission_obj
-                .iter()
-                .find(|(k, _)| k == "reason")
-                .ok_or(CapsuleDecodeError::Truncated {
-                    expected_min: 1,
-                    actual: 0,
-                })?
-                .1
-                .as_str()?;
-            let reason = OmissionReason::parse(reason_str)?;
-            let policy_rule = omission_obj
-                .iter()
-                .find(|(k, _)| k == "policyRule")
-                .ok_or(CapsuleDecodeError::Truncated {
-                    expected_min: 1,
-                    actual: 0,
-                })?
-                .1
-                .as_str()?
-                .to_string();
-            if policy_rule.len() > MAX_POLICY_RULE_LEN {
-                return Err(CapsuleDecodeError::OverLimitLength {
-                    field: "omission.policyRule",
-                    limit: MAX_POLICY_RULE_LEN,
-                    actual: policy_rule.len(),
-                });
-            }
-            let omitted_bytes = omission_obj
-                .iter()
-                .find(|(k, _)| k == "omittedBytes")
-                .ok_or(CapsuleDecodeError::Truncated {
-                    expected_min: 1,
-                    actual: 0,
-                })?
-                .1
-                .as_u64()?;
-            let omitted_frames = omission_obj
-                .iter()
-                .find(|(k, _)| k == "omittedFrames")
-                .ok_or(CapsuleDecodeError::Truncated {
-                    expected_min: 1,
-                    actual: 0,
-                })?
-                .1
-                .as_u32()?;
-            ExplicitOmission::Omitted {
-                reason,
-                policy_rule,
-                omitted_bytes,
-                omitted_frames,
-            }
-        } else {
-            ExplicitOmission::None
-        };
-
-        // Media
-        let media_obj = get_field("media")?.as_object()?;
-        let kind_str = media_obj
-            .iter()
-            .find(|(k, _)| k == "kind")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()?;
-        let kind = MediaKind::parse(kind_str).map_err(CapsuleDecodeError::Contract)?;
-        let codec = media_obj
-            .iter()
-            .find(|(k, _)| k == "codec")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()?
-            .to_string();
-        if codec.len() > MAX_CODEC_LEN {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "media.codec",
-                limit: MAX_CODEC_LEN,
-                actual: codec.len(),
-            });
-        }
-        let container = match media_obj.iter().find(|(k, _)| k == "container") {
-            Some((_, v)) => v.as_opt_str()?.map(ToOwned::to_owned),
-            None => None,
-        };
-        if let Some(c) = &container
-            && c.len() > MAX_CONTAINER_LEN
-        {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "media.container",
-                limit: MAX_CONTAINER_LEN,
-                actual: c.len(),
-            });
-        }
-        let width = match media_obj.iter().find(|(k, _)| k == "width") {
-            Some((_, v)) => v.as_opt_u32()?,
-            None => None,
-        };
-        let height = match media_obj.iter().find(|(k, _)| k == "height") {
-            Some((_, v)) => v.as_opt_u32()?,
-            None => None,
-        };
-        let source_bytes = media_obj
-            .iter()
-            .find(|(k, _)| k == "sourceBytes")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_u64()?;
-        let frame_count = media_obj
-            .iter()
-            .find(|(k, _)| k == "frameCount")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_u32()?;
-        let source_digest = match media_obj.iter().find(|(k, _)| k == "sourceDigest") {
-            Some((_, v)) => v
-                .as_opt_str()?
-                .map(ContentDigest::parse)
-                .transpose()
-                .map_err(CapsuleDecodeError::Contract)?,
-            None => None,
-        };
-        let proxy_digest = match media_obj.iter().find(|(k, _)| k == "proxyDigest") {
-            Some((_, v)) => v
-                .as_opt_str()?
-                .map(ContentDigest::parse)
-                .transpose()
-                .map_err(CapsuleDecodeError::Contract)?,
-            None => None,
-        };
-
-        let media = MediaDescriptor {
-            kind,
-            codec,
-            container,
-            width,
-            height,
-            source_bytes,
-            frame_count,
-            source_digest,
-            proxy_digest,
-        };
-
-        // Integrity
-        let integrity_obj = get_field("integrity")?.as_object()?;
-        let metadata_digest_str = integrity_obj
-            .iter()
-            .find(|(k, _)| k == "metadataDigest")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()?;
-        let metadata_digest =
-            ContentDigest::parse(metadata_digest_str).map_err(CapsuleDecodeError::Contract)?;
-        let continuity_str = integrity_obj
-            .iter()
-            .find(|(k, _)| k == "continuity")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()?;
-        let continuity = ContinuityState::parse(continuity_str)?;
-        let decode_str = integrity_obj
-            .iter()
-            .find(|(k, _)| k == "decode")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()?;
-        let decode = DecodeState::parse(decode_str)?;
-        let firmware_fingerprint = match integrity_obj
-            .iter()
-            .find(|(k, _)| k == "firmwareFingerprint")
-        {
-            Some((_, v)) => v.as_opt_str()?.map(ToOwned::to_owned),
-            None => None,
-        };
-        if let Some(fp) = &firmware_fingerprint
-            && fp.len() > MAX_FIRMWARE_FINGERPRINT_LEN
-        {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "integrity.firmwareFingerprint",
-                limit: MAX_FIRMWARE_FINGERPRINT_LEN,
-                actual: fp.len(),
-            });
-        }
-        let integrity = IntegrityWitness {
-            metadata_digest,
-            continuity,
-            decode,
-            firmware_fingerprint,
-        };
-
-        // Privacy
-        let privacy_obj = get_field("privacy")?.as_object()?;
-        let mask_generation = match privacy_obj.iter().find(|(k, _)| k == "maskGeneration") {
-            Some((_, v)) => v
-                .as_opt_str()?
-                .map(ContentDigest::parse)
-                .transpose()
-                .map_err(CapsuleDecodeError::Contract)?,
-            None => None,
-        };
-        let redaction_str = privacy_obj
-            .iter()
-            .find(|(k, _)| k == "redactionState")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()?;
-        let redaction_state = RedactionState::parse(redaction_str)?;
-        let retention_class = privacy_obj
-            .iter()
-            .find(|(k, _)| k == "retentionClass")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()?
-            .to_string();
-        if retention_class.len() > MAX_RETENTION_CLASS_LEN {
-            return Err(CapsuleDecodeError::OverLimitLength {
-                field: "privacy.retentionClass",
-                limit: MAX_RETENTION_CLASS_LEN,
-                actual: retention_class.len(),
-            });
-        }
-        let privacy = PrivacyDescriptor {
-            mask_generation,
-            redaction_state,
-            retention_class,
-        };
-
-        // Publication
-        let pub_obj = get_field("publication")?.as_object()?;
-        let pub_state_str = pub_obj
-            .iter()
-            .find(|(k, _)| k == "state")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()?;
-        let state = PublicationState::parse(pub_state_str)?;
-        let root_digest_str = pub_obj
-            .iter()
-            .find(|(k, _)| k == "rootDigest")
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()?;
-        let root_digest =
-            ContentDigest::parse(root_digest_str).map_err(CapsuleDecodeError::Contract)?;
-        let ledger_revision = match pub_obj.iter().find(|(k, _)| k == "ledgerRevision") {
-            Some((_, v)) => v.as_opt_u64()?,
-            None => None,
-        };
-        let publication = PublicationDescriptor {
-            state,
-            root_digest,
-            ledger_revision,
-        };
-
-        // Identities: parse nested SourceIdentity, DeviceIdentity, AdapterIdentity
-        let source_id_obj = get_field("sourceIdentity")?.as_object()?;
-        let source_identity = parse_source_identity_from_json(source_id_obj)?;
-
-        let device_id_obj = get_field("deviceIdentity")?.as_object()?;
-        let device_identity = parse_device_identity_from_json(device_id_obj)?;
-
-        let adapter_id_obj = get_field("adapterIdentity")?.as_object()?;
-        let adapter_identity = parse_adapter_identity_from_json(adapter_id_obj)?;
+        let source_identity = parse_source_identity_from_json(&JsonObject::closed(
+            obj.get("sourceIdentity")?,
+            "sourceIdentity",
+            JSON_SOURCE_IDENTITY_KEYS,
+        )?)?;
+        let device_identity = parse_device_identity_from_json(&JsonObject::closed(
+            obj.get("deviceIdentity")?,
+            "deviceIdentity",
+            JSON_DEVICE_IDENTITY_KEYS,
+        )?)?;
+        let adapter_identity = parse_adapter_identity_from_json(&JsonObject::closed(
+            obj.get("adapterIdentity")?,
+            "adapterIdentity",
+            JSON_ADAPTER_IDENTITY_KEYS,
+        )?)?;
 
         let capsule = Self {
             schema: schema_val.to_string(),
@@ -2060,6 +1801,7 @@ impl SensorCapsuleV1 {
             adapter_identity,
             sequence,
             capture_interval,
+            capture_uncertainty_reason,
             receive_time_ns,
             clock_basis,
             custody,
@@ -2074,249 +1816,547 @@ impl SensorCapsuleV1 {
     }
 }
 
+/// Reads a length-prefixed text field from the binary payload.
+fn read_text<'a>(decoder: &mut CanonicalDecoder<'a>) -> Result<&'a str, CapsuleDecodeError> {
+    decoder.text().map_err(|_| CapsuleDecodeError::Truncated {
+        expected_min: 1,
+        actual: 0,
+    })
+}
+
+/// Enforces the length bound on a raw identifier, then requires that parsing did not
+/// normalize it (e.g. an alias prefix such as `dev:` rewritten to `device:`).
+fn canonical_id<T: AsRef<str>>(
+    field: &'static str,
+    limit: usize,
+    raw: &str,
+    parsed: Result<T, ContractError>,
+) -> Result<T, CapsuleDecodeError> {
+    if raw.len() > limit {
+        return Err(CapsuleDecodeError::OverLimitLength {
+            field,
+            limit,
+            actual: raw.len(),
+        });
+    }
+    let id = parsed.map_err(CapsuleDecodeError::Contract)?;
+    if id.as_ref() != raw {
+        return Err(CapsuleDecodeError::NonCanonicalEncoding {
+            detail: format!(
+                "{field} '{raw}' is a non-canonical alias of '{}'",
+                id.as_ref()
+            ),
+        });
+    }
+    Ok(id)
+}
+
+fn parse_clock_basis(tag: &str) -> Result<ClockBasis, CapsuleDecodeError> {
+    match tag {
+        "utc_disciplined" => Ok(ClockBasis::UtcDisciplined),
+        "device_monotonic" => Ok(ClockBasis::DeviceMonotonic),
+        "host_monotonic" => Ok(ClockBasis::HostMonotonic),
+        "estimated" => Ok(ClockBasis::Estimated),
+        _ => Err(CapsuleDecodeError::NonCanonicalEncoding {
+            detail: format!("unknown clock basis '{tag}'"),
+        }),
+    }
+}
+
+const JSON_ROOT_KEYS: &[&str] = &[
+    "adapterId",
+    "adapterIdentity",
+    "capsuleId",
+    "captureInterval",
+    "clockBasis",
+    "custody",
+    "deviceId",
+    "deviceIdentity",
+    "integrity",
+    "media",
+    "omission",
+    "privacy",
+    "publication",
+    "receiveTimeNs",
+    "schema",
+    "sensorId",
+    "sequence",
+    "sourceId",
+    "sourceIdentity",
+    "streamId",
+];
+const JSON_CAPTURE_INTERVAL_KEYS: &[&str] = &["earliestNs", "latestNs", "uncertaintyReason"];
+const JSON_CUSTODY_KEYS: &[&str] = &["isRetained", "sourceBytes", "sourceDigest", "storageHandle"];
+const JSON_OMISSION_KEYS: &[&str] = &[
+    "isOmitted",
+    "omittedBytes",
+    "omittedFrames",
+    "policyRule",
+    "reason",
+];
+const JSON_MEDIA_KEYS: &[&str] = &[
+    "codec",
+    "container",
+    "frameCount",
+    "height",
+    "kind",
+    "proxyDigest",
+    "sourceBytes",
+    "sourceDigest",
+    "width",
+];
+const JSON_INTEGRITY_KEYS: &[&str] = &[
+    "continuity",
+    "decode",
+    "firmwareFingerprint",
+    "metadataDigest",
+];
+const JSON_PRIVACY_KEYS: &[&str] = &["maskGeneration", "redactionState", "retentionClass"];
+const JSON_PUBLICATION_KEYS: &[&str] = &["ledgerRevision", "rootDigest", "state"];
+const JSON_SOURCE_IDENTITY_KEYS: &[&str] = &[
+    "adapterId",
+    "channel",
+    "deviceId",
+    "failureDomain",
+    "isLive",
+    "mediaKind",
+    "nominalClockBasis",
+    "schema",
+    "sourceId",
+    "sourceKind",
+    "streamGeneration",
+];
+const JSON_DEVICE_IDENTITY_KEYS: &[&str] = &[
+    "applicationVersion",
+    "capabilities",
+    "deviceClass",
+    "deviceId",
+    "failureDomain",
+    "firmwareVersion",
+    "generation",
+    "hardwareRevision",
+    "manufacturer",
+    "model",
+    "modelGeneration",
+    "schema",
+];
+const JSON_ADAPTER_IDENTITY_KEYS: &[&str] = &[
+    "adapterId",
+    "adapterKind",
+    "capabilities",
+    "credentialMethod",
+    "generation",
+    "isolationMode",
+    "maxBandwidthBytesPerSec",
+    "maxBufferFrames",
+    "protocolProfile",
+    "requestTimeoutNs",
+    "schema",
+];
+
+/// A JSON object whose key set has been checked against a closed schema object.
+///
+/// Duplicate keys are rejected by the parser; unknown keys are rejected here; every key
+/// the capsule projection emits is required.
+struct JsonObject<'a> {
+    path: &'static str,
+    fields: &'a [(String, JsonValue)],
+}
+
+impl<'a> JsonObject<'a> {
+    fn closed(
+        value: &'a JsonValue,
+        path: &'static str,
+        allowed: &[&str],
+    ) -> Result<Self, CapsuleDecodeError> {
+        let fields = value.as_object()?;
+        if let Some((key, _)) = fields.iter().find(|(k, _)| !allowed.contains(&k.as_str())) {
+            return Err(CapsuleDecodeError::JsonError {
+                detail: format!("unknown field '{key}' in {path}"),
+            });
+        }
+        Ok(Self { path, fields })
+    }
+
+    fn get(&self, name: &str) -> Result<&'a JsonValue, CapsuleDecodeError> {
+        self.fields
+            .iter()
+            .find(|(k, _)| k == name)
+            .map(|(_, v)| v)
+            .ok_or_else(|| CapsuleDecodeError::JsonError {
+                detail: format!("missing required field '{name}' in {}", self.path),
+            })
+    }
+
+    fn str(&self, name: &str) -> Result<&'a str, CapsuleDecodeError> {
+        self.get(name)?.as_str()
+    }
+}
+
+fn parse_opt_digest(value: &JsonValue) -> Result<Option<ContentDigest>, CapsuleDecodeError> {
+    value
+        .as_opt_str()?
+        .map(ContentDigest::parse)
+        .transpose()
+        .map_err(CapsuleDecodeError::Contract)
+}
+
+fn parse_custody_json(obj: &JsonObject<'_>) -> Result<SourceCustody, CapsuleDecodeError> {
+    let is_retained = obj.get("isRetained")?.as_bool()?;
+    let source_bytes = obj.get("sourceBytes")?.as_u64()?;
+    let source_digest = obj.get("sourceDigest")?.as_opt_str()?;
+    let storage_handle = obj.str("storageHandle")?;
+    if storage_handle.len() > MAX_STORAGE_HANDLE_LEN {
+        return Err(CapsuleDecodeError::OverLimitLength {
+            field: "custody.storageHandle",
+            limit: MAX_STORAGE_HANDLE_LEN,
+            actual: storage_handle.len(),
+        });
+    }
+    if is_retained {
+        let digest = source_digest.ok_or_else(|| CapsuleDecodeError::JsonError {
+            detail: "retained custody requires sourceDigest".to_string(),
+        })?;
+        return Ok(SourceCustody::Retained {
+            source_digest: ContentDigest::parse(digest).map_err(CapsuleDecodeError::Contract)?,
+            source_bytes,
+            storage_handle: storage_handle.to_string(),
+        });
+    }
+    if source_bytes != 0 {
+        return Err(CapsuleDecodeError::Contradiction {
+            field: "custody.sourceBytes",
+            detail: format!("must be 0 when isRetained is false, found {source_bytes}"),
+        });
+    }
+    if source_digest.is_some() {
+        return Err(CapsuleDecodeError::Contradiction {
+            field: "custody.sourceDigest",
+            detail: "must be null when isRetained is false".to_string(),
+        });
+    }
+    if !storage_handle.is_empty() {
+        return Err(CapsuleDecodeError::Contradiction {
+            field: "custody.storageHandle",
+            detail: "must be empty when isRetained is false".to_string(),
+        });
+    }
+    Ok(SourceCustody::NotRetained)
+}
+
+fn parse_omission_json(obj: &JsonObject<'_>) -> Result<ExplicitOmission, CapsuleDecodeError> {
+    let is_omitted = obj.get("isOmitted")?.as_bool()?;
+    let reason = OmissionReason::parse(obj.str("reason")?)?;
+    let policy_rule = obj.str("policyRule")?;
+    if policy_rule.len() > MAX_POLICY_RULE_LEN {
+        return Err(CapsuleDecodeError::OverLimitLength {
+            field: "omission.policyRule",
+            limit: MAX_POLICY_RULE_LEN,
+            actual: policy_rule.len(),
+        });
+    }
+    let omitted_bytes = obj.get("omittedBytes")?.as_u64()?;
+    let omitted_frames = obj.get("omittedFrames")?.as_u32()?;
+    if is_omitted {
+        if reason == OmissionReason::None {
+            return Err(CapsuleDecodeError::Contradiction {
+                field: "omission.reason",
+                detail: "an explicit omission must name a reason other than 'none'".to_string(),
+            });
+        }
+        return Ok(ExplicitOmission::Omitted {
+            reason,
+            policy_rule: policy_rule.to_string(),
+            omitted_bytes,
+            omitted_frames,
+        });
+    }
+    if omitted_bytes != 0 {
+        return Err(CapsuleDecodeError::Contradiction {
+            field: "omission.omittedBytes",
+            detail: format!("must be 0 when isOmitted is false, found {omitted_bytes}"),
+        });
+    }
+    if omitted_frames != 0 {
+        return Err(CapsuleDecodeError::Contradiction {
+            field: "omission.omittedFrames",
+            detail: format!("must be 0 when isOmitted is false, found {omitted_frames}"),
+        });
+    }
+    if !policy_rule.is_empty() {
+        return Err(CapsuleDecodeError::Contradiction {
+            field: "omission.policyRule",
+            detail: "must be empty when isOmitted is false".to_string(),
+        });
+    }
+    if reason != OmissionReason::None {
+        return Err(CapsuleDecodeError::Contradiction {
+            field: "omission.reason",
+            detail: format!(
+                "must be 'none' when isOmitted is false, found '{}'",
+                reason.as_str()
+            ),
+        });
+    }
+    Ok(ExplicitOmission::None)
+}
+
+fn parse_media_json(obj: &JsonObject<'_>) -> Result<MediaDescriptor, CapsuleDecodeError> {
+    let kind = MediaKind::parse(obj.str("kind")?).map_err(CapsuleDecodeError::Contract)?;
+    let codec = obj.str("codec")?;
+    if codec.len() > MAX_CODEC_LEN {
+        return Err(CapsuleDecodeError::OverLimitLength {
+            field: "media.codec",
+            limit: MAX_CODEC_LEN,
+            actual: codec.len(),
+        });
+    }
+    let container = obj.get("container")?.as_opt_str()?;
+    if let Some(c) = container
+        && c.len() > MAX_CONTAINER_LEN
+    {
+        return Err(CapsuleDecodeError::OverLimitLength {
+            field: "media.container",
+            limit: MAX_CONTAINER_LEN,
+            actual: c.len(),
+        });
+    }
+    Ok(MediaDescriptor {
+        kind,
+        codec: codec.to_string(),
+        container: container.map(ToOwned::to_owned),
+        width: obj.get("width")?.as_opt_u32()?,
+        height: obj.get("height")?.as_opt_u32()?,
+        source_bytes: obj.get("sourceBytes")?.as_u64()?,
+        frame_count: obj.get("frameCount")?.as_u32()?,
+        source_digest: parse_opt_digest(obj.get("sourceDigest")?)?,
+        proxy_digest: parse_opt_digest(obj.get("proxyDigest")?)?,
+    })
+}
+
+fn parse_integrity_json(obj: &JsonObject<'_>) -> Result<IntegrityWitness, CapsuleDecodeError> {
+    let metadata_digest =
+        ContentDigest::parse(obj.str("metadataDigest")?).map_err(CapsuleDecodeError::Contract)?;
+    let continuity = ContinuityState::parse(obj.str("continuity")?)?;
+    let decode = DecodeState::parse(obj.str("decode")?)?;
+    let firmware_fingerprint = obj.get("firmwareFingerprint")?.as_opt_str()?;
+    if let Some(fp) = firmware_fingerprint
+        && fp.len() > MAX_FIRMWARE_FINGERPRINT_LEN
+    {
+        return Err(CapsuleDecodeError::OverLimitLength {
+            field: "integrity.firmwareFingerprint",
+            limit: MAX_FIRMWARE_FINGERPRINT_LEN,
+            actual: fp.len(),
+        });
+    }
+    Ok(IntegrityWitness {
+        metadata_digest,
+        continuity,
+        decode,
+        firmware_fingerprint: firmware_fingerprint.map(ToOwned::to_owned),
+    })
+}
+
+fn parse_privacy_json(obj: &JsonObject<'_>) -> Result<PrivacyDescriptor, CapsuleDecodeError> {
+    let mask_generation = parse_opt_digest(obj.get("maskGeneration")?)?;
+    let redaction_state = RedactionState::parse(obj.str("redactionState")?)?;
+    let retention_class = obj.str("retentionClass")?;
+    if retention_class.len() > MAX_RETENTION_CLASS_LEN {
+        return Err(CapsuleDecodeError::OverLimitLength {
+            field: "privacy.retentionClass",
+            limit: MAX_RETENTION_CLASS_LEN,
+            actual: retention_class.len(),
+        });
+    }
+    Ok(PrivacyDescriptor {
+        mask_generation,
+        redaction_state,
+        retention_class: retention_class.to_string(),
+    })
+}
+
+fn parse_publication_json(
+    obj: &JsonObject<'_>,
+) -> Result<PublicationDescriptor, CapsuleDecodeError> {
+    Ok(PublicationDescriptor {
+        state: PublicationState::parse(obj.str("state")?)?,
+        root_digest: ContentDigest::parse(obj.str("rootDigest")?)
+            .map_err(CapsuleDecodeError::Contract)?,
+        ledger_revision: obj.get("ledgerRevision")?.as_opt_u64()?,
+    })
+}
+
 fn parse_source_identity_from_json(
-    obj: &[(String, JsonValue)],
+    obj: &JsonObject<'_>,
 ) -> Result<SourceIdentity, CapsuleDecodeError> {
     use crate::identity::SourceKind;
     use crate::ids::StreamGeneration;
 
-    let get_str = |name: &str| -> Result<&str, CapsuleDecodeError> {
-        obj.iter()
-            .find(|(k, _)| k == name)
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()
-    };
-    let schema = get_str("schema")?;
+    let schema = obj.str("schema")?;
     if schema != SourceIdentity::SCHEMA {
         return Err(CapsuleDecodeError::SchemaMismatch {
             expected: SourceIdentity::SCHEMA,
             found: schema.to_string(),
         });
     }
-    let source_id = SourceId::parse(get_str("sourceId")?).map_err(CapsuleDecodeError::Contract)?;
-    let device_id = DeviceId::parse(get_str("deviceId")?).map_err(CapsuleDecodeError::Contract)?;
-    let adapter_id =
-        AdapterId::parse(get_str("adapterId")?).map_err(CapsuleDecodeError::Contract)?;
-    let source_kind =
-        SourceKind::parse(get_str("sourceKind")?).map_err(CapsuleDecodeError::Contract)?;
-    let media_kind =
-        MediaKind::parse(get_str("mediaKind")?).map_err(CapsuleDecodeError::Contract)?;
-    let channel = get_str("channel")?.to_string();
-    let clock_str = get_str("nominalClockBasis")?;
-    let nominal_clock_basis = match clock_str {
-        "utc_disciplined" => ClockBasis::UtcDisciplined,
-        "device_monotonic" => ClockBasis::DeviceMonotonic,
-        "host_monotonic" => ClockBasis::HostMonotonic,
-        "estimated" => ClockBasis::Estimated,
-        _ => {
-            return Err(CapsuleDecodeError::NonCanonicalEncoding {
-                detail: format!("unknown clock basis '{clock_str}'"),
-            });
-        }
-    };
-    let stream_generation = StreamGeneration::parse(get_str("streamGeneration")?)
-        .map_err(CapsuleDecodeError::Contract)?;
-    let failure_domain = get_str("failureDomain")?.to_string();
-    let is_live = obj
-        .iter()
-        .find(|(k, _)| k == "isLive")
-        .ok_or(CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?
-        .1
-        .as_bool()?;
+    let raw = obj.str("sourceId")?;
+    let source_id = canonical_id(
+        "sourceIdentity.sourceId",
+        MAX_STR_LEN,
+        raw,
+        SourceId::parse(raw),
+    )?;
+    let raw = obj.str("deviceId")?;
+    let device_id = canonical_id(
+        "sourceIdentity.deviceId",
+        MAX_STR_LEN,
+        raw,
+        DeviceId::parse(raw),
+    )?;
+    let raw = obj.str("adapterId")?;
+    let adapter_id = canonical_id(
+        "sourceIdentity.adapterId",
+        MAX_STR_LEN,
+        raw,
+        AdapterId::parse(raw),
+    )?;
 
     let id = SourceIdentity {
         source_id,
         device_id,
         adapter_id,
-        source_kind,
-        media_kind,
-        channel,
-        nominal_clock_basis,
-        stream_generation,
-        failure_domain,
-        is_live,
+        source_kind: SourceKind::parse(obj.str("sourceKind")?)
+            .map_err(CapsuleDecodeError::Contract)?,
+        media_kind: MediaKind::parse(obj.str("mediaKind")?)
+            .map_err(CapsuleDecodeError::Contract)?,
+        channel: obj.str("channel")?.to_string(),
+        nominal_clock_basis: parse_clock_basis(obj.str("nominalClockBasis")?)?,
+        stream_generation: StreamGeneration::parse(obj.str("streamGeneration")?)
+            .map_err(CapsuleDecodeError::Contract)?,
+        failure_domain: obj.str("failureDomain")?.to_string(),
+        is_live: obj.get("isLive")?.as_bool()?,
     };
     id.verify().map_err(CapsuleDecodeError::Contract)?;
     Ok(id)
 }
 
 fn parse_device_identity_from_json(
-    obj: &[(String, JsonValue)],
+    obj: &JsonObject<'_>,
 ) -> Result<DeviceIdentity, CapsuleDecodeError> {
     use crate::identity::{DeviceCapabilities, DeviceClass};
     use crate::ids::{AppGeneration, DeviceGeneration, FirmwareGeneration, ModelGeneration};
 
-    let get_str = |name: &str| -> Result<&str, CapsuleDecodeError> {
-        obj.iter()
-            .find(|(k, _)| k == name)
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()
-    };
-    let schema = get_str("schema")?;
+    let schema = obj.str("schema")?;
     if schema != DeviceIdentity::SCHEMA {
         return Err(CapsuleDecodeError::SchemaMismatch {
             expected: DeviceIdentity::SCHEMA,
             found: schema.to_string(),
         });
     }
-    let device_id = DeviceId::parse(get_str("deviceId")?).map_err(CapsuleDecodeError::Contract)?;
-    let generation =
-        DeviceGeneration::parse(get_str("generation")?).map_err(CapsuleDecodeError::Contract)?;
-    let manufacturer = get_str("manufacturer")?.to_string();
-    let model = get_str("model")?.to_string();
-    let hardware_revision = get_str("hardwareRevision")?.to_string();
-    let firmware_version = FirmwareGeneration::parse(get_str("firmwareVersion")?)
+    let raw = obj.str("deviceId")?;
+    let device_id = canonical_id(
+        "deviceIdentity.deviceId",
+        MAX_STR_LEN,
+        raw,
+        DeviceId::parse(raw),
+    )?;
+    let application_version = obj
+        .get("applicationVersion")?
+        .as_opt_str()?
+        .map(AppGeneration::parse)
+        .transpose()
         .map_err(CapsuleDecodeError::Contract)?;
-    let application_version = match obj.iter().find(|(k, _)| k == "applicationVersion") {
-        Some((_, v)) => v
-            .as_opt_str()?
-            .map(AppGeneration::parse)
-            .transpose()
-            .map_err(CapsuleDecodeError::Contract)?,
-        None => None,
-    };
-    let model_generation = match obj.iter().find(|(k, _)| k == "modelGeneration") {
-        Some((_, v)) => v
-            .as_opt_str()?
-            .map(ModelGeneration::parse)
-            .transpose()
-            .map_err(CapsuleDecodeError::Contract)?,
-        None => None,
-    };
-    let device_class =
-        DeviceClass::parse(get_str("deviceClass")?).map_err(CapsuleDecodeError::Contract)?;
-    let cap_bits = obj
-        .iter()
-        .find(|(k, _)| k == "capabilities")
-        .ok_or(CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?
-        .1
-        .as_u32()?;
-    let capabilities =
-        DeviceCapabilities::from_bits(cap_bits).map_err(CapsuleDecodeError::Contract)?;
-    let failure_domain = get_str("failureDomain")?.to_string();
+    let model_generation = obj
+        .get("modelGeneration")?
+        .as_opt_str()?
+        .map(ModelGeneration::parse)
+        .transpose()
+        .map_err(CapsuleDecodeError::Contract)?;
+    let capabilities = DeviceCapabilities::from_bits(obj.get("capabilities")?.as_u32()?)
+        .map_err(CapsuleDecodeError::Contract)?;
 
     let id = DeviceIdentity {
         device_id,
-        generation,
-        manufacturer,
-        model,
-        hardware_revision,
-        firmware_version,
+        generation: DeviceGeneration::parse(obj.str("generation")?)
+            .map_err(CapsuleDecodeError::Contract)?,
+        manufacturer: obj.str("manufacturer")?.to_string(),
+        model: obj.str("model")?.to_string(),
+        hardware_revision: obj.str("hardwareRevision")?.to_string(),
+        firmware_version: FirmwareGeneration::parse(obj.str("firmwareVersion")?)
+            .map_err(CapsuleDecodeError::Contract)?,
         application_version,
         model_generation,
-        device_class,
+        device_class: DeviceClass::parse(obj.str("deviceClass")?)
+            .map_err(CapsuleDecodeError::Contract)?,
         capabilities,
-        failure_domain,
+        failure_domain: obj.str("failureDomain")?.to_string(),
     };
     id.verify().map_err(CapsuleDecodeError::Contract)?;
     Ok(id)
 }
 
 fn parse_adapter_identity_from_json(
-    obj: &[(String, JsonValue)],
+    obj: &JsonObject<'_>,
 ) -> Result<AdapterIdentity, CapsuleDecodeError> {
     use crate::identity::{AdapterCapabilities, AdapterKind, CredentialMethod, IsolationMode};
     use crate::ids::AdapterGeneration;
 
-    let get_str = |name: &str| -> Result<&str, CapsuleDecodeError> {
-        obj.iter()
-            .find(|(k, _)| k == name)
-            .ok_or(CapsuleDecodeError::Truncated {
-                expected_min: 1,
-                actual: 0,
-            })?
-            .1
-            .as_str()
-    };
-    let schema = get_str("schema")?;
+    let schema = obj.str("schema")?;
     if schema != AdapterIdentity::SCHEMA {
         return Err(CapsuleDecodeError::SchemaMismatch {
             expected: AdapterIdentity::SCHEMA,
             found: schema.to_string(),
         });
     }
-    let adapter_id =
-        AdapterId::parse(get_str("adapterId")?).map_err(CapsuleDecodeError::Contract)?;
-    let generation =
-        AdapterGeneration::parse(get_str("generation")?).map_err(CapsuleDecodeError::Contract)?;
-    let adapter_kind =
-        AdapterKind::parse(get_str("adapterKind")?).map_err(CapsuleDecodeError::Contract)?;
-    let protocol_profile = get_str("protocolProfile")?.to_string();
-    let isolation_mode =
-        IsolationMode::parse(get_str("isolationMode")?).map_err(CapsuleDecodeError::Contract)?;
-    let credential_method = CredentialMethod::parse(get_str("credentialMethod")?)
+    let raw = obj.str("adapterId")?;
+    let adapter_id = canonical_id(
+        "adapterIdentity.adapterId",
+        MAX_STR_LEN,
+        raw,
+        AdapterId::parse(raw),
+    )?;
+    let capabilities = AdapterCapabilities::from_bits(obj.get("capabilities")?.as_u32()?)
         .map_err(CapsuleDecodeError::Contract)?;
-    let cap_bits = obj
-        .iter()
-        .find(|(k, _)| k == "capabilities")
-        .ok_or(CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?
-        .1
-        .as_u32()?;
-    let capabilities =
-        AdapterCapabilities::from_bits(cap_bits).map_err(CapsuleDecodeError::Contract)?;
-    let max_bandwidth = obj
-        .iter()
-        .find(|(k, _)| k == "maxBandwidthBytesPerSec")
-        .ok_or(CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?
-        .1
-        .as_u64()?;
-    let max_buffer_frames = obj
-        .iter()
-        .find(|(k, _)| k == "maxBufferFrames")
-        .ok_or(CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?
-        .1
-        .as_u32()?;
-    let request_timeout_ns = obj
-        .iter()
-        .find(|(k, _)| k == "requestTimeoutNs")
-        .ok_or(CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })?
-        .1
-        .as_u64()?;
 
     let id = AdapterIdentity {
         adapter_id,
-        generation,
-        adapter_kind,
-        protocol_profile,
-        isolation_mode,
-        credential_method,
+        generation: AdapterGeneration::parse(obj.str("generation")?)
+            .map_err(CapsuleDecodeError::Contract)?,
+        adapter_kind: AdapterKind::parse(obj.str("adapterKind")?)
+            .map_err(CapsuleDecodeError::Contract)?,
+        protocol_profile: obj.str("protocolProfile")?.to_string(),
+        isolation_mode: IsolationMode::parse(obj.str("isolationMode")?)
+            .map_err(CapsuleDecodeError::Contract)?,
+        credential_method: CredentialMethod::parse(obj.str("credentialMethod")?)
+            .map_err(CapsuleDecodeError::Contract)?,
         capabilities,
-        max_bandwidth_bytes_per_sec: max_bandwidth,
-        max_buffer_frames,
-        request_timeout_ns,
+        max_bandwidth_bytes_per_sec: obj.get("maxBandwidthBytesPerSec")?.as_u64()?,
+        max_buffer_frames: obj.get("maxBufferFrames")?.as_u32()?,
+        request_timeout_ns: obj.get("requestTimeoutNs")?.as_u64()?,
     };
     id.verify().map_err(CapsuleDecodeError::Contract)?;
     Ok(id)
 }
 
+/// Whether the canonical field encoding carries `integrity.metadata_digest`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MetadataDigestSlot {
+    /// Full canonical encoding (binary envelope payload).
+    Included,
+    /// Metadata digest input: the stored digest is omitted so the digest never covers itself.
+    Excluded,
+}
+
 impl CanonicalEncode for SensorCapsuleV1 {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        self.encode_fields(encoder, MetadataDigestSlot::Included);
+    }
+}
+
+impl SensorCapsuleV1 {
+    /// Appends every field in canonical binary order; `slot` controls whether
+    /// `integrity.metadata_digest` is written.
+    fn encode_fields(&self, encoder: &mut CanonicalEncoder, slot: MetadataDigestSlot) {
         encoder.text(Self::SCHEMA);
         self.capsule_id.encode_canonical(encoder);
         self.source_id.encode_canonical(encoder);
@@ -2326,6 +2366,7 @@ impl CanonicalEncode for SensorCapsuleV1 {
         self.stream_id.encode_canonical(encoder);
         encoder.u64(self.sequence);
         self.capture_interval.encode_canonical(encoder);
+        encoder.text(&self.capture_uncertainty_reason);
         self.receive_time_ns.encode_canonical(encoder);
         encoder.u8(match self.clock_basis {
             ClockBasis::UtcDisciplined => 1,
@@ -2412,7 +2453,9 @@ impl CanonicalEncode for SensorCapsuleV1 {
         }
 
         // Integrity
-        encoder.digest(self.integrity.metadata_digest);
+        if slot == MetadataDigestSlot::Included {
+            encoder.digest(self.integrity.metadata_digest);
+        }
         encoder.u8(self.integrity.continuity as u8);
         encoder.u8(self.integrity.decode as u8);
         match &self.integrity.firmware_fingerprint {
@@ -2461,7 +2504,18 @@ impl CanonicalDecode for SensorCapsuleV1 {
     }
 }
 
-// Minimal deterministic JSON serializer helper
+/// Maximum JSON nesting depth accepted by the capsule JSON decoder.
+///
+/// The capsule projection nests objects two levels deep; the bound makes hostile input fail
+/// with a typed error instead of exhausting the stack.
+const MAX_JSON_DEPTH: usize = 16;
+
+const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+// Minimal deterministic JSON serializer helper.
+//
+// Escapes `"`, `\`, and every control character below U+0020 so canonical output is always
+// valid JSON; every other character, including non-ASCII text, is emitted verbatim.
 fn json_write_str(out: &mut String, s: &str) {
     out.push('"');
     for c in s.chars() {
@@ -2471,6 +2525,14 @@ fn json_write_str(out: &mut String, s: &str) {
             '\n' => out.push_str("\\n"),
             '\r' => out.push_str("\\r"),
             '\t' => out.push_str("\\t"),
+            '\u{8}' => out.push_str("\\b"),
+            '\u{c}' => out.push_str("\\f"),
+            control if u32::from(control) < 0x20 => {
+                let code = u32::from(control) as usize;
+                out.push_str("\\u00");
+                out.push(char::from(HEX_DIGITS[code >> 4]));
+                out.push(char::from(HEX_DIGITS[code & 0xf]));
+            }
             other => out.push(other),
         }
     }
@@ -2583,6 +2645,7 @@ impl JsonValue {
 struct JsonParser<'a> {
     src: &'a [u8],
     pos: usize,
+    depth: usize,
 }
 
 impl<'a> JsonParser<'a> {
@@ -2590,6 +2653,7 @@ impl<'a> JsonParser<'a> {
         Self {
             src: input.as_bytes(),
             pos: 0,
+            depth: 0,
         }
     }
 
@@ -2621,6 +2685,16 @@ impl<'a> JsonParser<'a> {
         }
     }
 
+    fn enter_container(&mut self) -> Result<(), CapsuleDecodeError> {
+        self.depth += 1;
+        if self.depth > MAX_JSON_DEPTH {
+            return Err(CapsuleDecodeError::JsonError {
+                detail: format!("nesting depth exceeds {MAX_JSON_DEPTH}"),
+            });
+        }
+        Ok(())
+    }
+
     fn parse_value(&mut self) -> Result<JsonValue, CapsuleDecodeError> {
         let b = self.peek().ok_or(CapsuleDecodeError::Truncated {
             expected_min: 1,
@@ -2641,10 +2715,12 @@ impl<'a> JsonParser<'a> {
 
     fn parse_object(&mut self) -> Result<JsonValue, CapsuleDecodeError> {
         self.pos += 1; // skip '{'
-        let mut fields = Vec::new();
+        self.enter_container()?;
+        let mut fields: Vec<(String, JsonValue)> = Vec::new();
         self.skip_whitespace();
         if self.pos < self.src.len() && self.src[self.pos] == b'}' {
             self.pos += 1;
+            self.depth -= 1;
             return Ok(JsonValue::Object(fields));
         }
         loop {
@@ -2655,6 +2731,11 @@ impl<'a> JsonParser<'a> {
                 });
             }
             let key = self.parse_string()?;
+            if fields.iter().any(|(existing, _)| *existing == key) {
+                return Err(CapsuleDecodeError::JsonError {
+                    detail: format!("duplicate object key '{key}'"),
+                });
+            }
             self.skip_whitespace();
             if self.pos >= self.src.len() || self.src[self.pos] != b':' {
                 return Err(CapsuleDecodeError::JsonError {
@@ -2683,15 +2764,18 @@ impl<'a> JsonParser<'a> {
                 detail: "expected ',' or '}' in object".to_string(),
             });
         }
+        self.depth -= 1;
         Ok(JsonValue::Object(fields))
     }
 
     fn parse_array(&mut self) -> Result<JsonValue, CapsuleDecodeError> {
         self.pos += 1; // skip '['
+        self.enter_container()?;
         let mut items = Vec::new();
         self.skip_whitespace();
         if self.pos < self.src.len() && self.src[self.pos] == b']' {
             self.pos += 1;
+            self.depth -= 1;
             return Ok(JsonValue::Array(items));
         }
         loop {
@@ -2716,118 +2800,138 @@ impl<'a> JsonParser<'a> {
                 detail: "expected ',' or ']' in array".to_string(),
             });
         }
+        self.depth -= 1;
         Ok(JsonValue::Array(items))
     }
 
     fn parse_string(&mut self) -> Result<String, CapsuleDecodeError> {
         self.pos += 1; // skip opening quote
         let mut s = String::new();
-        while self.pos < self.src.len() {
+        loop {
+            let run_start = self.pos;
+            while self.pos < self.src.len()
+                && !matches!(self.src[self.pos], b'"' | b'\\' | 0x00..=0x1f)
+            {
+                self.pos += 1;
+            }
+            // `src` comes from a `&str` and a run ends only at an ASCII byte, so the run is
+            // complete UTF-8: decode it as text rather than casting individual bytes.
+            let run = core::str::from_utf8(&self.src[run_start..self.pos]).map_err(|_| {
+                CapsuleDecodeError::JsonError {
+                    detail: "invalid utf-8 in string".to_string(),
+                }
+            })?;
+            s.push_str(run);
+            if self.pos >= self.src.len() {
+                return Err(CapsuleDecodeError::Truncated {
+                    expected_min: 1,
+                    actual: 0,
+                });
+            }
             let b = self.src[self.pos];
             self.pos += 1;
             match b {
                 b'"' => return Ok(s),
-                b'\\' => {
-                    if self.pos >= self.src.len() {
-                        return Err(CapsuleDecodeError::Truncated {
-                            expected_min: 1,
-                            actual: 0,
-                        });
-                    }
-                    let esc = self.src[self.pos];
-                    self.pos += 1;
-                    match esc {
-                        b'"' => s.push('"'),
-                        b'\\' => s.push('\\'),
-                        b'/' => s.push('/'),
-                        b'b' => s.push('\x08'),
-                        b'f' => s.push('\x0c'),
-                        b'n' => s.push('\n'),
-                        b'r' => s.push('\r'),
-                        b't' => s.push('\t'),
-                        b'u' => {
-                            if self.pos + 4 > self.src.len() {
-                                return Err(CapsuleDecodeError::Truncated {
-                                    expected_min: 4,
-                                    actual: self.src.len() - self.pos,
-                                });
-                            }
-                            let hex_str = core::str::from_utf8(&self.src[self.pos..self.pos + 4])
-                                .map_err(|_| CapsuleDecodeError::JsonError {
-                                detail: "invalid unicode escape".to_string(),
-                            })?;
-                            self.pos += 4;
-                            let codepoint = u16::from_str_radix(hex_str, 16).map_err(|_| {
-                                CapsuleDecodeError::JsonError {
-                                    detail: "invalid unicode hex digits".to_string(),
-                                }
-                            })?;
-                            if (0xD800..=0xDBFF).contains(&codepoint) {
-                                if self.pos + 6 <= self.src.len()
-                                    && &self.src[self.pos..self.pos + 2] == b"\\u"
-                                {
-                                    let low_hex =
-                                        core::str::from_utf8(&self.src[self.pos + 2..self.pos + 6])
-                                            .map_err(|_| CapsuleDecodeError::JsonError {
-                                                detail: "invalid unicode escape in low surrogate"
-                                                    .to_string(),
-                                            })?;
-                                    let low_codepoint =
-                                        u16::from_str_radix(low_hex, 16).map_err(|_| {
-                                            CapsuleDecodeError::JsonError {
-                                                detail:
-                                                    "invalid unicode hex digits in low surrogate"
-                                                        .to_string(),
-                                            }
-                                        })?;
-                                    if (0xDC00..=0xDFFF).contains(&low_codepoint) {
-                                        self.pos += 6;
-                                        let full_codepoint = 0x10000
-                                            + (((codepoint as u32 - 0xD800) << 10)
-                                                | (low_codepoint as u32 - 0xDC00));
-                                        let ch = char::from_u32(full_codepoint).ok_or(
-                                            CapsuleDecodeError::InvalidUnicodeEscape {
-                                                codepoint: full_codepoint,
-                                            },
-                                        )?;
-                                        s.push(ch);
-                                    } else {
-                                        return Err(CapsuleDecodeError::InvalidUnicodeEscape {
-                                            codepoint: codepoint as u32,
-                                        });
-                                    }
-                                } else {
-                                    return Err(CapsuleDecodeError::InvalidUnicodeEscape {
-                                        codepoint: codepoint as u32,
-                                    });
-                                }
-                            } else if (0xDC00..=0xDFFF).contains(&codepoint) {
-                                return Err(CapsuleDecodeError::InvalidUnicodeEscape {
-                                    codepoint: codepoint as u32,
-                                });
-                            } else {
-                                let ch = char::from_u32(codepoint as u32).ok_or(
-                                    CapsuleDecodeError::InvalidUnicodeEscape {
-                                        codepoint: codepoint as u32,
-                                    },
-                                )?;
-                                s.push(ch);
-                            }
-                        }
-                        _ => {
-                            return Err(CapsuleDecodeError::JsonError {
-                                detail: format!("invalid escape \\\\{}", esc as char),
-                            });
-                        }
-                    }
+                b'\\' => self.parse_escape(&mut s)?,
+                control => {
+                    return Err(CapsuleDecodeError::JsonError {
+                        detail: format!("unescaped control character U+{control:04X} in string"),
+                    });
                 }
-                other => s.push(other as char),
             }
         }
-        Err(CapsuleDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })
+    }
+
+    fn parse_escape(&mut self, s: &mut String) -> Result<(), CapsuleDecodeError> {
+        if self.pos >= self.src.len() {
+            return Err(CapsuleDecodeError::Truncated {
+                expected_min: 1,
+                actual: 0,
+            });
+        }
+        let esc = self.src[self.pos];
+        self.pos += 1;
+        match esc {
+            b'"' => s.push('"'),
+            b'\\' => s.push('\\'),
+            b'/' => s.push('/'),
+            b'b' => s.push('\x08'),
+            b'f' => s.push('\x0c'),
+            b'n' => s.push('\n'),
+            b'r' => s.push('\r'),
+            b't' => s.push('\t'),
+            b'u' => {
+                if self.pos + 4 > self.src.len() {
+                    return Err(CapsuleDecodeError::Truncated {
+                        expected_min: 4,
+                        actual: self.src.len() - self.pos,
+                    });
+                }
+                let hex_str =
+                    core::str::from_utf8(&self.src[self.pos..self.pos + 4]).map_err(|_| {
+                        CapsuleDecodeError::JsonError {
+                            detail: "invalid unicode escape".to_string(),
+                        }
+                    })?;
+                self.pos += 4;
+                let codepoint = u16::from_str_radix(hex_str, 16).map_err(|_| {
+                    CapsuleDecodeError::JsonError {
+                        detail: "invalid unicode hex digits".to_string(),
+                    }
+                })?;
+                if (0xD800..=0xDBFF).contains(&codepoint) {
+                    if self.pos + 6 <= self.src.len() && &self.src[self.pos..self.pos + 2] == b"\\u"
+                    {
+                        let low_hex = core::str::from_utf8(&self.src[self.pos + 2..self.pos + 6])
+                            .map_err(|_| CapsuleDecodeError::JsonError {
+                            detail: "invalid unicode escape in low surrogate".to_string(),
+                        })?;
+                        let low_codepoint = u16::from_str_radix(low_hex, 16).map_err(|_| {
+                            CapsuleDecodeError::JsonError {
+                                detail: "invalid unicode hex digits in low surrogate".to_string(),
+                            }
+                        })?;
+                        if (0xDC00..=0xDFFF).contains(&low_codepoint) {
+                            self.pos += 6;
+                            let full_codepoint = 0x10000
+                                + (((u32::from(codepoint) - 0xD800) << 10)
+                                    | (u32::from(low_codepoint) - 0xDC00));
+                            let ch = char::from_u32(full_codepoint).ok_or(
+                                CapsuleDecodeError::InvalidUnicodeEscape {
+                                    codepoint: full_codepoint,
+                                },
+                            )?;
+                            s.push(ch);
+                        } else {
+                            return Err(CapsuleDecodeError::InvalidUnicodeEscape {
+                                codepoint: u32::from(codepoint),
+                            });
+                        }
+                    } else {
+                        return Err(CapsuleDecodeError::InvalidUnicodeEscape {
+                            codepoint: u32::from(codepoint),
+                        });
+                    }
+                } else if (0xDC00..=0xDFFF).contains(&codepoint) {
+                    return Err(CapsuleDecodeError::InvalidUnicodeEscape {
+                        codepoint: u32::from(codepoint),
+                    });
+                } else {
+                    let ch = char::from_u32(u32::from(codepoint)).ok_or(
+                        CapsuleDecodeError::InvalidUnicodeEscape {
+                            codepoint: u32::from(codepoint),
+                        },
+                    )?;
+                    s.push(ch);
+                }
+            }
+            _ => {
+                return Err(CapsuleDecodeError::JsonError {
+                    detail: format!("invalid escape \\\\{}", esc as char),
+                });
+            }
+        }
+        Ok(())
     }
 
     fn parse_bool(&mut self) -> Result<bool, CapsuleDecodeError> {
@@ -2855,11 +2959,14 @@ impl<'a> JsonParser<'a> {
         }
     }
 
+    /// Parses a canonical JSON integer: `0` or `-?[1-9][0-9]*`. Leading zeros, `-0`,
+    /// fractions, and exponents are typed errors rather than silently truncated values.
     fn parse_number(&mut self) -> Result<i128, CapsuleDecodeError> {
         let start = self.pos;
         if self.pos < self.src.len() && self.src[self.pos] == b'-' {
             self.pos += 1;
         }
+        let digits_start = self.pos;
         while self.pos < self.src.len() && self.src[self.pos].is_ascii_digit() {
             self.pos += 1;
         }
@@ -2868,6 +2975,27 @@ impl<'a> JsonParser<'a> {
                 detail: "invalid number utf-8".to_string(),
             }
         })?;
+        let digits = &self.src[digits_start..self.pos];
+        if digits.is_empty() {
+            return Err(CapsuleDecodeError::JsonError {
+                detail: format!("expected digits in number '{slice}'"),
+            });
+        }
+        if digits.len() > 1 && digits.first() == Some(&b'0') {
+            return Err(CapsuleDecodeError::JsonError {
+                detail: format!("non-canonical integer '{slice}': leading zero"),
+            });
+        }
+        if digits == b"0" && digits_start != start {
+            return Err(CapsuleDecodeError::JsonError {
+                detail: "non-canonical integer '-0'".to_string(),
+            });
+        }
+        if self.pos < self.src.len() && matches!(self.src[self.pos], b'.' | b'e' | b'E') {
+            return Err(CapsuleDecodeError::JsonError {
+                detail: format!("non-integer number beginning '{slice}'"),
+            });
+        }
         slice
             .parse::<i128>()
             .map_err(|_| CapsuleDecodeError::JsonError {
