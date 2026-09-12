@@ -28,7 +28,7 @@ Fail-closed verification invariants:
 7. Receipts: qualification receipts under qualification-artifacts/ are inspected. A
    non-passing receipt fails when verified or cited; a retained but uncited non-passing
    receipt is reported as a typed warning and counted in the summary.
-8. Claim-class realization: a promoted bundle of a realized class (``slo``, ``proof``) has
+8. Claim-class realization: a promoted bundle of a realized class (``slo``, ``proof``, ``bounded_model``) has
    the evidence its registry row demands opened from disk and bound to the claim; each
    missing or mismatched item fails closed with a registered finding id.
 """
@@ -80,6 +80,11 @@ ERR_PROOF_FORMAL_ARTIFACT_MISSING = "ERR-CLAIM-PROOF-FORMAL-ARTIFACT-MISSING-001
 ERR_PROOF_TESTS_ONLY = "ERR-CLAIM-PROOF-TESTS-ONLY-001"
 ERR_PROOF_TOOLCHAIN_UNBOUND = "ERR-CLAIM-PROOF-TOOLCHAIN-UNBOUND-001"
 ERR_PROOF_CHECK_RECEIPT_INVALID = "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001"
+ERR_BOUND_DERIVATION_UNBOUND = "ERR-CLAIM-BOUND-DERIVATION-UNBOUND-001"
+ERR_BOUND_EXPRESSION_UNBOUND = "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001"
+ERR_BOUND_UNITS_MISSING = "ERR-CLAIM-BOUND-UNITS-MISSING-001"
+ERR_BOUND_TIGHTER_THAN_DERIVATION = "ERR-CLAIM-BOUND-TIGHTER-THAN-DERIVATION-001"
+ERR_BOUND_SENSITIVITY_MISSING = "ERR-CLAIM-BOUND-SENSITIVITY-MISSING-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_PROOF_BUNDLE_NOT_FOUND: {
@@ -173,6 +178,26 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_PROOF_CHECK_RECEIPT_INVALID: {
         "trigger": "A 'proof' claim's check receipt is missing, malformed, non-passing, or not bound to the claim ID, the formal model, and the formal artifact digest",
         "remediation": "Re-run the formal checker and retain a passing fss.proof_check_receipt.v1 bound to the claim, model, and artifact",
+    },
+    ERR_BOUND_DERIVATION_UNBOUND: {
+        "trigger": "A promoted 'bounded_model' claim retains no single fss.bound_derivation.v1 derivation, or it is not on disk, not digest-bound, malformed, has no derivation steps, or is not bound to the claim ID and generation",
+        "remediation": "Retain the analytic derivation bound to the claim ID and its exact generation",
+    },
+    ERR_BOUND_EXPRESSION_UNBOUND: {
+        "trigger": "A 'bounded_model' claim's bound expression, comparator, or value is missing, non-finite, bound to another claim, or differs from the derivation",
+        "remediation": "Bind the exact derived bound expression, comparator, and value to the claim ID",
+    },
+    ERR_BOUND_UNITS_MISSING: {
+        "trigger": "A 'bounded_model' claim's bound or derivation declares no units, or the claimed units differ from the derivation's units",
+        "remediation": "Declare identical explicit units in the claim and its derivation; units are never converted implicitly",
+    },
+    ERR_BOUND_TIGHTER_THAN_DERIVATION: {
+        "trigger": "A 'bounded_model' claim asserts a bound tighter than the analytically derived bound (below a derived upper bound or above a derived lower bound)",
+        "remediation": "Claim at most the derived bound, or retain a derivation that supports the tighter bound",
+    },
+    ERR_BOUND_SENSITIVITY_MISSING: {
+        "trigger": "A 'bounded_model' claim's derivation declares no sensitivity analysis or no invalidators",
+        "remediation": "Retain the sensitivity analysis and the invalidating conditions with the derivation",
     },
 }
 
@@ -1577,6 +1602,186 @@ def _verify_proof_claim_evidence(
         ))
 
 
+
+# Claim class 'bounded_model' (fss-x4a.30.87.3): "analytically derived bound under assumptions".
+# Row minimum_evidence: derivation, units, assumptions, sensitivity and invalidators.
+BOUND_DERIVATION_SCHEMA = "fss.bound_derivation.v1"
+BOUND_COMPARATORS: frozenset[str] = frozenset({"<=", ">="})
+
+
+def _finite_number(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+def _nonempty_entries(value: Any) -> bool:
+    return isinstance(value, list) and len(value) > 0 and all(
+        (isinstance(e, str) and e.strip()) or (isinstance(e, dict) and e) for e in value
+    )
+
+
+def _verify_bounded_model_claim_evidence(
+    bundle_data: dict[str, Any],
+    root: Path,
+    path_str: str,
+    expected_claim_id: str | None,
+    findings: list[ClaimFinding],
+) -> None:
+    """Opens and validates the evidence the 'bounded_model' row demands; every gap fails closed.
+
+    1. Assumptions: non-empty, each a named {id, statement}; every assumption the
+       derivation relies on is declared by the claim.
+    2. Bound: {claim_id, expression, comparator, value, units} bound to the claim ID,
+       with a finite value and explicit units.
+    3. Derivation: exactly one retained fss.bound_derivation.v1 on disk, digest-bound,
+       bound to the claim ID and generation, with derivation steps.
+    4. The claimed expression, comparator, and units equal the derivation's exactly.
+    5. The derivation carries sensitivity analysis and invalidators.
+    6. The claimed bound is never tighter than the derived bound (no tolerance).
+    """
+    claim_id = _bound_claim_id(bundle_data, expected_claim_id)
+    params: dict[str, Any] = {"claim_class": "bounded_model", "claim_id": claim_id}
+    label = f"'bounded_model' claim '{claim_id}'"
+    claim_generation = _nonempty_str(bundle_data.get("generation"))
+
+    # 1. Assumptions (the derivation cross-check follows below).
+    assumption_ids = _check_assumptions(bundle_data, path_str, params, findings)
+
+    # 2. The claimed bound.
+    bound = bundle_data.get("bound")
+    expression: str | None = None
+    comparator: str | None = None
+    value: float | None = None
+    units: str | None = None
+    if not isinstance(bound, dict):
+        findings.append(_finding(
+            ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound",
+            f"{label} declares no bound {{claim_id, expression, comparator, value, units}}",
+            params,
+        ))
+    else:
+        bound_claim = _nonempty_str(bound.get("claim_id"))
+        if bound_claim != claim_id:
+            findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.claim_id", f"{label} bound is bound to claim {bound_claim!r}", params))
+        expression = _nonempty_str(bound.get("expression"))
+        if expression is None:
+            findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.expression", f"{label} bound declares no expression", params))
+        raw_comparator = bound.get("comparator")
+        if raw_comparator in BOUND_COMPARATORS:
+            comparator = raw_comparator
+        else:
+            findings.append(_finding(
+                ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.comparator",
+                f"{label} bound comparator {raw_comparator!r} is not one of {sorted(BOUND_COMPARATORS)}",
+                params,
+            ))
+        value = _finite_number(bound.get("value"))
+        if value is None:
+            findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.value", f"{label} bound value {bound.get('value')!r} is not a finite number", params))
+        units = _nonempty_str(bound.get("units"))
+        if units is None:
+            findings.append(_finding(ERR_BOUND_UNITS_MISSING, path_str, "bound.units", f"{label} bound declares no units", params))
+
+    # 3. The derivation artifact, opened and bound to the claim.
+    derivation, reason = _open_role_document(bundle_data, root, "derivation", BOUND_DERIVATION_SCHEMA)
+    if derivation is None:
+        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, "artifacts[role=derivation]", f"{label} derivation: {reason}", params))
+        return
+    d_loc = "derivation"
+    if _nonempty_str(derivation.get("claim_id")) != claim_id:
+        findings.append(_finding(
+            ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.claim_id",
+            f"{label} derivation is bound to claim {derivation.get('claim_id')!r}",
+            params,
+        ))
+    d_generation = _nonempty_str(derivation.get("generation"))
+    if d_generation is None or claim_generation is None or d_generation != claim_generation:
+        findings.append(_finding(
+            ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.generation",
+            f"{label} derivation generation {derivation.get('generation')!r} differs from the claim generation {claim_generation!r}",
+            params,
+        ))
+    steps = derivation.get("steps")
+    if not (isinstance(steps, list) and len(steps) > 0 and all(isinstance(s, str) and s.strip() for s in steps)):
+        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.steps", f"{label} derivation declares no derivation steps", params))
+
+    # 4. Expression, comparator, value, and units agree exactly with the derivation.
+    d_expression = _nonempty_str(derivation.get("expression"))
+    if d_expression is None:
+        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.expression", f"{label} derivation declares no derived expression", params))
+    elif expression is not None and d_expression != expression:
+        findings.append(_finding(
+            ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.expression",
+            f"{label} claimed expression {expression!r} differs from the derived expression {d_expression!r}",
+            params,
+        ))
+    d_comparator = derivation.get("comparator")
+    if d_comparator not in BOUND_COMPARATORS:
+        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.comparator", f"{label} derivation comparator {d_comparator!r} is not registered", params))
+        d_comparator = None
+    elif comparator is not None and d_comparator != comparator:
+        findings.append(_finding(
+            ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.comparator",
+            f"{label} claimed comparator '{comparator}' differs from the derived comparator '{d_comparator}'",
+            params,
+        ))
+    d_value = _finite_number(derivation.get("derived_value"))
+    if d_value is None:
+        findings.append(_finding(
+            ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.derived_value",
+            f"{label} derivation derived_value {derivation.get('derived_value')!r} is not a finite number",
+            params,
+        ))
+    d_units = _nonempty_str(derivation.get("units"))
+    if d_units is None:
+        findings.append(_finding(ERR_BOUND_UNITS_MISSING, path_str, f"{d_loc}.units", f"{label} derivation declares no units", params))
+    elif units is not None and d_units != units:
+        findings.append(_finding(
+            ERR_BOUND_UNITS_MISSING, path_str, "bound.units",
+            f"{label} claimed units '{units}' differ from the derivation units '{d_units}'; units are never converted implicitly",
+            params,
+        ))
+
+    d_assumptions = derivation.get("assumption_ids")
+    if not (isinstance(d_assumptions, list) and len(d_assumptions) > 0 and all(isinstance(a, str) and a.strip() for a in d_assumptions)):
+        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.assumption_ids", f"{label} derivation names no assumption ids", params))
+    elif assumption_ids is not None:
+        omitted = sorted({a.strip() for a in d_assumptions} - set(assumption_ids))
+        if omitted:
+            findings.append(_finding(
+                ERR_CLAIM_ASSUMPTIONS_MISSING, path_str, "assumptions",
+                f"{label} omits assumptions its derivation relies on: {omitted}",
+                {**params, "omitted_assumptions": omitted},
+            ))
+
+    # 5. Sensitivity analysis and invalidators.
+    for key in ("sensitivity", "invalidators"):
+        if not _nonempty_entries(derivation.get(key)):
+            findings.append(_finding(
+                ERR_BOUND_SENSITIVITY_MISSING, path_str, f"{d_loc}.{key}",
+                f"{label} derivation declares no {key} (got {derivation.get(key)!r})",
+                params,
+            ))
+
+    # 6. Never tighter than the derivation.
+    comparable = (
+        value is not None and d_value is not None
+        and comparator is not None and comparator == d_comparator
+        and units is not None and units == d_units
+        and expression is not None and expression == d_expression
+    )
+    if comparable:
+        tighter = value < d_value if comparator == "<=" else value > d_value
+        if tighter:
+            findings.append(_finding(
+                ERR_BOUND_TIGHTER_THAN_DERIVATION, path_str, "bound.value",
+                f"{label} claims '{expression}' {comparator} {value} {units}, tighter than the derived bound {d_value} {units}",
+                {**params, "claimed_value": value, "derived_value": d_value, "comparator": comparator, "units": units},
+            ))
+
+
 def verify_proof_bundle(
     bundle_path: Path,
     root: Path,
@@ -1793,6 +1998,8 @@ def verify_proof_bundle(
             _verify_slo_claim_evidence(data, root, path_str, expected_claim_id, findings)
         elif effective_class == "proof" and _is_promoted_bundle(data, claim_level):
             _verify_proof_claim_evidence(data, root, path_str, expected_claim_id, findings)
+        elif effective_class == "bounded_model" and _is_promoted_bundle(data, claim_level):
+            _verify_bounded_model_claim_evidence(data, root, path_str, expected_claim_id, findings)
 
     is_valid = not any(f.severity == "error" for f in findings)
     return is_valid, findings, data
