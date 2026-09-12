@@ -12,20 +12,21 @@
     "modelId",
     "outputSchema",
     "schema",
+    "supersedesGeneration",
     "weightsDigest"
   ],
   "properties": {
     "calibrationGeneration": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,254}$",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$",
       "minLength": 8,
-      "maxLength": 255
+      "maxLength": 256
     },
     "generation": {
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,254}$",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$",
       "minLength": 8,
-      "maxLength": 255
+      "maxLength": 256
     },
     "inputSchema": {
       "type": "string",
@@ -40,6 +41,8 @@
         "restrictions",
         "sourceIdentity",
         "spdxOrIdentity",
+        "textDigest",
+        "upstreamRevision",
         "useApproved"
       ],
       "properties": {
@@ -109,9 +112,9 @@
       "anyOf": [
         {
           "type": "string",
-          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,254}$",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,255}$",
           "minLength": 8,
-          "maxLength": 255
+          "maxLength": 256
         },
         {
           "type": "null"
