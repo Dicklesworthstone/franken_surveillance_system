@@ -825,6 +825,12 @@ impl CanonicalDecode for DecisionPath {
     }
 }
 
+impl std::fmt::Display for DecisionPath {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.fingerprint)
+    }
+}
+
 /// An evidence edge supporting or contradicting an event or graph relation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EventEvidence {
