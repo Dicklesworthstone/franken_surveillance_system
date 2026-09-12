@@ -170,6 +170,40 @@ class SloValidatePlantedFaultTests(unittest.TestCase):
         codes = [f.code for f in findings]
         self.assertIn(slo_validate.CODE_PROOF_ROOT_NOT_FOUND, codes)
 
+    def test_planted_temp_or_hidden_proof_root_rejected(self) -> None:
+        """SLO validation must fail closed if an achieved SLO references a temporary or hidden receipt file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            qual_dir = temp_root / "qualification-artifacts/local/run1"
+            qual_dir.mkdir(parents=True, exist_ok=True)
+            temp_receipt = qual_dir / ".qualification-receipt.json.tmp.12345"
+            temp_receipt.write_text(json.dumps({
+                "schema": "fss.release_qualification_receipt.v1",
+                "receiptId": "local:policy:test1",
+                "laneId": "QL-POLICY-001",
+                "sourceCommit": "git:abc1234",
+                "sourceTree": "git-tree:def5678",
+                "siblingClosureDigest": "sha256:0000",
+                "toolchain": "nightly",
+                "hostIdentity": "host1",
+                "target": "Linux",
+                "features": [],
+                "commands": [{"argv": ["test"], "status": "passed", "outputDigest": "sha256:00"}],
+                "status": "passed",
+            }), encoding="utf-8")
+
+            planted = self.real_slos_text + f"\n| `SLO-TEST-001` | target desc | measurement surface | achieved | qualification-artifacts/local/run1/{temp_receipt.name} |\n"
+            slos_file = self.temp_path / "SLOS.md"
+            slos_file.write_text(planted, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=temp_root,
+                slos_path=slos_file,
+                costs_path=COSTS_PATH,
+            )
+            self.assertFalse(is_valid, "Referencing a temporary or hidden receipt must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn(slo_validate.CODE_ACHIEVED_WITHOUT_PROOF_ROOT, codes)
+
     # Positive test: Achieved with real existing proof file passes
     def test_achieved_with_real_proof_file_passes(self) -> None:
         proof_dir = ROOT / "qualification-artifacts"

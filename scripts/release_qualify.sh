@@ -117,7 +117,7 @@ build_release() {
   "$STAGE_DIR/$(basename "$source")" capabilities --json > "$RECEIPT_DIR/capabilities.json"
   python3 scripts/manifest_audit.py > "$RECEIPT_DIR/repository-manifest-audit.txt"
   python3 - "$RECEIPT_DIR/build.json" <<'PY'
-import hashlib, json, os, subprocess, sys
+import hashlib, json, os, subprocess, sys, tempfile
 from pathlib import Path
 
 def digest(path: str) -> str:
@@ -147,7 +147,28 @@ receipt = {
     "capabilitiesSha256": digest(os.path.join(os.environ["RECEIPT_DIR"], "capabilities.json")),
     "claimBoundary": "design_skeleton",
 }
-Path(sys.argv[1]).write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+target_path = Path(sys.argv[1]).resolve()
+target_path.parent.mkdir(parents=True, exist_ok=True)
+descriptor, temp_name = tempfile.mkstemp(prefix=f".{target_path.name}.tmp.", dir=target_path.parent)
+temp_file = Path(temp_name)
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.chmod(temp_file, 0o644)
+    os.replace(temp_file, target_path)
+    dir_fd = os.open(target_path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+finally:
+    if temp_file.exists():
+        try:
+            temp_file.unlink()
+        except OSError:
+            pass
 PY
 }
 

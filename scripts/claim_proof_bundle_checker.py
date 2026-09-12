@@ -1035,6 +1035,7 @@ def write_qualification_receipt(output_path: Path | str, receipt: dict[str, Any]
             handle.write(json.dumps(receipt, indent=2) + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+        os.chmod(temp_path, 0o644)
         os.replace(temp_path, target)
         dir_fd = os.open(target.parent, os.O_RDONLY)
         try:

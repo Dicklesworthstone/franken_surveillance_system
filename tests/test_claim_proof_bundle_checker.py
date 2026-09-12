@@ -1584,32 +1584,89 @@ class TestAtomicReceiptWritingAndCorruptReceiptNaming(unittest.TestCase):
             # Restore old receipt and demonstrate atomic write isolation
             cpb.write_qualification_receipt(receipt_file, old_receipt)
 
-            # Atomic write truncated mid-write: write to temp file in same directory, truncated before rename
-            temp_path = receipt_file.parent / f".{receipt_file.name}.tmp.simulated"
-            with open(temp_path, "wb") as f:
-                f.write(new_bytes[:truncated_len])
-                f.flush()
-                os.fsync(f.fileno())
+    def test_write_qualification_receipt_mid_write_truncation_preserves_old_receipt(self) -> None:
+        """write_qualification_receipt must preserve existing receipt and clean up temp files when truncated mid-write."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            rel = "qualification-artifacts/local/run1/qualification-receipt.json"
+            receipt_file = root / rel
+            receipt_file.parent.mkdir(parents=True, exist_ok=True)
+            old_receipt = make_receipt("passed")
+            new_receipt = make_receipt("passed")
+            new_receipt["receiptId"] = "local:policy:new_receipt_001"
+            cpb.write_qualification_receipt(receipt_file, old_receipt)
 
-            # Reader sees old complete receipt! Never partial/corrupt receipt!
-            pre_rename_findings, pre_rename_status = cpb.inspect_qualification_receipt(receipt_file, root)
-            self.assertEqual(pre_rename_status, "passed")
-            self.assertEqual(len(pre_rename_findings), 0)
+            original_open = os.fdopen
+            def crashing_fdopen(*args, **kwargs):
+                handle = original_open(*args, **kwargs)
+                original_write = handle.write
+                def truncated_write(data):
+                    original_write(data[:len(data) // 3])
+                    handle.flush()
+                    raise OSError("Simulated disk full / process crash mid-write")
+                handle.write = truncated_write
+                return handle
+
+            with mock.patch("os.fdopen", side_effect=crashing_fdopen):
+                with self.assertRaises(OSError):
+                    cpb.write_qualification_receipt(receipt_file, new_receipt)
+
+            # Reader must see intact old receipt, never a corrupt/partial receipt
+            findings, status = cpb.inspect_qualification_receipt(receipt_file, root)
+            self.assertEqual(status, "passed")
+            self.assertEqual(len(findings), 0)
             data, _ = cpb._read_json_document(receipt_file, rel, "qualification receipt")
             self.assertIsNotNone(data)
             self.assertEqual(data["receiptId"], old_receipt["receiptId"])
 
-            # Clean up aborted temp file
-            temp_path.unlink()
+            # Aborted temp file must be unlinked
+            temp_files = list(receipt_file.parent.glob(".*.tmp.*"))
+            self.assertEqual(temp_files, [], "write_qualification_receipt must clean up temp files on write failure")
 
-            # Successful atomic write completes: reader sees new complete receipt!
-            cpb.write_qualification_receipt(receipt_file, new_receipt)
-            post_rename_findings, post_rename_status = cpb.inspect_qualification_receipt(receipt_file, root)
-            self.assertEqual(post_rename_status, "passed")
-            self.assertEqual(len(post_rename_findings), 0)
-            data, _ = cpb._read_json_document(receipt_file, rel, "qualification receipt")
-            self.assertIsNotNone(data)
-            self.assertEqual(data["receiptId"], "local:policy:new_receipt_001")
+    def test_test_suite_does_not_use_colliding_static_temp_file(self) -> None:
+        """Tests must not hardcode static temp filenames like .tmp.simulated that collide in parallel runs."""
+        test_file_lines = (ROOT / "tests/test_claim_proof_bundle_checker.py").read_text(encoding="utf-8").splitlines()
+        forbidden = f".tmp.{'simulated'}"
+        matching = [line for line in test_file_lines if forbidden in line and "forbidden" not in line and "def test_" not in line and "Tests must not" not in line]
+        self.assertEqual(
+            matching,
+            [],
+            f"test_claim_proof_bundle_checker.py hardcodes a static temporary filename which collides across concurrent runs: {matching}",
+        )
+
+    def test_release_qualify_writes_build_receipt_atomically(self) -> None:
+        """scripts/release_qualify.sh must write build.json atomically, not directly via write_text."""
+        script_text = (ROOT / "scripts/release_qualify.sh").read_text(encoding="utf-8")
+        self.assertNotIn(
+            "Path(sys.argv[1]).write_text(",
+            script_text,
+            "scripts/release_qualify.sh writes build.json in-place via write_text, allowing partial reads",
+        )
+        self.assertIn("tempfile.mkstemp", script_text)
+        self.assertIn("os.fsync", script_text)
+        self.assertIn("os.replace", script_text)
+
+    def test_qualify_finalize_handles_truncated_commands_record(self) -> None:
+        """qualify.sh finalize trap must not crash with unhandled JSONDecodeError if commands.jsonl has a partial line."""
+        script_text = (ROOT / "scripts/qualify.sh").read_text(encoding="utf-8")
+        self.assertIn(
+            "json.JSONDecodeError",
+            script_text,
+            "qualify.sh must handle JSONDecodeError in finalize trap",
+        )
+        self.assertIn(
+            "handle.flush()",
+            script_text,
+            "qualify.sh append_record must flush and fsync",
+        )
+
+    def test_written_receipt_has_standard_permissions(self) -> None:
+        """Qualification receipts written by write_qualification_receipt must have standard permissions (0644)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            receipt_file = Path(tmpdir) / "qualification-receipt.json"
+            cpb.write_qualification_receipt(receipt_file, make_receipt("passed"))
+            mode = receipt_file.stat().st_mode & 0o777
+            self.assertEqual(mode, 0o644, f"Receipt file permissions should be 0644, got {oct(mode)}")
 
     def test_qualify_script_atomic_receipt_contract(self) -> None:
         """scripts/qualify.sh must write receipts to temp file in same directory, fsync, and rename."""

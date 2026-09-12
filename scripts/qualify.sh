@@ -52,12 +52,15 @@ append_record() {
   shift 3
   python3 - "$records" "$id" "$status" "$digest" "$@" <<'PY'
 import json
+import os
 import pathlib
 import sys
 path = pathlib.Path(sys.argv[1])
 record = {"id": sys.argv[2], "status": sys.argv[3], "outputDigest": sys.argv[4], "argv": sys.argv[5:]}
 with path.open("a", encoding="utf-8") as handle:
     handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
 PY
 }
 
@@ -238,9 +241,22 @@ lane_ids = {
     "privacy": "QL-PRIVACY-001", "release-preflight": "QL-RELEASE-001", "release": "QL-RELEASE-001",
 }
 commands=[]
-for line in pathlib.Path(records_path).read_text(encoding="utf-8").splitlines():
-    row=json.loads(line)
-    commands.append({"argv": row["argv"], "status": row["status"], "outputDigest": row["outputDigest"]})
+records_file = pathlib.Path(records_path)
+if records_file.exists():
+    for line in records_file.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row=json.loads(line)
+            commands.append({"argv": row["argv"], "status": row["status"], "outputDigest": row["outputDigest"]})
+        except (json.JSONDecodeError, ValueError, KeyError):
+            commands.append({
+                "argv": ["corrupt_record"],
+                "status": "failed",
+                "outputDigest": "sha256:" + hashlib.sha256(line.encode("utf-8")).hexdigest(),
+            })
+            status = "failed"
 if not commands:
     commands=[{"argv":["scripts/qualify.sh","--lane",lane],"status":"failed","outputDigest":"sha256:"+hashlib.sha256(b"no-command-record").hexdigest()}]
 lock=pathlib.Path("Cargo.lock")
@@ -271,6 +287,7 @@ try:
         handle.write(json.dumps(receipt, indent=2) + "\n")
         handle.flush()
         os.fsync(handle.fileno())
+    os.chmod(temp_file, 0o644)
     os.replace(temp_file, target_path)
     dir_fd = os.open(target_path.parent, os.O_RDONLY)
     try:

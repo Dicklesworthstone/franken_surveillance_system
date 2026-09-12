@@ -546,6 +546,15 @@ def parse_slos(
                                 remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_ROOT_NOT_FOUND]["remediation"],
                                 params={"slo_id": slo_id, "proof_root": proof_root},
                             ))
+                        elif curr.name.startswith(".") or ".tmp." in curr.name or curr.name.endswith(".tmp"):
+                            findings.append(SloFinding(
+                                severity="error",
+                                code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
+                                path=path_str,
+                                message=f"SLO {slo_id} referenced proof root '{proof_root}' is a temporary or hidden receipt file; transient artifacts cannot serve as proof",
+                                remediation="Qualification proof root must reference an official published receipt, not a temporary or hidden file",
+                                params={"slo_id": slo_id, "proof_root": proof_root},
+                            ))
                         else:
                             # F2: an achieved proof root must be a non-empty JSON file that parses as a qualification receipt with schema fss.release_qualification_receipt.v1
                             file_size = curr.stat().st_size
