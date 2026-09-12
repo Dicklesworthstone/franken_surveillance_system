@@ -10,8 +10,8 @@ and mandated by `AGENTS.md`:
 ## Where the invariants are proven
 
 Every invariant below is proven by a doctest attached to the real public item that owns the
-boundary, compiled against the crate's actual public API. The doctests run in the normal cargo
-test wave (`cargo test --doc -p fss-core` and `cargo test --doc -p fss-reference`). This
+boundary, compiled against the crate's actual public API. The doctests run in the
+qualify.sh rust-lane 'doctest' step (DEP-AUD-028). This
 document intentionally contains no compile-fail blocks of its own: a standalone markdown file
 has no link to the workspace crates, so any example here would fail for an unresolved path
 rather than for the plane violation it claims to show.

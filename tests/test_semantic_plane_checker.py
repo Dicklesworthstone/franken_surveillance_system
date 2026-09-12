@@ -576,6 +576,21 @@ impl From<Belief> for EffectAuthority {
             codes = [f.code for f in findings]
             self.assertIn(ERR_DOCTEST_FAILED, codes)
 
+    def test_contract_doc_invalid_mapping_fails(self) -> None:
+        """Contract doc with missing invariant mapping must fail verification."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            doc_dir = tmp_root / "docs" / "enforcement"
+            doc_dir.mkdir(parents=True, exist_ok=True)
+            bad_doc = doc_dir / "three_semantic_planes_contract.md"
+            bad_doc.write_text(
+                "# Bad Contract\n## Invariant 1: Something\nNo table rows here.\n",
+                encoding="utf-8",
+            )
+            success, count, err = verify_compile_fail_doctests(bad_doc, tmp_root)
+            self.assertFalse(success)
+            self.assertIn("Invariant 1 has no enforcement row", err)
+
     def test_finding_5_missing_declared_module_fails_closed(self) -> None:
         """Declared module that does not exist on disk must fail closed (F5)."""
         with tempfile.TemporaryDirectory() as td:

@@ -20,7 +20,6 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -50,8 +49,8 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "standard_code": "SEMPLANE-001",
     },
     ERR_DOCTEST_FAILED: {
-        "trigger": "Compile-fail doctests in docs/enforcement/three_semantic_planes_contract.md failed to run or passed compilation",
-        "remediation": "Ensure forbidden cross-plane conversions trigger compilation failure under rustdoc --test",
+        "trigger": "Compile-fail doctest mapping in docs/enforcement/three_semantic_planes_contract.md failed or missing",
+        "remediation": "Ensure forbidden cross-plane conversions are mapped and proven by crate doctests",
         "standard_code": "SEMPLANE-002",
     },
     ERR_REGISTRY_INVALID: {
@@ -257,124 +256,138 @@ def load_semantic_plane_registry(
     return data, findings
 
 
-def resolve_workspace_doctest_flags(root: Path) -> list[str]:
-    """Resolves compiler flags (--extern and -L) for workspace crates needed by contract doctests."""
-    target_dirs: list[Path] = []
-    if "CARGO_TARGET_DIR" in os.environ:
-        target_dirs.append(Path(os.environ["CARGO_TARGET_DIR"]))
-    target_dirs.extend([
-        Path("/data/tmp/cargo-target"),
-        Path("/data/tmp/cargo-semantic-plane-doctests"),
-        root / "target",
-    ])
-
-    crates = ["fss_core", "fss_reference", "fss_ledger", "fss_object", "fss_publication"]
-    found_crates: dict[str, Path] = {}
-    dep_dirs: set[str] = set()
-
-    for td in target_dirs:
-        build_dir = td / "debug" / "build"
-        if not build_dir.is_dir():
-            continue
-        for crate in crates:
-            if crate in found_crates:
-                continue
-            crate_kebab = crate.replace("_", "-")
-            pattern = f"{crate_kebab}/*/out/lib{crate}-*.rmeta"
-            matches = sorted(
-                build_dir.glob(pattern),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            if matches:
-                found_crates[crate] = matches[0]
-                dep_dirs.add(str(matches[0].parent))
-
-    missing_crates = [c for c in crates if c not in found_crates]
-    if missing_crates:
-        try:
-            cargo_cmd = ["cargo", "check", "-p", "fss-reference"]
-            env = dict(os.environ)
-            env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
-            subprocess.run(
-                cargo_cmd,
-                capture_output=True,
-                text=True,
-                cwd=str(root),
-                env=env,
-                timeout=60,
-            )
-            for td in target_dirs:
-                build_dir = td / "debug" / "build"
-                if not build_dir.is_dir():
-                    continue
-                for crate in missing_crates:
-                    if crate in found_crates:
-                        continue
-                    crate_kebab = crate.replace("_", "-")
-                    pattern = f"{crate_kebab}/*/out/lib{crate}-*.rmeta"
-                    matches = sorted(
-                        build_dir.glob(pattern),
-                        key=lambda p: p.stat().st_mtime,
-                        reverse=True,
-                    )
-                    if matches:
-                        found_crates[crate] = matches[0]
-                        dep_dirs.add(str(matches[0].parent))
-        except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
-            pass
-
-    flags: list[str] = []
-    for crate, path in found_crates.items():
-        flags.extend(["--extern", f"{crate}={path}"])
-    for d in sorted(dep_dirs):
-        flags.extend(["-L", f"dependency={d}"])
-
-    return flags
-
-
 def verify_compile_fail_doctests(
     contract_path: Path, root: Path | None = None
 ) -> tuple[bool, int, str]:
-    """Runs rustdoc --test on compile-fail contract and verifies all tests fail compilation as expected."""
+    """Verifies that docs/enforcement/three_semantic_planes_contract.md maps every invariant to a real doctest/test."""
     if not contract_path.is_file():
         return False, 0, f"Contract doctest file missing: {contract_path}"
 
-    cmd = ["rustdoc", "--test", str(contract_path), "--edition", "2024"]
+    try:
+        doc = contract_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        return False, 0, f"Failed to read contract document: {exc}"
+
     effective_root = root
     if effective_root is None:
-        for parent in contract_path.parents:
+        for parent in contract_path.resolve().parents:
             if (parent / "Cargo.toml").is_file():
                 effective_root = parent
                 break
-    if effective_root is not None:
-        flags = resolve_workspace_doctest_flags(effective_root)
-        cmd.extend(flags)
+        if effective_root is None:
+            effective_root = contract_path.resolve().parent
 
-    try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            cwd=str(contract_path.parent),
-            timeout=30,
+    errors: list[str] = []
+
+    for line_no, line in enumerate(doc.splitlines(), start=1):
+        stripped = line.strip()
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            info = stripped[3:].strip()
+            if info != "text":
+                errors.append(
+                    f"{contract_path}:{line_no}: code fence {stripped!r} would be an untested rustdoc block"
+                )
+
+    invariants = set(re.findall(r"^## Invariant (\d+):", doc, re.MULTILINE))
+    if not invariants:
+        errors.append(f"{contract_path}: no '## Invariant N:' sections found")
+
+    row_re = re.compile(
+        r"^\|\s*(?P<inv>[^|`]+?)\s*\|\s*`(?P<kind>[^`]+)`\s*\|\s*`(?P<path>[^`]+)`\s*\|"
+        r"\s*`(?P<item>[^`]+)`\s*\|\s*`(?P<marker>[^`]+)`\s*\|\s*$",
+        re.MULTILINE,
+    )
+    rows = [m.groupdict() for m in row_re.finditer(doc)]
+    mapped = {row["inv"] for row in rows}
+    for inv in sorted(invariants - mapped):
+        errors.append(f"{contract_path}: Invariant {inv} has no enforcement row")
+    for inv in sorted(mapped - invariants - {"legal-path"}):
+        errors.append(f"{contract_path}: enforcement row names unknown invariant {inv!r}")
+    if not any(row["inv"] == "legal-path" and row["kind"] == "doctest" for row in rows):
+        errors.append(f"{contract_path}: no compiling legal-path doctest row")
+
+    def attached_doc_blocks(lines: list[str], item: str) -> list[list[tuple[str, str]]]:
+        decl = re.compile(
+            r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:struct|enum|fn|type|trait|mod)\s+"
+            + re.escape(item)
+            + r"\b"
         )
-    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError) as exc:
-        return False, 0, f"Failed to execute rustdoc: {exc}"
+        all_blocks: list[list[tuple[str, str]]] = []
+        for index, line in enumerate(lines):
+            if not decl.match(line):
+                continue
+            start = index
+            while start > 0 and lines[start - 1].lstrip().startswith(("///", "#[")):
+                start -= 1
+            docs = [l.lstrip()[3:] for l in lines[start:index] if l.lstrip().startswith("///")]
+            docs = [d[1:] if d.startswith(" ") else d for d in docs]
+            blocks: list[tuple[str, str]] = []
+            info: str | None = None
+            body: list[str] = []
+            for text in docs:
+                if text.strip().startswith("```"):
+                    if info is None:
+                        info, body = text.strip()[3:].strip(), []
+                    else:
+                        blocks.append((info, "\n".join(body)))
+                        info = None
+                elif info is not None:
+                    body.append(text)
+            all_blocks.append(blocks)
+        return all_blocks
 
-    if result.returncode != 0:
-        return False, 0, f"rustdoc --test failed with code {result.returncode}:\n{result.stdout}\n{result.stderr}"
+    markers_seen: set[str] = set()
+    for row in rows:
+        rel_path = Path(row["path"])
+        path = (effective_root / rel_path) if not rel_path.is_absolute() else rel_path
+        label = f"Invariant {row['inv']} ({row['marker']})"
+        if row["marker"] in markers_seen:
+            errors.append(f"{label}: marker listed twice")
+        markers_seen.add(row["marker"])
+        if not path.is_file():
+            errors.append(f"{label}: {path} does not exist")
+            continue
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError) as exc:
+            errors.append(f"{label}: unreadable file {path}: {exc}")
+            continue
 
-    # Parse passed test count
-    match = re.search(r"test result:\s*ok\.\s*(\d+)\s*passed", result.stdout)
-    if not match:
-        return False, 0, f"Could not determine test count from rustdoc output:\n{result.stdout}"
+        if row["kind"] == "test":
+            if not re.search(
+                r"#\[test\]\s*\n\s*fn\s+" + re.escape(row["item"]) + r"\s*\(", "\n".join(lines)
+            ):
+                errors.append(f"{label}: no #[test] fn {row['item']} in {path}")
+            continue
 
-    test_count = int(match.group(1))
-    if test_count == 0:
-        return False, 0, "Zero doctests were executed by rustdoc"
+        if row["kind"] == "doctest":
+            ok_kind = lambda info: info in ("", "rust")
+        elif re.fullmatch(r"compile_fail,E\d{4}", row["kind"]):
+            ok_kind = lambda info, kind=row["kind"]: info == kind
+        else:
+            errors.append(f"{label}: unsupported kind {row['kind']!r}")
+            continue
 
-    return True, test_count, ""
+        found = False
+        any_item = False
+        for blocks in attached_doc_blocks(lines, row["item"]):
+            any_item = True
+            for info, body in blocks:
+                if ok_kind(info) and re.search(r"//\s*" + re.escape(row["marker"]) + r"\b", body):
+                    if "fss_core::" not in body and "fss_reference::" not in body:
+                        errors.append(f"{label}: doctest does not exercise real fss types")
+                    found = True
+        if not any_item:
+            errors.append(f"{label}: item {row['item']} not declared in {path}")
+        elif not found:
+            errors.append(
+                f"{label}: no `{row['kind']}` doctest carrying the marker is attached to {row['item']} in {path}"
+            )
+
+    if errors:
+        return False, 0, "; ".join(errors)
+
+    return True, len(rows), ""
 
 
 def audit_contract_doc_claims(
@@ -1228,7 +1241,7 @@ def audit_semantic_planes(
                     SemanticPlaneFinding(
                         code=ERR_DOCTEST_FAILED,
                         file=sanitize_path(contract_path, root),
-                        location="rustdoc",
+                        location="contract_map",
                         message=f"Compile-fail doctest verification failed: {err}",
                         severity="error",
                         remediation=DIAGNOSTIC_REGISTRY[ERR_DOCTEST_FAILED]["remediation"],
@@ -1253,17 +1266,15 @@ def audit_semantic_planes(
         "cognition_types": cognition_count,
         "effect_types": effect_count,
         "ambiguous_types": ambiguous_count,
-        "doctests_passed": doctests_passed,
+        "doctests_verified": doctests_passed,
     }
 
     return is_valid, findings, summary
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Deterministic ADR-0001 three semantic planes enforcement checker"
-    )
-    parser.add_argument("--root", type=Path, default=ROOT, help="Repository root directory")
+    parser = argparse.ArgumentParser(description="Audit ADR-0001 three semantic planes enforcement")
+    parser.add_argument("--root", type=Path, default=ROOT, help="Project root directory")
     parser.add_argument(
         "--registry",
         type=Path,
@@ -1275,7 +1286,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-doctests",
         action="store_true",
-        help="Skip executing rustdoc compile-fail doctests",
+        help="Skip verifying ADR-0001 compile-fail doctest mappings",
     )
     args = parser.parse_args()
 
@@ -1305,7 +1316,7 @@ def main() -> int:
             print(f"  Cognition:       {summary['cognition_types']}")
             print(f"  Effect:          {summary['effect_types']}")
             print(f"  Ambiguous:       {summary['ambiguous_types']}")
-            print(f"Doctests Verified: {summary['doctests_passed']}")
+            print(f"Doctests Verified: {summary['doctests_verified']}")
             print(f"Errors:            {summary['error_count']}")
             print("================================================================================")
 
@@ -1319,7 +1330,7 @@ def main() -> int:
 
         if is_valid:
             if not args.quiet:
-                print(f"\n[PASS] Three semantic planes audit passed ({summary['types_mapped']} types mapped, {summary['doctests_passed']} doctests verified)")
+                print(f"\n[PASS] Three semantic planes audit passed ({summary['types_mapped']} types mapped, {summary['doctests_verified']} doctests verified)")
         else:
             print(f"\n[FAIL] Three semantic planes audit failed with {summary['error_count']} error(s)")
 
