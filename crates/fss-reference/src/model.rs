@@ -284,6 +284,23 @@ pub enum MockModelOutcome {
     },
 }
 
+impl MockModelOutcome {
+    /// Validates that this model outcome is not being treated as negative evidence.
+    ///
+    /// Per NEG-003 and AGENTS.md, model abstention is epistemic `Unknown`, never
+    /// evidence of absence (which strictly requires a verified `CoverageWitness`).
+    pub fn assert_not_negative_evidence(&self) -> Result<(), MockModelError> {
+        match self {
+            Self::Abstained { reason } => {
+                Err(MockModelError::AbstentionCannotBeNegativeEvidence {
+                    outcome: format!("MockModelOutcome::Abstained({reason:?})"),
+                })
+            }
+            Self::Finding { .. } => Ok(()),
+        }
+    }
+}
+
 /// Retained deterministic model result.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MockModelResult {
@@ -661,6 +678,40 @@ impl MockExecutorOutcome {
         match self {
             Self::Success(out) => Some(out.as_ref()),
             _ => None,
+        }
+    }
+
+    /// Validates that this executor outcome is not being treated as negative evidence.
+    ///
+    /// Crashes, timeouts, malformed outputs, and empty detections are failures/gaps,
+    /// NEVER negative evidence of absence (NEG-003).
+    pub fn assert_not_negative_evidence(&self) -> Result<(), MockModelError> {
+        match self {
+            Self::Crashed { reason } => Err(MockModelError::AbstentionCannotBeNegativeEvidence {
+                outcome: format!("MockExecutorOutcome::Crashed({reason})"),
+            }),
+            Self::TimedOut {
+                virtual_timeout_ns,
+                virtual_elapsed_ns,
+            } => Err(MockModelError::AbstentionCannotBeNegativeEvidence {
+                outcome: format!(
+                    "MockExecutorOutcome::TimedOut({virtual_elapsed_ns}/{virtual_timeout_ns}ns)"
+                ),
+            }),
+            Self::MalformedOutput { detail } => {
+                Err(MockModelError::AbstentionCannotBeNegativeEvidence {
+                    outcome: format!("MockExecutorOutcome::MalformedOutput({detail})"),
+                })
+            }
+            Self::Success(output) => {
+                if output.detections.is_empty() {
+                    Err(MockModelError::AbstentionCannotBeNegativeEvidence {
+                        outcome: "MockExecutorOutcome::Success(empty_detections)".to_string(),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 }
@@ -1651,6 +1702,11 @@ pub enum MockModelError {
     },
     /// Embedding vector has invalid norm (zero or non-finite).
     InvalidEmbeddingNorm,
+    /// Prohibited attempt to use model abstention or failure as negative evidence (NEG-003, INV-056).
+    AbstentionCannotBeNegativeEvidence {
+        /// Rejected outcome detail.
+        outcome: String,
+    },
 }
 
 impl fmt::Display for MockModelError {
@@ -1766,6 +1822,12 @@ impl fmt::Display for MockModelError {
             }
             Self::InvalidEmbeddingNorm => {
                 write!(f, "embedding vector has zero or non-finite norm")
+            }
+            Self::AbstentionCannotBeNegativeEvidence { outcome } => {
+                write!(
+                    f,
+                    "model abstention or failure ({outcome}) cannot be treated as negative evidence; negative evidence requires verified CoverageWitness (NEG-003, INV-056)"
+                )
             }
         }
     }
