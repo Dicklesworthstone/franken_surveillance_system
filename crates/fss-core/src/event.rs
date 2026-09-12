@@ -2638,7 +2638,6 @@ impl JsonValue {
 
 struct JsonObject<'a> {
     fields: &'a [(String, JsonValue)],
-    #[allow(dead_code)]
     name: &'static str,
 }
 
@@ -3044,5 +3043,91 @@ impl<'a> JsonParser<'a> {
             let val = self.parse_value(depth)?;
             fields.push((key, val));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_test_interval() -> Result<CaptureInterval, ContractError> {
+        CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))
+    }
+
+    fn sample_test_evidence(failure_domain: &str, supports: bool) -> EventEvidence {
+        let digest = ContentDigest::sha256(format!("evidence:{failure_domain}").as_bytes());
+        EventEvidence {
+            digest,
+            class: EvidenceClass::Derived,
+            failure_domain: failure_domain.to_string(),
+            supports,
+            relation: if supports {
+                EvidenceEdgeRelation::Supports
+            } else {
+                EvidenceEdgeRelation::Contradicts
+            },
+            capsule_digest: Some(ContentDigest::sha256(
+                format!("capsule:{failure_domain}").as_bytes(),
+            )),
+            identity_digest: Some(ContentDigest::sha256(
+                format!("identity:{failure_domain}").as_bytes(),
+            )),
+        }
+    }
+
+    fn sample_corroborated_event(
+        evidence: Vec<EventEvidence>,
+    ) -> Result<EventHypothesis, ContractError> {
+        let event_id = EventId::parse("event:corroboration-test")?;
+        let interval = sample_test_interval()?;
+        let probability = ProbabilityInterval::with_calibration(
+            0.8,
+            0.95,
+            ContentDigest::sha256(b"cal:camera-v1"),
+        )?;
+        Ok(EventHypothesis {
+            schema: EventHypothesis::SCHEMA.to_string(),
+            event_id,
+            revision: 1,
+            supersedes: None,
+            state: EventState::Corroborated,
+            kind: EventKind::PerimeterBreach,
+            interval,
+            uncertainty_reason: None,
+            zone_ids: vec!["zone:east".to_string()],
+            track_ids: vec!["track:001".to_string()],
+            probability,
+            evidence,
+            model_receipts: vec![ContentDigest::sha256(b"receipt-1")],
+            decision_path: ContentDigest::sha256(b"decision-path-1"),
+        })
+    }
+
+    #[test]
+    fn corroboration_requires_distinct_failure_domains() -> Result<(), ContractError> {
+        // AGENTS.md prohibits calling one camera's model score "corroborated".
+        // Building an event needing corroboration without it (identical failure domain) must fail.
+        let event = sample_corroborated_event(vec![
+            sample_test_evidence("camera:one", true),
+            sample_test_evidence("camera:one", true),
+        ])?;
+        assert_eq!(event.validate(), Err(ContractError::CorroborationRequired));
+        assert_eq!(
+            event.verify(),
+            Err(EventDecodeError::Contract(ContractError::CorroborationRequired))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn corroboration_passes_with_distinct_failure_domains() -> Result<(), ContractError> {
+        // Positive case: two distinct failure domains among supporting evidence passes.
+        let event = sample_corroborated_event(vec![
+            sample_test_evidence("camera:one", true),
+            sample_test_evidence("camera:two", true),
+        ])?;
+        assert_eq!(event.validate(), Ok(()));
+        assert!(event.verify().is_ok());
+        Ok(())
     }
 }

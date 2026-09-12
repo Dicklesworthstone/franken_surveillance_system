@@ -260,6 +260,7 @@ fn test_corroboration_requires_two_failure_domains() -> Result<(), Box<dyn Error
         sample_evidence("cam-east-1", true),
         sample_evidence("cam-east-1", true),
     ];
+    assert_eq!(event.validate(), Err(ContractError::CorroborationRequired));
     let Err(err) = event.verify() else {
         return Err("expected error".into());
     };
@@ -267,6 +268,15 @@ fn test_corroboration_requires_two_failure_domains() -> Result<(), Box<dyn Error
         err,
         EventDecodeError::Contract(ContractError::CorroborationRequired)
     ));
+
+    // Positive case: two distinct failure domains pass
+    event.evidence = vec![
+        sample_evidence("cam-east-1", true),
+        sample_evidence("cam-west-1", true),
+    ];
+    assert_eq!(event.validate(), Ok(()));
+    assert!(event.verify().is_ok());
+
     Ok(())
 }
 
