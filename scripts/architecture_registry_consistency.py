@@ -795,10 +795,26 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
     # Collect from stable_id_audit repository index
     try:
         repo_index = stable_id_audit._load_repository_index(repo_root)
-        known_active_ids.update(repo_index.known)
-        tombstoned_ids.update(repo_index.tombstoned)
-    except Exception:
-        pass
+        if not repo_index.known:
+            emit(
+                ERR_CORRUPT_FILE,
+                "architecture",
+                "#",
+                "stable-ID repository index is empty (no active or known stable IDs found)",
+            )
+        else:
+            known_active_ids.update(repo_index.known)
+            tombstoned_ids.update(repo_index.tombstoned)
+    except Exception as exc:
+        target_file = "architecture"
+        if hasattr(exc, "details") and isinstance(exc.details, dict):
+            target_file = str(exc.details.get("file") or exc.details.get("source") or target_file)
+        emit(
+            ERR_CORRUPT_FILE,
+            target_file,
+            "#",
+            f"failed to load stable-ID repository index: {exc}",
+        )
 
     # Validate foreign keys
     cap_md_map = extract_md_rows_by_id("registries/CAPABILITIES.md", "CAP-")

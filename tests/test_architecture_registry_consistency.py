@@ -27,6 +27,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
+import unittest.mock
+import stable_id_audit
+
 from architecture_registry_consistency import (
     ERR_CORRUPT_FILE,
     ERR_COUNT_MISMATCH,
@@ -135,6 +138,41 @@ class TestFailClosedOnMissingAndCorruptFiles(unittest.TestCase):
             corrupt_findings = [f for f in findings if f.code == ERR_CORRUPT_FILE]
             self.assertGreaterEqual(len(corrupt_findings), 1)
             self.assertTrue(any("architecture/operation_cost_registry.toml" in f.file for f in corrupt_findings))
+
+    def test_planted_corrupt_stable_id_index_fails_closed(self) -> None:
+        """Verifies that an exception loading the stable-ID repository index fails closed."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            with unittest.mock.patch(
+                "stable_id_audit._load_repository_index",
+                side_effect=stable_id_audit.AuditError(
+                    "ERR-STABLE-ID-INDEX-CORRUPT", "simulated corrupt stable-ID index"
+                ),
+            ):
+                is_valid, findings, _ = validate_consistency(repo)
+                self.assertFalse(is_valid)
+                corrupt_findings = [f for f in findings if f.code == ERR_CORRUPT_FILE]
+                self.assertGreaterEqual(len(corrupt_findings), 1)
+                self.assertTrue(
+                    any("failed to load stable-ID repository index" in f.message for f in corrupt_findings)
+                )
+
+    def test_planted_removed_stable_id_index_fails_closed(self) -> None:
+        """Verifies that an empty/removed stable-ID index fails closed rather than passing silently."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            with unittest.mock.patch(
+                "stable_id_audit._load_repository_index",
+                return_value=stable_id_audit.RepositoryIndex(),
+            ):
+                is_valid, findings, _ = validate_consistency(repo)
+                self.assertFalse(is_valid)
+                corrupt_findings = [f for f in findings if f.code == ERR_CORRUPT_FILE]
+                self.assertGreaterEqual(len(corrupt_findings), 1)
+                self.assertTrue(
+                    any("stable-ID repository index is empty" in f.message for f in corrupt_findings)
+                )
+
 
 
 class TestIdentifierPresenceAndCount(unittest.TestCase):
