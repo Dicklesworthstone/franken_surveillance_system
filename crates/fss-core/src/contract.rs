@@ -2267,6 +2267,8 @@ pub enum ContractError {
     NonMonotoneUncertaintyNarrowing,
     /// Unrecognized canonical encoding tag for clock basis.
     UnknownClockBasis(u8),
+    /// Unrecognized canonical encoding tag for an event store entry.
+    UnknownEntryTag(u8),
     /// A transition requires retained evidence.
     EvidenceRequired,
     /// A transition requires independent corroboration.
@@ -2314,6 +2316,7 @@ impl ContractError {
             Self::ArithmeticOverflow => "arithmetic_overflow",
             Self::NonMonotoneUncertaintyNarrowing => "non_monotone_uncertainty_narrowing",
             Self::UnknownClockBasis(_) => "unknown_clock_basis",
+            Self::UnknownEntryTag(_) => "unknown_entry_tag",
             Self::EvidenceRequired => "evidence_required",
             Self::CorroborationRequired => "corroboration_required",
             Self::NonCanonicalOrdering => "noncanonical_ordering",
