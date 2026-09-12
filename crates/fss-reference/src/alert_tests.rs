@@ -155,8 +155,16 @@ fn delivered_alert_closes_verified_obligation() -> Result<(), Box<dyn Error>> {
         .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?;
     assert_eq!(obligation.state, ObligationState::Pending);
 
-    let obs_proof = fss_core::ContentDigest::sha256(b"delivery-observation");
-    let observed = observe_reference_alert(&plan, obs_proof, TimestampNs(103), &mut journal)?;
+    let provider_receipt = provider
+        .lookup(&plan.intent)?
+        .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+    let observed = observe_reference_alert(
+        &plan,
+        provider_receipt.receipt_digest(),
+        TimestampNs(103),
+        &mut journal,
+        &provider,
+    )?;
     assert_eq!(observed.state, EffectState::Observed);
 
     let verified = verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;

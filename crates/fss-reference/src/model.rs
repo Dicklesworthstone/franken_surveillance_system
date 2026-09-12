@@ -1,6 +1,6 @@
 //! Deterministic scripted perception oracle for walking-skeleton qualification.
 
-use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, ProbabilityInterval};
+use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, ProbabilityInterval, SensorId};
 use fss_object::InMemoryObjectStore;
 
 use crate::{ReferenceCapture, ReferenceError};
@@ -105,13 +105,14 @@ impl MockAbstentionReason {
 #[derive(Clone, Debug, PartialEq)]
 pub enum MockModelOutcome {
     /// Model produced a derived label and probability interval.
+    /// Deterministic finding with a bounded conservative probability interval.
     Finding {
-        /// Derived semantic label.
+        /// Semantic label.
         label: MockSemanticLabel,
-        /// Model-local probability interval.
+        /// Calibrated or conservative probability interval.
         probability: ProbabilityInterval,
     },
-    /// Model declined to classify the input.
+    /// Explicit deterministic abstention.
     Abstained {
         /// Stable abstention reason.
         reason: MockAbstentionReason,
@@ -123,6 +124,8 @@ pub enum MockModelOutcome {
 pub struct MockModelResult {
     /// Stable model generation identity.
     pub generation_id: String,
+    /// Sensor identity from which capture was sourced.
+    pub sensor_id: SensorId,
     /// Complete scripted model-spec digest.
     pub model_spec_digest: ContentDigest,
     /// Exact capture object graph consumed.
@@ -145,6 +148,7 @@ impl CanonicalEncode for MockModelResult {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text("fss.mock_model_result.v1");
         encoder.text(&self.generation_id);
+        self.sensor_id.encode_canonical(encoder);
         encoder.digest(self.model_spec_digest);
         encoder.digest(self.input_capture_root);
         encoder.digest(self.continuity_digest);
@@ -186,8 +190,14 @@ pub fn execute_mock_model(
             }
         }
     };
+    let sensor_id = capture
+        .source_packets
+        .first()
+        .map(|packet| packet.sensor_id.clone())
+        .ok_or(ReferenceError::InvalidSpec("capture_has_no_packets"))?;
     let result = MockModelResult {
         generation_id: spec.generation_id.clone(),
+        sensor_id,
         model_spec_digest: spec.spec_digest(),
         input_capture_root: capture.receipt.capture_root,
         continuity_digest: capture.receipt.continuity_digest,

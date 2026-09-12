@@ -9,7 +9,7 @@ use fss_object::{InMemoryObjectStore, ObjectManifest};
 use fss_publication::AuthorityPublisher;
 
 use crate::{
-    ReferenceAlertPlan, ReferenceError,
+    ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError,
     alert::{reference_alert_terminal_proof_bytes, validate_reference_alert_plan},
 };
 
@@ -23,15 +23,15 @@ pub struct ReferenceAlertOutcome {
     pub operation_receipt: OperationReceipt,
     /// Terminal-proof obligation owned by the operation.
     pub obligation_id: fss_core::ObligationId,
-    /// Event graph against which the alert was prepared.
+    /// Exact canonical event graph being reported.
     pub event_root: ContentDigest,
-    /// Exact event revision witness.
+    /// Event revision fingerprint.
     pub event_revision_digest: ContentDigest,
-    /// Bounded provider channel identity.
+    /// Stable bounded alert channel identity.
     pub channel: String,
-    /// Content object containing the canonical operation receipt bytes.
+    /// Exact canonical object digest for the operation receipt.
     pub operation_object_digest: ContentDigest,
-    /// Retained provider proof object, absent only for an indeterminate outcome.
+    /// Terminal delivery or failure proof object digest, when terminal.
     pub proof_object_digest: Option<ContentDigest>,
 }
 
@@ -54,24 +54,24 @@ impl CanonicalEncode for ReferenceAlertOutcome {
     }
 }
 
-/// Authority receipt for one published alert-effect outcome.
+/// Receipt returned after one deterministic alert outcome is durably published.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReferenceAlertOutcomeReceipt {
-    /// Canonical semantic outcome.
+    /// Authoritative alert outcome record.
     pub outcome: ReferenceAlertOutcome,
-    /// Stable effect object identity.
+    /// Stable authority object identity.
     pub effect_object_id: ObjectId,
-    /// Effect object generation.
+    /// Exact published effect generation.
     pub effect_generation: u64,
-    /// Root of the complete outcome object graph.
+    /// Top-level outcome object root.
     pub outcome_root: ContentDigest,
-    /// Exact canonical outcome metadata object.
+    /// Canonical digest of the serialized outcome payload.
     pub outcome_object_digest: ContentDigest,
-    /// Authority anchor after publication, or the current anchor on an exact retry.
+    /// Authority anchor after publication.
     pub authority_anchor: LedgerAnchor,
 }
 
-/// Publishes one verified, failed, or indeterminate alert outcome exactly once.
+/// Publishes an authoritative alert effect outcome only when its event basis remains published.
 ///
 /// Provider success and known failure retain their exact deterministic proof bytes. An ambiguous
 /// outcome is published without fabricating proof and remains `Indeterminate`. Exact retries return
@@ -82,6 +82,7 @@ pub fn publish_reference_alert_outcome(
     journal: &EffectJournal,
     objects: &mut InMemoryObjectStore,
     ledger: &mut DurableReferenceLedger,
+    provider: &ReferenceAlertProvider,
 ) -> Result<ReferenceAlertOutcomeReceipt, ReferenceError> {
     validate_reference_alert_plan(plan)?;
     let operation = journal
@@ -123,7 +124,7 @@ pub fn publish_reference_alert_outcome(
     }
     let _ = objects.verify_closure(plan.event_root)?;
 
-    let proof_bytes = reference_alert_terminal_proof_bytes(plan, &operation)?;
+    let proof_bytes = reference_alert_terminal_proof_bytes(plan, &operation, provider)?;
     let proof_object_digest = proof_bytes.as_deref().map(ContentDigest::sha256);
     if proof_object_digest != operation.result_digest {
         return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));

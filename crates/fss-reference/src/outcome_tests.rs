@@ -23,6 +23,7 @@ struct OutcomeHarness {
     authority: DurableReferenceLedger,
     journal: EffectJournal,
     plan: ReferenceAlertPlan,
+    provider: ReferenceAlertProvider,
     event_object_id: ObjectId,
 }
 
@@ -81,8 +82,16 @@ impl OutcomeHarness {
             &mut provider,
         )?;
         if behavior == ReferenceProviderBehavior::Deliver {
-            let obs_proof = fss_core::ContentDigest::sha256(b"delivery-observation");
-            let _ = observe_reference_alert(&plan, obs_proof, TimestampNs(103), &mut journal)?;
+            let provider_receipt = provider
+                .lookup(&plan.intent)?
+                .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+            let _ = observe_reference_alert(
+                &plan,
+                provider_receipt.receipt_digest(),
+                TimestampNs(103),
+                &mut journal,
+                &provider,
+            )?;
             let _ = verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;
         }
 
@@ -92,6 +101,7 @@ impl OutcomeHarness {
             authority,
             journal,
             plan,
+            provider,
             event_object_id: ObjectId::parse(format!("object:event:{}", event_id.as_str()))?,
         })
     }
@@ -160,6 +170,7 @@ fn verified_outcome_is_authoritative_and_exact_retry_is_read_like() -> Result<()
         &harness.journal,
         &mut harness.objects,
         &mut harness.authority,
+        &harness.provider,
     )?;
     assert_eq!(first.outcome.operation_receipt.state, EffectState::Verified);
     let proof = first
@@ -196,6 +207,7 @@ fn verified_outcome_is_authoritative_and_exact_retry_is_read_like() -> Result<()
         &harness.journal,
         &mut harness.objects,
         &mut harness.authority,
+        &harness.provider,
     )?;
     assert_eq!(second.outcome_root, first.outcome_root);
     assert_eq!(second.authority_anchor, first.authority_anchor);
@@ -224,6 +236,7 @@ fn indeterminate_outcome_preserves_event_and_does_not_invent_proof() -> Result<(
         &harness.journal,
         &mut harness.objects,
         &mut harness.authority,
+        &harness.provider,
     )?;
     assert_eq!(
         receipt.outcome.operation_receipt.state,
@@ -253,6 +266,7 @@ fn known_failure_retains_non_delivery_proof() -> Result<(), Box<dyn Error>> {
         &harness.journal,
         &mut harness.objects,
         &mut harness.authority,
+        &harness.provider,
     )?;
     assert_eq!(receipt.outcome.operation_receipt.state, EffectState::Failed);
     let proof = receipt
@@ -280,6 +294,7 @@ fn mutated_plan_is_rejected_before_object_or_authority_mutation() -> Result<(), 
             &harness.journal,
             &mut harness.objects,
             &mut harness.authority,
+            &harness.provider,
         ),
         Err(ReferenceError::InvalidSpec("alert_plan_integrity"))
     ));

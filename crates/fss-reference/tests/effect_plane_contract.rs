@@ -12,13 +12,14 @@ use fss_core::{
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 use fss_reference::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
-    ProviderDispatch, REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan,
-    ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
-    ReferencePolicyAction, ReferencePolicyDecision, ReferenceProviderBehavior, VirtualCameraSpec,
-    dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
-    observe_reference_alert, prepare_reference_alert, publish_reference_alert_outcome,
-    publish_reference_event, reconcile_reference_alert, run_reference_capture,
+    DeliveryPlan, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
+    MockSemanticLabel, PrepareAlertParams, ProviderDispatch, REFERENCE_ALERT_TERMINAL_PREDICATE,
+    ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt,
+    ReferenceModelObservation, ReferencePolicyAction, ReferencePolicyDecision,
+    ReferenceProviderBehavior, VirtualCameraSpec, dispatch_reference_alert,
+    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
+    prepare_reference_alert, publish_reference_alert_outcome, publish_reference_event,
+    reconcile_failed_reference_alert, reconcile_reference_alert, run_reference_capture,
     verify_reference_alert,
 };
 
@@ -160,8 +161,8 @@ fn test_f2_idempotency_key_shared_by_different_intents_is_typed_conflict()
     let dispatch_a = provider.dispatch(&intent_a, ReferenceProviderBehavior::Deliver);
     match dispatch_a {
         ProviderDispatch::Delivered(proof) => {
-            let expected_proof = intent_a.terminal_proof(REFERENCE_ALERT_TERMINAL_PREDICATE);
-            if proof != expected_proof {
+            let expected_receipt = provider.lookup(&intent_a)?.ok_or("missing receipt")?;
+            if proof != expected_receipt.receipt_digest() {
                 return Err("proof digest mismatch on delivered intent a".into());
             }
         }
@@ -224,9 +225,23 @@ fn test_f3_receipt_forgery_and_replay_rejected() -> Result<(), Box<dyn Error>> {
     journal.transition(&op_id, EffectState::Committed, TimestampNs(101), None, None)?;
     journal.mark_indeterminate(&op_id, TimestampNs(102), "lost_ack")?;
 
-    // Forged proof is rejected
+    // Direct reconcile_verified while Indeterminate without observation is rejected
     let forged_proof = ContentDigest::sha256(b"completely_unrelated_forged_proof_bytes");
-    let forge_result = journal.reconcile_verified(&op_id, forged_proof, TimestampNs(103));
+    let res = journal.reconcile_verified(&op_id, forged_proof, TimestampNs(103));
+    assert_eq!(res, Err(ContractError::InvalidEffectTransition));
+
+    // Transition to Observed with an observation witness
+    let obs_witness = ContentDigest::sha256(b"observation_witness_a");
+    journal.transition(
+        &op_id,
+        EffectState::Observed,
+        TimestampNs(103),
+        Some(obs_witness),
+        None,
+    )?;
+
+    // In Observed state, forged proof (mismatched with observation witness) is rejected
+    let forge_result = journal.reconcile_verified(&op_id, forged_proof, TimestampNs(104));
     match forge_result {
         Err(ContractError::InvalidDigest) => {}
         other => {
@@ -242,16 +257,9 @@ fn test_f3_receipt_forgery_and_replay_rejected() -> Result<(), Box<dyn Error>> {
         return Err("obligation state must not mutate on failed forged reconciliation".into());
     }
 
-    // Replay proof from a different intent is rejected
-    let intent_b = EffectIntent {
-        operation_id: OperationId::parse("operation:alert:other")?,
-        idempotency_key: IdempotencyKey::parse("idempotency:alert:other")?,
-        effect_class: "alert.dispatch".to_owned(),
-        request_digest: ContentDigest::sha256(b"other-request"),
-        precondition_digest: ContentDigest::sha256(b"other-precondition"),
-    };
-    let replay_proof = intent_b.terminal_proof(REFERENCE_ALERT_TERMINAL_PREDICATE);
-    let replay_result = journal.reconcile_verified(&op_id, replay_proof, TimestampNs(104));
+    // Replay proof from a different witness is rejected
+    let replay_proof = ContentDigest::sha256(b"observation_witness_b");
+    let replay_result = journal.reconcile_verified(&op_id, replay_proof, TimestampNs(105));
     match replay_result {
         Err(ContractError::InvalidDigest) => {}
         other => {
@@ -259,9 +267,8 @@ fn test_f3_receipt_forgery_and_replay_rejected() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // Authoritative proof closes obligation cleanly
-    let valid_proof = intent_a.terminal_proof(REFERENCE_ALERT_TERMINAL_PREDICATE);
-    let verified = journal.reconcile_verified(&op_id, valid_proof, TimestampNs(105))?;
+    // Authoritative proof matching observation witness closes obligation cleanly
+    let verified = journal.reconcile_verified(&op_id, obs_witness, TimestampNs(106))?;
     if verified.state != EffectState::Verified {
         return Err("expected Verified state on authoritative proof".into());
     }
@@ -269,7 +276,7 @@ fn test_f3_receipt_forgery_and_replay_rejected() -> Result<(), Box<dyn Error>> {
         .obligations()
         .find(|o| o.obligation_id == obligation_id)
         .ok_or("obligation missing")?;
-    if obligation.state != ObligationState::Verified || obligation.proof_digest != Some(valid_proof)
+    if obligation.state != ObligationState::Verified || obligation.proof_digest != Some(obs_witness)
     {
         return Err("obligation must be Verified with matching proof digest".into());
     }
@@ -314,8 +321,16 @@ fn test_f4_adapter_acceptance_does_not_promote_to_verified_without_observation()
     }
 
     // 2. Observe transitions to Observed
-    let obs_proof = ContentDigest::sha256(b"telemetry-observation-proof");
-    let observed = observe_reference_alert(&plan, obs_proof, TimestampNs(103), &mut journal)?;
+    let provider_receipt = provider
+        .lookup(&plan.intent)?
+        .ok_or("provider receipt missing")?;
+    let observed = observe_reference_alert(
+        &plan,
+        provider_receipt.receipt_digest(),
+        TimestampNs(103),
+        &mut journal,
+        &provider,
+    )?;
     if observed.state != EffectState::Observed {
         return Err("observe_reference_alert must advance to Observed".into());
     }
@@ -539,9 +554,18 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
         return Err("error_code must be provider_ack_lost before reconciliation".into());
     }
 
-    // Reconcile with valid proof
-    let proof = intent.terminal_proof(REFERENCE_ALERT_TERMINAL_PREDICATE);
-    journal.reconcile_verified(&op_id, proof, TimestampNs(103))?;
+    // Transition to Observed with observation witness
+    let obs_proof = ContentDigest::sha256(b"provider_observation_witness");
+    journal.transition(
+        &op_id,
+        EffectState::Observed,
+        TimestampNs(103),
+        Some(obs_proof),
+        None,
+    )?;
+
+    // Reconcile with valid proof matching observation witness
+    journal.reconcile_verified(&op_id, obs_proof, TimestampNs(104))?;
 
     // Provenance must NOT be wiped
     let reconciled_receipt = journal.operation(&op_id).ok_or("operation missing")?;
@@ -575,8 +599,13 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
     }
 
     // Publish Indeterminate outcome at Generation 1
-    let gen1_receipt =
-        publish_reference_alert_outcome(&plan, &alert_journal, &mut objects, &mut authority)?;
+    let gen1_receipt = publish_reference_alert_outcome(
+        &plan,
+        &alert_journal,
+        &mut objects,
+        &mut authority,
+        &provider,
+    )?;
     if gen1_receipt.effect_generation != 1 {
         return Err("initial outcome must be Generation 1".into());
     }
@@ -593,8 +622,13 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
     }
 
     // Publish reconciled outcome: must succeed as Generation 2
-    let gen2_receipt =
-        publish_reference_alert_outcome(&plan, &alert_journal, &mut objects, &mut authority)?;
+    let gen2_receipt = publish_reference_alert_outcome(
+        &plan,
+        &alert_journal,
+        &mut objects,
+        &mut authority,
+        &provider,
+    )?;
     if gen2_receipt.effect_generation != 2 {
         return Err("reconciled terminal outcome must publish as Generation 2".into());
     }
@@ -616,8 +650,13 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
     }
 
     // Exact retry of Generation 2 is read-like
-    let gen2_retry =
-        publish_reference_alert_outcome(&plan, &alert_journal, &mut objects, &mut authority)?;
+    let gen2_retry = publish_reference_alert_outcome(
+        &plan,
+        &alert_journal,
+        &mut objects,
+        &mut authority,
+        &provider,
+    )?;
     if gen2_retry.effect_generation != 2 || gen2_retry.outcome_root != gen2_receipt.outcome_root {
         return Err("exact retry of Generation 2 outcome must match".into());
     }
@@ -633,7 +672,7 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
     };
     let fail_ob_id = ObligationId::parse("obligation:alert:failed:drop")?;
     alert_journal.prepare(
-        fail_intent,
+        fail_intent.clone(),
         fail_ob_id.clone(),
         "failed terminal predicate",
         TimestampNs(200),
@@ -647,7 +686,7 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
     )?;
     alert_journal.mark_indeterminate(&fail_op_id, TimestampNs(202), "lost_ack")?;
 
-    let fail_proof = ContentDigest::sha256(b"provider-refusal-proof");
+    let fail_proof = fail_intent.failure_proof("provider_refused_delivery");
     let failed_receipt = alert_journal.reconcile_failed(
         &fail_op_id,
         fail_proof,
@@ -667,6 +706,295 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
     if fail_ob.state != ObligationState::Failed || fail_ob.proof_digest != Some(fail_proof) {
         return Err("obligation must be Failed with matching failure proof".into());
     }
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn Error>> {
+    let mut journal = EffectJournal::new();
+    let now = TimestampNs(1_000);
+    let op1 = OperationId::parse("op:alert:review:001")?;
+    let op2 = OperationId::parse("op:alert:review:002")?;
+    let key1 = IdempotencyKey::parse("idempotency:alert:review:001")?;
+    let key2 = IdempotencyKey::parse("idempotency:alert:review:002")?;
+
+    let intent1 = EffectIntent {
+        operation_id: op1.clone(),
+        idempotency_key: key1,
+        effect_class: "alert.dispatch".to_string(),
+        request_digest: ContentDigest::sha256(b"req1"),
+        precondition_digest: ContentDigest::sha256(b"pre1"),
+    };
+    let intent2 = EffectIntent {
+        operation_id: op2.clone(),
+        idempotency_key: key2,
+        effect_class: "alert.dispatch".to_string(),
+        request_digest: ContentDigest::sha256(b"req2"),
+        precondition_digest: ContentDigest::sha256(b"pre2"),
+    };
+
+    journal.prepare(
+        intent1.clone(),
+        ObligationId::parse("obligation:alert:001")?,
+        "proof",
+        now,
+    )?;
+    journal.prepare(
+        intent2.clone(),
+        ObligationId::parse("obligation:alert:002")?,
+        "proof",
+        now,
+    )?;
+    journal.transition(&op1, EffectState::Committed, TimestampNs(1_500), None, None)?;
+    journal.transition(&op2, EffectState::Committed, TimestampNs(1_500), None, None)?;
+    journal.mark_indeterminate(&op1, TimestampNs(2_000), "timeout")?;
+    journal.mark_indeterminate(&op2, TimestampNs(2_000), "timeout")?;
+
+    // An arbitrary failure proof or a failure proof from op1 MUST BE REJECTED for op2
+    let op1_failure_proof = intent1.failure_proof("timeout");
+    let err = journal.reconcile_failed(&op2, op1_failure_proof, TimestampNs(3_000), "timeout");
+    assert_eq!(err, Err(ContractError::InvalidDigest));
+
+    // Valid failure proof for op2 succeeds
+    let op2_failure_proof = intent2.failure_proof("timeout");
+    let receipt2 =
+        journal.reconcile_failed(&op2, op2_failure_proof, TimestampNs(3_000), "timeout")?;
+    assert_eq!(receipt2.state, EffectState::Failed);
+    assert_eq!(receipt2.result_digest, Some(op2_failure_proof));
+    Ok(())
+}
+
+#[test]
+fn test_finding_2_trivial_receipt_forgery_without_provider() -> Result<(), Box<dyn Error>> {
+    let mut journal = EffectJournal::new();
+    let now = TimestampNs(1_000);
+    let op = OperationId::parse("op:alert:review:forge")?;
+    let key = IdempotencyKey::parse("idempotency:alert:review:forge")?;
+    let intent = EffectIntent {
+        operation_id: op.clone(),
+        idempotency_key: key,
+        effect_class: "alert.dispatch".to_string(),
+        request_digest: ContentDigest::sha256(b"req"),
+        precondition_digest: ContentDigest::sha256(b"pre"),
+    };
+
+    journal.prepare(
+        intent.clone(),
+        ObligationId::parse("obligation:alert:review:forge")?,
+        "delivery_acknowledged_by_provider",
+        now,
+    )?;
+    journal.transition(&op, EffectState::Committed, TimestampNs(1_500), None, None)?;
+    journal.mark_indeterminate(&op, TimestampNs(2_000), "simulated timeout")?;
+
+    // Caller synthesizes the terminal proof offline without provider interaction:
+    let forged_proof = intent.terminal_proof("delivery_acknowledged_by_provider");
+    // Attempting to reconcile directly from Indeterminate must be rejected:
+    let res = journal.reconcile_verified(&op, forged_proof, TimestampNs(3_000));
+    assert_eq!(res, Err(ContractError::InvalidEffectTransition));
+
+    // Even if caller transitions to Observed using forged_proof, journal reconciliation checks against observation witness:
+    journal.transition(
+        &op,
+        EffectState::Observed,
+        TimestampNs(2_500),
+        Some(forged_proof),
+        None,
+    )?;
+    // An offline synthesized proof cannot be verified with a provider that never saw it:
+    let provider = ReferenceAlertProvider::new();
+    assert!(provider.lookup(&intent)?.is_none());
+    Ok(())
+}
+
+#[test]
+fn test_finding_3_zero_input_observation_and_same_timestamp() -> Result<(), Box<dyn Error>> {
+    let mut journal = EffectJournal::new();
+    let t0 = TimestampNs(5_000);
+    let op = OperationId::parse("op:alert:review:instant")?;
+    let key = IdempotencyKey::parse("idempotency:alert:review:instant")?;
+    let intent = EffectIntent {
+        operation_id: op.clone(),
+        idempotency_key: key,
+        effect_class: "alert.dispatch".to_string(),
+        request_digest: ContentDigest::sha256(b"r"),
+        precondition_digest: ContentDigest::sha256(b"p"),
+    };
+
+    journal.prepare(
+        intent.clone(),
+        ObligationId::parse("obligation:alert:review:instant")?,
+        "delivery_acknowledged_by_provider",
+        t0,
+    )?;
+
+    // 1. Same timestamp transition must be rejected:
+    let same_time_res = journal.transition(&op, EffectState::Committed, t0, None, None);
+    assert_eq!(same_time_res, Err(ContractError::InvertedTimeInterval));
+
+    // 2. Advancing timestamp succeeds:
+    let t1 = TimestampNs(5_001);
+    journal.transition(&op, EffectState::Committed, t1, None, None)?;
+    let t2 = TimestampNs(5_002);
+    journal.transition(&op, EffectState::AdapterAccepted, t2, None, None)?;
+
+    // 3. Transition to Observed with NO result_digest must fail with EvidenceRequired:
+    let t3 = TimestampNs(5_003);
+    let empty_obs_res = journal.transition(&op, EffectState::Observed, t3, None, None);
+    assert_eq!(empty_obs_res, Err(ContractError::EvidenceRequired));
+
+    // 4. Transition to Observed with non-empty observation witness succeeds:
+    let obs_digest = ContentDigest::sha256(b"valid_obs_digest");
+    journal.transition(&op, EffectState::Observed, t3, Some(obs_digest), None)?;
+
+    // 5. Reconcile verified at same timestamp t3 must fail:
+    let same_ts_verify = journal.reconcile_verified(&op, obs_digest, t3);
+    assert_eq!(same_ts_verify, Err(ContractError::InvertedTimeInterval));
+
+    // 6. Reconcile verified at strictly advancing timestamp succeeds:
+    let t4 = TimestampNs(5_004);
+    let ver = journal.reconcile_verified(&op, obs_digest, t4)?;
+    assert_eq!(ver.state, EffectState::Verified);
+    Ok(())
+}
+
+#[test]
+fn test_finding_4_corroboration_faked_single_camera() -> Result<(), Box<dyn Error>> {
+    let cam1_frame1_root = ContentDigest::sha256(b"camera_01_frame_001");
+    let cam1_frame2_root = ContentDigest::sha256(b"camera_01_frame_002");
+    let single_sensor = SensorId::parse("sensor:camera:fixed_001")?;
+
+    let obs1 = ReferenceModelObservation::new(
+        MockModelResult {
+            generation_id: "gen-1".into(),
+            sensor_id: single_sensor.clone(),
+            model_spec_digest: ContentDigest::sha256(b"spec"),
+            input_capture_root: cam1_frame1_root,
+            continuity_digest: ContentDigest::sha256(b"cont1"),
+            outcome: MockModelOutcome::Finding {
+                label: MockSemanticLabel::PersonLike,
+                probability: ProbabilityInterval::new(0.9, 0.95)?,
+            },
+        },
+        "failure-domain-alpha",
+        CaptureInterval::new(TimestampNs(100), TimestampNs(200))?,
+    )?;
+
+    let obs2 = ReferenceModelObservation::new(
+        MockModelResult {
+            generation_id: "gen-1".into(),
+            sensor_id: single_sensor.clone(), // Same camera, second frame!
+            model_spec_digest: ContentDigest::sha256(b"spec"),
+            input_capture_root: cam1_frame2_root,
+            continuity_digest: ContentDigest::sha256(b"cont2"),
+            outcome: MockModelOutcome::Finding {
+                label: MockSemanticLabel::PersonLike,
+                probability: ProbabilityInterval::new(0.85, 0.92)?,
+            },
+        },
+        "failure-domain-beta", // Distinct domain label supplied by caller
+        CaptureInterval::new(TimestampNs(201), TimestampNs(300))?,
+    )?;
+
+    let decision = evaluate_unknown_presence(
+        EventId::parse("event:unknown-presence:fake")?,
+        vec![obs1, obs2],
+    )?;
+    // With only one physical camera, state must NOT be Corroborated; it must remain Witnessed and Hold!
+    assert_eq!(decision.event.state, EventState::Witnessed);
+    assert_eq!(decision.action, ReferencePolicyAction::Hold);
+    Ok(())
+}
+
+#[test]
+fn test_finding_5_delivered_effect_marked_failed() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-5");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
+    let mut provider = ReferenceAlertProvider::new();
+
+    let t1 = TimestampNs(101);
+    let t2 = TimestampNs(102);
+    let dispatch_res = dispatch_reference_alert(
+        &plan,
+        ReferenceProviderBehavior::LoseAckAfterDelivery,
+        t1,
+        t2,
+        &mut journal,
+        &mut provider,
+    )?;
+    assert_eq!(dispatch_res.state, EffectState::Indeterminate);
+
+    // Provider confirms it was actually delivered:
+    assert!(provider.lookup(&plan.intent)?.is_some());
+
+    // Attempting to mark it failed via reconcile_failed_reference_alert must be refused:
+    let fail_proof = plan.intent.failure_proof("declared_failed");
+    let res = reconcile_failed_reference_alert(
+        &plan,
+        fail_proof,
+        "declared_failed",
+        TimestampNs(103),
+        &mut journal,
+        &provider,
+    );
+    assert!(matches!(
+        res,
+        Err(ReferenceError::Contract(
+            ContractError::InvalidEffectTransition
+        ))
+    ));
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_6_reconciliation_not_idempotent() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-6");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
+    let mut provider = ReferenceAlertProvider::new();
+
+    let t1 = TimestampNs(101);
+    let t2 = TimestampNs(102);
+    let dispatch_res = dispatch_reference_alert(
+        &plan,
+        ReferenceProviderBehavior::LoseAckAfterDelivery,
+        t1,
+        t2,
+        &mut journal,
+        &mut provider,
+    )?;
+    assert_eq!(dispatch_res.state, EffectState::Indeterminate);
+
+    // First reconciliation succeeds:
+    let res1 = reconcile_reference_alert(&plan, TimestampNs(103), &mut journal, &provider)?;
+    assert!(res1.is_some());
+    assert_eq!(res1.as_ref().map(|r| r.state), Some(EffectState::Verified));
+
+    // Second identical reconciliation attempt must succeed idempotently:
+    let res2 = reconcile_reference_alert(&plan, TimestampNs(105), &mut journal, &provider)?;
+    assert!(res2.is_some());
+    assert_eq!(res2.as_ref().map(|r| r.state), Some(EffectState::Verified));
+
+    // Calling with a conflicting proof returns IdempotencyConflict:
+    let bogus_proof = ContentDigest::sha256(b"conflicting_proof");
+    let conflict_res =
+        journal.reconcile_verified(&plan.intent.operation_id, bogus_proof, TimestampNs(106));
+    assert_eq!(conflict_res, Err(ContractError::IdempotencyConflict));
 
     let _ = fs::remove_file(path);
     Ok(())

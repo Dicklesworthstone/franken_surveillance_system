@@ -90,6 +90,20 @@ impl EffectIntent {
         encoder.text(terminal_predicate);
         ContentDigest::sha256(&encoder.finish())
     }
+
+    /// Computes the unique canonical failure proof digest binding full intent and failure error code.
+    #[must_use]
+    pub fn failure_proof(&self, error_code: &str) -> ContentDigest {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.effect_proof.v1");
+        self.operation_id.encode_canonical(&mut encoder);
+        self.idempotency_key.encode_canonical(&mut encoder);
+        encoder.text(&self.effect_class);
+        encoder.digest(self.request_digest);
+        encoder.digest(self.precondition_digest);
+        encoder.text(error_code);
+        ContentDigest::sha256(&encoder.finish())
+    }
 }
 
 /// Durable operation receipt.
@@ -267,7 +281,7 @@ impl EffectJournal {
                 .operations
                 .get_mut(operation_id)
                 .ok_or(ContractError::NotFound)?;
-            if now < receipt.updated_at {
+            if now <= receipt.updated_at {
                 return Err(ContractError::InvertedTimeInterval);
             }
             if !valid_transition(receipt.state, next) {
@@ -277,21 +291,18 @@ impl EffectJournal {
                     ContractError::InvalidEffectTransition
                 });
             }
-            if (next == EffectState::Verified || next == EffectState::Cancelled)
+            if (next == EffectState::Observed
+                || next == EffectState::Verified
+                || next == EffectState::Cancelled)
                 && result_digest.is_none()
             {
                 return Err(ContractError::EvidenceRequired);
             }
             if next == EffectState::Verified {
-                let obligation = self
-                    .obligations
-                    .values()
-                    .find(|o| o.operation_id == *operation_id)
-                    .ok_or(ContractError::NotFound)?;
-                let expected_proof = receipt
-                    .intent
-                    .terminal_proof(&obligation.terminal_predicate);
-                if result_digest != Some(expected_proof) {
+                let obs_digest = receipt
+                    .result_digest
+                    .ok_or(ContractError::EvidenceRequired)?;
+                if result_digest != Some(obs_digest) {
                     return Err(ContractError::InvalidDigest);
                 }
             }
@@ -361,7 +372,7 @@ impl EffectJournal {
         )
     }
 
-    /// Reconciles an indeterminate operation using independently observed terminal proof.
+    /// Reconciles an observed operation using independently observed terminal proof.
     pub fn reconcile_verified(
         &mut self,
         operation_id: &OperationId,
@@ -373,22 +384,22 @@ impl EffectJournal {
                 .operations
                 .get(operation_id)
                 .ok_or(ContractError::NotFound)?;
-            if now < current.updated_at {
+            if current.state == EffectState::Verified {
+                if current.result_digest == Some(proof_digest) {
+                    return Ok(current);
+                }
+                return Err(ContractError::IdempotencyConflict);
+            }
+            if now <= current.updated_at {
                 return Err(ContractError::InvertedTimeInterval);
             }
-            if current.state != EffectState::Indeterminate && current.state != EffectState::Observed
-            {
+            if current.state != EffectState::Observed {
                 return Err(ContractError::InvalidEffectTransition);
             }
-            let obligation = self
-                .obligations
-                .values()
-                .find(|o| o.operation_id == *operation_id)
-                .ok_or(ContractError::NotFound)?;
-            let expected_proof = current
-                .intent
-                .terminal_proof(&obligation.terminal_predicate);
-            if proof_digest != expected_proof {
+            let obs_digest = current
+                .result_digest
+                .ok_or(ContractError::EvidenceRequired)?;
+            if proof_digest != obs_digest {
                 return Err(ContractError::InvalidDigest);
             }
         }
@@ -413,7 +424,7 @@ impl EffectJournal {
             .ok_or(ContractError::NotFound)
     }
 
-    /// Reconciles an indeterminate or observed operation to a terminal failure using proof.
+    /// Reconciles an indeterminate operation to a terminal failure using proof.
     pub fn reconcile_failed(
         &mut self,
         operation_id: &OperationId,
@@ -430,12 +441,23 @@ impl EffectJournal {
                 .operations
                 .get(operation_id)
                 .ok_or(ContractError::NotFound)?;
-            if now < current.updated_at {
+            if current.state == EffectState::Failed {
+                if current.result_digest == Some(proof_digest)
+                    && current.error_code.as_deref() == Some(&reason)
+                {
+                    return Ok(current);
+                }
+                return Err(ContractError::IdempotencyConflict);
+            }
+            if now <= current.updated_at {
                 return Err(ContractError::InvertedTimeInterval);
             }
-            if current.state != EffectState::Indeterminate && current.state != EffectState::Observed
-            {
+            if current.state != EffectState::Indeterminate {
                 return Err(ContractError::InvalidEffectTransition);
+            }
+            let expected_proof = current.intent.failure_proof(&reason);
+            if proof_digest != expected_proof {
+                return Err(ContractError::InvalidDigest);
             }
         }
         let receipt = self
@@ -517,7 +539,7 @@ fn valid_transition(current: EffectState, next: EffectState) -> bool {
             | (EffectState::AdapterAccepted, EffectState::Failed)
             | (EffectState::Observed, EffectState::Verified)
             | (EffectState::Observed, EffectState::Indeterminate)
-            | (EffectState::Observed, EffectState::Failed)
+            | (EffectState::Indeterminate, EffectState::Observed)
     )
 }
 
@@ -592,8 +614,15 @@ mod tests {
             ),
             Err(ContractError::ReconciliationRequired)
         );
-        let proof = effect.terminal_proof("delivery proved");
-        let _ = journal.reconcile_verified(&operation_id, proof, TimestampNs(5))?;
+        let obs_proof = ContentDigest::sha256(b"delivery-observation");
+        let _ = journal.transition(
+            &operation_id,
+            EffectState::Observed,
+            TimestampNs(5),
+            Some(obs_proof),
+            None,
+        )?;
+        let _ = journal.reconcile_verified(&operation_id, obs_proof, TimestampNs(6))?;
         assert_eq!(
             journal
                 .operation(&operation_id)

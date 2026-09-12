@@ -100,6 +100,7 @@ pub fn evaluate_unknown_presence(
     let mut seen_results = BTreeSet::new();
     let mut support_domains = BTreeSet::new();
     let mut support_capture_roots = BTreeSet::new();
+    let mut support_sensors = BTreeSet::new();
     let mut contradictory = 0_usize;
     let mut unresolved = 0_usize;
     let mut evidence = Vec::with_capacity(observations.len());
@@ -126,6 +127,7 @@ pub fn evaluate_unknown_presence(
             } => {
                 support_domains.insert(observation.failure_domain.clone());
                 support_capture_roots.insert(observation.result.input_capture_root);
+                support_sensors.insert(observation.result.sensor_id.clone());
                 true
             }
             MockModelOutcome::Finding {
@@ -152,7 +154,8 @@ pub fn evaluate_unknown_presence(
         model_receipts.push(result_digest);
     }
 
-    let state = if support_capture_roots.len() >= 2
+    let state = if support_sensors.len() >= 2
+        && support_capture_roots.len() >= 2
         && support_domains.len() >= 2
         && contradictory == 0
         && unresolved == 0
