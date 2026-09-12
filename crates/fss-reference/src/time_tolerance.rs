@@ -435,8 +435,12 @@ impl SourceTimeEvidence {
         let new_interval = CaptureInterval::new_checked(earliest, latest)?;
 
         let mut updated_sources = self.uncertainty_sources;
-        let additional_u64 = u64::try_from(additional_ns).unwrap_or(u64::MAX);
-        updated_sources.network_ns = updated_sources.network_ns.saturating_add(additional_u64);
+        let additional_u64 =
+            u64::try_from(additional_ns).map_err(|_| TimeToleranceError::ArithmeticOverflow)?;
+        updated_sources.network_ns = updated_sources
+            .network_ns
+            .checked_add(additional_u64)
+            .ok_or(TimeToleranceError::ArithmeticOverflow)?;
 
         Self::new(SourceTimeEvidenceParams {
             sequence: self.sequence,
@@ -455,6 +459,18 @@ impl SourceTimeEvidence {
     pub fn uncertainty_ns(&self) -> u128 {
         self.plausible_capture_interval.uncertainty_ns()
     }
+
+    /// Returns the effective clock basis for this timing record.
+    #[must_use]
+    pub fn effective_clock_basis(&self) -> ClockBasis {
+        match &self.sync_state {
+            ClockSyncState::Synchronised { basis, .. } => *basis,
+            ClockSyncState::Unsynchronised { basis, .. } => *basis,
+            ClockSyncState::Unknown { .. } => {
+                self.device_clock_basis.unwrap_or(ClockBasis::HostMonotonic)
+            }
+        }
+    }
 }
 
 impl TryFrom<SourceTimeEvidenceParams> for SourceTimeEvidence {
@@ -462,12 +478,16 @@ impl TryFrom<SourceTimeEvidenceParams> for SourceTimeEvidence {
 
     fn try_from(params: SourceTimeEvidenceParams) -> Result<Self, Self::Error> {
         let total_sources = params.uncertainty_sources.total_uncertainty_ns()?;
+        let clock_uncertainty = params.sync_state.clock_uncertainty_ns().unwrap_or(0) as u128;
+        let min_required_uncertainty = total_sources
+            .checked_add(clock_uncertainty)
+            .ok_or(TimeToleranceError::ArithmeticOverflow)?;
         let interval_width = params.plausible_capture_interval.uncertainty_ns();
 
-        // Under FORMAL-010, the interval width must be at least as wide as the sum of all declared sources
-        if interval_width < total_sources {
+        // Under FORMAL-010, the interval width must be at least as wide as the sum of all declared sources and clock uncertainty
+        if interval_width < min_required_uncertainty {
             return Err(TimeToleranceError::NonMonotoneNarrowingAttempted {
-                previous_uncertainty_ns: total_sources,
+                previous_uncertainty_ns: min_required_uncertainty,
                 attempted_uncertainty_ns: interval_width,
             });
         }
@@ -597,21 +617,41 @@ impl SourceTimeEvidenceBuilder {
             return Err(TimeToleranceError::ArithmeticOverflow);
         }
 
-        let base_timestamp = match (self.device_timestamp, &self.sync_state) {
-            (Some(ts), ClockSyncState::Synchronised { .. }) => ts,
-            (Some(ts), ClockSyncState::Unsynchronised { .. }) => ts,
-            _ => self.host_receive_time,
+        let (earliest, latest) = match (self.device_timestamp, &self.sync_state) {
+            (Some(ts), ClockSyncState::Synchronised { .. }) => {
+                let half_uncertainty = (total_uncertainty / 2) as i128;
+                let remainder = (total_uncertainty % 2) as i128;
+                let earliest = ts
+                    .checked_sub_ns(half_uncertainty)
+                    .map_err(|_| TimeToleranceError::ArithmeticOverflow)?;
+                let latest = ts
+                    .checked_add_ns(half_uncertainty + remainder)
+                    .map_err(|_| TimeToleranceError::ArithmeticOverflow)?;
+                (earliest, latest)
+            }
+            (Some(ts), ClockSyncState::Unsynchronised { .. }) => {
+                let half_uncertainty = (total_uncertainty / 2) as i128;
+                let remainder = (total_uncertainty % 2) as i128;
+                let earliest = ts
+                    .checked_sub_ns(half_uncertainty)
+                    .map_err(|_| TimeToleranceError::ArithmeticOverflow)?;
+                let latest = ts
+                    .checked_add_ns(half_uncertainty + remainder)
+                    .map_err(|_| TimeToleranceError::ArithmeticOverflow)?;
+                (earliest, latest)
+            }
+            _ => {
+                // When anchored to host_receive_time (device timestamp missing or clock unknown),
+                // physical capture cannot occur in the future after host receipt (causality).
+                // Interval is conservatively [host_receive_time - total_uncertainty, host_receive_time].
+                let earliest = self
+                    .host_receive_time
+                    .checked_sub_ns(total_uncertainty as i128)
+                    .map_err(|_| TimeToleranceError::ArithmeticOverflow)?;
+                let latest = self.host_receive_time;
+                (earliest, latest)
+            }
         };
-
-        let half_uncertainty = (total_uncertainty / 2) as i128;
-        let remainder = (total_uncertainty % 2) as i128;
-
-        let earliest = base_timestamp
-            .checked_sub_ns(half_uncertainty)
-            .map_err(|_| TimeToleranceError::ArithmeticOverflow)?;
-        let latest = base_timestamp
-            .checked_add_ns(half_uncertainty + remainder)
-            .map_err(|_| TimeToleranceError::ArithmeticOverflow)?;
 
         let plausible_capture_interval = CaptureInterval::new_checked(earliest, latest)?;
 
@@ -880,6 +920,97 @@ impl TimeUncertaintyBudget {
                     }),
                 };
             }
+            (
+                ClockSyncState::Unsynchronised {
+                    basis,
+                    drift_bound_ns,
+                },
+                RequiredClockEvidence::BoundedMonotonicDrift,
+            ) => {
+                let is_monotonic = matches!(
+                    basis,
+                    ClockBasis::HostMonotonic | ClockBasis::DeviceMonotonic
+                );
+                if !is_monotonic || *drift_bound_ns > tolerance.max_tolerable_uncertainty_ns {
+                    let msg = if !is_monotonic {
+                        format!(
+                            "operation {} requires monotonic clock, but observed basis is {basis:?}",
+                            operation.operation_id()
+                        )
+                    } else {
+                        format!(
+                            "operation {} requires bounded monotonic drift (<= {} ns), but observed drift bound is {} ns",
+                            operation.operation_id(),
+                            tolerance.max_tolerable_uncertainty_ns,
+                            drift_bound_ns
+                        )
+                    };
+                    return match tolerance.consequence {
+                        ExceedanceConsequence::FailClosed => {
+                            Err(TimeToleranceError::ClockUnsynchronised {
+                                operation,
+                                basis: *basis,
+                                drift_bound_ns: *drift_bound_ns,
+                            })
+                        }
+                        ExceedanceConsequence::Abstain => Ok(EnforcementOutcome::Abstained {
+                            operation,
+                            observed_uncertainty_ns: evidence
+                                .plausible_capture_interval
+                                .uncertainty_ns(),
+                            tolerance_ns: tolerance.max_tolerable_uncertainty_ns,
+                            reason: msg,
+                        }),
+                        ExceedanceConsequence::Degrade => Ok(EnforcementOutcome::Degraded {
+                            operation,
+                            observed_uncertainty_ns: evidence
+                                .plausible_capture_interval
+                                .uncertainty_ns(),
+                            tolerance_ns: tolerance.max_tolerable_uncertainty_ns,
+                            degraded_state: msg,
+                        }),
+                    };
+                }
+            }
+            (
+                ClockSyncState::Unsynchronised {
+                    basis,
+                    drift_bound_ns,
+                },
+                RequiredClockEvidence::EstimatedWithCovariance,
+            ) if *drift_bound_ns > tolerance.max_tolerable_uncertainty_ns => {
+                let msg = format!(
+                    "operation {} requires estimated clock with bounded uncertainty (<= {} ns), but observed drift bound is {} ns",
+                    operation.operation_id(),
+                    tolerance.max_tolerable_uncertainty_ns,
+                    drift_bound_ns
+                );
+                return match tolerance.consequence {
+                    ExceedanceConsequence::FailClosed => {
+                        Err(TimeToleranceError::ClockUnsynchronised {
+                            operation,
+                            basis: *basis,
+                            drift_bound_ns: *drift_bound_ns,
+                        })
+                    }
+                    ExceedanceConsequence::Abstain => Ok(EnforcementOutcome::Abstained {
+                        operation,
+                        observed_uncertainty_ns: evidence
+                            .plausible_capture_interval
+                            .uncertainty_ns(),
+                        tolerance_ns: tolerance.max_tolerable_uncertainty_ns,
+                        reason: msg,
+                    }),
+                    ExceedanceConsequence::Degrade => Ok(EnforcementOutcome::Degraded {
+                        operation,
+                        observed_uncertainty_ns: evidence
+                            .plausible_capture_interval
+                            .uncertainty_ns(),
+                        tolerance_ns: tolerance.max_tolerable_uncertainty_ns,
+                        degraded_state: msg,
+                    }),
+                };
+            }
             _ => {}
         }
 
@@ -1034,22 +1165,47 @@ pub fn evaluate_cross_camera_association(
         });
     }
 
+    let basis_a = obs_a.effective_clock_basis();
+    let basis_b = obs_b.effective_clock_basis();
+    if basis_a != basis_b {
+        return Err(TimeToleranceError::ClockBasisMismatch {
+            expected: basis_a,
+            actual: basis_b,
+        });
+    }
+
     let op = TimeSensitiveOperation::CrossCameraIdentityAssociation;
 
     // Enforce tolerance on camera A
     let outcome_a = budget.enforce(op, obs_a)?;
-    if let EnforcementOutcome::Abstained { reason, .. } = outcome_a {
-        return Ok(AssociationDecision::Abstained {
-            reason: format!("camera A timing rejected: {reason}"),
-        });
+    match outcome_a {
+        EnforcementOutcome::Accepted { .. } => {}
+        EnforcementOutcome::Abstained { reason, .. } => {
+            return Ok(AssociationDecision::Abstained {
+                reason: format!("camera A timing rejected: {reason}"),
+            });
+        }
+        EnforcementOutcome::Degraded { degraded_state, .. } => {
+            return Ok(AssociationDecision::Abstained {
+                reason: format!("camera A timing degraded: {degraded_state}"),
+            });
+        }
     }
 
     // Enforce tolerance on camera B
     let outcome_b = budget.enforce(op, obs_b)?;
-    if let EnforcementOutcome::Abstained { reason, .. } = outcome_b {
-        return Ok(AssociationDecision::Abstained {
-            reason: format!("camera B timing rejected: {reason}"),
-        });
+    match outcome_b {
+        EnforcementOutcome::Accepted { .. } => {}
+        EnforcementOutcome::Abstained { reason, .. } => {
+            return Ok(AssociationDecision::Abstained {
+                reason: format!("camera B timing rejected: {reason}"),
+            });
+        }
+        EnforcementOutcome::Degraded { degraded_state, .. } => {
+            return Ok(AssociationDecision::Abstained {
+                reason: format!("camera B timing degraded: {degraded_state}"),
+            });
+        }
     }
 
     // Predict arrival window at camera B
@@ -1070,10 +1226,19 @@ pub fn evaluate_cross_camera_association(
     let transit_interval = CaptureInterval::new_checked(earliest_arrival, latest_arrival)?;
 
     if let Some(overlap) = transit_interval.intersection(obs_b.plausible_capture_interval) {
-        Ok(AssociationDecision::Consistent {
-            transit_interval,
-            overlap,
-        })
+        if overlap.is_point() {
+            Ok(AssociationDecision::Indeterminate {
+                reason: format!(
+                    "transit arrival interval {transit_interval} touches camera B capture {} at degenerate boundary point {}",
+                    obs_b.plausible_capture_interval, overlap.earliest
+                ),
+            })
+        } else {
+            Ok(AssociationDecision::Consistent {
+                transit_interval,
+                overlap,
+            })
+        }
     } else {
         Ok(AssociationDecision::PhysicallyImpossible {
             reason: format!(

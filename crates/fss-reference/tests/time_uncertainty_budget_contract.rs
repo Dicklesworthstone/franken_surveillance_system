@@ -55,6 +55,34 @@ fn sample_evidence(
     })?)
 }
 
+/// Helper: constructs source evidence on a specific clock basis.
+fn sample_evidence_with_basis(
+    seq: u64,
+    host_time_ns: i128,
+    half_width_ns: u64,
+    basis: ClockBasis,
+) -> Result<SourceTimeEvidence, Box<dyn Error>> {
+    let host_ts = TimestampNs(host_time_ns);
+    let earliest = host_ts.checked_sub_ns(i128::from(half_width_ns))?;
+    let latest = host_ts.checked_add_ns(i128::from(half_width_ns))?;
+    let interval = CaptureInterval::new(earliest, latest)?;
+
+    Ok(SourceTimeEvidence::new(SourceTimeEvidenceParams {
+        sequence: seq,
+        has_discontinuity: false,
+        device_timestamp: None,
+        device_clock_basis: Some(basis),
+        host_receive_time: host_ts,
+        sync_state: ClockSyncState::Synchronised {
+            basis,
+            residual_uncertainty_ns: 0,
+            clock_generation: 1,
+        },
+        uncertainty_sources: UncertaintySources::zero(),
+        plausible_capture_interval: interval,
+    })?)
+}
+
 // ---------------------------------------------------------------------------
 // 1. Registered Operations & Catalog Completeness
 // ---------------------------------------------------------------------------
@@ -236,7 +264,7 @@ fn test_unsynchronised_clock_state_fails_when_certified_clock_required()
         drift_bound_ns: 20_000_000,
     };
 
-    let evidence = sample_evidence(11, 1_000_000_000, 1_000_000, unsync_state)?;
+    let evidence = sample_evidence(11, 1_000_000_000, 10_000_000, unsync_state)?;
 
     let res = budget.enforce(op, &evidence);
     let Err(err) = res else {
@@ -559,6 +587,321 @@ fn test_inverted_transit_interval_rejected() -> Result<(), Box<dyn Error>> {
     };
 
     assert!(matches!(err, TimeToleranceError::InvertedInterval { .. }));
+
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 10. Review-627 Findings Test Coverage (F1 - F9)
+// ---------------------------------------------------------------------------
+
+// Finding 1 (CRITICAL): Degraded Observations Cannot Produce Consistent Association
+#[test]
+fn test_degraded_observation_cannot_produce_consistent_association() -> Result<(), Box<dyn Error>> {
+    let mut budget = TimeUncertaintyBudget::empty();
+    budget.register(OperationTimeTolerance::new(
+        TimeSensitiveOperation::CrossCameraIdentityAssociation,
+        20_000_000, // 20 ms
+        ExceedanceConsequence::Degrade,
+        RequiredClockEvidence::CertifiedSynchronised,
+    ));
+    // Obs A uncertainty = 80 ms > 20 ms (Degraded)
+    let obs_a = sample_evidence(1, 1_000_000_000, 40_000_000, sync_clock(1, 0))?;
+    let obs_b = sample_evidence(2, 7_000_000_000, 1_000_000, sync_clock(1, 0))?;
+
+    let decision =
+        evaluate_cross_camera_association(&budget, &obs_a, &obs_b, 5_000_000_000, 10_000_000_000)?;
+    assert!(
+        !decision.is_consistent(),
+        "degraded camera A observation must not yield Consistent association, got {decision:?}"
+    );
+    assert!(
+        decision.is_abstained(),
+        "degraded observation must result in Abstained association decision"
+    );
+    Ok(())
+}
+
+// Finding 2 (CRITICAL): Cross-Camera Association Rejects Clock Basis Mismatch
+#[test]
+fn test_cross_camera_association_rejects_clock_basis_mismatch() -> Result<(), Box<dyn Error>> {
+    let budget = TimeUncertaintyBudget::default();
+    let obs_a = sample_evidence_with_basis(1, 1_000_000_000, 1_000_000, ClockBasis::HostMonotonic)?;
+    let obs_b =
+        sample_evidence_with_basis(2, 7_000_000_000, 1_000_000, ClockBasis::UtcDisciplined)?;
+
+    let res =
+        evaluate_cross_camera_association(&budget, &obs_a, &obs_b, 5_000_000_000, 10_000_000_000);
+    assert!(
+        matches!(res, Err(TimeToleranceError::ClockBasisMismatch { .. })),
+        "expected ClockBasisMismatch error when associating across different clock bases, got {res:?}"
+    );
+    Ok(())
+}
+
+// Finding 3 (HIGH): SourceTimeEvidenceParams Rejects Interval Narrower Than Clock Drift
+#[test]
+fn test_params_rejects_interval_narrower_than_clock_drift() -> Result<(), Box<dyn Error>> {
+    let host_ts = TimestampNs(1_000_000_000);
+    let latest = host_ts.checked_add_ns(1_000)?; // 1 µs width
+    let interval = CaptureInterval::new(host_ts, latest)?;
+    let params = SourceTimeEvidenceParams {
+        sequence: 1,
+        has_discontinuity: false,
+        device_timestamp: None,
+        device_clock_basis: None,
+        host_receive_time: host_ts,
+        sync_state: ClockSyncState::Unsynchronised {
+            basis: ClockBasis::HostMonotonic,
+            drift_bound_ns: 50_000_000, // 50 ms drift
+        },
+        uncertainty_sources: UncertaintySources::zero(),
+        plausible_capture_interval: interval,
+    };
+    let res = SourceTimeEvidence::new(params);
+    assert!(
+        matches!(
+            res,
+            Err(TimeToleranceError::NonMonotoneNarrowingAttempted { .. })
+        ),
+        "expected NonMonotoneNarrowingAttempted when interval is narrower than clock drift, got {res:?}"
+    );
+    Ok(())
+}
+
+// Finding 4 (HIGH): Boundary Point Contact Yields Indeterminate, Not Consistent
+#[test]
+fn test_boundary_point_contact_yields_indeterminate_not_consistent() -> Result<(), Box<dyn Error>> {
+    let budget = TimeUncertaintyBudget::default();
+    // Exactly touches at boundary: transit is [5s, 10s], obs_a at 1s -> arrival is [6s, 11s]
+    // obs_b at exactly 6s with 0 uncertainty touches arrival at single point 6.0s
+    let obs_a = sample_evidence(1, 1_000_000_000, 0, sync_clock(1, 0))?;
+    let obs_b = sample_evidence(2, 6_000_000_000, 0, sync_clock(1, 0))?;
+    let decision =
+        evaluate_cross_camera_association(&budget, &obs_a, &obs_b, 5_000_000_000, 10_000_000_000)?;
+    assert!(
+        decision.is_indeterminate(),
+        "exact boundary contact must yield Indeterminate, not Consistent, got {decision:?}"
+    );
+    Ok(())
+}
+
+// Finding 5 (HIGH): Host Receive Anchor Cannot Place Latest Capture In Future
+#[test]
+fn test_host_receive_anchor_cannot_place_latest_capture_in_future() -> Result<(), Box<dyn Error>> {
+    let host_ts = TimestampNs(1_000_000_000);
+    let sources = UncertaintySources::vendor_cloud_relay_profile();
+    let evidence = SourceTimeEvidenceBuilder::new(1, host_ts)
+        .uncertainty_sources(sources)
+        .build()?;
+    assert!(
+        evidence.plausible_capture_interval.latest <= host_ts,
+        "physical capture cannot occur after host receive time (latest: {}, host_ts: {})",
+        evidence.plausible_capture_interval.latest,
+        host_ts
+    );
+    Ok(())
+}
+
+// Finding 6 (HIGH): widen_uncertainty Fails Closed On Source Overflow
+#[test]
+fn test_widen_uncertainty_fails_on_source_overflow() -> Result<(), Box<dyn Error>> {
+    let host_ts = TimestampNs(1_000_000_000);
+    let mut sources = UncertaintySources::zero();
+    sources.network_ns = u64::MAX - 5;
+    let evidence = SourceTimeEvidenceBuilder::new(1, host_ts)
+        .uncertainty_sources(sources)
+        .sync_state(sync_clock(1, 0))
+        .build()?;
+    let res = evidence.widen_uncertainty(100);
+    assert!(
+        matches!(res, Err(TimeToleranceError::ArithmeticOverflow)),
+        "expected ArithmeticOverflow when widening exceeds u64 source budget, got {res:?}"
+    );
+    Ok(())
+}
+
+// Finding 7 (MEDIUM): Bounded Monotonic Drift Rejects Excessive Drift
+#[test]
+fn test_bounded_monotonic_drift_rejects_excessive_drift() -> Result<(), Box<dyn Error>> {
+    let budget = TimeUncertaintyBudget::default();
+    let op = TimeSensitiveOperation::TransitFeasibilityCheck; // requires BoundedMonotonicDrift, tolerance 200 ms
+    let unsync = ClockSyncState::Unsynchronised {
+        basis: ClockBasis::HostMonotonic,
+        drift_bound_ns: 800_000_000, // 800 ms drift > 200 ms tolerance
+    };
+    let evidence = sample_evidence(1, 1_000_000_000, 400_000_000, unsync)?;
+    let res = budget.enforce(op, &evidence);
+    let is_rejected = match res {
+        Err(_) => true,
+        Ok(outcome) => !outcome.is_accepted(),
+    };
+    assert!(
+        is_rejected,
+        "drift bound of 800 ms must not satisfy 200 ms tolerance"
+    );
+    Ok(())
+}
+
+// Finding 8 (MEDIUM): Error Code Registration Completeness in registries/ERRORS.md
+#[test]
+fn test_error_code_registration_completeness() -> Result<(), Box<dyn Error>> {
+    let content = include_str!("../../../registries/ERRORS.md");
+
+    let mut registered_ids = std::collections::BTreeSet::new();
+    for line in content.lines() {
+        if line.starts_with('|') {
+            let cols: Vec<&str> = line.split('|').map(str::trim).collect();
+            if cols.len() >= 2 {
+                let token = cols[1].trim_matches('`').trim();
+                if token.starts_with("ERR-") {
+                    registered_ids.insert(token.to_string());
+                }
+            }
+        }
+    }
+
+    let required_error_codes = [
+        ERR_CLOCK_UNCERTAIN_001,
+        "ERR-CLOCK-STATE-UNKNOWN-001",
+        "ERR-CLOCK-UNSYNCHRONISED-001",
+        "ERR-OPERATION-UNREGISTERED-001",
+        "ERR-TIME-INTERVAL-INVERTED-001",
+        "ERR-CLOCK-BASIS-MISMATCH-001",
+        "ERR-ARITHMETIC-OVERFLOW-001",
+        "ERR-NON-MONOTONE-NARROWING-001",
+    ];
+
+    for &code in &required_error_codes {
+        assert!(
+            registered_ids.contains(code),
+            "Time tolerance error code '{code}' is not registered in registries/ERRORS.md"
+        );
+    }
+    Ok(())
+}
+
+// Finding 9 (MEDIUM): Boundary Abstain/Degrade and Error Variant Tests
+#[test]
+fn test_boundary_conditions_for_abstain_consequence() -> Result<(), Box<dyn Error>> {
+    let budget = TimeUncertaintyBudget::default();
+    let op = TimeSensitiveOperation::GeometryDependentNegativeEvidence; // 100 ms, Abstain
+    let limit = op.default_max_uncertainty_ns();
+
+    // At exact bound
+    let ev_at_bound = sample_evidence(1, 1_000_000_000, limit / 2, sync_clock(1, 0))?;
+    let outcome_bound = budget.enforce(op, &ev_at_bound)?;
+    assert!(
+        outcome_bound.is_accepted(),
+        "exact bound must be accepted for Abstain op"
+    );
+
+    // At bound + 1 ns
+    let host_ts = TimestampNs(1_000_000_000);
+    let latest = host_ts.checked_add_ns(i128::from(limit) + 1)?;
+    let interval = CaptureInterval::new(host_ts, latest)?;
+    let ev_bound_plus_one = SourceTimeEvidence::new(SourceTimeEvidenceParams {
+        sequence: 2,
+        has_discontinuity: false,
+        device_timestamp: None,
+        device_clock_basis: None,
+        host_receive_time: host_ts,
+        sync_state: sync_clock(1, 0),
+        uncertainty_sources: UncertaintySources::zero(),
+        plausible_capture_interval: interval,
+    })?;
+    let outcome_plus_one = budget.enforce(op, &ev_bound_plus_one)?;
+    assert!(
+        outcome_plus_one.is_abstained(),
+        "bound+1 must cause Abstain"
+    );
+    assert!(!outcome_plus_one.is_accepted());
+    Ok(())
+}
+
+#[test]
+fn test_boundary_conditions_for_degrade_consequence() -> Result<(), Box<dyn Error>> {
+    let budget = TimeUncertaintyBudget::default();
+    let op = TimeSensitiveOperation::IncidentReconstruction; // 250 ms, Degrade
+    let limit = op.default_max_uncertainty_ns();
+
+    // At exact bound
+    let ev_at_bound = sample_evidence(1, 1_000_000_000, limit / 2, sync_clock(1, 0))?;
+    let outcome_bound = budget.enforce(op, &ev_at_bound)?;
+    assert!(
+        outcome_bound.is_accepted(),
+        "exact bound must be accepted for Degrade op"
+    );
+
+    // At bound + 1 ns
+    let host_ts = TimestampNs(1_000_000_000);
+    let latest = host_ts.checked_add_ns(i128::from(limit) + 1)?;
+    let interval = CaptureInterval::new(host_ts, latest)?;
+    let ev_bound_plus_one = SourceTimeEvidence::new(SourceTimeEvidenceParams {
+        sequence: 2,
+        has_discontinuity: false,
+        device_timestamp: None,
+        device_clock_basis: None,
+        host_receive_time: host_ts,
+        sync_state: sync_clock(1, 0),
+        uncertainty_sources: UncertaintySources::zero(),
+        plausible_capture_interval: interval,
+    })?;
+    let outcome_plus_one = budget.enforce(op, &ev_bound_plus_one)?;
+    assert!(outcome_plus_one.is_degraded(), "bound+1 must cause Degrade");
+    assert!(!outcome_plus_one.is_accepted());
+    Ok(())
+}
+
+#[test]
+fn test_error_variants_formatting_and_codes() -> Result<(), Box<dyn Error>> {
+    let err_overflow = TimeToleranceError::ArithmeticOverflow;
+    assert_eq!(err_overflow.error_code(), "ERR-ARITHMETIC-OVERFLOW-001");
+    assert!(format!("{err_overflow}").contains("arithmetic overflow"));
+
+    let err_narrowing = TimeToleranceError::NonMonotoneNarrowingAttempted {
+        previous_uncertainty_ns: 100,
+        attempted_uncertainty_ns: 50,
+    };
+    assert_eq!(err_narrowing.error_code(), "ERR-NON-MONOTONE-NARROWING-001");
+    assert!(format!("{err_narrowing}").contains("narrow uncertainty"));
+
+    let err_mismatch = TimeToleranceError::ClockBasisMismatch {
+        expected: ClockBasis::HostMonotonic,
+        actual: ClockBasis::UtcDisciplined,
+    };
+    assert_eq!(err_mismatch.error_code(), "ERR-CLOCK-BASIS-MISMATCH-001");
+    assert!(format!("{err_mismatch}").contains("mismatch"));
+
+    let err_inverted = TimeToleranceError::InvertedInterval {
+        earliest: TimestampNs(100),
+        latest: TimestampNs(50),
+    };
+    assert_eq!(err_inverted.error_code(), "ERR-TIME-INTERVAL-INVERTED-001");
+    assert!(format!("{err_inverted}").contains("inverted"));
+
+    let err_unregistered =
+        TimeToleranceError::UnregisteredOperation(TimeSensitiveOperation::StereoTriangulation);
+    assert_eq!(
+        err_unregistered.error_code(),
+        "ERR-OPERATION-UNREGISTERED-001"
+    );
+    assert!(format!("{err_unregistered}").contains("not registered"));
+
+    let err_unknown = TimeToleranceError::ClockStateUnknown {
+        operation: TimeSensitiveOperation::StereoTriangulation,
+        reason: "daemon lost".to_string(),
+    };
+    assert_eq!(err_unknown.error_code(), "ERR-CLOCK-STATE-UNKNOWN-001");
+    assert!(format!("{err_unknown}").contains("unknown"));
+
+    let err_unsync = TimeToleranceError::ClockUnsynchronised {
+        operation: TimeSensitiveOperation::StereoTriangulation,
+        basis: ClockBasis::DeviceMonotonic,
+        drift_bound_ns: 1_000,
+    };
+    assert_eq!(err_unsync.error_code(), "ERR-CLOCK-UNSYNCHRONISED-001");
+    assert!(format!("{err_unsync}").contains("unsynchronised"));
 
     Ok(())
 }

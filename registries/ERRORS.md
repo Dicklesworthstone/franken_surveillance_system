@@ -14,6 +14,13 @@ operation states rather than generic errors.
 | `ERR-STREAM-NO-FIRST-FRAME-001` | adapter accepted but no decodable frame before budget | reconnect or fail; never claim coverage |
 | `ERR-STREAM-CONTINUITY-001` | gaps/jitter exceed contract | degrade coverage; bounded recovery |
 | `ERR-CLOCK-UNCERTAIN-001` | capture interval too wide for requested operation | degrade/abstain/recalibrate |
+| `ERR-CLOCK-STATE-UNKNOWN-001` | clock synchronization state unknown when synchronised evidence required | obtain synchronisation certificate or abstain |
+| `ERR-CLOCK-UNSYNCHRONISED-001` | clock unsynchronised or drift bound exceeds tolerance | synchronise clock or bound monotonic drift |
+| `ERR-OPERATION-UNREGISTERED-001` | surveillance operation not registered in time uncertainty budget catalog | register operation tolerance before evaluation |
+| `ERR-TIME-INTERVAL-INVERTED-001` | capture or transit interval earliest bound exceeds latest bound | correct interval bounds before evaluation |
+| `ERR-CLOCK-BASIS-MISMATCH-001` | comparison or association between incompatible clock bases | convert to common basis or synchronise to UTC |
+| `ERR-ARITHMETIC-OVERFLOW-001` | arithmetic overflow in timestamp or uncertainty calculation | bound timestamp values within addressable range |
+| `ERR-NON-MONOTONE-NARROWING-001` | attempted non-monotone uncertainty narrowing violating FORMAL-010 | preserve monotone widening; retain sync evidence |
 | `ERR-DECODE-001` | media decode failed | preserve source; alternate decoder only if registered |
 | `ERR-DECODE-BOUNDS-001` | media exceeds declared bounds | fail closed |
 | `ERR-MODEL-UNAVAILABLE-001` | model generation not runnable | route to registered fallback or degrade |
