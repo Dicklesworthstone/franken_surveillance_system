@@ -9,18 +9,21 @@ use std::fmt;
 use std::path::Path;
 
 use fss_core::{
-    CanonicalDecode, CanonicalEncode, ContentDigest, ContractError, EffectIntent, EffectJournal,
-    EffectJournalTransition, EffectState, Obligation, ObligationId, OperationId, OperationReceipt,
-    TimestampNs,
+    BatchId, CanonicalDecode, CanonicalEncode, ContentDigest, ContractError, EffectIntent,
+    EffectJournal, EffectJournalTransition, EffectState, LedgerAnchor, ObjectId, Obligation,
+    ObligationId, OperationId, OperationReceipt, Plane, TimestampNs,
 };
 use fss_ledger::{
-    ExternalMutationKind, IncompleteTailPolicy, Journal, JournalError, RecoveryReport, inspect,
+    DurableReferenceLedger, ExternalMutationKind, IncompleteTailPolicy, Journal, JournalError,
+    RecoveryReport, inspect,
 };
+use fss_object::InMemoryObjectStore;
 
 use crate::alert::{
     ProviderDispatch, ReferenceAlertPlan, ReferenceAlertProvider, ReferenceProviderBehavior,
 };
 use crate::error::ReferenceError;
+use crate::outcome::{ALERT_OUTCOME_FAMILY, ReferenceAlertOutcomeReceipt};
 
 /// Dedicated journal record kind for canonical effect journal transitions.
 pub const EFFECT_TRANSITION_RECORD_KIND: u16 = 2;
@@ -48,6 +51,11 @@ pub enum DurableEffectError {
         /// Underlying contract decode error.
         error: ContractError,
     },
+    /// An obligation is transient and not persisted in the durable effect journal (INV-111).
+    TransientObligation {
+        /// Offending transient obligation identity.
+        obligation_id: ObligationId,
+    },
 }
 
 impl fmt::Display for DurableEffectError {
@@ -64,6 +72,10 @@ impl fmt::Display for DurableEffectError {
                 formatter,
                 "durable effect record {sequence} failed canonical decode: {error}"
             ),
+            Self::TransientObligation { obligation_id } => write!(
+                formatter,
+                "obligation {obligation_id} is transient and not durably recorded (INV-111 violation)"
+            ),
         }
     }
 }
@@ -74,7 +86,7 @@ impl Error for DurableEffectError {
             Self::Journal(error) => Some(error),
             Self::Contract(error) => Some(error),
             Self::Reference(error) => Some(error),
-            Self::UnexpectedRecordKind { .. } => None,
+            Self::UnexpectedRecordKind { .. } | Self::TransientObligation { .. } => None,
             Self::Decode { error, .. } => Some(error),
         }
     }
@@ -96,6 +108,59 @@ impl From<ReferenceError> for DurableEffectError {
     fn from(value: ReferenceError) -> Self {
         Self::Reference(value)
     }
+}
+
+/// An obligation that is recorded in the durable effect journal but whose outcome is not yet published to the canonical ledger.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PendingLedgerObligation {
+    /// The durable obligation recorded in the journal.
+    pub obligation: Obligation,
+    /// The operation receipt recorded in the journal.
+    pub receipt: OperationReceipt,
+}
+
+/// An obligation whose outcome is durably recorded in the journal and published to the canonical ledger.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LedgeredObligation {
+    /// The durable obligation recorded in the journal.
+    pub obligation: Obligation,
+    /// The operation receipt recorded in the journal.
+    pub receipt: OperationReceipt,
+    /// Anchor of the batch that published the outcome.
+    pub anchor: LedgerAnchor,
+    /// Batch identity of that publication.
+    pub batch_id: BatchId,
+    /// Manifest root of the published outcome.
+    pub outcome_root: ContentDigest,
+}
+
+/// Joint durable journal and canonical ledger classification of one obligation (INV-111).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ObligationLedgerState {
+    /// The obligation is not recorded in the durable journal and the ledger names none.
+    Absent,
+    /// The obligation is durably journaled, but its outcome has not been published to the canonical ledger.
+    PendingLedger(PendingLedgerObligation),
+    /// The obligation is durably journaled and its exact outcome is published in the canonical ledger.
+    Ledgered(LedgeredObligation),
+    /// The obligation is durably journaled, but the ledger publishes a different outcome or family for this operation.
+    LedgerConflict {
+        /// Obligation identity.
+        obligation_id: ObligationId,
+        /// Journal receipt digest.
+        journal_receipt_digest: ContentDigest,
+        /// Ledger witness digest.
+        ledgered_witness_digest: Option<ContentDigest>,
+        /// Family named by the ledger.
+        ledgered_family: String,
+    },
+    /// The ledger contains an effect outcome for an operation that does not exist in the durable journal.
+    UnbackedLedgerClaim {
+        /// Operation identity from the ledger object.
+        operation_id: OperationId,
+        /// Manifest root payload in the ledger.
+        ledgered_root: ContentDigest,
+    },
 }
 
 /// Durable crash-safe wrapper around [`EffectJournal`].
@@ -189,6 +254,122 @@ impl DurableEffectJournal {
     /// Returns all obligations in canonical identity order.
     pub fn obligations(&self) -> impl Iterator<Item = &Obligation> {
         self.memory.obligations()
+    }
+
+    /// Returns one obligation if present in the replayed journal.
+    #[must_use]
+    pub fn obligation(&self, obligation_id: &ObligationId) -> Option<&Obligation> {
+        self.memory
+            .obligations()
+            .find(|candidate| &candidate.obligation_id == obligation_id)
+    }
+
+    /// Acknowledges an obligation, proving it is durably recorded in the journal (INV-111).
+    ///
+    /// Rejects any transient or unpersisted obligation with [`DurableEffectError::TransientObligation`].
+    pub fn acknowledge_obligation(
+        &self,
+        obligation_id: &ObligationId,
+    ) -> Result<&Obligation, DurableEffectError> {
+        self.obligation(obligation_id)
+            .ok_or_else(|| DurableEffectError::TransientObligation {
+                obligation_id: obligation_id.clone(),
+            })
+    }
+
+    /// Classifies an obligation against both the durable effect journal and the canonical reference ledger.
+    ///
+    /// Follows the `PendingLedger` pattern to distinguish between unledgered durable obligations,
+    /// ledgered obligations, and conflicts.
+    pub fn classify_obligation(
+        &self,
+        obligation_id: &ObligationId,
+        ledger: &DurableReferenceLedger,
+    ) -> Result<ObligationLedgerState, DurableEffectError> {
+        let Some(obligation) = self.obligation(obligation_id) else {
+            return Ok(ObligationLedgerState::Absent);
+        };
+        let receipt = self
+            .operation(&obligation.operation_id)
+            .ok_or(ContractError::NotFound)?;
+        let effect_object_id = ObjectId::parse(format!(
+            "object:effect:{}",
+            obligation.operation_id.as_str()
+        ))?;
+        let Some(published) = ledger.current().objects.get(&effect_object_id) else {
+            return Ok(ObligationLedgerState::PendingLedger(
+                PendingLedgerObligation {
+                    obligation: obligation.clone(),
+                    receipt: receipt.clone(),
+                },
+            ));
+        };
+        if published.family != ALERT_OUTCOME_FAMILY || published.plane != Plane::Effect {
+            return Ok(ObligationLedgerState::LedgerConflict {
+                obligation_id: obligation_id.clone(),
+                journal_receipt_digest: receipt.receipt_digest(),
+                ledgered_witness_digest: None,
+                ledgered_family: published.family.clone(),
+            });
+        }
+        let matching_batch = ledger.batches().iter().rev().find(|batch| {
+            batch
+                .deltas
+                .iter()
+                .any(|delta| delta.object_id == effect_object_id)
+        });
+        let matching_delta = matching_batch.and_then(|batch| {
+            batch
+                .deltas
+                .iter()
+                .rev()
+                .find(|delta| delta.object_id == effect_object_id)
+        });
+        let ledgered_witness = matching_delta.and_then(|d| d.witness_digest);
+        if ledgered_witness == Some(receipt.receipt_digest())
+            && published.payload_digest
+                == matching_delta
+                    .map(|d| d.payload_digest)
+                    .unwrap_or(published.payload_digest)
+        {
+            let batch = matching_batch.ok_or(ContractError::NotFound)?;
+            Ok(ObligationLedgerState::Ledgered(LedgeredObligation {
+                obligation: obligation.clone(),
+                receipt: receipt.clone(),
+                anchor: batch.new_anchor.clone(),
+                batch_id: batch.batch_id.clone(),
+                outcome_root: published.payload_digest,
+            }))
+        } else {
+            Ok(ObligationLedgerState::LedgerConflict {
+                obligation_id: obligation_id.clone(),
+                journal_receipt_digest: receipt.receipt_digest(),
+                ledgered_witness_digest: ledgered_witness,
+                ledgered_family: published.family.clone(),
+            })
+        }
+    }
+
+    /// Classifies an operation identity against both the durable effect journal and the canonical reference ledger.
+    pub fn classify_operation(
+        &self,
+        operation_id: &OperationId,
+        ledger: &DurableReferenceLedger,
+    ) -> Result<ObligationLedgerState, DurableEffectError> {
+        let effect_object_id = ObjectId::parse(format!("object:effect:{}", operation_id.as_str()))?;
+        let Some(_receipt) = self.operation(operation_id) else {
+            if let Some(published) = ledger.current().objects.get(&effect_object_id) {
+                return Ok(ObligationLedgerState::UnbackedLedgerClaim {
+                    operation_id: operation_id.clone(),
+                    ledgered_root: published.payload_digest,
+                });
+            }
+            return Ok(ObligationLedgerState::Absent);
+        };
+        let Some(obligation) = self.obligations().find(|o| o.operation_id == *operation_id) else {
+            return Ok(ObligationLedgerState::Absent);
+        };
+        self.classify_obligation(&obligation.obligation_id, ledger)
     }
 
     /// Prepares an effect intent durably. Exact retries return existing receipt.
@@ -545,6 +726,43 @@ impl DurableEffectJournal {
         let receipt =
             self.reconcile_failed(&plan.intent.operation_id, proof_digest, now, reason_str)?;
         Ok(receipt.clone())
+    }
+
+    /// Prepares a reference alert plan durably, appending the prepare transition to disk before returning (INV-111).
+    pub fn prepare_alert(
+        &mut self,
+        params: crate::alert::PrepareAlertParams<'_>,
+    ) -> Result<ReferenceAlertPlan, DurableEffectError> {
+        let now = params.now;
+        let mut validation_journal = EffectJournal::new();
+        let plan = crate::alert::prepare_reference_alert(params, &mut validation_journal)?;
+        self.prepare(
+            plan.intent.clone(),
+            plan.obligation_id.clone(),
+            crate::alert::REFERENCE_ALERT_TERMINAL_PREDICATE,
+            now,
+        )?;
+        Ok(plan)
+    }
+
+    /// Publishes an authoritative alert effect outcome to the canonical ledger only after acknowledging
+    /// that the obligation is durably journaled (INV-111).
+    pub fn publish_alert_outcome(
+        &self,
+        plan: &ReferenceAlertPlan,
+        objects: &mut InMemoryObjectStore,
+        ledger: &mut DurableReferenceLedger,
+        provider: &ReferenceAlertProvider,
+    ) -> Result<ReferenceAlertOutcomeReceipt, DurableEffectError> {
+        self.acknowledge_obligation(&plan.obligation_id)?;
+        let receipt = crate::outcome::publish_reference_alert_outcome(
+            plan,
+            &self.memory,
+            objects,
+            ledger,
+            provider,
+        )?;
+        Ok(receipt)
     }
 }
 

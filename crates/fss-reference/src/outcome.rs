@@ -13,7 +13,8 @@ use crate::{
     alert::{reference_alert_terminal_proof_bytes, validate_reference_alert_plan},
 };
 
-const ALERT_OUTCOME_FAMILY: &str = "alert_effect_outcome";
+/// Canonical evidence delta family for published alert effect outcomes.
+pub const ALERT_OUTCOME_FAMILY: &str = "alert_effect_outcome";
 const ALERT_OUTCOME_GENERATION: u64 = 1;
 
 /// Immutable semantic record tying one alert operation to its event basis and terminal evidence.

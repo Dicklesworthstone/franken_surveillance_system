@@ -77,7 +77,10 @@ pub use delivery::{
     DeliveryContinuity, DeliveryDirective, DeliveryMutation, DeliveryPacket, DeliveryPlan,
     MAX_DELIVERY_DIRECTIVES,
 };
-pub use durable_effect::{DurableEffectError, DurableEffectJournal, EFFECT_TRANSITION_RECORD_KIND};
+pub use durable_effect::{
+    DurableEffectError, DurableEffectJournal, EFFECT_TRANSITION_RECORD_KIND, LedgeredObligation,
+    ObligationLedgerState, PendingLedgerObligation,
+};
 pub use encoded_fixture::{
     ContainerFormat, EncodedCameraGenerator, EncodedCameraSpec, EncodedFixtureError,
     EncodedFixtureKind, EncodedFrameFixture, FrameType, MAX_FIXTURE_FRAMES,
@@ -92,7 +95,8 @@ pub use model::{
     MockSemanticLabel, execute_mock_model,
 };
 pub use outcome::{
-    ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt, publish_reference_alert_outcome,
+    ALERT_OUTCOME_FAMILY, ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt,
+    publish_reference_alert_outcome,
 };
 pub use packet_fault::{
     DeterministicFaultPrng, FaultInjectionJournal, FaultRule, FaultStreamItem,
@@ -106,7 +110,9 @@ pub use policy::{
     ReferencePolicyDecision, evaluate_unknown_presence, publish_reference_event,
 };
 pub use situation_guard::{
+    CAPABILITY_EFFECT_RECONCILE, EFFECT_RECONCILE_AFFORDANCE, EFFECT_STATUS_AFFORDANCE,
     ReferenceSituation, ReferenceSituationRequest, compile_reference_situation,
+    compile_reference_situation_with_durable_journal,
     compile_reference_situation_with_operation_receipt, seal_reference_handoff,
 };
 pub use situation_sections::{

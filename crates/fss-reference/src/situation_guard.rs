@@ -8,12 +8,16 @@ use fss_core::{
 };
 use fss_ledger::DurableReferenceLedger;
 
-use crate::{ReferenceAlertPlan, ReferenceError};
+use crate::{DurableEffectJournal, ReferenceAlertPlan, ReferenceError};
 
 pub use crate::situation::{ReferenceSituation, ReferenceSituationRequest};
 
-const CAPABILITY_EFFECT_RECONCILE: &str = "capability:effect.reconcile";
-const EFFECT_STATUS_AFFORDANCE: &str = "affordance:alert:effect-status";
+/// Required capability to reconcile an in-flight or indeterminate effect.
+pub const CAPABILITY_EFFECT_RECONCILE: &str = "capability:effect.reconcile";
+/// Stable affordance identity for investigating an in-flight effect status.
+pub const EFFECT_STATUS_AFFORDANCE: &str = "affordance:alert:effect-status";
+/// Stable affordance identity for reconciling an indeterminate effect.
+pub const EFFECT_RECONCILE_AFFORDANCE: &str = "affordance:alert:reconcile";
 
 /// Compiles a conservative situation without trusting caller-hidden local effect state.
 ///
@@ -106,6 +110,30 @@ pub fn compile_reference_situation_with_operation_receipt(
 
     finalize_projection(&mut situation)?;
     Ok(situation)
+}
+
+/// Compiles a situation bound to the durable effect journal (INV-111).
+///
+/// If an alert plan is present, enforces that its obligation is durably recorded in the journal.
+/// A transient-only obligation is rejected with [`ReferenceError::InvalidSpec("transient_obligation_rejected")`].
+/// If the operation has already been dispatched or is indeterminate (e.g. across restart),
+/// the commit affordance is replaced with the reconcile affordance [`EFFECT_RECONCILE_AFFORDANCE`].
+pub fn compile_reference_situation_with_durable_journal(
+    request: ReferenceSituationRequest<'_>,
+    durable_journal: &DurableEffectJournal,
+    authority: &DurableReferenceLedger,
+) -> Result<ReferenceSituation, ReferenceError> {
+    if let Some(plan) = request.alert_plan {
+        durable_journal
+            .acknowledge_obligation(&plan.obligation_id)
+            .map_err(|_| ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
+        let operation_receipt = durable_journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
+        compile_reference_situation_with_operation_receipt(request, operation_receipt, authority)
+    } else {
+        compile_reference_situation(request, authority)
+    }
 }
 
 /// Seals a root-closed handoff from a verified guarded situation.
@@ -225,20 +253,42 @@ fn replace_commit_with_status(
     let available = capabilities.contains(CAPABILITY_EFFECT_RECONCILE);
     let retained_worlds = situation.capsule.frame.world_envelope.world_ids();
     let state_text = state.map_or("unknown", EffectState::as_str);
-    situation.capsule.affordances.push(ActionAffordance {
-        affordance_id: EFFECT_STATUS_AFFORDANCE.to_owned(),
-        operation: "investigate".to_owned(),
-        target: format!(
-            "fss://operation/{}/status",
-            plan.intent.operation_id.as_str()
-        ),
-        rationale: if available {
-            format!("{rationale} Inspect and reconcile the existing {state_text} operation.")
-        } else {
+
+    let (affordance_id, target, detail_text) = if state == Some(EffectState::Indeterminate) {
+        (
+            EFFECT_RECONCILE_AFFORDANCE,
             format!(
-                "{rationale} Required capability {CAPABILITY_EFFECT_RECONCILE} is not delegated."
-            )
-        },
+                "fss://operation/{}/reconcile",
+                plan.intent.operation_id.as_str()
+            ),
+            "Read independent provider state and reconcile the existing indeterminate operation without resending.",
+        )
+    } else {
+        (
+            EFFECT_STATUS_AFFORDANCE,
+            format!(
+                "fss://operation/{}/status",
+                plan.intent.operation_id.as_str()
+            ),
+            "Inspect and reconcile the existing operation.",
+        )
+    };
+
+    let full_rationale = if available {
+        if state == Some(EffectState::Indeterminate) {
+            format!("{rationale} {detail_text}")
+        } else {
+            format!("{rationale} Inspect and reconcile the existing {state_text} operation.")
+        }
+    } else {
+        format!("{rationale} Required capability {CAPABILITY_EFFECT_RECONCILE} is not delegated.")
+    };
+
+    situation.capsule.affordances.push(ActionAffordance {
+        affordance_id: affordance_id.to_owned(),
+        operation: "investigate".to_owned(),
+        target,
+        rationale: full_rationale,
         class: if available {
             AffordanceClass::Probe
         } else {
