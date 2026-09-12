@@ -16,6 +16,7 @@ use fss_cli::crosswalk::{
     lookup_by_library_entry_point, lookup_by_mcp_tool_name, lookup_by_operation_id,
     lookup_by_operation_name, validate_crosswalk_entries,
 };
+use fss_cli::error::ExitIdentity;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
@@ -246,3 +247,131 @@ fn test_validator_fails_closed_on_unregistered_error() -> TestResult {
     ));
     Ok(())
 }
+
+#[test]
+fn test_unregistered_exit_identity_fails_closed() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    static FAKE_EXIT: [ExitIdentity; 1] = [ExitIdentity {
+        code: 99,
+        identifier: "EXIT-NONEXISTENT-FICTIONAL-999",
+    }];
+    entries[0].exit_identities = &FAKE_EXIT;
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(matches!(
+        res,
+        Err(CrosswalkValidationError::InvalidExitIdentity { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_empty_exit_identities_fails_closed() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[0].exit_identities = &[];
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(res.is_err(), "Empty exit identities must fail closed");
+    Ok(())
+}
+
+#[test]
+fn test_duplicate_operation_id_fails_closed() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    let mut dup = entries[0];
+    dup.cli_command = "fss custom command";
+    dup.mcp_tool_name = "custom_tool";
+    dup.library_entry_point = "fss_custom::tool";
+    entries.push(dup);
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(res.is_err(), "Duplicate operation_id AOP-001 must be rejected");
+    Ok(())
+}
+
+#[test]
+fn test_case_and_separator_collision_fails_closed() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[1].mcp_tool_name = "session-open";
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(matches!(
+        res,
+        Err(CrosswalkValidationError::McpToolCollision { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_empty_primary_error_id_fails_closed() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[0].primary_error_id = "";
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(res.is_err(), "Empty primary_error_id must fail closed");
+    Ok(())
+}
+
+#[test]
+fn test_whitespace_surface_fails_closed() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[0].cli_command = "   ";
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(matches!(
+        res,
+        Err(CrosswalkValidationError::MissingSurfaceMapping {
+            surface: "cli_command",
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_stale_tombstone_entry_fails_closed() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[0].status = "tombstone";
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(matches!(
+        res,
+        Err(CrosswalkValidationError::StaleEntry { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_all_missing_surfaces_fail_closed() -> TestResult {
+    let mut entries_mcp = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries_mcp[0].mcp_tool_name = "";
+    let res_mcp = validate_crosswalk_entries(&entries_mcp, &[]);
+    assert!(matches!(
+        res_mcp,
+        Err(CrosswalkValidationError::MissingSurfaceMapping {
+            surface: "mcp_tool_name",
+            ..
+        })
+    ));
+
+    let mut entries_lib = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries_lib[0].library_entry_point = "";
+    let res_lib = validate_crosswalk_entries(&entries_lib, &[]);
+    assert!(matches!(
+        res_lib,
+        Err(CrosswalkValidationError::MissingSurfaceMapping {
+            surface: "library_entry_point",
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_parity_against_json_crosswalk() -> TestResult {
+    let json_str = include_str!("../../../architecture/operation_crosswalk.json");
+    for entry in REGISTERED_OPERATION_CROSSWALK {
+        assert!(json_str.contains(entry.operation_id));
+        assert!(json_str.contains(entry.operation_name));
+        assert!(json_str.contains(entry.cli_command));
+        assert!(json_str.contains(entry.mcp_tool_name));
+        assert!(json_str.contains(entry.library_entry_point));
+        assert!(json_str.contains(entry.primary_error_id));
+        assert!(json_str.contains(entry.status));
+    }
+    Ok(())
+}
+

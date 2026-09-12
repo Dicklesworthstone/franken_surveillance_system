@@ -307,5 +307,135 @@ class TestOperationCrosswalkChecker(unittest.TestCase):
         self.assertEqual(data["operationCount"], 14)
 
 
+
+class TestReview687Findings(unittest.TestCase):
+    """Failing tests first corresponding to review-687 findings."""
+
+    def test_finding_1_unregistered_exit_identity_fails_closed(self) -> None:
+        """Exit identity not in registries/ERRORS.md must fail closed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            crosswalk_file = repo / "architecture" / "operation_crosswalk.json"
+            crosswalk_file.unlink()
+            data = json.loads((ROOT / "architecture" / "operation_crosswalk.json").read_text(encoding="utf-8"))
+            data["crosswalk"][0]["exit_identities"].append("EXIT-NONEXISTENT-FICTIONAL-999")
+            crosswalk_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            result = validate_crosswalk(repo)
+            self.assertFalse(result.passed)
+            self.assertTrue(any("EXIT-NONEXISTENT-FICTIONAL-999" in err.message for err in result.errors))
+
+    def test_finding_2_tombstoned_error_in_error_identities_fails_closed(self) -> None:
+        """Tombstoned error in error_identities must fail closed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            crosswalk_file = repo / "architecture" / "operation_crosswalk.json"
+            crosswalk_file.unlink()
+            data = json.loads((ROOT / "architecture" / "operation_crosswalk.json").read_text(encoding="utf-8"))
+            data["crosswalk"][0]["error_identities"].append("ERR-OP-PRECONDITION-FAILED-001")
+            crosswalk_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            result = validate_crosswalk(repo)
+            self.assertFalse(result.passed)
+            self.assertTrue(
+                any(err.code == ERR_CROSSWALK_STALE_ENTRY and "ERR-OP-PRECONDITION-FAILED-001" in err.message for err in result.errors)
+            )
+
+    def test_finding_3_separator_and_case_collision_fails_closed(self) -> None:
+        """Collision across case or separator normalization must fail closed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            crosswalk_file = repo / "architecture" / "operation_crosswalk.json"
+            crosswalk_file.unlink()
+            data = json.loads((ROOT / "architecture" / "operation_crosswalk.json").read_text(encoding="utf-8"))
+            data["crosswalk"][1]["mcp_tool_name"] = "session-open"
+            crosswalk_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            result = validate_crosswalk(repo)
+            self.assertFalse(result.passed)
+            self.assertTrue(any(err.code == ERR_CROSSWALK_NAME_COLLISION for err in result.errors))
+
+    def test_finding_3_command_prefix_collision_fails_closed(self) -> None:
+        """CLI command that is a prefix of another CLI command must fail closed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            crosswalk_file = repo / "architecture" / "operation_crosswalk.json"
+            crosswalk_file.unlink()
+            data = json.loads((ROOT / "architecture" / "operation_crosswalk.json").read_text(encoding="utf-8"))
+            data["crosswalk"][1]["cli_command"] = "fss session"
+            crosswalk_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            result = validate_crosswalk(repo)
+            self.assertFalse(result.passed)
+            self.assertTrue(any(err.code == ERR_CROSSWALK_NAME_COLLISION for err in result.errors))
+
+    def test_finding_4_extra_operation_in_markdown_table_fails_closed(self) -> None:
+        """Extra operation in Markdown table not in JSON must fail closed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            md_file = repo / "registries" / "OPERATION_CROSSWALK.md"
+            md_file.unlink()
+            content = (ROOT / "registries" / "OPERATION_CROSSWALK.md").read_text(encoding="utf-8")
+            extra_row = "| `AOP-015` | `session.audit` | `fss-audit` | `fss session audit` | `fss_audit::session_audit` | `session_audit` | `ERR-AUTH-DENIED-001` | `EXIT-OK-000` | `specified` |\n"
+            md_file.write_text(content + extra_row, encoding="utf-8")
+            result = validate_crosswalk(repo)
+            self.assertFalse(result.passed)
+            self.assertTrue(any(err.code == ERR_CROSSWALK_DIVERGENCE and "AOP-015" in err.message for err in result.errors))
+
+    def test_finding_5_empty_primary_error_id_fails_closed(self) -> None:
+        """Empty primary_error_id must fail closed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            crosswalk_file = repo / "architecture" / "operation_crosswalk.json"
+            crosswalk_file.unlink()
+            data = json.loads((ROOT / "architecture" / "operation_crosswalk.json").read_text(encoding="utf-8"))
+            data["crosswalk"][0]["primary_error_id"] = ""
+            crosswalk_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            result = validate_crosswalk(repo)
+            self.assertFalse(result.passed)
+            self.assertTrue(any("primary_error_id" in err.message for err in result.errors))
+
+    def test_finding_6_null_fields_fail_closed_with_diagnostic(self) -> None:
+        """Null field values in JSON must emit diagnostics without crashing."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            crosswalk_file = repo / "architecture" / "operation_crosswalk.json"
+            crosswalk_file.unlink()
+            data = json.loads((ROOT / "architecture" / "operation_crosswalk.json").read_text(encoding="utf-8"))
+            data["crosswalk"][0]["cli_command"] = None
+            crosswalk_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            result = validate_crosswalk(repo)
+            self.assertFalse(result.passed)
+            self.assertTrue(any(err.code in (ERR_CROSSWALK_CORRUPT_FILE, ERR_CROSSWALK_SURFACE_MISSING) for err in result.errors))
+
+    def test_finding_6_root_list_fails_closed_with_diagnostic(self) -> None:
+        """Non-dict root in operation_crosswalk.json must emit diagnostic without crashing."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            crosswalk_file = repo / "architecture" / "operation_crosswalk.json"
+            crosswalk_file.unlink()
+            crosswalk_file.write_text(json.dumps(["not", "a", "dict"]), encoding="utf-8")
+            result = validate_crosswalk(repo)
+            self.assertFalse(result.passed)
+            self.assertTrue(any(err.code == ERR_CROSSWALK_CORRUPT_FILE for err in result.errors))
+
+    def test_finding_8_tombstoned_operation_in_active_crosswalk_fails_closed(self) -> None:
+        """Tombstoned operation with active crosswalk mapping must fail closed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo = create_mock_repo(Path(tmp_dir))
+            ao_file = repo / "architecture" / "agent_operations.json"
+            ao_file.unlink()
+            ao_data = json.loads((ROOT / "architecture" / "agent_operations.json").read_text(encoding="utf-8"))
+            ao_data["operations"][0]["status"] = "tombstone"
+            ao_file.write_text(json.dumps(ao_data, indent=2), encoding="utf-8")
+
+            cw_file = repo / "architecture" / "operation_crosswalk.json"
+            cw_file.unlink()
+            cw_data = json.loads((ROOT / "architecture" / "operation_crosswalk.json").read_text(encoding="utf-8"))
+            cw_data["crosswalk"][0]["status"] = "tombstone"
+            cw_file.write_text(json.dumps(cw_data, indent=2), encoding="utf-8")
+
+            result = validate_crosswalk(repo)
+            self.assertFalse(result.passed)
+            self.assertTrue(any(err.code == ERR_CROSSWALK_STALE_ENTRY for err in result.errors))
+
+
 if __name__ == "__main__":
     unittest.main()
+
