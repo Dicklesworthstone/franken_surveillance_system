@@ -35,6 +35,8 @@ pub fn validate_id(value: &str) -> Result<(), ContractError> {
 }
 
 /// Validates a subsystem generation identifier matching `^[a-z0-9][a-z0-9:+._-]{7,255}$`.
+///
+/// Under ADR-0004 and NEG-003, mutable aliases containing `latest` are strictly prohibited.
 pub fn validate_subsystem_generation(value: &str) -> Result<(), ContractError> {
     if value.len() < MIN_SUBSYSTEM_GENERATION_LEN || value.len() > MAX_SUBSYSTEM_GENERATION_LEN {
         return Err(ContractError::InvalidIdentifier);
@@ -52,7 +54,26 @@ pub fn validate_subsystem_generation(value: &str) -> Result<(), ContractError> {
             return Err(ContractError::InvalidIdentifier);
         }
     }
+    if is_latest_subsystem_generation_alias(value) {
+        return Err(ContractError::InvalidIdentifier);
+    }
     Ok(())
+}
+
+/// Detects whether a generation string contains a forbidden `latest` alias token (ADR-0004).
+#[must_use]
+pub fn is_latest_subsystem_generation_alias(value: &str) -> bool {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "latest" || lower == "latest.weights" {
+        return true;
+    }
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|token| token == "latest")
 }
 
 macro_rules! stable_id {
@@ -513,6 +534,13 @@ macro_rules! subsystem_generation {
                 let value = value.into();
                 validate_subsystem_generation(&value)?;
                 Ok(Self(value))
+            }
+
+            /// Constructs an unvalidated identifier for testing defense-in-depth and negative boundaries.
+            #[doc(hidden)]
+            #[must_use]
+            pub fn from_unvalidated_for_test(value: impl Into<String>) -> Self {
+                Self(value.into())
             }
 
             /// Returns the identifier text.

@@ -54,7 +54,8 @@ fn test_valid_standards_first_adapters_pass() -> Result<(), Box<dyn std::error::
 }
 
 #[test]
-fn test_marketing_inferred_standards_claim_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+fn test_marketing_inferred_standards_claim_fails_closed() -> Result<(), Box<dyn std::error::Error>>
+{
     let bad_adapter = AdapterIdentity {
         adapter_id: AdapterId::parse("adapter:consumer-wifi-cam-001")?,
         generation: AdapterGeneration::parse("gen:adapter:cam-v1")?,
@@ -121,7 +122,8 @@ fn test_proprietary_in_sealed_laboratory_passes() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn test_unscoped_vendor_token_in_native_driver_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+fn test_unscoped_vendor_token_in_native_driver_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let bad_token_adapter = AdapterIdentity {
         adapter_id: AdapterId::parse("adapter:unscoped-token-cam-001")?,
         generation: AdapterGeneration::parse("gen:adapter:cam-v1")?,
@@ -145,7 +147,8 @@ fn test_unscoped_vendor_token_in_native_driver_fails_closed() -> Result<(), Box<
 }
 
 #[test]
-fn test_unverified_standards_claim_without_evidence_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+fn test_unverified_standards_claim_without_evidence_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let unverified_adapter = AdapterIdentity {
         adapter_id: AdapterId::parse("adapter:unverified-onvif-001")?,
         generation: AdapterGeneration::parse("gen:adapter:cam-v1")?,
@@ -191,7 +194,8 @@ fn test_marketing_underscore_and_synonyms_fails_closed() -> Result<(), Box<dyn s
 }
 
 #[test]
-fn test_proprietary_vendor_ring_nest_in_native_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+fn test_proprietary_vendor_ring_nest_in_native_fails_closed()
+-> Result<(), Box<dyn std::error::Error>> {
     let ring_adapter = AdapterIdentity {
         adapter_id: AdapterId::parse("adapter:ring-doorbell-001")?,
         generation: AdapterGeneration::parse("gen:adapter:ring-v1")?,
@@ -277,7 +281,8 @@ fn test_app_automation_with_spaces_fails_closed() -> Result<(), Box<dyn std::err
 }
 
 #[test]
-fn test_unscoped_vendor_token_in_sealed_lab_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+fn test_unscoped_vendor_token_in_sealed_lab_fails_closed() -> Result<(), Box<dyn std::error::Error>>
+{
     let adapter = AdapterIdentity {
         adapter_id: AdapterId::parse("adapter:wyze-ambient-001")?,
         generation: AdapterGeneration::parse("gen:adapter:wyze-v1")?,
@@ -299,7 +304,8 @@ fn test_unscoped_vendor_token_in_sealed_lab_fails_closed() -> Result<(), Box<dyn
 }
 
 #[test]
-fn test_security_boundary_violation_in_rust_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+fn test_security_boundary_violation_in_rust_fails_closed() -> Result<(), Box<dyn std::error::Error>>
+{
     let adapter = AdapterIdentity {
         adapter_id: AdapterId::parse("adapter:scanner-cam-001")?,
         generation: AdapterGeneration::parse("gen:adapter:v1")?,

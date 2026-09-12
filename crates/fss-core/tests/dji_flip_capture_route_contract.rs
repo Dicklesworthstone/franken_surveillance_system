@@ -2,18 +2,17 @@
 //! Contract and negative-evidence verification tests for NEG-001 (DJI Flip SDK non-dependency constraint).
 
 use fss_core::acquisition::{
-    evaluate_capture_route, AcquisitionError, AcquisitionRequest,
-    CaptureDeviceTuple, CaptureReadinessState, CaptureRouteKind,
-    LiveCaptureRouteResult, Neg001ScenarioLog,
-    UnavailableCaptureReason, UnsupportedCaptureReason, CONSTRAINT_NEG_001,
-    SCHEMA_NEG001_SCENARIO_LOG,
+    AcquisitionError, AcquisitionRequest, CONSTRAINT_NEG_001, CaptureDeviceTuple,
+    CaptureReadinessState, CaptureRouteKind, LiveCaptureRouteResult, Neg001ScenarioLog,
+    SCHEMA_NEG001_SCENARIO_LOG, UnavailableCaptureReason, UnsupportedCaptureReason,
+    evaluate_capture_route,
 };
 use fss_core::{
     AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind,
-    CanonicalDecode, CanonicalEncode, ClockBasis, ContentDigest, ContractError,
-    CredentialMethod, DeviceCapabilities, DeviceClass, DeviceGeneration, DeviceId,
-    DeviceIdentity, FirmwareGeneration, IsolationMode, MediaKind, SourceId,
-    SourceIdentity, SourceKind, StreamGeneration, TimestampNs,
+    CanonicalDecode, CanonicalEncode, ClockBasis, ContentDigest, ContractError, CredentialMethod,
+    DeviceCapabilities, DeviceClass, DeviceGeneration, DeviceId, DeviceIdentity,
+    FirmwareGeneration, IsolationMode, MediaKind, SourceId, SourceIdentity, SourceKind,
+    StreamGeneration, TimestampNs,
 };
 
 fn make_dji_flip_tuple() -> Result<CaptureDeviceTuple, ContractError> {
@@ -42,9 +41,15 @@ fn test_neg001_dji_flip_sdk_route_returns_unsupported() -> Result<(), Box<dyn st
     match &result {
         LiveCaptureRouteResult::Unsupported(unsupported) => {
             assert_eq!(unsupported.constraint_id, Some(CONSTRAINT_NEG_001));
-            assert_eq!(unsupported.route_kind, CaptureRouteKind::ProprietarySdkLiveCapture);
+            assert_eq!(
+                unsupported.route_kind,
+                CaptureRouteKind::ProprietarySdkLiveCapture
+            );
             match &unsupported.reason {
-                UnsupportedCaptureReason::ProhibitedSdkDependency { sdk_name, constraint_id } => {
+                UnsupportedCaptureReason::ProhibitedSdkDependency {
+                    sdk_name,
+                    constraint_id,
+                } => {
                     assert_eq!(sdk_name, "DJI Mobile SDK");
                     assert_eq!(*constraint_id, CONSTRAINT_NEG_001);
                 }
@@ -65,15 +70,11 @@ fn test_neg001_dji_flip_sdk_route_returns_unsupported() -> Result<(), Box<dyn st
 }
 
 #[test]
-fn test_neg001_dji_flip_live_streaming_route_returns_unsupported() -> Result<(), Box<dyn std::error::Error>> {
+fn test_neg001_dji_flip_live_streaming_route_returns_unsupported()
+-> Result<(), Box<dyn std::error::Error>> {
     let tuple = make_dji_flip_tuple()?;
 
-    let result = evaluate_capture_route(
-        &tuple,
-        CaptureRouteKind::LiveStreaming,
-        true,
-        true,
-    );
+    let result = evaluate_capture_route(&tuple, CaptureRouteKind::LiveStreaming, true, true);
 
     match &result {
         LiveCaptureRouteResult::Unsupported(unsupported) => {
@@ -104,16 +105,13 @@ fn test_neg001_dji_flip_live_streaming_route_returns_unsupported() -> Result<(),
 }
 
 #[test]
-fn test_neg001_gate100_recorded_import_and_lab_bridge_succeed() -> Result<(), Box<dyn std::error::Error>> {
+fn test_neg001_gate100_recorded_import_and_lab_bridge_succeed()
+-> Result<(), Box<dyn std::error::Error>> {
     let tuple = make_dji_flip_tuple()?;
 
     // 1. GATE-100 RecordedFileImport
-    let import_result = evaluate_capture_route(
-        &tuple,
-        CaptureRouteKind::RecordedFileImport,
-        true,
-        true,
-    );
+    let import_result =
+        evaluate_capture_route(&tuple, CaptureRouteKind::RecordedFileImport, true, true);
 
     match &import_result {
         LiveCaptureRouteResult::Established(est) => {
@@ -121,11 +119,16 @@ fn test_neg001_gate100_recorded_import_and_lab_bridge_succeed() -> Result<(), Bo
             assert_eq!(est.route_kind, CaptureRouteKind::RecordedFileImport);
             assert!(est.authority_lease_id.contains("recorded-import"));
         }
-        other => return Err(format!("expected Established for recorded import, got: {other:?}").into()),
+        other => {
+            return Err(format!("expected Established for recorded import, got: {other:?}").into());
+        }
     }
 
     assert!(import_result.is_ready());
-    assert_eq!(import_result.readiness_state(), CaptureReadinessState::QualifiedReady);
+    assert_eq!(
+        import_result.readiness_state(),
+        CaptureReadinessState::QualifiedReady
+    );
     // Route evaluation is NOT adapter acceptance and NEVER streaming
     assert!(!import_result.is_adapter_accepted());
     assert!(!import_result.is_streaming());
@@ -148,7 +151,10 @@ fn test_neg001_gate100_recorded_import_and_lab_bridge_succeed() -> Result<(), Bo
     }
 
     assert!(lab_result.is_ready());
-    assert_eq!(lab_result.readiness_state(), CaptureReadinessState::QualifiedReady);
+    assert_eq!(
+        lab_result.readiness_state(),
+        CaptureReadinessState::QualifiedReady
+    );
     assert!(!lab_result.is_adapter_accepted());
     assert!(!lab_result.is_streaming());
 
@@ -176,14 +182,12 @@ fn test_neg001_unestablished_device_tuple_rejected() -> Result<(), Box<dyn std::
     );
 
     match &result {
-        LiveCaptureRouteResult::Unsupported(unsupported) => {
-            match &unsupported.reason {
-                UnsupportedCaptureReason::UnestablishedDeviceTuple { missing_dimension } => {
-                    assert!(missing_dimension.contains("unestablished"));
-                }
-                other => return Err(format!("unexpected reason: {other:?}").into()),
+        LiveCaptureRouteResult::Unsupported(unsupported) => match &unsupported.reason {
+            UnsupportedCaptureReason::UnestablishedDeviceTuple { missing_dimension } => {
+                assert!(missing_dimension.contains("unestablished"));
             }
-        }
+            other => return Err(format!("unexpected reason: {other:?}").into()),
+        },
         other => return Err(format!("expected Unsupported result, got: {other:?}").into()),
     }
 
@@ -207,14 +211,12 @@ fn test_neg001_auth_revocation_returns_unavailable() -> Result<(), Box<dyn std::
     );
 
     match &result {
-        LiveCaptureRouteResult::Unavailable(unavail) => {
-            match &unavail.reason {
-                UnavailableCaptureReason::AuthRevoked { detail } => {
-                    assert!(detail.contains("revoked"));
-                }
-                other => return Err(format!("unexpected reason: {other:?}").into()),
+        LiveCaptureRouteResult::Unavailable(unavail) => match &unavail.reason {
+            UnavailableCaptureReason::AuthRevoked { detail } => {
+                assert!(detail.contains("revoked"));
             }
-        }
+            other => return Err(format!("unexpected reason: {other:?}").into()),
+        },
         other => return Err(format!("expected Unavailable result, got: {other:?}").into()),
     }
 
@@ -227,7 +229,8 @@ fn test_neg001_auth_revocation_returns_unavailable() -> Result<(), Box<dyn std::
 }
 
 #[test]
-fn test_neg001_privacy_scope_mismatch_returns_unavailable() -> Result<(), Box<dyn std::error::Error>> {
+fn test_neg001_privacy_scope_mismatch_returns_unavailable() -> Result<(), Box<dyn std::error::Error>>
+{
     let tuple = make_dji_flip_tuple()?;
 
     let result = evaluate_capture_route(
@@ -238,15 +241,13 @@ fn test_neg001_privacy_scope_mismatch_returns_unavailable() -> Result<(), Box<dy
     );
 
     match &result {
-        LiveCaptureRouteResult::Unavailable(unavail) => {
-            match &unavail.reason {
-                UnavailableCaptureReason::PrivacyScopeExceeded { scope, required } => {
-                    assert_eq!(scope, "owner-authorized-lab");
-                    assert_eq!(required, "owner-authorized-lab");
-                }
-                other => return Err(format!("unexpected reason: {other:?}").into()),
+        LiveCaptureRouteResult::Unavailable(unavail) => match &unavail.reason {
+            UnavailableCaptureReason::PrivacyScopeExceeded { scope, required } => {
+                assert_eq!(scope, "owner-authorized-lab");
+                assert_eq!(required, "owner-authorized-lab");
             }
-        }
+            other => return Err(format!("unexpected reason: {other:?}").into()),
+        },
         other => return Err(format!("expected Unavailable result, got: {other:?}").into()),
     }
 
@@ -259,7 +260,8 @@ fn test_neg001_privacy_scope_mismatch_returns_unavailable() -> Result<(), Box<dy
 }
 
 #[test]
-fn test_neg001_acquisition_request_refuses_dji_flip_streaming() -> Result<(), Box<dyn std::error::Error>> {
+fn test_neg001_acquisition_request_refuses_dji_flip_streaming()
+-> Result<(), Box<dyn std::error::Error>> {
     let source_id = SourceId::parse("src:dji:flip01")?;
     let device_id = DeviceId::parse("device:dji:flip01")?;
     let adapter_id = AdapterId::parse("adapter:dji:flip01")?;
@@ -315,7 +317,10 @@ fn test_neg001_acquisition_request_refuses_dji_flip_streaming() -> Result<(), Bo
 
     // AcquisitionRequest::verify must fail closed with UnsupportedLiveRoute for DJI Flip streaming
     match request.verify() {
-        Err(AcquisitionError::UnsupportedLiveRoute { constraint_id, detail }) => {
+        Err(AcquisitionError::UnsupportedLiveRoute {
+            constraint_id,
+            detail,
+        }) => {
             assert_eq!(constraint_id, CONSTRAINT_NEG_001);
             assert!(detail.contains("DJI Flip live streaming"));
         }
@@ -391,7 +396,8 @@ fn test_neg001_scenario_jsonl_log_contains_no_secrets() -> Result<(), Box<dyn st
         is_streaming: false,
         revival_condition_met: false,
         proof_hash,
-        reproduction_command: "cargo test -p fss-core --test dji_flip_capture_route_contract".to_string(),
+        reproduction_command: "cargo test -p fss-core --test dji_flip_capture_route_contract"
+            .to_string(),
     };
 
     let line = log_entry.to_jsonl_line();

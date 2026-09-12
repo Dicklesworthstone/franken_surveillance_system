@@ -913,3 +913,32 @@ fn finding_3_signed_i128_byte_order_property_pinned() {
     // Callers MUST sort using typed i128 / TimestampNs rather than raw canonical bytes.
     assert!(bytes_neg > bytes_pos);
 }
+
+#[test]
+fn test_subsystem_generation_parse_rejects_latest_aliases() {
+    assert_eq!(
+        ModelGeneration::parse("model:detector:latest"),
+        Err(ContractError::InvalidIdentifier),
+        "ModelGeneration must reject 'latest' generation alias under ADR-0004"
+    );
+    assert_eq!(
+        ModelGeneration::parse("model:yolo:latest.weights"),
+        Err(ContractError::InvalidIdentifier),
+        "ModelGeneration must reject 'latest.weights' alias"
+    );
+    assert_eq!(
+        DeviceGeneration::parse("device:sensor:latest"),
+        Err(ContractError::InvalidIdentifier),
+        "DeviceGeneration must reject 'latest' alias"
+    );
+    assert_eq!(
+        StreamGeneration::parse("stream:rtsp:latest"),
+        Err(ContractError::InvalidIdentifier),
+        "StreamGeneration must reject 'latest' alias"
+    );
+    assert_eq!(
+        AdapterGeneration::parse("adapter:driver:latest"),
+        Err(ContractError::InvalidIdentifier),
+        "AdapterGeneration must reject 'latest' alias"
+    );
+}

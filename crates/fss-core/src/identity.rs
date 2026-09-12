@@ -1054,7 +1054,15 @@ impl AdapterIdentity {
         match self.adapter_kind {
             AdapterKind::OnvifProfileT => {
                 let has_spec = [
-                    "profile t", "profile-t", "profile_t", "onvif profile t", "gate 030", "gate-030", "test onvif", "conformance", "proof",
+                    "profile t",
+                    "profile-t",
+                    "profile_t",
+                    "onvif profile t",
+                    "gate 030",
+                    "gate-030",
+                    "test onvif",
+                    "conformance",
+                    "proof",
                 ]
                 .iter()
                 .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
@@ -1069,7 +1077,16 @@ impl AdapterIdentity {
             }
             AdapterKind::Rtsp => {
                 let has_spec = [
-                    "rfc2326", "rfc 2326", "rfc7826", "rfc 7826", "rfc3550", "rfc 3550", "gate 030", "gate-030", "test rtsp", "proof",
+                    "rfc2326",
+                    "rfc 2326",
+                    "rfc7826",
+                    "rfc 7826",
+                    "rfc3550",
+                    "rfc 3550",
+                    "gate 030",
+                    "gate-030",
+                    "test rtsp",
+                    "proof",
                 ]
                 .iter()
                 .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
@@ -1100,11 +1117,33 @@ impl AdapterIdentity {
 
         // Rule 3 (Defect 3 & 4): Proprietary paths cannot claim NativePureRust
         let is_proprietary = [
-            "wyze", "aosu", "dji", "ring", "nest", "blink", "arlo", "eufy", "tuya",
-            "reolink", "kasa", "tapo", "ezviz", "imou", "proprietary", "closed source",
-            "vendor cloud", "private protocol", "vendor protocol", "screen capture",
-            "app automation", "ui automation", "reverse engineered", "reverse engineering",
-            "cloud bridge", "lab", "vendor",
+            "wyze",
+            "aosu",
+            "dji",
+            "ring",
+            "nest",
+            "blink",
+            "arlo",
+            "eufy",
+            "tuya",
+            "reolink",
+            "kasa",
+            "tapo",
+            "ezviz",
+            "imou",
+            "proprietary",
+            "closed source",
+            "vendor cloud",
+            "private protocol",
+            "vendor protocol",
+            "screen capture",
+            "app automation",
+            "ui automation",
+            "reverse engineered",
+            "reverse engineering",
+            "cloud bridge",
+            "lab",
+            "vendor",
         ]
         .iter()
         .any(|&p| {
@@ -1136,7 +1175,12 @@ impl AdapterIdentity {
 
             // Even in SealedLaboratoryProcess, ambient/global/unscoped tokens are forbidden
             let is_unscoped = [
-                "global", "ambient", "multi device", "all devices", "unscoped", "*",
+                "global",
+                "ambient",
+                "multi device",
+                "all devices",
+                "unscoped",
+                "*",
             ]
             .iter()
             .any(|&u| {
