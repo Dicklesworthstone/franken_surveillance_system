@@ -17,6 +17,7 @@ mod delivery;
 mod durable_effect;
 mod encoded_fixture;
 mod error;
+mod extrinsics;
 mod hydration;
 mod meaningful_delta;
 mod model;
@@ -96,6 +97,13 @@ pub use encoded_fixture::{
     MIN_KEYFRAME_CADENCE, VideoCodec,
 };
 pub use error::ReferenceError;
+pub use extrinsics::{
+    ExtrinsicsCertificate, ExtrinsicsCertificateBuilder, ExtrinsicsCorrespondence,
+    ExtrinsicsCovariance, ExtrinsicsError, ExtrinsicsLifecycle, ExtrinsicsLifecycleState,
+    ExtrinsicsResidual, ExtrinsicsSolveRequest, ExtrinsicsSolver, MAX_EXTRINSICS_CORRESPONDENCES,
+    MAX_EXTRINSICS_REPROJECTION_TOLERANCE_UPX, MIN_EXTRINSICS_CORRESPONDENCES,
+    ReferenceExtrinsicsSolver, RigidTransform3D, solve_extrinsics,
+};
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use meaningful_delta::classify_reference_meaningful_delta;
 pub use model::{
