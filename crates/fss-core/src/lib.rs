@@ -6,6 +6,7 @@
 //! agent-facing situation and handoff objects. It performs no device I/O and invokes
 //! no foreign runtime.
 
+pub mod acquisition;
 mod agent;
 mod canonical;
 mod compression;
@@ -110,3 +111,5 @@ pub use sensor_capsule::{
     SENSOR_CAPSULE_METADATA_DOMAIN, SENSOR_CAPSULE_SCHEMA, SENSOR_CAPSULE_VERSION_1,
     SensorCapsuleV1, SourceCustody,
 };
+
+pub use acquisition::*;
