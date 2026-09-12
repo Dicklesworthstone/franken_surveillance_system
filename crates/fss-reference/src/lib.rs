@@ -96,7 +96,7 @@ pub use model::{
     MAX_MODEL_GENERATION_BYTES, MockAbstentionReason, MockDetection, MockExecutorOutcome,
     MockModelError, MockModelExecutor, MockModelFaultSchedule, MockModelOutcome, MockModelOutput,
     MockModelResult, MockModelScript, MockModelSpec, MockSemanticLabel, compare_model_scores,
-    evaluate_corroboration, execute_mock_model,
+    compute_output_digest, encode_coord_to_basis_point, evaluate_corroboration, execute_mock_model,
 };
 pub use outcome::{
     ALERT_OUTCOME_FAMILY, ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt,

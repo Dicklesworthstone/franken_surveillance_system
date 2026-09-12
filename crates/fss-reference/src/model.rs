@@ -26,6 +26,14 @@ pub const MAX_DETECTIONS_PER_OUTPUT: usize = 64;
 /// Maximum distinct sources permitted in a single corroboration evaluation.
 pub const MAX_CORROBORATION_SOURCES: usize = 32;
 
+/// Encodes a normalized coordinate [0.0, 1.0] into a deterministic discrete basis point [0, 10_000]
+/// using IEEE 754 half-away-from-zero rounding to eliminate float truncation drift (INV-004).
+#[inline]
+#[must_use]
+pub fn encode_coord_to_basis_point(coord: f64) -> u64 {
+    (coord.clamp(0.0, 1.0) * 10_000.0).round() as u64
+}
+
 /// Coarse model-facing label. This is derived cognition, not canonical event truth.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MockSemanticLabel {
@@ -316,16 +324,85 @@ impl CanonicalEncode for MockModelOutput {
         self.sensor_id.encode_canonical(encoder);
         encoder.digest(self.input_digest);
         self.capture_interval.encode_canonical(encoder);
+        encoder.text(self.knowledge_state.as_str());
+        encoder.text(provenance_class_str(self.provenance_class));
+        encode_corroboration_status(&self.corroboration, encoder);
         encoder.u64(self.detections.len() as u64);
         for det in &self.detections {
             encoder.u8(det.label.tag());
             det.probability.encode_canonical(encoder);
-            encoder.u64((det.bounding_box[0] * 10_000.0) as u64);
-            encoder.u64((det.bounding_box[1] * 10_000.0) as u64);
-            encoder.u64((det.bounding_box[2] * 10_000.0) as u64);
-            encoder.u64((det.bounding_box[3] * 10_000.0) as u64);
+            encoder.u64(encode_coord_to_basis_point(det.bounding_box[0]));
+            encoder.u64(encode_coord_to_basis_point(det.bounding_box[1]));
+            encoder.u64(encode_coord_to_basis_point(det.bounding_box[2]));
+            encoder.u64(encode_coord_to_basis_point(det.bounding_box[3]));
         }
         encoder.u64(self.virtual_latency_ns);
+    }
+}
+
+impl MockModelOutput {
+    /// Serializes to deterministic canonical bytes.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        encoder.finish()
+    }
+
+    /// Validates internal bounds and invariants.
+    pub fn validate(&self) -> Result<(), MockModelError> {
+        if self.detections.len() > MAX_DETECTIONS_PER_OUTPUT {
+            return Err(MockModelError::TooManyDetections {
+                actual: self.detections.len(),
+                max: MAX_DETECTIONS_PER_OUTPUT,
+            });
+        }
+        Ok(())
+    }
+
+    /// Computes the content digest for this output object.
+    #[must_use]
+    pub fn compute_digest(&self) -> ContentDigest {
+        ContentDigest::sha256(&self.canonical_bytes())
+    }
+}
+
+fn provenance_class_str(class: ProvenanceClass) -> &'static str {
+    match class {
+        ProvenanceClass::Observed => "observed",
+        ProvenanceClass::Derived => "derived",
+        ProvenanceClass::Predicted => "predicted",
+        ProvenanceClass::Remembered => "remembered",
+        ProvenanceClass::OperatorAsserted => "operator_asserted",
+        ProvenanceClass::VendorClaimed => "vendor_claimed",
+        ProvenanceClass::Policy => "policy",
+    }
+}
+
+fn encode_corroboration_status(status: &CorroborationStatus, encoder: &mut CanonicalEncoder) {
+    match status {
+        CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id,
+            model_generation,
+        } => {
+            encoder.u8(1);
+            sensor_id.encode_canonical(encoder);
+            encoder.text(model_generation);
+        }
+        CorroborationStatus::Corroborated {
+            contributing_sensors,
+            contributing_generations,
+        } => {
+            encoder.u8(2);
+            encoder.u64(contributing_sensors.len() as u64);
+            for s in contributing_sensors {
+                s.encode_canonical(encoder);
+            }
+            encoder.u64(contributing_generations.len() as u64);
+            for g in contributing_generations {
+                encoder.text(g);
+            }
+        }
     }
 }
 
@@ -632,14 +709,22 @@ impl MockModelExecutor {
             });
         }
 
+        let corroboration = CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_id.clone(),
+            model_generation: self.generation.as_str().to_string(),
+        };
+
         let output_digest = compute_output_digest(
             &self.generation,
             sensor_id,
             &input_digest,
             capture_interval,
+            KnowledgeState::Estimated,
+            ProvenanceClass::Predicted,
+            &corroboration,
             &detections,
             self.nominal_latency_ns,
-        );
+        )?;
 
         let output = MockModelOutput {
             output_digest,
@@ -650,10 +735,7 @@ impl MockModelExecutor {
             knowledge_state: KnowledgeState::Estimated,
             provenance_class: ProvenanceClass::Predicted,
             detections,
-            corroboration: CorroborationStatus::UncorroboratedSingleSource {
-                sensor_id: sensor_id.clone(),
-                model_generation: self.generation.as_str().to_string(),
-            },
+            corroboration,
             virtual_latency_ns: self.nominal_latency_ns,
         };
 
@@ -668,31 +750,44 @@ fn read_u64_le(slice: &[u8]) -> u64 {
     u64::from_le_bytes(buf)
 }
 
-fn compute_output_digest(
+/// Computes deterministic output digest with full provenance and bound checking.
+pub fn compute_output_digest(
     generation: &ModelGeneration,
     sensor_id: &SensorId,
     input_digest: &ContentDigest,
     capture_interval: &CaptureInterval,
+    knowledge_state: KnowledgeState,
+    provenance_class: ProvenanceClass,
+    corroboration: &CorroborationStatus,
     detections: &[MockDetection],
     virtual_latency_ns: u64,
-) -> ContentDigest {
+) -> Result<ContentDigest, MockModelError> {
+    if detections.len() > MAX_DETECTIONS_PER_OUTPUT {
+        return Err(MockModelError::TooManyDetections {
+            actual: detections.len(),
+            max: MAX_DETECTIONS_PER_OUTPUT,
+        });
+    }
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.mock_model_output.v1");
     encoder.text(generation.as_str());
     sensor_id.encode_canonical(&mut encoder);
     encoder.digest(*input_digest);
     capture_interval.encode_canonical(&mut encoder);
+    encoder.text(knowledge_state.as_str());
+    encoder.text(provenance_class_str(provenance_class));
+    encode_corroboration_status(corroboration, &mut encoder);
     encoder.u64(detections.len() as u64);
     for det in detections {
         encoder.u8(det.label.tag());
         det.probability.encode_canonical(&mut encoder);
-        encoder.u64((det.bounding_box[0] * 10_000.0) as u64);
-        encoder.u64((det.bounding_box[1] * 10_000.0) as u64);
-        encoder.u64((det.bounding_box[2] * 10_000.0) as u64);
-        encoder.u64((det.bounding_box[3] * 10_000.0) as u64);
+        encoder.u64(encode_coord_to_basis_point(det.bounding_box[0]));
+        encoder.u64(encode_coord_to_basis_point(det.bounding_box[1]));
+        encoder.u64(encode_coord_to_basis_point(det.bounding_box[2]));
+        encoder.u64(encode_coord_to_basis_point(det.bounding_box[3]));
     }
     encoder.u64(virtual_latency_ns);
-    ContentDigest::sha256(&encoder.finish())
+    Ok(ContentDigest::sha256(&encoder.finish()))
 }
 
 /// Compares detection scores between two models, enforcing generation compatibility.
@@ -740,7 +835,9 @@ pub struct CorroboratedModelFinding {
 /// 1. Minimum 2 sources required.
 /// 2. Bounded by [`MAX_CORROBORATION_SOURCES`].
 /// 3. Model generations must match (cross-generation mixing prohibited).
-/// 4. Contributing sensors must be distinct (single camera cannot corroborate itself).
+/// 4. Detections count bounded by [`MAX_DETECTIONS_PER_OUTPUT`].
+/// 5. Contributing sensors must be distinct and actually observe the candidate label.
+/// 6. Contradictory disjoint intervals are rejected with typed errors, never silently clamped.
 pub fn evaluate_corroboration(
     outputs: &[MockModelOutput],
 ) -> Result<CorroboratedModelFinding, MockModelError> {
@@ -767,40 +864,67 @@ pub fn evaluate_corroboration(
         }
     }
 
-    let mut unique_sensors = BTreeSet::new();
     for out in outputs {
-        unique_sensors.insert(out.sensor_id.clone());
+        if out.detections.len() > MAX_DETECTIONS_PER_OUTPUT {
+            return Err(MockModelError::TooManyDetections {
+                actual: out.detections.len(),
+                max: MAX_DETECTIONS_PER_OUTPUT,
+            });
+        }
     }
-    if unique_sensors.len() < 2 {
-        return Err(MockModelError::UncorroboratedSingleSensor {
-            sensor_id: first.sensor_id.clone(),
+
+    // Candidate detection: must not fabricate from empty detections
+    let first_detection = first
+        .detections
+        .first()
+        .ok_or(MockModelError::NoDetectionsToCorroborate)?;
+    let common_label = first_detection.label;
+
+    // Collect distinct sensors that actually detected common_label
+    let mut matching_sensors = BTreeSet::new();
+    let mut contributing_input_digests = Vec::new();
+    let mut fused_lower = 0.0_f64;
+    let mut fused_upper = 1.0_f64;
+
+    for out in outputs {
+        if let Some(det) = out.detections.iter().find(|d| d.label == common_label) {
+            if matching_sensors.insert(out.sensor_id.clone()) {
+                contributing_input_digests.push(out.input_digest);
+                fused_lower = fused_lower.max(det.probability.lower);
+                fused_upper = fused_upper.min(det.probability.upper);
+            }
+        }
+    }
+
+    // Crucial: Must have at least 2 distinct sensors that observed common_label
+    if matching_sensors.len() < 2 {
+        if matching_sensors.len() == 1 {
+            let sensor_id = matching_sensors
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| first.sensor_id.clone());
+            return Err(MockModelError::UncorroboratedSingleSensor { sensor_id });
+        }
+        return Err(MockModelError::InsufficientSourcesForCorroboration {
+            count: matching_sensors.len(),
+            min_required: 2,
         });
     }
 
-    let common_label = first
-        .detections
-        .first()
-        .map(|d| d.label)
-        .unwrap_or(MockSemanticLabel::Unknown);
-
-    // Compute conservative fused probability interval: max lower, min upper
-    let mut fused_lower = 0.0_f64;
-    let mut fused_upper = 1.0_f64;
-    for out in outputs {
-        if let Some(det) = out.detections.iter().find(|d| d.label == common_label) {
-            fused_lower = fused_lower.max(det.probability.lower);
-            fused_upper = fused_upper.min(det.probability.upper);
-        }
-    }
+    // Disjoint / contradictory intervals: report typed contradiction error, never silently clamp
     if fused_lower > fused_upper {
-        fused_upper = fused_lower;
+        let lower_micro = (fused_lower * 1_000_000.0).round() as u64;
+        let upper_micro = (fused_upper * 1_000_000.0).round() as u64;
+        return Err(MockModelError::ContradictoryProbabilityIntervals {
+            lower_micro,
+            upper_micro,
+        });
     }
+
     let fused_probability = ProbabilityInterval::new(fused_lower, fused_upper)
         .map_err(|_| MockModelError::InvalidProbabilityScore)?;
 
-    let contributing_sensors: Vec<SensorId> = unique_sensors.into_iter().collect();
-    let contributing_input_digests: Vec<ContentDigest> =
-        outputs.iter().map(|o| o.input_digest).collect();
+    let contributing_sensors: Vec<SensorId> = matching_sensors.into_iter().collect();
 
     Ok(CorroboratedModelFinding {
         label: common_label,
@@ -867,6 +991,22 @@ pub enum MockModelError {
         /// Maximum allowed count.
         max: usize,
     },
+    /// Detections list exceeds maximum declared bound.
+    TooManyDetections {
+        /// Actual count observed.
+        actual: usize,
+        /// Maximum allowed count.
+        max: usize,
+    },
+    /// Model output contains no detections to corroborate.
+    NoDetectionsToCorroborate,
+    /// Contradictory disjoint probability intervals between corroborating sources.
+    ContradictoryProbabilityIntervals {
+        /// Fused lower bound in micro-units.
+        lower_micro: u64,
+        /// Fused upper bound in micro-units.
+        upper_micro: u64,
+    },
     /// The sensor capsule is invalid.
     InvalidCapsule(String),
     /// Invalid probability score.
@@ -913,6 +1053,21 @@ impl fmt::Display for MockModelError {
             }
             Self::TooManyCorroborationSources { actual, max } => {
                 write!(f, "corroboration source count {actual} exceeds bound {max}")
+            }
+            Self::TooManyDetections { actual, max } => {
+                write!(f, "detection count {actual} exceeds bound {max}")
+            }
+            Self::NoDetectionsToCorroborate => {
+                write!(f, "no detections available to evaluate corroboration")
+            }
+            Self::ContradictoryProbabilityIntervals {
+                lower_micro,
+                upper_micro,
+            } => {
+                write!(
+                    f,
+                    "contradictory disjoint probability intervals: lower {lower_micro} upx > upper {upper_micro} upx"
+                )
             }
             Self::InvalidCapsule(reason) => write!(f, "invalid sensor capsule: {reason}"),
             Self::InvalidProbabilityScore => write!(f, "invalid probability score"),

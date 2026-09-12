@@ -11,10 +11,11 @@ use fss_core::{
     SourceCustody, TimestampNs,
 };
 use fss_reference::{
-    CorroborationStatus, MAX_CORROBORATION_SOURCES, MAX_FAULT_REASON_LEN, MAX_INPUT_PAYLOAD_BYTES,
-    MAX_MODEL_GENERATION_BYTES, MockDetection, MockExecutorOutcome, MockModelError,
-    MockModelExecutor, MockModelFaultSchedule, MockSemanticLabel, VirtualClock,
-    compare_model_scores, evaluate_corroboration,
+    CorroborationStatus, MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT,
+    MAX_FAULT_REASON_LEN, MAX_INPUT_PAYLOAD_BYTES, MAX_MODEL_GENERATION_BYTES, MockDetection,
+    MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
+    MockModelOutput, MockSemanticLabel, VirtualClock, compare_model_scores, compute_output_digest,
+    encode_coord_to_basis_point, evaluate_corroboration,
 };
 
 fn sample_capsule(
@@ -328,12 +329,12 @@ fn test_model_score_multi_camera_corroboration_success() -> Result<(), Box<dyn E
     let mut clock = VirtualClock::new(1, TimestampNs(10_000_000));
 
     let out_front =
-        match executor.execute_frame(b"view-front", &sensor_front, &interval, &mut clock)? {
+        match executor.execute_frame(b"shared-scene-view", &sensor_front, &interval, &mut clock)? {
             MockExecutorOutcome::Success(o) => *o,
             other => return Err(format!("expected Success, got {other:?}").into()),
         };
     let out_side =
-        match executor.execute_frame(b"view-side", &sensor_side, &interval, &mut clock)? {
+        match executor.execute_frame(b"shared-scene-view", &sensor_side, &interval, &mut clock)? {
             MockExecutorOutcome::Success(o) => *o,
             other => return Err(format!("expected Success, got {other:?}").into()),
         };
@@ -597,5 +598,395 @@ fn test_e2e_capsule_execution_with_sensor_capsule_and_virtual_clock() -> Result<
         assert!(det.bounding_box[1] >= 0.0 && det.bounding_box[3] <= 1.0);
     }
 
+    Ok(())
+}
+
+#[test]
+fn test_single_model_score_not_corroborated_when_second_camera_disagrees()
+-> Result<(), Box<dyn Error>> {
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_1 = SensorId::parse("sensor:cam-front")?;
+    let sensor_2 = SensorId::parse("sensor:cam-rear")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let out_1 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out1"),
+        generation: generation.clone(),
+        sensor_id: sensor_1.clone(),
+        input_digest: ContentDigest::sha256(b"in1"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![MockDetection {
+            label: MockSemanticLabel::PersonLike,
+            probability: ProbabilityInterval::new(0.80, 0.90)?,
+            bounding_box: [0.1, 0.1, 0.5, 0.5],
+        }],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1.clone(),
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    // Camera 2 detected AnimalLike, NOT PersonLike
+    let out_2 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out2"),
+        generation: generation.clone(),
+        sensor_id: sensor_2.clone(),
+        input_digest: ContentDigest::sha256(b"in2"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![MockDetection {
+            label: MockSemanticLabel::AnimalLike,
+            probability: ProbabilityInterval::new(0.70, 0.85)?,
+            bounding_box: [0.2, 0.2, 0.6, 0.6],
+        }],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_2,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let result = evaluate_corroboration(&[out_1, out_2]);
+    assert!(
+        result.is_err(),
+        "evaluate_corroboration must reject corroboration when only a single camera observed the label"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_canonical_encode_and_output_digest_must_bind_knowledge_state_provenance_and_corroboration()
+-> Result<(), Box<dyn Error>> {
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_id = SensorId::parse("sensor:cam-1")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let out_estimated = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"dummy1"),
+        generation: generation.clone(),
+        sensor_id: sensor_id.clone(),
+        input_digest: ContentDigest::sha256(b"input"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_id.clone(),
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let mut out_conflicted = out_estimated.clone();
+    out_conflicted.knowledge_state = KnowledgeState::Conflicted;
+
+    let mut out_remembered = out_estimated.clone();
+    out_remembered.provenance_class = ProvenanceClass::Remembered;
+
+    let mut out_corroborated = out_estimated.clone();
+    out_corroborated.corroboration = CorroborationStatus::Corroborated {
+        contributing_sensors: vec![sensor_id.clone(), SensorId::parse("sensor:cam-2")?],
+        contributing_generations: vec![generation.as_str().to_string()],
+    };
+
+    let bytes_estimated = out_estimated.canonical_bytes();
+    let bytes_conflicted = out_conflicted.canonical_bytes();
+    let bytes_remembered = out_remembered.canonical_bytes();
+    let bytes_corroborated = out_corroborated.canonical_bytes();
+
+    assert_ne!(
+        bytes_estimated, bytes_conflicted,
+        "outputs with different knowledge states must produce distinct canonical bytes"
+    );
+    assert_ne!(
+        bytes_estimated, bytes_remembered,
+        "outputs with different provenance classes must produce distinct canonical bytes"
+    );
+    assert_ne!(
+        bytes_estimated, bytes_corroborated,
+        "outputs with different corroboration statuses must produce distinct canonical bytes"
+    );
+
+    let digest_estimated = compute_output_digest(
+        &out_estimated.generation,
+        &out_estimated.sensor_id,
+        &out_estimated.input_digest,
+        &out_estimated.capture_interval,
+        out_estimated.knowledge_state,
+        out_estimated.provenance_class,
+        &out_estimated.corroboration,
+        &out_estimated.detections,
+        out_estimated.virtual_latency_ns,
+    )?;
+    let digest_conflicted = compute_output_digest(
+        &out_conflicted.generation,
+        &out_conflicted.sensor_id,
+        &out_conflicted.input_digest,
+        &out_conflicted.capture_interval,
+        out_conflicted.knowledge_state,
+        out_conflicted.provenance_class,
+        &out_conflicted.corroboration,
+        &out_conflicted.detections,
+        out_conflicted.virtual_latency_ns,
+    )?;
+    assert_ne!(
+        digest_estimated, digest_conflicted,
+        "output digests must differ when knowledge state changes"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_bounding_box_rounding_eliminates_float_truncation_drift() {
+    let coord: f64 = 0.043;
+    let basis_pt = encode_coord_to_basis_point(coord);
+    assert_eq!(
+        basis_pt, 430,
+        "Truncation drift: 0.043 * 10000.0 rounded basis point must evaluate to 430, got {basis_pt}"
+    );
+
+    let coord2: f64 = 0.051;
+    let basis_pt2 = encode_coord_to_basis_point(coord2);
+    assert_eq!(
+        basis_pt2, 510,
+        "Truncation drift: 0.051 * 10000.0 rounded basis point must evaluate to 510, got {basis_pt2}"
+    );
+
+    assert_eq!(encode_coord_to_basis_point(0.0), 0);
+    assert_eq!(encode_coord_to_basis_point(1.0), 10_000);
+}
+
+#[test]
+fn test_corroboration_rejects_contradictory_probability_intervals() -> Result<(), Box<dyn Error>> {
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_1 = SensorId::parse("sensor:cam-1")?;
+    let sensor_2 = SensorId::parse("sensor:cam-2")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let out_1 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out1"),
+        generation: generation.clone(),
+        sensor_id: sensor_1.clone(),
+        input_digest: ContentDigest::sha256(b"in1"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![MockDetection {
+            label: MockSemanticLabel::PersonLike,
+            probability: ProbabilityInterval::new(0.80, 0.90)?,
+            bounding_box: [0.1, 0.1, 0.5, 0.5],
+        }],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let out_2 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out2"),
+        generation: generation.clone(),
+        sensor_id: sensor_2.clone(),
+        input_digest: ContentDigest::sha256(b"in2"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![MockDetection {
+            label: MockSemanticLabel::PersonLike,
+            probability: ProbabilityInterval::new(0.10, 0.20)?,
+            bounding_box: [0.1, 0.1, 0.5, 0.5],
+        }],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_2,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let res = evaluate_corroboration(&[out_1, out_2]);
+    match res {
+        Err(MockModelError::ContradictoryProbabilityIntervals {
+            lower_micro,
+            upper_micro,
+        }) => {
+            assert_eq!(lower_micro, 800_000);
+            assert_eq!(upper_micro, 200_000);
+        }
+        other => {
+            return Err(
+                format!("expected ContradictoryProbabilityIntervals, got {other:?}").into(),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_bounds_detections_per_output_at_bound_and_bound_plus_one() -> Result<(), Box<dyn Error>> {
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_1 = SensorId::parse("sensor:cam-1")?;
+    let sensor_2 = SensorId::parse("sensor:cam-2")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let make_detections = |count: usize| -> Result<Vec<MockDetection>, Box<dyn Error>> {
+        let mut list = Vec::with_capacity(count);
+        for _ in 0..count {
+            list.push(MockDetection {
+                label: MockSemanticLabel::PersonLike,
+                probability: ProbabilityInterval::new(0.60, 0.80)?,
+                bounding_box: [0.1, 0.1, 0.5, 0.5],
+            });
+        }
+        Ok(list)
+    };
+
+    // Exactly at bound: 64 detections
+    let detections_at_bound = make_detections(MAX_DETECTIONS_PER_OUTPUT)?;
+    assert_eq!(detections_at_bound.len(), MAX_DETECTIONS_PER_OUTPUT);
+    let digest_at_bound = compute_output_digest(
+        &generation,
+        &sensor_1,
+        &ContentDigest::sha256(b"in"),
+        &interval,
+        KnowledgeState::Estimated,
+        ProvenanceClass::Predicted,
+        &CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1.clone(),
+            model_generation: generation.as_str().to_string(),
+        },
+        &detections_at_bound,
+        10_000_000,
+    );
+    assert!(digest_at_bound.is_ok());
+
+    let out_1_at_bound = MockModelOutput {
+        output_digest: digest_at_bound?,
+        generation: generation.clone(),
+        sensor_id: sensor_1.clone(),
+        input_digest: ContentDigest::sha256(b"in1"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: detections_at_bound,
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1.clone(),
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+    assert!(out_1_at_bound.validate().is_ok());
+
+    let out_2_at_bound = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out2"),
+        generation: generation.clone(),
+        sensor_id: sensor_2.clone(),
+        input_digest: ContentDigest::sha256(b"in2"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: make_detections(2)?,
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_2,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+    assert!(evaluate_corroboration(&[out_1_at_bound, out_2_at_bound]).is_ok());
+
+    // Over bound: 65 detections
+    let detections_over_bound = make_detections(MAX_DETECTIONS_PER_OUTPUT + 1)?;
+    assert_eq!(detections_over_bound.len(), MAX_DETECTIONS_PER_OUTPUT + 1);
+    let digest_over_bound = compute_output_digest(
+        &generation,
+        &sensor_1,
+        &ContentDigest::sha256(b"in"),
+        &interval,
+        KnowledgeState::Estimated,
+        ProvenanceClass::Predicted,
+        &CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1.clone(),
+            model_generation: generation.as_str().to_string(),
+        },
+        &detections_over_bound,
+        10_000_000,
+    );
+    match digest_over_bound {
+        Err(MockModelError::TooManyDetections { actual, max }) => {
+            assert_eq!(actual, MAX_DETECTIONS_PER_OUTPUT + 1);
+            assert_eq!(max, MAX_DETECTIONS_PER_OUTPUT);
+        }
+        other => return Err(format!("expected TooManyDetections, got {other:?}").into()),
+    }
+
+    let out_over_bound = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"dummy"),
+        generation,
+        sensor_id: sensor_1,
+        input_digest: ContentDigest::sha256(b"in"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: detections_over_bound,
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_2,
+            model_generation: "model:detector:v1".to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+    assert!(matches!(
+        out_over_bound.validate(),
+        Err(MockModelError::TooManyDetections { .. })
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn test_corroboration_rejects_empty_detections_without_fabricating_unknown()
+-> Result<(), Box<dyn Error>> {
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_1 = SensorId::parse("sensor:cam-1")?;
+    let sensor_2 = SensorId::parse("sensor:cam-2")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let out_empty_1 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out1"),
+        generation: generation.clone(),
+        sensor_id: sensor_1.clone(),
+        input_digest: ContentDigest::sha256(b"in1"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let out_empty_2 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out2"),
+        generation: generation.clone(),
+        sensor_id: sensor_2.clone(),
+        input_digest: ContentDigest::sha256(b"in2"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_2,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let res = evaluate_corroboration(&[out_empty_1, out_empty_2]);
+    assert_eq!(res, Err(MockModelError::NoDetectionsToCorroborate));
     Ok(())
 }
