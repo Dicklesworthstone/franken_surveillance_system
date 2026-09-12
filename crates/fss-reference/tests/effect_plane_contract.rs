@@ -5,22 +5,21 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    CapsuleId, CaptureInterval, ContentDigest, ContractError, EffectIntent, EffectJournal,
-    EffectState, EventId, EventState, IdempotencyKey, ObligationId, ObligationState, OperationId,
-    ProbabilityInterval, SensorId, TimestampNs,
+    CanonicalEncode, CapsuleId, CaptureInterval, ContentDigest, ContractError, EffectIntent,
+    EffectJournal, EffectState, EventId, EventState, IdempotencyKey, ObligationId, ObligationState,
+    OperationId, ProbabilityInterval, SensorId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 use fss_reference::{
-    DeliveryPlan, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
-    MockSemanticLabel, PrepareAlertParams, ProviderDispatch, REFERENCE_ALERT_TERMINAL_PREDICATE,
-    ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt,
-    ReferenceModelObservation, ReferencePolicyAction, ReferencePolicyDecision,
-    ReferenceProviderBehavior, VirtualCameraSpec, dispatch_reference_alert,
-    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
-    prepare_reference_alert, publish_reference_alert_outcome, publish_reference_event,
-    reconcile_failed_reference_alert, reconcile_reference_alert, run_reference_capture,
-    verify_reference_alert,
+    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
+    ProviderObservationReceipt, REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan,
+    ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
+    ReferencePolicyAction, ReferencePolicyDecision, ReferenceProviderBehavior, VirtualCameraSpec,
+    dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
+    observe_reference_alert, prepare_reference_alert, publish_reference_alert_outcome,
+    publish_reference_event, reconcile_failed_reference_alert, reconcile_reference_alert,
+    run_reference_capture, verify_reference_alert,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -133,73 +132,138 @@ fn prepare_alert(
 #[test]
 fn test_f2_idempotency_key_shared_by_different_intents_is_typed_conflict()
 -> Result<(), Box<dyn Error>> {
-    let mut provider = ReferenceAlertProvider::new();
+    let path = temp_journal("f2-lifecycle");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
     let shared_idempotency_key = IdempotencyKey::parse("idempotency:alert:shared")?;
-    let request_digest = ContentDigest::sha256(b"alert-request-body");
 
-    let intent_a = EffectIntent {
-        operation_id: OperationId::parse("operation:alert:a")?,
-        idempotency_key: shared_idempotency_key.clone(),
-        effect_class: "alert.dispatch".to_owned(),
-        request_digest,
-        precondition_digest: ContentDigest::sha256(b"precondition-at-anchor-1"),
-    };
+    // Plan A
+    let plan_a = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: OperationId::parse("operation:alert:a")?,
+            idempotency_key: shared_idempotency_key.clone(),
+            obligation_id: ObligationId::parse("obligation:alert:a")?,
+            channel: "operator:channel_a".to_owned(),
+            now: TimestampNs(100),
+        },
+        &mut journal,
+    )?;
 
-    let intent_b = EffectIntent {
-        operation_id: OperationId::parse("operation:alert:b")?,
-        idempotency_key: shared_idempotency_key,
-        effect_class: "alert.dispatch".to_owned(),
-        request_digest,
-        precondition_digest: ContentDigest::sha256(b"precondition-at-anchor-2"),
-    };
+    // 1. In the same journal, preparing conflicting plan_b is rejected with IdempotencyConflict:
+    let err_prepare = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: OperationId::parse("operation:alert:b")?,
+            idempotency_key: shared_idempotency_key.clone(),
+            obligation_id: ObligationId::parse("obligation:alert:b")?,
+            channel: "operator:channel_b".to_owned(),
+            now: TimestampNs(100),
+        },
+        &mut journal,
+    );
+    assert!(matches!(
+        err_prepare,
+        Err(ReferenceError::Contract(ContractError::IdempotencyConflict))
+    ));
 
-    if intent_a == intent_b {
-        return Err("intents must differ for this test".into());
-    }
+    // 2. In a separate journal (e.g. concurrent node/process), plan_b is prepared:
+    let mut journal_b = EffectJournal::new();
+    let plan_b = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: OperationId::parse("operation:alert:b")?,
+            idempotency_key: shared_idempotency_key,
+            obligation_id: ObligationId::parse("obligation:alert:b")?,
+            channel: "operator:channel_b".to_owned(),
+            now: TimestampNs(100),
+        },
+        &mut journal_b,
+    )?;
 
-    // First dispatch succeeds
-    let dispatch_a = provider.dispatch(&intent_a, ReferenceProviderBehavior::Deliver);
-    match dispatch_a {
-        ProviderDispatch::Delivered(proof) => {
-            let expected_receipt = provider.lookup(&intent_a)?.ok_or("missing receipt")?;
-            if proof != expected_receipt.receipt_digest() {
-                return Err("proof digest mismatch on delivered intent a".into());
-            }
-        }
-        _ => return Err("expected Delivered for intent_a".into()),
-    }
+    let mut provider = ReferenceAlertProvider::new();
 
-    // Exact retry with intent_a succeeds idempotently
-    let dispatch_a_retry = provider.dispatch(&intent_a, ReferenceProviderBehavior::Deliver);
-    if dispatch_a_retry != dispatch_a {
-        return Err("exact retry must return identical delivery proof".into());
-    }
+    // 3. First dispatch of plan_a through dispatch_reference_alert succeeds:
+    let dispatch_a = dispatch_reference_alert(
+        &plan_a,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    )?;
+    assert_eq!(dispatch_a.state, EffectState::AdapterAccepted);
 
-    let lookup_a = provider.lookup(&intent_a)?;
-    if lookup_a.is_none() {
-        return Err("lookup for intent_a should return Some(proof)".into());
-    }
+    // 4. Conflicting dispatch of plan_b with different intent under same idempotency key fails:
+    let err_b = dispatch_reference_alert(
+        &plan_b,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(103),
+        TimestampNs(104),
+        &mut journal_b,
+        &mut provider,
+    );
+    assert!(matches!(
+        err_b,
+        Err(ReferenceError::Contract(ContractError::IdempotencyConflict))
+    ));
 
-    // Conflicting dispatch with intent_b under same idempotency key is rejected
-    let dispatch_b = provider.dispatch(&intent_b, ReferenceProviderBehavior::Deliver);
-    if dispatch_b != ProviderDispatch::ConflictingIdempotency {
-        return Err(
-            "differing intent under shared idempotency key must return ConflictingIdempotency"
-                .into(),
-        );
-    }
-
-    // Lookup with intent_b under same idempotency key returns typed IdempotencyConflict
-    match provider.lookup(&intent_b) {
+    // 3. Provider lookup for conflicting intent returns IdempotencyConflict:
+    match provider.lookup(&plan_b.intent) {
         Err(ReferenceError::Contract(ContractError::IdempotencyConflict)) => {}
         other => {
-            return Err(format!(
-                "expected IdempotencyConflict on lookup of conflicting intent, got: {other:?}"
-            )
-            .into());
+            return Err(
+                format!("expected IdempotencyConflict on plan_b lookup, got {other:?}").into(),
+            );
         }
     }
 
+    // 4. Progress plan_a through observation, verification, and outcome publication:
+    let provider_receipt_a = provider
+        .lookup(&plan_a.intent)?
+        .ok_or("missing receipt a")?;
+    let _ = observe_reference_alert(
+        &plan_a,
+        provider_receipt_a.receipt_digest(),
+        TimestampNs(105),
+        &mut journal,
+        &provider,
+    )?;
+    let _ = verify_reference_alert(&plan_a, TimestampNs(106), &mut journal, &provider)?;
+
+    let outcome_receipt = publish_reference_alert_outcome(
+        &plan_a,
+        &journal,
+        &mut objects,
+        &mut authority,
+        &provider,
+    )?;
+    assert_eq!(
+        outcome_receipt.outcome.operation_receipt.state,
+        EffectState::Verified
+    );
+
+    // 5. Exact retry of publication on plan_a is idempotent:
+    let outcome_retry = publish_reference_alert_outcome(
+        &plan_a,
+        &journal,
+        &mut objects,
+        &mut authority,
+        &provider,
+    )?;
+    assert_eq!(outcome_retry, outcome_receipt);
+
+    let _ = fs::remove_file(path);
     Ok(())
 }
 
@@ -713,56 +777,95 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
 
 #[test]
 fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-1-replay");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
     let mut journal = EffectJournal::new();
-    let now = TimestampNs(1_000);
-    let op1 = OperationId::parse("op:alert:review:001")?;
-    let op2 = OperationId::parse("op:alert:review:002")?;
-    let key1 = IdempotencyKey::parse("idempotency:alert:review:001")?;
-    let key2 = IdempotencyKey::parse("idempotency:alert:review:002")?;
 
-    let intent1 = EffectIntent {
-        operation_id: op1.clone(),
-        idempotency_key: key1,
-        effect_class: "alert.dispatch".to_string(),
-        request_digest: ContentDigest::sha256(b"req1"),
-        precondition_digest: ContentDigest::sha256(b"pre1"),
-    };
-    let intent2 = EffectIntent {
-        operation_id: op2.clone(),
-        idempotency_key: key2,
-        effect_class: "alert.dispatch".to_string(),
-        request_digest: ContentDigest::sha256(b"req2"),
-        precondition_digest: ContentDigest::sha256(b"pre2"),
-    };
-
-    journal.prepare(
-        intent1.clone(),
-        ObligationId::parse("obligation:alert:001")?,
-        "proof",
-        now,
+    let plan1 = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: OperationId::parse("op:alert:review:001")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:alert:review:001")?,
+            obligation_id: ObligationId::parse("obligation:alert:001")?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
+        &mut journal,
     )?;
-    journal.prepare(
-        intent2.clone(),
-        ObligationId::parse("obligation:alert:002")?,
-        "proof",
-        now,
+
+    let plan2 = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &decision,
+            event_receipt: &event_receipt,
+            authority: &authority,
+            operation_id: OperationId::parse("op:alert:review:002")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:alert:review:002")?,
+            obligation_id: ObligationId::parse("obligation:alert:002")?,
+            channel: "operator:oncall".to_owned(),
+            now: TimestampNs(100),
+        },
+        &mut journal,
     )?;
-    journal.transition(&op1, EffectState::Committed, TimestampNs(1_500), None, None)?;
-    journal.transition(&op2, EffectState::Committed, TimestampNs(1_500), None, None)?;
-    journal.mark_indeterminate(&op1, TimestampNs(2_000), "timeout")?;
-    journal.mark_indeterminate(&op2, TimestampNs(2_000), "timeout")?;
 
-    // An arbitrary failure proof or a failure proof from op1 MUST BE REJECTED for op2
-    let op1_failure_proof = intent1.failure_proof("timeout");
-    let err = journal.reconcile_failed(&op2, op1_failure_proof, TimestampNs(3_000), "timeout");
-    assert_eq!(err, Err(ContractError::InvalidDigest));
+    let mut provider = ReferenceAlertProvider::new();
 
-    // Valid failure proof for op2 succeeds
-    let op2_failure_proof = intent2.failure_proof("timeout");
-    let receipt2 =
-        journal.reconcile_failed(&op2, op2_failure_proof, TimestampNs(3_000), "timeout")?;
+    // Dispatch plan1 and plan2 which both lose ACK and become Indeterminate:
+    let _ = dispatch_reference_alert(
+        &plan1,
+        ReferenceProviderBehavior::LoseAckAfterDelivery,
+        TimestampNs(150),
+        TimestampNs(200),
+        &mut journal,
+        &mut provider,
+    )?;
+    let _ = dispatch_reference_alert(
+        &plan2,
+        ReferenceProviderBehavior::LoseAckAfterDelivery,
+        TimestampNs(150),
+        TimestampNs(200),
+        &mut journal,
+        &mut provider,
+    )?;
+
+    // External provider records failures for op1 and op2:
+    // But op1 failure receipt cannot be replayed for op2!
+    let mut failure_provider = ReferenceAlertProvider::new();
+    let op1_receipt = failure_provider.record_failure(&plan1.intent, "timeout")?;
+    let op2_receipt = failure_provider.record_failure(&plan2.intent, "timeout")?;
+
+    // Attempting to reconcile plan2 using op1's failure proof MUST BE REJECTED
+    let err = reconcile_failed_reference_alert(
+        &plan2,
+        op1_receipt.receipt_digest(),
+        "timeout",
+        TimestampNs(300),
+        &mut journal,
+        &failure_provider,
+    );
+    assert!(matches!(
+        err,
+        Err(ReferenceError::Contract(ContractError::InvalidDigest))
+    ));
+
+    // Valid failure proof for plan2 succeeds
+    let receipt2 = reconcile_failed_reference_alert(
+        &plan2,
+        op2_receipt.receipt_digest(),
+        "timeout",
+        TimestampNs(300),
+        &mut journal,
+        &failure_provider,
+    )?;
     assert_eq!(receipt2.state, EffectState::Failed);
-    assert_eq!(receipt2.result_digest, Some(op2_failure_proof));
+    assert_eq!(receipt2.result_digest, Some(op2_receipt.receipt_digest()));
+
+    let _ = fs::remove_file(path);
     Ok(())
 }
 
@@ -862,40 +965,27 @@ fn test_finding_3_zero_input_observation_and_same_timestamp() -> Result<(), Box<
 
 #[test]
 fn test_finding_4_corroboration_faked_single_camera() -> Result<(), Box<dyn Error>> {
-    let cam1_frame1_root = ContentDigest::sha256(b"camera_01_frame_001");
-    let cam1_frame2_root = ContentDigest::sha256(b"camera_01_frame_002");
-    let single_sensor = SensorId::parse("sensor:camera:fixed_001")?;
+    let path = temp_journal("f4-corroboration");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
 
-    let obs1 = ReferenceModelObservation::new(
-        MockModelResult {
-            generation_id: "gen-1".into(),
-            sensor_id: single_sensor.clone(),
-            model_spec_digest: ContentDigest::sha256(b"spec"),
-            input_capture_root: cam1_frame1_root,
-            continuity_digest: ContentDigest::sha256(b"cont1"),
-            outcome: MockModelOutcome::Finding {
-                label: MockSemanticLabel::PersonLike,
-                probability: ProbabilityInterval::new(0.9, 0.95)?,
-            },
-        },
+    let obs1 = observation(
+        "capture:camera:cam1_frame1",
+        "sensor:camera:fixed_001",
+        10,
         "failure-domain-alpha",
-        CaptureInterval::new(TimestampNs(100), TimestampNs(200))?,
+        &mut objects,
+        &mut ledger,
     )?;
-
-    let obs2 = ReferenceModelObservation::new(
-        MockModelResult {
-            generation_id: "gen-1".into(),
-            sensor_id: single_sensor.clone(), // Same camera, second frame!
-            model_spec_digest: ContentDigest::sha256(b"spec"),
-            input_capture_root: cam1_frame2_root,
-            continuity_digest: ContentDigest::sha256(b"cont2"),
-            outcome: MockModelOutcome::Finding {
-                label: MockSemanticLabel::PersonLike,
-                probability: ProbabilityInterval::new(0.85, 0.92)?,
-            },
-        },
-        "failure-domain-beta", // Distinct domain label supplied by caller
-        CaptureInterval::new(TimestampNs(201), TimestampNs(300))?,
+    let obs2 = observation(
+        "capture:camera:cam1_frame2",
+        "sensor:camera:fixed_001",
+        20,
+        "failure-domain-beta",
+        &mut objects,
+        &mut ledger,
     )?;
 
     let decision = evaluate_unknown_presence(
@@ -905,6 +995,7 @@ fn test_finding_4_corroboration_faked_single_camera() -> Result<(), Box<dyn Erro
     // With only one physical camera, state must NOT be Corroborated; it must remain Witnessed and Hold!
     assert_eq!(decision.event.state, EventState::Witnessed);
     assert_eq!(decision.action, ReferencePolicyAction::Hold);
+    let _ = fs::remove_file(path);
     Ok(())
 }
 
@@ -996,6 +1087,133 @@ fn test_finding_6_reconciliation_not_idempotent() -> Result<(), Box<dyn Error>> 
         journal.reconcile_verified(&plan.intent.operation_id, bogus_proof, TimestampNs(106));
     assert_eq!(conflict_res, Err(ContractError::IdempotencyConflict));
 
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_f1_uncalled_provider_refuses_failure_reconciliation() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("f1-uncalled");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
+    let provider = ReferenceAlertProvider::new();
+
+    journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Committed,
+        TimestampNs(101),
+        None,
+        None,
+    )?;
+    journal.mark_indeterminate(&plan.intent.operation_id, TimestampNs(102), "drop")?;
+
+    // Anyone can synthesize a failure proof with an arbitrary reason:
+    let fake_reason = "fabricated_carrier_outage";
+    let forged_failure_proof = plan.intent.failure_proof(fake_reason);
+
+    // The provider was NEVER called and issued no failure receipt:
+    assert!(provider.lookup(&plan.intent)?.is_none());
+
+    // DEFECT: reconcile_failed_reference_alert succeeds without any provider-issued failure receipt!
+    let res = reconcile_failed_reference_alert(
+        &plan,
+        forged_failure_proof,
+        fake_reason,
+        TimestampNs(103),
+        &mut journal,
+        &provider,
+    );
+    assert!(
+        res.is_err(),
+        "Reconciling failure must require a provider-issued failure receipt, not a public hash of intent!"
+    );
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_f2_independent_providers_mint_distinct_nonces() -> Result<(), Box<dyn Error>> {
+    let mut provider_a = ReferenceAlertProvider::new();
+    let mut provider_b = ReferenceAlertProvider::new();
+
+    let intent_a = EffectIntent {
+        operation_id: OperationId::parse("op:alert:nonce:a")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:nonce:a")?,
+        effect_class: "alert.dispatch".to_string(),
+        request_digest: ContentDigest::sha256(b"req_a"),
+        precondition_digest: ContentDigest::sha256(b"pre_a"),
+    };
+    let intent_b = EffectIntent {
+        operation_id: OperationId::parse("op:alert:nonce:b")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:nonce:b")?,
+        effect_class: "alert.dispatch".to_string(),
+        request_digest: ContentDigest::sha256(b"req_b"),
+        precondition_digest: ContentDigest::sha256(b"pre_b"),
+    };
+
+    let _ = provider_a.dispatch(&intent_a, ReferenceProviderBehavior::Deliver);
+    let _ = provider_b.dispatch(&intent_b, ReferenceProviderBehavior::Deliver);
+
+    let receipt_a = provider_a.lookup(&intent_a)?.ok_or("missing receipt a")?;
+    let receipt_b = provider_b.lookup(&intent_b)?.ok_or("missing receipt b")?;
+
+    assert_ne!(
+        receipt_a.provider_nonce, receipt_b.provider_nonce,
+        "Distinct provider instances must never issue identical provider nonces!"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_f3_unissued_observation_receipt_rejected() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("f3-unissued");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
+    let provider = ReferenceAlertProvider::new();
+
+    journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Committed,
+        TimestampNs(101),
+        None,
+        None,
+    )?;
+    journal.transition(
+        &plan.intent.operation_id,
+        EffectState::AdapterAccepted,
+        TimestampNs(102),
+        None,
+        None,
+    )?;
+
+    // Caller fabricates an observation receipt offline:
+    let fake_receipt = ProviderObservationReceipt {
+        provider_nonce: ContentDigest::sha256(b"fabricated_nonce"),
+        message_digest: plan.intent.canonical_digest("fss.effect_proof.v1"),
+    };
+    let forged_proof = fake_receipt.receipt_digest();
+
+    let res = observe_reference_alert(
+        &plan,
+        forged_proof,
+        TimestampNs(103),
+        &mut journal,
+        &provider,
+    );
+    assert!(
+        res.is_err(),
+        "observe_reference_alert must reject caller-built receipts never issued by provider"
+    );
     let _ = fs::remove_file(path);
     Ok(())
 }

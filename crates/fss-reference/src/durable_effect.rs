@@ -476,7 +476,7 @@ impl DurableEffectJournal {
         }
     }
 
-    /// Reconciles a failed reference alert durably.
+    /// Reconciles a failed reference alert durably using provider failure receipt.
     pub fn reconcile_failed_alert(
         &mut self,
         plan: &ReferenceAlertPlan,
@@ -489,7 +489,16 @@ impl DurableEffectJournal {
         if provider.lookup(&plan.intent)?.is_some() {
             return Err(ContractError::InvalidEffectTransition.into());
         }
+        let Some(failure_receipt) = provider.lookup_failure(&plan.intent)? else {
+            return Err(ReferenceError::InvalidSpec("provider_failure_proof_missing").into());
+        };
+        if proof_digest != failure_receipt.receipt_digest() {
+            return Err(ContractError::InvalidDigest.into());
+        }
         let reason_str = reason.into();
+        if reason_str != failure_receipt.error_code {
+            return Err(ReferenceError::InvalidSpec("provider_failure_reason_mismatch").into());
+        }
         let receipt =
             self.reconcile_failed(&plan.intent.operation_id, proof_digest, now, reason_str)?;
         Ok(receipt.clone())

@@ -51,7 +51,7 @@ mod situation_tests;
 mod tests;
 
 pub use alert::{
-    PrepareAlertParams, ProviderDispatch, ProviderObservationReceipt,
+    PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
     REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan, ReferenceAlertProvider,
     ReferenceProviderBehavior, dispatch_reference_alert, observe_reference_alert,
     prepare_reference_alert, reconcile_failed_reference_alert, reconcile_reference_alert,

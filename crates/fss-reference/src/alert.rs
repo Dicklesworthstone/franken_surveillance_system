@@ -1,6 +1,9 @@
 //! Deterministic alert-effect oracle with lost-ACK reconciliation.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_PROVIDER_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, EffectIntent, EffectJournal, EffectState,
@@ -80,6 +83,36 @@ impl ProviderObservationReceipt {
     }
 }
 
+/// Typed failure proof issued by the reference provider oracle.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProviderFailureReceipt {
+    /// Independent provider-generated dispatch nonce.
+    pub provider_nonce: ContentDigest,
+    /// Canonical digest of the dispatched intent payload.
+    pub message_digest: ContentDigest,
+    /// Error code or failure reason issued by the provider.
+    pub error_code: String,
+}
+
+impl ProviderFailureReceipt {
+    /// Canonical encoded bytes of the failure receipt.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.effect_proof.v1");
+        encoder.digest(self.provider_nonce);
+        encoder.digest(self.message_digest);
+        encoder.text(&self.error_code);
+        encoder.finish()
+    }
+
+    /// SHA-256 digest of the canonical receipt bytes.
+    #[must_use]
+    pub fn receipt_digest(&self) -> ContentDigest {
+        ContentDigest::sha256(&self.canonical_bytes())
+    }
+}
+
 /// Bounded stable terminal predicate for reference alert obligations.
 pub const REFERENCE_ALERT_TERMINAL_PREDICATE: &str =
     "provider delivery is independently reconciled";
@@ -104,27 +137,74 @@ impl ProviderMessage {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ProviderFailureMessage {
+    operation_id: OperationId,
+    effect_class: String,
+    request_digest: ContentDigest,
+    precondition_digest: ContentDigest,
+    receipt: ProviderFailureReceipt,
+}
+
+impl ProviderFailureMessage {
+    fn matches_intent(&self, intent: &EffectIntent) -> bool {
+        self.operation_id == intent.operation_id
+            && self.effect_class == intent.effect_class
+            && self.request_digest == intent.request_digest
+            && self.precondition_digest == intent.precondition_digest
+    }
+}
+
 /// Deterministic idempotent alert provider oracle.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct ReferenceAlertProvider {
+    provider_id: String,
     nonce_counter: u64,
     messages: BTreeMap<IdempotencyKey, ProviderMessage>,
+    failures: BTreeMap<IdempotencyKey, ProviderFailureMessage>,
+}
+
+impl Default for ReferenceAlertProvider {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ReferenceAlertProvider {
-    /// Creates an empty deterministic provider.
+    /// Creates an empty deterministic provider with unique instance identity.
     #[must_use]
     pub fn new() -> Self {
+        let instance = NEXT_PROVIDER_INSTANCE.fetch_add(1, Ordering::Relaxed);
+        Self::with_provider_id(format!("provider:reference:{instance}"))
+    }
+
+    /// Creates an empty deterministic provider with explicit provider instance identity.
+    #[must_use]
+    pub fn with_provider_id(provider_id: impl Into<String>) -> Self {
         Self {
+            provider_id: provider_id.into(),
             nonce_counter: 0,
             messages: BTreeMap::new(),
+            failures: BTreeMap::new(),
         }
     }
 
-    /// Number of unique provider messages created.
+    /// Provider instance identity.
+    #[must_use]
+    pub fn provider_id(&self) -> &str {
+        &self.provider_id
+    }
+
+    /// Number of unique provider delivery messages created.
     #[must_use]
     pub fn message_count(&self) -> usize {
         self.messages.len()
+    }
+
+    /// Number of unique provider failure receipts created.
+    #[must_use]
+    pub fn failure_count(&self) -> usize {
+        self.failures.len()
     }
 
     /// Dispatches an intent to the provider oracle under the requested behavior.
@@ -140,16 +220,43 @@ impl ReferenceAlertProvider {
                 ProviderDispatch::ConflictingIdempotency
             };
         }
-        if behavior == ReferenceProviderBehavior::FailBeforeDelivery {
-            return ProviderDispatch::KnownFailure(provider_failure_proof(intent));
+        if let Some(existing) = self.failures.get(&intent.idempotency_key) {
+            return if existing.matches_intent(intent) {
+                ProviderDispatch::KnownFailure(existing.receipt.receipt_digest())
+            } else {
+                ProviderDispatch::ConflictingIdempotency
+            };
         }
 
+        if self.nonce_counter == u64::MAX {
+            return ProviderDispatch::ConflictingIdempotency;
+        }
         self.nonce_counter += 1;
         let mut nonce_enc = CanonicalEncoder::new();
         nonce_enc.text("fss.effect_proof.v1");
-        nonce_enc.text("provider_nonce");
+        nonce_enc.text(&self.provider_id);
         nonce_enc.u64(self.nonce_counter);
         let provider_nonce = ContentDigest::sha256(&nonce_enc.finish());
+
+        if behavior == ReferenceProviderBehavior::FailBeforeDelivery {
+            let receipt = ProviderFailureReceipt {
+                provider_nonce,
+                message_digest: intent.canonical_digest("fss.effect_proof.v1"),
+                error_code: REFERENCE_ALERT_FAILURE_REASON.to_owned(),
+            };
+            let receipt_digest = receipt.receipt_digest();
+            self.failures.insert(
+                intent.idempotency_key.clone(),
+                ProviderFailureMessage {
+                    operation_id: intent.operation_id.clone(),
+                    effect_class: intent.effect_class.clone(),
+                    request_digest: intent.request_digest,
+                    precondition_digest: intent.precondition_digest,
+                    receipt,
+                },
+            );
+            return ProviderDispatch::KnownFailure(receipt_digest);
+        }
 
         let receipt = ProviderObservationReceipt {
             provider_nonce,
@@ -171,7 +278,7 @@ impl ReferenceAlertProvider {
             ReferenceProviderBehavior::Deliver => ProviderDispatch::Delivered(receipt_digest),
             ReferenceProviderBehavior::LoseAckAfterDelivery => ProviderDispatch::LostAck,
             ReferenceProviderBehavior::FailBeforeDelivery => {
-                ProviderDispatch::KnownFailure(provider_failure_proof(intent))
+                unreachable!("handled above")
             }
         }
     }
@@ -181,13 +288,118 @@ impl ReferenceAlertProvider {
         &self,
         intent: &EffectIntent,
     ) -> Result<Option<ProviderObservationReceipt>, ReferenceError> {
-        match self.messages.get(&intent.idempotency_key) {
-            Some(message) if message.matches_intent(intent) => Ok(Some(message.receipt.clone())),
-            Some(_) => Err(ReferenceError::Contract(
-                fss_core::ContractError::IdempotencyConflict,
-            )),
-            None => Ok(None),
+        if let Some(message) = self.messages.get(&intent.idempotency_key) {
+            return if message.matches_intent(intent) {
+                Ok(Some(message.receipt.clone()))
+            } else {
+                Err(ReferenceError::Contract(
+                    fss_core::ContractError::IdempotencyConflict,
+                ))
+            };
         }
+        if let Some(failure) = self.failures.get(&intent.idempotency_key) {
+            return if failure.matches_intent(intent) {
+                Ok(None)
+            } else {
+                Err(ReferenceError::Contract(
+                    fss_core::ContractError::IdempotencyConflict,
+                ))
+            };
+        }
+        Ok(None)
+    }
+
+    /// Looks up prior failure receipt for an intent if present.
+    pub fn lookup_failure(
+        &self,
+        intent: &EffectIntent,
+    ) -> Result<Option<ProviderFailureReceipt>, ReferenceError> {
+        if let Some(failure) = self.failures.get(&intent.idempotency_key) {
+            return if failure.matches_intent(intent) {
+                Ok(Some(failure.receipt.clone()))
+            } else {
+                Err(ReferenceError::Contract(
+                    fss_core::ContractError::IdempotencyConflict,
+                ))
+            };
+        }
+        if let Some(message) = self.messages.get(&intent.idempotency_key) {
+            return if message.matches_intent(intent) {
+                Ok(None)
+            } else {
+                Err(ReferenceError::Contract(
+                    fss_core::ContractError::IdempotencyConflict,
+                ))
+            };
+        }
+        Ok(None)
+    }
+
+    /// Explicitly records an external provider delivery failure for an indeterminate intent.
+    pub fn record_failure(
+        &mut self,
+        intent: &EffectIntent,
+        error_code: impl Into<String>,
+    ) -> Result<ProviderFailureReceipt, ReferenceError> {
+        let error_str = error_code.into();
+        if error_str.is_empty() {
+            return Err(ReferenceError::Contract(
+                fss_core::ContractError::EvidenceRequired,
+            ));
+        }
+        if let Some(existing) = self.messages.get(&intent.idempotency_key) {
+            return if existing.matches_intent(intent) {
+                Err(ReferenceError::Contract(
+                    fss_core::ContractError::InvalidEffectTransition,
+                ))
+            } else {
+                Err(ReferenceError::Contract(
+                    fss_core::ContractError::IdempotencyConflict,
+                ))
+            };
+        }
+        if let Some(existing) = self.failures.get(&intent.idempotency_key) {
+            return if existing.matches_intent(intent) {
+                if existing.receipt.error_code == error_str {
+                    Ok(existing.receipt.clone())
+                } else {
+                    Err(ReferenceError::Contract(
+                        fss_core::ContractError::IdempotencyConflict,
+                    ))
+                }
+            } else {
+                Err(ReferenceError::Contract(
+                    fss_core::ContractError::IdempotencyConflict,
+                ))
+            };
+        }
+
+        if self.nonce_counter == u64::MAX {
+            return Err(ReferenceError::ArithmeticOverflow);
+        }
+        self.nonce_counter += 1;
+        let mut nonce_enc = CanonicalEncoder::new();
+        nonce_enc.text("fss.effect_proof.v1");
+        nonce_enc.text(&self.provider_id);
+        nonce_enc.u64(self.nonce_counter);
+        let provider_nonce = ContentDigest::sha256(&nonce_enc.finish());
+
+        let receipt = ProviderFailureReceipt {
+            provider_nonce,
+            message_digest: intent.canonical_digest("fss.effect_proof.v1"),
+            error_code: error_str,
+        };
+        self.failures.insert(
+            intent.idempotency_key.clone(),
+            ProviderFailureMessage {
+                operation_id: intent.operation_id.clone(),
+                effect_class: intent.effect_class.clone(),
+                request_digest: intent.request_digest,
+                precondition_digest: intent.precondition_digest,
+                receipt: receipt.clone(),
+            },
+        );
+        Ok(receipt)
     }
 }
 
@@ -385,7 +597,22 @@ pub fn reconcile_failed_reference_alert(
             fss_core::ContractError::InvalidEffectTransition,
         ));
     }
+    let Some(failure_receipt) = provider.lookup_failure(&plan.intent)? else {
+        return Err(ReferenceError::InvalidSpec(
+            "provider_failure_proof_missing",
+        ));
+    };
+    if proof_digest != failure_receipt.receipt_digest() {
+        return Err(ReferenceError::Contract(
+            fss_core::ContractError::InvalidDigest,
+        ));
+    }
     let reason_str = reason.into();
+    if reason_str != failure_receipt.error_code {
+        return Err(ReferenceError::InvalidSpec(
+            "provider_failure_reason_mismatch",
+        ));
+    }
     let receipt =
         journal.reconcile_failed(&plan.intent.operation_id, proof_digest, now, reason_str)?;
     Ok(receipt.clone())
@@ -494,22 +721,6 @@ fn alert_precondition_digest(
     ContentDigest::sha256(&encoder.finish())
 }
 
-fn provider_failure_proof(intent: &EffectIntent) -> ContentDigest {
-    intent.failure_proof(REFERENCE_ALERT_FAILURE_REASON)
-}
-
-fn provider_failure_proof_bytes(intent: &EffectIntent, error_code: &str) -> Vec<u8> {
-    let mut encoder = CanonicalEncoder::new();
-    encoder.text("fss.effect_proof.v1");
-    intent.operation_id.encode_canonical(&mut encoder);
-    intent.idempotency_key.encode_canonical(&mut encoder);
-    encoder.text(&intent.effect_class);
-    encoder.digest(intent.request_digest);
-    encoder.digest(intent.precondition_digest);
-    encoder.text(error_code);
-    encoder.finish()
-}
-
 pub(crate) fn reference_alert_terminal_proof_bytes(
     plan: &ReferenceAlertPlan,
     receipt: &OperationReceipt,
@@ -530,21 +741,29 @@ pub(crate) fn reference_alert_terminal_proof_bytes(
             Ok(Some(bytes))
         }
         EffectState::Failed => {
-            if receipt.error_code.as_deref().is_none_or(str::is_empty) {
+            let Some(reason) = receipt.error_code.as_deref().filter(|s| !s.is_empty()) else {
+                return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
+            };
+            let failure_receipt =
+                provider
+                    .lookup_failure(&receipt.intent)?
+                    .ok_or(ReferenceError::InvalidSpec(
+                        "provider_failure_proof_missing",
+                    ))?;
+            if failure_receipt.error_code != reason {
                 return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
             }
-            let reason = receipt.error_code.as_deref().unwrap_or("");
-            let expected_proof = receipt.intent.failure_proof(reason);
-            if receipt.result_digest != Some(expected_proof) {
+            let bytes = failure_receipt.canonical_bytes();
+            if receipt.result_digest != Some(failure_receipt.receipt_digest()) {
                 return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
             }
-            let bytes = provider_failure_proof_bytes(&receipt.intent, reason);
             Ok(Some(bytes))
         }
         EffectState::Indeterminate => {
-            if receipt.result_digest.is_some()
-                || receipt.error_code.as_deref().is_none_or(str::is_empty)
-            {
+            let Some(_reason) = receipt.error_code.as_deref().filter(|s| !s.is_empty()) else {
+                return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
+            };
+            if receipt.result_digest.is_some() {
                 return Err(ReferenceError::InvalidSpec("alert_outcome_proof"));
             }
             Ok(None)

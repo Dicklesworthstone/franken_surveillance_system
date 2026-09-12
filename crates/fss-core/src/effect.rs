@@ -681,10 +681,6 @@ impl EffectJournal {
             if current.state != EffectState::Indeterminate {
                 return Err(ContractError::InvalidEffectTransition);
             }
-            let expected_proof = current.intent.failure_proof(&reason);
-            if proof_digest != expected_proof {
-                return Err(ContractError::InvalidDigest);
-            }
         }
         let receipt = self
             .operations
