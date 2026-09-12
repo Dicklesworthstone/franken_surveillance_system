@@ -1,11 +1,12 @@
 //! Agent-facing situation, possible-world, affordance, and handoff contracts.
 
 use std::collections::BTreeSet;
+use std::fmt;
 
 use crate::{
     BudgetVector, CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest, ContractError,
     HandoffId, HypothesisDisposition, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
-    PrincipalId, ProvenanceClass, SessionId, TimestampNs,
+    PrincipalId, PrivacyGeneration, ProvenanceClass, SessionId, TimestampNs,
 };
 
 /// Exact semantic universe used to interpret an agent request or response.
@@ -148,8 +149,103 @@ impl CanonicalEncode for ContractBasis {
     }
 }
 
-/// One proposition with orthogonal epistemic, provenance, and hypothesis states.
+/// Marker printed and hashed in place of a withheld `redacted` statement.
+///
+/// A redacted cell never exposes its statement through `Debug` or through its canonical
+/// encoding, so neither diagnostics nor digests can serve as a dictionary oracle for the
+/// withheld proposition.
+pub const REDACTED_STATEMENT_MARKER: &str = "<redacted:statement-withheld>";
+
+/// Which projection withholds a `redacted` proposition (KSTATE-007).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum RedactionReason {
+    /// Withheld by the current privacy projection.
+    PrivacyProjection,
+    /// Withheld by the current capability projection.
+    CapabilityProjection,
+}
+
+impl RedactionReason {
+    /// Returns the stable schema spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PrivacyProjection => "privacy_projection",
+            Self::CapabilityProjection => "capability_projection",
+        }
+    }
+}
+
+/// Explicit typed marker naming the projection that withholds a `redacted` proposition.
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RedactionMarker {
+    /// Projection that withholds the proposition or its evidence.
+    pub reason: RedactionReason,
+    /// Exact privacy projection generation that applied the redaction.
+    pub privacy_generation: PrivacyGeneration,
+}
+
+impl CanonicalEncode for RedactionMarker {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.reason.as_str());
+        encoder.text(self.privacy_generation.as_str());
+    }
+}
+
+/// Typed state-specific basis that a knowledge cell must carry when its state names one.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum KnowledgeStateBasis {
+    /// Redaction marker required by `redacted` (KSTATE-007).
+    Redaction(RedactionMarker),
+}
+
+impl KnowledgeStateBasis {
+    /// Returns the only knowledge state this basis may accompany.
+    #[must_use]
+    pub const fn knowledge_state(&self) -> KnowledgeState {
+        match self {
+            Self::Redaction(_) => KnowledgeState::Redacted,
+        }
+    }
+
+    /// Validates the basis payload itself.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        match self {
+            Self::Redaction(_) => Ok(()),
+        }
+    }
+}
+
+impl CanonicalEncode for KnowledgeStateBasis {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        match self {
+            Self::Redaction(marker) => {
+                encoder.u8(1);
+                marker.encode_canonical(encoder);
+            }
+        }
+    }
+}
+
+/// Returns the typed refusal for a state whose registry meaning requires a basis.
+const fn required_basis_error(state: KnowledgeState) -> Option<ContractError> {
+    match state {
+        KnowledgeState::Redacted => Some(ContractError::RedactionMarkerRequired),
+        KnowledgeState::Known
+        | KnowledgeState::Estimated
+        | KnowledgeState::Unknown
+        | KnowledgeState::Conflicted
+        | KnowledgeState::Stale
+        | KnowledgeState::NotObservable
+        | KnowledgeState::Indeterminate
+        | KnowledgeState::NotApplicable => None,
+    }
+}
+
+/// One proposition with orthogonal epistemic, provenance, and hypothesis states.
+///
+/// `Debug` is implemented by hand so that a `redacted` cell never prints its statement.
+#[derive(Clone, Eq, PartialEq)]
 pub struct KnowledgeCell {
     /// Stable proposition identity.
     pub claim_id: String,
@@ -167,6 +263,8 @@ pub struct KnowledgeCell {
     pub contradictions: Vec<ContentDigest>,
     /// Validity end, when bounded.
     pub valid_until: Option<TimestampNs>,
+    /// Typed basis required by states whose registry meaning names one; `None` otherwise.
+    pub state_basis: Option<KnowledgeStateBasis>,
 }
 
 impl KnowledgeCell {
@@ -174,9 +272,50 @@ impl KnowledgeCell {
     #[must_use]
     pub fn is_irreversible_effect_premise(&self, now: TimestampNs) -> bool {
         self.knowledge_state.may_authorize_irreversible_effect()
+            && self.validate().is_ok()
             && !self.evidence.is_empty()
             && self.contradictions.is_empty()
             && self.valid_until.is_none_or(|limit| now <= limit)
+    }
+
+    /// Validates that the typed state basis matches the knowledge state.
+    ///
+    /// A state whose registry meaning names a basis is refused without it, and a basis is
+    /// refused on any state it does not belong to.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        match (
+            &self.state_basis,
+            required_basis_error(self.knowledge_state),
+        ) {
+            (None, None) => Ok(()),
+            (None, Some(error)) => Err(error),
+            (Some(basis), _) if basis.knowledge_state() == self.knowledge_state => basis.validate(),
+            (Some(_), Some(error)) => Err(error),
+            (Some(_), None) => Err(ContractError::KnowledgeStateBasisMismatch),
+        }
+    }
+
+    /// Consumes and returns the cell only when [`Self::validate`] accepts it.
+    pub fn validated(self) -> Result<Self, ContractError> {
+        self.validate()?;
+        Ok(self)
+    }
+
+    /// Returns whether the statement is withheld from `Debug` output and canonical encoding.
+    #[must_use]
+    pub fn withholds_statement(&self) -> bool {
+        self.knowledge_state == KnowledgeState::Redacted
+            || matches!(self.state_basis, Some(KnowledgeStateBasis::Redaction(_)))
+    }
+
+    /// Returns the statement as it may be disclosed: [`REDACTED_STATEMENT_MARKER`] when withheld.
+    #[must_use]
+    pub fn disclosable_statement(&self) -> &str {
+        if self.withholds_statement() {
+            REDACTED_STATEMENT_MARKER
+        } else {
+            &self.statement
+        }
     }
 
     /// Returns whether this knowledge cell is an estimated proposition.
@@ -246,10 +385,35 @@ impl KnowledgeCell {
     }
 }
 
+impl fmt::Debug for KnowledgeCell {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut debug = formatter.debug_struct("KnowledgeCell");
+        debug.field("claim_id", &self.claim_id);
+        if self.withholds_statement() {
+            debug.field("statement", &format_args!("{REDACTED_STATEMENT_MARKER}"));
+        } else {
+            debug.field("statement", &self.statement);
+        }
+        debug
+            .field("knowledge_state", &self.knowledge_state)
+            .field("provenance", &self.provenance)
+            .field("hypothesis", &self.hypothesis)
+            .field("evidence", &self.evidence)
+            .field("contradictions", &self.contradictions)
+            .field("valid_until", &self.valid_until)
+            .field("state_basis", &self.state_basis)
+            .finish()
+    }
+}
+
 impl CanonicalEncode for KnowledgeCell {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(&self.claim_id);
-        encoder.text(&self.statement);
+        if self.withholds_statement() {
+            encoder.text(REDACTED_STATEMENT_MARKER);
+        } else {
+            encoder.text(&self.statement);
+        }
         encoder.text(self.knowledge_state.as_str());
         encoder.u8(provenance_code(self.provenance));
         match self.hypothesis {
@@ -265,6 +429,13 @@ impl CanonicalEncode for KnowledgeCell {
             Some(value) => {
                 encoder.bool(true);
                 value.encode_canonical(encoder);
+            }
+            None => encoder.bool(false),
+        }
+        match &self.state_basis {
+            Some(basis) => {
+                encoder.bool(true);
+                basis.encode_canonical(encoder);
             }
             None => encoder.bool(false),
         }

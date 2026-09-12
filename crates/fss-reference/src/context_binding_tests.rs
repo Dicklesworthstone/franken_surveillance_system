@@ -87,6 +87,7 @@ fn situation() -> Result<ReferenceSituation, ContractError> {
             evidence: vec![evidence],
             contradictions: vec![ContentDigest::sha256(b"bound-context-contradiction")],
             valid_until: None,
+            state_basis: None,
         }],
         now: vec!["A candidate event remains under investigation.".to_owned()],
         changed: vec!["A contradictory observation arrived.".to_owned()],

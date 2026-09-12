@@ -235,6 +235,7 @@ fn annotate_operation_receipt(
         evidence: vec![digest],
         contradictions: Vec::new(),
         valid_until: None,
+        state_basis: None,
     });
     situation.capsule.frame.now.push(format!(
         "Local operation {operation_id} is {}.",

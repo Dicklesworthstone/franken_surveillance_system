@@ -152,6 +152,7 @@ pub fn compile_reference_situation(
         evidence: vec![event_revision_digest, request.event_receipt.event_root],
         contradictions: Vec::new(),
         valid_until: None,
+        state_basis: None,
     };
     let mut knowledge_cells = vec![policy_cell];
     let physical_state = match request.decision.event.state {
@@ -176,6 +177,7 @@ pub fn compile_reference_situation(
         evidence: supporting.clone(),
         contradictions: contradicting.clone(),
         valid_until: None,
+        state_basis: None,
     });
 
     let mut coverage_proof_root = None;
@@ -237,6 +239,7 @@ pub fn compile_reference_situation(
                         evidence: vec![event_revision_digest, witness.witness_digest()],
                         contradictions: Vec::new(),
                         valid_until: None,
+                        state_basis: None,
                     }),
                 )
             } else {
@@ -306,6 +309,7 @@ pub fn compile_reference_situation(
                         evidence: vec![event_revision_digest],
                         contradictions: Vec::new(),
                         valid_until: None,
+                        state_basis: None,
                     }),
                 )
             }
@@ -325,6 +329,7 @@ pub fn compile_reference_situation(
                     evidence: vec![event_revision_digest],
                     contradictions: Vec::new(),
                     valid_until: None,
+                    state_basis: None,
                 }),
             )
         }
@@ -368,6 +373,7 @@ pub fn compile_reference_situation(
             evidence: operation.result_digest.into_iter().collect(),
             contradictions: Vec::new(),
             valid_until: None,
+            state_basis: None,
         });
     }
 

@@ -348,6 +348,7 @@ fn synthetic_situation(
         evidence: vec![evidence],
         contradictions: Vec::new(),
         valid_until: None,
+        state_basis: None,
     };
     let frame = SituationFrame {
         frame_id: "frame:synthetic".to_owned(),

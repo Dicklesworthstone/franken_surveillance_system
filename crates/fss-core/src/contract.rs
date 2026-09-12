@@ -2470,6 +2470,10 @@ pub enum ContractError {
     InvalidBudget(BudgetError),
     /// A subsystem generation identifier names a forbidden mutable latest alias (ADR-0004).
     LatestNotResolvable,
+    /// A `redacted` knowledge cell lacks its explicit typed redaction marker.
+    RedactionMarkerRequired,
+    /// A knowledge cell carries a state basis that belongs to a different knowledge state.
+    KnowledgeStateBasisMismatch,
 }
 
 impl ContractError {
@@ -2503,6 +2507,8 @@ impl ContractError {
             Self::BudgetExhausted => "budget_exhausted",
             Self::InvalidBudget(err) => err.code(),
             Self::LatestNotResolvable => "latest_not_resolvable",
+            Self::RedactionMarkerRequired => "redaction_marker_required",
+            Self::KnowledgeStateBasisMismatch => "knowledge_state_basis_mismatch",
         }
     }
 }

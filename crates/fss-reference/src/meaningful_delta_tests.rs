@@ -3,9 +3,10 @@ use std::error::Error;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest, ContractBasis,
-    ContractBasisRegistryBytes, DeltaPriority, KnowledgeCell, KnowledgeState, LedgerAnchor,
-    MeaningfulDeltaClass, MissionId, ObligationId, PrincipalId, ProvenanceClass, ResourcePressure,
-    SessionId, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    ContractBasisRegistryBytes, DeltaPriority, KnowledgeCell, KnowledgeState, KnowledgeStateBasis,
+    LedgerAnchor, MeaningfulDeltaClass, MissionId, ObligationId, PrincipalId, PrivacyGeneration,
+    ProvenanceClass, RedactionMarker, RedactionReason, ResourcePressure, SessionId,
+    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 
 use crate::{
@@ -66,6 +67,19 @@ fn basis() -> ContractBasis {
     )
 }
 
+/// Typed state basis a fixture cell in `state` must carry so that it validates.
+fn fixture_state_basis(
+    state: KnowledgeState,
+) -> Result<Option<KnowledgeStateBasis>, fss_core::ContractError> {
+    Ok(match state {
+        KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+            reason: RedactionReason::PrivacyProjection,
+            privacy_generation: PrivacyGeneration::parse("privacy:projection:v1")?,
+        })),
+        _ => None,
+    })
+}
+
 fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
     let mut anchor = LedgerAnchor::genesis("site:meaningful-delta");
     anchor.commit_sequence = variant.sequence;
@@ -124,6 +138,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
         evidence: vec![evidence],
         contradictions: variant.premise_contradictions.clone(),
         valid_until: None,
+        state_basis: fixture_state_basis(variant.premise_state)?,
     }];
     if let Some(effect_state) = variant.effect_state {
         knowledge_cells.push(KnowledgeCell {
@@ -152,6 +167,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
                 Vec::new()
             },
             valid_until: None,
+            state_basis: fixture_state_basis(effect_state)?,
         });
     }
     let next = affordances

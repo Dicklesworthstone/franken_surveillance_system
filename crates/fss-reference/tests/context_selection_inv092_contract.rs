@@ -263,6 +263,7 @@ fn test_inv092_duplicate_contradiction_deduplicated_with_recorded_reason()
         evidence: vec![evidence_digest],
         contradictions: vec![contra_digest_1],
         valid_until: None,
+        state_basis: None,
     };
     let cell_beta = KnowledgeCell {
         claim_id: "claim:target:cam2".to_owned(),
@@ -273,6 +274,7 @@ fn test_inv092_duplicate_contradiction_deduplicated_with_recorded_reason()
         evidence: vec![evidence_digest],
         contradictions: vec![contra_digest_1],
         valid_until: None,
+        state_basis: None,
     };
 
     // Cell Gamma reports a DISTINCT contradiction with a different statement and different root.
@@ -285,6 +287,7 @@ fn test_inv092_duplicate_contradiction_deduplicated_with_recorded_reason()
         evidence: vec![evidence_digest],
         contradictions: vec![contra_digest_2],
         valid_until: None,
+        state_basis: None,
     };
 
     let frame = SituationFrame {
@@ -711,6 +714,7 @@ fn test_contradiction_dedup_must_not_drop_independent_sensor_evidence() -> Resul
         evidence: vec![evidence_cam1],
         contradictions: vec![contra_root],
         valid_until: None,
+        state_basis: None,
     };
     let cell_cam2 = KnowledgeCell {
         claim_id: "claim:cam2".to_owned(),
@@ -721,6 +725,7 @@ fn test_contradiction_dedup_must_not_drop_independent_sensor_evidence() -> Resul
         evidence: vec![evidence_cam2],
         contradictions: vec![contra_root],
         valid_until: None,
+        state_basis: None,
     };
 
     let frame = SituationFrame {
@@ -792,6 +797,7 @@ fn test_contradiction_basis_must_include_positive_evidence() -> Result<(), Box<d
         evidence: vec![evidence_digest],
         contradictions: vec![contra_digest],
         valid_until: None,
+        state_basis: None,
     };
 
     let world = PossibleWorld {
@@ -953,6 +959,7 @@ fn test_single_contradiction_does_not_double_count_tokens() -> Result<(), Box<dy
         evidence: vec![evidence_digest],
         contradictions: vec![contra_digest],
         valid_until: None,
+        state_basis: None,
     };
     let world = PossibleWorld {
         world_id: "world:adv:4".to_owned(),

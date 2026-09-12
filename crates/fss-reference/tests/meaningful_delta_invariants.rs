@@ -386,6 +386,7 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
         evidence: vec![evidence],
         contradictions: variant.premise_contradictions.clone(),
         valid_until: None,
+        state_basis: None,
     }];
     if let Some(effect_state) = variant.effect_state {
         let statement = match &variant.effect_statement {
@@ -409,6 +410,7 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
             evidence: vec![ContentDigest::sha256(b"effect-outcome")],
             contradictions: Vec::new(),
             valid_until: None,
+            state_basis: None,
         });
     }
     knowledge_cells.extend(variant.custom_cells.iter().cloned());

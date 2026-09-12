@@ -4,7 +4,8 @@ use std::error::Error;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest, ContractBasis,
     ContractBasisRegistryBytes, ContractError, HandoffId, KnowledgeCell, KnowledgeState,
-    LedgerAnchor, MissionId, ObligationId, PrincipalId, ProvenanceClass, ResourcePressure,
+    KnowledgeStateBasis, LedgerAnchor, MissionId, ObligationId, PrincipalId, PrivacyGeneration,
+    ProvenanceClass, REDACTED_STATEMENT_MARKER, RedactionMarker, RedactionReason, ResourcePressure,
     SessionId, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 
@@ -81,6 +82,7 @@ fn situation(long_optional_why: bool) -> Result<ReferenceSituation, ContractErro
         evidence: vec![evidence],
         contradictions: Vec::new(),
         valid_until: None,
+        state_basis: None,
     };
     let conflicted = KnowledgeCell {
         claim_id: "claim:presence".to_owned(),
@@ -91,6 +93,7 @@ fn situation(long_optional_why: bool) -> Result<ReferenceSituation, ContractErro
         evidence: vec![evidence],
         contradictions: vec![ContentDigest::sha256(b"contradiction")],
         valid_until: None,
+        state_basis: None,
     };
     let why = if long_optional_why {
         vec!["optional explanatory detail ".repeat(400)]
@@ -267,5 +270,47 @@ fn handoff_root_covers_the_complete_publication() -> Result<(), Box<dyn Error>> 
             .contains(&publication.compression_receipt.receipt_digest())
     );
     handoff.verify()?;
+    Ok(())
+}
+
+#[test]
+fn redacted_cells_never_disclose_their_statement() -> Result<(), Box<dyn Error>> {
+    let secret = "SECRET-alice-is-home";
+    let mut reference = situation(false)?;
+    reference.capsule.frame.knowledge_cells.push(
+        KnowledgeCell {
+            claim_id: "claim:resident".to_owned(),
+            statement: secret.to_owned(),
+            knowledge_state: KnowledgeState::Redacted,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![ContentDigest::sha256(b"redacted-evidence")],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+                reason: RedactionReason::PrivacyProjection,
+                privacy_generation: PrivacyGeneration::parse("privacy:projection:v7")?,
+            })),
+        }
+        .validated()?,
+    );
+
+    let projected = project_reference_situation(reference, &spec(10_000))?;
+    let epistemic = projected
+        .context_pack
+        .items
+        .iter()
+        .find(|item| item.item_id == "context:epistemic:claim:resident")
+        .ok_or("redacted cell missing from the context pack")?;
+    assert_eq!(epistemic.content, REDACTED_STATEMENT_MARKER);
+    assert_eq!(epistemic.epistemic_state, KnowledgeState::Redacted);
+    assert!(
+        projected
+            .context_pack
+            .items
+            .iter()
+            .all(|item| !item.content.contains(secret))
+    );
+    assert!(!format!("{projected:?}").contains(secret));
     Ok(())
 }

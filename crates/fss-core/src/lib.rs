@@ -37,8 +37,9 @@ mod time;
 
 pub use agent::{
     ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
-    HandoffPublishParams, KnowledgeCell, MissionLifecycleState, PossibleWorld, SituationCapsule,
-    SituationFrame, WorldEnvelope,
+    HandoffPublishParams, KnowledgeCell, KnowledgeStateBasis, MissionLifecycleState, PossibleWorld,
+    REDACTED_STATEMENT_MARKER, RedactionMarker, RedactionReason, SituationCapsule, SituationFrame,
+    WorldEnvelope,
 };
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,

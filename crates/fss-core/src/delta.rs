@@ -466,6 +466,7 @@ fn validate_changed_cells(cells: &[KnowledgeCell]) -> Result<(), ContractError> 
         {
             return Err(ContractError::NonCanonicalOrdering);
         }
+        cell.validate()?;
     }
     Ok(())
 }
@@ -533,6 +534,7 @@ mod tests {
                 Vec::new()
             },
             valid_until: Some(TimestampNs(10)),
+            state_basis: None,
         }
     }
 
@@ -712,5 +714,14 @@ mod tests {
             ..cert
         };
         assert_eq!(cert2.validate(), Err(ContractError::EvidenceRequired));
+    }
+
+    #[test]
+    fn changed_cells_refuse_redacted_cell_without_marker() {
+        let cells = [cell(KnowledgeState::Redacted)];
+        assert_eq!(
+            validate_changed_cells(&cells),
+            Err(ContractError::RedactionMarkerRequired)
+        );
     }
 }
