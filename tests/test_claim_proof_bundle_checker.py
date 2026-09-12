@@ -64,6 +64,8 @@ from claim_proof_bundle_checker import (
 )
 import claim_proof_bundle_checker as cpb
 
+ERR_CLAIM_BINDING_MISMATCH = cpb.ERR_CLAIM_BINDING_MISMATCH
+
 
 class TestClaimProofBundlePositiveControls(unittest.TestCase):
     """Positive controls asserting valid inputs pass with zero errors."""
@@ -105,39 +107,21 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "")
 
     def test_positive_valid_bundle(self) -> None:
-        """A well-formed proof bundle with matching digest and valid metadata passes."""
+        """A complete 'slo' proof bundle (retained measurement bound to its SLO row, cost
+        operation, generation, validity window, and retained environment manifest) passes."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = Path(tmpdir)
             known_classes, prohibited, _ = load_authoritative_claims(ROOT / "architecture/claims.json")
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-TEST-001",
-                "claim_id": "STAT-TEST-001",
-                "claim_class": "statistical",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "dataset_manifest",
-                    "sampling_protocol",
-                    "confidence_interval",
-                    "held_out_results",
-                ],
-            }
-            digest = compute_bundle_digest(bundle_data)
-            bundle_data["content_digest"] = digest
-
-            bundle_file = tmp_root / "test.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data, indent=2), encoding="utf-8")
+            bundle_file = write_slo_bundle(tmp_root, build_slo_fixture(tmp_root))
 
             is_valid, findings, loaded_data = verify_proof_bundle(
                 bundle_path=bundle_file,
                 root=tmp_root,
-                expected_claim_id="STAT-TEST-001",
+                expected_claim_id=SLO_CLAIM_ID,
                 claim_level="achieved",
                 known_classes=known_classes,
                 prohibited_promotions=prohibited,
+                now=SLO_NOW,
             )
             self.assertTrue(is_valid, f"Expected pass, got findings: {[f.message for f in findings]}")
             self.assertEqual(len(findings), 0)
@@ -190,48 +174,49 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             self.assertEqual(len(findings), 0)
 
     def test_positive_markdown_table_with_valid_bundle(self) -> None:
-        """Markdown table citing a valid relative proof bundle passes scanning."""
+        """Markdown table row citing a complete 'slo' proof bundle passes scanning; the row
+        status reaches the bundle as its claim level, so the slo evidence is inspected."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = Path(tmpdir)
             known_classes, prohibited, _ = load_authoritative_claims(ROOT / "architecture/claims.json")
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "claim_id": "STAT-001",
-                "claim_class": "statistical",
-                "supported_level": "achieved",
-                "generation": "gen-active-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "dataset_manifest",
-                    "sampling_protocol",
-                    "confidence_interval",
-                    "held_out_results",
-                ],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            rel_bundle = "proof_bundles/stat1.bundle.json"
-            full_bundle_path = tmp_root / rel_bundle
-            full_bundle_path.parent.mkdir(parents=True, exist_ok=True)
-            full_bundle_path.write_text(json.dumps(bundle_data), encoding="utf-8")
+            write_slo_bundle(tmp_root, build_slo_fixture(tmp_root))
 
             md_content = (
                 "# Status Table\n\n"
                 "| ID | Status | Proof root |\n"
                 "|---|---|---|\n"
-                f"| `STAT-001` | achieved | `{rel_bundle}` |\n"
+                f"| `{SLO_CLAIM_ID}` | achieved | `{SLO_BUNDLE_REL}` |\n"
             )
             md_file = tmp_root / "test_table.md"
             md_file.write_text(md_content, encoding="utf-8")
 
+            stats: dict[str, int] = {}
             findings = scan_markdown_claim_tables(
                 md_path=md_file,
                 root=tmp_root,
                 known_classes=known_classes,
                 tombstoned_ids=set(),
                 prohibited_promotions=prohibited,
+                stats=stats,
+                now=SLO_NOW,
             )
             self.assertEqual(len(findings), 0, f"Expected 0 findings, got: {[f.message for f in findings]}")
+            self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (1, 1, 1))
+
+    def test_positive_slos_md_row_cites_valid_slo_bundle_end_to_end(self) -> None:
+        """registries/SLOS.md marks SLO-DETECT-001 achieved and cites a complete slo bundle:
+        the repository audit (markdown surface + retention walk) and the CLI both pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_slo_bundle(root, build_slo_fixture(root))
+            promote_slos_row(root, SLO_CLAIM_ID, SLO_BUNDLE_REL)
+            ok, findings, summary = audit_claim_proof_bundles(root, now=SLO_NOW)
+            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual(summary["error_count"], 0)
+            self.assertEqual(summary["promoted_claim_rows"], 1)
+            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (2, 2))
+            result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 
 class TestPlantedNegativeProofBundleNotFound(unittest.TestCase):
@@ -805,22 +790,43 @@ FIXTURE_FILES = (
 )
 _DROP = object()
 
+# Canonical slo measurement shape (fss-x4a.30.87.5): the target and comparator come from the
+# SLO-DETECT-001 row of registries/SLOS.md ("p95 ... <= 1.5 s"); the measurement carries exactly
+# one canonical 'actual', its unit, a validity window, a passing status, and the digest of a
+# retained environment manifest.
+FIXED_NOW = datetime(2026, 9, 2, tzinfo=timezone.utc)
+DEFAULT_ENVIRONMENT_DATA = {
+    "schema": "fss.environment_manifest.v1",
+    "host_profile": "edge-gpu-reference",
+    "workload": "declared detect profile",
+}
+DEFAULT_ENVIRONMENT_BYTES = json.dumps(DEFAULT_ENVIRONMENT_DATA).encode("utf-8")
+DEFAULT_ENVIRONMENT_DIGEST = compute_sha256(DEFAULT_ENVIRONMENT_BYTES)
+DEFAULT_ENVIRONMENT_REL = "qualification-artifacts/env.json"
+DEFAULT_ENVIRONMENT_ARTIFACT = {"role": "environment_manifest", "path": DEFAULT_ENVIRONMENT_REL, "digest": DEFAULT_ENVIRONMENT_DIGEST}
 DEFAULT_MEASUREMENT_DATA = {
-    "schema": "fss.operation_cost_measurement.v1",
+    "schema": "fss.slo_measurement.v1",
     "slo_id": "SLO-DETECT-001",
     "operation_id": "COST-DETECT-001",
     "generation": "gen-2026-09-01",
+    "operation_cost_generation": "gen:fss1:operation-cost-v1",
+    "status": "passed",
     "measurement_window": {
         "started_at": "2026-09-01T00:00:00Z",
         "finished_at": "2026-09-01T01:00:00Z",
     },
-    "target": 100.0,
-    "actual": 85.0,
+    "unit": "s",
+    "actual": 1.2,
+    "environment_manifest_digest": DEFAULT_ENVIRONMENT_DIGEST,
 }
 DEFAULT_MEASUREMENT_BYTES = json.dumps(DEFAULT_MEASUREMENT_DATA).encode("utf-8")
 DEFAULT_MEASUREMENT_DIGEST = compute_sha256(DEFAULT_MEASUREMENT_BYTES)
 DEFAULT_MEASUREMENT_REL = "qualification-artifacts/meas.json"
-DEFAULT_MEASUREMENT_ARTIFACT = {"path": DEFAULT_MEASUREMENT_REL, "digest": DEFAULT_MEASUREMENT_DIGEST}
+DEFAULT_MEASUREMENT_ARTIFACT = {"role": "measurement_artifact", "path": DEFAULT_MEASUREMENT_REL, "digest": DEFAULT_MEASUREMENT_DIGEST}
+DEFAULT_RETAINED_FILES = {
+    DEFAULT_MEASUREMENT_REL: DEFAULT_MEASUREMENT_BYTES,
+    DEFAULT_ENVIRONMENT_REL: DEFAULT_ENVIRONMENT_BYTES,
+}
 
 
 def _known_classes() -> dict[str, list[str]]:
@@ -840,7 +846,7 @@ def make_bundle(**overrides: object) -> dict:
         "generation": "gen-2026-09-01",
         "status": "passed",
         "retained_evidence": list(SLO_EVIDENCE),
-        "artifacts": [dict(DEFAULT_MEASUREMENT_ARTIFACT)],
+        "artifacts": [dict(DEFAULT_MEASUREMENT_ARTIFACT), dict(DEFAULT_ENVIRONMENT_ARTIFACT)],
     }
     if "objects" in overrides and "artifacts" not in overrides:
         data.pop("artifacts", None)
@@ -868,16 +874,16 @@ def write_json(path: Path, data: object) -> Path:
 def verify(root: Path, data: dict, name: str = "b.bundle.json", **kwargs: object):
     path = write_json(root / name, data)
     kwargs.setdefault("known_classes", _known_classes())
-    default_meas_path = root / DEFAULT_MEASUREMENT_REL
-    if not default_meas_path.exists():
-        for key in ("artifacts", "objects"):
-            entries = data.get(key)
-            if isinstance(entries, list):
-                for e in entries:
-                    if isinstance(e, dict) and e.get("path") == DEFAULT_MEASUREMENT_REL:
-                        default_meas_path.parent.mkdir(parents=True, exist_ok=True)
-                        default_meas_path.write_bytes(DEFAULT_MEASUREMENT_BYTES)
-                        break
+    kwargs.setdefault("now", FIXED_NOW)
+    referenced: set[str] = set()
+    for key in ("artifacts", "objects"):
+        entries = data.get(key)
+        if isinstance(entries, list):
+            referenced.update(e.get("path") for e in entries if isinstance(e, dict) and isinstance(e.get("path"), str))
+    for rel, raw in DEFAULT_RETAINED_FILES.items():
+        if rel in referenced and not (root / rel).exists():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(raw)
     return verify_proof_bundle(bundle_path=path, root=root, **kwargs)
 
 
@@ -888,7 +894,7 @@ def claim_table(*rows: str) -> str:
 def scan(root: Path, text: str, name: str = "table.md") -> list:
     md_file = root / name
     md_file.write_text(text, encoding="utf-8")
-    return scan_markdown_claim_tables(md_file, root, _known_classes(), set())
+    return scan_markdown_claim_tables(md_file, root, _known_classes(), set(), now=FIXED_NOW)
 
 
 def build_fixture_root(tmp: Path) -> Path:
@@ -1074,7 +1080,7 @@ class TestReview606F2Artifacts(unittest.TestCase):
     def test_f2_intentionally_omitted_object_is_explicit_not_a_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             obj = {"digest": ZERO_DIGEST, "role": "r", "sizeBytes": 0, "retentionState": "intentionally_omitted", "uriHint": None}
-            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(objects=[dict(DEFAULT_MEASUREMENT_ARTIFACT), obj])))
+            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(objects=[dict(DEFAULT_MEASUREMENT_ARTIFACT), dict(DEFAULT_ENVIRONMENT_ARTIFACT), obj])))
             self.assertTrue(ok, [f.message for f in findings])
 
     @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores file permissions")
@@ -2447,51 +2453,16 @@ class TestSloClaimClassRealization(unittest.TestCase):
         """A well-formed proof bundle for an SLO with complete required evidence passes verification."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = Path(tmpdir)
-            meas_path = tmp_root / "qualification-artifacts/meas.json"
-            meas_path.parent.mkdir(parents=True, exist_ok=True)
-            meas_data = {
-                "schema": "fss.operation_cost_measurement.v1",
-                "slo_id": "SLO-INGEST-001",
-                "operation_id": "COST-ACQUIRE-001",
-                "generation": "gen-2026-09-01",
-                "environment": {"profile": "reference"},
-                "status": "passed",
-                "started_at": "2026-09-01T00:00:00Z",
-                "finished_at": "2026-09-01T00:01:00Z",
-                "target_ms": 10.0,
-                "actual_ms": 8.0,
-            }
-            meas_path.write_text(json.dumps(meas_data), encoding="utf-8")
-            meas_digest = compute_sha256(meas_path.read_bytes())
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-INGEST-001",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "operation_cost_row",
-                    "measurement_artifact",
-                    "environment_manifest",
-                ],
-                "artifacts": [
-                    {"path": "qualification-artifacts/meas.json", "digest": meas_digest}
-                ],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "slo_ingest.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data, indent=2), encoding="utf-8")
+            bundle_file = write_slo_bundle(tmp_root, build_slo_fixture(tmp_root))
 
             is_valid, findings, loaded_data = verify_proof_bundle(
                 bundle_path=bundle_file,
                 root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
+                expected_claim_id=SLO_CLAIM_ID,
                 claim_level="achieved",
                 known_classes=self.known_classes,
                 prohibited_promotions=self.prohibited,
+                now=SLO_NOW,
             )
             self.assertTrue(is_valid, f"Expected pass, got findings: {[f.message for f in findings]}")
             self.assertEqual(len(findings), 0)
@@ -2568,458 +2539,383 @@ class TestSloClaimClassRealization(unittest.TestCase):
 
 
 class TestSloEvidenceInspectionFailures(unittest.TestCase):
-    """Planted negative tests for real SLO evidence inspection per mail #806 / fss-x4a.30.87.5."""
+    """Planted negative tests for real SLO evidence inspection per mail #806 / fss-x4a.30.87.5.
 
-    def setUp(self) -> None:
-        self.known_classes, self.prohibited, _ = load_authoritative_claims(ROOT / "architecture/claims.json")
+    Rebased on build_slo_fixture: every plant perturbs one aspect of a valid slo claim, keeps
+    its original assertion, and pins the exact finding-id set."""
+
+    def plant(self, **case: object) -> list:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            is_valid, findings, _ = verify_slo_bundle(root, build_slo_fixture(root, **case))
+            self.assertFalse(is_valid)
+            return findings
 
     def test_planted_slo_no_measurement_on_disk_fails(self) -> None:
         """Plant 1: SLO proof bundle without measurement artifact fails with ERR-CLAIM-PROOF-LEVEL-EXCEEDED-001."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_root = Path(tmpdir)
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-INGEST-EMPTY-ARTS",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "operation_cost_row",
-                    "measurement_artifact",
-                    "environment_manifest",
-                ],
-                "artifacts": [],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "slo.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
-
-            is_valid, findings, _ = verify_proof_bundle(
-                bundle_path=bundle_file,
-                root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
-                claim_level="achieved",
-                known_classes=self.known_classes,
-                prohibited_promotions=self.prohibited,
-            )
-            self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes)
+        for case in ({"bundle": {"artifacts": []}}, {"omit_roles": ("measurement_artifact",)}):
+            with self.subTest(case=case):
+                findings = self.plant(**case)
+                self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings))
+                self.assertEqual(error_code_set(findings), [ERR_CLAIM_LEVEL_EXCEEDED])
 
     def test_planted_slo_mismatched_slo_id_fails(self) -> None:
         """Plant 2a: Measurement artifact tied to different SLO ID emits ERR-CLAIM-PROOF-CLAIM-BINDING-MISMATCH-001."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_root = Path(tmpdir)
-            meas_path = tmp_root / "qualification-artifacts/meas.json"
-            meas_path.parent.mkdir(parents=True, exist_ok=True)
-            meas_data = {
-                "schema": "fss.operation_cost_measurement.v1",
-                "slo_id": "SLO-OTHER-999",
-                "operation_id": "COST-ACQUIRE-001",
-                "generation": "gen:fss1:operation-cost-v1",
-                "environment": {"profile": "reference"},
-                "status": "passed",
-                "started_at": "2026-09-01T00:00:00Z",
-                "finished_at": "2026-09-01T00:01:00Z",
-                "target_ms": 10.0,
-                "actual_ms": 5.0,
-            }
-            meas_path.write_text(json.dumps(meas_data), encoding="utf-8")
-            meas_digest = compute_sha256(meas_path.read_bytes())
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-INGEST-MISMATCH",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "operation_cost_row",
-                    "measurement_artifact",
-                    "environment_manifest",
-                ],
-                "artifacts": [
-                    {"path": "qualification-artifacts/meas.json", "digest": meas_digest}
-                ],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "slo.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
-
-            from claim_proof_bundle_checker import ERR_CLAIM_BINDING_MISMATCH
-            is_valid, findings, _ = verify_proof_bundle(
-                bundle_path=bundle_file,
-                root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
-                claim_level="achieved",
-                known_classes=self.known_classes,
-                prohibited_promotions=self.prohibited,
-            )
-            self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_CLAIM_BINDING_MISMATCH, codes)
+        findings = self.plant(measurement={"slo_id": "SLO-OTHER-999"})
+        self.assertIn(ERR_CLAIM_BINDING_MISMATCH, codes(findings))
+        self.assertEqual(error_code_set(findings), [ERR_CLAIM_BINDING_MISMATCH])
 
     def test_planted_slo_mismatched_cost_operation_fails(self) -> None:
         """Plant 2b: Measurement artifact with unknown/unassociated operation ID emits ERR-CLAIM-PROOF-CLAIM-BINDING-MISMATCH-001."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_root = Path(tmpdir)
-            meas_path = tmp_root / "qualification-artifacts/meas.json"
-            meas_path.parent.mkdir(parents=True, exist_ok=True)
-            meas_data = {
-                "schema": "fss.operation_cost_measurement.v1",
-                "slo_id": "SLO-INGEST-001",
-                "operation_id": "cost-different-op-001",
-                "generation": "gen:fss1:operation-cost-v1",
-                "environment": {"profile": "reference"},
-                "status": "passed",
-                "started_at": "2026-09-01T00:00:00Z",
-                "finished_at": "2026-09-01T00:01:00Z",
-                "target_ms": 10.0,
-                "actual_ms": 5.0,
-            }
-            meas_path.write_text(json.dumps(meas_data), encoding="utf-8")
-            meas_digest = compute_sha256(meas_path.read_bytes())
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-INGEST-OP-MISMATCH",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "operation_cost_row",
-                    "measurement_artifact",
-                    "environment_manifest",
-                ],
-                "artifacts": [
-                    {"path": "qualification-artifacts/meas.json", "digest": meas_digest}
-                ],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "slo.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
-
-            from claim_proof_bundle_checker import ERR_CLAIM_BINDING_MISMATCH
-            is_valid, findings, _ = verify_proof_bundle(
-                bundle_path=bundle_file,
-                root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
-                claim_level="achieved",
-                known_classes=self.known_classes,
-                prohibited_promotions=self.prohibited,
-            )
-            self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_CLAIM_BINDING_MISMATCH, codes)
+        for operation_id in ("cost-different-op-001", "COST-PROXY-001"):
+            with self.subTest(operation_id=operation_id):
+                findings = self.plant(measurement={"operation_id": operation_id})
+                self.assertIn(ERR_CLAIM_BINDING_MISMATCH, codes(findings))
+                self.assertEqual(error_code_set(findings), [ERR_CLAIM_BINDING_MISMATCH])
 
     def test_planted_slo_stale_measurement_window_fails(self) -> None:
         """Plant 3: Measurement window timestamped in 2024 fails with ERR-CLAIM-PROOF-STALE-GENERATION-001."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_root = Path(tmpdir)
-            meas_path = tmp_root / "qualification-artifacts/meas.json"
-            meas_path.parent.mkdir(parents=True, exist_ok=True)
-            meas_data = {
-                "schema": "fss.operation_cost_measurement.v1",
-                "slo_id": "SLO-INGEST-001",
-                "operation_id": "COST-ACQUIRE-001",
-                "generation": "gen:fss1:operation-cost-v1",
-                "environment": {"profile": "reference"},
-                "status": "passed",
-                "started_at": "2024-01-01T00:00:00Z",
-                "finished_at": "2024-01-01T00:01:00Z",
-                "target_ms": 10.0,
-                "actual_ms": 5.0,
-            }
-            meas_path.write_text(json.dumps(meas_data), encoding="utf-8")
-            meas_digest = compute_sha256(meas_path.read_bytes())
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-INGEST-STALE-WIN",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "operation_cost_row",
-                    "measurement_artifact",
-                    "environment_manifest",
-                ],
-                "artifacts": [
-                    {"path": "qualification-artifacts/meas.json", "digest": meas_digest}
-                ],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "slo.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
-
-            is_valid, findings, _ = verify_proof_bundle(
-                bundle_path=bundle_file,
-                root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
-                claim_level="achieved",
-                known_classes=self.known_classes,
-                prohibited_promotions=self.prohibited,
-            )
-            self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_STALE_GENERATION, codes)
+        findings = self.plant(measurement={"measurement_window": {"started_at": "2024-01-01T00:00:00Z", "finished_at": "2024-01-01T00:01:00Z"}})
+        self.assertIn(ERR_STALE_GENERATION, codes(findings))
+        self.assertEqual(error_code_set(findings), [ERR_STALE_GENERATION])
 
     def test_planted_slo_target_met_only_by_rounding_fails(self) -> None:
-        """Plant 4: Target met only by rounding (target 5.0, actual 5.4, rounded 5.0) emits ERR-CLAIM-PROOF-LEVEL-EXCEEDED-001."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_root = Path(tmpdir)
-            meas_path = tmp_root / "qualification-artifacts/meas.json"
-            meas_path.parent.mkdir(parents=True, exist_ok=True)
-            meas_data = {
-                "schema": "fss.operation_cost_measurement.v1",
-                "slo_id": "SLO-INGEST-001",
-                "operation_id": "COST-ACQUIRE-001",
-                "generation": "gen:fss1:operation-cost-v1",
-                "environment": {"profile": "reference"},
-                "status": "passed",
-                "started_at": "2026-09-01T00:00:00Z",
-                "finished_at": "2026-09-01T00:01:00Z",
-                "target_ms": 5.0,
-                "actual_ms": 5.4,
-                "reported_rounded_ms": 5.0,
-            }
-            meas_path.write_text(json.dumps(meas_data), encoding="utf-8")
-            meas_digest = compute_sha256(meas_path.read_bytes())
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-INGEST-ROUNDING",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "operation_cost_row",
-                    "measurement_artifact",
-                    "environment_manifest",
-                ],
-                "artifacts": [
-                    {"path": "qualification-artifacts/meas.json", "digest": meas_digest}
-                ],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "slo.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
-
-            is_valid, findings, _ = verify_proof_bundle(
-                bundle_path=bundle_file,
-                root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
-                claim_level="achieved",
-                known_classes=self.known_classes,
-                prohibited_promotions=self.prohibited,
-            )
-            self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes)
+        """Plant 4: Target met only by rounding (target 1.5 s, actual 1.54, rounded 1.5) emits ERR-CLAIM-PROOF-LEVEL-EXCEEDED-001."""
+        findings = self.plant(measurement={"actual": 1.54, "reported_rounded": 1.5})
+        self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings))
+        self.assertEqual(error_code_set(findings), [ERR_CLAIM_LEVEL_EXCEEDED])
 
     def test_planted_slo_nan_infinity_values_fail(self) -> None:
         """Plant 5: Measurement declaring NaN or Infinity emits ERR-CLAIM-PROOF-LEVEL-EXCEEDED-001."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_root = Path(tmpdir)
-            meas_path = tmp_root / "qualification-artifacts/meas.json"
-            meas_path.parent.mkdir(parents=True, exist_ok=True)
-            meas_data = {
-                "schema": "fss.operation_cost_measurement.v1",
-                "slo_id": "SLO-INGEST-001",
-                "operation_id": "COST-ACQUIRE-001",
-                "generation": "gen:fss1:operation-cost-v1",
-                "environment": {"profile": "reference"},
-                "status": "passed",
-                "started_at": "2026-09-01T00:00:00Z",
-                "finished_at": "2026-09-01T00:01:00Z",
-                "target_ms": 10.0,
-                "actual_ms": "NaN",
-                "cpu_millis": "Infinity",
-            }
-            meas_path.write_text(json.dumps(meas_data), encoding="utf-8")
-            meas_digest = compute_sha256(meas_path.read_bytes())
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-INGEST-NAN",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "operation_cost_row",
-                    "measurement_artifact",
-                    "environment_manifest",
-                ],
-                "artifacts": [
-                    {"path": "qualification-artifacts/meas.json", "digest": meas_digest}
-                ],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "slo.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
-
-            is_valid, findings, _ = verify_proof_bundle(
-                bundle_path=bundle_file,
-                root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
-                claim_level="achieved",
-                known_classes=self.known_classes,
-                prohibited_promotions=self.prohibited,
-            )
-            self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes)
+        findings = self.plant(measurement={"actual": "NaN", "cpu_millis": "Infinity"})
+        self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings))
+        self.assertEqual(error_code_set(findings), [ERR_CLAIM_LEVEL_EXCEEDED])
 
     def test_planted_slo_stale_generation_fails(self) -> None:
         """Plant 2c: Measurement artifact with stale generation emits ERR-CLAIM-PROOF-STALE-GENERATION-001."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_root = Path(tmpdir)
-            meas_path = tmp_root / "qualification-artifacts/meas.json"
-            meas_path.parent.mkdir(parents=True, exist_ok=True)
-            meas_data = {
-                "schema": "fss.operation_cost_measurement.v1",
-                "slo_id": "SLO-INGEST-001",
-                "operation_id": "COST-ACQUIRE-001",
-                "generation": "gen-2020-01-01",
-                "environment": {"profile": "reference"},
-                "status": "passed",
-                "started_at": "2026-09-01T00:00:00Z",
-                "finished_at": "2026-09-01T00:01:00Z",
-                "target_ms": 10.0,
-                "actual_ms": 5.0,
-            }
-            meas_path.write_text(json.dumps(meas_data), encoding="utf-8")
-            meas_digest = compute_sha256(meas_path.read_bytes())
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-INGEST-STALE-GEN",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": [
-                    "operation_cost_row",
-                    "measurement_artifact",
-                    "environment_manifest",
-                ],
-                "artifacts": [
-                    {"path": "qualification-artifacts/meas.json", "digest": meas_digest}
-                ],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "slo.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
-
-            is_valid, findings, _ = verify_proof_bundle(
-                bundle_path=bundle_file,
-                root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
-                claim_level="achieved",
-                known_classes=self.known_classes,
-                prohibited_promotions=self.prohibited,
-            )
-            self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_STALE_GENERATION, codes)
+        findings = self.plant(measurement={"generation": "gen-2020-01-01"})
+        self.assertIn(ERR_STALE_GENERATION, codes(findings))
+        self.assertEqual(error_code_set(findings), [ERR_STALE_GENERATION])
 
     def test_planted_slo_upgraded_beyond_evidence_fails(self) -> None:
         """Plant 6: Empty dummy evidence upgraded directly to 'achieved' emits ERR-CLAIM-PROOF-LEVEL-EXCEEDED-001."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_root = Path(tmpdir)
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-UPGRADED-DUMMY",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "passed",
-                "retained_evidence": ["operation_cost_row", "measurement_artifact", "environment_manifest"],
-                "artifacts": [],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "dummy.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
-
-            is_valid, findings, _ = verify_proof_bundle(
-                bundle_path=bundle_file,
-                root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
-                claim_level="achieved",
-                known_classes=self.known_classes,
-                prohibited_promotions=self.prohibited,
-            )
-            self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes)
+        findings = self.plant(bundle={"artifacts": [], "bundle_id": "BUNDLE-SLO-UPGRADED-DUMMY"})
+        self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings))
+        self.assertEqual(error_code_set(findings), [ERR_CLAIM_LEVEL_EXCEEDED])
 
     def test_planted_slo_valid_measurement_passes(self) -> None:
         """Positive control: Well-formed SLO proof bundle with valid measurement artifact passes with 0 errors."""
         with tempfile.TemporaryDirectory() as tmpdir:
-            tmp_root = Path(tmpdir)
-            meas_path = tmp_root / "qualification-artifacts/meas.json"
-            meas_path.parent.mkdir(parents=True, exist_ok=True)
-            meas_data = {
-                "schema": "fss.operation_cost_measurement.v1",
-                "slo_id": "SLO-INGEST-001",
-                "operation_id": "COST-ACQUIRE-001",
-                "generation": "gen:fss1:operation-cost-v1",
-                "environment": {"profile": "reference"},
-                "status": "passed",
-                "started_at": "2026-09-01T00:00:00Z",
-                "finished_at": "2026-09-01T00:01:00Z",
-                "target_ms": 10.0,
-                "actual_ms": 8.0,
-            }
-            meas_path.write_text(json.dumps(meas_data), encoding="utf-8")
-            meas_digest = compute_sha256(meas_path.read_bytes())
-
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-SLO-INGEST-VALID",
-                "claim_id": "SLO-INGEST-001",
-                "claim_class": "slo",
-                "supported_level": "achieved",
-                "generation": "gen:fss1:operation-cost-v1",
-                "status": "passed",
-                "retained_evidence": [
-                    "operation_cost_row",
-                    "measurement_artifact",
-                    "environment_manifest",
-                ],
-                "artifacts": [
-                    {"path": "qualification-artifacts/meas.json", "digest": meas_digest}
-                ],
-            }
-            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            bundle_file = tmp_root / "slo.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
-
-            is_valid, findings, _ = verify_proof_bundle(
-                bundle_path=bundle_file,
-                root=tmp_root,
-                expected_claim_id="SLO-INGEST-001",
-                claim_level="achieved",
-                known_classes=self.known_classes,
-                prohibited_promotions=self.prohibited,
-            )
+            root = Path(tmpdir)
+            is_valid, findings, _ = verify_slo_bundle(root, build_slo_fixture(root))
             self.assertTrue(is_valid, f"Expected pass, got: {[f.message for f in findings]}")
             self.assertEqual(len(findings), 0)
 
+
+# ---------------------------------------------------------------------------
+# Claim class 'slo' independent-review rework (fss-x4a.30.87.5)
+# ---------------------------------------------------------------------------
+
+SLO_CLAIM_ID = "SLO-DETECT-001"  # registries/SLOS.md: "p95 first event hypothesis <= 1.5 s ..."
+SLO_OPERATION_ID = "COST-DETECT-001"  # operation_cost_registry.toml: slo_ids includes SLO-DETECT-001
+SLO_GENERATION = "gen-2026-09-01"
+SLO_COST_GENERATION = "gen:fss1:operation-cost-v1"
+SLO_NOW = FIXED_NOW
+SLO_MEASUREMENT_REL = "qualification-artifacts/slo/detect.measurement.json"
+SLO_ENVIRONMENT_REL = "qualification-artifacts/slo/reference.environment.json"
+SLO_BUNDLE_REL = "qualification-artifacts/slo/detect.bundle.json"
+STATISTICAL_EVIDENCE = ["dataset_manifest", "sampling_protocol", "confidence_interval", "held_out_results"]
+
+
+def _apply_overrides(doc: dict, overrides: dict | None) -> dict:
+    for key, value in (overrides or {}).items():
+        if value is _DROP:
+            doc.pop(key, None)
+        else:
+            doc[key] = value
+    return doc
+
+
+def build_slo_fixture(
+    root: Path,
+    *,
+    measurement: dict | None = None,
+    environment: dict | None = None,
+    bundle: dict | None = None,
+    omit_roles: tuple[str, ...] = (),
+) -> dict:
+    """Writes a complete, valid 'slo' claim for SLO-DETECT-001 (retained environment manifest,
+    retained measurement bound to it) under root and returns the unsealed bundle. Each
+    negative test perturbs exactly one aspect through the override dictionaries."""
+    env_doc = _apply_overrides(dict(DEFAULT_ENVIRONMENT_DATA), environment)
+    env_digest = _write_doc(root, SLO_ENVIRONMENT_REL, env_doc)
+    meas_doc = _apply_overrides({
+        "schema": "fss.slo_measurement.v1",
+        "slo_id": SLO_CLAIM_ID,
+        "operation_id": SLO_OPERATION_ID,
+        "generation": SLO_GENERATION,
+        "operation_cost_generation": SLO_COST_GENERATION,
+        "status": "passed",
+        "measurement_window": {"started_at": "2026-09-01T00:00:00Z", "finished_at": "2026-09-01T01:00:00Z"},
+        "unit": "s",
+        "actual": 1.2,
+        "environment_manifest_digest": env_digest,
+    }, measurement)
+    meas_digest = _write_doc(root, SLO_MEASUREMENT_REL, meas_doc)
+    artifacts = [
+        {"role": "measurement_artifact", "path": SLO_MEASUREMENT_REL, "digest": meas_digest},
+        {"role": "environment_manifest", "path": SLO_ENVIRONMENT_REL, "digest": env_digest},
+    ]
+    return _apply_overrides({
+        "schema": "fss.proof_bundle.v1",
+        "bundle_id": "BUNDLE-SLO-DETECT-001",
+        "claim_id": SLO_CLAIM_ID,
+        "claim_class": "slo",
+        "supported_level": "achieved",
+        "generation": SLO_GENERATION,
+        "status": "passed",
+        "retained_evidence": list(SLO_EVIDENCE),
+        "artifacts": [a for a in artifacts if a["role"] not in omit_roles],
+    }, bundle)
+
+
+def write_slo_bundle(root: Path, data: dict, rel: str = SLO_BUNDLE_REL) -> Path:
+    return write_json(root / rel, seal(data))
+
+
+def verify_slo_bundle(
+    root: Path,
+    data: dict,
+    claim_id: str | None = SLO_CLAIM_ID,
+    claim_level: str | None = "achieved",
+    now: datetime = SLO_NOW,
+    **kwargs: object,
+):
+    return verify_proof_bundle(
+        bundle_path=write_slo_bundle(root, data),
+        root=root,
+        expected_claim_id=claim_id,
+        claim_level=claim_level,
+        known_classes=_known_classes(),
+        tombstoned_ids=set(),
+        prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS),
+        now=now,
+        **kwargs,
+    )
+
+
+def promote_slos_row(root: Path, slo_id: str, proof_rel: str) -> None:
+    """Marks one registries/SLOS.md row achieved and cites proof_rel as its proof root."""
+    slos = root / "registries/SLOS.md"
+    lines = slos.read_text(encoding="utf-8").splitlines(keepends=True)
+    hits = [i for i, line in enumerate(lines) if line.startswith(f"| `{slo_id}` |")]
+    assert len(hits) == 1, hits
+    row = lines[hits[0]].rstrip("\n")
+    assert row.endswith("| target | - |"), row
+    lines[hits[0]] = row[: -len("| target | - |")] + f"| achieved | `{proof_rel}` |\n"
+    slos.write_text("".join(lines), encoding="utf-8")
+
+
+class TestSloIndependentReviewBypasses(unittest.TestCase):
+    """fss-x4a.30.87.5 independent review: every planted slo bypass fails closed with an exact
+    set of registered finding ids. Each case perturbs exactly one aspect of a valid fixture."""
+
+    def run_case(
+        self,
+        *,
+        measurement: dict | None = None,
+        environment: dict | None = None,
+        bundle: dict | None = None,
+        omit_roles: tuple[str, ...] = (),
+        claim_id: str = SLO_CLAIM_ID,
+        setup=None,
+        after=None,
+    ) -> tuple[bool, list]:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            if setup is not None:
+                setup(root)
+            data = build_slo_fixture(root, measurement=measurement, environment=environment, bundle=bundle, omit_roles=omit_roles)
+            if after is not None:
+                after(root)
+            ok, findings, _ = verify_slo_bundle(root, data, claim_id=claim_id)
+            return ok, findings
+
+    def assert_fails(self, expected: list[str], **case: object) -> None:
+        ok, findings = self.run_case(**case)
+        self.assertFalse(ok, "planted bypass was accepted")
+        self.assertEqual(error_code_set(findings), sorted(set(expected)), [f"{f.code}: {f.message}" for f in findings])
+
+    def test_control_complete_slo_bundle_passes(self) -> None:
+        for label, measurement in (("canonical", None), ("matching authoritative target", {"target": 1.5, "comparison": "<="})):
+            with self.subTest(case=label):
+                ok, findings = self.run_case(measurement=measurement)
+                self.assertTrue(ok, [f.message for f in findings])
+                self.assertEqual(findings, [])
+
+    def test_item1_missing_or_unrecognised_actual_fails(self) -> None:
+        actual = _code("ERR_SLO_ACTUAL_INVALID")
+        for label, measurement in (
+            ("no target and no actual", {"actual": _DROP}),
+            ("actual under unrecognised key p95_ms", {"actual": _DROP, "p95_ms": 1.2}),
+        ):
+            with self.subTest(case=label):
+                self.assert_fails([actual], measurement=measurement)
+
+    def test_item2_generation_required_and_bound(self) -> None:
+        unbound = _code("ERR_SLO_GENERATION_UNBOUND")
+        for label, case, expected in (
+            ("bundle declares no generation", {"bundle": {"generation": _DROP}}, [unbound]),
+            ("measurement declares no generation", {"measurement": {"generation": _DROP}}, [unbound]),
+            ("measurement unbound to cost-registry generation", {"measurement": {"operation_cost_generation": _DROP}}, [unbound]),
+            ("measurement against a stale cost-registry generation", {"measurement": {"operation_cost_generation": "gen:fss1:operation-cost-v0"}}, [ERR_STALE_GENERATION]),
+        ):
+            with self.subTest(case=label):
+                self.assert_fails(expected, **case)
+
+    def test_item3_validity_window_is_real(self) -> None:
+        window = _code("ERR_SLO_WINDOW_INVALID")
+
+        def win(started: object, finished: object) -> dict:
+            return {"measurement_window": {"started_at": started, "finished_at": finished}}
+
+        for label, measurement, expected in (
+            ("unparseable 'yesterday'", win("yesterday", "2026-09-01T01:00:00Z"), [window]),
+            ("zone-less instant", win("2026-09-01T00:00:00", "2026-09-01T01:00:00Z"), [window]),
+            ("finished before started", win("2026-09-01T01:00:00Z", "2026-09-01T00:00:00Z"), [window]),
+            ("window in the future", win("2026-09-03T00:00:00Z", "2026-09-03T01:00:00Z"), [window]),
+            ("older than allowed staleness", win("2026-06-01T00:00:00Z", "2026-06-01T01:00:00Z"), [ERR_STALE_GENERATION]),
+            ("no window", {"measurement_window": _DROP}, [window]),
+        ):
+            with self.subTest(case=label):
+                self.assert_fails(expected, measurement=measurement)
+
+    def test_item4_measurement_cannot_override_comparator(self) -> None:
+        override = _code("ERR_SLO_COMPARATOR_OVERRIDE")
+        self.assert_fails([override, ERR_CLAIM_LEVEL_EXCEEDED], measurement={"comparison": ">=", "actual": 2.0})
+        self.assert_fails([override], measurement={"comparator": "ge"})
+
+    def test_item5_non_numeric_or_rounded_only_actual_fails(self) -> None:
+        actual = _code("ERR_SLO_ACTUAL_INVALID")
+        for label, measurement, expected in (
+            ("string actual", {"actual": "1.2"}, [actual]),
+            ("boolean actual", {"actual": True}, [actual]),
+            ("rounded value only", {"actual": _DROP, "reported_rounded": 1.0}, [actual]),
+            ("rounded value never compared", {"actual": 1.54, "reported_rounded": 1.5}, [ERR_CLAIM_LEVEL_EXCEEDED]),
+            ("negative actual", {"actual": -0.5}, [actual]),
+        ):
+            with self.subTest(case=label):
+                self.assert_fails(expected, measurement=measurement)
+
+    def test_item6_target_comes_from_authoritative_slo_row(self) -> None:
+        target = _code("ERR_SLO_TARGET_UNBOUND")
+        for label, case, expected in (
+            ("measurement relaxes the target", {"measurement": {"target": 5.0, "actual": 3.0}}, [target, ERR_CLAIM_LEVEL_EXCEEDED]),
+            ("non-canonical target field", {"measurement": {"target_ms": 5000.0}}, [target]),
+            ("unit differs from the SLO unit", {"measurement": {"unit": "ms", "actual": 1200.0}}, [target]),
+            ("no unit", {"measurement": {"unit": _DROP}}, [target]),
+            (
+                "SLO row has no numeric threshold",
+                {
+                    "claim_id": "SLO-INGEST-001",
+                    "bundle": {"claim_id": "SLO-INGEST-001"},
+                    "measurement": {"slo_id": "SLO-INGEST-001", "operation_id": "COST-ACQUIRE-001", "target": 10.0, "unit": "ms", "actual": 8.0},
+                },
+                [target],
+            ),
+            (
+                "SLO id not in the registry",
+                {"claim_id": "SLO-NOPE-001", "bundle": {"claim_id": "SLO-NOPE-001"}, "measurement": {"slo_id": "SLO-NOPE-001"}},
+                [target, ERR_CLAIM_BINDING_MISMATCH],
+            ),
+        ):
+            with self.subTest(case=label):
+                self.assert_fails(expected, **case)
+
+    def test_item7_exactly_one_canonical_actual(self) -> None:
+        actual = _code("ERR_SLO_ACTUAL_INVALID")
+        self.assert_fails([actual], measurement={"actual": 9.0, "actual_ms": 1.0, "target": 1.5})
+        self.assert_fails([actual], measurement={"actual": 1.2, "achieved": 1.2})
+
+    def test_item8_class_comes_from_claim_row_not_bundle(self) -> None:
+        # (i) an SLO-row claim whose bundle relabels itself 'statistical' (never inspected)
+        # while its measurement misses the target.
+        self.assert_fails(
+            [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED],
+            measurement={"actual": 2.0},
+            bundle={"claim_class": "statistical", "retained_evidence": list(STATISTICAL_EVIDENCE)},
+        )
+        # (ii) a complete, valid 'proof' bundle bound to the SLO id.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_proof_fixture(
+                root,
+                model={"claim_ids": [SLO_CLAIM_ID]},
+                receipt={"claim_id": SLO_CLAIM_ID},
+                bundle={"claim_id": SLO_CLAIM_ID, "theorem": {"claim_id": SLO_CLAIM_ID, "statement": PROOF_THEOREM}},
+            )
+            ok, findings, _ = verify_slo_bundle(root, data, claim_level="verified")
+            self.assertFalse(ok, "a 'proof'-relabelled bundle for an SLO-row claim skipped the slo checks")
+            self.assertEqual(
+                error_code_set(findings),
+                sorted({ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED, _code("ERR_SLO_ENVIRONMENT_UNRETAINED")}),
+                [f"{f.code}: {f.message}" for f in findings],
+            )
+
+    def test_item8_relabel_end_to_end_through_slos_md_and_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            data = build_slo_fixture(
+                root,
+                measurement={"actual": 2.0},
+                bundle={"claim_class": "statistical", "retained_evidence": list(STATISTICAL_EVIDENCE)},
+            )
+            write_slo_bundle(root, data)
+            promote_slos_row(root, SLO_CLAIM_ID, SLO_BUNDLE_REL)
+            ok, findings, summary = audit_claim_proof_bundles(root, now=SLO_NOW)
+            self.assertFalse(ok, "relabelled SLO bundle passed the repository audit")
+            self.assertEqual(error_code_set(findings), sorted({ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED}))
+            self.assertEqual(summary["verified_bundles_count"], 0)
+            result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_item9_failed_measurement_and_unretained_environment_fail(self) -> None:
+        not_passed = _code("ERR_SLO_MEASUREMENT_NOT_PASSED")
+        env = _code("ERR_SLO_ENVIRONMENT_UNRETAINED")
+
+        def delete_env(root: Path) -> None:
+            (root / SLO_ENVIRONMENT_REL).unlink()
+
+        for label, case, expected in (
+            ("measurement status failed", {"measurement": {"status": "failed"}}, [not_passed]),
+            ("measurement declares no status", {"measurement": {"status": _DROP}}, [not_passed]),
+            ("no environment manifest retained", {"omit_roles": ("environment_manifest",)}, [env]),
+            ("environment manifest absent on disk", {"after": delete_env}, [env, ERR_PROOF_BUNDLE_NOT_FOUND]),
+            ("measurement not bound to the retained manifest", {"measurement": {"environment_manifest_digest": ZERO_DIGEST}}, [env]),
+            ("measurement declares no manifest binding", {"measurement": {"environment_manifest_digest": _DROP}}, [env]),
+        ):
+            with self.subTest(case=label):
+                self.assert_fails(expected, **case)
+
+    def test_item10_malformed_or_empty_registries_under_root_fail_closed(self) -> None:
+        registry = _code("ERR_SLO_REGISTRY_INVALID")
+
+        def put(rel: str, text: str):
+            def setup(root: Path) -> None:
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_text(text, encoding="utf-8")
+            return setup
+
+        cost = "architecture/operation_cost_registry.toml"
+        for label, setup in (
+            ("empty cost registry", put(cost, "")),
+            ("malformed cost registry", put(cost, "[[operation]\nid = \n")),
+            ("cost registry without operations", put(cost, 'generation = "gen:fss1:operation-cost-v1"\n')),
+            ("empty SLO registry", put("registries/SLOS.md", "")),
+            ("SLO registry without a table", put("registries/SLOS.md", "# SLO registry\n\nnothing here\n")),
+        ):
+            with self.subTest(case=label):
+                self.assert_fails([registry], setup=setup)
 
 
 # ---------------------------------------------------------------------------
