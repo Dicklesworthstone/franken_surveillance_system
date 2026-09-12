@@ -98,7 +98,8 @@ fn build_probe_affordance(
 }
 
 #[test]
-fn test_inv092_tiny_budget_fails_closed_never_drops_protected_world() -> Result<(), Box<dyn Error>> {
+fn test_inv092_tiny_budget_fails_closed_never_drops_protected_world() -> Result<(), Box<dyn Error>>
+{
     let anchor = LedgerAnchor::genesis("site:inv092:budget");
     let evidence_digest = ContentDigest::sha256(b"protected-world-evidence");
 
@@ -177,8 +178,7 @@ fn test_inv092_tiny_budget_fails_closed_never_drops_protected_world() -> Result<
     };
 
     // 1. Ample budget: protected world is retained in context pack.
-    let ample_publication =
-        project_reference_situation(situation.clone(), &test_spec(10_000)?)?;
+    let ample_publication = project_reference_situation(situation.clone(), &test_spec(10_000)?)?;
     assert_eq!(
         ample_publication.verify()?,
         ample_publication.publication_digest
@@ -486,7 +486,10 @@ fn test_inv092_warning_looking_redundant_is_preserved_while_exact_duplicate_is_d
 
     // Redundancy records must record the drop of the exact duplicate warning:
     let redundancy_records = publication.redundancy_records();
-    let warn_north_id = format!("context:at-risk:{}", ContentDigest::sha256(warn_north.as_bytes()));
+    let warn_north_id = format!(
+        "context:at-risk:{}",
+        ContentDigest::sha256(warn_north.as_bytes())
+    );
     let warn_dedup = redundancy_records
         .iter()
         .find(|r| r.dropped_item_id == warn_north_id);
@@ -496,7 +499,10 @@ fn test_inv092_warning_looking_redundant_is_preserved_while_exact_duplicate_is_d
     assert_eq!(warn_record.kind, "at_risk");
 
     // Syntactically similar warn_south was NOT deduplicated:
-    let warn_south_id = format!("context:at-risk:{}", ContentDigest::sha256(warn_south.as_bytes()));
+    let warn_south_id = format!(
+        "context:at-risk:{}",
+        ContentDigest::sha256(warn_south.as_bytes())
+    );
     assert!(
         !redundancy_records
             .iter()
@@ -515,7 +521,8 @@ fn test_inv092_warning_looking_redundant_is_preserved_while_exact_duplicate_is_d
 }
 
 #[test]
-fn test_inv092_planted_negative_verify_rejects_omitted_critical_item() -> Result<(), Box<dyn Error>> {
+fn test_inv092_planted_negative_verify_rejects_omitted_critical_item() -> Result<(), Box<dyn Error>>
+{
     let anchor = LedgerAnchor::genesis("site:inv092:planted");
     let evidence_digest = ContentDigest::sha256(b"planted-negative-evidence");
 
