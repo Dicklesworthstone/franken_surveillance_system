@@ -2,6 +2,11 @@
 
 This roadmap is an implementation-order guide. The bead graph, normative architecture, stable registries, qualification lanes, and release gates remain authoritative. A checked box here means the stated reference capability exists; it does not imply production qualification.
 
+The accepted [Blender twin integration plan](BLENDER_TWIN_INTEGRATION_PLAN.md) is the
+detailed companion for existing-model import, automatic camera registration, world
+tracking, and predictive handoff. Its [implementation crosswalk](docs/BLENDER_TWIN_IMPLEMENTATION_TASKS.md)
+links the work to existing FSS requirements and beads without changing their status.
+
 ## Phase 0 — Constitutional repository and deterministic kernel
 
 - [x] Rust 2024 workspace on the pinned toolchain.
@@ -58,6 +63,12 @@ This roadmap is an implementation-order guide. The bead graph, normative archite
 - [ ] Pure-Rust model package verification, execution, batching, calibration, generation transition, and fallback.
 - [ ] Certified graph/search algorithms with witnesses, incremental maintenance, and deterministic fallback.
 - [ ] Owner-authorized drone capture, explicit flight control boundary, geofence, battery, and evidence custody.
+- [ ] Existing Blender twin import into native immutable visual/geometric/behavioral representations.
+- [ ] Evidence-linked localization atlas and robust 2D-to-3D camera registration.
+- [ ] Terrain-aware world tracks retaining class, posture, support, and shared uncertainty.
+- [ ] Next-camera, occlusion-emergence/frame-region, and capture/availability-time forecasts.
+- [ ] Human/animal/unknown trajectory priors with protected off-path alternatives.
+- [ ] Live twin/calibration/clock/coverage invalidation and native inspection views.
 - [ ] Interoperability laboratory campaigns against retained foreign oracles without admitting foreign runtimes into production.
 
 ## Phase 5 — Security, privacy, retention, and operations
@@ -79,7 +90,7 @@ This roadmap is an implementation-order guide. The bead graph, normative archite
 
 ## Near-term critical path
 
-The current optimal sequence is:
+The existing agent/custody critical path remains:
 
 1. finish FSS-210 schema/registry and context-pack binding;
 2. implement durable session and symbol-table semantics over the existing exact cursor and hydration contracts;
@@ -87,3 +98,23 @@ The current optimal sequence is:
 4. prove cross-surface canonical equivalence before adding independent presentation logic;
 5. integrate persistent custody, retention, and deletion before treating H3 as production source access;
 6. accumulate retained QL-AGENT evidence and advance GATE-115 only when all required dimensions are terminal.
+
+### Parallel twin-to-handoff critical path
+
+Prioritize these vertical capabilities alongside the existing agent/custody work,
+using reference fixtures until live media and runtime prerequisites qualify:
+
+1. freeze the neutral export contract and import an actual evaluated scene;
+2. prove coordinate conversions, support queries, and robust supplied-correspondence PnP;
+3. automate matching with the source-image/landmark atlas and bounded alternatives;
+4. retain 2D observations while estimating terrain-aware world tracks;
+5. demonstrate next-camera, frame-region, and time predictions on two-camera recordings;
+6. add class-conditioned route priors without deleting protected off-path hypotheses;
+7. qualify live invalidation, privacy, cancellation, resource pressure, and Blender-absent operation.
+
+Existing-twin installation does not require another reconstruction or simultaneous
+drone flight when unchanged static landmarks suffice. The manual shuttle remains
+available for missing geometry, scale, or time evidence. Reconcile affected bead
+dependencies explicitly before implementation; imported data does not bypass
+calibration, custody, or GATE-070/080/115 evidence. All new runtime items above are
+unchecked because adopting a plan is not implementing or qualifying its features.
