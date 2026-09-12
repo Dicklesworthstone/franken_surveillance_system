@@ -446,7 +446,8 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
     let _ = fs::remove_file(&ledger_path);
 
     let (plan, _) = setup_alert_plan(&ledger_path)?;
-    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_redispatch");
+    let mut provider =
+        ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_redispatch");
 
     // Session 1: Prepare and commit effect to durable journal, then simulate crash
     // immediately between Step 1 (commit) and Step 2 (provider dispatch).
@@ -489,7 +490,10 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
         )?;
         assert_eq!(redispatch_receipt.state, EffectState::AdapterAccepted);
 
-        let provider_proof = provider.lookup(&plan.intent)?.unwrap().receipt_digest();
+        let provider_proof = provider
+            .lookup(&plan.intent)?
+            .ok_or("missing provider receipt")?
+            .receipt_digest();
         let _ = journal.observe_alert(&plan, provider_proof, TimestampNs(215), &provider)?;
 
         // Verification must be able to complete normally
@@ -516,11 +520,15 @@ fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>
     let _ = fs::remove_file(&ledger_path);
 
     let (plan, _) = setup_alert_plan(&ledger_path)?;
-    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_reconcile");
+    let mut provider =
+        ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_reconcile");
 
     // Provider external dispatch succeeded, but crash occurred before journal recorded AdapterAccepted
     let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
-    let provider_proof = provider.lookup(&plan.intent)?.unwrap().receipt_digest();
+    let provider_proof = provider
+        .lookup(&plan.intent)?
+        .ok_or("missing provider receipt")?
+        .receipt_digest();
 
     // Session 1: Committed on disk
     {
@@ -568,7 +576,8 @@ fn test_crash_after_commit_recovery_via_reconcile_failed() -> Result<(), Box<dyn
     let _ = fs::remove_file(&ledger_path);
 
     let (plan, _) = setup_alert_plan(&ledger_path)?;
-    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_fail");
+    let mut provider =
+        ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_fail");
 
     // Provider recorded external failure
     let fail_receipt = provider.record_failure(&plan.intent, "carrier_gateway_timeout")?;
@@ -627,7 +636,8 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
     let _ = fs::remove_file(&ledger_path);
 
     let (plan, _) = setup_alert_plan(&ledger_path)?;
-    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:reconcile_accepted");
+    let mut provider =
+        ReferenceAlertProvider::with_provider_id("provider:test:durable:reconcile_accepted");
 
     // Session 1: Prepare and dispatch alert; provider accepts delivery
     {

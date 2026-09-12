@@ -792,7 +792,7 @@ impl EffectJournal {
             }
         }
         if next == EffectState::Failed
-            && (result_digest.is_none() || error_code.as_deref().is_none_or(str::is_empty))
+            && (result_digest.is_none() || error_code.is_none_or(str::is_empty))
         {
             return Err(ContractError::EvidenceRequired);
         }
