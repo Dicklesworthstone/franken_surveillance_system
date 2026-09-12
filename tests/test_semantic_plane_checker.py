@@ -573,5 +573,206 @@ impl From<Belief> for EffectAuthority {
             self.assertIn(ERR_REGISTRY_INVALID, codes)
 
 
+# Fallbacks for NEG-003 diagnostic codes during test execution
+ERR_MODEL_OUTPUT_REACHES_EFFECT = getattr(
+    sys.modules.get("semantic_plane_checker"),
+    "ERR_MODEL_OUTPUT_REACHES_EFFECT",
+    "ERR-SEMPLANE-MODEL-OUTPUT-REACHES-EFFECT-001",
+)
+ERR_SINGLE_MODEL_CORROBORATION = getattr(
+    sys.modules.get("semantic_plane_checker"),
+    "ERR_SINGLE_MODEL_CORROBORATION",
+    "ERR-SEMPLANE-SINGLE-MODEL-CORROBORATION-001",
+)
+ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE = getattr(
+    sys.modules.get("semantic_plane_checker"),
+    "ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE",
+    "ERR-SEMPLANE-ABSTENTION-AS-NEGATIVE-EVIDENCE-001",
+)
+ERR_MUTABLE_MODEL_GENERATION = getattr(
+    sys.modules.get("semantic_plane_checker"),
+    "ERR_MUTABLE_MODEL_GENERATION",
+    "ERR-SEMPLANE-MUTABLE-MODEL-GENERATION-001",
+)
+
+
+class TestPlantedNegativeDecomposedModelCascade(unittest.TestCase):
+    """Planted-negative tests enforcing NEG-003 decomposed model-cascade constraints.
+
+    NEG-003 mandates:
+    1. A VLM/model output can never reach an effect type directly.
+    2. A single model is never independent corroboration (policy check: min_sources >= 2).
+    3. Model abstention/failure is never negative evidence (requires CoverageWitness).
+    4. Model generations stay immutable (no 'latest' or mutable alias).
+    """
+
+    def test_vlm_or_model_output_directly_reaching_effect_fails_closed(self) -> None:
+        """A VLM or model output type directly converting to an effect type fails closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src_dir = tmp_root / "crates" / "fss-cognition" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            bad_module = src_dir / "direct_vlm_effect.rs"
+            bad_module.write_text(
+                """//! Forbidden direct VLM-to-effect bridge
+pub struct VlmOutput {
+    pub text: String,
+    pub score: f64,
+}
+
+pub struct EffectIntent {
+    pub action: String,
+}
+
+impl From<VlmOutput> for EffectIntent {
+    fn from(vlm: VlmOutput) -> Self {
+        EffectIntent { action: vlm.text }
+    }
+}
+
+pub fn trigger_alert_directly(vlm: VlmOutput) -> EffectIntent {
+    EffectIntent { action: vlm.text }
+}
+""",
+                encoding="utf-8",
+            )
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {
+                        "crates/fss-cognition/src/direct_vlm_effect.rs": "cognition"
+                    },
+                    "types": {
+                        "VlmOutput": {"file": "crates/fss-cognition/src/direct_vlm_effect.rs", "plane": "cognition"},
+                        "EffectIntent": {"file": "crates/fss-cognition/src/direct_vlm_effect.rs", "plane": "effect"}
+                    },
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Direct VLM-to-effect bridge must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_MODEL_OUTPUT_REACHES_EFFECT, codes)
+
+    def test_single_model_corroboration_policy_fails_closed(self) -> None:
+        """A policy or configuration permitting single-model corroboration (< 2 sources) fails closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            arch_dir = tmp_root / "architecture"
+            arch_dir.mkdir(parents=True, exist_ok=True)
+            # Corroboration policy declaring single-model corroboration
+            (arch_dir / "corroboration_policy.json").write_text(
+                json.dumps({
+                    "schema": "fss.corroboration_policy.v1",
+                    "corroboration": {
+                        "min_sources": 1,
+                        "allow_single_model": True
+                    }
+                }),
+                encoding="utf-8",
+            )
+            (arch_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {},
+                    "types": {},
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Single-model corroboration policy (min_sources < 2) must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_SINGLE_MODEL_CORROBORATION, codes)
+
+    def test_model_abstention_as_negative_evidence_fails_closed(self) -> None:
+        """Coercing model abstention or failure into negative evidence / CoverageWitness fails closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src_dir = tmp_root / "crates" / "fss-cognition" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            bad_module = src_dir / "abstention_leak.rs"
+            bad_module.write_text(
+                """//! Prohibited: treating model abstention as absence
+pub struct MockModelOutcome;
+pub struct CoverageWitness;
+
+pub fn abstention_to_coverage_witness(_outcome: MockModelOutcome) -> CoverageWitness {
+    CoverageWitness
+}
+
+impl From<MockModelOutcome> for CoverageWitness {
+    fn from(_: MockModelOutcome) -> Self {
+        CoverageWitness
+    }
+}
+""",
+                encoding="utf-8",
+            )
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {
+                        "crates/fss-cognition/src/abstention_leak.rs": "cognition"
+                    },
+                    "types": {
+                        "MockModelOutcome": {"file": "crates/fss-cognition/src/abstention_leak.rs", "plane": "cognition"},
+                        "CoverageWitness": {"file": "crates/fss-cognition/src/abstention_leak.rs", "plane": "authority"}
+                    },
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Treating model abstention as negative evidence must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE, codes)
+
+    def test_mutable_model_generation_fails_closed(self) -> None:
+        """Declaring or referencing a mutable model generation alias (e.g. 'latest') fails closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            arch_dir = tmp_root / "architecture"
+            arch_dir.mkdir(parents=True, exist_ok=True)
+            # Model runtime registry with forbidden mutable generation
+            (arch_dir / "model_runtime_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.model_runtime_registry.v1",
+                    "asOf": "2026-08-31",
+                    "models": [
+                        {
+                            "name": "yolo-frontier",
+                            "generation": "yolo26:latest",
+                            "status": "active"
+                        }
+                    ]
+                }),
+                encoding="utf-8",
+            )
+            (arch_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {},
+                    "types": {},
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Mutable model generation ('latest') must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_MUTABLE_MODEL_GENERATION, codes)
+
+
 if __name__ == "__main__":
     unittest.main()
+
