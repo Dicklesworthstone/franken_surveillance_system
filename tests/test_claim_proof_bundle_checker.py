@@ -215,7 +215,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = Path(tmpdir)
             write_json(root / BOUND_BUNDLE_REL, seal(build_bound_fixture(root)))
-            findings, stats = scan_with_stats(root, class_table(f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{BOUND_BUNDLE_REL}` |"))
+            findings, stats = scan_with_stats(root, class_table(f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{BOUND_BUNDLE_REL}` | {BOUND_GENERATION} |"))
             self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
             self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (1, 1, 1))
 
@@ -3331,6 +3331,12 @@ def build_bound_fixture(
         ],
         "sensitivity": [{"parameter": "Q_max", "partial": "+10 ms per additional queued frame"}],
         "invalidators": ["Q_max raised above 8", "decoder WCET exceeds 40 ms"],
+        "inputs": {
+            "D_decode": {"value": 40.0, "units": "ms"},
+            "Q_max": {"value": 8, "units": "frames"},
+            "D_frame": {"value": 10.0, "units": "ms"},
+        },
+        "formula": "D_decode + Q_max * D_frame",
     }
     for key, value in (derivation or {}).items():
         if value is _DROP:
@@ -3466,10 +3472,14 @@ class TestBoundedModelClaimClassRealization(unittest.TestCase):
         self.assertRefused(self._run(bound={"value": 119.999}), [_code("ERR_BOUND_TIGHTER_THAN_DERIVATION")])
 
     def test_planted_lower_bound_tighter_than_derivation_fails(self) -> None:
-        expression = "A_archive >= 1 - P_loss"
+        expression = "A_archive >= 100 - P_loss"
         result = self._run(
-            bound={"expression": expression, "comparator": ">=", "value": 0.999, "units": "ratio"},
-            derivation={"expression": expression, "comparator": ">=", "derived_value": 0.99, "units": "ratio"},
+            bound={"expression": expression, "comparator": ">=", "value": 99.95, "units": "%"},
+            derivation={
+                "expression": expression, "comparator": ">=", "derived_value": 99.9, "units": "%",
+                "inputs": {"P_loss": {"value": 0.1, "units": "%"}}, "formula": "100 - P_loss",
+                "sensitivity": [{"parameter": "P_loss", "partial": "-1 % availability per 1 % of loss"}],
+            },
         )
         self.assertRefused(result, [_code("ERR_BOUND_TIGHTER_THAN_DERIVATION")])
 
@@ -4069,6 +4079,120 @@ class TestClassReviewItemsAtoD(unittest.TestCase):
             )
             self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
             self.assertEqual(findings, [])
+
+
+# ---------------------------------------------------------------------------
+# 'bounded_model' independent-review findings 1-5 (fss-x4a.30.87.3)
+# ---------------------------------------------------------------------------
+
+
+class TestBoundedModelReviewFindings(unittest.TestCase):
+    """Each 'bounded_model' bypass from the independent review fails closed with an exact finding-id set."""
+
+    def _run(self, claim_generation: object = _DROP, **kwargs: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_bound_fixture(root, **kwargs)
+            return verify_class_bundle(root, data, BOUND_CLAIM_ID, claim_generation=claim_generation)
+
+    def assertRefused(self, result, expected: list[str]) -> None:
+        is_valid, findings, _ = result
+        self.assertFalse(is_valid, "planted bypass was accepted: " + repr([f"{f.code}: {f.message}" for f in findings]))
+        self.assertEqual(error_code_set(findings), sorted(set(expected)), [f"{f.code}: {f.message}" for f in findings])
+
+    def test_review_finding_ids_are_registered(self) -> None:
+        errors_md = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8")
+        for name, code in {
+            "ERR_BOUND_VALUE_OUT_OF_DOMAIN": "ERR-CLAIM-BOUND-VALUE-OUT-OF-DOMAIN-001",
+            "ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE": "ERR-CLAIM-BOUND-DERIVATION-NOT-RECOMPUTABLE-001",
+        }.items():
+            self.assertEqual(_code(name), code)
+            self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+            self.assertEqual(errors_md.count(f"| `{code}` |"), 1, code)
+
+    def test_complete_recomputable_derivation_passes(self) -> None:
+        is_valid, findings, _ = self._run()
+        self.assertTrue(is_valid, [f"{f.code}: {f.message}" for f in findings])
+        self.assertEqual(findings, [])
+
+    # (1) Registered units only ---------------------------------------------------
+
+    def test_1_placeholder_or_unregistered_units_fail(self) -> None:
+        for units in ("none", "-", "unknown", "n/a", "?", "TBD", "MS", "ratio"):
+            with self.subTest(units=units):
+                result = self._run(bound={"units": units}, derivation={"units": units})
+                self.assertRefused(result, [_code("ERR_BOUND_UNITS_MISSING")])
+
+    def test_1_unregistered_input_units_fail(self) -> None:
+        inputs = {"D_decode": {"value": 40.0, "units": "none"}, "Q_max": {"value": 8, "units": "frames"}, "D_frame": {"value": 10.0, "units": "ms"}}
+        self.assertRefused(self._run(derivation={"inputs": inputs}), [_code("ERR_BOUND_UNITS_MISSING")])
+
+    # (2) Case-distinct and invisible-character duplicate assumption ids -------
+
+    def test_2_case_distinct_duplicate_assumption_ids_fail(self) -> None:
+        assumptions = [dict(a) for a in BOUND_ASSUMPTIONS] + [{"id": "assume-queue-bound", "statement": "the queue is bounded again"}]
+        self.assertRefused(self._run(bundle={"assumptions": assumptions}), [_code("ERR_CLAIM_ASSUMPTIONS_MISSING")])
+
+    def test_2_assumption_id_with_non_breaking_space_fails(self) -> None:
+        assumptions = [{"id": "ASSUME-QUEUE-BOUND" + NBSP, "statement": BOUND_ASSUMPTIONS[0]["statement"]}, dict(BOUND_ASSUMPTIONS[1])]
+        self.assertRefused(self._run(bundle={"assumptions": assumptions}), [_code("ERR_CLAIM_ASSUMPTIONS_MISSING")])
+
+    # (3) Substantive derivation content --------------------------------------
+
+    def test_3_trivial_derivation_content_fails(self) -> None:
+        for label, derivation, code_name in (
+            ("steps ['.']", {"steps": ["."]}, "ERR_BOUND_DERIVATION_UNBOUND"),
+            ("steps ['none']", {"steps": ["none"]}, "ERR_BOUND_DERIVATION_UNBOUND"),
+            ("sensitivity ['none']", {"sensitivity": ["none"]}, "ERR_BOUND_SENSITIVITY_MISSING"),
+            ("sensitivity [{'x': None}]", {"sensitivity": [{"x": None}]}, "ERR_BOUND_SENSITIVITY_MISSING"),
+            ("sensitivity on a non-input", {"sensitivity": [{"parameter": "Z_unknown", "partial": "+1 ms per unit"}]}, "ERR_BOUND_SENSITIVITY_MISSING"),
+            ("sensitivity without effect", {"sensitivity": [{"parameter": "Q_max", "partial": "?"}]}, "ERR_BOUND_SENSITIVITY_MISSING"),
+            ("invalidators ['none']", {"invalidators": ["none"]}, "ERR_BOUND_SENSITIVITY_MISSING"),
+            ("invalidators ['TBD', '-']", {"invalidators": ["TBD", "-"]}, "ERR_BOUND_SENSITIVITY_MISSING"),
+        ):
+            with self.subTest(case=label):
+                self.assertRefused(self._run(derivation=derivation), [_code(code_name)])
+
+    # (4) Values inside their unit's domain -------------------------------------
+
+    def test_4_negative_latency_bound_fails(self) -> None:
+        self.assertRefused(self._run(bound={"value": -5.0}), [_code("ERR_BOUND_VALUE_OUT_OF_DOMAIN")])
+
+    def test_4_percent_above_one_hundred_fails(self) -> None:
+        result = self._run(bound={"units": "%", "value": 150.0}, derivation={"units": "%"})
+        self.assertRefused(result, [_code("ERR_BOUND_VALUE_OUT_OF_DOMAIN")])
+
+    def test_4_negative_input_fails(self) -> None:
+        inputs = {"D_decode": {"value": -40.0, "units": "ms"}, "Q_max": {"value": 8, "units": "frames"}, "D_frame": {"value": 20.0, "units": "ms"}}
+        self.assertRefused(self._run(derivation={"inputs": inputs}), [_code("ERR_BOUND_VALUE_OUT_OF_DOMAIN")])
+
+    # (5) The derived value is recomputed from recorded inputs ------------------
+
+    def test_5_self_asserted_derived_value_fails(self) -> None:
+        self.assertRefused(self._run(derivation={"derived_value": 100.0}, bound={"value": 100.0}), [_code("ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE")])
+
+    def test_5_derivation_without_inputs_or_formula_fails(self) -> None:
+        for label, derivation in (
+            ("no inputs", {"inputs": _DROP}),
+            ("empty inputs", {"inputs": {}}),
+            ("no formula", {"formula": _DROP}),
+            ("formula names an unrecorded input", {"formula": "D_decode + Q_max * D_frame + X"}),
+            ("formula is not arithmetic", {"formula": "__import__('os').getpid()"}),
+            ("formula divides by zero", {"formula": "D_decode / (Q_max - Q_max)"}),
+            ("formula is not the derived expression", {"formula": "D_frame * Q_max + D_decode"}),
+        ):
+            with self.subTest(case=label):
+                self.assertRefused(self._run(derivation=derivation), [_code("ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE")])
+
+    # Generation bound to the claim row (as for 'proof') -----------------------
+
+    def test_self_consistent_old_generation_fails(self) -> None:
+        stale = "gen:fss1:bound-ingest-v0"
+        result = self._run(bundle={"generation": stale}, derivation={"generation": stale})
+        self.assertRefused(result, [ERR_STALE_GENERATION])
+
+    def test_claim_row_without_generation_fails(self) -> None:
+        self.assertRefused(self._run(claim_generation=None), [_code("ERR_CLAIM_GENERATION_UNBOUND")])
 
 if __name__ == "__main__":
     unittest.main()
