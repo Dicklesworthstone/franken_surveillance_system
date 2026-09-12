@@ -1,0 +1,1340 @@
+#![forbid(unsafe_code)]
+//! Event evidence graph and revision store (FSS-081).
+//!
+//! Provides an append-only, deterministic event evidence graph and revision store:
+//! - All state transitions are append-only commits pinned to an immutable basis `LedgerAnchor`.
+//! - Revisions never rewrite history; corrections supersede earlier revisions.
+//! - Derived state (lineages, graph index, contradictions, unresolved worlds) is fully
+//!   rebuildable from canonical history.
+//! - Contradictions and unresolved worlds remain first-class and cannot be pruned by ranking.
+//! - Reads outside certified coverage return typed `NotObservable` states, never absence.
+//! - Hard size and capacity bounds, tested at exact bound and bound+1.
+
+use core::fmt;
+use std::collections::{BTreeMap, BTreeSet};
+
+use crate::belief::{BeliefError, Contradiction};
+use crate::canonical::{CanonicalEncode, CanonicalEncoder};
+use crate::contract::Completeness;
+use crate::digest::ContentDigest;
+use crate::event::{
+    EventDecodeError, EventHypothesis, EventLineage, EventState,
+    EventTransitionError, EventTransitionParams, EvidenceGraph, MAX_LINEAGE_DEPTH,
+};
+use crate::evidence::{
+    CoverageContinuity, CoverageStopReason, CoverageWitness, LedgerAnchor,
+};
+use crate::ids::EventId;
+use crate::time::TimestampNs;
+
+/// Maximum number of distinct events retained in one store instance.
+pub const MAX_STORE_EVENTS: usize = 10_000;
+
+/// Maximum number of commits retained in one store instance history.
+pub const MAX_STORE_COMMITS: usize = 100_000;
+
+/// Maximum lineage depth (number of revisions per event).
+pub const MAX_STORE_LINEAGE_DEPTH: usize = MAX_LINEAGE_DEPTH;
+
+/// Maximum number of evidence graphs attached to a single revision.
+pub const MAX_GRAPHS_PER_REVISION: usize = 64;
+
+/// Maximum number of first-class contradictions recorded against a single event.
+pub const MAX_CONTRADICTIONS_PER_EVENT: usize = 64;
+
+/// Maximum number of coverage witnesses registered in one store instance.
+pub const MAX_STORE_COVERAGE_WITNESSES: usize = 1_024;
+
+/// Canonical digest domain for event store commits.
+pub const EVENT_STORE_COMMIT_DOMAIN: &str = "fss.event_store_commit.v1";
+
+/// Canonical digest domain for event store state roots.
+pub const EVENT_STORE_STATE_DOMAIN: &str = "fss.event_store_state.v1";
+
+/// Typed error conditions for event revision store operations.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EventStoreError {
+    /// Commit attempted against a stale or non-matching basis anchor.
+    StaleAnchor {
+        /// Expected basis anchor.
+        expected: LedgerAnchor,
+        /// Actual anchor provided by caller.
+        actual: LedgerAnchor,
+    },
+    /// Event lineage depth strictly exceeds hard bound.
+    LineageDepthExceeded {
+        /// Event identifier.
+        event_id: EventId,
+        /// Configured maximum depth.
+        limit: usize,
+        /// Actual attempted depth.
+        actual: usize,
+    },
+    /// Total events count strictly exceeds store capacity bound.
+    StoreEventCapacityExceeded {
+        /// Configured maximum events.
+        limit: usize,
+        /// Actual attempted count.
+        actual: usize,
+    },
+    /// Total commits count strictly exceeds store capacity bound.
+    StoreCommitCapacityExceeded {
+        /// Configured maximum commits.
+        limit: usize,
+        /// Actual attempted count.
+        actual: usize,
+    },
+    /// Contradictions count for an event strictly exceeds hard bound.
+    ContradictionCapacityExceeded {
+        /// Event identifier.
+        event_id: EventId,
+        /// Configured limit.
+        limit: usize,
+        /// Actual count.
+        actual: usize,
+    },
+    /// Evidence graphs count for a revision strictly exceeds hard bound.
+    GraphCapacityExceeded {
+        /// Event identifier.
+        event_id: EventId,
+        /// Revision number.
+        revision: u64,
+        /// Configured limit.
+        limit: usize,
+        /// Actual count.
+        actual: usize,
+    },
+    /// Coverage witness count strictly exceeds store capacity bound.
+    CoverageWitnessCapacityExceeded {
+        /// Configured limit.
+        limit: usize,
+        /// Actual count.
+        actual: usize,
+    },
+    /// Attempted revision number is not strictly monotonic.
+    NonMonotonicRevision {
+        /// Event identifier.
+        event_id: EventId,
+        /// Expected next revision number.
+        expected: u64,
+        /// Actual attempted revision number.
+        actual: u64,
+    },
+    /// Genesis revision must have revision number 1.
+    GenesisRevisionNotOne {
+        /// Event identifier.
+        event_id: EventId,
+        /// Actual attempted revision number.
+        actual: u64,
+    },
+    /// Genesis revision must begin in Hypothesized state.
+    GenesisStateNotHypothesized {
+        /// Event identifier.
+        event_id: EventId,
+        /// Actual attempted state.
+        state: EventState,
+    },
+    /// Genesis revision cannot supersede a prior revision.
+    GenesisHasSupersedes {
+        /// Event identifier.
+        event_id: EventId,
+    },
+    /// Superseding revision digest link does not match prior revision digest.
+    SupersedesDigestMismatch {
+        /// Event identifier.
+        event_id: EventId,
+        /// Expected digest of prior revision.
+        expected: ContentDigest,
+        /// Actual declared supersedes digest.
+        actual: Option<ContentDigest>,
+    },
+    /// Event is in a terminal state (Resolved or Rejected) and cannot be superseded.
+    TerminalStateImmutable {
+        /// Event identifier.
+        event_id: EventId,
+        /// Terminal state reached.
+        state: EventState,
+    },
+    /// State machine transition is not permitted.
+    IllegalStateTransition {
+        /// Event identifier.
+        event_id: EventId,
+        /// Transition failure detail.
+        detail: EventTransitionError,
+    },
+    /// Event was not found in the store.
+    EventNotFound(EventId),
+    /// Target revision not found for event.
+    RevisionNotFound {
+        /// Event identifier.
+        event_id: EventId,
+        /// Target revision number.
+        revision: u64,
+    },
+    /// Duplicate evidence graph identifier already committed.
+    DuplicateGraphId(String),
+    /// Commit sequence is not dense and monotonic.
+    SequenceNotMonotonic {
+        /// Expected sequence number.
+        expected: u64,
+        /// Actual sequence number.
+        actual: u64,
+    },
+    /// Underlying event hypothesis failed validation.
+    InvalidHypothesis(EventDecodeError),
+    /// Underlying evidence graph failed validation.
+    InvalidEvidenceGraph(EventDecodeError),
+    /// Underlying contradiction failed validation.
+    InvalidContradiction(BeliefError),
+    /// Coverage domain string cannot be empty.
+    EmptyCoverageDomain,
+}
+
+impl fmt::Display for EventStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StaleAnchor { expected, actual } => {
+                write!(
+                    f,
+                    "event store commit rejected against stale anchor: expected seq {}, actual seq {}",
+                    expected.commit_sequence, actual.commit_sequence
+                )
+            }
+            Self::LineageDepthExceeded {
+                event_id,
+                limit,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "event {event_id} lineage depth {actual} exceeds limit {limit}"
+                )
+            }
+            Self::StoreEventCapacityExceeded { limit, actual } => {
+                write!(
+                    f,
+                    "event store capacity exceeded: {actual} events > limit {limit}"
+                )
+            }
+            Self::StoreCommitCapacityExceeded { limit, actual } => {
+                write!(
+                    f,
+                    "event store commit capacity exceeded: {actual} commits > limit {limit}"
+                )
+            }
+            Self::ContradictionCapacityExceeded {
+                event_id,
+                limit,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "event {event_id} contradiction capacity exceeded: {actual} > limit {limit}"
+                )
+            }
+            Self::GraphCapacityExceeded {
+                event_id,
+                revision,
+                limit,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "event {event_id} rev {revision} graph capacity exceeded: {actual} > limit {limit}"
+                )
+            }
+            Self::CoverageWitnessCapacityExceeded { limit, actual } => {
+                write!(
+                    f,
+                    "coverage witness capacity exceeded: {actual} > limit {limit}"
+                )
+            }
+            Self::NonMonotonicRevision {
+                event_id,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "event {event_id} revision not monotonic: expected {expected}, actual {actual}"
+                )
+            }
+            Self::GenesisRevisionNotOne { event_id, actual } => {
+                write!(
+                    f,
+                    "event {event_id} genesis revision must be 1, actual {actual}"
+                )
+            }
+            Self::GenesisStateNotHypothesized { event_id, state } => {
+                write!(
+                    f,
+                    "event {event_id} genesis revision must begin in Hypothesized, actual {state:?}"
+                )
+            }
+            Self::GenesisHasSupersedes { event_id } => {
+                write!(
+                    f,
+                    "event {event_id} genesis revision cannot declare a superseded digest"
+                )
+            }
+            Self::SupersedesDigestMismatch {
+                event_id,
+                expected,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "event {event_id} supersedes digest mismatch: expected {expected}, found {actual:?}"
+                )
+            }
+            Self::TerminalStateImmutable { event_id, state } => {
+                write!(
+                    f,
+                    "event {event_id} is in terminal state {state:?} and cannot be superseded"
+                )
+            }
+            Self::IllegalStateTransition { event_id, detail } => {
+                write!(f, "event {event_id} illegal transition: {detail}")
+            }
+            Self::EventNotFound(event_id) => {
+                write!(f, "event not found: {event_id}")
+            }
+            Self::RevisionNotFound { event_id, revision } => {
+                write!(f, "revision {revision} not found for event {event_id}")
+            }
+            Self::DuplicateGraphId(id) => {
+                write!(f, "duplicate evidence graph id: {id}")
+            }
+            Self::SequenceNotMonotonic { expected, actual } => {
+                write!(
+                    f,
+                    "commit sequence not monotonic: expected {expected}, actual {actual}"
+                )
+            }
+            Self::InvalidHypothesis(err) => {
+                write!(f, "invalid event hypothesis: {err:?}")
+            }
+            Self::InvalidEvidenceGraph(err) => {
+                write!(f, "invalid evidence graph: {err:?}")
+            }
+            Self::InvalidContradiction(err) => {
+                write!(f, "invalid contradiction: {err}")
+            }
+            Self::EmptyCoverageDomain => {
+                write!(f, "coverage domain string cannot be empty")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EventStoreError {}
+
+/// One typed mutation entry appended to the store's canonical log.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventStoreEntry {
+    /// Genesis event revision (revision 1, Hypothesized).
+    GenesisRevision {
+        /// Genesis event hypothesis.
+        revision: EventHypothesis,
+        /// Coverage domain in which this event originated.
+        coverage_domain: String,
+    },
+    /// Superseding event revision (revision > 1).
+    SupersedeRevision {
+        /// New superseding event hypothesis.
+        revision: EventHypothesis,
+    },
+    /// Evidence graph attachment to an existing event revision.
+    AttachEvidenceGraph {
+        /// Validated evidence graph.
+        graph: EvidenceGraph,
+    },
+    /// First-class contradiction recorded against an event.
+    RecordContradiction {
+        /// Event identifier.
+        event_id: EventId,
+        /// Physical contradiction details.
+        contradiction: Contradiction,
+    },
+    /// Explicit coverage witness registration.
+    RegisterCoverageWitness {
+        /// Validated coverage witness.
+        witness: CoverageWitness,
+    },
+}
+
+impl CanonicalEncode for EventStoreEntry {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        match self {
+            Self::GenesisRevision {
+                revision,
+                coverage_domain,
+            } => {
+                encoder.u8(1);
+                revision.encode_canonical(encoder);
+                encoder.text(coverage_domain);
+            }
+            Self::SupersedeRevision { revision } => {
+                encoder.u8(2);
+                revision.encode_canonical(encoder);
+            }
+            Self::AttachEvidenceGraph { graph } => {
+                encoder.u8(3);
+                graph.encode_canonical(encoder);
+            }
+            Self::RecordContradiction {
+                event_id,
+                contradiction,
+            } => {
+                encoder.u8(4);
+                event_id.encode_canonical(encoder);
+                contradiction.encode_canonical(encoder);
+            }
+            Self::RegisterCoverageWitness { witness } => {
+                encoder.u8(5);
+                witness.encode_canonical(encoder);
+            }
+        }
+    }
+}
+
+/// One immutable commit in the append-only canonical history of the store.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventStoreCommit {
+    /// Monotonic 1-based commit sequence number.
+    pub sequence: u64,
+    /// Basis ledger anchor before applying this commit.
+    pub basis_anchor: LedgerAnchor,
+    /// Resulting ledger anchor after applying this commit.
+    pub new_anchor: LedgerAnchor,
+    /// Host receive or commit timestamp.
+    pub commit_time: TimestampNs,
+    /// Typed mutation payload.
+    pub entry: EventStoreEntry,
+    /// Canonical content digest over this commit.
+    pub commit_digest: ContentDigest,
+}
+
+impl EventStoreCommit {
+    /// Computes the canonical digest for a commit.
+    #[must_use]
+    pub fn compute_digest(
+        sequence: u64,
+        basis_anchor: &LedgerAnchor,
+        new_anchor: &LedgerAnchor,
+        commit_time: TimestampNs,
+        entry: &EventStoreEntry,
+    ) -> ContentDigest {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text(EVENT_STORE_COMMIT_DOMAIN);
+        encoder.u64(sequence);
+        basis_anchor.encode_canonical(&mut encoder);
+        new_anchor.encode_canonical(&mut encoder);
+        commit_time.encode_canonical(&mut encoder);
+        entry.encode_canonical(&mut encoder);
+        ContentDigest::sha256(&encoder.finish())
+    }
+}
+
+impl CanonicalEncode for EventStoreCommit {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(EVENT_STORE_COMMIT_DOMAIN);
+        encoder.u64(self.sequence);
+        self.basis_anchor.encode_canonical(encoder);
+        self.new_anchor.encode_canonical(encoder);
+        self.commit_time.encode_canonical(encoder);
+        self.entry.encode_canonical(encoder);
+        encoder.digest(self.commit_digest);
+    }
+}
+
+/// Specific reason why a read of an event, lineage, or graph is not observable.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NotObservableReason {
+    /// No coverage witness is registered for the requested domain.
+    NoCoverageWitness,
+    /// The registered coverage witness has gaps in its continuity window.
+    CoverageWitnessGapped,
+    /// The coverage witness is incomplete or did not certify complete evaluation.
+    CoverageWitnessUncertified,
+    /// The queried domain is outside the authorized/observed domain.
+    DomainNotCovered {
+        /// Domain string queried.
+        queried: String,
+    },
+    /// The authorized generation differs from observed generation.
+    GenerationMismatch {
+        /// Expected authorized generation.
+        expected: u64,
+        /// Actual observed generation.
+        observed: u64,
+    },
+    /// Domain was explicitly excluded in the coverage witness.
+    ExcludedDomain {
+        /// Excluded domain string.
+        domain: String,
+    },
+}
+
+impl fmt::Display for NotObservableReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoCoverageWitness => {
+                write!(f, "no CoverageWitness registered for domain")
+            }
+            Self::CoverageWitnessGapped => {
+                write!(f, "CoverageWitness contains continuity gaps")
+            }
+            Self::CoverageWitnessUncertified => {
+                write!(f, "CoverageWitness does not certify complete absence")
+            }
+            Self::DomainNotCovered { queried } => {
+                write!(f, "queried domain '{queried}' is not covered")
+            }
+            Self::GenerationMismatch { expected, observed } => {
+                write!(
+                    f,
+                    "generation mismatch: authorized {expected}, observed {observed}"
+                )
+            }
+            Self::ExcludedDomain { domain } => {
+                write!(f, "domain '{domain}' is explicitly excluded in coverage")
+            }
+        }
+    }
+}
+
+/// Result of querying an event revision from the store.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EventReadResult<'a> {
+    /// The revision is present and observed.
+    Found(&'a EventHypothesis),
+    /// Domain is verified by a valid CoverageWitness certifying that the revision does not exist.
+    AbsentWithCoverage(&'a CoverageWitness),
+    /// Query is outside certified coverage; absence cannot be asserted.
+    NotObservable {
+        /// Queried coverage domain.
+        domain: String,
+        /// Specific non-observability reason.
+        reason: NotObservableReason,
+    },
+}
+
+/// Result of querying an event lineage from the store.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LineageReadResult<'a> {
+    /// The event lineage is present and observed.
+    Found(&'a EventLineage),
+    /// Domain is verified by a valid CoverageWitness certifying that the event does not exist.
+    AbsentWithCoverage(&'a CoverageWitness),
+    /// Query is outside certified coverage; absence cannot be asserted.
+    NotObservable {
+        /// Queried coverage domain.
+        domain: String,
+        /// Specific non-observability reason.
+        reason: NotObservableReason,
+    },
+}
+
+/// Result of querying an evidence graph from the store.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GraphReadResult<'a> {
+    /// The evidence graph is present and observed.
+    Found(&'a EvidenceGraph),
+    /// Domain is verified by a valid CoverageWitness certifying that the graph does not exist.
+    AbsentWithCoverage(&'a CoverageWitness),
+    /// Query is outside certified coverage; absence cannot be asserted.
+    NotObservable {
+        /// Queried coverage domain.
+        domain: String,
+        /// Specific non-observability reason.
+        reason: NotObservableReason,
+    },
+}
+
+/// Deterministic, append-only event evidence graph and revision store (FSS-081).
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventRevisionStore {
+    current_anchor: LedgerAnchor,
+    history: Vec<EventStoreCommit>,
+    // Derived state:
+    lineages: BTreeMap<EventId, EventLineage>,
+    event_domains: BTreeMap<EventId, String>,
+    graphs_by_id: BTreeMap<String, EvidenceGraph>,
+    graphs_by_revision: BTreeMap<(EventId, u64), Vec<String>>,
+    contradictions: BTreeMap<EventId, Vec<Contradiction>>,
+    unresolved_worlds: BTreeSet<String>,
+    coverage_witnesses: Vec<CoverageWitness>,
+}
+
+impl EventRevisionStore {
+    /// Creates a new empty store starting at the specified genesis anchor.
+    #[must_use]
+    pub fn new(genesis_anchor: LedgerAnchor) -> Self {
+        Self {
+            current_anchor: genesis_anchor,
+            history: Vec::new(),
+            lineages: BTreeMap::new(),
+            event_domains: BTreeMap::new(),
+            graphs_by_id: BTreeMap::new(),
+            graphs_by_revision: BTreeMap::new(),
+            contradictions: BTreeMap::new(),
+            unresolved_worlds: BTreeSet::new(),
+            coverage_witnesses: Vec::new(),
+        }
+    }
+
+    /// Returns the current state anchor of the store.
+    #[must_use]
+    pub const fn current_anchor(&self) -> &LedgerAnchor {
+        &self.current_anchor
+    }
+
+    /// Returns the immutable append-only commit history of the store.
+    #[must_use]
+    pub fn history(&self) -> &[EventStoreCommit] {
+        &self.history
+    }
+
+    /// Returns the number of commits recorded in the history.
+    #[must_use]
+    pub fn commit_count(&self) -> usize {
+        self.history.len()
+    }
+
+    /// Returns the number of distinct event lineages tracked in derived state.
+    #[must_use]
+    pub fn event_count(&self) -> usize {
+        self.lineages.len()
+    }
+
+    /// Returns the set of all active unresolved worlds kept alive by contradictions.
+    #[must_use]
+    pub const fn unresolved_worlds(&self) -> &BTreeSet<String> {
+        &self.unresolved_worlds
+    }
+
+    /// Checks whether a specific world identifier remains unresolved.
+    #[must_use]
+    pub fn is_world_unresolved(&self, world_id: &str) -> bool {
+        self.unresolved_worlds.contains(world_id)
+    }
+
+    /// Returns all first-class contradictions recorded against a specific event.
+    #[must_use]
+    pub fn contradictions_for_event(&self, event_id: &EventId) -> &[Contradiction] {
+        self.contradictions.get(event_id).map_or(&[], Vec::as_slice)
+    }
+
+    /// Returns true if any contradictions are active for the specified event.
+    #[must_use]
+    pub fn has_contradiction(&self, event_id: &EventId) -> bool {
+        self.contradictions
+            .get(event_id)
+            .is_some_and(|c| !c.is_empty())
+    }
+
+    /// Appends a genesis event revision (revision 1) to the store.
+    pub fn append_genesis(
+        &mut self,
+        basis_anchor: LedgerAnchor,
+        genesis: EventHypothesis,
+        coverage_domain: impl Into<String>,
+        commit_time: TimestampNs,
+    ) -> Result<ContentDigest, EventStoreError> {
+        let coverage_domain = coverage_domain.into();
+        if coverage_domain.trim().is_empty() {
+            return Err(EventStoreError::EmptyCoverageDomain);
+        }
+        self.check_basis_anchor(&basis_anchor)?;
+        if self.history.len() >= MAX_STORE_COMMITS {
+            return Err(EventStoreError::StoreCommitCapacityExceeded {
+                limit: MAX_STORE_COMMITS,
+                actual: self.history.len() + 1,
+            });
+        }
+        if self.lineages.len() >= MAX_STORE_EVENTS && !self.lineages.contains_key(&genesis.event_id)
+        {
+            return Err(EventStoreError::StoreEventCapacityExceeded {
+                limit: MAX_STORE_EVENTS,
+                actual: self.lineages.len() + 1,
+            });
+        }
+        if genesis.revision != 1 {
+            return Err(EventStoreError::GenesisRevisionNotOne {
+                event_id: genesis.event_id.clone(),
+                actual: genesis.revision,
+            });
+        }
+        if genesis.state != EventState::Hypothesized {
+            return Err(EventStoreError::GenesisStateNotHypothesized {
+                event_id: genesis.event_id.clone(),
+                state: genesis.state,
+            });
+        }
+        if genesis.supersedes.is_some() {
+            return Err(EventStoreError::GenesisHasSupersedes {
+                event_id: genesis.event_id.clone(),
+            });
+        }
+        if self.lineages.contains_key(&genesis.event_id) {
+            return Err(EventStoreError::NonMonotonicRevision {
+                event_id: genesis.event_id.clone(),
+                expected: 2,
+                actual: 1,
+            });
+        }
+        genesis
+            .verify()
+            .map_err(EventStoreError::InvalidHypothesis)?;
+
+        let lineage = EventLineage::new(genesis.clone()).map_err(|err| {
+            EventStoreError::IllegalStateTransition {
+                event_id: genesis.event_id.clone(),
+                detail: err,
+            }
+        })?;
+
+        let entry = EventStoreEntry::GenesisRevision {
+            revision: genesis.clone(),
+            coverage_domain: coverage_domain.clone(),
+        };
+
+        let digest = self.commit_entry(entry, commit_time)?;
+        self.lineages.insert(genesis.event_id.clone(), lineage);
+        self.event_domains.insert(genesis.event_id, coverage_domain);
+        Ok(digest)
+    }
+
+    /// Appends a superseding event revision via state machine transition.
+    pub fn append_transition(
+        &mut self,
+        basis_anchor: LedgerAnchor,
+        event_id: &EventId,
+        params: EventTransitionParams,
+        commit_time: TimestampNs,
+    ) -> Result<ContentDigest, EventStoreError> {
+        self.check_basis_anchor(&basis_anchor)?;
+        if self.history.len() >= MAX_STORE_COMMITS {
+            return Err(EventStoreError::StoreCommitCapacityExceeded {
+                limit: MAX_STORE_COMMITS,
+                actual: self.history.len() + 1,
+            });
+        }
+
+        let lineage = self
+            .lineages
+            .get(event_id)
+            .ok_or_else(|| EventStoreError::EventNotFound(event_id.clone()))?;
+
+        if lineage.len() >= MAX_STORE_LINEAGE_DEPTH {
+            return Err(EventStoreError::LineageDepthExceeded {
+                event_id: event_id.clone(),
+                limit: MAX_STORE_LINEAGE_DEPTH,
+                actual: lineage.len() + 1,
+            });
+        }
+
+        let mut updated_lineage = lineage.clone();
+        let new_revision = updated_lineage
+            .transition(params)
+            .map_err(|err| match err {
+                EventTransitionError::TerminalStateImmutable { state } => {
+                    EventStoreError::TerminalStateImmutable {
+                        event_id: event_id.clone(),
+                        state,
+                    }
+                }
+                other => EventStoreError::IllegalStateTransition {
+                    event_id: event_id.clone(),
+                    detail: other,
+                },
+            })?
+            .clone();
+
+        let entry = EventStoreEntry::SupersedeRevision {
+            revision: new_revision,
+        };
+
+        let digest = self.commit_entry(entry, commit_time)?;
+        self.lineages.insert(event_id.clone(), updated_lineage);
+        Ok(digest)
+    }
+
+    /// Appends an explicitly constructed superseding revision.
+    pub fn append_revision(
+        &mut self,
+        basis_anchor: LedgerAnchor,
+        revision: EventHypothesis,
+        commit_time: TimestampNs,
+    ) -> Result<ContentDigest, EventStoreError> {
+        self.check_basis_anchor(&basis_anchor)?;
+        if self.history.len() >= MAX_STORE_COMMITS {
+            return Err(EventStoreError::StoreCommitCapacityExceeded {
+                limit: MAX_STORE_COMMITS,
+                actual: self.history.len() + 1,
+            });
+        }
+
+        let lineage = self
+            .lineages
+            .get(&revision.event_id)
+            .ok_or_else(|| EventStoreError::EventNotFound(revision.event_id.clone()))?;
+
+        let current = lineage.current();
+        if current.state.is_terminal() {
+            return Err(EventStoreError::TerminalStateImmutable {
+                event_id: revision.event_id.clone(),
+                state: current.state,
+            });
+        }
+
+        let expected_rev = current.revision + 1;
+        if revision.revision != expected_rev {
+            return Err(EventStoreError::NonMonotonicRevision {
+                event_id: revision.event_id.clone(),
+                expected: expected_rev,
+                actual: revision.revision,
+            });
+        }
+
+        let expected_prior_digest = current.canonical_digest(EventHypothesis::SCHEMA);
+        if revision.supersedes != Some(expected_prior_digest) {
+            return Err(EventStoreError::SupersedesDigestMismatch {
+                event_id: revision.event_id.clone(),
+                expected: expected_prior_digest,
+                actual: revision.supersedes,
+            });
+        }
+
+        revision
+            .verify()
+            .map_err(EventStoreError::InvalidHypothesis)?;
+
+        // Verify transition rule validity
+        let transition_params = EventTransitionParams {
+            target_state: revision.state,
+            kind: revision.kind,
+            interval: revision.interval,
+            uncertainty_reason: revision.uncertainty_reason.clone(),
+            zone_ids: revision.zone_ids.clone(),
+            track_ids: revision.track_ids.clone(),
+            probability: revision.probability,
+            evidence: revision.evidence.clone(),
+            model_receipts: revision.model_receipts.clone(),
+            decision_path: revision.decision_path.clone(),
+            urgent_single_sensor: revision
+                .uncertainty_reason
+                .as_deref()
+                .is_some_and(|r| r.contains(crate::event::SINGLE_DOMAIN_UNCONFIRMED_LABEL)),
+        };
+
+        let mut updated_lineage = lineage.clone();
+        updated_lineage
+            .transition(transition_params)
+            .map_err(|err| EventStoreError::IllegalStateTransition {
+                event_id: revision.event_id.clone(),
+                detail: err,
+            })?;
+
+        let entry = EventStoreEntry::SupersedeRevision {
+            revision: revision.clone(),
+        };
+
+        let digest = self.commit_entry(entry, commit_time)?;
+        self.lineages.insert(revision.event_id, updated_lineage);
+        Ok(digest)
+    }
+
+    /// Attaches an evidence graph to an existing event revision.
+    pub fn attach_evidence_graph(
+        &mut self,
+        basis_anchor: LedgerAnchor,
+        graph: EvidenceGraph,
+        commit_time: TimestampNs,
+    ) -> Result<ContentDigest, EventStoreError> {
+        self.check_basis_anchor(&basis_anchor)?;
+        if self.history.len() >= MAX_STORE_COMMITS {
+            return Err(EventStoreError::StoreCommitCapacityExceeded {
+                limit: MAX_STORE_COMMITS,
+                actual: self.history.len() + 1,
+            });
+        }
+        if self.graphs_by_id.contains_key(&graph.graph_id) {
+            return Err(EventStoreError::DuplicateGraphId(graph.graph_id.clone()));
+        }
+
+        graph
+            .verify()
+            .map_err(EventStoreError::InvalidEvidenceGraph)?;
+
+        let lineage = self
+            .lineages
+            .get(&graph.event_id)
+            .ok_or_else(|| EventStoreError::EventNotFound(graph.event_id.clone()))?;
+
+        if graph.revision == 0 || graph.revision > lineage.current_revision() {
+            return Err(EventStoreError::RevisionNotFound {
+                event_id: graph.event_id.clone(),
+                revision: graph.revision,
+            });
+        }
+
+        let rev_key = (graph.event_id.clone(), graph.revision);
+        let current_count = self.graphs_by_revision.get(&rev_key).map_or(0, Vec::len);
+        if current_count >= MAX_GRAPHS_PER_REVISION {
+            return Err(EventStoreError::GraphCapacityExceeded {
+                event_id: graph.event_id.clone(),
+                revision: graph.revision,
+                limit: MAX_GRAPHS_PER_REVISION,
+                actual: current_count + 1,
+            });
+        }
+
+        let graph_id = graph.graph_id.clone();
+        let entry = EventStoreEntry::AttachEvidenceGraph {
+            graph: graph.clone(),
+        };
+
+        let digest = self.commit_entry(entry, commit_time)?;
+        self.graphs_by_id.insert(graph_id.clone(), graph);
+        self.graphs_by_revision
+            .entry(rev_key)
+            .or_default()
+            .push(graph_id);
+        Ok(digest)
+    }
+
+    /// Records a first-class physical contradiction against an event.
+    pub fn record_contradiction(
+        &mut self,
+        basis_anchor: LedgerAnchor,
+        event_id: EventId,
+        contradiction: Contradiction,
+        commit_time: TimestampNs,
+    ) -> Result<ContentDigest, EventStoreError> {
+        self.check_basis_anchor(&basis_anchor)?;
+        if self.history.len() >= MAX_STORE_COMMITS {
+            return Err(EventStoreError::StoreCommitCapacityExceeded {
+                limit: MAX_STORE_COMMITS,
+                actual: self.history.len() + 1,
+            });
+        }
+        if !self.lineages.contains_key(&event_id) {
+            return Err(EventStoreError::EventNotFound(event_id));
+        }
+
+        contradiction
+            .verify()
+            .map_err(EventStoreError::InvalidContradiction)?;
+
+        let current_count = self.contradictions.get(&event_id).map_or(0, Vec::len);
+        if current_count >= MAX_CONTRADICTIONS_PER_EVENT {
+            return Err(EventStoreError::ContradictionCapacityExceeded {
+                event_id,
+                limit: MAX_CONTRADICTIONS_PER_EVENT,
+                actual: current_count + 1,
+            });
+        }
+
+        for world in contradiction.unresolved_worlds() {
+            self.unresolved_worlds.insert(world.clone());
+        }
+
+        let entry = EventStoreEntry::RecordContradiction {
+            event_id: event_id.clone(),
+            contradiction: contradiction.clone(),
+        };
+
+        let digest = self.commit_entry(entry, commit_time)?;
+        self.contradictions
+            .entry(event_id)
+            .or_default()
+            .push(contradiction);
+        Ok(digest)
+    }
+
+    /// Registers a coverage witness in the store.
+    pub fn register_coverage_witness(
+        &mut self,
+        basis_anchor: LedgerAnchor,
+        witness: CoverageWitness,
+        commit_time: TimestampNs,
+    ) -> Result<ContentDigest, EventStoreError> {
+        self.check_basis_anchor(&basis_anchor)?;
+        if self.history.len() >= MAX_STORE_COMMITS {
+            return Err(EventStoreError::StoreCommitCapacityExceeded {
+                limit: MAX_STORE_COMMITS,
+                actual: self.history.len() + 1,
+            });
+        }
+        if self.coverage_witnesses.len() >= MAX_STORE_COVERAGE_WITNESSES {
+            return Err(EventStoreError::CoverageWitnessCapacityExceeded {
+                limit: MAX_STORE_COVERAGE_WITNESSES,
+                actual: self.coverage_witnesses.len() + 1,
+            });
+        }
+
+        let entry = EventStoreEntry::RegisterCoverageWitness {
+            witness: witness.clone(),
+        };
+
+        let digest = self.commit_entry(entry, commit_time)?;
+        self.coverage_witnesses.push(witness);
+        Ok(digest)
+    }
+
+    /// Reads an event revision from the store.
+    ///
+    /// If `at_revision` is `None`, returns the latest revision.
+    /// If the revision is not present, evaluates coverage witnesses for the event's domain.
+    /// Outside coverage, returns typed `NotObservable`, never absence.
+    pub fn read_event(
+        &self,
+        event_id: &EventId,
+        at_revision: Option<u64>,
+    ) -> Result<EventReadResult<'_>, EventStoreError> {
+        if let Some(lineage) = self.lineages.get(event_id) {
+            match at_revision {
+                None => Ok(EventReadResult::Found(lineage.current())),
+                Some(target_rev) => {
+                    if let Some(rev) = lineage.history().iter().find(|r| r.revision == target_rev) {
+                        Ok(EventReadResult::Found(rev))
+                    } else {
+                        let domain = self
+                            .event_domains
+                            .get(event_id)
+                            .cloned()
+                            .unwrap_or_default();
+                        Ok(self.evaluate_coverage_for_absent(&domain))
+                    }
+                }
+            }
+        } else {
+            Ok(self.evaluate_coverage_for_absent("unknown"))
+        }
+    }
+
+    /// Reads an event revision within an explicitly declared coverage domain.
+    pub fn read_event_in_domain(
+        &self,
+        event_id: &EventId,
+        domain: &str,
+        at_revision: Option<u64>,
+    ) -> Result<EventReadResult<'_>, EventStoreError> {
+        if let Some(lineage) = self.lineages.get(event_id) {
+            match at_revision {
+                None => Ok(EventReadResult::Found(lineage.current())),
+                Some(target_rev) => {
+                    if let Some(rev) = lineage.history().iter().find(|r| r.revision == target_rev) {
+                        Ok(EventReadResult::Found(rev))
+                    } else {
+                        Ok(self.evaluate_coverage_for_absent(domain))
+                    }
+                }
+            }
+        } else {
+            Ok(self.evaluate_coverage_for_absent(domain))
+        }
+    }
+
+    /// Reads an event lineage from the store.
+    pub fn read_lineage(
+        &self,
+        event_id: &EventId,
+    ) -> Result<LineageReadResult<'_>, EventStoreError> {
+        if let Some(lineage) = self.lineages.get(event_id) {
+            Ok(LineageReadResult::Found(lineage))
+        } else {
+            let domain = self
+                .event_domains
+                .get(event_id)
+                .cloned()
+                .unwrap_or_else(|| "unknown".to_string());
+            match self.evaluate_coverage_for_absent(&domain) {
+                EventReadResult::AbsentWithCoverage(w) => {
+                    Ok(LineageReadResult::AbsentWithCoverage(w))
+                }
+                EventReadResult::NotObservable { domain, reason } => {
+                    Ok(LineageReadResult::NotObservable { domain, reason })
+                }
+                EventReadResult::Found(_) => Ok(LineageReadResult::NotObservable {
+                    domain,
+                    reason: NotObservableReason::NoCoverageWitness,
+                }),
+            }
+        }
+    }
+
+    /// Reads an event lineage within an explicitly declared coverage domain.
+    pub fn read_lineage_in_domain(
+        &self,
+        event_id: &EventId,
+        domain: &str,
+    ) -> Result<LineageReadResult<'_>, EventStoreError> {
+        if let Some(lineage) = self.lineages.get(event_id) {
+            Ok(LineageReadResult::Found(lineage))
+        } else {
+            match self.evaluate_coverage_for_absent(domain) {
+                EventReadResult::AbsentWithCoverage(w) => {
+                    Ok(LineageReadResult::AbsentWithCoverage(w))
+                }
+                EventReadResult::NotObservable { domain, reason } => {
+                    Ok(LineageReadResult::NotObservable { domain, reason })
+                }
+                EventReadResult::Found(_) => Ok(LineageReadResult::NotObservable {
+                    domain: domain.to_string(),
+                    reason: NotObservableReason::NoCoverageWitness,
+                }),
+            }
+        }
+    }
+
+    /// Reads all evidence graphs attached to a specific event revision.
+    pub fn read_evidence_graphs(
+        &self,
+        event_id: &EventId,
+        revision: u64,
+    ) -> Result<Vec<&EvidenceGraph>, EventStoreError> {
+        let rev_key = (event_id.clone(), revision);
+        if let Some(ids) = self.graphs_by_revision.get(&rev_key) {
+            let mut graphs = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Some(g) = self.graphs_by_id.get(id) {
+                    graphs.push(g);
+                }
+            }
+            Ok(graphs)
+        } else if !self.lineages.contains_key(event_id) {
+            Err(EventStoreError::EventNotFound(event_id.clone()))
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Reads one evidence graph by its unique graph identifier.
+    pub fn read_evidence_graph(
+        &self,
+        graph_id: &str,
+        domain: &str,
+    ) -> Result<GraphReadResult<'_>, EventStoreError> {
+        if let Some(graph) = self.graphs_by_id.get(graph_id) {
+            Ok(GraphReadResult::Found(graph))
+        } else {
+            match self.evaluate_coverage_for_absent(domain) {
+                EventReadResult::AbsentWithCoverage(w) => {
+                    Ok(GraphReadResult::AbsentWithCoverage(w))
+                }
+                EventReadResult::NotObservable { domain, reason } => {
+                    Ok(GraphReadResult::NotObservable { domain, reason })
+                }
+                EventReadResult::Found(_) => Ok(GraphReadResult::NotObservable {
+                    domain: domain.to_string(),
+                    reason: NotObservableReason::NoCoverageWitness,
+                }),
+            }
+        }
+    }
+
+    /// Rebuilds derived store state from scratch by replaying canonical commit history.
+    ///
+    /// Proves INV-015: derived state is completely rebuildable from canonical history.
+    pub fn rebuild_from_history(
+        genesis_anchor: LedgerAnchor,
+        history: &[EventStoreCommit],
+    ) -> Result<Self, EventStoreError> {
+        let mut store = Self::new(genesis_anchor);
+        for commit in history {
+            if commit.sequence != (store.history.len() as u64) + 1 {
+                return Err(EventStoreError::SequenceNotMonotonic {
+                    expected: (store.history.len() as u64) + 1,
+                    actual: commit.sequence,
+                });
+            }
+            if commit.basis_anchor != store.current_anchor {
+                return Err(EventStoreError::StaleAnchor {
+                    expected: store.current_anchor.clone(),
+                    actual: commit.basis_anchor.clone(),
+                });
+            }
+
+            match &commit.entry {
+                EventStoreEntry::GenesisRevision {
+                    revision,
+                    coverage_domain,
+                } => {
+                    store.append_genesis(
+                        commit.basis_anchor.clone(),
+                        revision.clone(),
+                        coverage_domain.clone(),
+                        commit.commit_time,
+                    )?;
+                }
+                EventStoreEntry::SupersedeRevision { revision } => {
+                    store.append_revision(
+                        commit.basis_anchor.clone(),
+                        revision.clone(),
+                        commit.commit_time,
+                    )?;
+                }
+                EventStoreEntry::AttachEvidenceGraph { graph } => {
+                    store.attach_evidence_graph(
+                        commit.basis_anchor.clone(),
+                        graph.clone(),
+                        commit.commit_time,
+                    )?;
+                }
+                EventStoreEntry::RecordContradiction {
+                    event_id,
+                    contradiction,
+                } => {
+                    store.record_contradiction(
+                        commit.basis_anchor.clone(),
+                        event_id.clone(),
+                        contradiction.clone(),
+                        commit.commit_time,
+                    )?;
+                }
+                EventStoreEntry::RegisterCoverageWitness { witness } => {
+                    store.register_coverage_witness(
+                        commit.basis_anchor.clone(),
+                        witness.clone(),
+                        commit.commit_time,
+                    )?;
+                }
+            }
+
+            // Verify the rebuilt state anchor matches the recorded new_anchor
+            if store.current_anchor != commit.new_anchor {
+                return Err(EventStoreError::StaleAnchor {
+                    expected: commit.new_anchor.clone(),
+                    actual: store.current_anchor.clone(),
+                });
+            }
+        }
+        Ok(store)
+    }
+
+    fn check_basis_anchor(&self, basis_anchor: &LedgerAnchor) -> Result<(), EventStoreError> {
+        if *basis_anchor != self.current_anchor {
+            return Err(EventStoreError::StaleAnchor {
+                expected: self.current_anchor.clone(),
+                actual: basis_anchor.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    fn commit_entry(
+        &mut self,
+        entry: EventStoreEntry,
+        commit_time: TimestampNs,
+    ) -> Result<ContentDigest, EventStoreError> {
+        let sequence = (self.history.len() as u64) + 1;
+        let mut entry_encoder = CanonicalEncoder::new();
+        entry.encode_canonical(&mut entry_encoder);
+        let entry_digest = ContentDigest::sha256(&entry_encoder.finish());
+
+        let mut new_anchor = self.current_anchor.clone();
+        new_anchor.commit_sequence = sequence;
+        new_anchor.state_root =
+            compute_state_root(self.current_anchor.state_root, sequence, entry_digest);
+
+        let commit_digest = EventStoreCommit::compute_digest(
+            sequence,
+            &self.current_anchor,
+            &new_anchor,
+            commit_time,
+            &entry,
+        );
+
+        let commit = EventStoreCommit {
+            sequence,
+            basis_anchor: self.current_anchor.clone(),
+            new_anchor: new_anchor.clone(),
+            commit_time,
+            entry,
+            commit_digest,
+        };
+
+        self.history.push(commit);
+        self.current_anchor = new_anchor;
+        Ok(commit_digest)
+    }
+
+    fn evaluate_coverage_for_absent(&self, domain: &str) -> EventReadResult<'_> {
+        let candidate = self
+            .coverage_witnesses
+            .iter()
+            .find(|w| w.observed_domain.iter().any(|d| d == domain));
+
+        let witness = match candidate {
+            Some(w) => w,
+            None => {
+                return EventReadResult::NotObservable {
+                    domain: domain.to_string(),
+                    reason: NotObservableReason::NoCoverageWitness,
+                };
+            }
+        };
+
+        if witness.excluded_domain.iter().any(|d| d == domain) {
+            return EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::ExcludedDomain {
+                    domain: domain.to_string(),
+                },
+            };
+        }
+
+        if witness.continuity != CoverageContinuity::Continuous {
+            return EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::CoverageWitnessGapped,
+            };
+        }
+
+        if witness.completeness != Completeness::Complete
+            || witness.stop_reason != CoverageStopReason::Complete
+        {
+            return EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::CoverageWitnessUncertified,
+            };
+        }
+
+        if witness.authorized_generation == 0
+            || witness.authorized_generation != witness.observed_generation
+        {
+            return EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::GenerationMismatch {
+                    expected: witness.authorized_generation,
+                    observed: witness.observed_generation,
+                },
+            };
+        }
+
+        if !witness.certifies_absence() {
+            return EventReadResult::NotObservable {
+                domain: domain.to_string(),
+                reason: NotObservableReason::CoverageWitnessUncertified,
+            };
+        }
+
+        EventReadResult::AbsentWithCoverage(witness)
+    }
+}
+
+fn compute_state_root(
+    previous_root: ContentDigest,
+    commit_sequence: u64,
+    entry_digest: ContentDigest,
+) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(EVENT_STORE_STATE_DOMAIN);
+    encoder.digest(previous_root);
+    encoder.u64(commit_sequence);
+    encoder.digest(entry_digest);
+    ContentDigest::sha256(&encoder.finish())
+}

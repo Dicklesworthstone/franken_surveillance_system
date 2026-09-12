@@ -20,6 +20,7 @@ mod digest;
 pub mod durable;
 pub mod effect;
 pub mod event;
+pub mod event_store;
 mod evidence;
 pub mod hydration;
 pub mod identity;
@@ -79,13 +80,14 @@ pub use effect::{
 pub use event::{
     DecisionPath, EVENT_HYPOTHESIS_MAGIC, EVENT_HYPOTHESIS_SCHEMA, EVENT_HYPOTHESIS_VERSION_1,
     EVIDENCE_GRAPH_MAGIC, EVIDENCE_GRAPH_SCHEMA, EVIDENCE_GRAPH_VERSION_1, EventDecodeError,
-    EventEvidence, EventHypothesis, EventKind, EventRevision, EventState, EvidenceEdgeRelation,
-    EvidenceGraph, EvidenceNode, EvidenceNodeKind, MAX_ABSTENTION_REASON_LEN, MAX_EDGES_COUNT,
-    MAX_EVENT_ID_LEN, MAX_EVIDENCE_COUNT, MAX_FAILURE_DOMAIN_LEN, MAX_GRAPH_ID_LEN,
-    MAX_MODEL_RECEIPTS_COUNT, MAX_NODE_LABEL_LEN, MAX_NODES_COUNT, MAX_TRACK_ID_LEN,
-    MAX_TRACKS_COUNT, MAX_ZONE_ID_LEN, MAX_ZONES_COUNT, ProbabilityInterval, evidence_class_as_str,
-    evidence_class_from_u8, evidence_class_to_u8, parse_evidence_class,
+    EventEvidence, EventHypothesis, EventKind, EventRevision, EventState, EventTransitionParams,
+    EvidenceEdgeRelation, EvidenceGraph, EvidenceNode, EvidenceNodeKind, MAX_ABSTENTION_REASON_LEN,
+    MAX_EDGES_COUNT, MAX_EVENT_ID_LEN, MAX_EVIDENCE_COUNT, MAX_FAILURE_DOMAIN_LEN,
+    MAX_GRAPH_ID_LEN, MAX_MODEL_RECEIPTS_COUNT, MAX_NODE_LABEL_LEN, MAX_NODES_COUNT,
+    MAX_TRACK_ID_LEN, MAX_TRACKS_COUNT, MAX_ZONE_ID_LEN, MAX_ZONES_COUNT, ProbabilityInterval,
+    evidence_class_as_str, evidence_class_from_u8, evidence_class_to_u8, parse_evidence_class,
 };
+pub use event_store::*;
 pub use evidence::{
     ClockBasis, CoverageContinuity, CoverageStopReason, CoverageWitness, EvidenceDelta,
     EvidenceDeltaBatch, LedgerAnchor, LedgerSnapshot, ObjectRevision, ReferenceLedger,
