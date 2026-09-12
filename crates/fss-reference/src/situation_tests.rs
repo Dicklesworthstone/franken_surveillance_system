@@ -190,8 +190,8 @@ fn corroborated_projection_is_deterministic_and_capability_explicit() -> Result<
     let second = compile_reference_situation(compile_request, &harness.authority)?;
     assert_eq!(first, second);
     assert_eq!(
-        first.capsule.decision_fingerprint(),
-        second.capsule.decision_fingerprint()
+        first.capsule.decision_fingerprint()?,
+        second.capsule.decision_fingerprint()?
     );
     assert_eq!(first.capsule.completeness, Completeness::Bounded);
     assert_eq!(
@@ -363,7 +363,7 @@ fn lost_ack_projects_only_reconciliation_and_seals_root_closed_handoff()
     assert!(
         handoff
             .child_roots
-            .contains(&situation.capsule.decision_fingerprint())
+            .contains(&situation.capsule.decision_fingerprint()?)
     );
     assert!(handoff.child_roots.contains(&outcome.outcome_root));
     handoff.verify()?;

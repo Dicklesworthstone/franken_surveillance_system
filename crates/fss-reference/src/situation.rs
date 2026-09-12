@@ -75,7 +75,7 @@ impl ReferenceSituation {
         if self.proof_roots.is_empty() {
             return Err(fss_core::ContractError::IncompletePublicationGraph.into());
         }
-        Ok(self.capsule.decision_fingerprint())
+        Ok(self.capsule.decision_fingerprint()?)
     }
 }
 

@@ -1010,9 +1010,13 @@ impl SituationCapsule {
     }
 
     /// Returns the decision fingerprint used for replay comparison.
-    #[must_use]
-    pub fn decision_fingerprint(&self) -> ContentDigest {
-        self.canonical_digest("fss.situation_capsule.v1")
+    ///
+    /// The capsule is validated first: a capsule refused by [`Self::validate`] has no
+    /// fingerprint, so an invalid capsule (for example one whose frame carries a basisless stale
+    /// cell) can never be hashed into a replay, projection, or handoff root.
+    pub fn decision_fingerprint(&self) -> Result<ContentDigest, ContractError> {
+        self.validate()?;
+        Ok(self.canonical_digest("fss.situation_capsule.v1"))
     }
 }
 

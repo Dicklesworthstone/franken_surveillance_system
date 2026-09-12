@@ -168,7 +168,7 @@ impl ReferenceSituationPublication {
         {
             return Err(ContractError::EvidenceRequired.into());
         }
-        let computed = self.computed_digest();
+        let computed = self.computed_digest()?;
         if computed != self.publication_digest {
             return Err(ContractError::DigestMismatch.into());
         }
@@ -181,16 +181,18 @@ impl ReferenceSituationPublication {
     }
 
     /// Computes the complete publication digest with the digest field omitted.
-    #[must_use]
-    pub fn computed_digest(&self) -> ContentDigest {
+    ///
+    /// Fails with the capsule's typed refusal when the situation capsule does not validate, since
+    /// an invalid capsule has no decision fingerprint.
+    pub fn computed_digest(&self) -> Result<ContentDigest, ReferenceError> {
         let mut encoder = CanonicalEncoder::new();
         encoder.text("fss.reference_situation_publication.v1");
-        encoder.digest(self.situation.capsule.decision_fingerprint());
+        encoder.digest(self.situation.capsule.decision_fingerprint()?);
         self.resource_state.encode_canonical(&mut encoder);
         self.control_envelope.encode_canonical(&mut encoder);
         self.context_pack.encode_canonical(&mut encoder);
         self.compression_receipt.encode_canonical(&mut encoder);
-        ContentDigest::sha256(&encoder.finish())
+        Ok(ContentDigest::sha256(&encoder.finish()))
     }
 }
 
@@ -239,7 +241,7 @@ pub fn project_reference_situation(
         &situation.capsule.affordances,
     )?;
     let selection = select_context(&situation, spec.target_tokens)?;
-    let identity = projection_identity(&situation, spec, selection.frontier_digest);
+    let identity = projection_identity(base_digest, spec, selection.frontier_digest);
     let receipt_id = format!("compression:{identity}");
     let continuation = if selection.omitted.is_empty() {
         None
@@ -347,7 +349,7 @@ pub fn project_reference_situation(
         compression_receipt,
         publication_digest: ContentDigest::sha256(b"unpublished-situation-publication"),
     };
-    publication.publication_digest = publication.computed_digest();
+    publication.publication_digest = publication.computed_digest()?;
     publication.verify()?;
     Ok(publication)
 }
@@ -361,7 +363,7 @@ pub fn seal_reference_publication_handoff(
 ) -> Result<HandoffCapsule, ReferenceError> {
     let publication_root = publication.verify()?;
     let mut children = publication.situation.proof_roots.clone();
-    children.insert(publication.situation.capsule.decision_fingerprint());
+    children.insert(publication.situation.capsule.decision_fingerprint()?);
     children.insert(publication.resource_state.state_digest());
     children.insert(publication.control_envelope.control_digest());
     children.insert(publication.context_pack.pack_digest);
@@ -1048,9 +1050,14 @@ fn insert_candidate(
 }
 
 /// Returns the required critical context item identities for the situation, or error if candidates cannot be computed.
+///
+/// The situation is verified first, so a capsule refused by [`ReferenceSituation::verify`] (for
+/// example a frame carrying a basisless stale, indeterminate, or redacted cell) yields exactly
+/// that typed refusal instead of a candidate set built from an invalid capsule.
 pub fn required_context_item_ids(
     situation: &ReferenceSituation,
 ) -> Result<BTreeSet<String>, ReferenceError> {
+    situation.verify()?;
     context_candidates(situation).map(|(candidates, _)| {
         candidates
             .into_iter()
@@ -1128,14 +1135,15 @@ fn expansion_handles(
     Ok(handles)
 }
 
+/// Projection identity over the decision fingerprint of an already-verified situation.
 fn projection_identity(
-    situation: &ReferenceSituation,
+    situation_fingerprint: ContentDigest,
     spec: &ReferenceProjectionSpec,
     frontier_digest: ContentDigest,
 ) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_projection_identity.v1");
-    encoder.digest(situation.capsule.decision_fingerprint());
+    encoder.digest(situation_fingerprint);
     encoder.digest(spec.spec_digest());
     encoder.digest(frontier_digest);
     ContentDigest::sha256(&encoder.finish())
@@ -1144,3 +1152,7 @@ fn projection_identity(
 fn encode_budget(value: BudgetVector, encoder: &mut CanonicalEncoder) {
     value.encode_to_canonical(encoder);
 }
+
+#[cfg(test)]
+#[path = "situation_sections_dedup_tests.rs"]
+mod dedup_tests;
