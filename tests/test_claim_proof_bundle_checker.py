@@ -1515,5 +1515,116 @@ class TestFailOpenScan(unittest.TestCase):
         self.assertEqual(frozenset(cpb.RECEIPT_STATUSES), frozenset(schema["properties"]["status"]["enum"]))
 
 
+class TestAtomicReceiptWritingAndCorruptReceiptNaming(unittest.TestCase):
+    """fss-1geb3: atomic receipt write prevents partial reads; corrupt receipt errors name the file."""
+
+    def test_corrupt_receipt_error_names_the_file(self) -> None:
+        """The claim checker's corrupt-receipt error messages must name the receipt file."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            rel = "qualification-artifacts/local/run1/qualification-receipt.json"
+            receipt_file = root / rel
+            receipt_file.parent.mkdir(parents=True, exist_ok=True)
+
+            # 1. Truncated/corrupt JSON
+            receipt_file.write_text('{"schema": "fss.release_qualification_receipt.v1", "receiptId":', encoding="utf-8")
+            findings, status = cpb.inspect_qualification_receipt(receipt_file, root)
+            self.assertIsNone(status)
+            self.assertTrue(len(findings) > 0)
+            self.assertIn(cpb.ERR_UNREADABLE_INPUT, codes(findings))
+            self.assertTrue(any(rel in f.message for f in findings), [(f.code, f.message) for f in findings])
+
+            # 2. Corrupt schema
+            receipt_file.write_text(json.dumps({"schema": "fss.corrupted_schema.v9", "status": "passed"}), encoding="utf-8")
+            findings, status = cpb.inspect_qualification_receipt(receipt_file, root)
+            self.assertIsNone(status)
+            self.assertIn(cpb.ERR_UNRECOGNIZED_STATE, codes(findings))
+            self.assertTrue(any(rel in f.message for f in findings), [(f.code, f.message) for f in findings])
+
+            # 3. Missing required fields (corrupt receipt structure)
+            receipt_file.write_text(json.dumps({"schema": "fss.release_qualification_receipt.v1", "status": "passed"}), encoding="utf-8")
+            findings, status = cpb.inspect_qualification_receipt(receipt_file, root)
+            self.assertTrue(any(rel in f.message for f in findings), [(f.code, f.message) for f in findings])
+
+    def test_planted_negative_truncated_mid_write_proves_reader_isolation(self) -> None:
+        """Planted-negative test: truncating a receipt mid-write in-place causes readers to observe
+        a corrupt receipt naming the file, whereas atomic writing guarantees readers see either the
+        old or the new complete receipt, never a partial/corrupt receipt.
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            rel = "qualification-artifacts/local/run1/qualification-receipt.json"
+            receipt_file = root / rel
+            receipt_file.parent.mkdir(parents=True, exist_ok=True)
+
+            old_receipt = make_receipt("passed")
+            new_receipt = make_receipt("passed")
+            new_receipt["receiptId"] = "local:policy:new_receipt_001"
+
+            # Write initial complete receipt
+            cpb.write_qualification_receipt(receipt_file, old_receipt)
+            findings, status = cpb.inspect_qualification_receipt(receipt_file, root)
+            self.assertEqual(status, "passed")
+            self.assertEqual(len(findings), 0)
+
+            # Planted negative: non-atomic in-place write truncated mid-write
+            # Simulates what qualify.sh previously did: opening output_path directly and writing partial bytes
+            new_bytes = (json.dumps(new_receipt, indent=2) + "\n").encode("utf-8")
+            truncated_len = len(new_bytes) // 3
+            with open(receipt_file, "wb") as f:
+                f.write(new_bytes[:truncated_len])
+                f.flush()
+
+            # Concurrent reader inspecting the file during/after non-atomic partial write sees corruption
+            corrupt_findings, corrupt_status = cpb.inspect_qualification_receipt(receipt_file, root)
+            self.assertIsNone(corrupt_status)
+            self.assertTrue(any(f.code == cpb.ERR_UNREADABLE_INPUT for f in corrupt_findings))
+            self.assertTrue(any(rel in f.message for f in corrupt_findings), "Corrupt receipt error must name file")
+
+            # Restore old receipt and demonstrate atomic write isolation
+            cpb.write_qualification_receipt(receipt_file, old_receipt)
+
+            # Atomic write truncated mid-write: write to temp file in same directory, truncated before rename
+            temp_path = receipt_file.parent / f".{receipt_file.name}.tmp.simulated"
+            with open(temp_path, "wb") as f:
+                f.write(new_bytes[:truncated_len])
+                f.flush()
+                os.fsync(f.fileno())
+
+            # Reader sees old complete receipt! Never partial/corrupt receipt!
+            pre_rename_findings, pre_rename_status = cpb.inspect_qualification_receipt(receipt_file, root)
+            self.assertEqual(pre_rename_status, "passed")
+            self.assertEqual(len(pre_rename_findings), 0)
+            data, _ = cpb._read_json_document(receipt_file, rel, "qualification receipt")
+            self.assertIsNotNone(data)
+            self.assertEqual(data["receiptId"], old_receipt["receiptId"])
+
+            # Clean up aborted temp file
+            temp_path.unlink()
+
+            # Successful atomic write completes: reader sees new complete receipt!
+            cpb.write_qualification_receipt(receipt_file, new_receipt)
+            post_rename_findings, post_rename_status = cpb.inspect_qualification_receipt(receipt_file, root)
+            self.assertEqual(post_rename_status, "passed")
+            self.assertEqual(len(post_rename_findings), 0)
+            data, _ = cpb._read_json_document(receipt_file, rel, "qualification receipt")
+            self.assertIsNotNone(data)
+            self.assertEqual(data["receiptId"], "local:policy:new_receipt_001")
+
+    def test_qualify_script_atomic_receipt_contract(self) -> None:
+        """scripts/qualify.sh must write receipts to temp file in same directory, fsync, and rename."""
+        script_text = (ROOT / "scripts/qualify.sh").read_text(encoding="utf-8")
+        # Must not write directly in place with write_text
+        self.assertNotIn(
+            'pathlib.Path(output_path).write_text(',
+            script_text,
+            "scripts/qualify.sh must not write qualification receipt in-place",
+        )
+        # Must create temp file in same directory, fsync, and replace/rename
+        self.assertIn("tempfile.mkstemp", script_text)
+        self.assertIn("os.fsync", script_text)
+        self.assertIn("os.replace", script_text)
+
+
 if __name__ == "__main__":
     unittest.main()

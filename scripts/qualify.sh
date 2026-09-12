@@ -222,8 +222,10 @@ PY
     python3 - "$RECEIPT_DIR/qualification-receipt.json" "$records" "$LANE" "$source_commit" "$source_tree" "$sibling_digest" "$host_digest" "$toolchain" "$target" "$started_ns" "$finished_ns" "$final_status" "$manifest_root" <<'PY'
 import hashlib
 import json
+import os
 import pathlib
 import sys
+import tempfile
 (
     output_path, records_path, lane, source_commit, source_tree, sibling_digest, host_digest,
     toolchain, target, started, finished, status, manifest_root
@@ -260,7 +262,27 @@ receipt={
     "finishedAt":{"earliestNs":int(finished),"latestNs":int(finished),"clockBasis":"host-realtime"},
     "status":status,
 }
-pathlib.Path(output_path).write_text(json.dumps(receipt, indent=2)+"\n", encoding="utf-8")
+target_path = pathlib.Path(output_path).resolve()
+target_path.parent.mkdir(parents=True, exist_ok=True)
+descriptor, temp_name = tempfile.mkstemp(prefix=f".{target_path.name}.tmp.", dir=target_path.parent)
+temp_file = pathlib.Path(temp_name)
+try:
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(receipt, indent=2) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temp_file, target_path)
+    dir_fd = os.open(target_path.parent, os.O_RDONLY)
+    try:
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
+finally:
+    if temp_file.exists():
+        try:
+            temp_file.unlink()
+        except OSError:
+            pass
 PY
     printf 'qualification receipt: %s\n' "$RECEIPT_DIR/qualification-receipt.json" >&2
   fi

@@ -38,6 +38,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -739,44 +740,44 @@ def _verify_receipt_payload(
     status = data.get("status")
     recognized: str | None = status if isinstance(status, str) and status in RECEIPT_STATUSES else None
     if recognized is None:
-        findings.append(_finding(ERR_UNRECOGNIZED_STATE, path_str, "status", f"Qualification receipt status {status!r} is not one of {sorted(RECEIPT_STATUSES)}"))
+        findings.append(_finding(ERR_UNRECOGNIZED_STATE, path_str, "status", f"Qualification receipt '{path_str}' status {status!r} is not one of {sorted(RECEIPT_STATUSES)}"))
     commands = data.get("commands")
     command_statuses: list[str] = []
     if not isinstance(commands, list) or len(commands) == 0:
-        findings.append(_finding(ERR_UNREADABLE_INPUT, path_str, "commands", "Qualification receipt commands must be a non-empty list"))
+        findings.append(_finding(ERR_UNREADABLE_INPUT, path_str, "commands", f"Qualification receipt '{path_str}' commands must be a non-empty list"))
     else:
         for idx, cmd in enumerate(commands):
             cmd_status = cmd.get("status") if isinstance(cmd, dict) else None
             if not isinstance(cmd_status, str) or cmd_status not in RECEIPT_COMMAND_STATUSES:
                 findings.append(_finding(
                     ERR_UNRECOGNIZED_STATE, path_str, f"commands[{idx}].status",
-                    f"Qualification receipt command {idx} status {cmd_status!r} is not one of {sorted(RECEIPT_COMMAND_STATUSES)}",
+                    f"Qualification receipt '{path_str}' command {idx} status {cmd_status!r} is not one of {sorted(RECEIPT_COMMAND_STATUSES)}",
                 ))
             else:
                 command_statuses.append(cmd_status)
     if recognized == "passed" and "failed" in command_statuses:
         findings.append(_finding(
             ERR_CLAIM_LEVEL_EXCEEDED, path_str, "status",
-            "Qualification receipt claims 'passed' but records a failed command; the receipt is self-contradictory",
+            f"Qualification receipt '{path_str}' claims 'passed' but records a failed command; the receipt is self-contradictory",
         ))
     if recognized is not None and recognized != "passed":
         if cited:
             findings.append(_finding(
                 ERR_CLAIM_LEVEL_EXCEEDED, path_str, "status",
-                f"Qualification receipt has non-passing status '{recognized}'; cannot support readiness",
+                f"Qualification receipt '{path_str}' has non-passing status '{recognized}'; cannot support readiness",
                 {"status": recognized},
             ))
         else:
             findings.append(_finding(
                 WARN_NONPASSING_RECEIPT, path_str, "status",
-                f"Retained qualification receipt records a non-passing run (status '{recognized}'); it must not be cited as proof",
+                f"Retained qualification receipt '{path_str}' records a non-passing run (status '{recognized}'); it must not be cited as proof",
                 {"status": recognized},
                 severity="warning",
             ))
     if cited and expected_claim_id is not None:
         findings.append(_finding(
             ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_id",
-            f"A qualification receipt binds no claim ID; claim '{expected_claim_id}' must cite a proof bundle bound to it",
+            f"Qualification receipt '{path_str}' binds no claim ID; claim '{expected_claim_id}' must cite a proof bundle bound to it",
             {"expected_claim_id": expected_claim_id},
         ))
     if cited and claim_level is not None:
@@ -784,7 +785,7 @@ def _verify_receipt_payload(
         if rank is not None and rank >= PROMOTION_RANK:
             findings.append(_finding(
                 ERR_CLAIM_LEVEL_EXCEEDED, path_str, "supported_level",
-                f"A qualification receipt declares no supported readiness level; claimed level '{claim_level}' is unsupported",
+                f"Qualification receipt '{path_str}' declares no supported readiness level; claimed level '{claim_level}' is unsupported",
             ))
     return findings, recognized
 
@@ -1015,9 +1016,38 @@ def inspect_qualification_receipt(receipt_path: Path, root: Path) -> tuple[list[
     if data.get("schema") != QUALIFICATION_RECEIPT_SCHEMA:
         return [_finding(
             ERR_UNRECOGNIZED_STATE, path_str, "schema",
-            f"Qualification receipt schema {data.get('schema')!r} is not '{QUALIFICATION_RECEIPT_SCHEMA}'",
+            f"Qualification receipt '{path_str}' schema {data.get('schema')!r} is not '{QUALIFICATION_RECEIPT_SCHEMA}'",
         )], None
     return _verify_receipt_payload(data, path_str, cited=False, expected_claim_id=None, claim_level=None)
+
+
+def write_qualification_receipt(output_path: Path | str, receipt: dict[str, Any]) -> Path:
+    """Atomically writes a qualification receipt to disk:
+    writes to a temporary file in the same directory, fsyncs, and renames into place.
+    """
+    target = Path(output_path).resolve()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    prefix = f".{target.name}.tmp."
+    descriptor, temp_name = tempfile.mkstemp(prefix=prefix, dir=target.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps(receipt, indent=2) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_path, target)
+        dir_fd = os.open(target.parent, os.O_RDONLY)
+        try:
+            os.fsync(dir_fd)
+        finally:
+            os.close(dir_fd)
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+    return target
 
 
 _DELIMITER_CELL_RE = re.compile(r"^:?-+:?$")
