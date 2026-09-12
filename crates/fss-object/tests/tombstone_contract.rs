@@ -97,8 +97,10 @@ fn publish_and_closure_verification_fail_naming_tombstoned_child() -> Result<(),
         store.published_manifest(receipt.root),
         Err(ObjectError::ManifestNotPublished(r)) if r == receipt.root
     ));
+    // verify_closure must still fail closed after child is tombstoned:
+    let verify_result = store.verify_closure(receipt.root);
     assert!(matches!(
-        store.verify_closure(receipt.root),
+        verify_result,
         Err(ObjectError::ManifestNotPublished(r)) if r == receipt.root
     ));
     assert!(store.closure_contains_tombstone(receipt.root));
