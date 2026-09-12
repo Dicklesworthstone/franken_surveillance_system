@@ -5,8 +5,8 @@ use std::fmt;
 
 use crate::{
     BudgetVector, CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest, ContractError,
-    HandoffId, HypothesisDisposition, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
-    PrincipalId, PrivacyGeneration, ProvenanceClass, SessionId, TimestampNs,
+    Generation, HandoffId, HypothesisDisposition, KnowledgeState, LedgerAnchor, MissionId,
+    ObligationId, PrincipalId, PrivacyGeneration, ProvenanceClass, SessionId, TimestampNs,
 };
 
 /// Exact semantic universe used to interpret an agent request or response.
@@ -192,11 +192,73 @@ impl CanonicalEncode for RedactionMarker {
     }
 }
 
+/// Older anchor or generation at which a `stale` proposition was last valid (KSTATE-005).
+///
+/// Each variant names both the older point and the current point it is older than, so a
+/// stale basis can never describe the current anchor or generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StaleBasis {
+    /// The proposition was valid only at an older ledger anchor.
+    OlderAnchor {
+        /// Anchor at which the proposition was last valid.
+        valid_at: Box<LedgerAnchor>,
+        /// Current anchor the proposition has not been revalidated against.
+        current: Box<LedgerAnchor>,
+    },
+    /// The proposition was valid only at an older generation.
+    OlderGeneration {
+        /// Generation at which the proposition was last valid.
+        valid_at: Generation,
+        /// Current generation the proposition has not been revalidated against.
+        current: Generation,
+    },
+}
+
+impl StaleBasis {
+    /// Refuses a basis that is not strictly older than the current anchor or generation.
+    ///
+    /// Anchors from different site lineages are not comparable and are refused.
+    pub fn validate(&self) -> Result<(), ContractError> {
+        let strictly_older = match self {
+            Self::OlderAnchor { valid_at, current } => {
+                valid_at.site_lineage == current.site_lineage
+                    && (valid_at.ledger_epoch, valid_at.commit_sequence)
+                        < (current.ledger_epoch, current.commit_sequence)
+            }
+            Self::OlderGeneration { valid_at, current } => valid_at < current,
+        };
+        if strictly_older {
+            Ok(())
+        } else {
+            Err(ContractError::StaleBasisNotOlder)
+        }
+    }
+}
+
+impl CanonicalEncode for StaleBasis {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        match self {
+            Self::OlderAnchor { valid_at, current } => {
+                encoder.u8(1);
+                valid_at.encode_canonical(encoder);
+                current.encode_canonical(encoder);
+            }
+            Self::OlderGeneration { valid_at, current } => {
+                encoder.u8(2);
+                encoder.u64(valid_at.0);
+                encoder.u64(current.0);
+            }
+        }
+    }
+}
+
 /// Typed state-specific basis that a knowledge cell must carry when its state names one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum KnowledgeStateBasis {
     /// Redaction marker required by `redacted` (KSTATE-007).
     Redaction(RedactionMarker),
+    /// Older anchor or generation required by `stale` (KSTATE-005).
+    Stale(StaleBasis),
 }
 
 impl KnowledgeStateBasis {
@@ -205,6 +267,7 @@ impl KnowledgeStateBasis {
     pub const fn knowledge_state(&self) -> KnowledgeState {
         match self {
             Self::Redaction(_) => KnowledgeState::Redacted,
+            Self::Stale(_) => KnowledgeState::Stale,
         }
     }
 
@@ -212,6 +275,7 @@ impl KnowledgeStateBasis {
     pub fn validate(&self) -> Result<(), ContractError> {
         match self {
             Self::Redaction(_) => Ok(()),
+            Self::Stale(basis) => basis.validate(),
         }
     }
 }
@@ -223,6 +287,10 @@ impl CanonicalEncode for KnowledgeStateBasis {
                 encoder.u8(1);
                 marker.encode_canonical(encoder);
             }
+            Self::Stale(basis) => {
+                encoder.u8(2);
+                basis.encode_canonical(encoder);
+            }
         }
     }
 }
@@ -231,11 +299,11 @@ impl CanonicalEncode for KnowledgeStateBasis {
 const fn required_basis_error(state: KnowledgeState) -> Option<ContractError> {
     match state {
         KnowledgeState::Redacted => Some(ContractError::RedactionMarkerRequired),
+        KnowledgeState::Stale => Some(ContractError::StaleBasisRequired),
         KnowledgeState::Known
         | KnowledgeState::Estimated
         | KnowledgeState::Unknown
         | KnowledgeState::Conflicted
-        | KnowledgeState::Stale
         | KnowledgeState::NotObservable
         | KnowledgeState::Indeterminate
         | KnowledgeState::NotApplicable => None,

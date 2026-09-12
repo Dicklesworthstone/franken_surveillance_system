@@ -3,10 +3,10 @@ use std::error::Error;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest, ContractBasis,
-    ContractBasisRegistryBytes, DeltaPriority, KnowledgeCell, KnowledgeState, KnowledgeStateBasis,
-    LedgerAnchor, MeaningfulDeltaClass, MissionId, ObligationId, PrincipalId, PrivacyGeneration,
-    ProvenanceClass, RedactionMarker, RedactionReason, ResourcePressure, SessionId,
-    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    ContractBasisRegistryBytes, DeltaPriority, Generation, KnowledgeCell, KnowledgeState,
+    KnowledgeStateBasis, LedgerAnchor, MeaningfulDeltaClass, MissionId, ObligationId, PrincipalId,
+    PrivacyGeneration, ProvenanceClass, RedactionMarker, RedactionReason, ResourcePressure,
+    SessionId, SituationCapsule, SituationFrame, StaleBasis, TimestampNs, WorldEnvelope,
 };
 
 use crate::{
@@ -75,6 +75,10 @@ fn fixture_state_basis(
         KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(RedactionMarker {
             reason: RedactionReason::PrivacyProjection,
             privacy_generation: PrivacyGeneration::parse("privacy:projection:v1")?,
+        })),
+        KnowledgeState::Stale => Some(KnowledgeStateBasis::Stale(StaleBasis::OlderGeneration {
+            valid_at: Generation::from_u64(1),
+            current: Generation::from_u64(2),
         })),
         _ => None,
     })

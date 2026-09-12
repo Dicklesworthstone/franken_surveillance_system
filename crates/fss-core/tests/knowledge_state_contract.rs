@@ -19,8 +19,9 @@ use std::str::FromStr;
 
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
-    ContractError, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, PrivacyGeneration,
-    ProvenanceClass, REDACTED_STATEMENT_MARKER, RedactionMarker, RedactionReason, TimestampNs,
+    ContractError, Generation, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
+    PrivacyGeneration, ProvenanceClass, REDACTED_STATEMENT_MARKER, RedactionMarker,
+    RedactionReason, StaleBasis, TimestampNs,
 };
 
 #[test]
@@ -569,18 +570,20 @@ fn test_stale_knowledge_cell_revalidation_and_hard_gate() -> Result<(), Box<dyn 
     let now = TimestampNs(2_000_000_000);
     let evidence = ContentDigest::sha256(b"historical_perimeter_clear_assertion");
 
-    // Construct a cell with KnowledgeState::Stale
+    // Evidence present, no contradictions, and validity NOT expired, so only the knowledge
+    // state can refuse the premise.
     let cell = KnowledgeCell {
         claim_id: "claim:perimeter:clear:001".to_string(),
-        statement: "Perimeter clear at older anchor timestamp".to_string(),
+        statement: "Perimeter clear at older anchor".to_string(),
         knowledge_state: KnowledgeState::Stale,
         provenance: ProvenanceClass::Remembered,
         hypothesis: None,
         evidence: vec![evidence],
         contradictions: vec![],
-        valid_until: Some(TimestampNs(1_500_000_000)), // expired
-        state_basis: None,
-    };
+        valid_until: Some(TimestampNs(3_000_000_000)),
+        state_basis: Some(KnowledgeStateBasis::Stale(older_anchor_basis())),
+    }
+    .validated()?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_stale());
@@ -596,13 +599,12 @@ fn test_stale_knowledge_cell_revalidation_and_hard_gate() -> Result<(), Box<dyn 
         "Stale knowledge state must NEVER authorize irreversible effects"
     );
 
-    // Even if valid_until is artificially extended, Stale knowledge_state alone strictly denies effect premise
-    let mut extended_cell = cell;
-    extended_cell.valid_until = Some(TimestampNs(3_000_000_000));
-    assert!(
-        !extended_cell.is_irreversible_effect_premise(now),
-        "Stale knowledge state must NEVER authorize irreversible effects even if valid_until is in future"
-    );
+    // The same fixture is a premise once explicitly revalidated as Known (basis dropped), so
+    // the refusal above came from the knowledge state alone.
+    let mut revalidated = cell;
+    revalidated.knowledge_state = KnowledgeState::Known;
+    revalidated.state_basis = None;
+    assert!(revalidated.is_irreversible_effect_premise(now));
 
     Ok(())
 }
@@ -1074,6 +1076,7 @@ fn redaction_marker() -> Result<RedactionMarker, ContractError> {
 fn valid_basis_for(state: KnowledgeState) -> Result<Option<KnowledgeStateBasis>, ContractError> {
     Ok(match state {
         KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(redaction_marker()?)),
+        KnowledgeState::Stale => Some(KnowledgeStateBasis::Stale(older_anchor_basis())),
         _ => None,
     })
 }
@@ -1271,6 +1274,138 @@ fn test_irreversible_effect_premise_across_all_knowledge_states() -> Result<(), 
         }
     }
     assert_eq!(mismatches, Vec::<String>::new());
+
+    Ok(())
+}
+
+/// A ledger anchor on the test lineage at `commit_sequence`.
+fn anchor_at(commit_sequence: u64) -> LedgerAnchor {
+    let mut anchor = LedgerAnchor::genesis("site:knowledge-state");
+    anchor.commit_sequence = commit_sequence;
+    anchor
+}
+
+/// A stale basis naming an anchor strictly older than the current one.
+fn older_anchor_basis() -> StaleBasis {
+    StaleBasis::OlderAnchor {
+        valid_at: Box::new(anchor_at(7)),
+        current: Box::new(anchor_at(9)),
+    }
+}
+
+/// A valid stale cell whose only premise blocker is its knowledge state.
+fn stale_cell(basis: StaleBasis) -> KnowledgeCell {
+    KnowledgeCell {
+        claim_id: "claim:perimeter:clear:002".to_string(),
+        statement: "Perimeter clear at an older anchor".to_string(),
+        knowledge_state: KnowledgeState::Stale,
+        provenance: ProvenanceClass::Remembered,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(
+            b"historical_perimeter_clear_assertion",
+        )],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(3_000_000_000)),
+        state_basis: Some(KnowledgeStateBasis::Stale(basis)),
+    }
+}
+
+#[test]
+fn test_stale_cell_without_basis_is_refused() -> Result<(), Box<dyn Error>> {
+    let mut cell = stale_cell(older_anchor_basis());
+    cell.state_basis = None;
+
+    assert_eq!(cell.validate(), Err(ContractError::StaleBasisRequired));
+    assert_eq!(
+        cell.clone().validated(),
+        Err(ContractError::StaleBasisRequired)
+    );
+    assert_eq!(
+        ContractError::StaleBasisRequired.code(),
+        "stale_basis_required"
+    );
+    assert!(!cell.is_irreversible_effect_premise(TimestampNs(2_000_000_000)));
+
+    Ok(())
+}
+
+#[test]
+fn test_stale_basis_must_name_a_strictly_older_anchor_or_generation() -> Result<(), Box<dyn Error>>
+{
+    // Accepted: strictly older anchor on the same lineage, strictly older generation.
+    stale_cell(older_anchor_basis()).validate()?;
+    stale_cell(StaleBasis::OlderGeneration {
+        valid_at: Generation::from_u64(3),
+        current: Generation::from_u64(4),
+    })
+    .validate()?;
+    let mut older_epoch = anchor_at(50);
+    older_epoch.ledger_epoch = 1;
+    let mut newer_epoch = anchor_at(2);
+    newer_epoch.ledger_epoch = 2;
+    stale_cell(StaleBasis::OlderAnchor {
+        valid_at: Box::new(older_epoch),
+        current: Box::new(newer_epoch),
+    })
+    .validate()?;
+
+    // Refused: the "older" point is the current point, is newer, or is not comparable.
+    let mut other_lineage = anchor_at(1);
+    other_lineage.site_lineage = "site:other".to_string();
+    let refused = [
+        StaleBasis::OlderAnchor {
+            valid_at: Box::new(anchor_at(9)),
+            current: Box::new(anchor_at(9)),
+        },
+        StaleBasis::OlderAnchor {
+            valid_at: Box::new(anchor_at(10)),
+            current: Box::new(anchor_at(9)),
+        },
+        StaleBasis::OlderAnchor {
+            valid_at: Box::new(other_lineage),
+            current: Box::new(anchor_at(9)),
+        },
+        StaleBasis::OlderGeneration {
+            valid_at: Generation::from_u64(4),
+            current: Generation::from_u64(4),
+        },
+        StaleBasis::OlderGeneration {
+            valid_at: Generation::from_u64(5),
+            current: Generation::from_u64(4),
+        },
+    ];
+    for basis in refused {
+        assert_eq!(
+            stale_cell(basis).validate(),
+            Err(ContractError::StaleBasisNotOlder)
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_stale_cell_cannot_pass_as_current() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(2_000_000_000);
+    let stale = stale_cell(older_anchor_basis()).validated()?;
+    assert!(!stale.is_irreversible_effect_premise(now));
+
+    // Relabelling the state while keeping the stale basis does not launder it into a
+    // current fact: the cell is refused and is never a premise.
+    let mut relabelled = stale.clone();
+    relabelled.knowledge_state = KnowledgeState::Known;
+    assert_eq!(
+        relabelled.validate(),
+        Err(ContractError::KnowledgeStateBasisMismatch)
+    );
+    assert!(!relabelled.is_irreversible_effect_premise(now));
+
+    // The stale basis is bound into the digest, so a stale cell never shares a digest with
+    // the current (revalidated) cell for the same claim.
+    let mut revalidated = stale.clone();
+    revalidated.knowledge_state = KnowledgeState::Known;
+    revalidated.state_basis = None;
+    assert_ne!(stale.cell_digest(), revalidated.cell_digest());
 
     Ok(())
 }

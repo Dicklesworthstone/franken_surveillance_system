@@ -724,4 +724,13 @@ mod tests {
             Err(ContractError::RedactionMarkerRequired)
         );
     }
+
+    #[test]
+    fn changed_cells_refuse_stale_cell_without_stale_basis() {
+        let cells = [cell(KnowledgeState::Stale)];
+        assert_eq!(
+            validate_changed_cells(&cells),
+            Err(ContractError::StaleBasisRequired)
+        );
+    }
 }

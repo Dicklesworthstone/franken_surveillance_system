@@ -60,7 +60,7 @@ pub enum KnowledgeState {
     Unknown,
     /// Material evidence conflicts.
     Conflicted,
-    /// The basis is older than the permitted freshness limit.
+    /// The proposition was valid only at an older anchor or generation and has not been revalidated.
     Stale,
     /// The declared domain was not observable.
     NotObservable,
@@ -2474,6 +2474,10 @@ pub enum ContractError {
     RedactionMarkerRequired,
     /// A knowledge cell carries a state basis that belongs to a different knowledge state.
     KnowledgeStateBasisMismatch,
+    /// A `stale` knowledge cell lacks the older anchor or generation it was valid at.
+    StaleBasisRequired,
+    /// A stale basis is not strictly older than the current anchor or generation it names.
+    StaleBasisNotOlder,
 }
 
 impl ContractError {
@@ -2509,6 +2513,8 @@ impl ContractError {
             Self::LatestNotResolvable => "latest_not_resolvable",
             Self::RedactionMarkerRequired => "redaction_marker_required",
             Self::KnowledgeStateBasisMismatch => "knowledge_state_basis_mismatch",
+            Self::StaleBasisRequired => "stale_basis_required",
+            Self::StaleBasisNotOlder => "stale_basis_not_older",
         }
     }
 }
