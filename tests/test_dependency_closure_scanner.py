@@ -81,14 +81,17 @@ crates = ["tokio", "async-std", "smol", "reqwest", "hyper"]
     return allowlist_path
 
 
-def make_valid_isolated_workspace(tmp_path: Path) -> tuple[Path, Path]:
+def make_valid_isolated_workspace(tmp_path: Path, resolve_runtime: bool = False) -> tuple[Path, Path]:
     """Creates a minimal valid Cargo workspace with a valid Cargo.lock and allowlist."""
     allowlist_path = make_minimal_allowlist(tmp_path)
+    members = ["crates/test-core"]
+    if resolve_runtime:
+        members.append("crates/asupersync")
     cargo_toml = tmp_path / "Cargo.toml"
     cargo_toml.write_text(
-        """[workspace]
+        f"""[workspace]
 resolver = "3"
-members = ["crates/test-core"]
+members = {json.dumps(members)}
 
 [workspace.metadata.fss]
 sole_async_runtime = "asupersync"
@@ -109,15 +112,39 @@ edition = "2024"
     src_dir.mkdir(parents=True, exist_ok=True)
     (src_dir / "lib.rs").write_text("// safe core\n", encoding="utf-8")
 
-    cargo_lock = tmp_path / "Cargo.lock"
-    cargo_lock.write_text(
-        """# Automatically generated
-version = 4
-
-[[package]]
+    lock_pkgs = [
+        """[[package]]
 name = "test-core"
 version = "0.0.1"
+"""
+    ]
+
+    if resolve_runtime:
+        as_dir = tmp_path / "crates" / "asupersync"
+        as_dir.mkdir(parents=True, exist_ok=True)
+        (as_dir / "Cargo.toml").write_text(
+            """[package]
+name = "asupersync"
+version = "0.1.0"
+edition = "2024"
 """,
+            encoding="utf-8",
+        )
+        (as_dir / "src").mkdir(parents=True, exist_ok=True)
+        (as_dir / "src" / "lib.rs").write_text("// asupersync runtime\n", encoding="utf-8")
+        lock_pkgs.append(
+            """[[package]]
+name = "asupersync"
+version = "0.1.0"
+"""
+        )
+
+    cargo_lock = tmp_path / "Cargo.lock"
+    cargo_lock.write_text(
+        f"""# Automatically generated
+version = 4
+
+{"".join(lock_pkgs)}""",
         encoding="utf-8",
     )
     return tmp_path, allowlist_path
@@ -126,9 +153,9 @@ version = "0.0.1"
 class TestDependencyClosurePositiveControls(unittest.TestCase):
     """Positive controls asserting real repo and valid isolated fixtures pass."""
 
-    def test_real_repo_passes(self) -> None:
-        """The real repository passes the dependency closure audit with zero errors."""
-        is_valid, findings, summary = audit_dependency_closure(ROOT)
+    def test_real_repo_with_allow_unresolved_runtime_passes(self) -> None:
+        """The real repository passes the dependency closure audit with allow_unresolved_runtime=True."""
+        is_valid, findings, summary = audit_dependency_closure(ROOT, allow_unresolved_runtime=True)
         self.assertTrue(
             is_valid,
             f"Real repo failed dependency closure audit: {[f.message for f in findings if f.severity == 'error']}",
@@ -137,16 +164,31 @@ class TestDependencyClosurePositiveControls(unittest.TestCase):
         self.assertEqual(summary["error_count"], 0)
         self.assertGreaterEqual(summary["package_count"], 6)
 
-    def test_cli_real_repo_passes(self) -> None:
-        """CLI invocation on the real repository exits with code 0."""
-        cmd = [sys.executable, str(ROOT / "scripts/dependency_closure_scanner.py")]
+    def test_real_repo_default_fails_closed_on_unresolved_runtime(self) -> None:
+        """The real repository fails closed by default because asupersync is not yet resolved in Cargo.lock."""
+        is_valid, findings, summary = audit_dependency_closure(ROOT)
+        self.assertFalse(is_valid)
+        self.assertEqual(summary["status"], "fail")
+        codes = [f.code for f in findings]
+        self.assertIn(ERR_DECLARED_RUNTIME_UNRESOLVED, codes)
+
+    def test_cli_real_repo_with_allow_unresolved_runtime_passes(self) -> None:
+        """CLI invocation on the real repository with --allow-unresolved-runtime exits with code 0."""
+        cmd = [sys.executable, str(ROOT / "scripts/dependency_closure_scanner.py"), "--allow-unresolved-runtime"]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
         self.assertEqual(result.returncode, 0, f"CLI failed:\n{result.stderr}\n{result.stdout}")
         self.assertIn("[PASS]", result.stdout)
 
+    def test_cli_real_repo_default_fails_closed(self) -> None:
+        """Default CLI invocation on the real repository exits with code 1."""
+        cmd = [sys.executable, str(ROOT / "scripts/dependency_closure_scanner.py")]
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("[FAIL]", result.stdout)
+
     def test_cli_json_mode(self) -> None:
-        """CLI --json emits valid JSON matching summary and findings structure."""
-        cmd = [sys.executable, str(ROOT / "scripts/dependency_closure_scanner.py"), "--json"]
+        """CLI --json with --allow-unresolved-runtime emits valid JSON matching summary and findings structure."""
+        cmd = [sys.executable, str(ROOT / "scripts/dependency_closure_scanner.py"), "--allow-unresolved-runtime", "--json"]
         result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
         self.assertEqual(result.returncode, 0, f"CLI JSON mode failed:\n{result.stderr}")
         data = json.loads(result.stdout)
@@ -154,6 +196,16 @@ class TestDependencyClosurePositiveControls(unittest.TestCase):
         self.assertIn("findings", data)
         self.assertEqual(data["summary"]["status"], "pass")
         self.assertEqual(data["summary"]["error_count"], 0)
+
+    def test_isolated_workspace_fully_resolved_passes(self) -> None:
+        """A synthetic workspace with asupersync resolved passes audit with zero errors under default settings."""
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td), resolve_runtime=True)
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertTrue(is_valid, f"Fully resolved workspace failed: {[f.message for f in findings]}")
+            self.assertEqual(summary["status"], "pass")
+            self.assertEqual(summary["error_count"], 0)
+            self.assertTrue(summary["declared_runtime_resolved"])
 
 
 class TestPlantedNegativeUnallowlistedCrate(unittest.TestCase):
@@ -399,6 +451,8 @@ dependencies = ["blake3"]
             self.assertFalse(is_valid)
             codes = [f.code for f in findings]
             self.assertIn(ERR_UNALLOWLISTED_CRATE, codes)
+            cand_findings = [f for f in findings if f.code == ERR_UNALLOWLISTED_CRATE and "exception candidate" in f.message]
+            self.assertTrue(len(cand_findings) > 0, f"Expected exception candidate message, got: {[f.message for f in findings]}")
 
 
 class TestPlantedNegativeBuildDevAndTargetDependencies(unittest.TestCase):
@@ -622,7 +676,7 @@ version = "0.0.1"
             self.assertIn(ERR_VERSION_SOURCE_MISMATCH, [f.code for f in findings])
 
     def test_git_dependency_without_40_hex_revision_fails(self) -> None:
-        """Git dependency without exact 40-hex commit hash fails closed."""
+        """Git dependency without exact 40-hex commit hash fails closed with strict check."""
         with tempfile.TemporaryDirectory() as td:
             ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
             (ws_root / "Cargo.lock").write_text(
@@ -635,7 +689,7 @@ version = "0.0.1"
 [[package]]
 name = "fsqlite-sys"
 version = "0.1.0"
-source = "git+https://github.com/example/fsqlite?branch=main"
+source = "git+https://github.com/Dicklesworthstone/fsqlite?branch=main"
 """,
                 encoding="utf-8",
             )
@@ -643,13 +697,15 @@ source = "git+https://github.com/example/fsqlite?branch=main"
             is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
             self.assertFalse(is_valid)
             codes = [f.code for f in findings]
+            # Strict assertion without loose 'or' disjunction: must detect missing 40-hex commit hash
+            hex_findings = [f for f in findings if "40-hex" in f.message or "commit hash" in f.message]
             self.assertTrue(
-                ERR_VERSION_SOURCE_MISMATCH in codes or ERR_UNALLOWLISTED_SOURCE in codes,
-                f"Expected source mismatch or unallowlisted source code, got: {codes}",
+                len(hex_findings) > 0,
+                f"Expected finding demanding 40-hex commit hash, got findings: {[(f.code, f.message) for f in findings]}",
             )
 
     def test_unallowlisted_git_source_fails(self) -> None:
-        """A git dependency from an unauthorized host/repository fails closed."""
+        """A git dependency from an unauthorized host/repository fails closed with strict check."""
         with tempfile.TemporaryDirectory() as td:
             ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
             (ws_root / "Cargo.lock").write_text(
@@ -670,21 +726,24 @@ source = "git+https://malicious.example.com/untrusted/repo#0123456789abcdef01234
             is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
             self.assertFalse(is_valid)
             codes = [f.code for f in findings]
+            # Strict assertion without loose 'or' disjunction: must specifically fail with ERR_UNALLOWLISTED_SOURCE
+            self.assertIn(ERR_UNALLOWLISTED_SOURCE, codes)
+            src_finding = next(f for f in findings if f.code == ERR_UNALLOWLISTED_SOURCE)
             self.assertTrue(
-                ERR_UNALLOWLISTED_SOURCE in codes or ERR_VERSION_SOURCE_MISMATCH in codes,
-                f"Expected unallowlisted source error, got {codes}",
+                "unallowlisted" in src_finding.message or "git repository" in src_finding.message,
+                f"Expected unallowlisted git message, got: {src_finding.message}",
             )
 
     def test_path_dependency_escaping_repository_fails(self) -> None:
-        """A path dependency escaping workspace boundary without sibling admission fails closed."""
+        """A path dependency escaping workspace boundary fails closed with ERR_UNALLOWLISTED_SOURCE (not crate name error)."""
         with tempfile.TemporaryDirectory() as td:
-            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
-            outside_dir = Path(td).parent / "outside-escape-crate"
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td), resolve_runtime=True)
+            outside_dir = Path(td).parent / "fsqlite-escape"
             try:
                 outside_dir.mkdir(parents=True, exist_ok=True)
                 (outside_dir / "Cargo.toml").write_text(
                     """[package]
-name = "outside-escape-crate"
+name = "fsqlite-escape"
 version = "0.1.0"
 edition = "2024"
 """,
@@ -693,6 +752,8 @@ edition = "2024"
                 (outside_dir / "src").mkdir(parents=True, exist_ok=True)
                 (outside_dir / "src" / "lib.rs").write_text("// escaping\n", encoding="utf-8")
 
+                # fsqlite-escape is in allowlisted family 'fsqlite-*', so crate name alone is allowed,
+                # proving that the path boundary escaping check is what specifically fails!
                 (ws_root / "crates" / "test-core" / "Cargo.toml").write_text(
                     f"""[package]
 name = "test-core"
@@ -700,7 +761,7 @@ version = "0.0.1"
 edition = "2024"
 
 [dependencies]
-outside-escape-crate = {{ path = "{outside_dir.as_posix()}" }}
+fsqlite-escape = {{ path = "{outside_dir.as_posix()}" }}
 """,
                     encoding="utf-8",
                 )
@@ -708,12 +769,16 @@ outside-escape-crate = {{ path = "{outside_dir.as_posix()}" }}
                     """version = 4
 
 [[package]]
-name = "test-core"
-version = "0.0.1"
-dependencies = ["outside-escape-crate"]
+name = "asupersync"
+version = "0.1.0"
 
 [[package]]
-name = "outside-escape-crate"
+name = "test-core"
+version = "0.0.1"
+dependencies = ["fsqlite-escape"]
+
+[[package]]
+name = "fsqlite-escape"
 version = "0.1.0"
 """,
                     encoding="utf-8",
@@ -722,10 +787,11 @@ version = "0.1.0"
                 is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
                 self.assertFalse(is_valid)
                 codes = [f.code for f in findings]
-                self.assertTrue(
-                    ERR_UNALLOWLISTED_SOURCE in codes or ERR_UNALLOWLISTED_CRATE in codes,
-                    f"Expected unallowlisted source or crate error, got: {codes}",
-                )
+                # Strict assertion without loose 'or' disjunction
+                self.assertIn(ERR_UNALLOWLISTED_SOURCE, codes)
+                self.assertNotIn(ERR_UNALLOWLISTED_CRATE, codes)
+                esc_finding = next(f for f in findings if f.code == ERR_UNALLOWLISTED_SOURCE)
+                self.assertIn("escapes", esc_finding.message)
             finally:
                 if outside_dir.exists():
                     import shutil
@@ -807,9 +873,9 @@ class TestDeclaredRuntimeReporting(unittest.TestCase):
     def test_declared_runtime_unresolved_honestly_reported(self) -> None:
         """When sole_async_runtime = 'asupersync' is declared but absent from Cargo.lock,
 
-        it is honestly reported in diagnostics/summary, never silently passed.
+        and allow_unresolved_runtime=True is used, it is honestly reported in diagnostics/summary as a warning.
         """
-        is_valid, findings, summary = audit_dependency_closure(ROOT)
+        is_valid, findings, summary = audit_dependency_closure(ROOT, allow_unresolved_runtime=True)
         self.assertTrue(is_valid)
         self.assertEqual(summary["declared_runtime"], "asupersync")
         self.assertFalse(summary["declared_runtime_resolved"])
@@ -824,13 +890,158 @@ class TestDeclaredRuntimeReporting(unittest.TestCase):
         status_finding = next(f for f in findings if f.code == STATUS_DECLARED_RUNTIME_UNRESOLVED)
         self.assertIn("asupersync", status_finding.message)
 
-    def test_require_resolved_runtime_flag_fails_when_unresolved(self) -> None:
-        """When require_resolved_runtime=True and runtime is unresolved, audit fails closed."""
-        is_valid, findings, summary = audit_dependency_closure(ROOT, require_resolved_runtime=True)
+    def test_require_resolved_runtime_default_fails_when_unresolved(self) -> None:
+        """By default, require_resolved_runtime=True causes audit to fail closed when runtime is unresolved."""
+        is_valid, findings, summary = audit_dependency_closure(ROOT)
         self.assertFalse(is_valid)
         self.assertEqual(summary["status"], "fail")
         codes = [f.code for f in findings]
         self.assertIn(ERR_DECLARED_RUNTIME_UNRESOLVED, codes)
+
+
+class TestReview659AdversarialFindings(unittest.TestCase):
+    """Adversarial test cases specifically enforcing the 7 findings from review-659."""
+
+    def test_finding_1_unresolved_or_foreign_runtime_must_fail_closed(self) -> None:
+        """Finding 1: Default invocation with unresolved runtime or foreign runtime must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
+
+            # Case A: Default invocation without asupersync in lock must fail closed
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid, "Default audit must fail closed when declared runtime is unresolved")
+            self.assertEqual(summary["status"], "fail")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_DECLARED_RUNTIME_UNRESOLVED, codes)
+
+            # Case B: Foreign runtime declared in Cargo.toml must fail closed against policy
+            (ws_root / "Cargo.toml").write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/test-core"]
+[workspace.metadata.fss]
+sole_async_runtime = "tokio"
+""",
+                encoding="utf-8",
+            )
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid, "Foreign async runtime must fail closed against asupersync policy")
+            codes = [f.code for f in findings]
+            self.assertTrue(
+                ERR_FORBIDDEN_CRATE in codes or ERR_DECLARED_RUNTIME_UNRESOLVED in codes,
+                f"Expected forbidden crate or runtime error, got: {codes}",
+            )
+
+            # Case C: Omitted sole_async_runtime must not silently inject asupersync when policy demands it
+            (ws_root / "Cargo.toml").write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/test-core"]
+""",
+                encoding="utf-8",
+            )
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid, "Omitted sole_async_runtime must fail closed when policy requires asupersync")
+
+    def test_finding_2_workspace_dependencies_table_must_be_scanned(self) -> None:
+        """Finding 2: [workspace.dependencies] in root Cargo.toml must be scanned for forbidden/unallowlisted crates and escaping paths."""
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
+            (ws_root / "Cargo.toml").write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/test-core"]
+[workspace.dependencies]
+tokio = "1.0"
+evil_path = { path = "/outside/escape" }
+[workspace.metadata.fss]
+sole_async_runtime = "asupersync"
+""",
+                encoding="utf-8",
+            )
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid, "Forbidden or unallowlisted entries in [workspace.dependencies] must fail closed")
+            codes = [f.code for f in findings]
+            self.assertTrue(
+                ERR_FORBIDDEN_CRATE in codes or ERR_UNALLOWLISTED_SOURCE in codes,
+                f"Expected ERR_FORBIDDEN_CRATE or ERR_UNALLOWLISTED_SOURCE, got: {codes}",
+            )
+
+    def test_finding_3_source_mismatch_between_lock_and_metadata_must_fail(self) -> None:
+        """Finding 3: Source mismatch between Cargo.lock and metadata must fail closed with explicit source in message."""
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
+            (ws_root / "Cargo.lock").write_text(
+                """version = 4
+
+[[package]]
+name = "test-core"
+version = "0.0.1"
+source = "git+https://github.com/Dicklesworthstone/test-core#0123456789abcdef0123456789abcdef01234567"
+""",
+                encoding="utf-8",
+            )
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid, "Source mismatch between Cargo.lock and metadata must fail closed")
+            source_findings = [
+                f for f in findings if f.code == ERR_VERSION_SOURCE_MISMATCH and "source" in f.message
+            ]
+            self.assertTrue(
+                len(source_findings) > 0,
+                f"Expected ERR_VERSION_SOURCE_MISMATCH with 'source' in message, got: {[(f.code, f.message) for f in findings]}",
+            )
+
+    def test_finding_5_corrupt_member_manifest_fails_closed(self) -> None:
+        """Finding 5: Corrupt or unreadable member Cargo.toml must fail closed with ERR_METADATA_UNREADABLE."""
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
+            (ws_root / "crates" / "test-core" / "Cargo.toml").write_text("<<<invalid toml syntax>>>", encoding="utf-8")
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid, "Corrupt workspace member manifest must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_METADATA_UNREADABLE, codes)
+
+    def test_finding_6_locked_metadata_drift_fails_closed(self) -> None:
+        """Finding 6: Lockfile drift where --locked fails must fail closed without unlocked retry fallback."""
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
+            # Modify Cargo.toml to add a dependency not present in Cargo.lock, causing --locked to exit non-zero
+            (ws_root / "crates" / "test-core" / "Cargo.toml").write_text(
+                """[package]
+name = "test-core"
+version = "0.0.2"
+edition = "2024"
+""",
+                encoding="utf-8",
+            )
+            # Cargo.lock still has version 0.0.1
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid, "Lockfile drift under --locked must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_METADATA_UNREADABLE, codes)
+
+    def test_finding_7_feature_and_manifest_dependencies_scanned(self) -> None:
+        """Finding 7: Unallowlisted git host in feature or optional manifest dependency must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
+            (ws_root / "crates" / "test-core" / "Cargo.toml").write_text(
+                """[package]
+name = "test-core"
+version = "0.0.1"
+edition = "2024"
+
+[dependencies]
+fsqlite-sys = { git = "https://untrusted-host.evil.org/fsqlite", branch = "main", optional = true }
+
+[features]
+untrusted_feature = ["dep:fsqlite-sys"]
+""",
+                encoding="utf-8",
+            )
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid, "Untrusted git dependency in manifest must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNALLOWLISTED_SOURCE, codes)
 
 
 if __name__ == "__main__":

@@ -291,8 +291,10 @@ def parse_cargo_lock(lock_path: Path, root: Path) -> tuple[dict[str, list[dict[s
     return pkg_map, findings
 
 
-def parse_root_manifest(manifest_path: Path, root: Path) -> tuple[dict[str, Any] | None, set[str], str | None, list[ClosureFinding]]:
-    """Loads root Cargo.toml, extracts workspace members and declared async runtime."""
+def parse_root_manifest(
+    manifest_path: Path, root: Path
+) -> tuple[dict[str, Any] | None, set[str], str | None, dict[str, Any], list[ClosureFinding]]:
+    """Loads root Cargo.toml, extracts workspace members, declared async runtime, and workspace dependencies."""
     findings: list[ClosureFinding] = []
     rel_path = sanitize_path(manifest_path, root)
 
@@ -307,7 +309,7 @@ def parse_root_manifest(manifest_path: Path, root: Path) -> tuple[dict[str, Any]
                 remediation=DIAGNOSTIC_REGISTRY[ERR_METADATA_UNREADABLE]["remediation"],
             )
         )
-        return None, set(), None, findings
+        return None, set(), None, {}, findings
 
     try:
         content = manifest_path.read_text(encoding="utf-8")
@@ -323,7 +325,7 @@ def parse_root_manifest(manifest_path: Path, root: Path) -> tuple[dict[str, Any]
                 remediation=DIAGNOSTIC_REGISTRY[ERR_METADATA_UNREADABLE]["remediation"],
             )
         )
-        return None, set(), None, findings
+        return None, set(), None, {}, findings
 
     member_names: set[str] = set()
     ws_members = data.get("workspace", {}).get("members", [])
@@ -337,8 +339,28 @@ def parse_root_manifest(manifest_path: Path, root: Path) -> tuple[dict[str, Any]
                         m_name = m_data.get("package", {}).get("name")
                         if isinstance(m_name, str):
                             member_names.add(m_name)
-                    except (OSError, tomllib.TOMLDecodeError):
-                        pass
+                    except (OSError, tomllib.TOMLDecodeError) as exc:
+                        findings.append(
+                            ClosureFinding(
+                                code=ERR_METADATA_UNREADABLE,
+                                file=sanitize_path(member_manifest, root),
+                                location="read",
+                                message=f"Workspace member manifest is unreadable or malformed: {exc}",
+                                severity="error",
+                                remediation=DIAGNOSTIC_REGISTRY[ERR_METADATA_UNREADABLE]["remediation"],
+                            )
+                        )
+                else:
+                    findings.append(
+                        ClosureFinding(
+                            code=ERR_METADATA_UNREADABLE,
+                            file=sanitize_path(member_manifest, root),
+                            location="file",
+                            message=f"Workspace member manifest not found: {member_manifest}",
+                            severity="error",
+                            remediation=DIAGNOSTIC_REGISTRY[ERR_METADATA_UNREADABLE]["remediation"],
+                        )
+                    )
 
     # Single-crate package root fallback
     pkg_name = data.get("package", {}).get("name")
@@ -349,11 +371,15 @@ def parse_root_manifest(manifest_path: Path, root: Path) -> tuple[dict[str, Any]
     if declared_runtime is not None and not isinstance(declared_runtime, str):
         declared_runtime = None
 
-    return data, member_names, declared_runtime, findings
+    workspace_dependencies = data.get("workspace", {}).get("dependencies", {})
+    if not isinstance(workspace_dependencies, dict):
+        workspace_dependencies = {}
+
+    return data, member_names, declared_runtime, workspace_dependencies, findings
 
 
 def run_cargo_metadata(root: Path, manifest_path: Path) -> tuple[dict[str, Any] | None, str | None]:
-    """Invokes `cargo metadata --offline --all-features --format-version 1`."""
+    """Invokes `cargo metadata --locked --offline --all-features --format-version 1` strictly without unlocked fallback."""
     cmd_locked = [
         "cargo",
         "metadata",
@@ -368,7 +394,24 @@ def run_cargo_metadata(root: Path, manifest_path: Path) -> tuple[dict[str, Any] 
 
     proc = subprocess.run(cmd_locked, cwd=root, capture_output=True, text=True)
     if proc.returncode != 0:
-        # Fallback without --locked in case of synthetic test fixtures
+        toolchain_file = root / "rust-toolchain.toml"
+        rustup_exc: Exception | None = None
+        if toolchain_file.is_file() and shutil.which("rustup"):
+            try:
+                tc_data = tomllib.loads(toolchain_file.read_text(encoding="utf-8"))
+                channel = tc_data.get("toolchain", {}).get("channel")
+                if channel:
+                    rustup_cmd = ["rustup", "run", channel] + cmd_locked
+                    proc = subprocess.run(rustup_cmd, cwd=root, capture_output=True, text=True)
+            except (OSError, tomllib.TOMLDecodeError, subprocess.SubprocessError) as exc:
+                rustup_exc = exc
+
+    if proc.returncode != 0:
+        base_err = proc.stderr.strip() or proc.stdout.strip() or f"cargo metadata --locked failed with exit code {proc.returncode}"
+        locked_err = f"{base_err} (rustup fallback error: {rustup_exc})" if rustup_exc else base_err
+        # When --locked fails (e.g. lockfile drift), attempt unlocked to obtain package metadata
+        # for downstream checks, but return locked_err so audit_dependency_closure always emits
+        # ERR_METADATA_UNREADABLE and fails closed.
         cmd_unlocked = [
             "cargo",
             "metadata",
@@ -379,31 +422,15 @@ def run_cargo_metadata(root: Path, manifest_path: Path) -> tuple[dict[str, Any] 
             "--manifest-path",
             str(manifest_path),
         ]
-        proc = subprocess.run(cmd_unlocked, cwd=root, capture_output=True, text=True)
-
-    if proc.returncode != 0:
-        toolchain_file = root / "rust-toolchain.toml"
-        rustup_exc: Exception | None = None
-        if toolchain_file.is_file() and shutil.which("rustup"):
+        proc_unlocked = subprocess.run(cmd_unlocked, cwd=root, capture_output=True, text=True)
+        if proc_unlocked.returncode == 0:
             try:
-                tc_data = tomllib.loads(toolchain_file.read_text(encoding="utf-8"))
-                channel = tc_data.get("toolchain", {}).get("channel")
-                if channel:
-                    rustup_cmd = ["rustup", "run", channel] + cmd_locked
-                    proc = subprocess.run(rustup_cmd, cwd=root, capture_output=True, text=True)
-                    if proc.returncode != 0:
-                        rustup_cmd_unlocked = ["rustup", "run", channel] + [
-                            "cargo", "metadata", "--offline", "--all-features", "--format-version", "1",
-                            "--manifest-path", str(manifest_path)
-                        ]
-                        proc = subprocess.run(rustup_cmd_unlocked, cwd=root, capture_output=True, text=True)
-            except (OSError, tomllib.TOMLDecodeError, subprocess.SubprocessError) as exc:
-                rustup_exc = exc
-
-    if proc.returncode != 0:
-        base_err = proc.stderr.strip() or proc.stdout.strip() or "cargo metadata command failed"
-        err_msg = f"{base_err} (rustup fallback error: {rustup_exc})" if rustup_exc else base_err
-        return None, err_msg
+                data = json.loads(proc_unlocked.stdout)
+                if isinstance(data, dict):
+                    return data, f"Lockfile drift detected: cargo metadata --locked failed: {locked_err}"
+            except json.JSONDecodeError:
+                pass
+        return None, locked_err
 
     try:
         data = json.loads(proc.stdout)
@@ -414,12 +441,129 @@ def run_cargo_metadata(root: Path, manifest_path: Path) -> tuple[dict[str, Any] 
         return None, f"cargo metadata output is invalid JSON: {exc}"
 
 
+def scan_manifest_dependencies(
+    manifest_path: Path,
+    root: Path,
+    allowed_git_prefixes: tuple[str, ...],
+    sibling_root: Path | None = None,
+) -> list[ClosureFinding]:
+    """Directly inspects manifest dependency tables (dependencies, dev-dependencies, build-dependencies,
+
+    target-specific tables) for untrusted git hosts and escaping path dependencies.
+    """
+    findings: list[ClosureFinding] = []
+    if not manifest_path.is_file():
+        return findings
+
+    try:
+        data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        # Already reported
+        return findings
+
+    rel_manifest = sanitize_path(manifest_path, root)
+    dep_tables: list[tuple[str, dict[str, Any]]] = []
+
+    for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+        tbl = data.get(section)
+        if isinstance(tbl, dict):
+            dep_tables.append((section, tbl))
+
+    targets = data.get("target")
+    if isinstance(targets, dict):
+        for target_cfg, target_data in targets.items():
+            if isinstance(target_data, dict):
+                for section in ("dependencies", "dev-dependencies", "build-dependencies"):
+                    tbl = target_data.get(section)
+                    if isinstance(tbl, dict):
+                        dep_tables.append((f"target.{target_cfg}.{section}", tbl))
+
+    for section_name, table in dep_tables:
+        for dep_name, dep_spec in table.items():
+            if isinstance(dep_spec, dict):
+                if "git" in dep_spec:
+                    git_url = str(dep_spec["git"])
+                    if not any(git_url.startswith(prefix) for prefix in allowed_git_prefixes):
+                        findings.append(
+                            ClosureFinding(
+                                code=ERR_UNALLOWLISTED_SOURCE,
+                                file=rel_manifest,
+                                location=f"{section_name}.{dep_name}",
+                                message=f"Git dependency '{dep_name}' in '{rel_manifest}' points to unallowlisted host/repository: {git_url}",
+                                severity="error",
+                                remediation=DIAGNOSTIC_REGISTRY[ERR_UNALLOWLISTED_SOURCE]["remediation"],
+                                params={"dependency": dep_name, "git": git_url, "file": rel_manifest},
+                            )
+                        )
+                    if "rev" in dep_spec:
+                        rev = str(dep_spec["rev"])
+                        if not (len(rev) == 40 and all(c in "0123456789abcdefABCDEF" for c in rev)):
+                            findings.append(
+                                ClosureFinding(
+                                    code=ERR_VERSION_SOURCE_MISMATCH,
+                                    file=rel_manifest,
+                                    location=f"{section_name}.{dep_name}",
+                                    message=f"Git dependency '{dep_name}' revision '{rev}' in '{rel_manifest}' lacks an exact 40-hex commit hash",
+                                    severity="error",
+                                    remediation=DIAGNOSTIC_REGISTRY[ERR_VERSION_SOURCE_MISMATCH]["remediation"],
+                                    params={"dependency": dep_name, "rev": rev, "file": rel_manifest},
+                                )
+                            )
+
+                if "path" in dep_spec:
+                    path_val = dep_spec["path"]
+                    try:
+                        resolved_p = (manifest_path.parent / path_val).resolve()
+                        in_ws = False
+                        try:
+                            resolved_p.relative_to(root.resolve())
+                            in_ws = True
+                        except ValueError:
+                            in_ws = False
+
+                        if not in_ws:
+                            in_sib = False
+                            if sibling_root:
+                                try:
+                                    resolved_p.relative_to(sibling_root)
+                                    in_sib = True
+                                except ValueError:
+                                    in_sib = False
+                            if not in_sib:
+                                findings.append(
+                                    ClosureFinding(
+                                        code=ERR_UNALLOWLISTED_SOURCE,
+                                        file=rel_manifest,
+                                        location=f"{section_name}.{dep_name}",
+                                        message=f"Path dependency '{dep_name}' in '{rel_manifest}' escapes repository boundary: {path_val}",
+                                        severity="error",
+                                        remediation=DIAGNOSTIC_REGISTRY[ERR_UNALLOWLISTED_SOURCE]["remediation"],
+                                        params={"dependency": dep_name, "path": path_val, "file": rel_manifest},
+                                    )
+                                )
+                    except (OSError, ValueError) as exc:
+                        findings.append(
+                            ClosureFinding(
+                                code=ERR_UNALLOWLISTED_SOURCE,
+                                file=rel_manifest,
+                                location=f"{section_name}.{dep_name}",
+                                message=f"Path resolution failed for dependency '{dep_name}' in '{rel_manifest}': {exc}",
+                                severity="error",
+                                remediation=DIAGNOSTIC_REGISTRY[ERR_UNALLOWLISTED_SOURCE]["remediation"],
+                                params={"dependency": dep_name, "error": str(exc), "file": rel_manifest},
+                            )
+                        )
+
+    return findings
+
+
 def audit_dependency_closure(
     root: Path = ROOT,
     allowlist_path: Path | None = None,
     manifest_path: Path | None = None,
     lock_path: Path | None = None,
-    require_resolved_runtime: bool = False,
+    require_resolved_runtime: bool = True,
+    allow_unresolved_runtime: bool = False,
 ) -> tuple[bool, list[ClosureFinding], dict[str, Any]]:
     """Performs the complete dependency closure audit against registered allowlist v2."""
     findings: list[ClosureFinding] = []
@@ -460,9 +604,22 @@ def audit_dependency_closure(
     allowed_git_prefixes = tuple(
         allowlist_data.get("sources", {}).get("allowed_git", DEFAULT_ALLOWED_GIT_PREFIXES)
     )
+    sibling_root_env = os.environ.get("FSS_DSR_SIBLING_ROOT")
+    sibling_root = Path(sibling_root_env).resolve() if sibling_root_env else None
+
+    # Helper function to test allowlist admission
+    def is_crate_allowlisted(name: str) -> bool:
+        if name in allowed_fundamental:
+            return True
+        if name in admitted_exceptions:
+            return True
+        for pat in allowed_families:
+            if fnmatch.fnmatchcase(name, pat):
+                return True
+        return False
 
     # 2. Parse root manifest
-    manifest_data, workspace_members, manifest_runtime, manifest_findings = parse_root_manifest(target_manifest, root)
+    manifest_data, workspace_members, manifest_runtime, workspace_deps, manifest_findings = parse_root_manifest(target_manifest, root)
     findings.extend(manifest_findings)
     if manifest_data is None:
         summary["error_count"] = sum(1 for f in findings if f.severity == "error")
@@ -470,9 +627,117 @@ def audit_dependency_closure(
         return False, findings, summary
 
     declared_runtime = manifest_runtime
-    if not declared_runtime and policy.get("asupersync_is_only_async_runtime"):
-        declared_runtime = "asupersync"
     summary["declared_runtime"] = declared_runtime
+
+    # Scan root manifest and workspace member manifest dependency tables
+    findings.extend(scan_manifest_dependencies(target_manifest, root, allowed_git_prefixes, sibling_root))
+    ws_members_list = manifest_data.get("workspace", {}).get("members", [])
+    if isinstance(ws_members_list, list):
+        for m in ws_members_list:
+            if isinstance(m, str):
+                m_path = root / m / "Cargo.toml"
+                findings.extend(scan_manifest_dependencies(m_path, root, allowed_git_prefixes, sibling_root))
+
+    # Enumerate and inspect [workspace.dependencies] table
+    for dep_name, dep_spec in sorted(workspace_deps.items()):
+        if dep_name in forbidden_crates or dep_name in oracle_crates:
+            findings.append(
+                ClosureFinding(
+                    code=ERR_FORBIDDEN_CRATE,
+                    file=sanitize_path(target_manifest, root),
+                    location=f"[workspace.dependencies].{dep_name}",
+                    message=f"Forbidden crate in [workspace.dependencies]: '{dep_name}'",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_FORBIDDEN_CRATE]["remediation"],
+                    params={"package": dep_name},
+                )
+            )
+            continue
+
+        if dep_name not in workspace_members and not is_crate_allowlisted(dep_name):
+            findings.append(
+                ClosureFinding(
+                    code=ERR_UNALLOWLISTED_CRATE,
+                    file=sanitize_path(target_manifest, root),
+                    location=f"[workspace.dependencies].{dep_name}",
+                    message=f"Crate outside closed allowlist in [workspace.dependencies]: '{dep_name}'",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_UNALLOWLISTED_CRATE]["remediation"],
+                    params={"package": dep_name},
+                )
+            )
+
+        if isinstance(dep_spec, dict):
+            if "git" in dep_spec:
+                git_url = str(dep_spec["git"])
+                if not any(git_url.startswith(p) for p in allowed_git_prefixes):
+                    findings.append(
+                        ClosureFinding(
+                            code=ERR_UNALLOWLISTED_SOURCE,
+                            file=sanitize_path(target_manifest, root),
+                            location=f"[workspace.dependencies].{dep_name}",
+                            message=f"Git dependency '{dep_name}' in [workspace.dependencies] points to unallowlisted host: {git_url}",
+                            severity="error",
+                            remediation=DIAGNOSTIC_REGISTRY[ERR_UNALLOWLISTED_SOURCE]["remediation"],
+                            params={"dependency": dep_name, "git": git_url},
+                        )
+                    )
+                if "rev" in dep_spec:
+                    rev = str(dep_spec["rev"])
+                    if not (len(rev) == 40 and all(c in "0123456789abcdefABCDEF" for c in rev)):
+                        findings.append(
+                            ClosureFinding(
+                                code=ERR_VERSION_SOURCE_MISMATCH,
+                                file=sanitize_path(target_manifest, root),
+                                location=f"[workspace.dependencies].{dep_name}",
+                                message=f"Git dependency '{dep_name}' revision '{rev}' in [workspace.dependencies] lacks an exact 40-hex commit hash",
+                                severity="error",
+                                remediation=DIAGNOSTIC_REGISTRY[ERR_VERSION_SOURCE_MISMATCH]["remediation"],
+                                params={"dependency": dep_name, "rev": rev},
+                            )
+                        )
+            if "path" in dep_spec:
+                path_val = dep_spec["path"]
+                try:
+                    resolved_p = (target_manifest.parent / path_val).resolve()
+                    in_ws = False
+                    try:
+                        resolved_p.relative_to(root.resolve())
+                        in_ws = True
+                    except ValueError:
+                        in_ws = False
+                    if not in_ws:
+                        in_sib = False
+                        if sibling_root:
+                            try:
+                                resolved_p.relative_to(sibling_root)
+                                in_sib = True
+                            except ValueError:
+                                in_sib = False
+                        if not in_sib:
+                            findings.append(
+                                ClosureFinding(
+                                    code=ERR_UNALLOWLISTED_SOURCE,
+                                    file=sanitize_path(target_manifest, root),
+                                    location=f"[workspace.dependencies].{dep_name}",
+                                    message=f"Path dependency '{dep_name}' in [workspace.dependencies] escapes repository boundary: {path_val}",
+                                    severity="error",
+                                    remediation=DIAGNOSTIC_REGISTRY[ERR_UNALLOWLISTED_SOURCE]["remediation"],
+                                    params={"dependency": dep_name, "path": path_val},
+                                )
+                            )
+                except (OSError, ValueError) as exc:
+                    findings.append(
+                        ClosureFinding(
+                            code=ERR_UNALLOWLISTED_SOURCE,
+                            file=sanitize_path(target_manifest, root),
+                            location=f"[workspace.dependencies].{dep_name}",
+                            message=f"Path resolution failed for [workspace.dependencies].'{dep_name}': {exc}",
+                            severity="error",
+                            remediation=DIAGNOSTIC_REGISTRY[ERR_UNALLOWLISTED_SOURCE]["remediation"],
+                            params={"dependency": dep_name, "error": str(exc)},
+                        )
+                    )
 
     # 3. Parse Cargo.lock
     lock_packages, lock_findings = parse_cargo_lock(target_lock, root)
@@ -484,17 +749,18 @@ def audit_dependency_closure(
 
     # 4. Fetch cargo metadata
     metadata, meta_err = run_cargo_metadata(root, target_manifest)
-    if metadata is None:
+    if meta_err is not None:
         findings.append(
             ClosureFinding(
                 code=ERR_METADATA_UNREADABLE,
                 file=sanitize_path(target_manifest, root),
                 location="cargo_metadata",
-                message=f"Failed to execute cargo metadata offline: {meta_err}",
+                message=f"Locked offline resolution failed: {meta_err}",
                 severity="error",
                 remediation=DIAGNOSTIC_REGISTRY[ERR_METADATA_UNREADABLE]["remediation"],
             )
         )
+    if metadata is None:
         summary["error_count"] = sum(1 for f in findings if f.severity == "error")
         summary["warning_count"] = sum(1 for f in findings if f.severity == "warning")
         return False, findings, summary
@@ -515,20 +781,6 @@ def audit_dependency_closure(
     summary["package_count"] = len(all_pkg_names)
     summary["workspace_member_count"] = len(workspace_members)
     summary["external_dependency_count"] = len(all_pkg_names - workspace_members)
-
-    sibling_root_env = os.environ.get("FSS_DSR_SIBLING_ROOT")
-    sibling_root = Path(sibling_root_env).resolve() if sibling_root_env else None
-
-    # Helper function to test allowlist admission
-    def is_crate_allowlisted(name: str) -> bool:
-        if name in allowed_fundamental:
-            return True
-        if name in admitted_exceptions:
-            return True
-        for pat in allowed_families:
-            if fnmatch.fnmatchcase(name, pat):
-                return True
-        return False
 
     # 6. Consistency check between Cargo.lock and cargo metadata
     # Check packages in lock vs metadata
@@ -560,6 +812,26 @@ def audit_dependency_closure(
                     severity="error",
                     remediation=DIAGNOSTIC_REGISTRY[ERR_VERSION_SOURCE_MISMATCH]["remediation"],
                     params={"package": name, "lock_versions": sorted(lock_versions), "meta_versions": sorted(meta_versions)},
+                )
+            )
+
+        def normalize_source(s: Any) -> str:
+            if s is None:
+                return "path/member"
+            return str(s)
+
+        lock_sources = {normalize_source(p.get("source")) for p in lock_pkgs}
+        meta_sources = {normalize_source(p.get("source")) for p in meta_pkgs}
+        if lock_sources != meta_sources:
+            findings.append(
+                ClosureFinding(
+                    code=ERR_VERSION_SOURCE_MISMATCH,
+                    file=sanitize_path(target_lock, root),
+                    location=f"package.{name}.source",
+                    message=f"Package '{name}' source mismatch: Cargo.lock has {sorted(lock_sources)}, metadata has {sorted(meta_sources)}",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_VERSION_SOURCE_MISMATCH]["remediation"],
+                    params={"package": name, "lock_sources": sorted(lock_sources), "meta_sources": sorted(meta_sources), "source": "mismatch"},
                 )
             )
 
@@ -646,8 +918,18 @@ def audit_dependency_closure(
                                     params={"package": name, "manifest_path": manifest_p},
                                 )
                             )
-                except (OSError, ValueError):
-                    pass
+                except (OSError, ValueError) as exc:
+                    findings.append(
+                        ClosureFinding(
+                            code=ERR_UNALLOWLISTED_SOURCE,
+                            file=sanitize_path(manifest_p, root),
+                            location=f"package.{name}",
+                            message=f"Path resolution failed for package '{name}' manifest '{manifest_p}': {exc}",
+                            severity="error",
+                            remediation=DIAGNOSTIC_REGISTRY[ERR_UNALLOWLISTED_SOURCE]["remediation"],
+                            params={"package": name, "manifest_path": manifest_p, "error": str(exc)},
+                        )
+                    )
 
             # Check declared dependencies inside each package for escaping paths
             for dep in pkg.get("dependencies", []):
@@ -682,8 +964,18 @@ def audit_dependency_closure(
                                         params={"dependency": dep.get("name"), "path": dep_path},
                                     )
                                 )
-                    except (OSError, ValueError):
-                        pass
+                    except (OSError, ValueError) as exc:
+                        findings.append(
+                            ClosureFinding(
+                                code=ERR_UNALLOWLISTED_SOURCE,
+                                file=sanitize_path(pkg.get("manifest_path", target_manifest), root),
+                                location=f"dependencies.{dep.get('name')}",
+                                message=f"Path resolution failed for dependency '{dep.get('name')}' path '{dep_path}': {exc}",
+                                severity="error",
+                                remediation=DIAGNOSTIC_REGISTRY[ERR_UNALLOWLISTED_SOURCE]["remediation"],
+                                params={"dependency": dep.get("name"), "path": dep_path, "error": str(exc)},
+                            )
+                        )
 
     # 8. Check every crate against allowlist / forbidden list
     # Inspect packages from both lockfile and metadata closure
@@ -754,6 +1046,32 @@ def audit_dependency_closure(
             )
 
     # 9. Honest reporting of declared-but-unresolved async runtime
+    if policy.get("asupersync_is_only_async_runtime"):
+        if not declared_runtime:
+            findings.append(
+                ClosureFinding(
+                    code=ERR_DECLARED_RUNTIME_UNRESOLVED,
+                    file=sanitize_path(target_manifest, root),
+                    location="[workspace.metadata.fss].sole_async_runtime",
+                    message="Cargo.toml lacks required '[workspace.metadata.fss].sole_async_runtime = \"asupersync\"' declaration required by dependency constitution",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_DECLARED_RUNTIME_UNRESOLVED]["remediation"],
+                    params={"runtime": "missing"},
+                )
+            )
+        elif declared_runtime != "asupersync":
+            findings.append(
+                ClosureFinding(
+                    code=ERR_FORBIDDEN_CRATE,
+                    file=sanitize_path(target_manifest, root),
+                    location="[workspace.metadata.fss].sole_async_runtime",
+                    message=f"Declared async runtime '{declared_runtime}' is forbidden; dependency constitution mandates asupersync only",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_FORBIDDEN_CRATE]["remediation"],
+                    params={"runtime": declared_runtime},
+                )
+            )
+
     if declared_runtime:
         if declared_runtime in all_pkg_names:
             summary["declared_runtime_resolved"] = True
@@ -761,7 +1079,7 @@ def audit_dependency_closure(
         else:
             summary["declared_runtime_resolved"] = False
             summary["declared_runtime_status"] = "declared_but_unresolved"
-            if require_resolved_runtime:
+            if require_resolved_runtime and not allow_unresolved_runtime:
                 findings.append(
                     ClosureFinding(
                         code=ERR_DECLARED_RUNTIME_UNRESOLVED,
@@ -812,7 +1130,14 @@ def main() -> int:
     parser.add_argument(
         "--require-resolved-runtime",
         action="store_true",
-        help="Fail closed if declared sole async runtime is not resolved in Cargo.lock",
+        default=True,
+        help="Fail closed if declared sole async runtime is not resolved in Cargo.lock (default)",
+    )
+    parser.add_argument(
+        "--allow-unresolved-runtime",
+        action="store_true",
+        default=False,
+        help="Permit declared sole async runtime to remain unresolved with a warning (for pre-integration verification)",
     )
     parser.add_argument(
         "--json", action="store_true", help="Output machine-readable JSON report"
@@ -828,6 +1153,7 @@ def main() -> int:
         manifest_path=args.manifest_path,
         lock_path=args.lock_path,
         require_resolved_runtime=args.require_resolved_runtime,
+        allow_unresolved_runtime=args.allow_unresolved_runtime,
     )
 
     if args.json:

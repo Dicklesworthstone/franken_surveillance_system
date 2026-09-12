@@ -117,7 +117,7 @@ policy_lane() {
   run claim-proof-bundle-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_claim_proof_bundle_checker.py
   run unsafe-prohibition-checker python3 scripts/unsafe_prohibition_checker.py
   run unsafe-prohibition-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_unsafe_prohibition_checker.py
-  run dependency-closure-scanner python3 scripts/dependency_closure_scanner.py
+  run dependency-closure-scanner python3 scripts/dependency_closure_scanner.py --allow-unresolved-runtime
   run dependency-closure-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_dependency_closure_scanner.py
   run semantic-plane-checker python3 scripts/semantic_plane_checker.py
   run semantic-plane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_semantic_plane_checker.py
