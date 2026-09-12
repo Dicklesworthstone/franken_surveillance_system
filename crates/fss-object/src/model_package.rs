@@ -18,8 +18,9 @@
 //! - Idempotent re-import of the exact same generation; typed conflict for the same generation
 //!   with different bytes, including across importer reopens, because generations are rebuilt
 //!   from the manifests already present in the spool.
-//! - Artifact names are single portable path components, so writing a package directory can
-//!   never escape its target directory.
+//! - Artifact names are single portable path components that are also valid, distinct file names
+//!   on Windows and case-insensitive filesystems, so writing a package directory can never escape
+//!   its target directory, open a device, or make two artifacts alias one file.
 //! - Full support for [`SpoolIo`](crate::SpoolIo) capability and
 //!   [`FaultInjectingSpoolIo`](crate::FaultInjectingSpoolIo) for fail-closed behavior testing.
 
@@ -112,12 +113,17 @@ pub enum ArtifactNameViolation {
         /// Maximum byte length.
         maximum: usize,
     },
-    /// The name is `.` or `..`.
+    /// The name consists only of dots (`.`, `..`, `...`, and longer runs).
     DotSegment,
     /// The name contains `/` or `\`, which includes every absolute path.
     PathSeparator,
-    /// The name is a reserved package manifest file name.
+    /// The name is a reserved package manifest file name, compared ASCII case-insensitively.
     Reserved,
+    /// The stem before the first `.` is a Windows reserved device name (`CON`, `PRN`, `AUX`,
+    /// `NUL`, `COM0`-`COM9`, or `LPT0`-`LPT9`), compared ASCII case-insensitively.
+    WindowsDeviceName,
+    /// The name ends in `.`, which Windows strips, so it would alias a different file name.
+    TrailingDot,
     /// The name contains a byte outside `[A-Za-z0-9._+-]`.
     DisallowedByte {
         /// Byte offset of the first disallowed byte.
@@ -138,9 +144,11 @@ impl fmt::Display for ArtifactNameViolation {
             Self::TooLong { length, maximum } => {
                 write!(f, "name is {length} bytes, maximum is {maximum}")
             }
-            Self::DotSegment => f.write_str("name is a dot segment"),
+            Self::DotSegment => f.write_str("name consists only of dots"),
             Self::PathSeparator => f.write_str("name contains a path separator"),
             Self::Reserved => f.write_str("name is a reserved manifest file name"),
+            Self::WindowsDeviceName => f.write_str("name stem is a Windows reserved device name"),
+            Self::TrailingDot => f.write_str("name ends in a dot"),
             Self::DisallowedByte { index, byte } => {
                 write!(f, "disallowed byte {byte:#04x} at index {index}")
             }
@@ -154,9 +162,12 @@ impl fmt::Display for ArtifactNameViolation {
 
 /// Validates that `name` is one portable file name that stays inside any target directory.
 ///
-/// Accepted names are 1 to [`MAX_ARTIFACT_NAME_LEN`] bytes of `[A-Za-z0-9._+-]`, are not `.` or
-/// `..`, are not a reserved manifest file name, and parse as exactly one normal path component.
-/// Absolute paths, parent references, and every path separator are therefore refused.
+/// Accepted names are 1 to [`MAX_ARTIFACT_NAME_LEN`] bytes of `[A-Za-z0-9._+-]`, do not consist
+/// only of dots, do not end in `.`, are not a reserved manifest file name in any ASCII case, have
+/// no Windows reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, `LPT0`-`LPT9`, in
+/// any ASCII case) as the stem before their first `.`, and parse as exactly one normal path
+/// component. Absolute paths, parent references, and every path separator are therefore refused.
+/// Uniqueness within a package is ASCII case-insensitive; see [`ModelPackage::verify_contents`].
 pub fn validate_artifact_name(name: &str) -> Result<(), ModelPackageError> {
     match artifact_name_violation(name) {
         None => Ok(()),
@@ -177,13 +188,15 @@ fn artifact_name_violation(name: &str) -> Option<ArtifactNameViolation> {
             maximum: MAX_ARTIFACT_NAME_LEN,
         });
     }
-    if name == "." || name == ".." {
+    if name.bytes().all(|byte| byte == b'.') {
         return Some(ArtifactNameViolation::DotSegment);
     }
     if name.bytes().any(|byte| byte == b'/' || byte == b'\\') {
         return Some(ArtifactNameViolation::PathSeparator);
     }
-    if name == PACKAGE_MANIFEST_BIN || name == PACKAGE_MANIFEST_JSON {
+    if name.eq_ignore_ascii_case(PACKAGE_MANIFEST_BIN)
+        || name.eq_ignore_ascii_case(PACKAGE_MANIFEST_JSON)
+    {
         return Some(ArtifactNameViolation::Reserved);
     }
     if let Some((index, byte)) = name
@@ -192,6 +205,13 @@ fn artifact_name_violation(name: &str) -> Option<ArtifactNameViolation> {
         .find(|&(_, byte)| !is_portable_name_byte(byte))
     {
         return Some(ArtifactNameViolation::DisallowedByte { index, byte });
+    }
+    if name.ends_with('.') {
+        return Some(ArtifactNameViolation::TrailingDot);
+    }
+    let stem = name.split_once('.').map_or(name, |(stem, _)| stem);
+    if is_windows_device_stem(stem) {
+        return Some(ArtifactNameViolation::WindowsDeviceName);
     }
     let mut components = Path::new(name).components();
     match (components.next(), components.next()) {
@@ -202,6 +222,28 @@ fn artifact_name_violation(name: &str) -> Option<ArtifactNameViolation> {
 
 const fn is_portable_name_byte(byte: u8) -> bool {
     byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'+')
+}
+
+/// Windows device names reserved in every directory, whatever the extension.
+const WINDOWS_DEVICE_STEMS: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+
+/// Windows device name prefixes reserved when followed by one ASCII digit.
+const WINDOWS_NUMBERED_DEVICE_PREFIXES: [&str; 2] = ["COM", "LPT"];
+
+/// Whether `stem` is a Windows reserved device name, compared ASCII case-insensitively.
+fn is_windows_device_stem(stem: &str) -> bool {
+    if WINDOWS_DEVICE_STEMS
+        .iter()
+        .any(|device| stem.eq_ignore_ascii_case(device))
+    {
+        return true;
+    }
+    match stem.as_bytes() {
+        [prefix @ .., digit] if digit.is_ascii_digit() => WINDOWS_NUMBERED_DEVICE_PREFIXES
+            .iter()
+            .any(|device| device.as_bytes().eq_ignore_ascii_case(prefix)),
+        _ => false,
+    }
 }
 
 /// One named, digest-verified artifact in an offline model package.
@@ -275,7 +317,8 @@ impl ModelPackage {
     /// Verifies every structural and content invariant without touching storage.
     ///
     /// - The manifest validates and `manifest_bytes` is exactly its canonical encoding.
-    /// - Every artifact name passes [`validate_artifact_name`] and names are unique.
+    /// - Every artifact name passes [`validate_artifact_name`] and names are unique under ASCII
+    ///   case folding, so no two artifacts alias one file on a case-insensitive filesystem.
     /// - Every artifact is keyed by its declared digest and its payload hashes to that digest.
     /// - The artifact set equals the set the manifest names (weights, license text, and
     ///   provenance artifacts): nothing missing, nothing extra.
@@ -284,7 +327,7 @@ impl ModelPackage {
         if self.manifest.to_canonical_bytes()? != self.manifest_bytes {
             return Err(ModelPackageError::ManifestBytesMismatch);
         }
-        let mut names = BTreeSet::new();
+        let mut names: BTreeMap<String, &str> = BTreeMap::new();
         for (key, art) in &self.artifacts {
             validate_artifact_name(&art.name)?;
             if *key != art.digest {
@@ -302,10 +345,21 @@ impl ModelPackage {
                     computed,
                 });
             }
-            if !names.insert(art.name.as_str()) {
-                return Err(ModelPackageError::DuplicateArtifactName {
-                    name: art.name.clone(),
-                });
+            match names.entry(art.name.to_ascii_lowercase()) {
+                Entry::Vacant(slot) => {
+                    slot.insert(art.name.as_str());
+                }
+                Entry::Occupied(slot) if *slot.get() == art.name => {
+                    return Err(ModelPackageError::DuplicateArtifactName {
+                        name: art.name.clone(),
+                    });
+                }
+                Entry::Occupied(slot) => {
+                    return Err(ModelPackageError::ArtifactNameCaseCollision {
+                        name: art.name.clone(),
+                        existing: (*slot.get()).to_string(),
+                    });
+                }
             }
         }
 
@@ -1168,6 +1222,14 @@ pub enum ModelPackageError {
         /// Duplicated name.
         name: String,
     },
+    /// Two artifact names differ only by ASCII case and would collide on a case-insensitive
+    /// filesystem.
+    ArtifactNameCaseCollision {
+        /// Name that collides, seen second in artifact digest order.
+        name: String,
+        /// Name seen first that `name` collides with.
+        existing: String,
+    },
     /// An artifact name is not one portable file name inside the package directory.
     InvalidArtifactName {
         /// Offending name (lossily rendered when it is not UTF-8).
@@ -1285,6 +1347,10 @@ impl fmt::Display for ModelPackageError {
             Self::DuplicateArtifactName { name } => {
                 write!(f, "duplicate artifact name in package: '{name}'")
             }
+            Self::ArtifactNameCaseCollision { name, existing } => write!(
+                f,
+                "artifact names '{existing}' and '{name}' differ only by case and collide on case-insensitive filesystems"
+            ),
             Self::InvalidArtifactName { name, reason } => {
                 write!(f, "invalid artifact name {name:?}: {reason}")
             }
