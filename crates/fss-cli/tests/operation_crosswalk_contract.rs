@@ -282,7 +282,10 @@ fn test_duplicate_operation_id_fails_closed() -> TestResult {
     dup.library_entry_point = "fss_custom::tool";
     entries.push(dup);
     let res = validate_crosswalk_entries(&entries, &[]);
-    assert!(res.is_err(), "Duplicate operation_id AOP-001 must be rejected");
+    assert!(
+        res.is_err(),
+        "Duplicate operation_id AOP-001 must be rejected"
+    );
     Ok(())
 }
 
@@ -374,4 +377,3 @@ fn test_parity_against_json_crosswalk() -> TestResult {
     }
     Ok(())
 }
-
