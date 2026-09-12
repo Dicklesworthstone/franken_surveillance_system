@@ -638,7 +638,7 @@ mod tests {
             "continuation:coalesced",
             ContentDigest::sha256(b"coalesced"),
         );
-        assert_eq!(err.unwrap_err(), ContractError::EvidenceRequired);
+        assert!(matches!(err, Err(ContractError::EvidenceRequired)));
         Ok(())
     }
 
