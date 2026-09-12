@@ -909,7 +909,7 @@ def parse_all_generic_bounds(
     impl_header: str | None,
     alias_map: dict[str, str] | None = None,
 ) -> dict[str, list[str]]:
-    """Extracts type bounds from generic parameter list, where clause, and impl header."""
+    """Extracts type bounds from generic parameter list, where clause, and impl header (fss-en549: normalising path types and use-renames)."""
     bounds: dict[str, list[str]] = {}
 
     def ingest_generic_params(gen_str: str) -> None:

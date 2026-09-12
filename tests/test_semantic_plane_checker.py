@@ -1064,6 +1064,51 @@ pub fn bridge_try_from_crate<T>(m: ModelOutput) -> T where crate::effect::Effect
             self.assertIn("bridge_use_rename_inline", functions_flagged)
             self.assertIn("bridge_try_from_crate", functions_flagged)
 
+    def test_path_qualified_and_use_renamed_authority_types_fail_closed(self) -> None:
+        """Path-qualified and use-renamed authority types (EffectAuthority) in cognition return types and reverse bounds fail closed (fss-en549)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src = tmp_root / "crates/fss-cognition/src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "bridge.rs").write_text("""
+pub struct EffectAuthority;
+
+use crate::authority::EffectAuthority as CustomAuth;
+
+// 1. crate:: path to EffectAuthority in reverse where-clause
+pub fn grant_crate_auth<T>() -> T where crate::authority::EffectAuthority: From<T> {
+    unimplemented!()
+}
+
+// 2. use-rename to EffectAuthority in reverse where-clause
+pub fn grant_use_rename_auth<T>() -> T where CustomAuth: From<T> {
+    unimplemented!()
+}
+
+// 3. direct use-rename return type
+pub fn grant_direct_auth() -> CustomAuth {
+    unimplemented!()
+}
+""", encoding="utf-8")
+            reg = tmp_root / "architecture"
+            reg.mkdir(parents=True, exist_ok=True)
+            (reg / "semantic_plane_registry.json").write_text(json.dumps({
+                "schema": "fss.semantic_plane_registry.v1",
+                "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                "registered_boundary_modules": [],
+                "module_declarations": {"crates/fss-cognition/src/bridge.rs": "cognition"},
+                "types": {
+                    "EffectAuthority": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "authority"}
+                }
+            }), encoding="utf-8")
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Path-qualified and use-renamed authority types must fail closed under ADR-0001")
+            auth_findings = [f for f in findings if f.code == ERR_COGNITION_GRANTS_EFFECT]
+            functions_flagged = {f.params.get("function") for f in auth_findings}
+            self.assertIn("grant_crate_auth", functions_flagged)
+            self.assertIn("grant_use_rename_auth", functions_flagged)
+            self.assertIn("grant_direct_auth", functions_flagged)
+
     def test_type_aliases_to_model_and_effect_types_fail_closed(self) -> None:
         """Type aliases to ModelOutput and EffectIntent (including pub type, chained, and tuple) must fail closed with ERR_MODEL_OUTPUT_REACHES_EFFECT."""
         with tempfile.TemporaryDirectory() as td:
