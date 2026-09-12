@@ -573,7 +573,12 @@ impl From<Belief> for EffectAuthority {
             self.assertIn(ERR_REGISTRY_INVALID, codes)
 
 
-# Fallbacks for NEG-003 diagnostic codes during test execution
+# Fallbacks for NEG-003 and contract doc diagnostic codes during test execution
+ERR_CONTRACT_DOC_INVALID = getattr(
+    sys.modules.get("semantic_plane_checker"),
+    "ERR_CONTRACT_DOC_INVALID",
+    "ERR-SEMPLANE-CONTRACT-DOC-INVALID-001",
+)
 ERR_MODEL_OUTPUT_REACHES_EFFECT = getattr(
     sys.modules.get("semantic_plane_checker"),
     "ERR_MODEL_OUTPUT_REACHES_EFFECT",
@@ -681,7 +686,7 @@ pub fn trigger_alert_directly(vlm: VlmOutput) -> EffectIntent {
                     "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
                     "registered_boundary_modules": [],
                     "module_declarations": {},
-                    "types": {},
+                    "types": {"Dummy": {"file": "crates/fss-core/src/effect.rs", "plane": "support"}},
                 }),
                 encoding="utf-8",
             )
@@ -763,7 +768,7 @@ impl From<MockModelOutcome> for CoverageWitness {
                     "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
                     "registered_boundary_modules": [],
                     "module_declarations": {},
-                    "types": {},
+                    "types": {"Dummy": {"file": "crates/fss-core/src/effect.rs", "plane": "support"}},
                 }),
                 encoding="utf-8",
             )

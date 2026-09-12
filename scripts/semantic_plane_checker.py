@@ -36,6 +36,12 @@ ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT = "ERR-SEMPLANE-UNAUTHORIZED-CROSS-PLANE-IMP
 ERR_UNMAPPED_CORE_TYPE = "ERR-SEMPLANE-UNMAPPED-CORE-TYPE-001"
 INFO_AMBIGUOUS_TYPE = "INFO-SEMPLANE-AMBIGUOUS-TYPE-001"
 
+# NEG-003 Decomposed model-cascade constraint codes
+ERR_MODEL_OUTPUT_REACHES_EFFECT = "ERR-SEMPLANE-MODEL-OUTPUT-REACHES-EFFECT-001"
+ERR_SINGLE_MODEL_CORROBORATION = "ERR-SEMPLANE-SINGLE-MODEL-CORROBORATION-001"
+ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE = "ERR-SEMPLANE-ABSTENTION-AS-NEGATIVE-EVIDENCE-001"
+ERR_MUTABLE_MODEL_GENERATION = "ERR-SEMPLANE-MUTABLE-MODEL-GENERATION-001"
+
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_COGNITION_GRANTS_EFFECT: {
         "trigger": "A cognition module contains a function or conversion granting EffectAuthority",
@@ -66,6 +72,26 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "trigger": "A registered type bridges multiple planes or couples evidence anchors with hypotheses",
         "remediation": "Informational audit finding: verify boundary handling meets ADR-0001 invariants",
         "standard_code": "SEMPLANE-006",
+    },
+    ERR_MODEL_OUTPUT_REACHES_EFFECT: {
+        "trigger": "A model or VLM output type directly converts to or constructs an effect type without plan/authority mediation",
+        "remediation": "NEG-003: Model output is derived cognition; route through situation capsule, affordance frontier, and witnessed plan before effect preparation",
+        "standard_code": "SEMPLANE-007",
+    },
+    ERR_SINGLE_MODEL_CORROBORATION: {
+        "trigger": "A corroboration policy or specification permits fewer than 2 distinct sources/sensors/models",
+        "remediation": "INV-055 and NEG-003 require corroboration to name >= 2 distinct sources with independent failure domains; min_sources must be >= 2",
+        "standard_code": "SEMPLANE-008",
+    },
+    ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE: {
+        "trigger": "Model abstention or failure is coerced into negative evidence or coverage witness",
+        "remediation": "Negative evidence requires a verified CoverageWitness over sensor custody; model abstention is epistemic Unknown, not evidence of absence",
+        "standard_code": "SEMPLANE-009",
+    },
+    ERR_MUTABLE_MODEL_GENERATION: {
+        "trigger": "A model generation references a mutable alias (e.g. 'latest', 'HEAD') instead of an immutable qualified generation",
+        "remediation": "ADR-0004 and NEG-003 require model generations to be pinned, immutable identifiers with content digests",
+        "standard_code": "SEMPLANE-010",
     },
 }
 
@@ -351,6 +377,49 @@ def audit_workspace_module_census(
     return findings
 
 
+MODEL_OUTPUT_TYPES: set[str] = {
+    "ModelOutput",
+    "MockModelOutput",
+    "VlmOutput",
+    "PerceptionOutput",
+    "ModelFinding",
+    "CorroboratedModelFinding",
+    "MockModelResult",
+    "MockDetection",
+}
+
+EFFECT_TYPES: set[str] = {
+    "EffectAuthority",
+    "EffectIntent",
+    "PreparedEffect",
+    "AlertIntent",
+    "AlertEffectRecord",
+}
+
+ABSTENTION_TYPES: set[str] = {
+    "MockModelOutcome",
+    "MockAbstentionReason",
+    "MockExecutorOutcome",
+}
+
+NEGATIVE_EVIDENCE_TYPES: set[str] = {
+    "CoverageWitness",
+    "AbsenceWitness",
+    "AbsenceConfirmed",
+}
+
+MUTABLE_GENERATION_TOKENS: set[str] = {
+    "latest",
+    "latest.weights",
+    "head",
+    "master",
+    "main",
+    "current",
+    "nightly",
+    "trunk",
+}
+
+
 def check_module_imports(
     root: Path, registry: dict[str, Any]
 ) -> list[SemanticPlaneFinding]:
@@ -409,12 +478,37 @@ def check_module_imports(
         if mod_rel in boundary_modules or mod_plane in ("support", "ambiguous"):
             continue
 
-        # Check for functions directly returning EffectAuthority in cognition modules
+        # Check for functions directly returning EffectAuthority in cognition modules,
+        # or bridging model outputs directly to effects, or abstention to negative evidence
         if mod_plane == "cognition":
             for match in fn_sig_pattern.finditer(content):
                 fn_name = match.group(1)
                 ret_type = match.group(2).strip()
-                if re.search(r"\bEffectAuthority\b", ret_type):
+                full_fn = match.group(0)
+
+                # NEG-003: Model/VLM output can never reach an effect type directly
+                is_model_input = any(
+                    re.search(r"\b" + re.escape(m_ty) + r"\b", full_fn)
+                    for m_ty in MODEL_OUTPUT_TYPES
+                ) or "vlm" in fn_name.lower() or "model" in fn_name.lower()
+                is_effect_ret = any(
+                    re.search(r"\b" + re.escape(e_ty) + r"\b", ret_type)
+                    for e_ty in EFFECT_TYPES
+                )
+                if is_model_input and is_effect_ret:
+                    line_no = content[: match.start()].count("\n") + 1
+                    findings.append(
+                        SemanticPlaneFinding(
+                            code=ERR_MODEL_OUTPUT_REACHES_EFFECT,
+                            file=mod_rel,
+                            location=f"line {line_no}",
+                            message=f"Prohibited direct model-to-effect bridge (NEG-003): function '{fn_name}' takes model output and returns effect type ({ret_type})",
+                            severity="error",
+                            remediation=DIAGNOSTIC_REGISTRY[ERR_MODEL_OUTPUT_REACHES_EFFECT]["remediation"],
+                            params={"module": mod_rel, "function": fn_name, "return_type": ret_type},
+                        )
+                    )
+                elif re.search(r"\bEffectAuthority\b", ret_type):
                     line_no = content[: match.start()].count("\n") + 1
                     findings.append(
                         SemanticPlaneFinding(
@@ -428,13 +522,68 @@ def check_module_imports(
                         )
                     )
 
+                # NEG-003: Abstention/failure is never negative evidence
+                is_absten_input = any(
+                    re.search(r"\b" + re.escape(a_ty) + r"\b", full_fn)
+                    for a_ty in ABSTENTION_TYPES
+                ) or "absten" in fn_name.lower()
+                is_negative_evidence_ret = any(
+                    re.search(r"\b" + re.escape(n_ty) + r"\b", ret_type)
+                    for n_ty in NEGATIVE_EVIDENCE_TYPES
+                )
+                if is_absten_input and is_negative_evidence_ret:
+                    line_no = content[: match.start()].count("\n") + 1
+                    findings.append(
+                        SemanticPlaneFinding(
+                            code=ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE,
+                            file=mod_rel,
+                            location=f"line {line_no}",
+                            message=f"Prohibited model abstention as negative evidence (NEG-003): function '{fn_name}' returns '{ret_type}' from model abstention",
+                            severity="error",
+                            remediation=DIAGNOSTIC_REGISTRY[ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE]["remediation"],
+                            params={"module": mod_rel, "function": fn_name, "return_type": ret_type},
+                        )
+                    )
+
         # Check From/Into cross-plane implementations
         for m in from_pattern.finditer(content):
             from_ty = m.group(1).split("::")[-1].strip().lstrip("&").strip()
             to_ty = m.group(2).split("::")[-1].strip().lstrip("&").strip()
             from_plane = registered_types.get(from_ty, {}).get("plane")
             to_plane = registered_types.get(to_ty, {}).get("plane")
-            if from_plane and to_plane and from_plane != to_plane:
+
+            is_model_output = from_ty in MODEL_OUTPUT_TYPES or "vlm" in from_ty.lower()
+            is_effect_type = to_ty in EFFECT_TYPES or to_plane == "effect"
+            is_abstention = from_ty in ABSTENTION_TYPES or "absten" in from_ty.lower()
+            is_negative_evidence = to_ty in NEGATIVE_EVIDENCE_TYPES or to_ty == "CoverageWitness"
+
+            if is_model_output and is_effect_type:
+                line_no = content[: m.start()].count("\n") + 1
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_MODEL_OUTPUT_REACHES_EFFECT,
+                        file=mod_rel,
+                        location=f"line {line_no}",
+                        message=f"Forbidden model-to-effect conversion (NEG-003): From<{from_ty}> for {to_ty} in non-boundary module '{mod_rel}'",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_MODEL_OUTPUT_REACHES_EFFECT]["remediation"],
+                        params={"module": mod_rel, "from_type": from_ty, "to_type": to_ty},
+                    )
+                )
+            elif is_abstention and is_negative_evidence:
+                line_no = content[: m.start()].count("\n") + 1
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE,
+                        file=mod_rel,
+                        location=f"line {line_no}",
+                        message=f"Forbidden abstention-to-negative-evidence conversion (NEG-003): From<{from_ty}> for {to_ty} in non-boundary module '{mod_rel}'",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE]["remediation"],
+                        params={"module": mod_rel, "from_type": from_ty, "to_type": to_ty},
+                    )
+                )
+            elif from_plane and to_plane and from_plane != to_plane:
                 if from_plane not in ("support", "ambiguous") and to_plane not in ("support", "ambiguous"):
                     line_no = content[: m.start()].count("\n") + 1
                     code = (
@@ -459,7 +608,39 @@ def check_module_imports(
             from_ty = m.group(2).split("::")[-1].strip().lstrip("&").strip()
             from_plane = registered_types.get(from_ty, {}).get("plane")
             to_plane = registered_types.get(to_ty, {}).get("plane")
-            if from_plane and to_plane and from_plane != to_plane:
+
+            is_model_output = from_ty in MODEL_OUTPUT_TYPES or "vlm" in from_ty.lower()
+            is_effect_type = to_ty in EFFECT_TYPES or to_plane == "effect"
+            is_abstention = from_ty in ABSTENTION_TYPES or "absten" in from_ty.lower()
+            is_negative_evidence = to_ty in NEGATIVE_EVIDENCE_TYPES or to_ty == "CoverageWitness"
+
+            if is_model_output and is_effect_type:
+                line_no = content[: m.start()].count("\n") + 1
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_MODEL_OUTPUT_REACHES_EFFECT,
+                        file=mod_rel,
+                        location=f"line {line_no}",
+                        message=f"Forbidden model-to-effect conversion (NEG-003): Into<{to_ty}> for {from_ty} in non-boundary module '{mod_rel}'",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_MODEL_OUTPUT_REACHES_EFFECT]["remediation"],
+                        params={"module": mod_rel, "from_type": from_ty, "to_type": to_ty},
+                    )
+                )
+            elif is_abstention and is_negative_evidence:
+                line_no = content[: m.start()].count("\n") + 1
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE,
+                        file=mod_rel,
+                        location=f"line {line_no}",
+                        message=f"Forbidden abstention-to-negative-evidence conversion (NEG-003): Into<{to_ty}> for {from_ty} in non-boundary module '{mod_rel}'",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE]["remediation"],
+                        params={"module": mod_rel, "from_type": from_ty, "to_type": to_ty},
+                    )
+                )
+            elif from_plane and to_plane and from_plane != to_plane:
                 if from_plane not in ("support", "ambiguous") and to_plane not in ("support", "ambiguous"):
                     line_no = content[: m.start()].count("\n") + 1
                     code = (
@@ -553,6 +734,165 @@ def check_module_imports(
     return findings
 
 
+def check_model_corroboration_policy(root: Path) -> list[SemanticPlaneFinding]:
+    """Audits corroboration policies to enforce NEG-003 / INV-055: single model is never independent corroboration."""
+    findings: list[SemanticPlaneFinding] = []
+
+    search_dirs = [root / "architecture", root / "schemas"]
+    json_files: list[Path] = []
+    for d in search_dirs:
+        if d.is_dir():
+            json_files.extend(sorted(d.glob("*.json")))
+
+    for jf in json_files:
+        rel_path = sanitize_path(jf, root)
+        try:
+            content = jf.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_SINGLE_MODEL_CORROBORATION,
+                    file=rel_path,
+                    location="file_system",
+                    message=f"Failed to read file for corroboration policy check: {exc}",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_SINGLE_MODEL_CORROBORATION]["remediation"],
+                )
+            )
+            continue
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+
+        def inspect_obj(obj: Any, path: str) -> None:
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    current_path = f"{path}/{k}" if path else k
+                    if k in (
+                        "min_sources",
+                        "min_sensors",
+                        "min_models",
+                        "min_failure_domains",
+                        "min_corroboration_sources",
+                    ):
+                        if isinstance(v, int) and v < 2:
+                            findings.append(
+                                SemanticPlaneFinding(
+                                    code=ERR_SINGLE_MODEL_CORROBORATION,
+                                    file=rel_path,
+                                    location=current_path,
+                                    message=(
+                                        f"Single model corroboration prohibited (NEG-003 / INV-055): "
+                                        f"'{current_path}' is {v}, but corroboration requires >= 2 distinct sources"
+                                    ),
+                                    severity="error",
+                                    remediation=DIAGNOSTIC_REGISTRY[ERR_SINGLE_MODEL_CORROBORATION]["remediation"],
+                                    params={"file": rel_path, "field": current_path, "value": v},
+                                )
+                            )
+                    if k in (
+                        "allow_single_model",
+                        "allow_single_sensor",
+                        "single_model_corroboration",
+                    ):
+                        if v is True:
+                            findings.append(
+                                SemanticPlaneFinding(
+                                    code=ERR_SINGLE_MODEL_CORROBORATION,
+                                    file=rel_path,
+                                    location=current_path,
+                                    message=(
+                                        f"Single model corroboration prohibited (NEG-003 / INV-055): "
+                                        f"'{current_path}' permits single-model corroboration"
+                                    ),
+                                    severity="error",
+                                    remediation=DIAGNOSTIC_REGISTRY[ERR_SINGLE_MODEL_CORROBORATION]["remediation"],
+                                    params={"file": rel_path, "field": current_path},
+                                )
+                            )
+                    inspect_obj(v, current_path)
+            elif isinstance(obj, list):
+                for idx, item in enumerate(obj):
+                    inspect_obj(item, f"{path}[{idx}]")
+
+        inspect_obj(data, "")
+
+    return findings
+
+
+def is_mutable_generation_str(gen: str) -> bool:
+    trimmed = gen.strip()
+    if not trimmed:
+        return False
+    lower = trimmed.lower()
+    if lower in MUTABLE_GENERATION_TOKENS:
+        return True
+    tokens = re.split(r"[^a-zA-Z0-9]+", lower)
+    return any(t in MUTABLE_GENERATION_TOKENS for t in tokens if t)
+
+
+def check_model_generation_immutability(root: Path) -> list[SemanticPlaneFinding]:
+    """Audits model configurations and manifests to enforce ADR-0004 / NEG-003 immutability."""
+    findings: list[SemanticPlaneFinding] = []
+
+    search_dirs = [root / "architecture", root / "models"]
+    json_files: list[Path] = []
+    for d in search_dirs:
+        if d.is_dir():
+            json_files.extend(sorted(d.glob("*.json")))
+
+    for jf in json_files:
+        rel_path = sanitize_path(jf, root)
+        try:
+            content = jf.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_MUTABLE_MODEL_GENERATION,
+                    file=rel_path,
+                    location="file_system",
+                    message=f"Failed to read file for model generation immutability check: {exc}",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_MUTABLE_MODEL_GENERATION]["remediation"],
+                )
+            )
+            continue
+        try:
+            data = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+
+        def inspect_obj(obj: Any, path: str) -> None:
+            if isinstance(obj, dict):
+                for k, v in obj.items():
+                    current_path = f"{path}/{k}" if path else k
+                    if k in ("generation", "model_generation", "generation_id", "weights_generation"):
+                        if isinstance(v, str) and is_mutable_generation_str(v):
+                            findings.append(
+                                SemanticPlaneFinding(
+                                    code=ERR_MUTABLE_MODEL_GENERATION,
+                                    file=rel_path,
+                                    location=current_path,
+                                    message=(
+                                        f"Mutable model generation alias prohibited (ADR-0004 / NEG-003): "
+                                        f"'{current_path}' is '{v}'; generations must be immutable qualified identifiers"
+                                    ),
+                                    severity="error",
+                                    remediation=DIAGNOSTIC_REGISTRY[ERR_MUTABLE_MODEL_GENERATION]["remediation"],
+                                    params={"file": rel_path, "field": current_path, "value": v},
+                                )
+                            )
+                    inspect_obj(v, current_path)
+            elif isinstance(obj, list):
+                for idx, item in enumerate(obj):
+                    inspect_obj(item, f"{path}[{idx}]")
+
+        inspect_obj(data, "")
+
+    return findings
+
+
 def audit_semantic_planes(
     root: Path,
     registry_path: Path | None = None,
@@ -611,6 +951,12 @@ def audit_semantic_planes(
 
     # Cross-plane import policy audit
     findings.extend(check_module_imports(root, registry))
+
+    # NEG-003 Corroboration policy audit (min_sources >= 2)
+    findings.extend(check_model_corroboration_policy(root))
+
+    # NEG-003 Model generation immutability audit (no mutable aliases like 'latest')
+    findings.extend(check_model_generation_immutability(root))
 
     # Compile-fail doctests verification
     contract_path = root / "docs/enforcement/three_semantic_planes_contract.md"

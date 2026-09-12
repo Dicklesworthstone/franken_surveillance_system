@@ -1882,14 +1882,22 @@ fn test_model_abstention_and_failure_never_negative_evidence() -> Result<(), Box
     ));
 
     // 4. MockExecutorOutcome with zero detections is failure to detect, NOT negative evidence
+    let sensor_id = SensorId::parse("sensor:cam01")?;
+    let generation = ModelGeneration::parse("model:detector:v1")?;
     let zero_detections_output = MockModelOutput {
-        generation: ModelGeneration::parse("model:detector:v1")?,
-        sensor_id: SensorId::parse("sensor:cam01")?,
-        timestamp_ns: TimestampNs::from_nanos(100),
+        output_digest: ContentDigest::sha256(b"zero_out"),
+        generation: generation.clone(),
+        sensor_id: sensor_id.clone(),
+        input_digest: ContentDigest::sha256(b"in1"),
+        capture_interval: CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
         detections: vec![],
-        embedding: None,
-        raw_output_root: ContentDigest::sha256(b"raw"),
-        execution_receipt_digest: ContentDigest::sha256(b"receipt"),
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
     };
     let zero_detections = MockExecutorOutcome::Success(Box::new(zero_detections_output));
     assert!(matches!(

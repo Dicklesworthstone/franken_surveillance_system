@@ -2,6 +2,7 @@
   "schema": "fss.semantic_plane_registry.v1",
   "as_of": "2026-09-01",
   "normative_adr": "docs/adr/ADR-0001-three-semantic-planes.md",
+  "negative_constraint": "NEG-003",
   "doctrine": "Authority, cognition, and effect planes are type-distinct: values never convert without explicit boundary types, and cognition output can never grant effect authority.",
   "planes": {
     "authority": {

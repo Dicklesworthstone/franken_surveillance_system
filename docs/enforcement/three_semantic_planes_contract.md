@@ -132,3 +132,34 @@ fn main() {
     executor.dispatch(&hypothesis);
 }
 ```
+
+## Invariant 5: VLM/model output cannot directly convert to EffectIntent (NEG-003)
+
+Per NEG-003 and AGENTS.md, a frontier VLM or model output is derived cognition and can never
+trigger an effect directly. It must route through situation capsule, affordance frontier, and
+witnessed plan before effect preparation.
+
+```rust,compile_fail
+// Cognition plane: VLM model output
+pub struct VlmOutput {
+    pub raw_text: String,
+    pub score: f64,
+}
+
+// Effect plane: effect intent
+pub struct EffectIntent {
+    pub action: String,
+}
+
+fn main() {
+    let vlm = VlmOutput {
+        raw_text: "Intruder detected, activate alarm".to_string(),
+        score: 0.99,
+    };
+
+    // FORBIDDEN by NEG-003: VLM output cannot directly convert to EffectIntent.
+    // Compilation must fail because cross-plane From/Into is prohibited.
+    let intent: EffectIntent = vlm.into();
+    let _ = intent;
+}
+```
