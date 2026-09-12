@@ -42,6 +42,12 @@ from architecture_registry_consistency import (
     ERR_COUNT_MISMATCH,
     ERR_CONTRADICTED_METADATA,
     ERR_DANGLING_REFERENCE,
+    ERR_GRAPH_MISSING_COMPLEXITY_WITNESS,
+    ERR_GRAPH_MISSING_OUTPUT_WITNESS,
+    ERR_GRAPH_MISSING_TIE_BREAK,
+    ERR_GRAPH_PROJECTION_MISMATCH,
+    ERR_GRAPH_STABLE_ID_DRIFT,
+    ERR_GRAPH_UNREGISTERED_PROJECTION,
     ERR_MISSING_FILE,
     ERR_MISSING_IDENTIFIER,
     ERR_TOMBSTONE_IN_USE,
@@ -689,6 +695,130 @@ class TestCliInvocation(unittest.TestCase):
             data = json.loads(report_path.read_text(encoding="utf-8"))
             self.assertEqual(data["status"], "passed")
             self.assertEqual(len(data["findings"]), 0)
+
+
+class TestGraphAlgorithmRegistryConsistency(unittest.TestCase):
+    """Verifies row-by-row consistency for graph algorithm projections and witnesses (fss-x4a.30.92)."""
+
+    def test_planted_unregistered_graph_projection_in_json_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            target = repo / "architecture/graph_algorithms.json"
+            raw_data = json.loads((ROOT / "architecture/graph_algorithms.json").read_text(encoding="utf-8"))
+            raw_data["algorithms"][0]["projection"] = ["UnregisteredProjectionGraph"]
+            target.unlink()
+            target.write_text(json.dumps(raw_data), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            proj_findings = [f for f in findings if f.code == ERR_GRAPH_UNREGISTERED_PROJECTION]
+            self.assertGreaterEqual(len(proj_findings), 1)
+            self.assertTrue(any("UnregisteredProjectionGraph" in f.message for f in proj_findings))
+
+    def test_planted_unregistered_graph_projection_in_markdown_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            target = repo / "registries/GRAPH_ALGORITHMS.md"
+            text = (ROOT / "registries/GRAPH_ALGORITHMS.md").read_text(encoding="utf-8")
+            text = text.replace("`SensorCoverageGraph`", "`NonexistentProjectionGraph`", 1)
+            target.unlink()
+            target.write_text(text, encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            proj_findings = [f for f in findings if f.code == ERR_GRAPH_UNREGISTERED_PROJECTION]
+            self.assertGreaterEqual(len(proj_findings), 1)
+            self.assertTrue(any("NonexistentProjectionGraph" in f.message for f in proj_findings))
+
+    def test_planted_missing_graph_tie_break_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            target = repo / "architecture/graph_algorithms.json"
+            raw_data = json.loads((ROOT / "architecture/graph_algorithms.json").read_text(encoding="utf-8"))
+            raw_data["algorithms"][0]["tieBreak"] = ""
+            target.unlink()
+            target.write_text(json.dumps(raw_data), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            tb_findings = [f for f in findings if f.code == ERR_GRAPH_MISSING_TIE_BREAK]
+            self.assertGreaterEqual(len(tb_findings), 1)
+            self.assertTrue(any(raw_data["algorithms"][0]["id"] in f.location for f in tb_findings))
+
+    def test_planted_non_deterministic_graph_tie_break_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            target = repo / "architecture/graph_algorithms.json"
+            raw_data = json.loads((ROOT / "architecture/graph_algorithms.json").read_text(encoding="utf-8"))
+            raw_data["algorithms"][0]["tieBreak"] = "arbitrary random pick"
+            target.unlink()
+            target.write_text(json.dumps(raw_data), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            tb_findings = [f for f in findings if f.code == ERR_GRAPH_MISSING_TIE_BREAK]
+            self.assertGreaterEqual(len(tb_findings), 1)
+
+    def test_planted_missing_complexity_witness_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            target = repo / "architecture/graph_algorithms.json"
+            raw_data = json.loads((ROOT / "architecture/graph_algorithms.json").read_text(encoding="utf-8"))
+            raw_data["algorithms"][0]["complexityWitness"] = ""
+            target.unlink()
+            target.write_text(json.dumps(raw_data), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            cw_findings = [f for f in findings if f.code == ERR_GRAPH_MISSING_COMPLEXITY_WITNESS]
+            self.assertGreaterEqual(len(cw_findings), 1)
+
+    def test_planted_missing_output_size_witness_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            target = repo / "architecture/graph_algorithms.json"
+            raw_data = json.loads((ROOT / "architecture/graph_algorithms.json").read_text(encoding="utf-8"))
+            raw_data["algorithms"][0].pop("outputSizeWitness", None)
+            target.unlink()
+            target.write_text(json.dumps(raw_data), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            ow_findings = [f for f in findings if f.code == ERR_GRAPH_MISSING_OUTPUT_WITNESS]
+            self.assertGreaterEqual(len(ow_findings), 1)
+
+    def test_planted_graph_projection_mirror_mismatch_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            target = repo / "registries/GRAPH_ALGORITHMS.md"
+            text = (ROOT / "registries/GRAPH_ALGORITHMS.md").read_text(encoding="utf-8")
+            text = text.replace(
+                "`SensorCoverageGraph`, `DeviceFailureGraph`, `EvidenceClaimGraph`",
+                "`SensorCoverageGraph`",
+                1,
+            )
+            target.unlink()
+            target.write_text(text, encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            mismatch_findings = [f for f in findings if f.code == ERR_GRAPH_PROJECTION_MISMATCH]
+            self.assertGreaterEqual(len(mismatch_findings), 1)
+            self.assertTrue(any("ALG-BRIDGE-001" in f.location for f in mismatch_findings))
+
+    def test_planted_graph_algorithm_stable_id_renumbered_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            target = repo / "architecture/graph_algorithms.json"
+            raw_data = json.loads((ROOT / "architecture/graph_algorithms.json").read_text(encoding="utf-8"))
+            raw_data["algorithms"][0]["id"] = "ALG-DYNCONN-002"
+            target.unlink()
+            target.write_text(json.dumps(raw_data), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            drift_findings = [f for f in findings if f.code == ERR_GRAPH_STABLE_ID_DRIFT]
+            self.assertGreaterEqual(len(drift_findings), 1)
 
 
 if __name__ == "__main__":

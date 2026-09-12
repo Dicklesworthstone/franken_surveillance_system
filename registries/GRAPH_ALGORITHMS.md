@@ -30,4 +30,14 @@ Machine source: `architecture/graph_algorithms.json`. Full motivation, numeric p
 | `ALG-INTERDICT-001` | `network_interdiction_and_robust_placement` | `SensorCoverageGraph`, `DeviceFailureGraph` | `bounded_exact_or_approximate` | `INT-FNX-001` |
 | `ALG-RELIABILITY-001` | `reliability_bounds` | `DeviceFailureGraph`, `ArchiveObjectGraph` | `bounded_statistical` | `INT-FNX-001` |
 | `ALG-FACTOR-001` | `factorized_free_join` | `EvidenceClaimGraph`, `SpatioTemporalTrackGraph` | `exact` | `INT-FNX-001` |
-| `ALG-ZSET-001` | `zset_incremental_maintenance` | `All derived projections` | `exact` | `INT-FNX-001` |
+| `ALG-ZSET-001` | `zset_incremental_maintenance` | `SensorCoverageGraph`, `SpatioTemporalTrackGraph`, `EvidenceClaimGraph`, `IncidentCausalGraph`, `DeviceFailureGraph`, `ArchiveObjectGraph`, `AuthorityGraph`, `PlanObligationGraph`, `OperationalMemoryGraph`, `DigitalTwinGraph` | `exact` | `INT-FNX-001` |
+
+## Registry drifts
+
+- Algorithm: `ALG-ZSET-001`
+  - Field: `projection`
+  - Original snapshot: "All derived projections"
+  - Reconciled value: 10 canonical projections (`SensorCoverageGraph`, `SpatioTemporalTrackGraph`, `EvidenceClaimGraph`, `IncidentCausalGraph`, `DeviceFailureGraph`, `ArchiveObjectGraph`, `AuthorityGraph`, `PlanObligationGraph`, `OperationalMemoryGraph`, `DigitalTwinGraph`)
+  - Status: `reconciled_pending_owner_decision`
+  - Reason: The 2026-08-31 snapshot informally declared 'All derived projections'. Reconciled to the 10 canonical projections pending owner decision on wildcard vs explicit enumeration.
+

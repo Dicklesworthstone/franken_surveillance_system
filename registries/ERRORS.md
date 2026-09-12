@@ -145,6 +145,17 @@ operation states rather than generic errors.
 | `ERR-CAPABILITY-STABLE-ID-REUSED-001` | capability stable identifier was reused or renumbered for a different entity | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-CAPABILITY-DIGEST-MISMATCH-001` | capability registry digest does not match canonical encoding of sorted rows | recompute canonical capability registry digest |
 | `ERR-CAPABILITY-CORRUPT-FILE-001` | capability registry or markdown documentation file is missing or corrupt | repair or restore capability registry file |
+| `ERR-KSTATE-REGISTRY-DRIFT-001` | knowledge state registry row drift between machine registry and markdown | synchronize architecture/knowledge_states.json and registries/AGENT_CONTRACTS.md |
+| `ERR-KSTATE-STABLE-ID-REUSED-001` | knowledge state stable identifier was reused or renumbered for a different entity | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-KSTATE-MISSING-FIELD-001` | knowledge state row lacks a mandatory field or is empty/corrupt | declare all mandatory fields in knowledge state row |
+| `ERR-KSTATE-CORRUPT-FILE-001` | knowledge state registry or markdown documentation file is missing or corrupt | repair or restore knowledge state registry file |
+| `ERR-GRAPH-UNREGISTERED-PROJECTION-001` | graph algorithm specifies an unregistered or nonexistent graph projection ID | update algorithm projection to a registered projection ID from docs/GRAPH_ALGORITHM_ATLAS.md |
+| `ERR-GRAPH-MISSING-TIE-BREAK-001` | graph algorithm row lacks a deterministic CGSE tie-break rule | specify a deterministic CGSE tie-break policy in graph algorithm registry |
+| `ERR-GRAPH-MISSING-COMPLEXITY-WITNESS-001` | graph algorithm row lacks declared complexity witness operations | declare dominant operation complexity witness in graph algorithm registry |
+| `ERR-GRAPH-MISSING-OUTPUT-WITNESS-001` | graph algorithm row lacks declared output-size witness with bounds | declare output-size witness with bounds or record explicit owner drift |
+| `ERR-GRAPH-PROJECTION-MISMATCH-001` | graph algorithm projections differ between machine source and registry markdown mirror | reconcile machine source and registry markdown projections |
+| `ERR-GRAPH-STABLE-ID-DRIFT-001` | graph algorithm stable identifier renumbered or superseded row not tombstoned | restore stable algorithm identity and retain superseded rows as tombstones |
+
 
 
 ## Subordinate dependency audit diagnostic registry (DEP-AUD)

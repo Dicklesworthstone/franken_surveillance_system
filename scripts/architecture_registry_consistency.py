@@ -82,6 +82,55 @@ ERR_TOMBSTONE_IN_USE = "ERR-CONSISTENCY-TOMBSTONE-IN-USE-001"
 ERR_UNREGISTERED_RUST_IDENTIFIER = "ERR-CONSISTENCY-UNREGISTERED-RUST-001"
 ERR_MISSING_FILE = "ERR-CONSISTENCY-MISSING-FILE-001"
 ERR_CORRUPT_FILE = "ERR-CONSISTENCY-CORRUPT-FILE-001"
+ERR_GRAPH_UNREGISTERED_PROJECTION = "ERR-GRAPH-UNREGISTERED-PROJECTION-001"
+ERR_GRAPH_MISSING_TIE_BREAK = "ERR-GRAPH-MISSING-TIE-BREAK-001"
+ERR_GRAPH_MISSING_COMPLEXITY_WITNESS = "ERR-GRAPH-MISSING-COMPLEXITY-WITNESS-001"
+ERR_GRAPH_MISSING_OUTPUT_WITNESS = "ERR-GRAPH-MISSING-OUTPUT-WITNESS-001"
+ERR_GRAPH_PROJECTION_MISMATCH = "ERR-GRAPH-PROJECTION-MISMATCH-001"
+ERR_GRAPH_STABLE_ID_DRIFT = "ERR-GRAPH-STABLE-ID-DRIFT-001"
+
+REGISTERED_GRAPH_PROJECTIONS = frozenset({
+    "SensorCoverageGraph",
+    "SpatioTemporalTrackGraph",
+    "EvidenceClaimGraph",
+    "IncidentCausalGraph",
+    "DeviceFailureGraph",
+    "ArchiveObjectGraph",
+    "AuthorityGraph",
+    "PlanObligationGraph",
+    "OperationalMemoryGraph",
+    "DigitalTwinGraph",
+})
+
+CANONICAL_GRAPH_ALGORITHM_IDS = frozenset({
+    "ALG-DYNCONN-001",
+    "ALG-BRIDGE-001",
+    "ALG-SCC-001",
+    "ALG-TOPO-001",
+    "ALG-DOM-001",
+    "ALG-SP-001",
+    "ALG-KSP-001",
+    "ALG-TREACH-001",
+    "ALG-MSD-001",
+    "ALG-FLOW-001",
+    "ALG-GH-001",
+    "ALG-MCF-001",
+    "ALG-MATCH-001",
+    "ALG-MULTIMATCH-001",
+    "ALG-SETCOVER-001",
+    "ALG-SUBMOD-001",
+    "ALG-MST-001",
+    "ALG-STEINER-001",
+    "ALG-PPR-001",
+    "ALG-HITS-001",
+    "ALG-CENTRAL-001",
+    "ALG-COMM-001",
+    "ALG-SPECTRAL-001",
+    "ALG-INTERDICT-001",
+    "ALG-RELIABILITY-001",
+    "ALG-FACTOR-001",
+    "ALG-ZSET-001",
+})
 
 TOMBSTONE_STATES = stable_id_audit.TOMBSTONE_STATES
 
@@ -335,7 +384,130 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             f"graph algorithms count mismatch: architecture has {len(alg_arch_map)}, registries has {len(alg_md_map)}",
         )
 
+    # Stable ID audit: algorithms must not be renumbered and must match canonical set
+    for aid in alg_arch_map:
+        if aid not in CANONICAL_GRAPH_ALGORITHM_IDS:
+            emit(
+                ERR_GRAPH_STABLE_ID_DRIFT,
+                "architecture/graph_algorithms.json",
+                f"#/algorithms/{aid}",
+                f"unknown or renumbered graph algorithm ID '{aid}'; canonical IDs are strictly versioned",
+            )
+        else:
+            status = alg_arch_map[aid].get("status")
+            if status in TOMBSTONE_STATES:
+                pass
+    for cid in sorted(CANONICAL_GRAPH_ALGORITHM_IDS):
+        if cid not in alg_arch_map:
+            emit(
+                ERR_GRAPH_STABLE_ID_DRIFT,
+                "architecture/graph_algorithms.json",
+                f"#/algorithms/{cid}",
+                f"canonical graph algorithm ID '{cid}' missing from architecture/graph_algorithms.json",
+            )
+
+    DETERMINISTIC_TIE_BREAK_KEYWORDS = (
+        "stable",
+        "canonical",
+        "insertion order",
+        "lexicographic",
+        "commit sequence",
+        "identity",
+        "order",
+        "key",
+    )
+    OUTPUT_BOUND_KEYWORDS = (
+        "<=",
+        "<",
+        "bound",
+        "bounded",
+        "o(",
+        "|v|",
+        "|e|",
+        "nodes",
+        "edges",
+        "tuples",
+        "entries",
+        "components",
+        "sets",
+        "pairs",
+        "elements",
+        "records",
+        "evaluations",
+        "k *",
+    )
+
     for aid, item in alg_arch_map.items():
+        # Registered projection validation on JSON row
+        raw_projections = item.get("projection")
+        if not isinstance(raw_projections, list) or len(raw_projections) == 0:
+            emit(
+                ERR_GRAPH_UNREGISTERED_PROJECTION,
+                "architecture/graph_algorithms.json",
+                f"#/algorithms/{aid}/projection",
+                f"algorithm '{aid}' must specify a non-empty list of registered projections",
+            )
+            arch_projs = []
+        else:
+            arch_projs = [str(p) for p in raw_projections]
+            for p_idx, proj in enumerate(arch_projs):
+                if proj not in REGISTERED_GRAPH_PROJECTIONS:
+                    emit(
+                        ERR_GRAPH_UNREGISTERED_PROJECTION,
+                        "architecture/graph_algorithms.json",
+                        f"#/algorithms/{aid}/projection/{p_idx}",
+                        f"algorithm '{aid}' specifies unregistered graph projection '{proj}'",
+                    )
+
+        # Deterministic CGSE tie-break rule validation
+        tie_break = item.get("tieBreak")
+        if not isinstance(tie_break, str) or not tie_break.strip():
+            emit(
+                ERR_GRAPH_MISSING_TIE_BREAK,
+                "architecture/graph_algorithms.json",
+                f"#/algorithms/{aid}/tieBreak",
+                f"algorithm '{aid}' lacks a deterministic CGSE tie-break rule",
+            )
+        else:
+            tb_lower = tie_break.lower()
+            if not any(kw in tb_lower for kw in DETERMINISTIC_TIE_BREAK_KEYWORDS):
+                emit(
+                    ERR_GRAPH_MISSING_TIE_BREAK,
+                    "architecture/graph_algorithms.json",
+                    f"#/algorithms/{aid}/tieBreak",
+                    f"algorithm '{aid}' tie-break rule '{tie_break}' lacks deterministic ordering criteria",
+                )
+
+        # Complexity witness validation
+        comp_witness = item.get("complexityWitness")
+        if not isinstance(comp_witness, str) or not comp_witness.strip():
+            emit(
+                ERR_GRAPH_MISSING_COMPLEXITY_WITNESS,
+                "architecture/graph_algorithms.json",
+                f"#/algorithms/{aid}/complexityWitness",
+                f"algorithm '{aid}' lacks declared complexity witness operations",
+            )
+
+        # Output-size witness validation with bounds
+        out_witness = item.get("outputSizeWitness")
+        if not isinstance(out_witness, str) or not out_witness.strip():
+            emit(
+                ERR_GRAPH_MISSING_OUTPUT_WITNESS,
+                "architecture/graph_algorithms.json",
+                f"#/algorithms/{aid}/outputSizeWitness",
+                f"algorithm '{aid}' lacks declared output-size witness with bounds",
+            )
+        else:
+            ow_lower = out_witness.lower()
+            if not any(kw in ow_lower for kw in OUTPUT_BOUND_KEYWORDS):
+                emit(
+                    ERR_GRAPH_MISSING_OUTPUT_WITNESS,
+                    "architecture/graph_algorithms.json",
+                    f"#/algorithms/{aid}/outputSizeWitness",
+                    f"algorithm '{aid}' output-size witness '{out_witness}' lacks explicit mathematical bounds",
+                )
+
+        # Mirror equality and cross-check against Markdown registry
         if aid not in alg_md_map:
             emit(
                 ERR_MISSING_IDENTIFIER,
@@ -371,6 +543,24 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
                     f"algorithm '{aid}' gate mismatch: architecture has '{item.get('gate')}', registries has '{md_gate}'",
                 )
 
+            md_proj_raw = md_row[2] if len(md_row) >= 3 else ""
+            md_projs = [p.strip("` ") for p in md_proj_raw.split(",") if p.strip("` ")]
+            for p in md_projs:
+                if p not in REGISTERED_GRAPH_PROJECTIONS:
+                    emit(
+                        ERR_GRAPH_UNREGISTERED_PROJECTION,
+                        "registries/GRAPH_ALGORITHMS.md",
+                        f"#{aid}",
+                        f"algorithm '{aid}' in registries/GRAPH_ALGORITHMS.md specifies unregistered projection '{p}'",
+                    )
+            if arch_projs != md_projs:
+                emit(
+                    ERR_GRAPH_PROJECTION_MISMATCH,
+                    "architecture/graph_algorithms.json",
+                    f"#/algorithms/{aid}/projection",
+                    f"algorithm '{aid}' projections mismatch: architecture has {arch_projs}, registries/GRAPH_ALGORITHMS.md has {md_projs}",
+                )
+
     for aid in alg_md_map:
         if aid not in alg_arch_map:
             emit(
@@ -379,6 +569,33 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
                 f"#/algorithms/{aid}",
                 f"algorithm '{aid}' in registries/GRAPH_ALGORITHMS.md is missing from architecture/graph_algorithms.json",
             )
+
+    # Validate optional drifts block if present in architecture JSON
+    if "drifts" in alg_doc:
+        drifts = alg_doc["drifts"]
+        if not isinstance(drifts, list):
+            emit(ERR_CORRUPT_FILE, "architecture/graph_algorithms.json", "#/drifts", "'drifts' must be an array")
+        else:
+            for d_idx, drift in enumerate(drifts):
+                if not isinstance(drift, dict):
+                    emit(ERR_CORRUPT_FILE, "architecture/graph_algorithms.json", f"#/drifts/{d_idx}", "drift entry must be an object")
+                    continue
+                d_aid = drift.get("algorithmId")
+                if d_aid not in CANONICAL_GRAPH_ALGORITHM_IDS:
+                    emit(
+                        ERR_GRAPH_STABLE_ID_DRIFT,
+                        "architecture/graph_algorithms.json",
+                        f"#/drifts/{d_idx}/algorithmId",
+                        f"drift entry references unknown algorithm ID '{d_aid}'",
+                    )
+                for req_field in ("field", "originalValue", "reconciledValue", "reason", "status"):
+                    if req_field not in drift:
+                        emit(
+                            ERR_CORRUPT_FILE,
+                            "architecture/graph_algorithms.json",
+                            f"#/drifts/{d_idx}/{req_field}",
+                            f"drift entry missing required field '{req_field}'",
+                        )
 
     # 2.3 Publication Primitives
     pub_doc = parsed_json["architecture/publication_primitives.json"]

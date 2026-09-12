@@ -16,6 +16,7 @@
       "authoritativeness": "derived",
       "tieBreak": "stable node identity then insertion order",
       "complexityWitness": "union/find or dynamic-forest operations",
+      "outputSizeWitness": "<= |V| component labels",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -33,6 +34,7 @@
       "authoritativeness": "derived",
       "tieBreak": "stable node and edge identity",
       "complexityWitness": "DFS visits and low-link updates",
+      "outputSizeWitness": "<= |V| cut vertices and <= |E| bridge edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -50,6 +52,7 @@
       "authoritativeness": "derived",
       "tieBreak": "stable node identity within topological condensation order",
       "complexityWitness": "edge scans and stack operations",
+      "outputSizeWitness": "<= |V| component labels and <= |E| condensation edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -66,6 +69,7 @@
       "authoritativeness": "derived",
       "tieBreak": "stable plan-step identity",
       "complexityWitness": "in-degree updates and relaxations",
+      "outputSizeWitness": "<= |V| ordered nodes and <= |E| slack records",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -83,6 +87,7 @@
       "authoritativeness": "derived",
       "tieBreak": "stable predecessor and node identity",
       "complexityWitness": "intersections and frontier updates",
+      "outputSizeWitness": "<= |V| immediate dominator relationships",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -100,6 +105,7 @@
       "authoritativeness": "derived",
       "tieBreak": "cost then stable edge/path identity",
       "complexityWitness": "heap pushes, pops, and relaxations",
+      "outputSizeWitness": "<= |V| path nodes and <= |V| - 1 edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -116,6 +122,7 @@
       "authoritativeness": "derived",
       "tieBreak": "cost, diversity penalty, then stable path identity",
       "complexityWitness": "candidate expansions and heap operations",
+      "outputSizeWitness": "<= k * |V| path nodes and <= k * |E| edges",
       "exactness": "exact_or_bounded",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -132,6 +139,7 @@
       "authoritativeness": "derived",
       "tieBreak": "earliest feasible interval then stable path identity",
       "complexityWitness": "interval compositions and dominance prunes",
+      "outputSizeWitness": "<= |V| reached nodes and <= |E| valid intervals",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -148,6 +156,7 @@
       "authoritativeness": "derived",
       "tieBreak": "distance then source identity",
       "complexityWitness": "heap operations and relaxations",
+      "outputSizeWitness": "<= |V| distance-source records",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -165,6 +174,7 @@
       "authoritativeness": "derived",
       "tieBreak": "stable residual-edge identity",
       "complexityWitness": "residual scans and augmentations",
+      "outputSizeWitness": "<= |E| edge flows and <= |V| cut partition flags",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -181,6 +191,7 @@
       "authoritativeness": "derived",
       "tieBreak": "stable cut partition identity",
       "complexityWitness": "max-flow invocations",
+      "outputSizeWitness": "<= |V| nodes and <= |V| - 1 tree edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -197,6 +208,7 @@
       "authoritativeness": "derived",
       "tieBreak": "cost then stable assignment identity",
       "complexityWitness": "augmentations and reduced-cost updates",
+      "outputSizeWitness": "<= |E| edge flow assignments",
       "exactness": "exact_or_verified_candidate",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -214,6 +226,7 @@
       "authoritativeness": "derived",
       "tieBreak": "weight then stable pair identity",
       "complexityWitness": "augmentations or primal-dual updates",
+      "outputSizeWitness": "<= |V| / 2 matched pairs",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -229,6 +242,7 @@
       "authoritativeness": "derived",
       "tieBreak": "score then canonical assignment tuple",
       "complexityWitness": "branch nodes and matching solves",
+      "outputSizeWitness": "<= k * (|V| / 2) matched pairs",
       "exactness": "bounded_exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -245,6 +259,7 @@
       "authoritativeness": "derived",
       "tieBreak": "marginal gain then stable element identity",
       "complexityWitness": "coverage updates and branch nodes",
+      "outputSizeWitness": "<= |V| selected covering sets",
       "exactness": "approximate_or_exact_small",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -261,6 +276,7 @@
       "authoritativeness": "derived",
       "tieBreak": "marginal utility per typed cost then stable action identity",
       "complexityWitness": "objective evaluations and lazy-heap refreshes",
+      "outputSizeWitness": "<= k <= |V| selected actions",
       "exactness": "approximate",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -278,6 +294,7 @@
       "authoritativeness": "derived",
       "tieBreak": "weight then stable edge identity",
       "complexityWitness": "sort comparisons and union/find operations",
+      "outputSizeWitness": "<= |V| - 1 tree edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -294,6 +311,7 @@
       "authoritativeness": "derived",
       "tieBreak": "approximation score then stable node identity",
       "complexityWitness": "shortest paths and reductions",
+      "outputSizeWitness": "<= 2 * |Terminals| <= |V| tree nodes and edges",
       "exactness": "approximate",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -310,6 +328,7 @@
       "authoritativeness": "derived",
       "tieBreak": "score then stable node identity",
       "complexityWitness": "sparse multiply/add operations",
+      "outputSizeWitness": "<= |V| stationary score entries",
       "exactness": "approximate_advisory",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -326,6 +345,7 @@
       "authoritativeness": "derived",
       "tieBreak": "score then stable node identity",
       "complexityWitness": "sparse multiply/add operations",
+      "outputSizeWitness": "<= 2 * |V| hub and authority score entries",
       "exactness": "approximate_advisory",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -343,6 +363,7 @@
       "authoritativeness": "derived",
       "tieBreak": "score then stable node identity",
       "complexityWitness": "family-specific path or matrix operations",
+      "outputSizeWitness": "<= |V| vertex and <= |E| edge centrality scores",
       "exactness": "exact_or_approximate_advisory",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -359,6 +380,7 @@
       "authoritativeness": "derived",
       "tieBreak": "objective then canonical partition encoding",
       "complexityWitness": "edge scans and moves",
+      "outputSizeWitness": "<= |V| community partition assignments",
       "exactness": "approximate_advisory",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -375,6 +397,7 @@
       "authoritativeness": "derived",
       "tieBreak": "eigen score then stable node identity",
       "complexityWitness": "matrix-vector products and residual norms",
+      "outputSizeWitness": "<= k * |V| eigenvector entries and anomaly score",
       "exactness": "approximate_advisory",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -391,6 +414,7 @@
       "authoritativeness": "derived",
       "tieBreak": "loss then canonical removal/placement set",
       "complexityWitness": "cut/flow solves and branch nodes",
+      "outputSizeWitness": "<= k <= |V| + |E| interdicted elements",
       "exactness": "bounded_exact_or_approximate",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -407,6 +431,7 @@
       "authoritativeness": "derived",
       "tieBreak": "bound then stable scenario identity",
       "complexityWitness": "scenario evaluations and convolution steps",
+      "outputSizeWitness": "<= |Scenarios| <= 2^k probability evaluations",
       "exactness": "bounded_statistical",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -423,6 +448,7 @@
       "authoritativeness": "derived",
       "tieBreak": "lexicographic stable relation key",
       "complexityWitness": "iterator seeks, intersections, and emitted factors",
+      "outputSizeWitness": "<= |V| * |Relations| factor nodes and edges",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
@@ -432,15 +458,48 @@
       "name": "zset_incremental_maintenance",
       "owner": "fss-graph-algorithms",
       "projection": [
-        "All derived projections"
+        "SensorCoverageGraph",
+        "SpatioTemporalTrackGraph",
+        "EvidenceClaimGraph",
+        "IncidentCausalGraph",
+        "DeviceFailureGraph",
+        "ArchiveObjectGraph",
+        "AuthorityGraph",
+        "PlanObligationGraph",
+        "OperationalMemoryGraph",
+        "DigitalTwinGraph"
       ],
       "decision": "Incremental views/subscriptions/statistics from capsule deltas",
       "authoritativeness": "derived",
       "tieBreak": "commit sequence then stable tuple key",
       "complexityWitness": "delta tuple updates and circuit activations",
+      "outputSizeWitness": "<= |Delta| <= |V| + |E| delta tuple records",
       "exactness": "exact",
       "gate": "INT-FNX-001",
       "status": "specified"
+    }
+  ],
+  "drifts": [
+    {
+      "algorithmId": "ALG-ZSET-001",
+      "field": "projection",
+      "originalValue": [
+        "All derived projections"
+      ],
+      "reconciledValue": [
+        "SensorCoverageGraph",
+        "SpatioTemporalTrackGraph",
+        "EvidenceClaimGraph",
+        "IncidentCausalGraph",
+        "DeviceFailureGraph",
+        "ArchiveObjectGraph",
+        "AuthorityGraph",
+        "PlanObligationGraph",
+        "OperationalMemoryGraph",
+        "DigitalTwinGraph"
+      ],
+      "reason": "The 2026-08-31 snapshot informally declared 'All derived projections'. Reconciled to the 10 canonical projections pending owner decision on wildcard vs explicit enumeration.",
+      "status": "reconciled_pending_owner_decision"
     }
   ]
 }
