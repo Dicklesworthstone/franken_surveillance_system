@@ -835,11 +835,7 @@ fn test_extrinsics_lifecycle_invalidation_on_contradiction() -> Result<(), Box<d
     })?;
 
     let mut lifecycle = ExtrinsicsLifecycle::new();
-    lifecycle.activate_certificate(
-        cert,
-        &target_cert,
-        TimestampNs(1_700_005_000_000_000_000),
-    )?;
+    lifecycle.activate_certificate(cert, &target_cert, TimestampNs(1_700_005_000_000_000_000))?;
     assert!(lifecycle.is_active());
 
     // 1. Verify a consistent observation passes verification
@@ -985,6 +981,473 @@ fn test_extrinsics_reference_solver_trait() -> Result<(), Box<dyn Error>> {
     let cert = solver.solve(&req)?;
     assert_eq!(cert.certificate_id, "ext:cert:trait-test");
     assert_eq!(cert.residual.correspondence_count, 16);
+
+    Ok(())
+}
+
+fn build_distorted_test_intrinsics(
+    device_id_suffix: &str,
+    cal_gen_suffix: &str,
+    distortion: DistortionModel,
+) -> Result<IntrinsicsCertificate, Box<dyn Error>> {
+    let intrinsics = CameraIntrinsics {
+        width_px: 1920,
+        height_px: 1080,
+        fx: Fixed64::from_integer(1200),
+        fy: Fixed64::from_integer(1200),
+        cx: Fixed64::from_integer(960),
+        cy: Fixed64::from_integer(540),
+        skew: Fixed64::ZERO,
+        distortion,
+    };
+
+    let mut samples = Vec::new();
+    for i in 0..16 {
+        let x_mm = if i % 2 == 0 { 200 } else { -200 };
+        let y_mm = if (i / 2) % 2 == 0 { 150 } else { -150 };
+        let z_mm = 1500 + i * 50;
+
+        let proj = intrinsics.project_point_f64([x_mm as f64, y_mm as f64, z_mm as f64])?;
+        let u_upx = (proj[0] * 1_000_000.0).round() as i64;
+        let v_upx = (proj[1] * 1_000_000.0).round() as i64;
+
+        let s = CalibrationSample::new(
+            (i + 1) as u64,
+            [x_mm, y_mm, z_mm],
+            (u_upx, v_upx),
+            0,
+            TimestampNs(1_700_000_000_000_000_000 + (i as i128) * 10_000_000),
+        )?;
+        samples.push(s);
+    }
+
+    let residual = IntrinsicsResidual {
+        mean_reprojection_error_upx: 50_000,
+        max_reprojection_error_upx: 120_000,
+        rmse_upx: 65_000,
+        covariance: IntrinsicsCovariance {
+            fx_variance_upx2: 1000,
+            fy_variance_upx2: 1000,
+            cx_variance_upx2: 500,
+            cy_variance_upx2: 500,
+            skew_variance_u2: 10,
+        },
+        observation_count: samples.len(),
+        frame_count: 1,
+    };
+
+    let validity = CaptureInterval::new(
+        TimestampNs(1_700_000_000_000_000_000),
+        TimestampNs(1_700_010_000_000_000_000),
+    )?;
+
+    let cert = IntrinsicsCertificateBuilder::new(&format!("cert:intrinsics:{device_id_suffix}"))?
+        .device(
+            DeviceId::parse(format!("dev:camera:{device_id_suffix}"))?,
+            DeviceGeneration::parse("dev:gen:sensor-rev-1")?,
+            FirmwareGeneration::parse("fw:gen:v1.0.0")?,
+        )
+        .calibration_generation(CalibrationGeneration::parse(format!(
+            "cal:intrinsics:{cal_gen_suffix}"
+        ))?)
+        .intrinsics(intrinsics)
+        .residual(residual)
+        .validity(validity)
+        .evidence(samples)?
+        .build()?;
+
+    Ok(cert)
+}
+
+#[test]
+fn test_adversarial_nan_rotation_or_translation_must_not_return_identity()
+-> Result<(), Box<dyn Error>> {
+    let identity_rot = [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]];
+    let nan_trans = [f64::NAN, 0.0, 0.0];
+
+    let res = RigidTransform3D::from_f64_parts(identity_rot, nan_trans);
+    match res {
+        Err(ExtrinsicsError::InvalidTransform(_)) | Err(ExtrinsicsError::ArithmeticOverflow) => {}
+        Ok(t) if t.is_identity() => {
+            return Err(
+                "Vulnerability: from_f64_parts laundered NaN into Ok(RigidTransform3D::IDENTITY)"
+                    .into(),
+            );
+        }
+        other => return Err(format!("Expected typed error on NaN float, got: {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_adversarial_diagonal_collinear_correspondences_must_be_rejected()
+-> Result<(), Box<dyn Error>> {
+    let source_cert = build_test_intrinsics("cam-1", "001")?;
+    let target_cert = build_test_intrinsics("cam-2", "001")?;
+    let validity = CaptureInterval::new(
+        TimestampNs(1_700_000_000_000_000_000),
+        TimestampNs(1_700_010_000_000_000_000),
+    )?;
+
+    let mut collinear_diagonal = Vec::new();
+    for i in 1..=8 {
+        let coord = i * 100;
+        let s = ExtrinsicsCorrespondence::new(
+            i as u64,
+            100 + i as u64,
+            [coord, coord, coord],
+            [coord + 50, coord - 50, coord],
+            (500_000, 500_000),
+            (550_000, 450_000),
+            TimestampNs(1_700_000_000_000_000_000),
+        )?;
+        collinear_diagonal.push(s);
+    }
+
+    let req = ExtrinsicsSolveRequest {
+        certificate_id: "ext:cert:diagonal-collinear".to_string(),
+        source_certificate: &source_cert,
+        target_certificate: &target_cert,
+        correspondences: collinear_diagonal,
+        validity,
+        calibration_generation: CalibrationGeneration::parse("cal:extrinsics:001")?,
+        max_reprojection_tolerance_upx: 1_000_000,
+    };
+
+    match solve_extrinsics(&req) {
+        Err(ExtrinsicsError::DegenerateCorrespondences { .. }) => {}
+        other => {
+            return Err(format!(
+                "Expected DegenerateCorrespondences on collinear points, got: {other:?}"
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_adversarial_duplicate_points_accepted_as_non_degenerate() -> Result<(), Box<dyn Error>> {
+    let source_cert = build_test_intrinsics("cam-1", "001")?;
+    let target_cert = build_test_intrinsics("cam-2", "001")?;
+    let validity = CaptureInterval::new(
+        TimestampNs(1_700_000_000_000_000_000),
+        TimestampNs(1_700_010_000_000_000_000),
+    )?;
+
+    let mut dups = Vec::new();
+    for i in 0..8 {
+        let (x, y) = if i % 2 == 0 { (100, 100) } else { (300, 300) };
+        let s = ExtrinsicsCorrespondence::new(
+            (i + 1) as u64,
+            (i % 2) as u64,
+            [x, y, 2000],
+            [x + 10, y + 10, 2000],
+            (500_000, 500_000),
+            (510_000, 510_000),
+            TimestampNs(1_700_000_000_000_000_000),
+        )?;
+        dups.push(s);
+    }
+
+    let req = ExtrinsicsSolveRequest {
+        certificate_id: "ext:cert:dups".to_string(),
+        source_certificate: &source_cert,
+        target_certificate: &target_cert,
+        correspondences: dups,
+        validity,
+        calibration_generation: CalibrationGeneration::parse("cal:extrinsics:001")?,
+        max_reprojection_tolerance_upx: 1_000_000,
+    };
+
+    match solve_extrinsics(&req) {
+        Err(ExtrinsicsError::DegenerateCorrespondences { .. })
+        | Err(ExtrinsicsError::InsufficientCorrespondences { .. }) => {}
+        other => {
+            return Err(format!("Expected rejection for duplicate points, got: {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_adversarial_certificate_digest_must_match_canonical_bytes_hash()
+-> Result<(), Box<dyn Error>> {
+    let source_cert = build_test_intrinsics("cam-1", "001")?;
+    let target_cert = build_test_intrinsics("cam-2", "001")?;
+    let transform = sample_test_transform()?;
+    let correspondences = generate_synthetic_correspondences(
+        16,
+        &transform,
+        &source_cert.intrinsics,
+        &target_cert.intrinsics,
+        1_700_000_000_000_000_000,
+    )?;
+    let validity = CaptureInterval::new(
+        TimestampNs(1_700_000_000_000_000_000),
+        TimestampNs(1_700_010_000_000_000_000),
+    )?;
+
+    let cert = solve_extrinsics(&ExtrinsicsSolveRequest {
+        certificate_id: "ext:cert:digest-check".to_string(),
+        source_certificate: &source_cert,
+        target_certificate: &target_cert,
+        correspondences,
+        validity,
+        calibration_generation: CalibrationGeneration::parse("cal:extrinsics:001")?,
+        max_reprojection_tolerance_upx: 1_000_000,
+    })?;
+
+    let canonical_bytes = cert.canonical_bytes()?;
+    let expected_digest = ContentDigest::sha256(&canonical_bytes);
+    if cert.certificate_digest != expected_digest {
+        return Err(format!(
+            "Vulnerability: certificate_digest ({:?}) does not match SHA-256 of its own canonical_bytes ({:?})",
+            cert.certificate_digest, expected_digest
+        ).into());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_adversarial_tolerance_exceeding_bound_silently_clamped() -> Result<(), Box<dyn Error>> {
+    let source_cert = build_test_intrinsics("cam-1", "001")?;
+    let target_cert = build_test_intrinsics("cam-2", "001")?;
+    let transform = sample_test_transform()?;
+    let correspondences = generate_synthetic_correspondences(
+        16,
+        &transform,
+        &source_cert.intrinsics,
+        &target_cert.intrinsics,
+        1_700_000_000_000_000_000,
+    )?;
+    let validity = CaptureInterval::new(
+        TimestampNs(1_700_000_000_000_000_000),
+        TimestampNs(1_700_010_000_000_000_000),
+    )?;
+
+    let req = ExtrinsicsSolveRequest {
+        certificate_id: "ext:cert:clamp-check".to_string(),
+        source_certificate: &source_cert,
+        target_certificate: &target_cert,
+        correspondences,
+        validity,
+        calibration_generation: CalibrationGeneration::parse("cal:extrinsics:001")?,
+        max_reprojection_tolerance_upx: MAX_EXTRINSICS_REPROJECTION_TOLERANCE_UPX + 1,
+    };
+
+    match solve_extrinsics(&req) {
+        Err(ExtrinsicsError::ResidualExceedsTolerance { .. }) => {}
+        Ok(_) => return Err("Vulnerability: solve_extrinsics silently clamped out-of-bounds tolerance instead of returning typed error".into()),
+        other => return Err(format!("Expected typed bound violation, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_adversarial_inverse_i64_min_does_not_panic() -> Result<(), Box<dyn Error>> {
+    let rot = [
+        [Fixed64::ONE, Fixed64::ZERO, Fixed64::ZERO],
+        [Fixed64::ZERO, Fixed64::ONE, Fixed64::ZERO],
+        [Fixed64::ZERO, Fixed64::ZERO, Fixed64::ONE],
+    ];
+    let trans = [Fixed64(i64::MIN), Fixed64::ZERO, Fixed64::ZERO];
+    let transform = RigidTransform3D::from_parts(rot, trans);
+
+    match transform.inverse() {
+        Err(ExtrinsicsError::ArithmeticOverflow) => Ok(()),
+        other => Err(format!("Expected Err(ArithmeticOverflow), got {other:?}").into()),
+    }
+}
+
+#[test]
+fn test_adversarial_negative_coordinates_canonical_cast_wrapping() -> Result<(), Box<dyn Error>> {
+    let corr = ExtrinsicsCorrespondence::new(
+        1,
+        100,
+        [-500, -200, 1500],
+        [-400, -100, 1500],
+        (-960_000_000, -540_000_000),
+        (-860_000_000, -440_000_000),
+        TimestampNs(1_700_000_000_000_000_000),
+    )?;
+
+    if corr.source_point_mm[0] != -500 {
+        return Err(format!(
+            "Expected source_point_mm[0] to be -500, got {}",
+            corr.source_point_mm[0]
+        )
+        .into());
+    }
+
+    let mut encoder = fss_core::CanonicalEncoder::new();
+    corr.encode_canonical(&mut encoder);
+    let bytes = encoder.finish_checked().map_err(|e| format!("{e:?}"))?;
+    if bytes.is_empty() {
+        return Err("Canonical bytes were empty".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_extrinsics_solving_with_brown_conrady_distortion() -> Result<(), Box<dyn Error>> {
+    let dist = DistortionModel::BrownConrady {
+        k1: Fixed64::from_raw(-50_000),
+        k2: Fixed64::from_raw(10_000),
+        p1: Fixed64::from_raw(1_000),
+        p2: Fixed64::from_raw(-1_000),
+        k3: Fixed64::from_raw(100),
+    };
+    let source_cert = build_distorted_test_intrinsics("cam-bc1", "001", dist.clone())?;
+    let target_cert = build_distorted_test_intrinsics("cam-bc2", "001", dist)?;
+
+    let transform = sample_test_transform()?;
+    let correspondences = generate_synthetic_correspondences(
+        16,
+        &transform,
+        &source_cert.intrinsics,
+        &target_cert.intrinsics,
+        1_700_000_000_000_000_000,
+    )?;
+
+    let validity = CaptureInterval::new(
+        TimestampNs(1_700_000_000_000_000_000),
+        TimestampNs(1_700_010_000_000_000_000),
+    )?;
+
+    let cert = solve_extrinsics(&ExtrinsicsSolveRequest {
+        certificate_id: "ext:cert:brown-conrady".to_string(),
+        source_certificate: &source_cert,
+        target_certificate: &target_cert,
+        correspondences,
+        validity,
+        calibration_generation: CalibrationGeneration::parse("cal:extrinsics:001")?,
+        max_reprojection_tolerance_upx: 2_000_000,
+    })?;
+
+    if cert.residual.rmse_upx > 2_000_000 {
+        return Err(format!("RMSE {} exceeded tolerance", cert.residual.rmse_upx).into());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_extrinsics_solving_with_kannala_brandt_distortion() -> Result<(), Box<dyn Error>> {
+    let dist = DistortionModel::KannalaBrandt {
+        k1: Fixed64::from_raw(-20_000),
+        k2: Fixed64::from_raw(5_000),
+        k3: Fixed64::from_raw(-1_000),
+        k4: Fixed64::from_raw(200),
+    };
+    let source_cert = build_distorted_test_intrinsics("cam-kb1", "001", dist.clone())?;
+    let target_cert = build_distorted_test_intrinsics("cam-kb2", "001", dist)?;
+
+    let transform = sample_test_transform()?;
+    let correspondences = generate_synthetic_correspondences(
+        16,
+        &transform,
+        &source_cert.intrinsics,
+        &target_cert.intrinsics,
+        1_700_000_000_000_000_000,
+    )?;
+
+    let validity = CaptureInterval::new(
+        TimestampNs(1_700_000_000_000_000_000),
+        TimestampNs(1_700_010_000_000_000_000),
+    )?;
+
+    let cert = solve_extrinsics(&ExtrinsicsSolveRequest {
+        certificate_id: "ext:cert:kannala-brandt".to_string(),
+        source_certificate: &source_cert,
+        target_certificate: &target_cert,
+        correspondences,
+        validity,
+        calibration_generation: CalibrationGeneration::parse("cal:extrinsics:001")?,
+        max_reprojection_tolerance_upx: 2_000_000,
+    })?;
+
+    if cert.residual.rmse_upx > 2_000_000 {
+        return Err(format!("RMSE {} exceeded tolerance", cert.residual.rmse_upx).into());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_extrinsics_lifecycle_rejects_expired_or_mismatched_target_intrinsics()
+-> Result<(), Box<dyn Error>> {
+    let source_cert = build_test_intrinsics("cam-1", "001")?;
+    let target_cert = build_test_intrinsics("cam-2", "001")?;
+    let wrong_target_cert = build_test_intrinsics("cam-3", "001")?;
+
+    let transform = sample_test_transform()?;
+    let correspondences = generate_synthetic_correspondences(
+        16,
+        &transform,
+        &source_cert.intrinsics,
+        &target_cert.intrinsics,
+        1_700_000_000_000_000_000,
+    )?;
+
+    let validity = CaptureInterval::new(
+        TimestampNs(1_700_000_000_000_000_000),
+        TimestampNs(1_700_010_000_000_000_000),
+    )?;
+
+    let cert = solve_extrinsics(&ExtrinsicsSolveRequest {
+        certificate_id: "ext:cert:lifecycle-checks".to_string(),
+        source_certificate: &source_cert,
+        target_certificate: &target_cert,
+        correspondences,
+        validity,
+        calibration_generation: CalibrationGeneration::parse("cal:extrinsics:001")?,
+        max_reprojection_tolerance_upx: 1_000_000,
+    })?;
+
+    let mut lifecycle = ExtrinsicsLifecycle::new();
+
+    // 1. Mismatched target intrinsics certificate
+    let res = lifecycle.activate_certificate(
+        cert.clone(),
+        &wrong_target_cert,
+        TimestampNs(1_700_005_000_000_000_000),
+    );
+    match res {
+        Err(ExtrinsicsError::TargetIntrinsicsDigestMismatch { .. }) => {}
+        other => {
+            return Err(format!("Expected TargetIntrinsicsDigestMismatch, got: {other:?}").into());
+        }
+    }
+
+    // 2. Expired certificate activation timestamp
+    let res_expired = lifecycle.activate_certificate(
+        cert.clone(),
+        &target_cert,
+        TimestampNs(1_700_020_000_000_000_000),
+    );
+    match res_expired {
+        Err(ExtrinsicsError::StaleCertificatePastValidity { .. }) => {}
+        other => {
+            return Err(format!("Expected StaleCertificatePastValidity, got: {other:?}").into());
+        }
+    }
+
+    // 3. Successful activation and active_certificate_at check
+    lifecycle.activate_certificate(cert, &target_cert, TimestampNs(1_700_005_000_000_000_000))?;
+
+    let active = lifecycle.active_certificate_at(TimestampNs(1_700_005_000_000_000_000))?;
+    if active.certificate_id != "ext:cert:lifecycle-checks" {
+        return Err(format!("Unexpected certificate_id: {}", active.certificate_id).into());
+    }
+
+    let query_expired = lifecycle.active_certificate_at(TimestampNs(1_700_020_000_000_000_000));
+    match query_expired {
+        Err(ExtrinsicsError::StaleCertificatePastValidity { .. }) => {}
+        other => {
+            return Err(
+                format!("Expected StaleCertificatePastValidity on query, got: {other:?}").into(),
+            );
+        }
+    }
 
     Ok(())
 }

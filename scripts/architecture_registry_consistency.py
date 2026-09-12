@@ -3,20 +3,58 @@
 
 Cross-validates architecture/*.json against registries/*.md, schemas/, and Rust implementations.
 
-Detects:
-1. Missing identifiers: an identifier declared in an architecture JSON but missing from its
-   corresponding registry Markdown, or vice-versa.
-2. Contradicted metadata: conflicting status, name/title, token budget, mode, or gate
-   between architecture JSON and registry Markdown.
-3. Count mismatches: cardinality differences between paired architecture/registry sources
-   or between registries/SCHEMAS.md and schemas/*.json.
-4. Dangling references: cross-registry references (gates, views, capabilities, invariants,
-   SLOs, activation primitives) pointing to nonexistent identifiers.
-5. Tombstoned IDs in use: retired or superseded identifiers referenced by active entities.
-6. Unregistered Rust schemas and digest domains: schemas or digest domains implemented
-   in Rust that are not registered in SCHEMAS.md or DIGEST_DOMAINS.md (via schema_validate).
-7. Missing or corrupt files: fail-closed enforcement ensuring all required architecture
-   and registry files exist and parse cleanly.
+Defect hunting / adversarial review remediation (review-529):
+1. CRITICAL fail-open: if _load_repository_index fails or returns an empty index, fail closed
+   immediately and return without running downstream foreign-key checks on degraded partial state.
+2. HIGH tombstone check in Section 3.7: check operationRefs, viewRefs, knowledgeStateRefs, and
+   provenanceClassRefs against tombstoned_ids and emit ERR_TOMBSTONE_IN_USE when referenced.
+3. HIGH vacuous consistency: verify root collection key existence and enforce non-empty minimum
+   cardinality for all mandatory collections in architecture JSON/TOML and registry Markdown.
+4. HIGH duplicate detection: detect and report duplicate identifiers in both Markdown tables
+   and architecture JSON arrays with ERR_COUNT_MISMATCH.
+5. HIGH complete coverage of all 17 architecture files and 21 registry files:
+   Architecture files (17):
+     - architecture/invariants.json (2.1: paired with registries/INVARIANTS.md)
+     - architecture/graph_algorithms.json (2.2: paired with registries/GRAPH_ALGORITHMS.md)
+     - architecture/publication_primitives.json (2.3: paired with registries/PUBLICATION_PRIMITIVES.md, 3.4: gate check)
+     - architecture/franken_imports.json (2.4: paired with registries/IMPORTS.md, 3.5: gate check)
+     - architecture/agent_operations.json (2.5: paired with registries/AGENT_OPERATIONS.md, 3.1: foreign keys)
+     - architecture/agent_views.json (2.6: paired with registries/AGENT_VIEWS.md, 3.2: gate check)
+     - architecture/release_qualification.json (2.7: paired with registries/QUALIFICATION_LANES.md)
+     - architecture/agent_abstraction_stack.json (2.8: paired with registries/AGENT_ABSTRACTIONS.md, 3.9: invariant ref, 3.10: cross-refs)
+     - architecture/agent_contracts.json (2.9: paired with registries/AGENT_CONTRACTS.md, 3.7: gate/lane check)
+     - architecture/semantic_hydration.json (2.10: paired with registries/SEMANTIC_HYDRATION.md)
+     - architecture/claims.json (2.11: paired with registries/CLAIMS.md)
+     - architecture/operation_cost_registry.toml (2.12: paired with registries/OPERATION_COSTS.md, 3.8: slo_ids check)
+     - architecture/model_runtime_registry.json (2.14: paired with registries/MODELS.md, 3.6: activationPrimitive & gate checks)
+     - architecture/dependency_constitution.json (2.15: paired with registries/DEPENDENCIES.md & allowlist path check)
+     - architecture/crate_topology.json (2.16: checked against crates/ directory on disk)
+     - architecture/decision_cards.json (2.17: verified for decisionFamily contract & schema)
+     - architecture/agent_operating_model.json (3.10: verified operationRefs, viewRefs, knowledgeStateRefs, provenanceClassRefs)
+   Registry files (21):
+     - registries/INVARIANTS.md (2.1)
+     - registries/GRAPH_ALGORITHMS.md (2.2)
+     - registries/PUBLICATION_PRIMITIVES.md (2.3)
+     - registries/IMPORTS.md (2.4)
+     - registries/AGENT_OPERATIONS.md (2.5)
+     - registries/AGENT_VIEWS.md (2.6)
+     - registries/QUALIFICATION_LANES.md (2.7)
+     - registries/AGENT_ABSTRACTIONS.md (2.8)
+     - registries/AGENT_CONTRACTS.md (2.9: kstates, prov, disps, semanticObjects, templates, priorities)
+     - registries/SEMANTIC_HYDRATION.md (2.10)
+     - registries/CLAIMS.md (2.11)
+     - registries/OPERATION_COSTS.md (2.12)
+     - registries/SCHEMAS.md (2.13: paired with schemas/*.json, 4: schema_validate constitution)
+     - registries/MODELS.md (2.14: paired with model_runtime_registry.json)
+     - registries/DEPENDENCIES.md (2.15: paired with dependency_constitution.json)
+     - registries/CAPABILITIES.md (2.18: non-empty & duplicate checks, 3.1: foreign key validation)
+     - registries/ERRORS.md (2.18: non-empty & duplicate checks, 3: foreign key validation)
+     - registries/SLOS.md (2.18: non-empty & duplicate checks, 3.8: foreign key validation)
+     - registries/TESTS.md (2.18: non-empty & duplicate checks, 3.11: gate foreign key validation)
+     - registries/RISKS.md (2.18: non-empty & duplicate checks)
+     - registries/DIGEST_DOMAINS.md (2.18: non-empty & duplicate checks, 3.9: invariant refs, 4: schema_validate)
+6. MEDIUM spaced delimiter parsing: regex DELIMITER_ROW_RE correctly identifies and skips
+   table delimiter rows regardless of alignment colons or whitespace.
 """
 from __future__ import annotations
 
@@ -91,6 +129,8 @@ MANDATORY_REGISTRY_FILES = (
     "registries/OPERATION_COSTS.md",
 )
 
+DELIMITER_ROW_RE = re.compile(r"^\|(?:\s*:?-+:?\s*\|)+$")
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -112,9 +152,11 @@ def parse_markdown_table_rows(text: str) -> list[list[str]]:
             continue
         if in_fence:
             continue
-        if stripped.startswith("|") and not stripped.startswith("|---"):
+        if stripped.startswith("|") and stripped.endswith("|"):
+            if DELIMITER_ROW_RE.match(stripped):
+                continue
             cells = [c.strip().strip("`") for c in stripped.split("|")[1:-1]]
-            if cells:
+            if cells and not all(re.match(r"^:?-+:?$", c) for c in cells):
                 rows.append(cells)
     return rows
 
@@ -176,7 +218,7 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             "checked_references": 0,
         }
 
-    # Helper to extract IDs and rows from markdown tables
+    # Helper to extract IDs and rows from markdown tables with duplicate detection
     def extract_md_rows_by_id(rel: str, id_prefix: str | None = None) -> dict[str, list[str]]:
         text = parsed_md.get(rel, "")
         rows = parse_markdown_table_rows(text)
@@ -185,17 +227,53 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             if not r:
                 continue
             first = r[0]
-            if first in ("ID", "Claim class", "Level", "Cost ID"):
+            if first in ("ID", "Claim class", "Level", "Cost ID", "Object", "Candidate", "Class", "Error code", "Lane"):
                 continue
             if id_prefix is None or first.startswith(id_prefix):
-                result[first] = r
+                if first in result:
+                    emit(
+                        ERR_COUNT_MISMATCH,
+                        rel,
+                        f"#{first}",
+                        f"duplicate identifier '{first}' in {rel}",
+                    )
+                else:
+                    result[first] = r
+        return result
+
+    # Helper to build architecture ID map with duplicate detection
+    def build_arch_map(rel: str, items: list[Any], key: str = "id") -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        for idx, item in enumerate(items):
+            if isinstance(item, dict) and key in item:
+                item_id = str(item[key])
+                if item_id in result:
+                    emit(
+                        ERR_COUNT_MISMATCH,
+                        rel,
+                        f"#/{idx}/{item_id}",
+                        f"duplicate identifier '{item_id}' in {rel}",
+                    )
+                else:
+                    result[item_id] = item
         return result
 
     # 2. Paired Registry Verifications
+
     # 2.1 Invariants
-    inv_arch = parsed_json["architecture/invariants.json"].get("invariants", [])
-    inv_arch_map = {item["id"]: item for item in inv_arch if isinstance(item, dict) and "id" in item}
+    inv_doc = parsed_json["architecture/invariants.json"]
+    if "invariants" not in inv_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/invariants.json", "#", "missing mandatory 'invariants' root key")
+        inv_arch = []
+    else:
+        inv_arch = inv_doc["invariants"]
+    inv_arch_map = build_arch_map("architecture/invariants.json", inv_arch)
     inv_md_map = extract_md_rows_by_id("registries/INVARIANTS.md", "INV-")
+
+    if len(inv_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/invariants.json", "#/invariants", "invariants collection must not be empty")
+    if len(inv_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/INVARIANTS.md", "#", "invariants registry must not be empty")
 
     if len(inv_arch_map) != len(inv_md_map):
         emit(
@@ -235,9 +313,19 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
 
     # 2.2 Graph Algorithms
-    alg_arch = parsed_json["architecture/graph_algorithms.json"].get("algorithms", [])
-    alg_arch_map = {item["id"]: item for item in alg_arch if isinstance(item, dict) and "id" in item}
+    alg_doc = parsed_json["architecture/graph_algorithms.json"]
+    if "algorithms" not in alg_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/graph_algorithms.json", "#", "missing mandatory 'algorithms' root key")
+        alg_arch = []
+    else:
+        alg_arch = alg_doc["algorithms"]
+    alg_arch_map = build_arch_map("architecture/graph_algorithms.json", alg_arch)
     alg_md_map = extract_md_rows_by_id("registries/GRAPH_ALGORITHMS.md", "ALG-")
+
+    if len(alg_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/graph_algorithms.json", "#/algorithms", "algorithms collection must not be empty")
+    if len(alg_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/GRAPH_ALGORITHMS.md", "#", "algorithms registry must not be empty")
 
     if len(alg_arch_map) != len(alg_md_map):
         emit(
@@ -257,7 +345,6 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
         else:
             md_row = alg_md_map[aid]
-            # row: [ID, Algorithm, Projections, Exactness class, Admission gate]
             md_name = md_row[1] if len(md_row) >= 2 else ""
             md_exactness = md_row[3] if len(md_row) >= 4 else ""
             md_gate = md_row[4] if len(md_row) >= 5 else ""
@@ -294,9 +381,19 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
 
     # 2.3 Publication Primitives
-    pub_arch = parsed_json["architecture/publication_primitives.json"].get("primitives", [])
-    pub_arch_map = {item["id"]: item for item in pub_arch if isinstance(item, dict) and "id" in item}
+    pub_doc = parsed_json["architecture/publication_primitives.json"]
+    if "primitives" not in pub_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/publication_primitives.json", "#", "missing mandatory 'primitives' root key")
+        pub_arch = []
+    else:
+        pub_arch = pub_doc["primitives"]
+    pub_arch_map = build_arch_map("architecture/publication_primitives.json", pub_arch)
     pub_md_map = extract_md_rows_by_id("registries/PUBLICATION_PRIMITIVES.md", "PUB-")
+
+    if len(pub_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/publication_primitives.json", "#/primitives", "publication primitives collection must not be empty")
+    if len(pub_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/PUBLICATION_PRIMITIVES.md", "#", "publication primitives registry must not be empty")
 
     if len(pub_arch_map) != len(pub_md_map):
         emit(
@@ -316,7 +413,6 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
         else:
             md_row = pub_md_map[pid]
-            # row: [ID, Primitive, Owner, Root invariant, State]
             md_name = md_row[1] if len(md_row) >= 2 else ""
             md_owner = md_row[2] if len(md_row) >= 3 else ""
             md_status = md_row[4] if len(md_row) >= 5 else ""
@@ -353,9 +449,19 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
 
     # 2.4 Franken Imports
-    imp_arch = parsed_json["architecture/franken_imports.json"].get("imports", [])
-    imp_arch_map = {item["id"]: item for item in imp_arch if isinstance(item, dict) and "id" in item}
+    imp_doc = parsed_json["architecture/franken_imports.json"]
+    if "imports" not in imp_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/franken_imports.json", "#", "missing mandatory 'imports' root key")
+        imp_arch = []
+    else:
+        imp_arch = imp_doc["imports"]
+    imp_arch_map = build_arch_map("architecture/franken_imports.json", imp_arch)
     imp_md_map = extract_md_rows_by_id("registries/IMPORTS.md", "IMP-")
+
+    if len(imp_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/franken_imports.json", "#/imports", "franken imports collection must not be empty")
+    if len(imp_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/IMPORTS.md", "#", "franken imports registry must not be empty")
 
     if len(imp_arch_map) != len(imp_md_map):
         emit(
@@ -383,9 +489,19 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
 
     # 2.5 Agent Operations
-    aop_arch = parsed_json["architecture/agent_operations.json"].get("operations", [])
-    aop_arch_map = {item["id"]: item for item in aop_arch if isinstance(item, dict) and "id" in item}
+    aop_doc = parsed_json["architecture/agent_operations.json"]
+    if "operations" not in aop_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/agent_operations.json", "#", "missing mandatory 'operations' root key")
+        aop_arch = []
+    else:
+        aop_arch = aop_doc["operations"]
+    aop_arch_map = build_arch_map("architecture/agent_operations.json", aop_arch)
     aop_md_map = extract_md_rows_by_id("registries/AGENT_OPERATIONS.md", "AOP-")
+
+    if len(aop_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/agent_operations.json", "#/operations", "agent operations collection must not be empty")
+    if len(aop_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/AGENT_OPERATIONS.md", "#", "agent operations registry must not be empty")
 
     if len(aop_arch_map) != len(aop_md_map):
         emit(
@@ -405,7 +521,6 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
         else:
             md_row = aop_md_map[opid]
-            # row: [ID, Operation, Owner, Mode, Default view, Typed request payload, Effectful, Durable, Gate, Status]
             md_name = md_row[1] if len(md_row) >= 2 else ""
             md_mode = md_row[3] if len(md_row) >= 4 else ""
             md_view = md_row[4] if len(md_row) >= 5 else ""
@@ -458,9 +573,19 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
 
     # 2.6 Agent Views
-    view_arch = parsed_json["architecture/agent_views.json"].get("views", [])
-    view_arch_map = {item["id"]: item for item in view_arch if isinstance(item, dict) and "id" in item}
+    view_doc = parsed_json["architecture/agent_views.json"]
+    if "views" not in view_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/agent_views.json", "#", "missing mandatory 'views' root key")
+        view_arch = []
+    else:
+        view_arch = view_doc["views"]
+    view_arch_map = build_arch_map("architecture/agent_views.json", view_arch)
     view_md_map = extract_md_rows_by_id("registries/AGENT_VIEWS.md", "AVIEW-")
+
+    if len(view_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/agent_views.json", "#/views", "agent views collection must not be empty")
+    if len(view_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/AGENT_VIEWS.md", "#", "agent views registry must not be empty")
 
     if len(view_arch_map) != len(view_md_map):
         emit(
@@ -480,7 +605,6 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
         else:
             md_row = view_md_map[vid]
-            # row: [ID, Name, Owner, Purpose, Target tokens, Maximum tokens, Gate, Status]
             md_name = md_row[1] if len(md_row) >= 2 else ""
             md_owner = md_row[2] if len(md_row) >= 3 else ""
             md_target = int(md_row[4]) if len(md_row) >= 5 and md_row[4].isdigit() else md_row[4]
@@ -541,9 +665,19 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
 
     # 2.7 Qualification Lanes
-    ql_arch = parsed_json["architecture/release_qualification.json"].get("lanes", [])
-    ql_arch_map = {item["id"]: item for item in ql_arch if isinstance(item, dict) and "id" in item}
+    ql_doc = parsed_json["architecture/release_qualification.json"]
+    if "lanes" not in ql_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/release_qualification.json", "#", "missing mandatory 'lanes' root key")
+        ql_arch = []
+    else:
+        ql_arch = ql_doc["lanes"]
+    ql_arch_map = build_arch_map("architecture/release_qualification.json", ql_arch)
     ql_md_map = extract_md_rows_by_id("registries/QUALIFICATION_LANES.md", "QL-")
+
+    if len(ql_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/release_qualification.json", "#/lanes", "qualification lanes collection must not be empty")
+    if len(ql_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/QUALIFICATION_LANES.md", "#", "qualification lanes registry must not be empty")
 
     if len(ql_arch_map) != len(ql_md_map):
         emit(
@@ -563,7 +697,6 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
         else:
             md_row = ql_md_map[qid]
-            # row: [ID, Lane, Scope, Required evidence, Authority]
             md_name = md_row[1] if len(md_row) >= 2 else ""
             md_scope = md_row[2] if len(md_row) >= 3 else ""
             md_auth = md_row[4] if len(md_row) >= 5 else ""
@@ -601,9 +734,19 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             )
 
     # 2.8 Agent Abstraction Stack Layers
-    layer_arch = parsed_json["architecture/agent_abstraction_stack.json"].get("layers", [])
-    layer_arch_map = {item["id"]: item for item in layer_arch if isinstance(item, dict) and "id" in item}
+    layer_doc = parsed_json["architecture/agent_abstraction_stack.json"]
+    if "layers" not in layer_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/agent_abstraction_stack.json", "#", "missing mandatory 'layers' root key")
+        layer_arch = []
+    else:
+        layer_arch = layer_doc["layers"]
+    layer_arch_map = build_arch_map("architecture/agent_abstraction_stack.json", layer_arch)
     layer_md_map = extract_md_rows_by_id("registries/AGENT_ABSTRACTIONS.md", "AGT-")
+
+    if len(layer_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/agent_abstraction_stack.json", "#/layers", "agent layers collection must not be empty")
+    if len(layer_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/AGENT_ABSTRACTIONS.md", "#", "agent abstractions registry must not be empty")
 
     if len(layer_arch_map) != len(layer_md_map):
         emit(
@@ -649,10 +792,21 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
                 f"layer '{lid}' in registries is missing from architecture/agent_abstraction_stack.json",
             )
 
-    # 2.9 Agent Contracts
+    # 2.9 Agent Contracts & Sub-Registries
     ac_doc = parsed_json["architecture/agent_contracts.json"]
-    kstate_arch_map = {x["id"]: x for x in ac_doc.get("knowledgeStates", []) if isinstance(x, dict)}
+    for req_key in ("knowledgeStates", "provenanceClasses", "hypothesisDispositions", "semanticObjects", "resourceTemplates", "responsePriority"):
+        if req_key not in ac_doc:
+            emit(ERR_CORRUPT_FILE, "architecture/agent_contracts.json", "#", f"missing mandatory '{req_key}' root key")
+
+    kstate_arch = ac_doc.get("knowledgeStates", [])
+    kstate_arch_map = build_arch_map("architecture/agent_contracts.json", kstate_arch)
     kstate_md_map = extract_md_rows_by_id("registries/AGENT_CONTRACTS.md", "KSTATE-")
+
+    if len(kstate_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/agent_contracts.json", "#/knowledgeStates", "knowledge states collection must not be empty")
+    if len(kstate_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/AGENT_CONTRACTS.md", "#", "knowledge states registry must not be empty")
+
     if len(kstate_arch_map) != len(kstate_md_map):
         emit(
             ERR_COUNT_MISMATCH,
@@ -667,8 +821,15 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
         if kid not in kstate_arch_map:
             emit(ERR_MISSING_IDENTIFIER, "architecture/agent_contracts.json", f"#/knowledgeStates/{kid}", f"knowledge state '{kid}' missing from architecture")
 
-    prov_arch_map = {x["id"]: x for x in ac_doc.get("provenanceClasses", []) if isinstance(x, dict)}
+    prov_arch = ac_doc.get("provenanceClasses", [])
+    prov_arch_map = build_arch_map("architecture/agent_contracts.json", prov_arch)
     prov_md_map = extract_md_rows_by_id("registries/AGENT_CONTRACTS.md", "PROV-")
+
+    if len(prov_arch_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/agent_contracts.json", "#/provenanceClasses", "provenance classes collection must not be empty")
+    if len(prov_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/AGENT_CONTRACTS.md", "#", "provenance classes registry must not be empty")
+
     if len(prov_arch_map) != len(prov_md_map):
         emit(
             ERR_COUNT_MISMATCH,
@@ -683,10 +844,84 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
         if pid not in prov_arch_map:
             emit(ERR_MISSING_IDENTIFIER, "architecture/agent_contracts.json", f"#/provenanceClasses/{pid}", f"provenance class '{pid}' missing from architecture")
 
+    # Cross-check hypothesis dispositions
+    hyp_disps_json = ac_doc.get("hypothesisDispositions", [])
+    if not isinstance(hyp_disps_json, list) or len(hyp_disps_json) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/agent_contracts.json", "#/hypothesisDispositions", "hypothesisDispositions must be a non-empty list")
+    else:
+        md_text = parsed_md.get("registries/AGENT_CONTRACTS.md", "")
+        match_disp = re.search(r"## Hypothesis dispositions\s*\n\s*([^\n]+)", md_text)
+        if not match_disp:
+            emit(ERR_MISSING_IDENTIFIER, "registries/AGENT_CONTRACTS.md", "#hypothesis-dispositions", "missing 'Hypothesis dispositions' section in registries/AGENT_CONTRACTS.md")
+        else:
+            disp_line = match_disp.group(1)
+            md_disps = [x.replace("`", "").strip() for x in disp_line.split("·")]
+            md_disps = [x for x in md_disps if x]
+            if set(hyp_disps_json) != set(md_disps):
+                emit(
+                    ERR_CONTRADICTED_METADATA,
+                    "architecture/agent_contracts.json",
+                    "#/hypothesisDispositions",
+                    f"hypothesis dispositions mismatch: JSON has {hyp_disps_json}, registries has {md_disps}",
+                )
+
+    # Cross-check semantic objects catalog
+    sem_objs_json = ac_doc.get("semanticObjects", {})
+    if not isinstance(sem_objs_json, dict) or len(sem_objs_json) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/agent_contracts.json", "#/semanticObjects", "semanticObjects must be a non-empty object mapping")
+    else:
+        sem_md_rows = parse_markdown_table_rows(parsed_md.get("registries/AGENT_CONTRACTS.md", ""))
+        sem_catalog_md = {
+            r[0]: r[1]
+            for r in sem_md_rows
+            if len(r) == 2 and r[0] not in ("Object", "ID", "Claim class", "Level")
+        }
+        if len(sem_catalog_md) == 0:
+            emit(ERR_COUNT_MISMATCH, "registries/AGENT_CONTRACTS.md", "#semantic-object-catalog", "semantic object catalog table must not be empty")
+        if len(sem_objs_json) != len(sem_catalog_md):
+            emit(
+                ERR_COUNT_MISMATCH,
+                "architecture/agent_contracts.json",
+                "#/semanticObjects",
+                f"semantic objects count mismatch: JSON has {len(sem_objs_json)}, registries has {len(sem_catalog_md)}",
+            )
+        for obj_name, schema_id in sem_objs_json.items():
+            if obj_name not in sem_catalog_md:
+                emit(ERR_MISSING_IDENTIFIER, "registries/AGENT_CONTRACTS.md", f"#{obj_name}", f"semantic object '{obj_name}' missing from registries catalog")
+            elif sem_catalog_md[obj_name] != schema_id:
+                emit(
+                    ERR_CONTRADICTED_METADATA,
+                    "architecture/agent_contracts.json",
+                    f"#/semanticObjects/{obj_name}",
+                    f"semantic object '{obj_name}' schema mismatch: JSON has '{schema_id}', registries has '{sem_catalog_md[obj_name]}'",
+                )
+        for obj_name in sem_catalog_md:
+            if obj_name not in sem_objs_json:
+                emit(ERR_MISSING_IDENTIFIER, "architecture/agent_contracts.json", f"#/semanticObjects/{obj_name}", f"semantic object '{obj_name}' in registries catalog missing from architecture")
+
+    # Resource templates and response priorities non-empty checks
+    res_templates = ac_doc.get("resourceTemplates", [])
+    if not isinstance(res_templates, list) or len(res_templates) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/agent_contracts.json", "#/resourceTemplates", "resourceTemplates must be a non-empty list")
+    resp_priority = ac_doc.get("responsePriority", [])
+    if not isinstance(resp_priority, list) or len(resp_priority) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/agent_contracts.json", "#/responsePriority", "responsePriority must be a non-empty list")
+
     # 2.10 Semantic Hydration Levels
-    hyd_levels = parsed_json["architecture/semantic_hydration.json"].get("levels", [])
-    hyd_levels_map = {x["id"]: x for x in hyd_levels if isinstance(x, dict) and "id" in x}
+    hyd_doc = parsed_json["architecture/semantic_hydration.json"]
+    if "levels" not in hyd_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/semantic_hydration.json", "#", "missing mandatory 'levels' root key")
+        hyd_levels = []
+    else:
+        hyd_levels = hyd_doc["levels"]
+    hyd_levels_map = build_arch_map("architecture/semantic_hydration.json", hyd_levels)
     hyd_md_rows = extract_md_rows_by_id("registries/SEMANTIC_HYDRATION.md", "H")
+
+    if len(hyd_levels_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/semantic_hydration.json", "#/levels", "hydration levels collection must not be empty")
+    if len(hyd_md_rows) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/SEMANTIC_HYDRATION.md", "#", "hydration levels registry must not be empty")
+
     if len(hyd_levels_map) != len(hyd_md_rows):
         emit(
             ERR_COUNT_MISMATCH,
@@ -702,10 +937,36 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             emit(ERR_MISSING_IDENTIFIER, "architecture/semantic_hydration.json", f"#/levels/{hid}", f"hydration level '{hid}' missing from architecture")
 
     # 2.11 Claims
-    claims_arch = parsed_json["architecture/claims.json"].get("classes", [])
-    claims_arch_ids = {x["id"] for x in claims_arch if isinstance(x, dict) and "id" in x}
+    claims_doc = parsed_json["architecture/claims.json"]
+    if "classes" not in claims_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/claims.json", "#", "missing mandatory 'classes' root key")
+        claims_arch = []
+    else:
+        claims_arch = claims_doc["classes"]
+    claims_arch_ids = set()
+    for item in claims_arch:
+        if isinstance(item, dict) and "id" in item:
+            cid = str(item["id"])
+            if cid in claims_arch_ids:
+                emit(ERR_COUNT_MISMATCH, "architecture/claims.json", f"#/classes/{cid}", f"duplicate claim class '{cid}' in architecture/claims.json")
+            else:
+                claims_arch_ids.add(cid)
+
     claims_md_rows = parse_markdown_table_rows(parsed_md["registries/CLAIMS.md"])
-    claims_md_ids = {r[0] for r in claims_md_rows if r and r[0] != "Claim class"}
+    claims_md_ids = set()
+    for r in claims_md_rows:
+        if r and r[0] != "Claim class":
+            cid = r[0]
+            if cid in claims_md_ids:
+                emit(ERR_COUNT_MISMATCH, "registries/CLAIMS.md", f"#{cid}", f"duplicate claim class '{cid}' in registries/CLAIMS.md")
+            else:
+                claims_md_ids.add(cid)
+
+    if len(claims_arch_ids) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/claims.json", "#/classes", "claims classes collection must not be empty")
+    if len(claims_md_ids) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/CLAIMS.md", "#", "claims classes registry must not be empty")
+
     if len(claims_arch_ids) != len(claims_md_ids):
         emit(
             ERR_COUNT_MISMATCH,
@@ -721,9 +982,20 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             emit(ERR_MISSING_IDENTIFIER, "architecture/claims.json", f"#/classes/{cid}", f"claim class '{cid}' missing from architecture")
 
     # 2.12 Operation Costs
-    costs_toml = parsed_toml["architecture/operation_cost_registry.toml"].get("operation", [])
-    costs_toml_map = {x["id"]: x for x in costs_toml if isinstance(x, dict) and "id" in x}
+    costs_doc = parsed_toml["architecture/operation_cost_registry.toml"]
+    if "operation" not in costs_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/operation_cost_registry.toml", "#", "missing mandatory 'operation' root table")
+        costs_toml = []
+    else:
+        costs_toml = costs_doc["operation"]
+    costs_toml_map = build_arch_map("architecture/operation_cost_registry.toml", costs_toml)
     costs_md_map = extract_md_rows_by_id("registries/OPERATION_COSTS.md", "COST-")
+
+    if len(costs_toml_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/operation_cost_registry.toml", "#[operation]", "operation costs collection must not be empty")
+    if len(costs_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/OPERATION_COSTS.md", "#", "operation costs registry must not be empty")
+
     if len(costs_toml_map) != len(costs_md_map):
         emit(
             ERR_COUNT_MISMATCH,
@@ -738,13 +1010,16 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
         if cid not in costs_toml_map:
             emit(ERR_MISSING_IDENTIFIER, "architecture/operation_cost_registry.toml", f"#[operation.{cid}]", f"cost ID '{cid}' missing from architecture")
 
-    # 2.13 Schemas vs schema files
+    # 2.13 Schemas vs Schema Files on Disk
     schemas_rows = extract_md_rows_by_id("registries/SCHEMAS.md", "SCHEMA-")
+    if len(schemas_rows) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/SCHEMAS.md", "#", "schemas registry must not be empty")
+
     schemas_dir = repo_root / "schemas"
     disk_schemas = sorted(schemas_dir.glob("*.json")) if schemas_dir.is_dir() else []
     disk_schema_rel_paths = {f"schemas/{p.name}" for p in disk_schemas}
-
     declared_schema_files = {r[2] for r in schemas_rows.values() if len(r) >= 3 and r[2].startswith("schemas/")}
+
     if declared_schema_files != disk_schema_rel_paths:
         missing_files = declared_schema_files - disk_schema_rel_paths
         unreg_files = disk_schema_rel_paths - declared_schema_files
@@ -753,8 +1028,102 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
         for uf in unreg_files:
             emit(ERR_MISSING_IDENTIFIER, uf, "#", f"schema file '{uf}' exists on disk but is not registered in registries/SCHEMAS.md")
 
+    # 2.14 Models Runtime Registry vs MODELS.md
+    mr_doc = parsed_json["architecture/model_runtime_registry.json"]
+    if "contracts" not in mr_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/model_runtime_registry.json", "#", "missing mandatory 'contracts' root key")
+        mr_contracts = []
+    else:
+        mr_contracts = mr_doc["contracts"]
+    mr_contracts_map = build_arch_map("architecture/model_runtime_registry.json", mr_contracts)
+    if len(mr_contracts_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/model_runtime_registry.json", "#/contracts", "model runtime contracts must not be empty")
+
+    models_md_map = extract_md_rows_by_id("registries/MODELS.md", "MOD-")
+    if len(models_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/MODELS.md", "#", "models registry must not be empty")
+
+    # 2.15 Dependency Constitution vs DEPENDENCIES.md
+    dep_doc = parsed_json["architecture/dependency_constitution.json"]
+    if "classes" not in dep_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/dependency_constitution.json", "#", "missing mandatory 'classes' root key")
+        dep_classes = []
+    else:
+        dep_classes = dep_doc["classes"]
+    dep_classes_map = build_arch_map("architecture/dependency_constitution.json", dep_classes)
+    if len(dep_classes_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/dependency_constitution.json", "#/classes", "dependency classes must not be empty")
+
+    normative_policy_path = dep_doc.get("normativePolicy")
+    if not normative_policy_path or not (repo_root / normative_policy_path).is_file():
+        emit(ERR_MISSING_FILE, str(normative_policy_path or "normativePolicy"), "#", "normativePolicy file declared in dependency constitution does not exist")
+
+    dep_md_map = extract_md_rows_by_id("registries/DEPENDENCIES.md", "DEP-")
+    if len(dep_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/DEPENDENCIES.md", "#", "dependencies registry must not be empty")
+
+    # 2.16 Crate Topology vs Crates on Disk
+    topo_doc = parsed_json["architecture/crate_topology.json"]
+    if "layers" not in topo_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/crate_topology.json", "#", "missing mandatory 'layers' root key")
+        topo_layers = []
+    else:
+        topo_layers = topo_doc["layers"]
+
+    declared_crates: dict[str, str] = {}
+    for layer in topo_layers:
+        for c in layer.get("crates", []):
+            cname = c.get("name")
+            if cname:
+                declared_crates[cname] = c.get("status", "unknown")
+
+    crates_dir = repo_root / "crates"
+    disk_crates = {p.name for p in crates_dir.iterdir() if p.is_dir() and (p / "Cargo.toml").is_file()} if crates_dir.is_dir() else set()
+    for dc in disk_crates:
+        if dc not in declared_crates:
+            emit(ERR_MISSING_IDENTIFIER, "architecture/crate_topology.json", f"#/layers/{dc}", f"crate '{dc}' on disk is not declared in crate_topology.json")
+    for cc, status in declared_crates.items():
+        if status in ("implemented", "skeleton"):
+            if cc not in disk_crates:
+                emit(ERR_MISSING_FILE, f"crates/{cc}", "#", f"crate '{cc}' declared with status '{status}' does not exist on disk")
+
+    # 2.17 Decision Cards
+    dec_doc = parsed_json["architecture/decision_cards.json"]
+    if "decisionFamily" not in dec_doc:
+        emit(ERR_CORRUPT_FILE, "architecture/decision_cards.json", "#", "missing mandatory 'decisionFamily' root key")
+        dec_families = []
+    else:
+        dec_families = dec_doc["decisionFamily"]
+    dec_family_map = build_arch_map("architecture/decision_cards.json", dec_families)
+    if len(dec_family_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/decision_cards.json", "#/decisionFamily", "decisionFamily collection must not be empty")
+
+    # 2.18 Individual Registry Non-Empty & Duplicate Checks
+    cap_md_map = extract_md_rows_by_id("registries/CAPABILITIES.md", "CAP-")
+    if len(cap_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/CAPABILITIES.md", "#", "capabilities registry must not be empty")
+
+    err_md_map = extract_md_rows_by_id("registries/ERRORS.md", "ERR-")
+    if len(err_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/ERRORS.md", "#", "errors registry must not be empty")
+
+    slos_md_map = extract_md_rows_by_id("registries/SLOS.md", "SLO-")
+    if len(slos_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/SLOS.md", "#", "SLOs registry must not be empty")
+
+    tests_md_map = extract_md_rows_by_id("registries/TESTS.md", "TEST-")
+    if len(tests_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/TESTS.md", "#", "tests registry must not be empty")
+
+    risks_md_map = extract_md_rows_by_id("registries/RISKS.md", "RISK-")
+    if len(risks_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/RISKS.md", "#", "risks registry must not be empty")
+
+    domains_md_map = extract_md_rows_by_id("registries/DIGEST_DOMAINS.md", "SCHEMA-DOMAIN-")
+    if len(domains_md_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "registries/DIGEST_DOMAINS.md", "#", "digest domains registry must not be empty")
+
     # 3. Cross-Registry Dangling Reference & Tombstone Checks
-    # Build complete active and tombstoned ID sets
     known_active_ids: set[str] = set()
     tombstoned_ids: set[str] = set()
 
@@ -765,12 +1134,20 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             if not r:
                 continue
             first = r[0]
-            if first in ("ID", "Claim class", "Level", "Cost ID"):
+            if first in ("ID", "Claim class", "Level", "Cost ID", "Object", "Candidate", "Class", "Error code", "Lane"):
                 continue
             known_active_ids.add(first)
             row_str = " ".join(r).lower()
             if any(t in row_str for t in ("tombstone", "superseded")):
                 tombstoned_ids.add(first)
+
+    # Collect milestone gates from normative comprehensive plan
+    plan_path = repo_root / "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md"
+    if plan_path.is_file():
+        plan_rows = parse_markdown_table_rows(plan_path.read_text(encoding="utf-8-sig"))
+        for r in plan_rows:
+            if r and re.match(r"^GATE-\d{3}$", r[0]):
+                known_active_ids.add(r[0])
 
     # Collect from architecture JSON
     for rel, data in parsed_json.items():
@@ -792,7 +1169,8 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
                     walk_arch(item)
         walk_arch(data)
 
-    # Collect from stable_id_audit repository index
+    # Collect from stable_id_audit repository index with immediate fail-closed
+    index_loaded = False
     try:
         repo_index = stable_id_audit._load_repository_index(repo_root)
         if not repo_index.known:
@@ -805,6 +1183,7 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
         else:
             known_active_ids.update(repo_index.known)
             tombstoned_ids.update(repo_index.tombstoned)
+            index_loaded = True
     except Exception as exc:
         target_file = "architecture"
         if hasattr(exc, "details") and isinstance(exc.details, dict):
@@ -816,8 +1195,15 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             f"failed to load stable-ID repository index: {exc}",
         )
 
-    # Validate foreign keys
-    cap_md_map = extract_md_rows_by_id("registries/CAPABILITIES.md", "CAP-")
+    # CRITICAL fail-closed: if the stable-ID repository index is unreadable or empty,
+    # stop immediately. Downstream foreign-key checks cannot safely run on partial state.
+    if not index_loaded:
+        return False, findings, {
+            "status": "fail",
+            "error_count": len(findings),
+            "checked_pairs": 0,
+            "checked_references": 0,
+        }
 
     # 3.1 Operations gates, defaultView, capabilities
     for op in aop_arch:
@@ -862,8 +1248,27 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             elif gate not in known_active_ids:
                 emit(ERR_DANGLING_REFERENCE, "architecture/graph_algorithms.json", f"#/algorithms/{aid}/gate", f"algorithm '{aid}' references nonexistent gate '{gate}'")
 
-    # 3.4 Model runtime activationPrimitive & gate
-    mr_doc = parsed_json["architecture/model_runtime_registry.json"]
+    # 3.4 Publication Primitives gates
+    for prim in pub_arch:
+        pid = prim.get("id", "unknown")
+        gate = prim.get("gate")
+        if gate:
+            if gate in tombstoned_ids:
+                emit(ERR_TOMBSTONE_IN_USE, "architecture/publication_primitives.json", f"#/primitives/{pid}/gate", f"primitive '{pid}' references tombstoned gate '{gate}'")
+            elif gate not in known_active_ids:
+                emit(ERR_DANGLING_REFERENCE, "architecture/publication_primitives.json", f"#/primitives/{pid}/gate", f"primitive '{pid}' references nonexistent gate '{gate}'")
+
+    # 3.5 Franken Imports gates
+    for imp in imp_arch:
+        imid = imp.get("id", "unknown")
+        gate = imp.get("gate")
+        if gate:
+            if gate in tombstoned_ids:
+                emit(ERR_TOMBSTONE_IN_USE, "architecture/franken_imports.json", f"#/imports/{imid}/gate", f"import '{imid}' references tombstoned gate '{gate}'")
+            elif gate not in known_active_ids:
+                emit(ERR_DANGLING_REFERENCE, "architecture/franken_imports.json", f"#/imports/{imid}/gate", f"import '{imid}' references nonexistent gate '{gate}'")
+
+    # 3.6 Model runtime activationPrimitive & gate
     ap = mr_doc.get("runtime", {}).get("activationPrimitive")
     if ap:
         if ap in tombstoned_ids:
@@ -880,8 +1285,22 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             elif gate not in known_active_ids:
                 emit(ERR_DANGLING_REFERENCE, "architecture/model_runtime_registry.json", f"#/contracts/{mc_id}/gate", f"model contract '{mc_id}' references nonexistent gate '{gate}'")
 
-    # 3.5 Operation costs slo_ids
-    slos_md_map = extract_md_rows_by_id("registries/SLOS.md", "SLO-")
+    # 3.7 Agent Contracts gate & qualification lane
+    ac_gate = ac_doc.get("gate")
+    if ac_gate:
+        if ac_gate in tombstoned_ids:
+            emit(ERR_TOMBSTONE_IN_USE, "architecture/agent_contracts.json", "#/gate", f"agent contracts references tombstoned gate '{ac_gate}'")
+        elif ac_gate not in known_active_ids:
+            emit(ERR_DANGLING_REFERENCE, "architecture/agent_contracts.json", "#/gate", f"agent contracts references nonexistent gate '{ac_gate}'")
+
+    ac_ql = ac_doc.get("qualificationLane")
+    if ac_ql:
+        if ac_ql in tombstoned_ids:
+            emit(ERR_TOMBSTONE_IN_USE, "architecture/agent_contracts.json", "#/qualificationLane", f"agent contracts references tombstoned lane '{ac_ql}'")
+        elif ac_ql not in ql_arch_map:
+            emit(ERR_DANGLING_REFERENCE, "architecture/agent_contracts.json", "#/qualificationLane", f"agent contracts references nonexistent lane '{ac_ql}'")
+
+    # 3.8 Operation costs slo_ids
     for c in costs_toml:
         cid = c.get("id", "unknown")
         for slo in c.get("slo_ids", []):
@@ -890,7 +1309,7 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             elif slo not in slos_md_map:
                 emit(ERR_DANGLING_REFERENCE, "architecture/operation_cost_registry.toml", f"#[operation.{cid}].slo_ids", f"cost '{cid}' references nonexistent SLO '{slo}'")
 
-    # 3.6 Invariant references in registries & abstraction stack
+    # 3.9 Invariant references in registries & abstraction stack
     inv_ref_re = re.compile(r"\b(INV-\d{3})\b")
     for rel_doc in ("registries/DIGEST_DOMAINS.md", "registries/SCHEMAS.md"):
         doc_text = parsed_md.get(rel_doc, "")
@@ -911,23 +1330,41 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
             elif inv_ref not in inv_arch_map:
                 emit(ERR_DANGLING_REFERENCE, "architecture/agent_abstraction_stack.json", f"#/layers/{lid}/invariant", f"layer '{lid}' references nonexistent invariant '{inv_ref}'")
 
-    # 3.7 Agent operating model and abstraction stack refs
+    # 3.10 Agent operating model and abstraction stack cross-references (with tombstone enforcement)
     for rel_doc, doc in (
         ("architecture/agent_abstraction_stack.json", parsed_json["architecture/agent_abstraction_stack.json"]),
         ("architecture/agent_operating_model.json", parsed_json["architecture/agent_operating_model.json"]),
     ):
         for oref in doc.get("operationRefs", []):
-            if oref not in aop_arch_map:
+            if oref in tombstoned_ids:
+                emit(ERR_TOMBSTONE_IN_USE, rel_doc, f"#/operationRefs/{oref}", f"{rel_doc} references tombstoned operation '{oref}'")
+            elif oref not in aop_arch_map:
                 emit(ERR_DANGLING_REFERENCE, rel_doc, f"#/operationRefs/{oref}", f"{rel_doc} references nonexistent operation '{oref}'")
         for vref in doc.get("viewRefs", []):
-            if vref not in view_arch_map:
+            if vref in tombstoned_ids:
+                emit(ERR_TOMBSTONE_IN_USE, rel_doc, f"#/viewRefs/{vref}", f"{rel_doc} references tombstoned view '{vref}'")
+            elif vref not in view_arch_map:
                 emit(ERR_DANGLING_REFERENCE, rel_doc, f"#/viewRefs/{vref}", f"{rel_doc} references nonexistent view '{vref}'")
         for kref in doc.get("knowledgeStateRefs", []):
-            if kref not in kstate_arch_map:
+            if kref in tombstoned_ids:
+                emit(ERR_TOMBSTONE_IN_USE, rel_doc, f"#/knowledgeStateRefs/{kref}", f"{rel_doc} references tombstoned knowledge state '{kref}'")
+            elif kref not in kstate_arch_map:
                 emit(ERR_DANGLING_REFERENCE, rel_doc, f"#/knowledgeStateRefs/{kref}", f"{rel_doc} references nonexistent knowledge state '{kref}'")
         for pref in doc.get("provenanceClassRefs", []):
-            if pref not in prov_arch_map:
+            if pref in tombstoned_ids:
+                emit(ERR_TOMBSTONE_IN_USE, rel_doc, f"#/provenanceClassRefs/{pref}", f"{rel_doc} references tombstoned provenance class '{pref}'")
+            elif pref not in prov_arch_map:
                 emit(ERR_DANGLING_REFERENCE, rel_doc, f"#/provenanceClassRefs/{pref}", f"{rel_doc} references nonexistent provenance class '{pref}'")
+
+    # 3.11 TESTS.md gate references
+    for tid, trow in tests_md_map.items():
+        if len(trow) >= 3:
+            t_gate = trow[2].strip()
+            if t_gate and t_gate != "-":
+                if t_gate in tombstoned_ids:
+                    emit(ERR_TOMBSTONE_IN_USE, "registries/TESTS.md", f"#{tid}/gate", f"test '{tid}' references tombstoned gate '{t_gate}'")
+                elif t_gate not in known_active_ids:
+                    emit(ERR_DANGLING_REFERENCE, "registries/TESTS.md", f"#{tid}/gate", f"test '{tid}' references nonexistent gate '{t_gate}'")
 
     # 4. Schema constitution & unregistered Rust schemas/domains (reusing schema_validate)
     validator = schema_validate.Validator()

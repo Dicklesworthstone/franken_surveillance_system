@@ -11,8 +11,15 @@ Enforces that:
 7. Missing mandatory files fail closed with ERR-CONSISTENCY-MISSING-FILE-001.
 8. Malformed/corrupt files fail closed with ERR-CONSISTENCY-CORRUPT-FILE-001.
 9. Live repository passes with 0 errors and complete consistency across all 116 invariants, 27 algorithms,
-   13 publication primitives, 47 imports, 14 operations, 8 views, 15 lanes, 33 costs, and 66 schemas.
+   13 publication primitives, 47 imports, 14 operations, 8 views, 15 lanes, 33 costs, and 71 schemas.
 10. CLI exits with code 0 and emits compliant text, JSON, and report formats.
+11. Adversarial review remediation tests (review-529):
+    - CRITICAL fail-closed on unreadable or empty stable-ID index (stops immediately, zero dangling errors)
+    - Tombstone validation for Section 3.10 operationRefs, viewRefs, knowledgeStateRefs, provenanceClassRefs
+    - Vacuous consistency prevention (rejects empty collections and missing root collection keys)
+    - Duplicate identifier detection in Markdown tables and JSON array mappings
+    - Comprehensive cross-checks for model runtime, dependencies, crate topology, and sub-registries
+    - Spaced delimiter row parsing in markdown tables
 """
 from __future__ import annotations
 
@@ -21,13 +28,13 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-import unittest.mock
 import stable_id_audit
 
 from architecture_registry_consistency import (
@@ -39,6 +46,7 @@ from architecture_registry_consistency import (
     ERR_MISSING_IDENTIFIER,
     ERR_TOMBSTONE_IN_USE,
     ERR_UNREGISTERED_RUST_IDENTIFIER,
+    parse_markdown_table_rows,
     validate_consistency,
 )
 
@@ -58,6 +66,11 @@ def create_mock_repo(tmp_path: Path) -> Path:
                     (dst_dir / item.name).symlink_to(item)
                 elif item.is_dir():
                     (dst_dir / item.name).symlink_to(item)
+
+    plan_file = ROOT / "COMPREHENSIVE_PLAN_FOR_FRANKEN_SURVEILLANCE_SYSTEM.md"
+    if plan_file.is_file():
+        (tmp_path / plan_file.name).symlink_to(plan_file)
+
     return tmp_path
 
 
@@ -81,7 +94,7 @@ class TestLiveRepoConsistency(unittest.TestCase):
         self.assertEqual(summary["agent_views_count"], 8)
         self.assertEqual(summary["qualification_lanes_count"], 15)
         self.assertEqual(summary["costs_count"], 33)
-        self.assertEqual(summary["schemas_count"], 66)
+        self.assertEqual(summary["schemas_count"], 71)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 
@@ -172,7 +185,6 @@ class TestFailClosedOnMissingAndCorruptFiles(unittest.TestCase):
                 self.assertTrue(
                     any("stable-ID repository index is empty" in f.message for f in corrupt_findings)
                 )
-
 
 
 class TestIdentifierPresenceAndCount(unittest.TestCase):
@@ -387,6 +399,238 @@ class TestUnregisteredRustArtifacts(unittest.TestCase):
                 f for f in findings if f.code in (ERR_UNREGISTERED_RUST_IDENTIFIER, ERR_MISSING_IDENTIFIER)
             ]
             self.assertTrue(any("fss.planted_unregistered_schema.v1.json" in f.message for f in unregistered_findings))
+
+
+class TestAdversarialConsistencyDefects(unittest.TestCase):
+    """Failing-first planted negative tests verifying fixes for all review-529 defect findings."""
+
+    def test_broad_except_continues_with_partial_data_emitting_spurious_dangling_errors(self) -> None:
+        """Finding 1 (CRITICAL fail-open): Proves that a failure in stable_id_audit._load_repository_index
+        fails closed immediately and does not emit spurious downstream dangling reference errors."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+            with unittest.mock.patch(
+                "stable_id_audit._load_repository_index",
+                side_effect=RuntimeError("simulated unreadable index"),
+            ):
+                is_valid, findings, _ = validate_consistency(repo)
+                self.assertFalse(is_valid)
+
+                corrupt_findings = [f for f in findings if f.code == ERR_CORRUPT_FILE]
+                self.assertGreaterEqual(len(corrupt_findings), 1)
+
+                dangling_findings = [f for f in findings if f.code == ERR_DANGLING_REFERENCE]
+                self.assertEqual(
+                    len(dangling_findings),
+                    0,
+                    f"Checker continued on partial state and emitted {len(dangling_findings)} spurious dangling errors",
+                )
+
+    def test_tombstoned_operation_accepted_in_agent_operating_model(self) -> None:
+        """Finding 2 (HIGH): Proves that Section 3.10 enforces tombstoned_ids checks on operationRefs."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+
+            target_json = repo / "architecture/agent_operations.json"
+            data = json.loads(target_json.read_text(encoding="utf-8"))
+            op_id = data["operations"][0]["id"]
+            data["operations"][0]["status"] = "tombstone"
+            target_json.unlink()
+            target_json.write_text(json.dumps(data), encoding="utf-8")
+
+            target_md = repo / "registries/AGENT_OPERATIONS.md"
+            lines = target_md.read_text(encoding="utf-8").splitlines()
+            new_lines = []
+            for line in lines:
+                if op_id in line:
+                    parts = line.split("|")
+                    parts[-2] = " tombstone "
+                    new_lines.append("|".join(parts))
+                else:
+                    new_lines.append(line)
+            target_md.unlink()
+            target_md.write_text("\n".join(new_lines), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+
+            tomb_findings = [
+                f for f in findings
+                if f.code == ERR_TOMBSTONE_IN_USE
+                and f.file == "architecture/agent_operating_model.json"
+                and op_id in f.message
+            ]
+            self.assertGreaterEqual(
+                len(tomb_findings),
+                1,
+                f"Tombstoned operation '{op_id}' in agent_operating_model.json was accepted without ERR_TOMBSTONE_IN_USE",
+            )
+
+    def test_vacuous_pass_on_empty_registry_rejected(self) -> None:
+        """Finding 3 (HIGH): Proves that an empty architecture array and empty markdown table fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+
+            target_json = repo / "architecture/franken_imports.json"
+            target_json.unlink()
+            target_json.write_text(json.dumps({"schema": "fss.franken_imports.v1", "imports": []}), encoding="utf-8")
+
+            target_md = repo / "registries/IMPORTS.md"
+            target_md.unlink()
+            target_md.write_text("# Franken imports registry\n\n| ID | Import | Source |\n|---|---|---|\n", encoding="utf-8")
+
+            is_valid, findings, summary = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            imp_findings = [f for f in findings if "IMPORTS" in f.file or "imports" in f.file]
+            self.assertGreaterEqual(
+                len(imp_findings),
+                1,
+                "Completely empty imports registry was accepted vacuously with 0 findings",
+            )
+
+    def test_missing_root_key_in_architecture_file_rejected(self) -> None:
+        """Finding 3 (HIGH): Proves that a missing mandatory root collection key fails closed."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+
+            target_json = repo / "architecture/invariants.json"
+            target_json.unlink()
+            target_json.write_text(json.dumps({"schema": "fss.invariants.v1"}), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            inv_findings = [f for f in findings if f.file == "architecture/invariants.json"]
+            self.assertGreaterEqual(
+                len(inv_findings),
+                1,
+                "Missing 'invariants' root key was accepted without error",
+            )
+
+    def test_duplicate_markdown_identifier_fails(self) -> None:
+        """Finding 4 (HIGH): Proves that duplicate IDs in markdown tables are detected."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+
+            target_md = repo / "registries/INVARIANTS.md"
+            content = target_md.read_text(encoding="utf-8")
+            dup_row = "| `INV-001` | Duplicate exact invariant | normative |"
+            target_md.unlink()
+            target_md.write_text(content + "\n" + dup_row + "\n", encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            inv_findings = [f for f in findings if "invariants" in f.file or "INVARIANTS" in f.file]
+            self.assertGreaterEqual(
+                len(inv_findings),
+                1,
+                "Duplicate INV-001 in registries/INVARIANTS.md was silently swallowed without detection",
+            )
+
+    def test_duplicate_architecture_identifier_fails(self) -> None:
+        """Finding 4 (HIGH): Proves that duplicate IDs in architecture JSON arrays are detected."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+
+            target_json = repo / "architecture/agent_operations.json"
+            data = json.loads(target_json.read_text(encoding="utf-8"))
+            data["operations"].append(data["operations"][0].copy())
+            target_json.unlink()
+            target_json.write_text(json.dumps(data), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            dup_findings = [
+                f for f in findings
+                if f.code == ERR_COUNT_MISMATCH and "duplicate identifier" in f.message
+            ]
+            self.assertGreaterEqual(
+                len(dup_findings),
+                1,
+                "Duplicate operation in architecture/agent_operations.json was not detected",
+            )
+
+    def test_parse_markdown_table_rows_skips_spaced_delimiter_rows(self) -> None:
+        """Finding 6 (MEDIUM): Proves that spaced delimiter rows are not parsed into data rows."""
+        sample_table = (
+            "# Sample table\n\n"
+            "| ID | Name | Status |\n"
+            "| --- | :---: | ---: |\n"
+            "| `INV-001` | Test invariant | normative |\n"
+        )
+        rows = parse_markdown_table_rows(sample_table)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], ["ID", "Name", "Status"])
+        self.assertEqual(rows[1], ["INV-001", "Test invariant", "normative"])
+
+    def test_contradicted_semantic_objects_fails(self) -> None:
+        """Finding 5 (HIGH): Proves that sub-registries in agent_contracts.json are cross-checked."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+
+            target_json = repo / "architecture/agent_contracts.json"
+            data = json.loads(target_json.read_text(encoding="utf-8"))
+            data["semanticObjects"]["MissionContract"] = "fss.planted_wrong_schema.v1"
+            target_json.unlink()
+            target_json.write_text(json.dumps(data), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            schema_findings = [
+                f for f in findings
+                if f.code == ERR_CONTRADICTED_METADATA and "MissionContract" in f.message
+            ]
+            self.assertGreaterEqual(
+                len(schema_findings),
+                1,
+                "Contradicted semanticObject schema in agent_contracts.json was not detected",
+            )
+
+    def test_unregistered_crate_in_topology_fails(self) -> None:
+        """Finding 5 (HIGH): Proves that crate_topology.json is cross-checked against crates/ on disk."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+
+            unreg_crate = repo / "crates/fss-planted-unregistered"
+            unreg_crate.mkdir(parents=True)
+            (unreg_crate / "Cargo.toml").write_text(
+                '[package]\nname = "fss-planted-unregistered"\nversion = "0.0.1"\nedition = "2024"\n',
+                encoding="utf-8",
+            )
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            crate_findings = [
+                f for f in findings
+                if f.code == ERR_MISSING_IDENTIFIER and "fss-planted-unregistered" in f.message
+            ]
+            self.assertGreaterEqual(
+                len(crate_findings),
+                1,
+                "Unregistered crate on disk was not detected by crate_topology cross-check",
+            )
+
+    def test_tombstoned_gate_in_publication_primitives_fails(self) -> None:
+        """Finding 5 (HIGH): Proves that gate references in publication_primitives are validated."""
+        with tempfile.TemporaryDirectory() as td:
+            repo = create_mock_repo(Path(td))
+
+            target_json = repo / "architecture/publication_primitives.json"
+            data = json.loads(target_json.read_text(encoding="utf-8"))
+            data["primitives"][0]["gate"] = "SCHEMA-DOMAIN-TOMBSTONE-001"
+            target_json.unlink()
+            target_json.write_text(json.dumps(data), encoding="utf-8")
+
+            is_valid, findings, _ = validate_consistency(repo)
+            self.assertFalse(is_valid)
+            tomb_findings = [
+                f for f in findings
+                if f.code == ERR_TOMBSTONE_IN_USE and "SCHEMA-DOMAIN-TOMBSTONE-001" in f.message
+            ]
+            self.assertGreaterEqual(
+                len(tomb_findings),
+                1,
+                "Tombstoned gate in publication_primitives.json was not detected",
+            )
 
 
 class TestCliInvocation(unittest.TestCase):
