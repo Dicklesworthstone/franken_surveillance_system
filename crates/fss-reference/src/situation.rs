@@ -1191,18 +1191,18 @@ fn reconciliation_basis_for(
 /// they never upgrade the physical proposition (`docs/AGENT_OPERATING_MODEL.md` §6). `estimated`
 /// (KSTATE-002) requires a supporting derivation, so a stage with no retained supporting roots is
 /// `unknown` (KSTATE-003) rather than estimated. Retained evidence that points both ways is an
-/// unresolved contradiction: the model has no typed adjudication basis that could retire it, so a
-/// post-corroboration stage keeps it `conflicted` exactly as `indeterminate` does, instead of
-/// flattening it to `estimated` while the cell still carries the contradicting roots.
+/// unresolved contradiction in every lifecycle state: the model has no typed basis that could
+/// retire it, so the cell is `conflicted` instead of being flattened to known, estimated, unknown,
+/// or indeterminate while it still carries the contradicting roots.
 pub(crate) fn physical_knowledge_state(
     state: EventState,
     supporting: &[ContentDigest],
     contradicting: &[ContentDigest],
 ) -> KnowledgeState {
-    let unresolved_conflict = !supporting.is_empty() && !contradicting.is_empty();
-    let post_corroboration = if unresolved_conflict {
-        KnowledgeState::Conflicted
-    } else if supporting.is_empty() {
+    if !supporting.is_empty() && !contradicting.is_empty() {
+        return KnowledgeState::Conflicted;
+    }
+    let supported_estimate = if supporting.is_empty() {
         KnowledgeState::Unknown
     } else {
         KnowledgeState::Estimated
@@ -1217,21 +1217,14 @@ pub(crate) fn physical_knowledge_state(
         EventState::Corroborated => KnowledgeState::Known,
         // Policy selected a disposition. Adjudication is also reachable through an urgent
         // single-sensor exception or policy reconciliation from indeterminate, so it cannot imply
-        // corroboration: at most estimated from retained support, and conflicted while retained
-        // contradicting roots remain unresolved.
-        EventState::Adjudicated => post_corroboration,
+        // corroboration: at most estimated from retained support.
+        EventState::Adjudicated => supported_estimate,
         // A durable delivery receipt proves the alert effect, not the physical event.
-        EventState::AlertDelivered => post_corroboration,
+        EventState::AlertDelivered => supported_estimate,
         // Resolution is a disposition; it neither confirms nor refutes physical presence.
-        EventState::Resolved => post_corroboration,
-        // Unresolved: conflicted when retained evidence points both ways, else indeterminate.
-        EventState::Indeterminate => {
-            if unresolved_conflict {
-                KnowledgeState::Conflicted
-            } else {
-                KnowledgeState::Indeterminate
-            }
-        }
+        EventState::Resolved => supported_estimate,
+        // Unresolved without evidence pointing both ways.
+        EventState::Indeterminate => KnowledgeState::Indeterminate,
         // Rejection refutes the candidate but does not certify physical absence.
         EventState::Rejected => KnowledgeState::Unknown,
     }

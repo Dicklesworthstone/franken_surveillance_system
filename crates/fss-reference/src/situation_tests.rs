@@ -4,9 +4,9 @@ use std::fs;
 
 use fss_core::{
     AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContentDigest, ContractBasis,
-    ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, EventState, HandoffId,
-    HypothesisDisposition, IdempotencyKey, KnowledgeCell, KnowledgeState, MissionId, ObligationId,
-    OperationId, PrincipalId, ProbabilityInterval, ProvenanceClass, SensorId, SessionId,
+    ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, EventState,
+    EvidenceEdgeRelation, HandoffId, HypothesisDisposition, IdempotencyKey, KnowledgeState,
+    MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval, SensorId, SessionId,
     TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
@@ -554,11 +554,12 @@ fn physical_knowledge_state_maps_every_event_state_explicitly() {
             &none,
             KnowledgeState::Indeterminate,
         ),
+        // Rejection keeps retained contradicting roots alongside support: still conflicted.
         (
             EventState::Rejected,
             &support,
             &contra,
-            KnowledgeState::Unknown,
+            KnowledgeState::Conflicted,
         ),
         (EventState::Rejected, &none, &none, KnowledgeState::Unknown),
     ];
@@ -575,115 +576,85 @@ fn physical_knowledge_state_maps_every_event_state_explicitly() {
 }
 
 #[test]
-fn physical_cell_stays_conflicted_after_post_corroboration_stages() -> Result<(), Box<dyn Error>> {
+fn physical_cell_is_conflicted_whenever_evidence_points_both_ways() -> Result<(), Box<dyn Error>> {
     let support = [ContentDigest::sha256(b"supporting-witness")];
     let contra = [ContentDigest::sha256(b"contradicting-witness")];
     let none: [ContentDigest; 0] = [];
-    // Each post-corroboration stage is reachable from `indeterminate` without new evidence, so
-    // retained evidence pointing both ways must stay conflicted there exactly as it is while
-    // indeterminate: no typed adjudication basis exists that could retire the contradiction.
-    let cases: [(
-        EventState,
-        &[ContentDigest],
-        &[ContentDigest],
-        KnowledgeState,
-    ); 10] = [
-        (
-            EventState::Indeterminate,
-            &support,
-            &contra,
-            KnowledgeState::Conflicted,
-        ),
-        (
-            EventState::Adjudicated,
-            &support,
-            &contra,
-            KnowledgeState::Conflicted,
-        ),
-        (
-            EventState::AlertDelivered,
-            &support,
-            &contra,
-            KnowledgeState::Conflicted,
-        ),
-        (
-            EventState::Resolved,
-            &support,
-            &contra,
-            KnowledgeState::Conflicted,
-        ),
-        // Without contradicting roots the stages stay estimated from retained support.
-        (
-            EventState::Adjudicated,
-            &support,
-            &none,
-            KnowledgeState::Estimated,
-        ),
-        (
-            EventState::AlertDelivered,
-            &support,
-            &none,
-            KnowledgeState::Estimated,
-        ),
-        (
-            EventState::Resolved,
-            &support,
-            &none,
-            KnowledgeState::Estimated,
-        ),
-        // Contradiction alone, with nothing supporting, is unknown rather than conflicted.
-        (
-            EventState::Adjudicated,
-            &none,
-            &contra,
-            KnowledgeState::Unknown,
-        ),
-        (
-            EventState::AlertDelivered,
-            &none,
-            &contra,
-            KnowledgeState::Unknown,
-        ),
-        (
-            EventState::Resolved,
-            &none,
-            &contra,
-            KnowledgeState::Unknown,
-        ),
-    ];
-    for (state, supporting, contradicting, expected) in cases {
-        let actual = physical_knowledge_state(state, supporting, contradicting);
-        if actual != expected {
-            return Err(format!(
-                "event state {} with {} supporting and {} contradicting roots: expected {expected:?}, got {actual:?}",
-                state.as_str(),
-                supporting.len(),
-                contradicting.len()
-            )
-            .into());
-        }
-        // The projected cell must remain a valid contract cell carrying its contradictions.
-        let cell = KnowledgeCell {
-            claim_id: format!("claim:event:{}:unknown-presence", state.as_str()),
-            statement: physical_statement(state).to_owned(),
-            knowledge_state: actual,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: Some(policy_hypothesis(state)),
-            evidence: supporting.to_vec(),
-            contradictions: contradicting.to_vec(),
-            valid_until: None,
-            state_basis: None,
-        }
-        .validated()?;
-        if !supporting.is_empty() && !contradicting.is_empty() && !cell.is_conflicted() {
-            return Err(format!(
-                "event state {} flattened an unresolved contradiction to {:?}",
-                state.as_str(),
-                cell.knowledge_state
-            )
-            .into());
+    let states: Vec<EventState> = (0..=u8::MAX)
+        .filter_map(|tag| EventState::from_u8(tag).ok())
+        .collect();
+    if states.len() != 8 {
+        return Err(format!("expected 8 decodable event states, found {}", states.len()).into());
+    }
+    for state in states {
+        // Support-only and contradiction-only rows keep their per-state mapping. Exhaustive on
+        // purpose: a new `EventState` must choose both before this compiles.
+        let (support_only, contradiction_only) = match state {
+            EventState::Hypothesized => (KnowledgeState::Unknown, KnowledgeState::Unknown),
+            EventState::Witnessed => (KnowledgeState::Estimated, KnowledgeState::Estimated),
+            EventState::Corroborated => (KnowledgeState::Known, KnowledgeState::Known),
+            EventState::Adjudicated | EventState::AlertDelivered | EventState::Resolved => {
+                (KnowledgeState::Estimated, KnowledgeState::Unknown)
+            }
+            EventState::Indeterminate => {
+                (KnowledgeState::Indeterminate, KnowledgeState::Indeterminate)
+            }
+            EventState::Rejected => (KnowledgeState::Unknown, KnowledgeState::Unknown),
+        };
+        // No typed basis retires a contradiction, so both kinds of evidence is always conflicted.
+        let rows: [(&[ContentDigest], &[ContentDigest], KnowledgeState); 3] = [
+            (&support, &contra, KnowledgeState::Conflicted),
+            (&support, &none, support_only),
+            (&none, &contra, contradiction_only),
+        ];
+        for (supporting, contradicting, expected) in rows {
+            let actual = physical_knowledge_state(state, supporting, contradicting);
+            if actual != expected {
+                return Err(format!(
+                    "event state {} with {} supporting and {} contradicting roots: expected {expected:?}, got {actual:?}",
+                    state.as_str(),
+                    supporting.len(),
+                    contradicting.len()
+                )
+                .into());
+            }
         }
     }
+    Ok(())
+}
+
+#[test]
+fn compiled_physical_cell_is_conflicted_when_evidence_points_both_ways()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = SituationHarness::new("conflicted-cell")?;
+    let (decision, event_receipt) = harness.publish_decision(
+        "conflicted-cell",
+        &[
+            (MockSemanticLabel::PersonLike, "power:alpha"),
+            (MockSemanticLabel::AnimalLike, "power:beta"),
+        ],
+    )?;
+    assert_eq!(decision.event.state, EventState::Indeterminate);
+    let situation = compile_reference_situation(
+        request(
+            &decision,
+            &event_receipt,
+            capabilities(&["capability:evidence.query", "capability:session.wait"]),
+        )?,
+        &harness.authority,
+    )?;
+    let physical = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":unknown-presence"))
+        .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
+    assert_eq!(physical.knowledge_state, KnowledgeState::Conflicted);
+    assert_eq!(physical.evidence.len(), 1);
+    assert_eq!(physical.contradictions.len(), 1);
+
+    harness.cleanup();
     Ok(())
 }
 
@@ -957,6 +928,57 @@ fn forged_result_digest_is_refused() -> Result<(), Box<dyn Error>> {
         "{:?}",
         effect.evidence
     );
+    harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn compiled_corroborated_cell_with_contradicting_edge_is_conflicted() -> Result<(), Box<dyn Error>>
+{
+    let mut harness = SituationHarness::new("corroborated-conflict")?;
+    let (mut decision, _) = harness.publish_decision(
+        "corroborated-conflict-policy",
+        &[
+            (MockSemanticLabel::PersonLike, "power:alpha"),
+            (MockSemanticLabel::PersonLike, "power:beta"),
+        ],
+    )?;
+    assert_eq!(decision.event.state, EventState::Corroborated);
+    // Corroboration counts only supporting edges, so a retained Contradicts edge is admissible.
+    let mut contradicting = decision
+        .event
+        .evidence
+        .first()
+        .ok_or(ReferenceError::InvalidSpec("missing_evidence"))?
+        .clone();
+    contradicting.digest = ContentDigest::sha256(b"corroborated-contradicting-witness");
+    contradicting.failure_domain = "power:gamma".to_owned();
+    contradicting.supports = false;
+    contradicting.relation = EvidenceEdgeRelation::Contradicts;
+    decision.event.evidence.push(contradicting);
+    decision.event.event_id = EventId::parse("event:situation:corroborated-conflict")?;
+    let event_receipt =
+        publish_reference_event(&decision, &mut harness.objects, &mut harness.authority)?;
+
+    let situation = compile_reference_situation(
+        request(
+            &decision,
+            &event_receipt,
+            capabilities(&["capability:alert.prepare"]),
+        )?,
+        &harness.authority,
+    )?;
+    let physical = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":unknown-presence"))
+        .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
+    assert_eq!(physical.knowledge_state, KnowledgeState::Conflicted);
+    assert_eq!(physical.evidence.len(), 2);
+    assert_eq!(physical.contradictions.len(), 1);
+
     harness.cleanup();
     Ok(())
 }
