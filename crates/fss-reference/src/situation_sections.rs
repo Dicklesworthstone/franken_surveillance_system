@@ -705,12 +705,13 @@ fn context_candidates(
         if matches!(
             cell.knowledge_state,
             KnowledgeState::Unknown
-                | KnowledgeState::Conflicted
                 | KnowledgeState::Stale
                 | KnowledgeState::NotObservable
                 | KnowledgeState::Redacted
                 | KnowledgeState::Indeterminate
-        ) {
+        ) || (cell.knowledge_state == KnowledgeState::Conflicted
+            && cell.contradictions.is_empty())
+        {
             let item_id = format!("context:epistemic:{}", cell.claim_id);
             if let Some((_, prev_item_id)) = seen_epistemic.iter().find(|(c, _)| {
                 c.statement == cell.statement

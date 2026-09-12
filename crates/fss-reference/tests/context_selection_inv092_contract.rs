@@ -888,3 +888,92 @@ fn test_redundancy_record_must_not_be_self_referential() -> Result<(), Box<dyn E
     );
     Ok(())
 }
+
+#[test]
+fn test_single_contradiction_does_not_double_count_tokens() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("site:inv092:adv4");
+    let evidence_digest = ContentDigest::sha256(b"single-contra-evidence");
+    let contra_digest = ContentDigest::sha256(b"single-contra-root");
+
+    let cell = KnowledgeCell {
+        claim_id: "claim:target:single".to_owned(),
+        statement: "Single contradiction statement".to_owned(),
+        knowledge_state: KnowledgeState::Conflicted,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![evidence_digest],
+        contradictions: vec![contra_digest],
+        valid_until: None,
+    };
+    let world = PossibleWorld {
+        world_id: "world:adv:4".to_owned(),
+        description: "World 4".to_owned(),
+        claim_ids: BTreeSet::from(["claim:target:single".to_owned()]),
+        evidence: vec![evidence_digest],
+        consequence_severity: 4,
+        protected: true,
+    };
+    let envelope = WorldEnvelope {
+        envelope_id: "envelope:adv:4".to_owned(),
+        objective_id: "objective:adv:4".to_owned(),
+        anchor: anchor.clone(),
+        nominal_claim_ids: BTreeSet::from(["claim:target:single".to_owned()]),
+        certified_core_claim_ids: BTreeSet::new(),
+        alternatives: vec![world],
+        adversarial_residuals: Vec::new(),
+        common_invariants: BTreeSet::new(),
+        coverage_boundary_handles: BTreeSet::new(),
+    };
+    let frame = SituationFrame {
+        frame_id: "frame:adv:4".to_owned(),
+        objective_id: "objective:adv:4".to_owned(),
+        anchor: anchor.clone(),
+        world_envelope: envelope,
+        knowledge_cells: vec![cell],
+        now: vec!["Monitoring".to_owned()],
+        changed: Vec::new(),
+        why: Vec::new(),
+        unknown: Vec::new(),
+        at_risk: Vec::new(),
+        next: Vec::new(),
+        evidence_handles: BTreeSet::new(),
+    };
+    let capsule = SituationCapsule {
+        capsule_id: "situation:adv:4".to_owned(),
+        revision: 1,
+        contract_basis: test_basis(),
+        mission_id: MissionId::parse("mission:adv:4")?,
+        session_id: SessionId::parse("session:adv:4")?,
+        principal_id: PrincipalId::parse("principal:adv")?,
+        anchor,
+        previous_anchor: None,
+        frame,
+        obligations: Vec::new(),
+        affordances: Vec::new(),
+        completeness: Completeness::Partial,
+        created_at: TimestampNs(1_000_000),
+        mission_state: None,
+    };
+    let situation = ReferenceSituation {
+        capsule,
+        proof_roots: BTreeSet::from([evidence_digest]),
+    };
+
+    let publ = project_reference_situation(situation, &test_spec(10_000)?)?;
+
+    // In current code, both "context:contradiction:claim:target:single" AND
+    // "context:epistemic:claim:target:single" are emitted as critical:
+    let matching_items: Vec<_> = publ
+        .context_pack
+        .items
+        .iter()
+        .filter(|i| i.content == "Single contradiction statement")
+        .collect();
+
+    assert_eq!(
+        matching_items.len(),
+        1,
+        "Conflicted cell was duplicated into both 'contradiction' and 'epistemic_boundary' items!"
+    );
+    Ok(())
+}
