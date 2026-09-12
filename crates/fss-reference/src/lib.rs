@@ -91,8 +91,12 @@ pub use error::ReferenceError;
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use meaningful_delta::classify_reference_meaningful_delta;
 pub use model::{
-    MockAbstentionReason, MockModelOutcome, MockModelResult, MockModelScript, MockModelSpec,
-    MockSemanticLabel, execute_mock_model,
+    CorroboratedModelFinding, CorroborationStatus, MAX_CORROBORATION_SOURCES,
+    MAX_DETECTIONS_PER_OUTPUT, MAX_FAULT_REASON_LEN, MAX_INPUT_PAYLOAD_BYTES,
+    MAX_MODEL_GENERATION_BYTES, MockAbstentionReason, MockDetection, MockExecutorOutcome,
+    MockModelError, MockModelExecutor, MockModelFaultSchedule, MockModelOutcome, MockModelOutput,
+    MockModelResult, MockModelScript, MockModelSpec, MockSemanticLabel, compare_model_scores,
+    evaluate_corroboration, execute_mock_model,
 };
 pub use outcome::{
     ALERT_OUTCOME_FAMILY, ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt,

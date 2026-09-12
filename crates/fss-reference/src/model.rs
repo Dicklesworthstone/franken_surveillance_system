@@ -1,11 +1,30 @@
-//! Deterministic scripted perception oracle for walking-skeleton qualification.
+//! Deterministic scripted perception oracle and mock model executor (FSS-020).
 
-use fss_core::{CanonicalEncode, CanonicalEncoder, ContentDigest, ProbabilityInterval, SensorId};
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use fss_core::{
+    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, KnowledgeState,
+    ModelGeneration, ProbabilityInterval, ProvenanceClass, SensorCapsuleV1, SensorId,
+};
 use fss_object::InMemoryObjectStore;
 
-use crate::{ReferenceCapture, ReferenceError};
+use crate::{ReferenceCapture, ReferenceError, VirtualClock};
 
-const MAX_MODEL_GENERATION_BYTES: usize = 256;
+/// Maximum byte length for a model generation identifier string.
+pub const MAX_MODEL_GENERATION_BYTES: usize = 256;
+
+/// Maximum payload size in bytes for a single model input frame (1 MiB).
+pub const MAX_INPUT_PAYLOAD_BYTES: usize = 1_048_576;
+
+/// Maximum character/byte length for an injected fault reason or diagnostic message.
+pub const MAX_FAULT_REASON_LEN: usize = 256;
+
+/// Maximum detections emitted in a single model output.
+pub const MAX_DETECTIONS_PER_OUTPUT: usize = 64;
+
+/// Maximum distinct sources permitted in a single corroboration evaluation.
+pub const MAX_CORROBORATION_SOURCES: usize = 32;
 
 /// Coarse model-facing label. This is derived cognition, not canonical event truth.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -21,7 +40,9 @@ pub enum MockSemanticLabel {
 }
 
 impl MockSemanticLabel {
-    fn tag(self) -> u8 {
+    /// Canonical discriminator tag.
+    #[must_use]
+    pub const fn tag(self) -> u8 {
         match self {
             Self::PersonLike => 1,
             Self::AnimalLike => 2,
@@ -223,5 +244,688 @@ fn encode_script(script: &MockModelScript, encoder: &mut CanonicalEncoder) {
             encoder.u8(label.tag());
             probability.encode_canonical(encoder);
         }
+    }
+}
+
+// =========================================================================
+// FSS-020 Deterministic Mock Model Executor
+// =========================================================================
+
+/// One deterministic detection finding emitted by the mock model.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MockDetection {
+    /// Semantic classification label.
+    pub label: MockSemanticLabel,
+    /// Bounded conservative probability interval.
+    pub probability: ProbabilityInterval,
+    /// Normalised bounding box `[x_min, y_min, x_max, y_max]` in `[0.0, 1.0]`.
+    pub bounding_box: [f64; 4],
+}
+
+/// Corroboration status of a model finding.
+///
+/// In FSS, a model score is NEVER corroborated on its own (a single camera and single model
+/// cannot corroborate itself). Cross-camera or independent source agreement is required.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum CorroborationStatus {
+    /// Uncorroborated single source/sensor observation.
+    UncorroboratedSingleSource {
+        /// Sensor identity of the single source.
+        sensor_id: SensorId,
+        /// Model generation that produced the score.
+        model_generation: String,
+    },
+    /// Multi-camera or multi-source corroborated finding.
+    Corroborated {
+        /// Distinct contributing sensor identifiers.
+        contributing_sensors: Vec<SensorId>,
+        /// Model generation identifiers that corroborated the finding.
+        contributing_generations: Vec<String>,
+    },
+}
+
+/// Deterministic model output carrying explicit provenance, uncertainty, and epistemic state.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MockModelOutput {
+    /// Deterministic canonical digest identifying this output object.
+    pub output_digest: ContentDigest,
+    /// Immutable model generation identity that produced this output.
+    pub generation: ModelGeneration,
+    /// Sensor identity from which the input was captured.
+    pub sensor_id: SensorId,
+    /// Exact content digest of the consumed input (capsule, frame, or capture).
+    pub input_digest: ContentDigest,
+    /// Temporal capture interval of the input.
+    pub capture_interval: CaptureInterval,
+    /// Epistemic knowledge state (typically Estimated or Conflicted).
+    pub knowledge_state: KnowledgeState,
+    /// Provenance class (Predicted for model cognition).
+    pub provenance_class: ProvenanceClass,
+    /// Bounded list of deterministic detections.
+    pub detections: Vec<MockDetection>,
+    /// Explicit corroboration status (initially UncorroboratedSingleSource).
+    pub corroboration: CorroborationStatus,
+    /// Virtual inference latency consumed.
+    pub virtual_latency_ns: u64,
+}
+
+impl CanonicalEncode for MockModelOutput {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text("fss.mock_model_output.v1");
+        encoder.text(self.generation.as_str());
+        self.sensor_id.encode_canonical(encoder);
+        encoder.digest(self.input_digest);
+        self.capture_interval.encode_canonical(encoder);
+        encoder.u64(self.detections.len() as u64);
+        for det in &self.detections {
+            encoder.u8(det.label.tag());
+            det.probability.encode_canonical(encoder);
+            encoder.u64((det.bounding_box[0] * 10_000.0) as u64);
+            encoder.u64((det.bounding_box[1] * 10_000.0) as u64);
+            encoder.u64((det.bounding_box[2] * 10_000.0) as u64);
+            encoder.u64((det.bounding_box[3] * 10_000.0) as u64);
+        }
+        encoder.u64(self.virtual_latency_ns);
+    }
+}
+
+/// Explicit typed outcome of a mock model execution.
+///
+/// In FSS, model failures, crashes, and timeouts are explicit typed outcomes;
+/// execution NEVER defaults to "no detection" or zero probability.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MockExecutorOutcome {
+    /// Normal successful model inference output.
+    Success(Box<MockModelOutput>),
+    /// Model process or runtime crashed.
+    Crashed {
+        /// Diagnostic reason for the crash.
+        reason: String,
+    },
+    /// Model exceeded virtual time budget.
+    TimedOut {
+        /// Virtual timeout limit configured.
+        virtual_timeout_ns: u64,
+        /// Virtual elapsed time before termination.
+        virtual_elapsed_ns: u64,
+    },
+    /// Model emitted malformed output bytes or invalid numerical bounds.
+    MalformedOutput {
+        /// Diagnostic detail.
+        detail: String,
+    },
+}
+
+impl MockExecutorOutcome {
+    /// Returns true if the outcome was successful.
+    #[must_use]
+    pub const fn is_success(&self) -> bool {
+        matches!(self, Self::Success(_))
+    }
+
+    /// Returns the output if successful, or None if a fault occurred.
+    #[must_use]
+    pub fn output(&self) -> Option<&MockModelOutput> {
+        match self {
+            Self::Success(out) => Some(out.as_ref()),
+            _ => None,
+        }
+    }
+}
+
+/// Fault injection schedule for mock model execution.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct MockModelFaultSchedule {
+    /// Injected crash faults keyed by input content digest.
+    pub crashes: BTreeMap<ContentDigest, String>,
+    /// Injected virtual timeouts keyed by input content digest.
+    pub timeouts: BTreeMap<ContentDigest, u64>,
+    /// Injected malformed outputs keyed by input content digest.
+    pub malformed_outputs: BTreeMap<ContentDigest, String>,
+}
+
+impl MockModelFaultSchedule {
+    /// Creates an empty fault schedule.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Injects a crash fault for a specific input digest.
+    pub fn inject_crash(
+        &mut self,
+        digest: ContentDigest,
+        reason: impl Into<String>,
+    ) -> Result<(), MockModelError> {
+        let reason = reason.into();
+        if reason.len() > MAX_FAULT_REASON_LEN {
+            return Err(MockModelError::FaultReasonTooLong {
+                actual: reason.len(),
+                max: MAX_FAULT_REASON_LEN,
+            });
+        }
+        self.crashes.insert(digest, reason);
+        Ok(())
+    }
+
+    /// Injects a virtual timeout fault for a specific input digest.
+    pub fn inject_timeout(&mut self, digest: ContentDigest, elapsed_ns: u64) {
+        self.timeouts.insert(digest, elapsed_ns);
+    }
+
+    /// Injects a malformed output fault for a specific input digest.
+    pub fn inject_malformed_output(
+        &mut self,
+        digest: ContentDigest,
+        detail: impl Into<String>,
+    ) -> Result<(), MockModelError> {
+        let detail = detail.into();
+        if detail.len() > MAX_FAULT_REASON_LEN {
+            return Err(MockModelError::FaultReasonTooLong {
+                actual: detail.len(),
+                max: MAX_FAULT_REASON_LEN,
+            });
+        }
+        self.malformed_outputs.insert(digest, detail);
+        Ok(())
+    }
+}
+
+/// Deterministic mock model executor.
+///
+/// Consumes sensor capsules, raw frames, or reference captures, emitting bit-identical
+/// model outputs deterministically from `(seed, model_generation, input_digest)`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MockModelExecutor {
+    generation: ModelGeneration,
+    seed: u64,
+    nominal_latency_ns: u64,
+    virtual_timeout_ns: u64,
+    fault_schedule: MockModelFaultSchedule,
+}
+
+impl MockModelExecutor {
+    /// Constructs a new mock model executor with default 10ms nominal latency and 50ms timeout.
+    pub fn new(generation: ModelGeneration, seed: u64) -> Result<Self, MockModelError> {
+        Self::with_latency_and_timeout(generation, seed, 10_000_000, 50_000_000)
+    }
+
+    /// Constructs a mock model executor with explicit nominal latency and virtual timeout.
+    pub fn with_latency_and_timeout(
+        generation: ModelGeneration,
+        seed: u64,
+        nominal_latency_ns: u64,
+        virtual_timeout_ns: u64,
+    ) -> Result<Self, MockModelError> {
+        Ok(Self {
+            generation,
+            seed,
+            nominal_latency_ns,
+            virtual_timeout_ns,
+            fault_schedule: MockModelFaultSchedule::new(),
+        })
+    }
+
+    /// Configures an explicit fault schedule.
+    #[must_use]
+    pub fn with_fault_schedule(mut self, schedule: MockModelFaultSchedule) -> Self {
+        self.fault_schedule = schedule;
+        self
+    }
+
+    /// Returns the active model generation.
+    #[must_use]
+    pub const fn generation(&self) -> &ModelGeneration {
+        &self.generation
+    }
+
+    /// Executes inference over a raw frame payload using the explicit virtual clock authority.
+    pub fn execute_frame(
+        &self,
+        frame_bytes: &[u8],
+        sensor_id: &SensorId,
+        capture_interval: &CaptureInterval,
+        clock: &mut VirtualClock,
+    ) -> Result<MockExecutorOutcome, MockModelError> {
+        if frame_bytes.len() > MAX_INPUT_PAYLOAD_BYTES {
+            return Err(MockModelError::InputPayloadTooLarge {
+                actual: frame_bytes.len(),
+                max: MAX_INPUT_PAYLOAD_BYTES,
+            });
+        }
+        let input_digest = ContentDigest::sha256(frame_bytes);
+        self.execute_internal(input_digest, sensor_id, capture_interval, clock)
+    }
+
+    /// Executes inference over a canonical SensorCapsuleV1 using the explicit virtual clock authority.
+    pub fn execute_capsule(
+        &self,
+        capsule: &SensorCapsuleV1,
+        clock: &mut VirtualClock,
+    ) -> Result<MockExecutorOutcome, MockModelError> {
+        capsule
+            .verify()
+            .map_err(|e| MockModelError::InvalidCapsule(format!("{e:?}")))?;
+        let input_digest = capsule.integrity.metadata_digest;
+        self.execute_internal(
+            input_digest,
+            &capsule.sensor_id,
+            &capsule.capture_interval,
+            clock,
+        )
+    }
+
+    /// Executes inference over a complete ReferenceCapture using the explicit virtual clock authority.
+    pub fn execute_capture(
+        &self,
+        capture: &ReferenceCapture,
+        clock: &mut VirtualClock,
+    ) -> Result<MockExecutorOutcome, MockModelError> {
+        let first_packet = capture.source_packets.first().ok_or_else(|| {
+            MockModelError::Reference("capture has no source packets".to_string())
+        })?;
+        let last_packet = capture.source_packets.last().ok_or_else(|| {
+            MockModelError::Reference("capture has no source packets".to_string())
+        })?;
+        let interval =
+            CaptureInterval::new(first_packet.capture.earliest, last_packet.capture.latest)
+                .map_err(|e| MockModelError::Reference(format!("{e:?}")))?;
+        let input_digest = capture.receipt.capture_root;
+        self.execute_internal(input_digest, &first_packet.sensor_id, &interval, clock)
+    }
+
+    fn execute_internal(
+        &self,
+        input_digest: ContentDigest,
+        sensor_id: &SensorId,
+        capture_interval: &CaptureInterval,
+        clock: &mut VirtualClock,
+    ) -> Result<MockExecutorOutcome, MockModelError> {
+        // 1. Check crash fault
+        if let Some(reason) = self.fault_schedule.crashes.get(&input_digest) {
+            return Ok(MockExecutorOutcome::Crashed {
+                reason: reason.clone(),
+            });
+        }
+
+        // 2. Check injected timeout fault
+        if let Some(&timeout_ns) = self.fault_schedule.timeouts.get(&input_digest) {
+            clock
+                .advance(timeout_ns)
+                .map_err(|e| MockModelError::ClockError(format!("{e:?}")))?;
+            return Ok(MockExecutorOutcome::TimedOut {
+                virtual_timeout_ns: self.virtual_timeout_ns,
+                virtual_elapsed_ns: timeout_ns,
+            });
+        }
+
+        // 3. Check nominal latency exceeding virtual timeout
+        if self.nominal_latency_ns > self.virtual_timeout_ns {
+            clock
+                .advance(self.virtual_timeout_ns)
+                .map_err(|e| MockModelError::ClockError(format!("{e:?}")))?;
+            return Ok(MockExecutorOutcome::TimedOut {
+                virtual_timeout_ns: self.virtual_timeout_ns,
+                virtual_elapsed_ns: self.nominal_latency_ns,
+            });
+        }
+
+        // 4. Check malformed output fault
+        if let Some(detail) = self.fault_schedule.malformed_outputs.get(&input_digest) {
+            return Ok(MockExecutorOutcome::MalformedOutput {
+                detail: detail.clone(),
+            });
+        }
+
+        // 5. Advance clock by nominal virtual latency
+        clock
+            .advance(self.nominal_latency_ns)
+            .map_err(|e| MockModelError::ClockError(format!("{e:?}")))?;
+
+        // 6. Deterministic PRNG seeded from (seed, generation, input_digest)
+        let gen_digest = ContentDigest::sha256(self.generation.as_str().as_bytes());
+        let mut prng_state = self.seed
+            ^ read_u64_le(&gen_digest.bytes()[..8])
+            ^ read_u64_le(&input_digest.bytes()[..8])
+            ^ 0x9e37_79b9_7f4a_7c15_u64;
+        if prng_state == 0 {
+            prng_state = 0xd1b5_4a32_d192_ed03_u64;
+        }
+
+        let mut next_u64 = || {
+            prng_state ^= prng_state >> 12;
+            prng_state ^= prng_state << 25;
+            prng_state ^= prng_state >> 27;
+            prng_state.wrapping_mul(0x2545_f491_4f6c_dd1d_u64)
+        };
+
+        // Generate 1 to 3 deterministic detections
+        let num_detections = ((next_u64() % 3) + 1) as usize;
+        let mut detections = Vec::with_capacity(num_detections);
+
+        for _ in 0..num_detections {
+            let label = match next_u64() % 4 {
+                0 => MockSemanticLabel::PersonLike,
+                1 => MockSemanticLabel::AnimalLike,
+                2 => MockSemanticLabel::TamperLike,
+                _ => MockSemanticLabel::Unknown,
+            };
+
+            let prob_raw = (next_u64() % 4000) as f64 / 10000.0; // 0.0 .. 0.4
+            let low = 0.50 + prob_raw; // 0.50 .. 0.90
+            let high = (low + 0.05).min(0.99); // 0.55 .. 0.95
+            let probability = ProbabilityInterval::new(low, high)
+                .map_err(|_| MockModelError::InvalidProbabilityScore)?;
+
+            let x1 = (next_u64() % 400) as f64 / 1000.0;
+            let y1 = (next_u64() % 400) as f64 / 1000.0;
+            let w = ((next_u64() % 400) + 100) as f64 / 1000.0;
+            let h = ((next_u64() % 400) + 100) as f64 / 1000.0;
+            let x2 = (x1 + w).min(1.0);
+            let y2 = (y1 + h).min(1.0);
+            let bounding_box = [x1, y1, x2, y2];
+
+            detections.push(MockDetection {
+                label,
+                probability,
+                bounding_box,
+            });
+        }
+
+        let output_digest = compute_output_digest(
+            &self.generation,
+            sensor_id,
+            &input_digest,
+            capture_interval,
+            &detections,
+            self.nominal_latency_ns,
+        );
+
+        let output = MockModelOutput {
+            output_digest,
+            generation: self.generation.clone(),
+            sensor_id: sensor_id.clone(),
+            input_digest,
+            capture_interval: *capture_interval,
+            knowledge_state: KnowledgeState::Estimated,
+            provenance_class: ProvenanceClass::Predicted,
+            detections,
+            corroboration: CorroborationStatus::UncorroboratedSingleSource {
+                sensor_id: sensor_id.clone(),
+                model_generation: self.generation.as_str().to_string(),
+            },
+            virtual_latency_ns: self.nominal_latency_ns,
+        };
+
+        Ok(MockExecutorOutcome::Success(Box::new(output)))
+    }
+}
+
+fn read_u64_le(slice: &[u8]) -> u64 {
+    let mut buf = [0_u8; 8];
+    let len = slice.len().min(8);
+    buf[..len].copy_from_slice(&slice[..len]);
+    u64::from_le_bytes(buf)
+}
+
+fn compute_output_digest(
+    generation: &ModelGeneration,
+    sensor_id: &SensorId,
+    input_digest: &ContentDigest,
+    capture_interval: &CaptureInterval,
+    detections: &[MockDetection],
+    virtual_latency_ns: u64,
+) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.mock_model_output.v1");
+    encoder.text(generation.as_str());
+    sensor_id.encode_canonical(&mut encoder);
+    encoder.digest(*input_digest);
+    capture_interval.encode_canonical(&mut encoder);
+    encoder.u64(detections.len() as u64);
+    for det in detections {
+        encoder.u8(det.label.tag());
+        det.probability.encode_canonical(&mut encoder);
+        encoder.u64((det.bounding_box[0] * 10_000.0) as u64);
+        encoder.u64((det.bounding_box[1] * 10_000.0) as u64);
+        encoder.u64((det.bounding_box[2] * 10_000.0) as u64);
+        encoder.u64((det.bounding_box[3] * 10_000.0) as u64);
+    }
+    encoder.u64(virtual_latency_ns);
+    ContentDigest::sha256(&encoder.finish())
+}
+
+/// Compares detection scores between two models, enforcing generation compatibility.
+///
+/// Under AGENTS.md, mixing scores across different model generations is strictly prohibited.
+pub fn compare_model_scores(
+    score_a: &MockDetection,
+    generation_a: &ModelGeneration,
+    score_b: &MockDetection,
+    generation_b: &ModelGeneration,
+) -> Result<std::cmp::Ordering, MockModelError> {
+    if generation_a != generation_b {
+        return Err(MockModelError::CrossGenerationScoreMixing {
+            expected: generation_a.clone(),
+            actual: generation_b.clone(),
+        });
+    }
+    let mid_a = (score_a.probability.lower + score_a.probability.upper) / 2.0;
+    let mid_b = (score_b.probability.lower + score_b.probability.upper) / 2.0;
+    mid_a
+        .partial_cmp(&mid_b)
+        .ok_or(MockModelError::InvalidProbabilityScore)
+}
+
+/// A multi-camera corroborated model finding.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CorroboratedModelFinding {
+    /// Common semantic label agreed upon.
+    pub label: MockSemanticLabel,
+    /// Immutable model generation that produced the corroborated finding.
+    pub generation: ModelGeneration,
+    /// Contributing distinct sensor identities.
+    pub contributing_sensors: Vec<SensorId>,
+    /// Input digests from contributing sensors.
+    pub contributing_input_digests: Vec<ContentDigest>,
+    /// Fused conservative probability interval.
+    pub fused_probability: ProbabilityInterval,
+    /// Corroboration status witness.
+    pub corroboration: CorroborationStatus,
+}
+
+/// Evaluates corroboration across multiple model outputs.
+///
+/// Enforces:
+/// 1. Minimum 2 sources required.
+/// 2. Bounded by [`MAX_CORROBORATION_SOURCES`].
+/// 3. Model generations must match (cross-generation mixing prohibited).
+/// 4. Contributing sensors must be distinct (single camera cannot corroborate itself).
+pub fn evaluate_corroboration(
+    outputs: &[MockModelOutput],
+) -> Result<CorroboratedModelFinding, MockModelError> {
+    if outputs.len() < 2 {
+        return Err(MockModelError::InsufficientSourcesForCorroboration {
+            count: outputs.len(),
+            min_required: 2,
+        });
+    }
+    if outputs.len() > MAX_CORROBORATION_SOURCES {
+        return Err(MockModelError::TooManyCorroborationSources {
+            actual: outputs.len(),
+            max: MAX_CORROBORATION_SOURCES,
+        });
+    }
+
+    let first = &outputs[0];
+    for out in outputs.iter().skip(1) {
+        if out.generation != first.generation {
+            return Err(MockModelError::CrossGenerationScoreMixing {
+                expected: first.generation.clone(),
+                actual: out.generation.clone(),
+            });
+        }
+    }
+
+    let mut unique_sensors = BTreeSet::new();
+    for out in outputs {
+        unique_sensors.insert(out.sensor_id.clone());
+    }
+    if unique_sensors.len() < 2 {
+        return Err(MockModelError::UncorroboratedSingleSensor {
+            sensor_id: first.sensor_id.clone(),
+        });
+    }
+
+    let common_label = first
+        .detections
+        .first()
+        .map(|d| d.label)
+        .unwrap_or(MockSemanticLabel::Unknown);
+
+    // Compute conservative fused probability interval: max lower, min upper
+    let mut fused_lower = 0.0_f64;
+    let mut fused_upper = 1.0_f64;
+    for out in outputs {
+        if let Some(det) = out.detections.iter().find(|d| d.label == common_label) {
+            fused_lower = fused_lower.max(det.probability.lower);
+            fused_upper = fused_upper.min(det.probability.upper);
+        }
+    }
+    if fused_lower > fused_upper {
+        fused_upper = fused_lower;
+    }
+    let fused_probability = ProbabilityInterval::new(fused_lower, fused_upper)
+        .map_err(|_| MockModelError::InvalidProbabilityScore)?;
+
+    let contributing_sensors: Vec<SensorId> = unique_sensors.into_iter().collect();
+    let contributing_input_digests: Vec<ContentDigest> =
+        outputs.iter().map(|o| o.input_digest).collect();
+
+    Ok(CorroboratedModelFinding {
+        label: common_label,
+        generation: first.generation.clone(),
+        contributing_sensors: contributing_sensors.clone(),
+        contributing_input_digests,
+        fused_probability,
+        corroboration: CorroborationStatus::Corroborated {
+            contributing_sensors,
+            contributing_generations: vec![first.generation.as_str().to_string()],
+        },
+    })
+}
+
+/// Errors returned by the mock model subsystem.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum MockModelError {
+    /// Model generation identifier is empty.
+    EmptyGenerationId,
+    /// Model generation identifier exceeds maximum declared bound.
+    GenerationIdTooLong {
+        /// Actual length observed.
+        actual: usize,
+        /// Maximum allowed length.
+        max: usize,
+    },
+    /// Input payload exceeds maximum allowed size.
+    InputPayloadTooLarge {
+        /// Actual length observed.
+        actual: usize,
+        /// Maximum allowed length.
+        max: usize,
+    },
+    /// Injected fault reason or detail exceeds maximum allowed length.
+    FaultReasonTooLong {
+        /// Actual length observed.
+        actual: usize,
+        /// Maximum allowed length.
+        max: usize,
+    },
+    /// Prohibited attempt to mix or compare scores across different model generations.
+    CrossGenerationScoreMixing {
+        /// Expected model generation.
+        expected: ModelGeneration,
+        /// Actual incompatible model generation.
+        actual: ModelGeneration,
+    },
+    /// Insufficient sources to evaluate corroboration (minimum 2 required).
+    InsufficientSourcesForCorroboration {
+        /// Observed source count.
+        count: usize,
+        /// Minimum required count.
+        min_required: usize,
+    },
+    /// Single camera or sensor cannot corroborate itself.
+    UncorroboratedSingleSensor {
+        /// Sensor identity of the single source.
+        sensor_id: SensorId,
+    },
+    /// Corroboration sources exceed maximum bound.
+    TooManyCorroborationSources {
+        /// Observed source count.
+        actual: usize,
+        /// Maximum allowed count.
+        max: usize,
+    },
+    /// The sensor capsule is invalid.
+    InvalidCapsule(String),
+    /// Invalid probability score.
+    InvalidProbabilityScore,
+    /// Error from virtual clock authority.
+    ClockError(String),
+    /// Reference error.
+    Reference(String),
+}
+
+impl fmt::Display for MockModelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyGenerationId => write!(f, "model generation identifier is empty"),
+            Self::GenerationIdTooLong { actual, max } => {
+                write!(
+                    f,
+                    "model generation identifier length {actual} exceeds bound {max}"
+                )
+            }
+            Self::InputPayloadTooLarge { actual, max } => {
+                write!(f, "input payload length {actual} exceeds bound {max}")
+            }
+            Self::FaultReasonTooLong { actual, max } => {
+                write!(f, "fault reason length {actual} exceeds bound {max}")
+            }
+            Self::CrossGenerationScoreMixing { expected, actual } => {
+                write!(
+                    f,
+                    "prohibited cross-generation score mixing: expected {expected}, got {actual}"
+                )
+            }
+            Self::InsufficientSourcesForCorroboration {
+                count,
+                min_required,
+            } => {
+                write!(
+                    f,
+                    "insufficient sources for corroboration: got {count}, min {min_required}"
+                )
+            }
+            Self::UncorroboratedSingleSensor { sensor_id } => {
+                write!(f, "single sensor {sensor_id} cannot corroborate itself")
+            }
+            Self::TooManyCorroborationSources { actual, max } => {
+                write!(f, "corroboration source count {actual} exceeds bound {max}")
+            }
+            Self::InvalidCapsule(reason) => write!(f, "invalid sensor capsule: {reason}"),
+            Self::InvalidProbabilityScore => write!(f, "invalid probability score"),
+            Self::ClockError(reason) => write!(f, "clock error: {reason}"),
+            Self::Reference(reason) => write!(f, "reference error: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for MockModelError {}
+
+impl From<ReferenceError> for MockModelError {
+    fn from(err: ReferenceError) -> Self {
+        Self::ClockError(format!("{err:?}"))
     }
 }
