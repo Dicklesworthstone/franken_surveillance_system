@@ -38,39 +38,223 @@ ERRORS_MD_PATH = "registries/ERRORS.md"
 
 # Canonical baseline for generation gen:fss1:public-v1
 BASELINE_GENERATION = "gen:fss1:public-v1"
-BASELINE_OPERATIONS = {
-    "AOP-001": ("session.open", "fss-agent-session"),
-    "AOP-002": ("session.resume", "fss-agent-session"),
-    "AOP-003": ("session.orient", "fss-situation"),
-    "AOP-004": ("session.follow", "fss-context-pack"),
-    "AOP-005": ("query", "fss-query-plan"),
-    "AOP-006": ("investigate", "fss-investigation"),
-    "AOP-007": ("plan", "fss-agent-plan"),
-    "AOP-008": ("commit", "fss-effect"),
-    "AOP-009": ("wait", "fss-obligation"),
-    "AOP-010": ("cancel", "fss-obligation"),
-    "AOP-011": ("explain", "fss-explain"),
-    "AOP-012": ("handoff", "fss-handoff"),
-    "AOP-013": ("feedback", "fss-learning"),
-    "AOP-014": ("doctor", "fss-doctor"),
+EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
+    "gen:fss1:public-v1": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
 }
 
-BASELINE_RESOURCES = {
-    "ARES-001": ("deployment.anchor", "fss://deployment/{deployment}/anchor/{anchor}", "fss-anchor"),
-    "ARES-002": ("deployment.situation", "fss://deployment/{deployment}/situation/{capsule}", "fss-situation"),
-    "ARES-003": ("deployment.sensor", "fss://deployment/{deployment}/sensor/{sensor}", "fss-sensor"),
-    "ARES-004": ("deployment.zone", "fss://deployment/{deployment}/zone/{zone}", "fss-zone"),
-    "ARES-005": ("deployment.event_revision", "fss://deployment/{deployment}/event/{event}/revision/{revision}", "fss-event"),
-    "ARES-006": ("deployment.case_revision", "fss://deployment/{deployment}/case/{case}/revision/{revision}", "fss-investigation"),
-    "ARES-007": ("deployment.hypothesis", "fss://deployment/{deployment}/hypothesis/{hypothesis}", "fss-investigation"),
-    "ARES-008": ("deployment.evidence", "fss://deployment/{deployment}/evidence/{digest}", "fss-evidence"),
-    "ARES-009": ("deployment.plan", "fss://deployment/{deployment}/plan/{plan}", "fss-agent-plan"),
-    "ARES-010": ("deployment.obligation", "fss://deployment/{deployment}/obligation/{obligation}", "fss-obligation"),
-    "ARES-011": ("mission.revision", "fss://mission/{mission}/revision/{revision}", "fss-mission"),
-    "ARES-012": ("session.workspace", "fss://session/{session}/workspace/{workspace}", "fss-agent-session"),
-    "ARES-013": ("session.handoff", "fss://session/{session}/handoff/{root}", "fss-handoff"),
-    "ARES-014": ("experience", "fss://experience/{capsule}", "fss-learning"),
-    "ARES-015": ("doctor", "fss://doctor/{bundle}", "fss-doctor"),
+BASELINE_OPERATIONS: dict[str, dict[str, Any]] = {
+    "AOP-001": {"id": "AOP-001", "kind": "operation", "name": "session.open", "generation": "gen:fss1:public-v1", "owner": "fss-agent-session", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_mission.v1", "responsePayloadSchemas": ["fss.situation_capsule.v1"], "defaultView": "AVIEW-002", "cliCommand": "fss session open", "mcpToolName": "session_open", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-002": {"id": "AOP-002", "kind": "operation", "name": "session.resume", "generation": "gen:fss1:public-v1", "owner": "fss-agent-session", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_handoff_capsule.v1", "responsePayloadSchemas": ["fss.situation_capsule.v1"], "defaultView": "AVIEW-006", "cliCommand": "fss session resume", "mcpToolName": "session_resume", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-003": {"id": "AOP-003", "kind": "operation", "name": "session.orient", "generation": "gen:fss1:public-v1", "owner": "fss-situation", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_query_plan.v1", "responsePayloadSchemas": ["fss.situation_capsule.v1"], "defaultView": "AVIEW-002", "cliCommand": "fss session orient", "mcpToolName": "session_orient", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-004": {"id": "AOP-004", "kind": "operation", "name": "session.follow", "generation": "gen:fss1:public-v1", "owner": "fss-context-pack", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_query_plan.v1", "responsePayloadSchemas": ["fss.agent_meaningful_delta.v1", "fss.situation_capsule.v1"], "defaultView": "AVIEW-001", "cliCommand": "fss session follow", "mcpToolName": "session_follow", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-005": {"id": "AOP-005", "kind": "operation", "name": "query", "generation": "gen:fss1:public-v1", "owner": "fss-query-plan", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_query_plan.v1", "responsePayloadSchemas": ["fss.agent_cognitive_envelope.v1"], "defaultView": "AVIEW-003", "cliCommand": "fss query", "mcpToolName": "query", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-006": {"id": "AOP-006", "kind": "operation", "name": "investigate", "generation": "gen:fss1:public-v1", "owner": "fss-investigation", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.investigation_state.v1", "responsePayloadSchemas": ["fss.investigation_state.v1", "fss.agent_cognitive_envelope.v1"], "defaultView": "AVIEW-003", "cliCommand": "fss investigate", "mcpToolName": "investigate", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-007": {"id": "AOP-007", "kind": "operation", "name": "plan", "generation": "gen:fss1:public-v1", "owner": "fss-agent-plan", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_objective_contract.v1", "responsePayloadSchemas": ["fss.agent_control_plan.v1"], "defaultView": "AVIEW-007", "cliCommand": "fss plan", "mcpToolName": "plan", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-008": {"id": "AOP-008", "kind": "operation", "name": "commit", "generation": "gen:fss1:public-v1", "owner": "fss-effect", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_control_plan.v1", "responsePayloadSchemas": ["fss.operation_receipt.v1", "fss.agent_cognitive_envelope.v1"], "defaultView": "AVIEW-005", "cliCommand": "fss commit", "mcpToolName": "commit", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-009": {"id": "AOP-009", "kind": "operation", "name": "wait", "generation": "gen:fss1:public-v1", "owner": "fss-obligation", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_query_plan.v1", "responsePayloadSchemas": ["fss.agent_cognitive_envelope.v1", "fss.operation_receipt.v1"], "defaultView": "AVIEW-005", "cliCommand": "fss wait", "mcpToolName": "wait", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-010": {"id": "AOP-010", "kind": "operation", "name": "cancel", "generation": "gen:fss1:public-v1", "owner": "fss-obligation", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_query_plan.v1", "responsePayloadSchemas": ["fss.operation_receipt.v1", "fss.agent_cognitive_envelope.v1"], "defaultView": "AVIEW-005", "cliCommand": "fss cancel", "mcpToolName": "cancel", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-011": {"id": "AOP-011", "kind": "operation", "name": "explain", "generation": "gen:fss1:public-v1", "owner": "fss-explain", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_query_plan.v1", "responsePayloadSchemas": ["fss.agent_cognitive_envelope.v1"], "defaultView": "AVIEW-007", "cliCommand": "fss explain", "mcpToolName": "explain", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-012": {"id": "AOP-012", "kind": "operation", "name": "handoff", "generation": "gen:fss1:public-v1", "owner": "fss-handoff", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_session_capsule.v1", "responsePayloadSchemas": ["fss.agent_handoff_capsule.v1"], "defaultView": "AVIEW-006", "cliCommand": "fss handoff", "mcpToolName": "handoff", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-013": {"id": "AOP-013", "kind": "operation", "name": "feedback", "generation": "gen:fss1:public-v1", "owner": "fss-learning", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_feedback_proposal.v1", "responsePayloadSchemas": ["fss.agent_feedback_proposal.v1", "fss.experience_capsule.v1"], "defaultView": "AVIEW-007", "cliCommand": "fss feedback", "mcpToolName": "feedback", "compatibilityClass": "backward_compatible", "status": "specified"},
+    "AOP-014": {"id": "AOP-014", "kind": "operation", "name": "doctor", "generation": "gen:fss1:public-v1", "owner": "fss-doctor", "requestEnvelope": "fss.agent_request_envelope.v1", "responseEnvelope": "fss.agent_response_envelope.v1", "requestPayloadSchema": "fss.agent_query_plan.v1", "responsePayloadSchemas": ["fss.agent_cognitive_envelope.v1", "fss.evidence_bundle.v1"], "defaultView": "AVIEW-004", "cliCommand": "fss doctor", "mcpToolName": "doctor", "compatibilityClass": "backward_compatible", "status": "specified"},
+}
+
+BASELINE_RESOURCES: dict[str, dict[str, Any]] = {
+    "ARES-001": {
+        "id": "ARES-001",
+        "kind": "resource",
+        "name": "deployment.anchor",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-anchor",
+        "uriTemplate": "fss://deployment/{deployment}/anchor/{anchor}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.evidence_anchor.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-002": {
+        "id": "ARES-002",
+        "kind": "resource",
+        "name": "deployment.situation",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-situation",
+        "uriTemplate": "fss://deployment/{deployment}/situation/{capsule}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.situation_capsule.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-003": {
+        "id": "ARES-003",
+        "kind": "resource",
+        "name": "deployment.sensor",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-sensor",
+        "uriTemplate": "fss://deployment/{deployment}/sensor/{sensor}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.sensor_capsule.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-004": {
+        "id": "ARES-004",
+        "kind": "resource",
+        "name": "deployment.zone",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-zone",
+        "uriTemplate": "fss://deployment/{deployment}/zone/{zone}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.agent_situation_frame.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-005": {
+        "id": "ARES-005",
+        "kind": "resource",
+        "name": "deployment.event_revision",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-event",
+        "uriTemplate": "fss://deployment/{deployment}/event/{event}/revision/{revision}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.event_hypothesis.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-006": {
+        "id": "ARES-006",
+        "kind": "resource",
+        "name": "deployment.case_revision",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-investigation",
+        "uriTemplate": "fss://deployment/{deployment}/case/{case}/revision/{revision}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.investigation_state.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-007": {
+        "id": "ARES-007",
+        "kind": "resource",
+        "name": "deployment.hypothesis",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-investigation",
+        "uriTemplate": "fss://deployment/{deployment}/hypothesis/{hypothesis}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.agent_hypothesis_workspace.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-008": {
+        "id": "ARES-008",
+        "kind": "resource",
+        "name": "deployment.evidence",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-evidence",
+        "uriTemplate": "fss://deployment/{deployment}/evidence/{digest}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.evidence_bundle.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-009": {
+        "id": "ARES-009",
+        "kind": "resource",
+        "name": "deployment.plan",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-agent-plan",
+        "uriTemplate": "fss://deployment/{deployment}/plan/{plan}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.agent_control_plan.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-010": {
+        "id": "ARES-010",
+        "kind": "resource",
+        "name": "deployment.obligation",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-obligation",
+        "uriTemplate": "fss://deployment/{deployment}/obligation/{obligation}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.prepared_effect.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-011": {
+        "id": "ARES-011",
+        "kind": "resource",
+        "name": "mission.revision",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-mission",
+        "uriTemplate": "fss://mission/{mission}/revision/{revision}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.agent_mission.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-012": {
+        "id": "ARES-012",
+        "kind": "resource",
+        "name": "session.workspace",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-agent-session",
+        "uriTemplate": "fss://session/{session}/workspace/{workspace}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.agent_session_capsule.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-013": {
+        "id": "ARES-013",
+        "kind": "resource",
+        "name": "session.handoff",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-handoff",
+        "uriTemplate": "fss://session/{session}/handoff/{root}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.agent_handoff_capsule.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-014": {
+        "id": "ARES-014",
+        "kind": "resource",
+        "name": "experience",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-learning",
+        "uriTemplate": "fss://experience/{capsule}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.experience_capsule.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
+    "ARES-015": {
+        "id": "ARES-015",
+        "kind": "resource",
+        "name": "doctor",
+        "generation": "gen:fss1:public-v1",
+        "owner": "fss-doctor",
+        "uriTemplate": "fss://doctor/{bundle}",
+        "requestEnvelope": "fss.agent_request_envelope.v1",
+        "responseEnvelope": "fss.agent_response_envelope.v1",
+        "payloadSchema": "fss.doctor.v1",
+        "compatibilityClass": "backward_compatible",
+        "status": "specified",
+    },
 }
 
 
@@ -96,24 +280,81 @@ class ValidationResult:
         self.errors.append(DiagnosticError(code=code, file_path=file_path, target=target, message=message))
 
 
-def compute_canonical_freeze_digest(
-    operations: list[dict[str, Any]],
-    resources: list[dict[str, Any]],
-    tombstones: list[dict[str, Any]] | None = None,
-) -> str:
-    """Computes SHA-256 digest of canonically serialized sorted rows."""
-    all_rows: list[dict[str, Any]] = []
-    for op in operations:
-        all_rows.append(op)
-    for res in resources:
-        all_rows.append(res)
-    if tombstones:
-        for tomb in tombstones:
-            all_rows.append(tomb)
+def canonicalize_value(val: Any) -> Any:
+    """Deterministically orders dictionaries and primitive lists for canonical hashing."""
+    if isinstance(val, dict):
+        return {k: canonicalize_value(v) for k, v in sorted(val.items())}
+    if isinstance(val, list):
+        canon_items = [canonicalize_value(item) for item in val]
+        if all(isinstance(x, (str, int, float, bool)) for x in canon_items):
+            return sorted(canon_items)
+        return canon_items
+    return val
 
-    # Sort deterministically by stable identifier
-    sorted_rows = sorted(all_rows, key=lambda r: str(r.get("id", "")))
-    canonical_bytes = json.dumps(sorted_rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+def compute_canonical_freeze_digest(
+    data_or_ops: dict[str, Any] | list[dict[str, Any]],
+    resources: list[dict[str, Any]] | None = None,
+    tombstones: list[dict[str, Any]] | None = None,
+    schema: str = "fss.public_registry.v1",
+    protocol: str = "fss/1",
+    generation: str = BASELINE_GENERATION,
+) -> str:
+    """Computes SHA-256 digest of canonically serialized registry data.
+
+    Binds top-level metadata (schema, semanticProtocol, registryGeneration)
+    and deterministically sorted and canonicalized rows (operations, resources, tombstones).
+    Fails closed on duplicate or empty IDs.
+    """
+    if isinstance(data_or_ops, dict):
+        data = data_or_ops
+        schema_val = str(data.get("schema", "")).strip()
+        proto_val = str(data.get("semanticProtocol", "")).strip()
+        gen_val = str(data.get("registryGeneration", "")).strip()
+        raw_ops = data.get("operations", [])
+        raw_res = data.get("resources", [])
+        raw_tombs = data.get("tombstones", [])
+    else:
+        schema_val = schema
+        proto_val = protocol
+        gen_val = generation
+        raw_ops = data_or_ops
+        raw_res = resources or []
+        raw_tombs = tombstones or []
+
+    if not schema_val:
+        raise ValueError("Missing schema")
+    if not proto_val:
+        raise ValueError("Missing semanticProtocol")
+    if not gen_val:
+        raise ValueError("Missing registryGeneration")
+
+    seen_ids: set[str] = set()
+    for cat, rows in [("operations", raw_ops), ("resources", raw_res), ("tombstones", raw_tombs)]:
+        for idx, row in enumerate(rows):
+            if not isinstance(row, dict):
+                raise ValueError(f"Non-dict entry in {cat}[{idx}]")
+            row_id = str(row.get("id", "")).strip()
+            if not row_id:
+                raise ValueError(f"Empty id in {cat}[{idx}]")
+            if row_id in seen_ids:
+                raise ValueError(f"Duplicate id '{row_id}' in {cat}[{idx}]")
+            seen_ids.add(row_id)
+
+    sorted_ops = sorted(raw_ops, key=lambda r: str(r["id"]))
+    sorted_res = sorted(raw_res, key=lambda r: str(r["id"]))
+    sorted_tombs = sorted(raw_tombs, key=lambda r: str(r["id"]))
+
+    canonical_payload = {
+        "schema": schema_val,
+        "semanticProtocol": proto_val,
+        "registryGeneration": gen_val,
+        "operations": [canonicalize_value(r) for r in sorted_ops],
+        "resources": [canonicalize_value(r) for r in sorted_res],
+        "tombstones": [canonicalize_value(r) for r in sorted_tombs],
+    }
+
+    canonical_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}"
 
 
@@ -227,22 +468,12 @@ def validate_frozen_registry(repo_root: Path = ROOT) -> ValidationResult:
         )
         return result
 
-    # 2. Check canonical freeze digest
-    expected_digest = compute_canonical_freeze_digest(operations, resources, tombstones)
-    if declared_digest != expected_digest:
-        result.add_error(
-            ERR_FROZEN_DIGEST_MISMATCH,
-            FROZEN_REGISTRY_PATH,
-            "#/freezeDigest",
-            f"Freeze digest mismatch: declared '{declared_digest}' != computed '{expected_digest}'",
-        )
-
     result.freeze_digest = declared_digest
     result.operation_count = len(operations)
     result.resource_count = len(resources)
     result.tombstone_count = len(tombstones)
 
-    # 3. Check for stable ID reuse and tombstone resurrection
+    # 2. Check for stable ID reuse and tombstone resurrection
     seen_ids: dict[str, str] = {}  # id -> kind/location
     tombstoned_ids: set[str] = set()
 
@@ -357,6 +588,35 @@ def validate_frozen_registry(repo_root: Path = ROOT) -> ValidationResult:
 
         res_map[res_id] = res
 
+    # 3. Check canonical freeze digest
+    try:
+        expected_digest = compute_canonical_freeze_digest(frozen_data)
+        if declared_digest != expected_digest:
+            result.add_error(
+                ERR_FROZEN_DIGEST_MISMATCH,
+                FROZEN_REGISTRY_PATH,
+                "#/freezeDigest",
+                f"Freeze digest mismatch: declared '{declared_digest}' != computed '{expected_digest}'",
+            )
+
+        # Pin expected canonical freeze digest per generation
+        expected_pinned_digest = EXPECTED_FREEZE_DIGESTS.get(generation)
+        if expected_pinned_digest is not None:
+            if declared_digest != expected_pinned_digest:
+                result.add_error(
+                    ERR_FROZEN_DIGEST_MISMATCH,
+                    FROZEN_REGISTRY_PATH,
+                    "#/freezeDigest",
+                    f"Freeze digest mismatch for generation '{generation}': declared '{declared_digest}' != pinned '{expected_pinned_digest}'",
+                )
+    except ValueError as exc:
+        result.add_error(
+            ERR_FROZEN_DIGEST_MISMATCH,
+            FROZEN_REGISTRY_PATH,
+            "#/freezeDigest",
+            f"Failed to compute canonical freeze digest: {exc}",
+        )
+
     # 4. Check drift without generation bump
     if generation == BASELINE_GENERATION:
         # Verify operations match baseline exactly
@@ -370,24 +630,25 @@ def validate_frozen_registry(repo_root: Path = ROOT) -> ValidationResult:
                 f"Operations altered without generation bump: {actual_op_ids} != {expected_op_ids}",
             )
         else:
-            for opid, (expected_name, expected_owner) in BASELINE_OPERATIONS.items():
-                op = op_map[opid]
-                actual_name = op.get("name")
-                actual_owner = op.get("owner")
-                if actual_name != expected_name:
-                    result.add_error(
-                        ERR_FROZEN_REGISTRY_DRIFT,
-                        FROZEN_REGISTRY_PATH,
-                        f"#/operations/{opid}/name",
-                        f"Operation '{opid}' renamed from '{expected_name}' to '{actual_name}' without generation bump",
-                    )
-                if actual_owner != expected_owner:
-                    result.add_error(
-                        ERR_FROZEN_REGISTRY_DRIFT,
-                        FROZEN_REGISTRY_PATH,
-                        f"#/operations/{opid}/owner",
-                        f"Operation '{opid}' owner changed without generation bump",
-                    )
+            for opid, expected_op in BASELINE_OPERATIONS.items():
+                actual_op = op_map[opid]
+                for key, expected_val in expected_op.items():
+                    actual_val = actual_op.get(key)
+                    if actual_val != expected_val:
+                        result.add_error(
+                            ERR_FROZEN_REGISTRY_DRIFT,
+                            FROZEN_REGISTRY_PATH,
+                            f"#/operations/{opid}/{key}",
+                            f"Operation '{opid}' field '{key}' changed from '{expected_val}' to '{actual_val}' without generation bump",
+                        )
+                for key in actual_op:
+                    if key not in expected_op:
+                        result.add_error(
+                            ERR_FROZEN_REGISTRY_DRIFT,
+                            FROZEN_REGISTRY_PATH,
+                            f"#/operations/{opid}/{key}",
+                            f"Operation '{opid}' has unexpected field '{key}' without generation bump",
+                        )
 
         # Verify resources match baseline exactly
         actual_res_ids = sorted(res_map.keys())
@@ -400,32 +661,25 @@ def validate_frozen_registry(repo_root: Path = ROOT) -> ValidationResult:
                 f"Resources altered without generation bump: {actual_res_ids} != {expected_res_ids}",
             )
         else:
-            for resid, (expected_name, expected_uri, expected_owner) in BASELINE_RESOURCES.items():
-                res = res_map[resid]
-                actual_name = res.get("name")
-                actual_uri = res.get("uriTemplate")
-                actual_owner = res.get("owner")
-                if actual_name != expected_name:
-                    result.add_error(
-                        ERR_FROZEN_REGISTRY_DRIFT,
-                        FROZEN_REGISTRY_PATH,
-                        f"#/resources/{resid}/name",
-                        f"Resource '{resid}' renamed from '{expected_name}' to '{actual_name}' without generation bump",
-                    )
-                if actual_uri != expected_uri:
-                    result.add_error(
-                        ERR_FROZEN_REGISTRY_DRIFT,
-                        FROZEN_REGISTRY_PATH,
-                        f"#/resources/{resid}/uriTemplate",
-                        f"Resource '{resid}' URI template changed without generation bump",
-                    )
-                if actual_owner != expected_owner:
-                    result.add_error(
-                        ERR_FROZEN_REGISTRY_DRIFT,
-                        FROZEN_REGISTRY_PATH,
-                        f"#/resources/{resid}/owner",
-                        f"Resource '{resid}' owner changed without generation bump",
-                    )
+            for resid, expected_res in BASELINE_RESOURCES.items():
+                actual_res = res_map[resid]
+                for key, expected_val in expected_res.items():
+                    actual_val = actual_res.get(key)
+                    if actual_val != expected_val:
+                        result.add_error(
+                            ERR_FROZEN_REGISTRY_DRIFT,
+                            FROZEN_REGISTRY_PATH,
+                            f"#/resources/{resid}/{key}",
+                            f"Resource '{resid}' field '{key}' changed from '{expected_val}' to '{actual_val}' without generation bump",
+                        )
+                for key in actual_res:
+                    if key not in expected_res:
+                        result.add_error(
+                            ERR_FROZEN_REGISTRY_DRIFT,
+                            FROZEN_REGISTRY_PATH,
+                            f"#/resources/{resid}/{key}",
+                            f"Resource '{resid}' has unexpected field '{key}' without generation bump",
+                        )
 
     # 5. Cross-check against architecture/agent_operations.json
     try:
@@ -517,26 +771,40 @@ def validate_frozen_registry(repo_root: Path = ROOT) -> ValidationResult:
             f"Failed to read operation_crosswalk.json: {exc}",
         )
 
-    # 8. Cross-check against crates/fss-cli/src/crosswalk.rs (unregistered op)
-    if cli_crosswalk_path.is_file():
-        try:
-            rs_text = cli_crosswalk_path.read_text(encoding="utf-8")
-            rs_op_ids = re.findall(r'operation_id:\s*"(AOP-[0-9]{3})"', rs_text)
-            for rs_op_id in rs_op_ids:
-                if rs_op_id not in op_map:
-                    result.add_error(
-                        ERR_FROZEN_UNREGISTERED_OP,
-                        CLI_CROSSWALK_RS_PATH,
-                        f"#{rs_op_id}",
-                        f"Rust crosswalk references unregistered operation '{rs_op_id}'",
-                    )
-        except OSError as exc:
-            result.add_error(
-                ERR_FROZEN_CORRUPT_FILE,
-                CLI_CROSSWALK_RS_PATH,
-                "#",
-                f"Failed to read crosswalk.rs: {exc}",
-            )
+    # 8. Cross-check against crates/fss-cli/src/*.rs (unregistered op / resource and non-AOP scheme)
+    cli_src_dir = repo_root / "crates/fss-cli/src"
+    if cli_src_dir.is_dir():
+        for rs_file in sorted(cli_src_dir.glob("*.rs")):
+            try:
+                rs_text = rs_file.read_text(encoding="utf-8")
+                rel_path = str(rs_file.relative_to(repo_root) if repo_root in rs_file.parents else rs_file)
+                # Match any string literal assigned to operation_id
+                rs_op_ids = re.findall(r'operation_id:\s*"([^"]+)"', rs_text)
+                for rs_op_id in rs_op_ids:
+                    if rs_op_id not in op_map:
+                        result.add_error(
+                            ERR_FROZEN_UNREGISTERED_OP,
+                            rel_path,
+                            f"#{rs_op_id}",
+                            f"CLI source '{rel_path}' references unregistered operation '{rs_op_id}'",
+                        )
+                # Match any string literal assigned to resource_id
+                rs_res_ids = re.findall(r'resource_id:\s*"([^"]+)"', rs_text)
+                for rs_res_id in rs_res_ids:
+                    if rs_res_id not in res_map:
+                        result.add_error(
+                            ERR_FROZEN_UNREGISTERED_OP,
+                            rel_path,
+                            f"#{rs_res_id}",
+                            f"CLI source '{rel_path}' references unregistered resource '{rs_res_id}'",
+                        )
+            except OSError as exc:
+                result.add_error(
+                    ERR_FROZEN_CORRUPT_FILE,
+                    str(rs_file.relative_to(repo_root) if repo_root in rs_file.parents else rs_file),
+                    "#",
+                    f"Failed to read {rs_file.name}: {exc}",
+                )
 
     return result
 

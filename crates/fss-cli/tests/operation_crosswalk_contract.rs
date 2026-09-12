@@ -12,9 +12,9 @@ use std::collections::HashSet;
 use std::error::Error;
 
 use fss_cli::crosswalk::{
-    CrosswalkValidationError, REGISTERED_OPERATION_CROSSWALK, lookup_by_cli_command,
-    lookup_by_library_entry_point, lookup_by_mcp_tool_name, lookup_by_operation_id,
-    lookup_by_operation_name, validate_crosswalk_entries,
+    CrosswalkValidationError, REGISTERED_OPERATION_CROSSWALK, REGISTERED_RESOURCE_CROSSWALK,
+    lookup_by_cli_command, lookup_by_library_entry_point, lookup_by_mcp_tool_name,
+    lookup_by_operation_id, lookup_by_operation_name, validate_crosswalk_entries,
 };
 use fss_cli::error::ExitIdentity;
 
@@ -378,59 +378,527 @@ fn test_parity_against_json_crosswalk() -> TestResult {
     Ok(())
 }
 
+const EXPECTED_FREEZE_DIGEST: &str =
+    "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8";
+
+#[derive(Debug, Clone, PartialEq)]
+enum JsonVal {
+    Null,
+    Bool(bool),
+    Number(i64),
+    Str(String),
+    Arr(Vec<JsonVal>),
+    Obj(std::collections::BTreeMap<String, JsonVal>),
+}
+
+impl JsonVal {
+    fn as_str(&self) -> Result<&str, String> {
+        match self {
+            Self::Str(s) => Ok(s.as_str()),
+            _ => Err("expected string".to_string()),
+        }
+    }
+    fn as_obj(&self) -> Result<&std::collections::BTreeMap<String, JsonVal>, String> {
+        match self {
+            Self::Obj(m) => Ok(m),
+            _ => Err("expected object".to_string()),
+        }
+    }
+    fn as_arr(&self) -> Result<&[JsonVal], String> {
+        match self {
+            Self::Arr(a) => Ok(a.as_slice()),
+            _ => Err("expected array".to_string()),
+        }
+    }
+}
+
+fn skip_ws(chars: &[char], pos: &mut usize) {
+    while *pos < chars.len() && chars[*pos].is_whitespace() {
+        *pos += 1;
+    }
+}
+
+fn parse_json_str(chars: &[char], pos: &mut usize) -> Result<String, String> {
+    if *pos >= chars.len() || chars[*pos] != '"' {
+        return Err("expected '\"'".to_string());
+    }
+    *pos += 1;
+    let mut s = String::new();
+    while *pos < chars.len() {
+        match chars[*pos] {
+            '"' => {
+                *pos += 1;
+                return Ok(s);
+            }
+            '\\' => {
+                *pos += 1;
+                if *pos >= chars.len() {
+                    return Err("unterminated escape".to_string());
+                }
+                match chars[*pos] {
+                    '"' => s.push('"'),
+                    '\\' => s.push('\\'),
+                    '/' => s.push('/'),
+                    'b' => s.push('\x08'),
+                    'f' => s.push('\x0c'),
+                    'n' => s.push('\n'),
+                    'r' => s.push('\r'),
+                    't' => s.push('\t'),
+                    c => return Err(format!("unknown escape '\\{}'", c)),
+                }
+                *pos += 1;
+            }
+            c => {
+                s.push(c);
+                *pos += 1;
+            }
+        }
+    }
+    Err("unterminated string".to_string())
+}
+
+fn parse_json_val(chars: &[char], pos: &mut usize) -> Result<JsonVal, String> {
+    skip_ws(chars, pos);
+    if *pos >= chars.len() {
+        return Err("unexpected EOF".to_string());
+    }
+    match chars[*pos] {
+        '{' => {
+            *pos += 1;
+            let mut map = std::collections::BTreeMap::new();
+            skip_ws(chars, pos);
+            if *pos < chars.len() && chars[*pos] == '}' {
+                *pos += 1;
+                return Ok(JsonVal::Obj(map));
+            }
+            loop {
+                skip_ws(chars, pos);
+                let key = parse_json_str(chars, pos)?;
+                skip_ws(chars, pos);
+                if *pos >= chars.len() || chars[*pos] != ':' {
+                    return Err("expected ':' in object".to_string());
+                }
+                *pos += 1;
+                let val = parse_json_val(chars, pos)?;
+                map.insert(key, val);
+                skip_ws(chars, pos);
+                if *pos >= chars.len() {
+                    return Err("unterminated object".to_string());
+                }
+                if chars[*pos] == '}' {
+                    *pos += 1;
+                    return Ok(JsonVal::Obj(map));
+                } else if chars[*pos] == ',' {
+                    *pos += 1;
+                } else {
+                    return Err(format!("expected ',' or '}}' at {}", *pos));
+                }
+            }
+        }
+        '[' => {
+            *pos += 1;
+            let mut arr = Vec::new();
+            skip_ws(chars, pos);
+            if *pos < chars.len() && chars[*pos] == ']' {
+                *pos += 1;
+                return Ok(JsonVal::Arr(arr));
+            }
+            loop {
+                let val = parse_json_val(chars, pos)?;
+                arr.push(val);
+                skip_ws(chars, pos);
+                if *pos >= chars.len() {
+                    return Err("unterminated array".to_string());
+                }
+                if chars[*pos] == ']' {
+                    *pos += 1;
+                    return Ok(JsonVal::Arr(arr));
+                } else if chars[*pos] == ',' {
+                    *pos += 1;
+                } else {
+                    return Err(format!("expected ',' or ']' at {}", *pos));
+                }
+            }
+        }
+        '"' => parse_json_str(chars, pos).map(JsonVal::Str),
+        't' => {
+            if chars[*pos..].starts_with(&['t', 'r', 'u', 'e']) {
+                *pos += 4;
+                Ok(JsonVal::Bool(true))
+            } else {
+                Err("invalid token".to_string())
+            }
+        }
+        'f' => {
+            if chars[*pos..].starts_with(&['f', 'a', 'l', 's', 'e']) {
+                *pos += 5;
+                Ok(JsonVal::Bool(false))
+            } else {
+                Err("invalid token".to_string())
+            }
+        }
+        'n' => {
+            if chars[*pos..].starts_with(&['n', 'u', 'l', 'l']) {
+                *pos += 4;
+                Ok(JsonVal::Null)
+            } else {
+                Err("invalid token".to_string())
+            }
+        }
+        '-' | '0'..='9' => {
+            let start = *pos;
+            if chars[*pos] == '-' {
+                *pos += 1;
+            }
+            while *pos < chars.len() && chars[*pos].is_ascii_digit() {
+                *pos += 1;
+            }
+            let s: String = chars[start..*pos].iter().collect();
+            let n: i64 = s.parse().map_err(|e| format!("invalid number {s}: {e}"))?;
+            Ok(JsonVal::Number(n))
+        }
+        c => Err(format!("unexpected character '{c}' at {pos}")),
+    }
+}
+
+fn parse_json(input: &str) -> Result<JsonVal, String> {
+    let chars: Vec<char> = input.chars().collect();
+    let mut pos = 0;
+    skip_ws(&chars, &mut pos);
+    let val = parse_json_val(&chars, &mut pos)?;
+    skip_ws(&chars, &mut pos);
+    if pos < chars.len() {
+        return Err(format!("trailing characters at {pos}"));
+    }
+    Ok(val)
+}
+
+fn validate_frozen_registry_against_compiled(val: &JsonVal) -> Result<(), String> {
+    let root = val.as_obj()?;
+    let schema = root.get("schema").ok_or("missing schema")?.as_str()?;
+    if schema != "fss.public_registry.v1" {
+        return Err(format!("unexpected schema: {schema}"));
+    }
+    let protocol = root
+        .get("semanticProtocol")
+        .ok_or("missing semanticProtocol")?
+        .as_str()?;
+    if protocol != "fss/1" {
+        return Err(format!("unexpected semanticProtocol: {protocol}"));
+    }
+    let generation = root
+        .get("registryGeneration")
+        .ok_or("missing registryGeneration")?
+        .as_str()?;
+    if generation != "gen:fss1:public-v1" {
+        return Err(format!("unexpected registryGeneration: {generation}"));
+    }
+    let freeze_digest = root
+        .get("freezeDigest")
+        .ok_or("missing freezeDigest")?
+        .as_str()?;
+    if freeze_digest != EXPECTED_FREEZE_DIGEST {
+        return Err(format!(
+            "freeze digest mismatch: expected {EXPECTED_FREEZE_DIGEST}, got {freeze_digest}"
+        ));
+    }
+
+    // 1. Operations validation
+    let ops_arr = root
+        .get("operations")
+        .ok_or("missing operations")?
+        .as_arr()?;
+    if ops_arr.len() != REGISTERED_OPERATION_CROSSWALK.len() {
+        return Err(format!(
+            "operation count mismatch: expected {}, got {}",
+            REGISTERED_OPERATION_CROSSWALK.len(),
+            ops_arr.len()
+        ));
+    }
+
+    let mut ops_seen = std::collections::BTreeSet::new();
+    for op_val in ops_arr {
+        let op_obj = op_val.as_obj()?;
+        let op_id = op_obj.get("id").ok_or("missing op id")?.as_str()?;
+        if op_id.len() != 7
+            || !op_id.starts_with("AOP-")
+            || !op_id[4..].chars().all(|c| c.is_ascii_digit())
+        {
+            return Err(format!("invalid operation id pattern: {op_id}"));
+        }
+        if !ops_seen.insert(op_id.to_string()) {
+            return Err(format!("duplicate operation id: {op_id}"));
+        }
+
+        let compiled = REGISTERED_OPERATION_CROSSWALK
+            .iter()
+            .find(|e| e.operation_id == op_id)
+            .ok_or_else(|| format!("unregistered operation id in frozen json: {op_id}"))?;
+
+        let name = op_obj.get("name").ok_or("missing name")?.as_str()?;
+        if name != compiled.operation_name {
+            return Err(format!(
+                "operation {op_id} name mismatch: expected {}, got {}",
+                compiled.operation_name, name
+            ));
+        }
+        let owner = op_obj.get("owner").ok_or("missing owner")?.as_str()?;
+        if owner != compiled.owner {
+            return Err(format!(
+                "operation {op_id} owner mismatch: expected {}, got {}",
+                compiled.owner, owner
+            ));
+        }
+        let cli_cmd = op_obj
+            .get("cliCommand")
+            .ok_or("missing cliCommand")?
+            .as_str()?;
+        if cli_cmd != compiled.cli_command {
+            return Err(format!(
+                "operation {op_id} cliCommand mismatch: expected {}, got {}",
+                compiled.cli_command, cli_cmd
+            ));
+        }
+        let mcp_tool = op_obj
+            .get("mcpToolName")
+            .ok_or("missing mcpToolName")?
+            .as_str()?;
+        if mcp_tool != compiled.mcp_tool_name {
+            return Err(format!(
+                "operation {op_id} mcpToolName mismatch: expected {}, got {}",
+                compiled.mcp_tool_name, mcp_tool
+            ));
+        }
+        let status = op_obj.get("status").ok_or("missing status")?.as_str()?;
+        if status != compiled.status {
+            return Err(format!(
+                "operation {op_id} status mismatch: expected {}, got {}",
+                compiled.status, status
+            ));
+        }
+    }
+
+    // 2. Resources validation
+    let res_arr = root.get("resources").ok_or("missing resources")?.as_arr()?;
+    if res_arr.len() != REGISTERED_RESOURCE_CROSSWALK.len() {
+        return Err(format!(
+            "resource count mismatch: expected {}, got {}",
+            REGISTERED_RESOURCE_CROSSWALK.len(),
+            res_arr.len()
+        ));
+    }
+
+    let mut res_seen = std::collections::BTreeSet::new();
+    for res_val in res_arr {
+        let res_obj = res_val.as_obj()?;
+        let res_id = res_obj.get("id").ok_or("missing res id")?.as_str()?;
+        if res_id.len() != 8
+            || !res_id.starts_with("ARES-")
+            || !res_id[5..].chars().all(|c| c.is_ascii_digit())
+        {
+            return Err(format!("invalid resource id pattern: {res_id}"));
+        }
+        if !res_seen.insert(res_id.to_string()) {
+            return Err(format!("duplicate resource id: {res_id}"));
+        }
+
+        let compiled = REGISTERED_RESOURCE_CROSSWALK
+            .iter()
+            .find(|e| e.resource_id == res_id)
+            .ok_or_else(|| format!("unregistered resource id in frozen json: {res_id}"))?;
+
+        let name = res_obj.get("name").ok_or("missing name")?.as_str()?;
+        if name != compiled.resource_name {
+            return Err(format!(
+                "resource {res_id} name mismatch: expected {}, got {}",
+                compiled.resource_name, name
+            ));
+        }
+        let uri = res_obj
+            .get("uriTemplate")
+            .ok_or("missing uriTemplate")?
+            .as_str()?;
+        if uri != compiled.uri_template {
+            return Err(format!(
+                "resource {res_id} uriTemplate mismatch: expected {}, got {}",
+                compiled.uri_template, uri
+            ));
+        }
+        let owner = res_obj.get("owner").ok_or("missing owner")?.as_str()?;
+        if owner != compiled.owner {
+            return Err(format!(
+                "resource {res_id} owner mismatch: expected {}, got {}",
+                compiled.owner, owner
+            ));
+        }
+        let schema = res_obj
+            .get("payloadSchema")
+            .ok_or("missing payloadSchema")?
+            .as_str()?;
+        if schema != compiled.payload_schema {
+            return Err(format!(
+                "resource {res_id} payloadSchema mismatch: expected {}, got {}",
+                compiled.payload_schema, schema
+            ));
+        }
+        let comp = res_obj
+            .get("compatibilityClass")
+            .ok_or("missing compatibilityClass")?
+            .as_str()?;
+        if comp != compiled.compatibility_class {
+            return Err(format!(
+                "resource {res_id} compatibilityClass mismatch: expected {}, got {}",
+                compiled.compatibility_class, comp
+            ));
+        }
+        let status = res_obj.get("status").ok_or("missing status")?.as_str()?;
+        if status != compiled.status {
+            return Err(format!(
+                "resource {res_id} status mismatch: expected {}, got {}",
+                compiled.status, status
+            ));
+        }
+    }
+
+    Ok(())
+}
+
 #[test]
 fn test_compiled_operation_table_equals_frozen_registry() -> TestResult {
     let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
-    assert!(
-        frozen_str.contains("\"semanticProtocol\": \"fss/1\""),
-        "Frozen registry must specify semanticProtocol fss/1"
-    );
-    assert!(
-        frozen_str.contains("\"schema\": \"fss.public_registry.v1\""),
-        "Frozen registry must specify schema fss.public_registry.v1"
-    );
-    assert!(
-        frozen_str.contains("\"freezeDigest\": \"sha256:"),
-        "Frozen registry must specify canonical freeze digest"
-    );
+    let json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
+    validate_frozen_registry_against_compiled(&json_val).map_err(|e| e.into())
+}
 
-    // Verify all 14 compiled operations are present with identical coordinates
-    for entry in REGISTERED_OPERATION_CROSSWALK {
-        assert!(
-            frozen_str.contains(entry.operation_id),
-            "Frozen registry missing compiled operation_id: {}",
-            entry.operation_id
-        );
-        assert!(
-            frozen_str.contains(entry.operation_name),
-            "Frozen registry missing compiled operation_name: {}",
-            entry.operation_name
-        );
-        assert!(
-            frozen_str.contains(entry.owner),
-            "Frozen registry missing compiled owner: {}",
-            entry.owner
-        );
-        assert!(
-            frozen_str.contains(entry.status),
-            "Frozen registry missing compiled status: {}",
-            entry.status
+#[test]
+fn test_planted_negative_swapped_operation_owner_fails() -> TestResult {
+    let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
+    let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
+    if let JsonVal::Obj(ref mut root) = json_val {
+        if let Some(JsonVal::Arr(ops)) = root.get_mut("operations") {
+            if let Some(JsonVal::Obj(op0)) = ops.get_mut(0) {
+                op0.insert(
+                    "owner".to_string(),
+                    JsonVal::Str("fss-situation".to_string()),
+                );
+            }
+        }
+    }
+    let res = validate_frozen_registry_against_compiled(&json_val);
+    assert!(res.is_err());
+    assert!(res.unwrap_err().contains("owner mismatch"));
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_extra_operation_fails() -> TestResult {
+    let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
+    let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
+    if let JsonVal::Obj(ref mut root) = json_val {
+        if let Some(JsonVal::Arr(ops)) = root.get_mut("operations") {
+            let mut extra = std::collections::BTreeMap::new();
+            extra.insert("id".to_string(), JsonVal::Str("AOP-015".to_string()));
+            extra.insert("name".to_string(), JsonVal::Str("extra.op".to_string()));
+            extra.insert("owner".to_string(), JsonVal::Str("fss-extra".to_string()));
+            extra.insert(
+                "cliCommand".to_string(),
+                JsonVal::Str("fss extra".to_string()),
+            );
+            extra.insert("mcpToolName".to_string(), JsonVal::Str("extra".to_string()));
+            extra.insert("status".to_string(), JsonVal::Str("specified".to_string()));
+            ops.push(JsonVal::Obj(extra));
+        }
+    }
+    let res = validate_frozen_registry_against_compiled(&json_val);
+    assert!(res.is_err());
+    assert!(res.unwrap_err().contains("operation count mismatch"));
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_non_aop_pattern_operation_fails() -> TestResult {
+    let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
+    let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
+    if let JsonVal::Obj(ref mut root) = json_val {
+        if let Some(JsonVal::Arr(ops)) = root.get_mut("operations") {
+            if let Some(JsonVal::Obj(op0)) = ops.get_mut(0) {
+                op0.insert("id".to_string(), JsonVal::Str("OP-001".to_string()));
+            }
+        }
+    }
+    let res = validate_frozen_registry_against_compiled(&json_val);
+    assert!(res.is_err());
+    assert!(res.unwrap_err().contains("invalid operation id pattern"));
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_freeze_digest_mismatch_fails() -> TestResult {
+    let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
+    let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
+    if let JsonVal::Obj(ref mut root) = json_val {
+        root.insert(
+            "freezeDigest".to_string(),
+            JsonVal::Str(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+                    .to_string(),
+            ),
         );
     }
+    let res = validate_frozen_registry_against_compiled(&json_val);
+    assert!(res.is_err());
+    assert!(res.unwrap_err().contains("freeze digest mismatch"));
+    Ok(())
+}
 
-    // Verify all 15 resources are present in the frozen registry
-    let expected_resource_ids = [
-        "ARES-001", "ARES-002", "ARES-003", "ARES-004", "ARES-005", "ARES-006", "ARES-007",
-        "ARES-008", "ARES-009", "ARES-010", "ARES-011", "ARES-012", "ARES-013", "ARES-014",
-        "ARES-015",
-    ];
-    for res_id in expected_resource_ids {
-        assert!(
-            frozen_str.contains(res_id),
-            "Frozen registry missing expected resource_id: {}",
-            res_id
-        );
+#[test]
+fn test_planted_negative_swapped_resource_uri_fails() -> TestResult {
+    let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
+    let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
+    if let JsonVal::Obj(ref mut root) = json_val {
+        if let Some(JsonVal::Arr(res)) = root.get_mut("resources") {
+            if let Some(JsonVal::Obj(res0)) = res.get_mut(0) {
+                res0.insert(
+                    "uriTemplate".to_string(),
+                    JsonVal::Str("fss://corrupted".to_string()),
+                );
+            }
+        }
     }
+    let res = validate_frozen_registry_against_compiled(&json_val);
+    assert!(res.is_err());
+    assert!(res.unwrap_err().contains("uriTemplate mismatch"));
+    Ok(())
+}
 
+#[test]
+fn test_planted_negative_extra_resource_fails() -> TestResult {
+    let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
+    let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
+    if let JsonVal::Obj(ref mut root) = json_val {
+        if let Some(JsonVal::Arr(res)) = root.get_mut("resources") {
+            let mut extra = std::collections::BTreeMap::new();
+            extra.insert("id".to_string(), JsonVal::Str("ARES-016".to_string()));
+            extra.insert("name".to_string(), JsonVal::Str("extra.res".to_string()));
+            extra.insert(
+                "uriTemplate".to_string(),
+                JsonVal::Str("fss://extra".to_string()),
+            );
+            extra.insert("owner".to_string(), JsonVal::Str("fss-extra".to_string()));
+            extra.insert(
+                "payloadSchema".to_string(),
+                JsonVal::Str("fss.extra.v1".to_string()),
+            );
+            extra.insert(
+                "compatibilityClass".to_string(),
+                JsonVal::Str("backward_compatible".to_string()),
+            );
+            extra.insert("status".to_string(), JsonVal::Str("specified".to_string()));
+            res.push(JsonVal::Obj(extra));
+        }
+    }
+    let res = validate_frozen_registry_against_compiled(&json_val);
+    assert!(res.is_err());
+    assert!(res.unwrap_err().contains("resource count mismatch"));
     Ok(())
 }

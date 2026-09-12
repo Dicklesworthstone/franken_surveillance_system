@@ -3,7 +3,7 @@
   "asOf": "2026-09-12",
   "semanticProtocol": "fss/1",
   "registryGeneration": "gen:fss1:public-v1",
-  "freezeDigest": "sha256:5b83279c75873c5894007fa7e20827365912d38a3657f3daefc7d8abe0f6ab29",
+  "freezeDigest": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
   "operations": [
     {
       "id": "AOP-001",

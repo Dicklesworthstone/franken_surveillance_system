@@ -328,6 +328,188 @@ pub fn lookup_by_library_entry_point(entry: &str) -> Option<&'static OperationCr
         .find(|e| e.library_entry_point == entry)
 }
 
+/// Crosswalk mapping entry for a registered public resource.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ResourceCrosswalkEntry {
+    /// Stable resource identifier (e.g. `ARES-001`).
+    pub resource_id: &'static str,
+    /// Canonical semantic resource name (e.g. `deployment.anchor`).
+    pub resource_name: &'static str,
+    /// Canonical URI template (e.g. `fss://deployment/{deployment}/anchor/{anchor}`).
+    pub uri_template: &'static str,
+    /// Owning subsystem crate (e.g. `fss-anchor`).
+    pub owner: &'static str,
+    /// Associated payload schema (e.g. `fss.evidence_anchor.v1`).
+    pub payload_schema: &'static str,
+    /// Compatibility class (e.g. `backward_compatible`).
+    pub compatibility_class: &'static str,
+    /// Specification status (e.g. `specified`).
+    pub status: &'static str,
+}
+
+/// The complete canonical crosswalk for all 15 registered `fss/1` public resources.
+pub static REGISTERED_RESOURCE_CROSSWALK: &[ResourceCrosswalkEntry] = &[
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-001",
+        resource_name: "deployment.anchor",
+        uri_template: "fss://deployment/{deployment}/anchor/{anchor}",
+        owner: "fss-anchor",
+        payload_schema: "fss.evidence_anchor.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-002",
+        resource_name: "deployment.situation",
+        uri_template: "fss://deployment/{deployment}/situation/{capsule}",
+        owner: "fss-situation",
+        payload_schema: "fss.situation_capsule.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-003",
+        resource_name: "deployment.sensor",
+        uri_template: "fss://deployment/{deployment}/sensor/{sensor}",
+        owner: "fss-sensor",
+        payload_schema: "fss.sensor_capsule.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-004",
+        resource_name: "deployment.zone",
+        uri_template: "fss://deployment/{deployment}/zone/{zone}",
+        owner: "fss-zone",
+        payload_schema: "fss.agent_situation_frame.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-005",
+        resource_name: "deployment.event_revision",
+        uri_template: "fss://deployment/{deployment}/event/{event}/revision/{revision}",
+        owner: "fss-event",
+        payload_schema: "fss.event_hypothesis.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-006",
+        resource_name: "deployment.case_revision",
+        uri_template: "fss://deployment/{deployment}/case/{case}/revision/{revision}",
+        owner: "fss-investigation",
+        payload_schema: "fss.investigation_state.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-007",
+        resource_name: "deployment.hypothesis",
+        uri_template: "fss://deployment/{deployment}/hypothesis/{hypothesis}",
+        owner: "fss-investigation",
+        payload_schema: "fss.agent_hypothesis_workspace.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-008",
+        resource_name: "deployment.evidence",
+        uri_template: "fss://deployment/{deployment}/evidence/{digest}",
+        owner: "fss-evidence",
+        payload_schema: "fss.evidence_bundle.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-009",
+        resource_name: "deployment.plan",
+        uri_template: "fss://deployment/{deployment}/plan/{plan}",
+        owner: "fss-agent-plan",
+        payload_schema: "fss.agent_control_plan.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-010",
+        resource_name: "deployment.obligation",
+        uri_template: "fss://deployment/{deployment}/obligation/{obligation}",
+        owner: "fss-obligation",
+        payload_schema: "fss.prepared_effect.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-011",
+        resource_name: "mission.revision",
+        uri_template: "fss://mission/{mission}/revision/{revision}",
+        owner: "fss-mission",
+        payload_schema: "fss.agent_mission.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-012",
+        resource_name: "session.workspace",
+        uri_template: "fss://session/{session}/workspace/{workspace}",
+        owner: "fss-agent-session",
+        payload_schema: "fss.agent_session_capsule.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-013",
+        resource_name: "session.handoff",
+        uri_template: "fss://session/{session}/handoff/{root}",
+        owner: "fss-handoff",
+        payload_schema: "fss.agent_handoff_capsule.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-014",
+        resource_name: "experience",
+        uri_template: "fss://experience/{capsule}",
+        owner: "fss-learning",
+        payload_schema: "fss.experience_capsule.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+    ResourceCrosswalkEntry {
+        resource_id: "ARES-015",
+        resource_name: "doctor",
+        uri_template: "fss://doctor/{bundle}",
+        owner: "fss-doctor",
+        payload_schema: "fss.doctor.v1",
+        compatibility_class: "backward_compatible",
+        status: "specified",
+    },
+];
+
+/// Looks up a resource crosswalk entry by its stable resource ID.
+#[must_use]
+pub fn lookup_resource_by_id(id: &str) -> Option<&'static ResourceCrosswalkEntry> {
+    REGISTERED_RESOURCE_CROSSWALK
+        .iter()
+        .find(|e| e.resource_id == id)
+}
+
+/// Looks up a resource crosswalk entry by its canonical resource name.
+#[must_use]
+pub fn lookup_resource_by_name(name: &str) -> Option<&'static ResourceCrosswalkEntry> {
+    REGISTERED_RESOURCE_CROSSWALK
+        .iter()
+        .find(|e| e.resource_name == name)
+}
+
+/// Looks up a resource crosswalk entry by its URI template.
+#[must_use]
+pub fn lookup_resource_by_uri_template(uri: &str) -> Option<&'static ResourceCrosswalkEntry> {
+    REGISTERED_RESOURCE_CROSSWALK
+        .iter()
+        .find(|e| e.uri_template == uri)
+}
+
 /// Errors produced during crosswalk integrity validation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CrosswalkValidationError {
