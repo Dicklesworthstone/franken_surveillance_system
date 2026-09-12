@@ -65,6 +65,9 @@ pub enum ObjectError {
     TombstoneConflict(ContentDigest),
     /// A tombstone record lacks mandatory deletion authority or coverage witness proof.
     MissingDeletionAuthority(ContentDigest),
+    /// Object custody could not be checked because storage failed or is in an indeterminate
+    /// state; no verdict about the object is implied.
+    Unavailable(ContentDigest),
 }
 
 impl fmt::Display for ObjectError {
@@ -117,6 +120,9 @@ impl fmt::Display for ObjectError {
                     formatter,
                     "tombstone lacks deletion authority witness: {digest}"
                 )
+            }
+            Self::Unavailable(digest) => {
+                write!(formatter, "object custody is unavailable: {digest}")
             }
         }
     }
