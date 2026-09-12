@@ -203,6 +203,12 @@ impl KnowledgeCell {
         self.knowledge_state == KnowledgeState::Stale
     }
 
+    /// Returns whether this knowledge cell is a not_observable proposition.
+    #[must_use]
+    pub fn is_not_observable(&self) -> bool {
+        self.knowledge_state == KnowledgeState::NotObservable
+    }
+
     /// Returns whether this cell requires explicit assumptions to be used in planning.
     #[must_use]
     pub fn requires_explicit_assumptions(&self) -> bool {

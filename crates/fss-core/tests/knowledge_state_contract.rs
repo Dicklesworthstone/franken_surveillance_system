@@ -595,3 +595,111 @@ fn test_stale_knowledge_cell_revalidation_and_hard_gate() -> Result<(), Box<dyn 
 
     Ok(())
 }
+
+#[test]
+fn test_not_observable_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::NotObservable;
+
+    // 1. Exact normative stable ID
+    assert_eq!(state.id(), "KSTATE-006");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(state.as_str(), "not_observable");
+    assert_eq!(format!("{state}"), "not_observable");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        state.meaning(),
+        "The declared sensor/authorization/model domain could not have established the proposition for the requested interval."
+    );
+
+    // 4. May support planning: yes, as a protected residual possibility
+    assert!(state.may_support_planning());
+    assert_eq!(
+        state.planning_support_description(),
+        "yes, as a protected residual possibility"
+    );
+
+    // 5. May authorize irreversible effect: no (hard constitutional gate)
+    assert!(!state.may_authorize_irreversible_effect());
+    assert_eq!(state.irreversible_effect_description(), "no");
+
+    // 6. Explicit assumptions required: yes
+    assert!(state.explicit_assumptions_required());
+
+    Ok(())
+}
+
+#[test]
+fn test_not_observable_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = KnowledgeState::from_id("KSTATE-006")?;
+    assert_eq!(from_id, KnowledgeState::NotObservable);
+
+    // Parse from schema name
+    let from_name = KnowledgeState::from_name("not_observable")?;
+    assert_eq!(from_name, KnowledgeState::NotObservable);
+
+    // Parse via FromStr
+    let from_str_name = KnowledgeState::from_str("not_observable")?;
+    assert_eq!(from_str_name, KnowledgeState::NotObservable);
+
+    let from_str_id = KnowledgeState::from_str("KSTATE-006")?;
+    assert_eq!(from_str_id, KnowledgeState::NotObservable);
+
+    Ok(())
+}
+
+#[test]
+fn test_not_observable_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::NotObservable;
+
+    let mut encoder = CanonicalEncoder::new();
+    state.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = KnowledgeState::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, state);
+    assert_eq!(decoded.id(), "KSTATE-006");
+    assert_eq!(decoded.as_str(), "not_observable");
+
+    Ok(())
+}
+
+#[test]
+fn test_not_observable_knowledge_cell_protected_possibility_and_hard_gate()
+-> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+
+    // Construct a cell with KnowledgeState::NotObservable (e.g. sensor occluded or unpowered during interval)
+    let cell = KnowledgeCell {
+        claim_id: "claim:corridor:motion:001".to_string(),
+        statement: "Corridor unobserved due to sensor occlusion during requested interval"
+            .to_string(),
+        knowledge_state: KnowledgeState::NotObservable,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+    };
+
+    // Properties on KnowledgeCell
+    assert!(cell.is_not_observable());
+    assert!(!cell.is_stale());
+    assert!(!cell.is_conflicted());
+    assert!(!cell.is_unknown());
+    assert!(!cell.is_estimated());
+    assert!(cell.requires_explicit_assumptions());
+    assert!(cell.may_support_planning());
+
+    // Constitutional Hard Gate: NotObservable CANNOT be used as an irreversible-effect premise.
+    assert!(
+        !cell.is_irreversible_effect_premise(now),
+        "NotObservable knowledge state must NEVER authorize irreversible effects"
+    );
+
+    Ok(())
+}
