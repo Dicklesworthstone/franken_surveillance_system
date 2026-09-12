@@ -345,6 +345,7 @@ pub struct LedgerSnapshot {
 pub struct ReferenceLedger {
     snapshots: Vec<LedgerSnapshot>,
     batches: Vec<EvidenceDeltaBatch>,
+    committed_batches: BTreeMap<BatchId, ContentDigest>,
 }
 
 impl ReferenceLedger {
@@ -358,6 +359,7 @@ impl ReferenceLedger {
                 objects: BTreeMap::new(),
             }],
             batches: Vec::new(),
+            committed_batches: BTreeMap::new(),
         }
     }
 
@@ -414,6 +416,12 @@ impl ReferenceLedger {
 
     /// Atomically verifies and publishes a prepared batch.
     pub fn append(&mut self, batch: EvidenceDeltaBatch) -> Result<&LedgerSnapshot, ContractError> {
+        let offered_digest = batch.computed_digest();
+        if let Some(committed_digest) = self.committed_batches.get(&batch.batch_id)
+            && offered_digest != *committed_digest
+        {
+            return Err(ContractError::IdempotencyConflict);
+        }
         if batch.basis_anchor != self.current().anchor {
             return Err(ContractError::StaleAnchor);
         }
@@ -435,7 +443,7 @@ impl ReferenceLedger {
         if !batch.is_canonically_ordered() {
             return Err(ContractError::NonCanonicalOrdering);
         }
-        if batch.computed_digest() != batch.batch_digest {
+        if offered_digest != batch.batch_digest {
             return Err(ContractError::DigestMismatch);
         }
         let next_objects = apply_deltas(&self.current().objects, &batch.deltas)?;
@@ -446,6 +454,8 @@ impl ReferenceLedger {
             anchor: batch.new_anchor.clone(),
             objects: next_objects,
         });
+        self.committed_batches
+            .insert(batch.batch_id.clone(), batch.batch_digest);
         self.batches.push(batch);
         Ok(self.current())
     }
@@ -771,5 +781,52 @@ mod tests {
             witness.require_certified_absence(),
             Err(ContractError::CoverageUncertified)
         );
+    }
+
+    #[test]
+    fn batch_id_reuse_with_different_content_is_rejected() -> Result<(), ContractError> {
+        let mut ledger = ReferenceLedger::new("site:one");
+        let first = ledger.prepare_batch(
+            BatchId::parse("batch:one")?,
+            vec![delta("delta:a", "object:a", None, 1)?],
+            [],
+        )?;
+        let first_snapshot = ledger.append(first.clone())?.clone();
+        assert_eq!(first_snapshot.anchor.commit_sequence, 1);
+
+        // Prepare a new successor batch reusing the same BatchId with different content
+        let reuse = ledger.prepare_batch(
+            BatchId::parse("batch:one")?,
+            vec![delta("delta:b", "object:b", None, 1)?],
+            [],
+        )?;
+        assert_eq!(reuse.basis_anchor, ledger.current().anchor);
+        assert_ne!(reuse.batch_digest, first.batch_digest);
+
+        let result = ledger.append(reuse);
+        assert_eq!(result, Err(ContractError::IdempotencyConflict));
+        assert_eq!(ledger.current().anchor.commit_sequence, 1);
+        assert_eq!(ledger.batches().len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn identical_batch_resubmission_keeps_stale_anchor_classification() -> Result<(), ContractError>
+    {
+        let mut ledger = ReferenceLedger::new("site:one");
+        let first = ledger.prepare_batch(
+            BatchId::parse("batch:one")?,
+            vec![delta("delta:a", "object:a", None, 1)?],
+            [],
+        )?;
+        let first_snapshot = ledger.append(first.clone())?.clone();
+        assert_eq!(first_snapshot.anchor.commit_sequence, 1);
+
+        // Identical resubmission: same batch_id and same content
+        let resubmission_result = ledger.append(first);
+        assert_eq!(resubmission_result, Err(ContractError::StaleAnchor));
+        assert_eq!(ledger.current().anchor.commit_sequence, 1);
+        assert_eq!(ledger.batches().len(), 1);
+        Ok(())
     }
 }

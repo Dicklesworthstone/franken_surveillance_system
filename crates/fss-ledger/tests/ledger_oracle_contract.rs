@@ -1640,14 +1640,13 @@ fn durable_replay_of_same_batches_is_byte_identical_and_matches_oracle() -> Test
     Ok(())
 }
 
-/// Agreement record for former divergence D-FSS016-001 (durable half fixed by fss-ceszm).
+/// Agreement record for former divergence D-FSS016-001 (fixed across durable and core by fss-ceszm).
 ///
 /// A new successor that reuses a committed `BatchId` with different content is refused by the
-/// oracle with `ERR-LEDGER-ORACLE-BATCH-ID-CONFLICT-001` and by `DurableReferenceLedger` with
+/// oracle with `ERR-LEDGER-ORACLE-BATCH-ID-CONFLICT-001`, by `DurableReferenceLedger` with
 /// `ERR-LEDGER-DURABLE-BATCH-ID-CONFLICT-001`, naming the same identity, committed sequence, and
-/// digests. Neither history changes and the journal is byte-identical. The core
-/// `fss_core::ReferenceLedger` still accepts the reuse on its own; that half is tracked
-/// separately.
+/// digests, and by `ReferenceLedger` with `ContractError::IdempotencyConflict`. Neither history
+/// changes and the journal is byte-identical.
 #[test]
 fn batch_id_reuse_is_rejected_by_oracle_and_durable_journal() -> TestResult {
     let mut log = ScenarioLog::new(
@@ -1657,10 +1656,16 @@ fn batch_id_reuse_is_rejected_by_oracle_and_durable_journal() -> TestResult {
     let path = journal_path("batch_id_reuse_agreement")?;
     let mut durable = DurableReferenceLedger::open(&path, SITE, IncompleteTailPolicy::Reject)?;
     let mut oracle = oracle()?;
+    let mut core = ReferenceLedger::new(SITE);
     let first = oracle.prepare_batch(batch_id("1")?, vec![create("a", "a")?], [])?;
     oracle.append(first.clone())?;
     durable.append(first.clone())?;
+    core.append(first.clone())?;
     assert_same_state(&oracle, &durable)?;
+    assert_eq!(
+        oracle.view_at(oracle.head_sequence())?.snapshot(),
+        *core.current()
+    );
 
     let reuse = oracle.prepare_batch(first.batch_id.clone(), vec![create("b", "b")?], [])?;
     let error = expect_err(oracle.append(reuse.clone()))?;
@@ -1715,17 +1720,34 @@ fn batch_id_reuse_is_rejected_by_oracle_and_durable_journal() -> TestResult {
         }
     }
 
+    let core_error = core.append(reuse.clone());
+    assert_eq!(core_error, Err(ContractError::IdempotencyConflict));
+
     let sharing = durable
         .batches()
         .iter()
         .filter(|batch| batch.batch_id == reuse.batch_id)
         .count();
     assert_eq!(sharing, 1);
+    let core_sharing = core
+        .batches()
+        .iter()
+        .filter(|batch| batch.batch_id == reuse.batch_id)
+        .count();
+    assert_eq!(core_sharing, 1);
     assert_eq!(durable.journal_root(), journal_before);
     assert_eq!(fs::read(&path)?, bytes_before);
     assert_same_state(&oracle, &durable)?;
+    assert_eq!(
+        oracle.view_at(oracle.head_sequence())?.snapshot(),
+        *core.current()
+    );
+    let oracle_batches: Vec<&EvidenceDeltaBatch> = oracle.batches().collect();
+    let core_batches: Vec<&EvidenceDeltaBatch> = core.batches().iter().collect();
+    assert_eq!(oracle_batches, core_batches);
+
     log.record(format!(
-        "oracle {} and durable {} both reject batch id reuse with matching identity, sequence, and digests",
+        "oracle {}, durable {}, and core ReferenceLedger all reject batch id reuse with matching identity, sequence, and digests",
         error.code(),
         ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001
     ))?;
