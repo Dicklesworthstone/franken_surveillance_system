@@ -7,12 +7,23 @@
   "required": [
     "schema",
     "capsuleId",
+    "sourceId",
+    "deviceId",
+    "adapterId",
     "sensorId",
     "streamId",
+    "sourceIdentity",
+    "deviceIdentity",
+    "adapterIdentity",
+    "sequence",
     "captureInterval",
     "receiveTimeNs",
+    "clockBasis",
+    "custody",
+    "omission",
     "media",
     "integrity",
+    "privacy",
     "publication"
   ],
   "properties": {
@@ -21,15 +32,48 @@
     },
     "capsuleId": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "sourceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "deviceId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "adapterId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
     },
     "sensorId": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
     },
     "streamId": {
       "type": "string",
-      "pattern": "^[A-Za-z0-9_.:-]{1,128}$"
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "sourceIdentity": {
+      "$ref": "source_identity.v1.json"
+    },
+    "deviceIdentity": {
+      "$ref": "device_identity.v1.json"
+    },
+    "adapterIdentity": {
+      "$ref": "adapter_identity.v1.json"
     },
     "sequence": {
       "type": "integer",
@@ -48,6 +92,120 @@
         "host_monotonic",
         "estimated"
       ]
+    },
+    "custody": {
+      "$ref": "#/$defs/custody"
+    },
+    "omission": {
+      "$ref": "#/$defs/omission"
+    },
+    "media": {
+      "$ref": "#/$defs/media"
+    },
+    "integrity": {
+      "$ref": "#/$defs/integrity"
+    },
+    "privacy": {
+      "$ref": "#/$defs/privacy"
+    },
+    "publication": {
+      "$ref": "#/$defs/publication"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9_-]*:[0-9a-f]{32,}$"
+    },
+    "timeInterval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliestNs",
+        "latestNs",
+        "uncertaintyReason"
+      ],
+      "properties": {
+        "earliestNs": {
+          "type": "integer"
+        },
+        "latestNs": {
+          "type": "integer"
+        },
+        "uncertaintyReason": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    },
+    "custody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "isRetained",
+        "sourceBytes",
+        "storageHandle"
+      ],
+      "properties": {
+        "isRetained": {
+          "type": "boolean"
+        },
+        "sourceDigest": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sourceBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "storageHandle": {
+          "type": "string",
+          "maxLength": 256
+        }
+      }
+    },
+    "omission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "isOmitted",
+        "omittedBytes",
+        "omittedFrames"
+      ],
+      "properties": {
+        "isOmitted": {
+          "type": "boolean"
+        },
+        "reason": {
+          "enum": [
+            "none",
+            "privacy_redaction",
+            "resource_pressure",
+            "retention_policy",
+            "capability_filtered",
+            "transient_preview_only",
+            "upstream_missing"
+          ]
+        },
+        "policyRule": {
+          "type": "string",
+          "maxLength": 256
+        },
+        "omittedBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "omittedFrames": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
     },
     "media": {
       "type": "object",
@@ -163,6 +321,10 @@
     "privacy": {
       "type": "object",
       "additionalProperties": false,
+      "required": [
+        "redactionState",
+        "retentionClass"
+      ],
       "properties": {
         "maskGeneration": {
           "anyOf": [
@@ -214,33 +376,6 @@
             "null"
           ],
           "minimum": 0
-        }
-      }
-    }
-  },
-  "$defs": {
-    "digest": {
-      "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9_-]*:[0-9a-f]{32,}$"
-    },
-    "timeInterval": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "earliestNs",
-        "latestNs",
-        "uncertaintyReason"
-      ],
-      "properties": {
-        "earliestNs": {
-          "type": "integer"
-        },
-        "latestNs": {
-          "type": "integer"
-        },
-        "uncertaintyReason": {
-          "type": "string",
-          "maxLength": 256
         }
       }
     }

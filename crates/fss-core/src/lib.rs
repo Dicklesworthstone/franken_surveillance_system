@@ -23,6 +23,7 @@ pub mod identity;
 mod ids;
 mod outcome;
 mod projection;
+pub mod sensor_capsule;
 mod time;
 
 pub use agent::{
@@ -98,4 +99,13 @@ pub use projection::{
 pub use time::{
     CaptureInterval, CaptureIntervalWithBasis, IntervalContainment, IntervalUnion,
     TemporalPrecedence, TimeIntervalError, TimestampNs,
+};
+
+pub use sensor_capsule::{
+    CapsuleDecodeError, ContinuityState, DecodeState, ExplicitOmission, IntegrityWitness,
+    MediaDescriptor, OmissionReason, PrivacyDescriptor, PublicationDescriptor, PublicationState,
+    RedactionState, SensorCapsuleV1, SourceCustody, MAX_CAPSULE_ID_LEN, MAX_CODEC_LEN,
+    MAX_CONTAINER_LEN, MAX_FIRMWARE_FINGERPRINT_LEN, MAX_POLICY_RULE_LEN, MAX_RETENTION_CLASS_LEN,
+    MAX_STORAGE_HANDLE_LEN, MAX_STR_LEN, MAX_UNCERTAINTY_REASON_LEN, SENSOR_CAPSULE_MAGIC,
+    SENSOR_CAPSULE_METADATA_DOMAIN, SENSOR_CAPSULE_SCHEMA, SENSOR_CAPSULE_VERSION_1,
 };
