@@ -52,9 +52,10 @@ const fn premise_state_invalidated(prior: KnowledgeState, current: KnowledgeStat
 enum IndeterminateEffectSuccessor {
     /// A retained terminal outcome resolved the effect uncertainty.
     Resolved,
-    /// The consequential outcome is still unproved. `coverage_gap` additionally reports the cell
-    /// as lost coverage because its new state withholds or fails to establish the outcome.
-    Unresolved { coverage_gap: bool },
+    /// The consequential outcome is still unproved, so the cell is also lost coverage: no successor
+    /// short of a proved outcome establishes it, including an estimate or a not-applicable claim
+    /// that would otherwise park the effect out of every later delta (fss-hmfs5).
+    Unresolved,
 }
 
 /// Classifies the result cell of an effect that was `Indeterminate` in the basis, at the result
@@ -70,10 +71,7 @@ fn indeterminate_effect_successor(
     current: &KnowledgeCell,
     now: TimestampNs,
 ) -> IndeterminateEffectSuccessor {
-    let unresolved_gap = IndeterminateEffectSuccessor::Unresolved { coverage_gap: true };
-    let unresolved = IndeterminateEffectSuccessor::Unresolved {
-        coverage_gap: false,
-    };
+    let unresolved = IndeterminateEffectSuccessor::Unresolved;
     match current.knowledge_state {
         // KSTATE-001: resolved only by a proved terminal outcome; a `known` claim without evidence
         // roots, with contradicting roots, with an invalid state basis, or whose validity window has
@@ -82,26 +80,27 @@ fn indeterminate_effect_successor(
             if current.is_irreversible_effect_premise(now) {
                 IndeterminateEffectSuccessor::Resolved
             } else {
-                unresolved_gap
+                unresolved
             }
         }
-        // KSTATE-002: an estimate of the outcome is not proof; still unresolved, but the estimate
-        // is explicit uncertainty rather than a coverage gap.
+        // KSTATE-002: an estimate of the outcome is not proof, and an effect parked as an estimate
+        // would otherwise drop out of every later delta; unresolved and a gap.
         KnowledgeState::Estimated => unresolved,
         // KSTATE-003: the evidence does not establish the outcome; unresolved and a gap.
-        KnowledgeState::Unknown => unresolved_gap,
+        KnowledgeState::Unknown => unresolved,
         // KSTATE-004: incompatible evidence about the outcome; unresolved and a gap.
-        KnowledgeState::Conflicted => unresolved_gap,
+        KnowledgeState::Conflicted => unresolved,
         // KSTATE-005: only an older anchor spoke to the outcome; unresolved and a gap.
-        KnowledgeState::Stale => unresolved_gap,
+        KnowledgeState::Stale => unresolved,
         // KSTATE-006: the domain could not have established the outcome; unresolved and a gap.
-        KnowledgeState::NotObservable => unresolved_gap,
+        KnowledgeState::NotObservable => unresolved,
         // KSTATE-007: the outcome is withheld by the projection, not proved; unresolved and a gap.
-        KnowledgeState::Redacted => unresolved_gap,
+        KnowledgeState::Redacted => unresolved,
         // KSTATE-008: still indeterminate (not reached from the set difference, kept exhaustive).
-        KnowledgeState::Indeterminate => unresolved_gap,
+        KnowledgeState::Indeterminate => unresolved,
         // KSTATE-009: says the proposition has no meaning in scope, which neither proves nor
-        // negates an outcome that may already have happened; unresolved, but not a coverage gap.
+        // negates an outcome that may already have happened, and an effect parked as not
+        // applicable would otherwise drop out of every later delta; unresolved and a gap.
         KnowledgeState::NotApplicable => unresolved,
     }
 }
@@ -301,17 +300,15 @@ pub fn classify_reference_meaningful_delta(
                         "effect uncertainty resolved: {claim_id} became known with retained outcome evidence"
                     ));
                 }
-                IndeterminateEffectSuccessor::Unresolved { coverage_gap } => {
+                IndeterminateEffectSuccessor::Unresolved => {
                     let state = current.knowledge_state.as_str();
                     effect_uncertainty_changes.push(format!(
                         "effect uncertainty remains: indeterminate effect {claim_id} became {state} without a proved outcome"
                     ));
-                    if coverage_gap {
-                        classes.insert(MeaningfulDeltaClass::CoverageLoss);
-                        coverage_changes.push(format!(
-                            "unproved effect {claim_id} degraded from indeterminate to {state}"
-                        ));
-                    }
+                    classes.insert(MeaningfulDeltaClass::CoverageLoss);
+                    coverage_changes.push(format!(
+                        "unproved effect {claim_id} degraded from indeterminate to {state}"
+                    ));
                 }
             },
             None => {
@@ -325,6 +322,11 @@ pub fn classify_reference_meaningful_delta(
             }
         }
     }
+    // Effect claims whose transition into or out of `indeterminate` was reported above.
+    let mut reported_effects: BTreeSet<&str> = basis_indeterminate
+        .symmetric_difference(&result_indeterminate)
+        .copied()
+        .collect();
     // A changed effect cell that claims `known` without clearing the premise bar asserts an outcome
     // it has not proved, whatever the basis carried, so it stays effect uncertainty and lost
     // coverage rather than a quiet terminal state (fss-deir9). A basis-indeterminate cell was
@@ -333,6 +335,7 @@ pub fn classify_reference_meaningful_delta(
         if unproved_known_effect(cell, result_now)
             && !basis_indeterminate.contains(cell.claim_id.as_str())
         {
+            reported_effects.insert(cell.claim_id.as_str());
             let claim_id = &cell.claim_id;
             effect_uncertainty_changes.push(format!(
                 "effect uncertainty remains: effect {claim_id} is known without a proved terminal outcome"
@@ -340,6 +343,18 @@ pub fn classify_reference_meaningful_delta(
             classes.insert(MeaningfulDeltaClass::CoverageLoss);
             coverage_changes.push(format!(
                 "unproved effect {claim_id} is known without admissible terminal outcome evidence"
+            ));
+        }
+    }
+    // An effect whose outcome is still unproved stays reported as uncertain in every delta until a
+    // proved outcome terminalizes it, so parking it in any unproved state (not_applicable,
+    // estimated, unknown, ...) never lets a later delta certify silence (fss-hmfs5).
+    for cell in &result_frame.knowledge_cells {
+        if unproved_effect(cell, result_now) && !reported_effects.contains(cell.claim_id.as_str()) {
+            let claim_id = &cell.claim_id;
+            let state = cell.knowledge_state.as_str();
+            effect_uncertainty_changes.push(format!(
+                "effect uncertainty remains: effect {claim_id} is {state} without a proved outcome"
             ));
         }
     }
@@ -490,9 +505,10 @@ pub fn classify_reference_meaningful_delta(
             // is degraded. `Known` is established, `Estimated` carries explicit uncertainty and
             // its Known->Estimated drop is reported as an invalidated premise above, and
             // `NotApplicable` asserts the proposition has no meaning in scope rather than a gap. An
-            // effect cell that claims `known` without clearing the irreversible-effect premise bar
-            // has not established its outcome, so it is degraded too (fss-deir9).
-            unproved_known_effect(cell, result_now)
+            // effect cell that does not clear the irreversible-effect premise bar has not
+            // established its outcome in any state, `known`, `estimated` and `not_applicable`
+            // included, so it is degraded too (fss-hmfs5, fss-deir9).
+            unproved_effect(cell, result_now)
                 || matches!(
                     cell.knowledge_state,
                     KnowledgeState::NotObservable
@@ -669,9 +685,13 @@ fn is_effect_claim(cell: &KnowledgeCell) -> bool {
 /// irreversible-effect premise bar at `now` (valid state basis, retained evidence, no
 /// contradictions, open validity window): it asserts an outcome it has not proved.
 fn unproved_known_effect(cell: &KnowledgeCell, now: TimestampNs) -> bool {
-    is_effect_claim(cell)
-        && cell.knowledge_state == KnowledgeState::Known
-        && !cell.is_irreversible_effect_premise(now)
+    cell.knowledge_state == KnowledgeState::Known && unproved_effect(cell, now)
+}
+
+/// Returns whether `cell` is an effect claim that does not clear the full irreversible-effect
+/// premise bar at `now`: whatever its state, its outcome is not proved.
+fn unproved_effect(cell: &KnowledgeCell, now: TimestampNs) -> bool {
+    is_effect_claim(cell) && !cell.is_irreversible_effect_premise(now)
 }
 
 fn indeterminate_effect_claims(cells: &[KnowledgeCell]) -> BTreeSet<&str> {

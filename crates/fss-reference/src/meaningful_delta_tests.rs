@@ -644,14 +644,10 @@ fn assert_degraded_successor_unresolved(state: KnowledgeState) -> Result<(), Box
     assert_effect_unresolved(&delta, &became(state), Some(&degraded_to(state)))
 }
 
-fn assert_non_degraded_successor_unresolved(state: KnowledgeState) -> Result<(), Box<dyn Error>> {
-    let delta = indeterminate_effect_delta(Some(state), keep_effect_evidence)?;
-    assert_effect_unresolved(&delta, &became(state), None)
-}
-
 #[test]
 fn indeterminate_effect_becoming_estimated_stays_unresolved() -> Result<(), Box<dyn Error>> {
-    assert_non_degraded_successor_unresolved(KnowledgeState::Estimated)
+    // An effect parked as an estimate is lost coverage, not a quiet state (fss-hmfs5).
+    assert_degraded_successor_unresolved(KnowledgeState::Estimated)
 }
 
 #[test]
@@ -681,7 +677,8 @@ fn indeterminate_effect_becoming_redacted_stays_unresolved() -> Result<(), Box<d
 
 #[test]
 fn indeterminate_effect_becoming_not_applicable_stays_unresolved() -> Result<(), Box<dyn Error>> {
-    assert_non_degraded_successor_unresolved(KnowledgeState::NotApplicable)
+    // An effect parked as not applicable is lost coverage, not a quiet state (fss-hmfs5).
+    assert_degraded_successor_unresolved(KnowledgeState::NotApplicable)
 }
 
 #[test]
@@ -733,7 +730,16 @@ fn indeterminate_effect_that_stays_indeterminate_is_neither_resolved_nor_termina
             .classes
             .contains(&MeaningfulDeltaClass::TerminalTransition)
     );
-    assert!(delta.effect_uncertainty_changes.is_empty());
+    // The still-unproved effect stays reported as uncertain in every delta (fss-hmfs5).
+    assert_eq!(
+        delta.effect_uncertainty_changes,
+        vec![still_unproved(KnowledgeState::Indeterminate)]
+    );
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::EffectUncertainty)
+    );
     // The still-indeterminate cell stays a degraded epistemic cell (fss-mfea7).
     assert!(delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss));
     assert!(delta.coverage_changes.iter().any(|change| {
@@ -1185,6 +1191,148 @@ fn effect_with_proved_terminal_outcome_is_terminal_whatever_the_prior_state()
             delta.coverage_changes
         );
         delta.validate()?;
+    }
+    Ok(())
+}
+
+// fss-hmfs5 rework: an unproved effect is reported in every delta, so it cannot be parked.
+
+/// The report an effect whose outcome is still unproved carries in every delta.
+fn still_unproved(state: KnowledgeState) -> String {
+    format!(
+        "effect uncertainty remains: effect {EFFECT_CLAIM} is {} without a proved outcome",
+        state.as_str()
+    )
+}
+
+/// Asserts that a delta whose result still carries an unproved effect in `state` is never
+/// silence: the effect stays reported as uncertain and as a degraded epistemic cell.
+fn assert_unproved_effect_still_reported(
+    delta: &fss_core::MeaningfulDelta,
+    state: KnowledgeState,
+    context: &str,
+) -> Result<(), Box<dyn Error>> {
+    assert!(
+        delta.silence_certificate.is_none(),
+        "{context}: an unproved effect is never silence: {:?}",
+        delta.classes
+    );
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{context}: an unproved effect is not terminal: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::EffectUncertainty),
+        "{context}: the unproved effect must stay reported as uncertain: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .effect_uncertainty_changes
+            .contains(&still_unproved(state)),
+        "{context}: missing {:?} in {:?}",
+        still_unproved(state),
+        delta.effect_uncertainty_changes
+    );
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+        "{context}: an unproved effect is coverage loss: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta.coverage_changes.iter().any(|change| {
+            change.contains("epistemic cell degraded") && change.contains(EFFECT_CLAIM)
+        }),
+        "{context}: the unproved effect must be listed as a degraded epistemic cell: {:?}",
+        delta.coverage_changes
+    );
+    assert_eq!(delta.priority, DeltaPriority::Critical);
+    delta.validate()?;
+    Ok(())
+}
+
+/// Parks a basis-indeterminate effect in `parked` and then republishes it unchanged, returning
+/// the parking delta and the republication delta.
+fn parked_effect_deltas(
+    parked: KnowledgeState,
+) -> Result<(fss_core::MeaningfulDelta, fss_core::MeaningfulDelta), Box<dyn Error>> {
+    let mut first = Variant::baseline()?;
+    first.effect_state = Some(KnowledgeState::Indeterminate);
+    let mut second = first.clone();
+    second.sequence = 2;
+    second.effect_state = Some(parked);
+    let mut third = second.clone();
+    third.sequence = 3;
+    let first = publication(&first)?;
+    let second = publication(&second)?;
+    let third = publication(&third)?;
+    Ok((
+        classify_reference_meaningful_delta(&first, &second)?,
+        classify_reference_meaningful_delta(&second, &third)?,
+    ))
+}
+
+#[test]
+fn indeterminate_effect_parked_as_not_applicable_is_never_silent() -> Result<(), Box<dyn Error>> {
+    let (parking, republished) = parked_effect_deltas(KnowledgeState::NotApplicable)?;
+    assert_effect_unresolved(
+        &parking,
+        &became(KnowledgeState::NotApplicable),
+        Some(&degraded_to(KnowledgeState::NotApplicable)),
+    )?;
+    assert_unproved_effect_still_reported(
+        &republished,
+        KnowledgeState::NotApplicable,
+        "not_applicable effect republished",
+    )
+}
+
+#[test]
+fn indeterminate_effect_parked_as_estimated_is_never_silent() -> Result<(), Box<dyn Error>> {
+    let (parking, republished) = parked_effect_deltas(KnowledgeState::Estimated)?;
+    assert_effect_unresolved(
+        &parking,
+        &became(KnowledgeState::Estimated),
+        Some(&degraded_to(KnowledgeState::Estimated)),
+    )?;
+    assert_unproved_effect_still_reported(
+        &republished,
+        KnowledgeState::Estimated,
+        "estimated effect republished",
+    )
+}
+
+#[test]
+fn unproved_effect_stays_effect_uncertainty_in_every_delta() -> Result<(), Box<dyn Error>> {
+    for (state, evidence) in [
+        (KnowledgeState::Unknown, true),
+        (KnowledgeState::Conflicted, true),
+        (KnowledgeState::Stale, true),
+        (KnowledgeState::NotObservable, true),
+        (KnowledgeState::Redacted, true),
+        (KnowledgeState::Estimated, true),
+        (KnowledgeState::NotApplicable, true),
+        (KnowledgeState::Indeterminate, true),
+        (KnowledgeState::Known, false),
+    ] {
+        let mut basis_variant = Variant::baseline()?;
+        basis_variant.effect_state = Some(state);
+        basis_variant.effect_evidence = evidence;
+        let basis = publication(&basis_variant)?;
+        let mut result_variant = basis_variant.clone();
+        result_variant.sequence = 2;
+        let result = publication(&result_variant)?;
+        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+        assert_unproved_effect_still_reported(
+            &delta,
+            state,
+            &format!("unchanged {} effect", state.as_str()),
+        )?;
     }
     Ok(())
 }
