@@ -2,10 +2,12 @@
 //! Contract and negative-evidence verification tests for NEG-001 (DJI Flip SDK non-dependency constraint).
 
 use fss_core::acquisition::{
-    AcquisitionError, AcquisitionRequest, CONSTRAINT_NEG_001, CaptureDeviceTuple,
-    CaptureReadinessState, CaptureRouteKind, LiveCaptureRouteResult, Neg001ScenarioLog,
-    SCHEMA_NEG001_SCENARIO_LOG, UnavailableCaptureReason, UnsupportedCaptureReason,
-    evaluate_capture_route,
+    AcquisitionError, AcquisitionRequest, AcquisitionSession, CONSTRAINT_NEG_001,
+    CaptureAvailabilityConditions, CaptureDeviceTuple, CaptureReadinessState, CaptureRouteKind,
+    EstablishedCaptureRoute, LiveCaptureRouteResult, Neg001ScenarioLog, SCHEMA_NEG001_SCENARIO_LOG,
+    UnavailableCaptureReason, UnsupportedCaptureReason, evaluate_capture_route,
+    evaluate_capture_route_vendor_claim, evaluate_capture_route_with_conditions,
+    evaluate_capture_route_with_reference,
 };
 use fss_core::{
     AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind,
@@ -361,6 +363,22 @@ fn test_neg001_empty_tuple_fields_fail_closed() {
         Err(ContractError::InvalidIdentifier)
     ));
     assert!(matches!(
+        CaptureDeviceTuple::new("model", "v1", "", "app", "linux", "scope"),
+        Err(ContractError::InvalidIdentifier)
+    ));
+    assert!(matches!(
+        CaptureDeviceTuple::new("model", "v1", "  ", "app", "linux", "scope"),
+        Err(ContractError::InvalidIdentifier)
+    ));
+    assert!(matches!(
+        CaptureDeviceTuple::new("model", "v1", "rc", "", "linux", "scope"),
+        Err(ContractError::InvalidIdentifier)
+    ));
+    assert!(matches!(
+        CaptureDeviceTuple::new("model", "v1", "rc", "  ", "linux", "scope"),
+        Err(ContractError::InvalidIdentifier)
+    ));
+    assert!(matches!(
         CaptureDeviceTuple::new("model", "v1", "rc", "app", "", "scope"),
         Err(ContractError::InvalidIdentifier)
     ));
@@ -415,5 +433,303 @@ fn test_neg001_scenario_jsonl_log_contains_no_secrets() -> Result<(), Box<dyn st
     assert!(!lower.contains("bearer"));
     assert!(!lower.contains("secret"));
 
+    Ok(())
+}
+
+#[test]
+fn test_unestablished_hardware_or_platform_must_fail_closed()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tuple = CaptureDeviceTuple::new(
+        "Generic Camera",
+        "v1.0",
+        "unestablished-controller",
+        "app-v1",
+        "unsupported-os",
+        "owner-authorized-lab",
+    )?;
+    let res = evaluate_capture_route(&tuple, CaptureRouteKind::LiveStreaming, true, true);
+    assert_ne!(res.readiness_state(), CaptureReadinessState::QualifiedReady);
+    assert!(!res.is_ready());
+    assert!(matches!(
+        res,
+        LiveCaptureRouteResult::Unsupported(_) | LiveCaptureRouteResult::Unavailable(_)
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_dji_flip_by_manufacturer_model_prohibits_streaming()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source_id = SourceId::parse("src:camera:01")?;
+    let device_id = DeviceId::parse("device:quadcopter:01")?;
+    let adapter_id = AdapterId::parse("adapter:generic:01")?;
+    let stream_generation = StreamGeneration::parse("gen:stream:1080p60-nv12")?;
+
+    let source_identity = SourceIdentity {
+        source_id,
+        device_id: device_id.clone(),
+        adapter_id: adapter_id.clone(),
+        source_kind: SourceKind::PhysicalSensor,
+        media_kind: MediaKind::Video,
+        channel: "main".to_string(),
+        nominal_clock_basis: ClockBasis::HostMonotonic,
+        stream_generation,
+        failure_domain: "power:lab-bench-1".to_string(),
+        is_live: true,
+    };
+
+    let device_identity = DeviceIdentity {
+        device_id: device_id.clone(),
+        generation: DeviceGeneration::parse("gen:dev:2026-09-12:rev1")?,
+        manufacturer: "DJI".to_string(),
+        model: "Flip".to_string(),
+        hardware_revision: "HW-1.0".to_string(),
+        firmware_version: FirmwareGeneration::parse("gen:firmware:v1-0-100")?,
+        application_version: None,
+        model_generation: None,
+        device_class: DeviceClass::Camera,
+        capabilities: DeviceCapabilities::AUDIO_CAPTURE,
+        failure_domain: "power:lab-bench-1".to_string(),
+    };
+
+    let adapter_identity = AdapterIdentity {
+        adapter_id: adapter_id.clone(),
+        generation: AdapterGeneration::parse("gen:adapter:generic-v1")?,
+        adapter_kind: AdapterKind::FileArchive,
+        protocol_profile: "lab:generic:bridge".to_string(),
+        isolation_mode: IsolationMode::NativePureRust,
+        credential_method: CredentialMethod::None,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 50_000_000,
+        max_buffer_frames: 16,
+        request_timeout_ns: 5_000_000_000,
+    };
+
+    let request = AcquisitionRequest {
+        source_identity,
+        device_identity,
+        adapter_identity,
+        requested_capabilities: AdapterCapabilities::STREAMING,
+        requested_at_ns: TimestampNs(1_000_000_000),
+    };
+
+    assert!(request.is_dji_flip());
+    match request.verify() {
+        Err(AcquisitionError::UnsupportedLiveRoute { constraint_id, .. }) => {
+            assert_eq!(constraint_id, CONSTRAINT_NEG_001);
+        }
+        other => {
+            return Err(format!(
+                "expected UnsupportedLiveRoute for DJI Flip by manufacturer/model, got: {other:?}"
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_session_adapter_accepted_rejected_for_unestablished_live_route()
+-> Result<(), Box<dyn std::error::Error>> {
+    let source_id = SourceId::parse("src:dji:flip02")?;
+    let device_id = DeviceId::parse("device:dji:flip02")?;
+    let adapter_id = AdapterId::parse("adapter:dji:flip02")?;
+    let stream_generation = StreamGeneration::parse("gen:stream:1080p60-nv12")?;
+
+    let source_identity = SourceIdentity {
+        source_id,
+        device_id: device_id.clone(),
+        adapter_id: adapter_id.clone(),
+        source_kind: SourceKind::PhysicalSensor,
+        media_kind: MediaKind::Video,
+        channel: "main".to_string(),
+        nominal_clock_basis: ClockBasis::HostMonotonic,
+        stream_generation,
+        failure_domain: "power:lab-bench-1".to_string(),
+        is_live: true,
+    };
+
+    let device_identity = DeviceIdentity {
+        device_id: device_id.clone(),
+        generation: DeviceGeneration::parse("gen:dev:2026-09-12:rev1")?,
+        manufacturer: "DJI".to_string(),
+        model: "Flip".to_string(),
+        hardware_revision: "HW-1.0".to_string(),
+        firmware_version: FirmwareGeneration::parse("gen:firmware:v1-0-100")?,
+        application_version: None,
+        model_generation: None,
+        device_class: DeviceClass::Camera,
+        capabilities: DeviceCapabilities::AUDIO_CAPTURE,
+        failure_domain: "power:lab-bench-1".to_string(),
+    };
+
+    let adapter_identity = AdapterIdentity {
+        adapter_id: adapter_id.clone(),
+        generation: AdapterGeneration::parse("gen:adapter:dji-flip-lab-v1")?,
+        adapter_kind: AdapterKind::FileArchive,
+        protocol_profile: "lab:dji-flip:bridge".to_string(),
+        isolation_mode: IsolationMode::NativePureRust,
+        credential_method: CredentialMethod::None,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 50_000_000,
+        max_buffer_frames: 16,
+        request_timeout_ns: 5_000_000_000,
+    };
+
+    let request = AcquisitionRequest {
+        source_identity,
+        device_identity,
+        adapter_identity,
+        requested_capabilities: AdapterCapabilities::STREAMING,
+        requested_at_ns: TimestampNs(1_000_000_000),
+    };
+
+    assert!(matches!(
+        AcquisitionSession::new(request),
+        Err(AcquisitionError::UnsupportedLiveRoute { constraint_id, .. }) if constraint_id == CONSTRAINT_NEG_001
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn test_established_route_adapter_accepted_and_streaming_invariants()
+-> Result<(), Box<dyn std::error::Error>> {
+    let tuple = make_dji_flip_tuple()?;
+
+    let est_streaming = LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
+        tuple: tuple.clone(),
+        route_kind: CaptureRouteKind::LiveStreaming,
+        promotion_gate: "GATE-020",
+        authority_lease_id: "lease:test:streaming".to_string(),
+        adapter_accepted: true,
+    });
+    assert!(est_streaming.is_ready());
+    assert!(est_streaming.is_streaming());
+    assert!(est_streaming.is_adapter_accepted());
+
+    let est_import = LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
+        tuple,
+        route_kind: CaptureRouteKind::RecordedFileImport,
+        promotion_gate: "GATE-100",
+        authority_lease_id: "lease:test:import".to_string(),
+        adapter_accepted: false,
+    });
+    assert!(est_import.is_ready());
+    assert!(!est_import.is_streaming());
+    assert!(!est_import.is_adapter_accepted());
+
+    Ok(())
+}
+
+#[test]
+fn test_tuple_drift_detected_between_reference_and_actual() -> Result<(), Box<dyn std::error::Error>>
+{
+    let reference = make_dji_flip_tuple()?;
+    let mut actual = reference.clone();
+    actual.firmware_version = "v01.00.0200".to_string();
+    let result = evaluate_capture_route_with_reference(
+        &actual,
+        &reference,
+        CaptureRouteKind::RecordedFileImport,
+        true,
+        true,
+    );
+    match result {
+        LiveCaptureRouteResult::Unsupported(u) => {
+            assert_eq!(u.constraint_id, Some(CONSTRAINT_NEG_001));
+            assert!(matches!(
+                u.reason,
+                UnsupportedCaptureReason::TupleDrift { .. }
+            ));
+            assert!(u.remediation.contains("tuple drift detected"));
+        }
+        other => return Err(format!("expected TupleDrift, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_misleading_vendor_claim_rejected() -> Result<(), Box<dyn std::error::Error>> {
+    let tuple = make_dji_flip_tuple()?;
+    let result = evaluate_capture_route_vendor_claim(
+        &tuple,
+        "Official DJI Mobile SDK streaming support available",
+        CaptureRouteKind::LiveStreaming,
+    );
+    match result {
+        LiveCaptureRouteResult::Unsupported(u) => {
+            assert_eq!(u.constraint_id, Some(CONSTRAINT_NEG_001));
+            assert!(matches!(
+                u.reason,
+                UnsupportedCaptureReason::MisleadingVendorClaim { .. }
+            ));
+        }
+        other => return Err(format!("expected MisleadingVendorClaim, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_cancelled_capture_route_returns_unavailable() -> Result<(), Box<dyn std::error::Error>> {
+    let tuple = make_dji_flip_tuple()?;
+    let conditions = CaptureAvailabilityConditions {
+        cancelled: true,
+        ..Default::default()
+    };
+    let result = evaluate_capture_route_with_conditions(
+        &tuple,
+        CaptureRouteKind::RecordedFileImport,
+        conditions,
+    );
+    match result {
+        LiveCaptureRouteResult::Unavailable(u) => {
+            assert!(matches!(
+                u.reason,
+                UnavailableCaptureReason::Cancelled { .. }
+            ));
+        }
+        other => return Err(format!("expected Cancelled, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_hardware_disconnected_returns_unavailable() -> Result<(), Box<dyn std::error::Error>> {
+    let tuple = make_dji_flip_tuple()?;
+    let conditions = CaptureAvailabilityConditions {
+        hardware_connected: false,
+        ..Default::default()
+    };
+    let result = evaluate_capture_route_with_conditions(
+        &tuple,
+        CaptureRouteKind::RecordedFileImport,
+        conditions,
+    );
+    match result {
+        LiveCaptureRouteResult::Unavailable(u) => {
+            assert!(matches!(
+                u.reason,
+                UnavailableCaptureReason::HardwareDisconnected { .. }
+            ));
+        }
+        other => return Err(format!("expected HardwareDisconnected, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unauthorized_account_scope_fails_closed_even_if_privacy_flag_true()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut tuple = make_dji_flip_tuple()?;
+    tuple.account_scope = "third-party-vendor-cloud".to_string();
+    let res = evaluate_capture_route(&tuple, CaptureRouteKind::RecordedFileImport, true, true);
+    assert_ne!(res.readiness_state(), CaptureReadinessState::QualifiedReady);
+    assert!(matches!(
+        res,
+        LiveCaptureRouteResult::Unavailable(u)
+            if matches!(u.reason, UnavailableCaptureReason::PrivacyScopeExceeded { .. })
+    ));
     Ok(())
 }

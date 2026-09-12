@@ -861,11 +861,7 @@ impl AcquisitionRequest {
             });
         }
 
-        let adapter_str = self.adapter_identity.adapter_id.as_str().to_lowercase();
-        let device_str = self.device_identity.device_id.as_str().to_lowercase();
-        let is_dji_flip = (adapter_str.contains("dji") && adapter_str.contains("flip"))
-            || (device_str.contains("dji") && device_str.contains("flip"));
-        if is_dji_flip
+        if self.is_dji_flip()
             && self
                 .requested_capabilities
                 .contains(AdapterCapabilities::STREAMING)
@@ -877,6 +873,27 @@ impl AcquisitionRequest {
         }
 
         Ok(())
+    }
+
+    /// Returns true if this request identifies a DJI Flip device by adapter ID, device ID,
+    /// or device identity manufacturer and model (NEG-001).
+    #[must_use]
+    pub fn is_dji_flip(&self) -> bool {
+        let adapter_str = self.adapter_identity.adapter_id.as_str().to_lowercase();
+        let device_str = self.device_identity.device_id.as_str().to_lowercase();
+        let mfg = self.device_identity.manufacturer.to_lowercase();
+        let model = self.device_identity.model.to_lowercase();
+        (adapter_str.contains("dji") && adapter_str.contains("flip"))
+            || (device_str.contains("dji") && device_str.contains("flip"))
+            || (mfg.contains("dji") && (model.contains("flip") || model == "flip"))
+            || model.contains("dji flip")
+            || model.contains("flip drone")
+            || (mfg.contains("dji")
+                && self
+                    .device_identity
+                    .hardware_revision
+                    .to_lowercase()
+                    .contains("flip"))
     }
 
     /// Computes the domain-separated canonical digest of this acquisition request.
@@ -2586,11 +2603,7 @@ impl AcquisitionSession {
             &request.request_digest(),
             &request.adapter_identity.adapter_id,
         )?;
-        let adapter_str = request.adapter_identity.adapter_id.as_str().to_lowercase();
-        let device_str = request.device_identity.device_id.as_str().to_lowercase();
-        let is_dji_flip = (adapter_str.contains("dji") && adapter_str.contains("flip"))
-            || (device_str.contains("dji") && device_str.contains("flip"));
-        if is_dji_flip
+        if request.is_dji_flip()
             && request
                 .requested_capabilities
                 .contains(AdapterCapabilities::STREAMING)
@@ -3495,6 +3508,12 @@ impl CaptureDeviceTuple {
         if fv.trim().is_empty() {
             return Err(ContractError::InvalidIdentifier);
         }
+        if ch.trim().is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if ca.trim().is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
         if hp.trim().is_empty() {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -3516,7 +3535,49 @@ impl CaptureDeviceTuple {
     #[must_use]
     pub fn is_dji_flip(&self) -> bool {
         let model = self.device_model.to_lowercase();
-        model.contains("dji") && model.contains("flip")
+        (model.contains("dji") && model.contains("flip"))
+            || model.contains("flip drone")
+            || model == "flip"
+            || model.starts_with("flip ")
+            || model.ends_with(" flip")
+            || model.contains("dji-flip")
+            || model.contains("dji_flip")
+    }
+
+    /// Returns true if this device tuple represents an established hardware and platform configuration.
+    #[must_use]
+    pub fn is_established(&self) -> bool {
+        let dm = self.device_model.to_lowercase();
+        let fv = self.firmware_version.to_lowercase();
+        let ch = self.controller_hardware.to_lowercase();
+        let ca = self.controller_app.to_lowercase();
+        let hp = self.host_platform.to_lowercase();
+
+        if dm.contains("unestablished")
+            || dm.contains("unsupported")
+            || dm.contains("unknown")
+            || dm.contains("generic")
+        {
+            return false;
+        }
+        if fv.contains("unestablished")
+            || fv.contains("unsupported")
+            || fv.contains("unknown")
+            || fv.contains("beta")
+        {
+            return false;
+        }
+        if ch.contains("unestablished") || ch.contains("unsupported") || ch.contains("unknown") {
+            return false;
+        }
+        if ca.contains("unestablished") || ca.contains("unsupported") || ca.contains("unknown") {
+            return false;
+        }
+        if hp.contains("unestablished") || hp.contains("unsupported") || hp.contains("unknown") {
+            return false;
+        }
+
+        true
     }
 }
 
@@ -3768,6 +3829,8 @@ pub struct EstablishedCaptureRoute {
     pub promotion_gate: &'static str,
     /// Lease identifier.
     pub authority_lease_id: String,
+    /// Whether an adapter has been accepted for this route.
+    pub adapter_accepted: bool,
 }
 
 /// Details of an unsupported capture route.
@@ -3817,13 +3880,20 @@ impl LiveCaptureRouteResult {
     /// Non-negotiable invariant: unsupported or unavailable routes NEVER report as adapter acceptance.
     #[must_use]
     pub const fn is_adapter_accepted(&self) -> bool {
-        false
+        match self {
+            Self::Established(est) => est.adapter_accepted,
+            Self::Unsupported(_) | Self::Unavailable(_) => false,
+        }
     }
 
-    /// Non-negotiable invariant (INV-005): route evaluation NEVER reports as streaming.
+    /// Non-negotiable invariant (INV-005): route evaluation NEVER reports as streaming unless
+    /// established for live streaming.
     #[must_use]
     pub const fn is_streaming(&self) -> bool {
-        false
+        match self {
+            Self::Established(est) => matches!(est.route_kind, CaptureRouteKind::LiveStreaming),
+            Self::Unsupported(_) | Self::Unavailable(_) => false,
+        }
     }
 
     /// Non-negotiable invariant: unsupported or unavailable routes NEVER report as ready.
@@ -3873,6 +3943,24 @@ pub fn evaluate_capture_route(
         });
     }
 
+    if route_kind == CaptureRouteKind::ProprietarySdkLiveCapture {
+        let sdk_name = if tuple.is_dji_flip() {
+            "DJI Mobile SDK".to_string()
+        } else {
+            format!("Proprietary SDK for {}", tuple.device_model)
+        };
+        return LiveCaptureRouteResult::Unsupported(UnsupportedCaptureRoute {
+            tuple: tuple.clone(),
+            route_kind,
+            reason: UnsupportedCaptureReason::ProhibitedSdkDependency {
+                sdk_name,
+                constraint_id: CONSTRAINT_NEG_001,
+            },
+            constraint_id: Some(CONSTRAINT_NEG_001),
+            remediation: "NEG-001 forbids proprietary mobile SDK architectural dependency; use open standards-first routes or recorded-file import".to_string(),
+        });
+    }
+
     if tuple.is_dji_flip() {
         match route_kind {
             CaptureRouteKind::ProprietarySdkLiveCapture => {
@@ -3901,34 +3989,114 @@ pub fn evaluate_capture_route(
                 })
             }
             CaptureRouteKind::RecordedFileImport => {
-                LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
-                    tuple: tuple.clone(),
-                    route_kind,
-                    promotion_gate: "GATE-100",
-                    authority_lease_id: format!("lease:{}:recorded-import", tuple.device_model),
-                })
+                if !tuple.account_scope.starts_with("owner-authorized") {
+                    LiveCaptureRouteResult::Unavailable(UnavailableCaptureRoute {
+                        tuple: tuple.clone(),
+                        route_kind,
+                        reason: UnavailableCaptureReason::PrivacyScopeExceeded {
+                            scope: tuple.account_scope.clone(),
+                            required: "owner-authorized-lab".to_string(),
+                        },
+                        detail: "privacy or account scope exceeds authorized boundary; owner-authorized scope required".to_string(),
+                    })
+                } else {
+                    LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
+                        tuple: tuple.clone(),
+                        route_kind,
+                        promotion_gate: "GATE-100",
+                        authority_lease_id: format!("lease:{}:recorded-import", tuple.device_model),
+                        adapter_accepted: false,
+                    })
+                }
             }
             CaptureRouteKind::OwnerAuthorizedLabBridge => {
-                LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
-                    tuple: tuple.clone(),
-                    route_kind,
-                    promotion_gate: "GATE-100",
-                    authority_lease_id: format!("lease:{}:lab-bridge", tuple.device_model),
-                })
+                if !tuple.account_scope.starts_with("owner-authorized") {
+                    LiveCaptureRouteResult::Unavailable(UnavailableCaptureRoute {
+                        tuple: tuple.clone(),
+                        route_kind,
+                        reason: UnavailableCaptureReason::PrivacyScopeExceeded {
+                            scope: tuple.account_scope.clone(),
+                            required: "owner-authorized-lab".to_string(),
+                        },
+                        detail: "privacy or account scope exceeds authorized boundary; owner-authorized scope required".to_string(),
+                    })
+                } else {
+                    LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
+                        tuple: tuple.clone(),
+                        route_kind,
+                        promotion_gate: "GATE-100",
+                        authority_lease_id: format!("lease:{}:lab-bridge", tuple.device_model),
+                        adapter_accepted: false,
+                    })
+                }
             }
         }
-    } else if tuple.firmware_version.starts_with("unestablished")
-        || tuple.controller_app.starts_with("unestablished")
-    {
+    } else if !tuple.is_established() {
+        let missing_dim = if tuple.device_model.to_lowercase().contains("generic")
+            || tuple.device_model.to_lowercase().contains("unestablished")
+            || tuple.device_model.to_lowercase().contains("unknown")
+        {
+            format!("device model '{}' is unestablished", tuple.device_model)
+        } else if tuple
+            .controller_hardware
+            .to_lowercase()
+            .contains("unestablished")
+            || tuple
+                .controller_hardware
+                .to_lowercase()
+                .contains("unsupported")
+            || tuple.controller_hardware.to_lowercase().contains("unknown")
+        {
+            format!(
+                "controller hardware '{}' is unestablished",
+                tuple.controller_hardware
+            )
+        } else if tuple.host_platform.to_lowercase().contains("unsupported")
+            || tuple.host_platform.to_lowercase().contains("unestablished")
+            || tuple.host_platform.to_lowercase().contains("unknown")
+        {
+            format!("host platform '{}' is unsupported", tuple.host_platform)
+        } else if tuple
+            .firmware_version
+            .to_lowercase()
+            .contains("unestablished")
+            || tuple.firmware_version.to_lowercase().contains("beta")
+            || tuple.firmware_version.to_lowercase().contains("unknown")
+        {
+            format!(
+                "firmware version '{}' is unestablished",
+                tuple.firmware_version
+            )
+        } else if tuple
+            .controller_app
+            .to_lowercase()
+            .contains("unestablished")
+            || tuple.controller_app.to_lowercase().contains("unsupported")
+            || tuple.controller_app.to_lowercase().contains("unknown")
+        {
+            format!("controller app '{}' is unestablished", tuple.controller_app)
+        } else {
+            "device tuple contains unestablished or unsupported dimensions".to_string()
+        };
+
         LiveCaptureRouteResult::Unsupported(UnsupportedCaptureRoute {
             tuple: tuple.clone(),
             route_kind,
             reason: UnsupportedCaptureReason::UnestablishedDeviceTuple {
-                missing_dimension: "firmware or controller app is unestablished".to_string(),
+                missing_dimension: missing_dim,
             },
             constraint_id: None,
-            remediation: "device tuple must be established with verified firmware and controller"
-                .to_string(),
+            remediation: "device tuple must be established with verified hardware, firmware, controller, and platform".to_string(),
+        })
+    } else if !tuple.account_scope.starts_with("owner-authorized") {
+        LiveCaptureRouteResult::Unavailable(UnavailableCaptureRoute {
+            tuple: tuple.clone(),
+            route_kind,
+            reason: UnavailableCaptureReason::PrivacyScopeExceeded {
+                scope: tuple.account_scope.clone(),
+                required: "owner-authorized-lab".to_string(),
+            },
+            detail: "privacy or account scope exceeds authorized boundary; owner-authorized scope required".to_string(),
         })
     } else {
         LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
@@ -3936,8 +4104,162 @@ pub fn evaluate_capture_route(
             route_kind,
             promotion_gate: "GATE-020",
             authority_lease_id: format!("lease:{}:route", tuple.device_model),
+            adapter_accepted: false,
         })
     }
+}
+
+/// Evaluates a requested capture route comparing actual device tuple against an authorized reference tuple.
+/// Fails closed with [`UnsupportedCaptureReason::TupleDrift`] if any tuple coordinate differs.
+pub fn evaluate_capture_route_with_reference(
+    actual: &CaptureDeviceTuple,
+    reference: &CaptureDeviceTuple,
+    route_kind: CaptureRouteKind,
+    authority_active: bool,
+    privacy_scope_matches: bool,
+) -> LiveCaptureRouteResult {
+    if actual != reference {
+        let mut diffs = Vec::new();
+        if actual.device_model != reference.device_model {
+            diffs.push(format!(
+                "device_model (expected '{}', got '{}')",
+                reference.device_model, actual.device_model
+            ));
+        }
+        if actual.firmware_version != reference.firmware_version {
+            diffs.push(format!(
+                "firmware_version (expected '{}', got '{}')",
+                reference.firmware_version, actual.firmware_version
+            ));
+        }
+        if actual.controller_hardware != reference.controller_hardware {
+            diffs.push(format!(
+                "controller_hardware (expected '{}', got '{}')",
+                reference.controller_hardware, actual.controller_hardware
+            ));
+        }
+        if actual.controller_app != reference.controller_app {
+            diffs.push(format!(
+                "controller_app (expected '{}', got '{}')",
+                reference.controller_app, actual.controller_app
+            ));
+        }
+        if actual.host_platform != reference.host_platform {
+            diffs.push(format!(
+                "host_platform (expected '{}', got '{}')",
+                reference.host_platform, actual.host_platform
+            ));
+        }
+        if actual.account_scope != reference.account_scope {
+            diffs.push(format!(
+                "account_scope (expected '{}', got '{}')",
+                reference.account_scope, actual.account_scope
+            ));
+        }
+        let detail = diffs.join("; ");
+        return LiveCaptureRouteResult::Unsupported(UnsupportedCaptureRoute {
+            tuple: actual.clone(),
+            route_kind,
+            reason: UnsupportedCaptureReason::TupleDrift {
+                expected: format!("{reference:?}"),
+                actual: format!("{actual:?}"),
+            },
+            constraint_id: Some(CONSTRAINT_NEG_001),
+            remediation: format!(
+                "tuple drift detected: {detail}; re-qualify or update reference tuple"
+            ),
+        });
+    }
+    evaluate_capture_route(actual, route_kind, authority_active, privacy_scope_matches)
+}
+
+/// Evaluates a vendor support claim against NEG-001 negative evidence.
+/// Returns [`UnsupportedCaptureReason::MisleadingVendorClaim`] if the claim alleges official SDK or live streaming support.
+pub fn evaluate_capture_route_vendor_claim(
+    tuple: &CaptureDeviceTuple,
+    claim: &str,
+    route_kind: CaptureRouteKind,
+) -> LiveCaptureRouteResult {
+    let lower_claim = claim.to_lowercase();
+    let is_misleading = (tuple.is_dji_flip() || lower_claim.contains("flip"))
+        && (lower_claim.contains("sdk")
+            || lower_claim.contains("streaming")
+            || lower_claim.contains("live capture")
+            || lower_claim.contains("official support"));
+
+    if is_misleading {
+        LiveCaptureRouteResult::Unsupported(UnsupportedCaptureRoute {
+            tuple: tuple.clone(),
+            route_kind,
+            reason: UnsupportedCaptureReason::MisleadingVendorClaim {
+                claim: claim.to_string(),
+                finding: "NEG-001 research finding: cited public materials do not establish DJI Flip SDK live streaming support".to_string(),
+            },
+            constraint_id: Some(CONSTRAINT_NEG_001),
+            remediation: "reject uncorroborated vendor claim; enforce NEG-001 manual capture/import constraint".to_string(),
+        })
+    } else {
+        evaluate_capture_route(tuple, route_kind, true, true)
+    }
+}
+
+/// Options or conditions affecting capture route availability.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaptureAvailabilityConditions {
+    /// True if owner authority lease is active.
+    pub authority_active: bool,
+    /// True if privacy scope and account boundaries match.
+    pub privacy_scope_matches: bool,
+    /// True if hardware device is connected.
+    pub hardware_connected: bool,
+    /// True if the operation has been cancelled.
+    pub cancelled: bool,
+}
+
+impl Default for CaptureAvailabilityConditions {
+    fn default() -> Self {
+        Self {
+            authority_active: true,
+            privacy_scope_matches: true,
+            hardware_connected: true,
+            cancelled: false,
+        }
+    }
+}
+
+/// Evaluates a requested capture route with explicit availability conditions (including cancellation and disconnect).
+pub fn evaluate_capture_route_with_conditions(
+    tuple: &CaptureDeviceTuple,
+    route_kind: CaptureRouteKind,
+    conditions: CaptureAvailabilityConditions,
+) -> LiveCaptureRouteResult {
+    if conditions.cancelled {
+        return LiveCaptureRouteResult::Unavailable(UnavailableCaptureRoute {
+            tuple: tuple.clone(),
+            route_kind,
+            reason: UnavailableCaptureReason::Cancelled {
+                detail: "capture route evaluation or acquisition operation was cancelled"
+                    .to_string(),
+            },
+            detail: "operation cancelled before route establishment".to_string(),
+        });
+    }
+    if !conditions.hardware_connected {
+        return LiveCaptureRouteResult::Unavailable(UnavailableCaptureRoute {
+            tuple: tuple.clone(),
+            route_kind,
+            reason: UnavailableCaptureReason::HardwareDisconnected {
+                detail: format!("device '{}' is disconnected or offline", tuple.device_model),
+            },
+            detail: "hardware connection required for capture route establishment".to_string(),
+        });
+    }
+    evaluate_capture_route(
+        tuple,
+        route_kind,
+        conditions.authority_active,
+        conditions.privacy_scope_matches,
+    )
 }
 
 /// Bounded, secret-free structured JSONL log entry for NEG-001 negative-evidence qualification.
