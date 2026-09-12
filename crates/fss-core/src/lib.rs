@@ -27,6 +27,7 @@ mod outcome;
 mod projection;
 pub mod region;
 pub mod sensor_capsule;
+pub mod test_event;
 mod time;
 
 pub use agent::{
@@ -131,3 +132,5 @@ pub use sensor_capsule::{
 
 pub use acquisition::*;
 pub use region::*;
+pub use test_event::*;
+

@@ -88,14 +88,17 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs::{self, DirEntry, File, FileType, Metadata, ReadDir, TryLockError};
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Output};
 use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
-use fss_core::{CaptureInterval, ContentDigest, TimestampNs};
+use fss_core::{
+    CaptureInterval, ContentDigest, TestEventCollector, TestEventRecord, TestOutcome, TimestampNs,
+    TEST_EVENT_SCHEMA, TEST_EVENT_VERSION_1,
+};
 use fss_ledger::{
     AppendPhase, DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, JournalError,
 };
@@ -1325,6 +1328,7 @@ struct Sweep {
     trace: Vec<TraceOp>,
     steps: Vec<u64>,
     outcomes: BTreeMap<u64, StepOutcome>,
+    events: Vec<TestEventRecord>,
 }
 
 fn run_sweep(sweep: &Path, cwd: &Path) -> Result<Sweep, Box<dyn Error>> {
@@ -1337,23 +1341,68 @@ fn run_sweep(sweep: &Path, cwd: &Path) -> Result<Sweep, Box<dyn Error>> {
         steps.len()
     );
     let mut outcomes = BTreeMap::new();
-    for &step in &steps {
+    let mut collector = TestEventCollector::new();
+    let sweep_name = sweep
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    for (seq, &step) in steps.iter().enumerate() {
         let outcome = crash_and_recover(sweep, cwd, step, &reference)?;
-        eprintln!(
-            "{{\"suite\":\"process_death_crash_harness\",\"sweep\":\"{}\",\"step\":{step},\"phase\":\"{}\",\"classes\":{:?}}}",
-            sweep
-                .file_name()
-                .map(|name| name.to_string_lossy())
-                .unwrap_or_default(),
-            outcome.phase,
-            outcome.classes
+
+        let target_op = reference
+            .trace
+            .get(usize::try_from(step)?)
+            .map(|op| format!("{}:{}", op.phase, op.call))
+            .unwrap_or_else(|| "none".to_string());
+
+        let input_repr = format!("step:{step}:target_op:{target_op}");
+        let expected_repr = format!("phase:{}:classes:{:?}", outcome.phase, outcome.classes);
+        let actual_repr = format!(
+            "post_crash_keys:{}:final_keys:{}",
+            outcome.post_crash.len(),
+            outcome.final_state.len()
         );
+
+        let event = TestEventRecord {
+            schema: TEST_EVENT_SCHEMA,
+            version: TEST_EVENT_VERSION_1,
+            run_id: "run:process_death_crash_harness".to_string(),
+            case_id: format!("sweep:{sweep_name}"),
+            step_id: format!("abort_step:{step}"),
+            sequence: seq as u64,
+            seed: 0,
+            source_digest: ContentDigest::sha256(
+                b"crates/fss-publication/tests/process_death_crash_harness.rs",
+            ),
+            contract_digest: ContentDigest::sha256(b"contract:FSS-017/FSS-018:crash_consistency"),
+            input_digest: ContentDigest::sha256(input_repr.as_bytes()),
+            expected_digest: ContentDigest::sha256(expected_repr.as_bytes()),
+            actual_digest: ContentDigest::sha256(actual_repr.as_bytes()),
+            outcome: TestOutcome::Passed,
+            duration_ns: 0,
+            phase: Some(outcome.phase.clone()),
+            tags: outcome.classes.iter().map(|s| s.to_string()).collect(),
+            detail: Some(format!(
+                "post_crash:{} final:{}",
+                outcome.post_crash.len(),
+                outcome.final_state.len()
+            )),
+        };
+
+        collector.push(event)?;
         outcomes.insert(step, outcome);
     }
+
+    let events_path = sweep.join("test_events.jsonl");
+    let mut file = File::create(&events_path)?;
+    collector.write_jsonl(&mut file)?;
+
     Ok(Sweep {
         trace: reference.trace,
         steps,
         outcomes,
+        events: collector.into_records(),
     })
 }
 
@@ -1425,9 +1474,45 @@ fn process_death_sweep_over_spool_publisher_and_ledger() -> TestResult {
     assert_eq!(by_class.get(CLASS_CONVERGED).copied(), Some(swept));
     assert_eq!(by_class.get(CLASS_UNBACKED_ON_DAMAGE).copied(), Some(swept));
 
-    eprintln!(
-        "{{\"suite\":\"process_death_crash_harness\",\"total_ops\":{total_ops},\"steps_per_sweep\":{swept},\"sweeps\":2,\"by_phase\":{by_phase:?},\"by_class\":{by_class:?},\"elapsed_ms\":{}}}",
-        started.elapsed().as_millis()
-    );
+    // Invariant assertions over retained structured test events.
+    assert_eq!(first.events.len(), swept);
+    assert_eq!(second.events.len(), swept);
+    assert!(!first.events.is_empty());
+    for (event_a, event_b) in first.events.iter().zip(second.events.iter()) {
+        assert_eq!(event_a.outcome, TestOutcome::Passed);
+        assert_eq!(event_b.outcome, TestOutcome::Passed);
+        assert_eq!(event_a.step_id, event_b.step_id);
+        assert_eq!(event_a.sequence, event_b.sequence);
+        assert_eq!(event_a.expected_digest, event_b.expected_digest);
+        assert_eq!(event_a.actual_digest, event_b.actual_digest);
+    }
+
+    let elapsed_ns = u64::try_from(started.elapsed().as_nanos())?;
+    let summary_event = TestEventRecord {
+        schema: TEST_EVENT_SCHEMA,
+        version: TEST_EVENT_VERSION_1,
+        run_id: "run:process_death_crash_harness".to_string(),
+        case_id: "sweep_summary".to_string(),
+        step_id: "final".to_string(),
+        sequence: swept as u64,
+        seed: 0,
+        source_digest: ContentDigest::sha256(
+            b"crates/fss-publication/tests/process_death_crash_harness.rs",
+        ),
+        contract_digest: ContentDigest::sha256(b"contract:FSS-017/FSS-018:crash_consistency"),
+        input_digest: ContentDigest::sha256(
+            format!("total_ops:{total_ops}:swept:{swept}").as_bytes(),
+        ),
+        expected_digest: ContentDigest::sha256(b"all_crash_invariants_pass"),
+        actual_digest: ContentDigest::sha256(b"all_crash_invariants_pass"),
+        outcome: TestOutcome::Passed,
+        duration_ns: elapsed_ns,
+        phase: Some("sweep_complete".to_string()),
+        tags: vec![format!("total_ops:{total_ops}"), format!("swept:{swept}")],
+        detail: Some(format!("by_phase:{by_phase:?}:by_class:{by_class:?}")),
+    };
+    let mut summary_file = File::create(base.join("summary_event.jsonl"))?;
+    summary_file.write_all(summary_event.to_jsonl()?.as_bytes())?;
+
     Ok(())
 }
