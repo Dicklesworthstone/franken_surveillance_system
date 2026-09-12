@@ -1635,30 +1635,30 @@ class TestAtomicReceiptWritingAndCorruptReceiptNaming(unittest.TestCase):
         )
 
     def test_release_qualify_writes_build_receipt_atomically(self) -> None:
-        """scripts/release_qualify.sh must write build.json atomically, not directly via write_text."""
+        """scripts/release_qualify.sh must route build.json and every digest-bound receipt output
+        through the shared atomic writer instead of an inline copy or a '>' redirection.
+        (build_release needs cargo, so the write behaviour itself is proven through the shared
+        `capture`/`write_json_atomic` entry points in TestSharedAtomicWriter.)"""
         script_text = (ROOT / "scripts/release_qualify.sh").read_text(encoding="utf-8")
-        self.assertNotIn(
-            "Path(sys.argv[1]).write_text(",
-            script_text,
-            "scripts/release_qualify.sh writes build.json in-place via write_text, allowing partial reads",
-        )
-        self.assertIn("tempfile.mkstemp", script_text)
-        self.assertIn("os.fsync", script_text)
-        self.assertIn("os.replace", script_text)
+        self.assertNotIn("Path(sys.argv[1]).write_text(", script_text)
+        self.assertNotIn("tempfile.mkstemp", script_text, "release_qualify.sh must not carry its own atomic writer copy")
+        self.assertIn("from qualification_receipt import write_json_atomic", script_text)
+        self.assertNotRegex(script_text, r'>\s*"\$RECEIPT_DIR/', "receipt outputs must not be written in place with '>'")
+        for name in ("cargo-metadata.json", "smoke-help.txt", "capabilities.json", "repository-manifest-audit.txt"):
+            self.assertIn(f'capture --output "$RECEIPT_DIR/{name}"', script_text.replace("--merge-stderr ", ""), name)
 
     def test_qualify_finalize_handles_truncated_commands_record(self) -> None:
-        """qualify.sh finalize trap must not crash with unhandled JSONDecodeError if commands.jsonl has a partial line."""
-        script_text = (ROOT / "scripts/qualify.sh").read_text(encoding="utf-8")
-        self.assertIn(
-            "json.JSONDecodeError",
-            script_text,
-            "qualify.sh must handle JSONDecodeError in finalize trap",
-        )
-        self.assertIn(
-            "handle.flush()",
-            script_text,
-            "qualify.sh append_record must flush and fsync",
-        )
+        """A partial (truncated) commands.jsonl line must not crash the real qualify.sh finalize
+        path: it is recorded as a failed command and the receipt is still written."""
+        self.assertIn("handle.flush()", (ROOT / "scripts/qualify.sh").read_text(encoding="utf-8"), "append_record must flush and fsync")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            valid = json.dumps(_record_row("policy")) + "\n"
+            result = run_qualify_finalize(run_dir, records=(valid + '{"id":"x","sta').encode("utf-8"))
+            receipt = json.loads((run_dir / "qualification-receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual(receipt["status"], "failed", result.stderr)
+            self.assertEqual([c["argv"] for c in receipt["commands"]], [["python3", "policy.py"], ["corrupt_record"]])
+            self.assertNotEqual(result.returncode, 0)
 
     def test_written_receipt_has_standard_permissions(self) -> None:
         """Qualification receipts written by write_qualification_receipt must have standard permissions (0644)."""
@@ -1669,18 +1669,351 @@ class TestAtomicReceiptWritingAndCorruptReceiptNaming(unittest.TestCase):
             self.assertEqual(mode, 0o644, f"Receipt file permissions should be 0644, got {oct(mode)}")
 
     def test_qualify_script_atomic_receipt_contract(self) -> None:
-        """scripts/qualify.sh must write receipts to temp file in same directory, fsync, and rename."""
-        script_text = (ROOT / "scripts/qualify.sh").read_text(encoding="utf-8")
-        # Must not write directly in place with write_text
-        self.assertNotIn(
-            'pathlib.Path(output_path).write_text(',
-            script_text,
-            "scripts/qualify.sh must not write qualification receipt in-place",
-        )
-        # Must create temp file in same directory, fsync, and replace/rename
-        self.assertIn("tempfile.mkstemp", script_text)
-        self.assertIn("os.fsync", script_text)
-        self.assertIn("os.replace", script_text)
+        """There is exactly one atomic writer: qualify.sh, release_qualify.sh and the checker all
+        delegate to scripts/qualification_receipt.py (behaviour is proven in
+        TestQualifyFinalizeBehaviour; this pins that no second copy can drift back in)."""
+        import qualification_receipt
+
+        self.assertIs(cpb.write_qualification_receipt, qualification_receipt.write_qualification_receipt)
+        for rel in ("scripts/qualify.sh", "scripts/release_qualify.sh", "scripts/claim_proof_bundle_checker.py"):
+            text = (ROOT / rel).read_text(encoding="utf-8")
+            for token in ("mkstemp(", "os.replace(", ".write_text(json.dumps"):
+                self.assertNotIn(token, text, f"{rel} carries its own receipt writer ({token})")
+        self.assertIn('scripts/qualification_receipt.py" finalize', (ROOT / "scripts/qualify.sh").read_text(encoding="utf-8"))
+
+
+# --- fss-1geb3: behavioural tests of the shipped receipt write paths --------------------------
+#
+# The finalize tests extract the real `pinned_toolchain` and `finalize` functions from
+# scripts/qualify.sh and run them exactly as its EXIT trap does. FSS_QUALIFY_ROOT_UNDER_TEST points
+# them (and the run-directory tests) at another checkout, e.g. an export of an older commit, so a
+# regression can be demonstrated against the historical writer.
+QUALIFY_ROOT = Path(os.environ.get("FSS_QUALIFY_ROOT_UNDER_TEST", str(ROOT))).resolve()
+RECEIPT_TEMP_PREFIX = ".qualification-receipt.json.tmp."
+_KILL_ON_RECEIPT_FSYNC = """
+import os, signal
+_real_fsync = os.fsync
+def _fsync(fd):
+    try:
+        name = os.path.basename(os.readlink(f"/proc/self/fd/{fd}"))
+    except OSError:
+        name = ""
+    if name.startswith(%r):
+        os.kill(os.getpid(), signal.SIGKILL)
+    return _real_fsync(fd)
+os.fsync = _fsync
+""" % RECEIPT_TEMP_PREFIX
+
+
+def _record_row(name: str, status: str = "passed") -> dict:
+    return {"id": name, "status": status, "outputDigest": "sha256:" + "4" * 64, "argv": ["python3", f"{name}.py"]}
+
+
+def _finalize_harness(root: Path) -> str:
+    text = (root / "scripts/qualify.sh").read_text(encoding="utf-8")
+    pinned_start = text.index("\npinned_toolchain() {\n") + 1
+    pinned = text[pinned_start:text.index("\n}\n", pinned_start) + 3]
+    finalize_start = text.index("\nfinalize() {\n") + 1
+    finalize = text[finalize_start:text.index("\ntrap finalize EXIT", finalize_start) + 1]
+    return pinned + finalize
+
+
+def run_qualify_finalize(
+    run_dir: Path,
+    *,
+    records: bytes | None,
+    final_status: str = "passed",
+    exit_code: int = 0,
+    fsize_limit: int | None = None,
+    pythonpath: Path | None = None,
+) -> subprocess.CompletedProcess:
+    """Runs qualify.sh's finalize trap (the shipped receipt path) against ``run_dir``."""
+    import shlex
+
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if records is not None:
+        (run_dir / "commands.jsonl").write_bytes(records)
+    script = "\n".join([
+        "set -Eeuo pipefail",
+        f"ROOT={shlex.quote(str(QUALIFY_ROOT))}",
+        'cd "$ROOT"',
+        "LANE=policy",
+        f"RECEIPT_DIR={shlex.quote(str(run_dir))}",
+        'records="$RECEIPT_DIR/commands.jsonl"',
+        "WRITE_RECEIPT=1",
+        "started_ns=1",
+        f"final_status={final_status}",
+        _finalize_harness(QUALIFY_ROOT),
+        "trap finalize EXIT",
+        f"exit {exit_code}",
+    ])
+    env = {k: v for k, v in os.environ.items() if not k.startswith("FSS_DSR_")}
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    if pythonpath is not None:
+        env["PYTHONPATH"] = str(pythonpath)
+
+    def limit_file_size() -> None:
+        import resource
+
+        resource.setrlimit(resource.RLIMIT_FSIZE, (fsize_limit, fsize_limit))
+
+    return subprocess.run(
+        [shutil.which("bash") or "/bin/bash", "-c", script],
+        capture_output=True, text=True, env=env, timeout=120,
+        preexec_fn=limit_file_size if fsize_limit is not None else None,
+    )
+
+
+def _receipt_temps(directory: Path) -> list[Path]:
+    return sorted(directory.glob(RECEIPT_TEMP_PREFIX + "*"))
+
+
+class TestQualifyFinalizeBehaviour(unittest.TestCase):
+    """fss-1geb3: the shipped qualify.sh finalize path writes receipts atomically and always."""
+
+    def _previous_receipt(self, run_dir: Path) -> bytes:
+        previous = make_receipt("passed")
+        previous["receiptId"] = "local:policy:previous_receipt"
+        write_json(run_dir / "qualification-receipt.json", previous)
+        return (run_dir / "qualification-receipt.json").read_bytes()
+
+    def test_efbig_mid_write_keeps_previous_receipt(self) -> None:
+        """A write that fails part-way (RLIMIT_FSIZE -> EFBIG after 2 KiB of a ~7 KiB receipt)
+        must leave the previous receipt byte-identical and no partial receipt readable. The
+        in-place writer (b5441b5^) truncates the old receipt to 2 KiB of broken JSON."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "run"
+            run_dir.mkdir()
+            previous = self._previous_receipt(run_dir)
+            records = "".join(json.dumps(_record_row(f"step{i:02d}")) + "\n" for i in range(40)).encode("utf-8")
+
+            crashed = run_qualify_finalize(run_dir, records=records, fsize_limit=2048)
+            self.assertEqual((run_dir / "qualification-receipt.json").read_bytes(), previous, crashed.stderr)
+            self.assertEqual(_receipt_temps(run_dir), [], "an aborted write must not leave a temp receipt behind")
+            self.assertNotEqual(crashed.returncode, 0, "a run whose receipt could not be written must not exit 0")
+            self.assertNotIn("qualification receipt: ", crashed.stderr, "the receipt path must not be announced when nothing was written")
+
+            # Control: without the limit the same finalize writes the new, complete receipt.
+            written = run_qualify_finalize(run_dir, records=None)
+            self.assertEqual(written.returncode, 0, written.stderr)
+            receipt = json.loads((run_dir / "qualification-receipt.json").read_text(encoding="utf-8"))
+            self.assertEqual(len(receipt["commands"]), 40)
+            self.assertGreater(len((run_dir / "qualification-receipt.json").read_bytes()), 2048)
+
+    @unittest.skipUnless(Path("/proc/self/fd").is_dir(), "needs /proc to identify the receipt temp fd")
+    def test_sigkill_mid_write_keeps_previous_receipt_and_audit_ignores_leftover_temp(self) -> None:
+        """SIGKILL while the new receipt is being made durable (a real crash, not an exception)
+        leaves the previous receipt intact; the leftover temp file under qualification-artifacts/
+        is never read as a receipt by the repository-wide audit."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            run_dir = root / "qualification-artifacts/local/run1"
+            run_dir.mkdir(parents=True)
+            previous = self._previous_receipt(run_dir)
+            site = Path(tmpdir) / "site"
+            site.mkdir()
+            (site / "sitecustomize.py").write_text(_KILL_ON_RECEIPT_FSYNC, encoding="utf-8")
+
+            records = (json.dumps(_record_row("policy")) + "\n").encode("utf-8")
+            crashed = run_qualify_finalize(run_dir, records=records, pythonpath=site)
+            self.assertEqual((run_dir / "qualification-receipt.json").read_bytes(), previous, crashed.stderr)
+            leftovers = _receipt_temps(run_dir)
+            self.assertEqual(len(leftovers), 1, f"the killed writer must leave its temp file: {crashed.stderr}")
+            self.assertNotEqual(crashed.returncode, 0)
+            self.assertNotIn("qualification receipt: ", crashed.stderr)
+
+            ok, findings, summary = audit_claim_proof_bundles(root)
+            self.assertTrue(ok, [(f.code, f.file, f.message) for f in findings])
+            self.assertEqual(summary["receipts_inspected"], 1)
+            self.assertEqual(summary["receipts_passed"], 1)
+            self.assertFalse(any(RECEIPT_TEMP_PREFIX in f.file or RECEIPT_TEMP_PREFIX in f.message for f in findings))
+
+    def test_planted_partial_temp_receipt_is_never_audited(self) -> None:
+        """A partial `.qualification-receipt.json.tmp.*` file (with or without a real receipt next
+        to it) is not a receipt: the audit neither inspects nor fails on it."""
+        for with_receipt in (False, True):
+            with self.subTest(with_receipt=with_receipt), tempfile.TemporaryDirectory() as tmpdir:
+                root = build_fixture_root(Path(tmpdir))
+                run_dir = root / "qualification-artifacts/local/run1"
+                run_dir.mkdir(parents=True)
+                (run_dir / (RECEIPT_TEMP_PREFIX + "k3j9x_")).write_text('{"schema": "fss.release_qualification_receipt.v1", "sta', encoding="utf-8")
+                if with_receipt:
+                    write_json(run_dir / "qualification-receipt.json", make_receipt("passed"))
+                ok, findings, summary = audit_claim_proof_bundles(root)
+                self.assertTrue(ok, [(f.code, f.file, f.message) for f in findings])
+                self.assertEqual(summary["receipts_inspected"], int(with_receipt))
+
+    def test_non_object_command_record_still_writes_failed_receipt(self) -> None:
+        """A commands.jsonl line that is valid JSON but not a command object (`[1,2]` and friends)
+        must not crash finalize: a failed receipt is written, its path is printed because it
+        exists, and the run exits non-zero."""
+        digest = b'"sha256:' + b"4" * 64 + b'"'
+        malformed = {
+            "list": b"[1,2]\n",
+            "string": b'"x"\n',
+            "null": b"null\n",
+            "argv_not_list": b'{"argv":"python3","status":"passed","outputDigest":' + digest + b"}\n",
+            "bad_status": b'{"argv":["a"],"status":"great","outputDigest":' + digest + b"}\n",
+            "not_utf8": b"\xff\xfe\n",
+        }
+        for label, line in malformed.items():
+            with self.subTest(record=label), tempfile.TemporaryDirectory() as tmpdir:
+                run_dir = Path(tmpdir) / "run"
+                result = run_qualify_finalize(run_dir, records=line)
+                receipt_path = run_dir / "qualification-receipt.json"
+                self.assertTrue(receipt_path.is_file(), f"no receipt written for {label}: {result.stderr}")
+                receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+                self.assertEqual(receipt["status"], "failed")
+                self.assertEqual(receipt["commands"][0]["argv"], ["corrupt_record"])
+                self.assertEqual(receipt["commands"][0]["status"], "failed")
+                self.assertIn(f"qualification receipt: {receipt_path}", result.stderr)
+                self.assertNotEqual(result.returncode, 0, "a failed receipt must not accompany exit 0")
+                findings, status = cpb.inspect_qualification_receipt(receipt_path, run_dir)
+                self.assertEqual(status, "failed")
+                self.assertEqual(error_codes(findings), [], [f.message for f in findings])
+
+
+class TestQualifyRunDirectories(unittest.TestCase):
+    """fss-1geb3: runs never share or truncate another run's receipt directory."""
+
+    STAMP = "19700101T000001Z"
+
+    def _stamp_dirs(self) -> list[Path]:
+        return sorted((QUALIFY_ROOT / "qualification-artifacts/local").glob(f"{self.STAMP}-docs*"))
+
+    def _cleanup_stamp_dirs(self) -> None:
+        for leftover in self._stamp_dirs():
+            shutil.rmtree(leftover)
+
+    def test_same_second_same_lane_runs_get_distinct_directories(self) -> None:
+        """Two concurrent `qualify.sh --lane docs` runs inside the same UTC second each keep their
+        own commands.jsonl and receipt (the second-resolution stamp used to make them collide)."""
+        self._cleanup_stamp_dirs()
+        self.addCleanup(self._cleanup_stamp_dirs)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bin_dir = Path(tmpdir) / "bin"
+            bin_dir.mkdir()
+            fake_date = bin_dir / "date"
+            fake_date.write_text(f"#!/bin/sh\nprintf '%s\\n' {self.STAMP}\n", encoding="utf-8")
+            fake_date.chmod(0o755)
+            env = {k: v for k, v in os.environ.items() if k != "FSS_RECEIPT_DIR"}
+            env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+            env["PYTHONDONTWRITEBYTECODE"] = "1"
+            procs = [
+                subprocess.Popen(
+                    [shutil.which("bash") or "/bin/bash", str(QUALIFY_ROOT / "scripts/qualify.sh"), "--lane", "docs"],
+                    cwd=str(QUALIFY_ROOT), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                )
+                for _ in range(2)
+            ]
+            stderrs = [proc.communicate(timeout=300)[1] for proc in procs]
+        run_dirs = self._stamp_dirs()
+        self.assertEqual(len(run_dirs), 2, f"expected two run directories, got {run_dirs}: {stderrs}")
+        for run_dir in run_dirs:
+            receipt = json.loads((run_dir / "qualification-receipt.json").read_text(encoding="utf-8"))
+            rows = [json.loads(line) for line in (run_dir / "commands.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
+            self.assertGreater(len(rows), 0)
+            self.assertEqual(len({row["id"] for row in rows}), len(rows), f"{run_dir} holds another run's records")
+            self.assertEqual(receipt["commands"], [{k: row[k] for k in ("argv", "status", "outputDigest")} for row in rows])
+            announcement = f"qualification receipt: {run_dir / 'qualification-receipt.json'}"
+            self.assertEqual(sum(announcement in err for err in stderrs), 1, f"{run_dir} must belong to exactly one run")
+
+    def test_explicit_receipt_dir_holding_a_run_is_refused_not_truncated(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            run_dir = Path(tmpdir) / "shared"
+            run_dir.mkdir()
+            prior = (json.dumps(_record_row("prior")) + "\n").encode("utf-8")
+            (run_dir / "commands.jsonl").write_bytes(prior)
+            env = {k: v for k, v in os.environ.items() if k != "FSS_RECEIPT_DIR"}
+            result = subprocess.run(
+                [shutil.which("bash") or "/bin/bash", str(QUALIFY_ROOT / "scripts/qualify.sh"), "--lane", "docs", "--receipt-dir", str(run_dir)],
+                cwd=str(QUALIFY_ROOT), env=env, capture_output=True, text=True, timeout=300,
+            )
+            self.assertEqual((run_dir / "commands.jsonl").read_bytes(), prior, "another run's log was truncated")
+            self.assertEqual(result.returncode, 4, result.stderr)
+            self.assertFalse((run_dir / "qualification-receipt.json").exists())
+
+
+class TestSharedAtomicWriter(unittest.TestCase):
+    """fss-1geb3: durability details of scripts/qualification_receipt.py (the one writer)."""
+
+    @staticmethod
+    def _recording_fsync(log: list):
+        real_fsync = os.fsync
+
+        def fsync(fd: int) -> None:
+            log.append((os.readlink(f"/proc/self/fd/{fd}"), os.fstat(fd).st_mode & 0o777))
+            real_fsync(fd)
+
+        return fsync
+
+    @unittest.skipUnless(Path("/proc/self/fd").is_dir(), "needs /proc to name fsynced descriptors")
+    def test_mode_is_set_before_fsync_and_new_parents_are_fsynced(self) -> None:
+        import qualification_receipt as qr
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir).resolve()
+            target = base / "a" / "b" / "qualification-receipt.json"
+            log: list = []
+            with mock.patch("os.fsync", side_effect=self._recording_fsync(log)):
+                qr.write_qualification_receipt(target, make_receipt("passed"))
+            synced = [path for path, _ in log]
+            temp_syncs = [(path, mode) for path, mode in log if os.path.basename(path).startswith(RECEIPT_TEMP_PREFIX)]
+            self.assertEqual(len(temp_syncs), 1, log)
+            self.assertEqual(temp_syncs[0][1], 0o644, "the file mode must be final before its data is fsynced")
+            for parent in (base, base / "a"):
+                self.assertIn(str(parent), synced, f"the new directory under {parent} was not fsynced into it")
+            self.assertEqual(synced[-1], str(base / "a" / "b"), "the rename must be fsynced last")
+            self.assertEqual(target.stat().st_mode & 0o777, 0o644)
+
+    def test_capture_writes_only_successful_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = Path(tmpdir) / "receipts" / "capabilities.json"
+            script = str(ROOT / "scripts/qualification_receipt.py")
+            ok = subprocess.run([sys.executable, script, "capture", "--output", str(out), "--", sys.executable, "-c", "print('{\"ok\": 1}')"], capture_output=True)
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertEqual(out.read_bytes(), b'{"ok": 1}\n')
+            self.assertEqual(out.stat().st_mode & 0o777, 0o644)
+
+            failing = "import sys; sys.stdout.write('{\"trunc'); sys.stdout.flush(); sys.exit(3)"
+            bad = subprocess.run([sys.executable, script, "capture", "--output", str(out), "--", sys.executable, "-c", failing], capture_output=True)
+            self.assertEqual(bad.returncode, 3)
+            self.assertEqual(out.read_bytes(), b'{"ok": 1}\n', "a failing command must leave the previous output untouched")
+
+            merged = Path(tmpdir) / "smoke-help.txt"
+            both = "import sys; print('out'); sys.stdout.flush(); print('err', file=sys.stderr)"
+            res = subprocess.run([sys.executable, script, "capture", "--merge-stderr", "--output", str(merged), "--", sys.executable, "-c", both], capture_output=True)
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(merged.read_text(encoding="utf-8").split(), ["out", "err"])
+
+            missing = subprocess.run([sys.executable, script, "capture", "--output", str(Path(tmpdir) / "none.txt"), "--", "/nonexistent/fss-binary"], capture_output=True)
+            self.assertEqual(missing.returncode, 127)
+            self.assertFalse((Path(tmpdir) / "none.txt").exists())
+            self.assertEqual(sorted(p.name for p in out.parent.iterdir()), ["capabilities.json"], "no temp files may remain")
+
+    def test_load_command_records_classifies_every_malformed_line(self) -> None:
+        import qualification_receipt as qr
+
+        digest = b'"sha256:' + b"4" * 64 + b'"'
+        good = json.dumps(_record_row("ok")).encode("utf-8")
+        cases = {
+            b"[1,2]": True, b'"x"': True, b"7": True, b"null": True, b"{}": True, b'{"argv":[': True,
+            b"\xff\xfe": True, b"[" * 100000: True,
+            b'{"argv":[],"status":"passed","outputDigest":' + digest + b"}": True,
+            b'{"argv":["a"],"status":"passed","outputDigest":7}': True,
+            b'{"argv":["a",1],"status":"passed","outputDigest":' + digest + b"}": True,
+            good: False,
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            records = Path(tmpdir) / "commands.jsonl"
+            for line, is_malformed in cases.items():
+                with self.subTest(line=line[:40]):
+                    records.write_bytes(line + b"\n")
+                    commands, malformed = qr.load_command_records(records)
+                    self.assertEqual(malformed, is_malformed)
+                    self.assertEqual(len(commands), 1)
+                    self.assertEqual(commands[0]["argv"] == ["corrupt_record"], is_malformed)
+            self.assertEqual(qr.load_command_records(Path(tmpdir) / "absent.jsonl"), ([], False))
 
 
 if __name__ == "__main__":
