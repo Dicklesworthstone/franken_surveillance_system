@@ -3,7 +3,7 @@
   "asOf": "2026-08-31",
   "semanticProtocol": "fss/1",
   "generation": "gen:fss1:capabilities-v1",
-  "registryDigest": "sha256:5360c06f34fef35062307ebfa50c71cdd68b6e6077b9f346213486a0cdca57d2",
+  "registryDigest": "sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a",
   "capabilities": [
     {
       "id": "CAP-ADAPTER-AUTH-001",

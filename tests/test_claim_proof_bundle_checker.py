@@ -49,12 +49,18 @@ from claim_proof_bundle_checker import (
     audit_claim_kind_registry,
     audit_claim_proof_bundles,
     compute_bundle_digest,
+    compute_canonical_claims_digest,
     compute_sha256,
     is_latest_generation,
     load_authoritative_claims,
     parse_markdown_tables,
     scan_markdown_claim_tables,
     verify_proof_bundle,
+    BASELINE_CLAIMS_FREEZE_DIGEST,
+    BASELINE_CLAIMS_GENERATION,
+    CANONICAL_CLAIM_CLASSES,
+    CANONICAL_PROHIBITED_PROMOTIONS,
+    EXPECTED_CLAIMS_FREEZE_DIGESTS,
 )
 import claim_proof_bundle_checker as cpb
 
@@ -2098,17 +2104,178 @@ class TestSharedAtomicWriter(unittest.TestCase):
 
 
 class TestClaimKindRegistryAuditing(unittest.TestCase):
-    """Audits the machine-readable claim-kind registry against registries/CLAIMS.md (fss-x4a.30.87.1)."""
+    """Audits the machine-readable claim-kind registry against registries/CLAIMS.md and baseline (fss-x4a.30.87.1)."""
 
     def setUp(self) -> None:
         self.claims_json_path = ROOT / "architecture/claims.json"
         self.claims_md_path = ROOT / "registries/CLAIMS.md"
 
     def test_live_claim_kind_registry_passes(self) -> None:
-        """The real claims.json and registries/CLAIMS.md must pass with 0 errors and all 7 normative rows."""
+        """The real claims.json and registries/CLAIMS.md must pass with 0 errors and all classes."""
         findings = audit_claim_kind_registry(ROOT, self.claims_json_path, self.claims_md_path)
         errors = [f for f in findings if f.severity == "error"]
         self.assertEqual(errors, [], f"Claim kind registry audit failed on real files: {errors}")
+
+    def test_live_claims_freeze_digest_exact_match(self) -> None:
+        """The real claims.json must match BASELINE_CLAIMS_GENERATION and BASELINE_CLAIMS_FREEZE_DIGEST exactly."""
+        data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+        self.assertEqual(data.get("generation"), BASELINE_CLAIMS_GENERATION)
+        self.assertEqual(data.get("freezeDigest"), BASELINE_CLAIMS_FREEZE_DIGEST)
+        computed = compute_canonical_claims_digest(data)
+        self.assertEqual(computed, BASELINE_CLAIMS_FREEZE_DIGEST)
+        self.assertEqual(data.get("freezeDigest"), computed)
+
+    def test_claims_freeze_digest_mismatch_fails(self) -> None:
+        """Mutating a claim field without recomputing freezeDigest emits ERR-CLAIM-PROOF-DIGEST-MISMATCH-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            (reg / "CLAIMS.md").write_text(self.claims_md_path.read_text(encoding="utf-8"), encoding="utf-8")
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            data["freezeDigest"] = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_BUNDLE_DIGEST_MISMATCH, codes)
+
+    def test_claims_generation_unrecognized_fails(self) -> None:
+        """Unrecognized generation without authorized freeze digest emits ERR-CLAIM-PROOF-STALE-GENERATION-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            (reg / "CLAIMS.md").write_text(self.claims_md_path.read_text(encoding="utf-8"), encoding="utf-8")
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            data["generation"] = "gen:unregistered:claims-v999"
+            data["freezeDigest"] = compute_canonical_claims_digest(data)
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_STALE_GENERATION, codes)
+
+    def test_claims_prohibited_list_tampering_fails(self) -> None:
+        """Tampering with or weakening the prohibited list emits ERR-CLAIM-REGISTRY-DRIFT-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            (reg / "CLAIMS.md").write_text(self.claims_md_path.read_text(encoding="utf-8"), encoding="utf-8")
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            data["prohibited"] = ["allow_everything"]
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_REGISTRY_DRIFT, codes)
+
+    def test_claims_missing_top_level_metadata_fails(self) -> None:
+        """Deleting required top-level metadata fields emits ERR-CLAIM-MISSING-FIELD-001."""
+        for field_name in ("schema", "generation", "freezeDigest", "sourceDocument", "prohibited"):
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                arch = root / "architecture"
+                reg = root / "registries"
+                arch.mkdir(parents=True)
+                reg.mkdir(parents=True)
+
+                (reg / "CLAIMS.md").write_text(self.claims_md_path.read_text(encoding="utf-8"), encoding="utf-8")
+                data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+                del data[field_name]
+                (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+                findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+                codes = [f.code for f in findings]
+                self.assertIn(ERR_CLAIM_MISSING_FIELD, codes)
+
+    def test_claims_missing_claim_class_field_fails(self) -> None:
+        """Omitting 'claim_class' from a class entry emits ERR-CLAIM-MISSING-FIELD-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            (reg / "CLAIMS.md").write_text(self.claims_md_path.read_text(encoding="utf-8"), encoding="utf-8")
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            data["classes"][0].pop("claim_class", None)
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_MISSING_FIELD, codes)
+
+    def test_claims_required_evidence_weakening_fails(self) -> None:
+        """Weakening or mutating requiredEvidence for any class emits ERR-CLAIM-REGISTRY-DRIFT-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            (reg / "CLAIMS.md").write_text(self.claims_md_path.read_text(encoding="utf-8"), encoding="utf-8")
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            data["classes"][0]["requiredEvidence"] = ["completely_unauthorized_token"]
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_REGISTRY_DRIFT, codes)
+
+    def test_claims_case_collision_duplicate_fails(self) -> None:
+        """Case-folded collision (e.g. 'INVARIANT' vs 'invariant') emits ERR-CLAIM-ID-REUSED-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            (reg / "CLAIMS.md").write_text(self.claims_md_path.read_text(encoding="utf-8"), encoding="utf-8")
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            dup = dict(data["classes"][0])
+            dup["id"] = "INVARIANT"
+            dup["claim_class"] = "INVARIANT"
+            data["classes"].append(dup)
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_ID_REUSED, codes)
+
+    @mock.patch("claim_proof_bundle_checker.load_tombstone_index")
+    def test_claims_tombstone_class_fails(self, mock_tombstones: mock.MagicMock) -> None:
+        """Attempting to use a tombstoned identifier as an active claim class emits ERR-CLAIM-ID-REUSED-001."""
+        mock_tombstones.return_value = ({"TOMBSTONED-CLASS"}, [])
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            (reg / "CLAIMS.md").write_text(self.claims_md_path.read_text(encoding="utf-8"), encoding="utf-8")
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            data["classes"][0]["id"] = "TOMBSTONED-CLASS"
+            data["classes"][0]["claim_class"] = "TOMBSTONED-CLASS"
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_ID_REUSED, codes)
 
     def test_claim_kind_registry_drift_meaning_mismatch(self) -> None:
         """Mismatch in meaning between claims.json and CLAIMS.md emits ERR-CLAIM-REGISTRY-DRIFT-001."""

@@ -1235,15 +1235,203 @@ def scan_markdown_claim_tables(
     return findings
 
 
-REQUIRED_NORMATIVE_CLAIM_CLASSES: tuple[str, ...] = (
-    "invariant",
-    "proof",
-    "bounded_model",
-    "statistical",
-    "slo",
-    "benchmark",
-    "compatibility",
+BASELINE_CLAIMS_GENERATION = "gen:fss1:claims-v1"
+BASELINE_CLAIMS_FREEZE_DIGEST = "sha256:a771b73ed343bbbb04a4cc98a9a7d2853caa533b2600b60090f1ab14d74e1916"
+
+EXPECTED_CLAIMS_FREEZE_DIGESTS: dict[str, str] = {
+    BASELINE_CLAIMS_GENERATION: BASELINE_CLAIMS_FREEZE_DIGEST,
+}
+
+CANONICAL_PROHIBITED_PROMOTIONS: tuple[str, ...] = (
+    "source_presence_as_support",
+    "single_demo_as_readiness",
+    "version_string_as_conformance",
+    "aggregate_accuracy_as_event_recall",
+    "unbounded_never_miss_claim",
+    "compact_output_as_sufficient_context_without_omission_receipt",
+    "recommendation_score_as_effect_authority",
+    "memory_or_prior_handoff_as_live_truth",
+    "lower_call_count_as_agent_efficiency_without_task_quality_and_cost_vector",
 )
+
+CANONICAL_CLAIM_CLASSES: dict[str, dict[str, Any]] = {
+    "invariant": {
+        "id": "invariant",
+        "claim_class": "invariant",
+        "meaning": "behavior forbidden/required for all reachable states",
+        "minimum_evidence": "contract, mechanical check, adversarial counterexample suite",
+        "requiredEvidence": [
+            "contract",
+            "mechanical_check",
+            "counterexample_suite",
+        ],
+    },
+    "proof": {
+        "id": "proof",
+        "claim_class": "proof",
+        "meaning": "theorem under declared formal model",
+        "minimum_evidence": "formal artifact, assumptions, toolchain identity, check receipt",
+        "requiredEvidence": [
+            "formal_artifact",
+            "toolchain_identity",
+            "proof_check_receipt",
+        ],
+    },
+    "bounded_model": {
+        "id": "bounded_model",
+        "claim_class": "bounded_model",
+        "meaning": "analytically derived bound under assumptions",
+        "minimum_evidence": "derivation, units, assumptions, sensitivity and invalidators",
+        "requiredEvidence": [
+            "assumptions",
+            "derivation",
+            "sensitivity_analysis",
+        ],
+    },
+    "statistical": {
+        "id": "statistical",
+        "claim_class": "statistical",
+        "meaning": "estimated population/task behavior",
+        "minimum_evidence": "sealed dataset manifest, sampling protocol, raw results, confidence interval",
+        "requiredEvidence": [
+            "dataset_manifest",
+            "sampling_protocol",
+            "confidence_interval",
+            "held_out_results",
+        ],
+    },
+    "slo": {
+        "id": "slo",
+        "claim_class": "slo",
+        "meaning": "operational latency/availability/cost target achieved",
+        "minimum_evidence": "operation-cost row, environment, workload, raw measurements, failures",
+        "requiredEvidence": [
+            "operation_cost_row",
+            "measurement_artifact",
+            "environment_manifest",
+        ],
+    },
+    "benchmark": {
+        "id": "benchmark",
+        "claim_class": "benchmark",
+        "meaning": "comparative performance",
+        "minimum_evidence": "pinned same-workload oracle, exact versions, raw samples, variance, command",
+        "requiredEvidence": [
+            "same_workload_oracle",
+            "raw_samples",
+            "variance",
+            "reproduction_command",
+        ],
+    },
+    "compatibility": {
+        "id": "compatibility",
+        "claim_class": "compatibility",
+        "meaning": "exact device/model/provider tuple works",
+        "minimum_evidence": "tuple identity, fixture, conformance/soak/crash/security evidence",
+        "requiredEvidence": [
+            "device_firmware_app_tuple",
+            "fixture_digest",
+            "conformance_receipt",
+        ],
+    },
+    "agent_task": {
+        "id": "agent_task",
+        "claim_class": "agent_task",
+        "meaning": "task-level agent correctness, calibration, safety, and efficiency",
+        "minimum_evidence": "sealed task corpus, anchor-aligned transcripts, CognitiveFacet owner/anchor compatibility, WorldEnvelope/control classification, task/evidence/safety metrics, resource cost vector, failures/abstentions/interventions",
+        "requiredEvidence": [
+            "sealed_task_corpus_manifest",
+            "anchor_aligned_transcripts",
+            "world_envelope_and_control_classification_metrics",
+            "cognitive_facet_owner_anchor_compatibility",
+            "task_correctness_and_calibration",
+            "evidence_use_and_unsafe_action_metrics",
+            "resource_cost_vector",
+            "failures_abstentions_and_operator_interventions",
+        ],
+    },
+    "agent_accretion": {
+        "id": "agent_accretion",
+        "claim_class": "agent_accretion",
+        "meaning": "improvement from retained handoff/experience/procedures across repeated tasks",
+        "minimum_evidence": "repeated-task corpus, no-memory baseline, quality non-regression, resource-savings distribution, harmful-transfer/trauma-guard evidence",
+        "requiredEvidence": [
+            "sealed_repeated_task_corpus",
+            "baseline_without_prior_experience",
+            "learning_and_handoff_roots",
+            "task_quality_non_regression",
+            "resource_savings_distribution",
+            "harmful_transfer_and_trauma_guard_results",
+        ],
+    },
+}
+
+REQUIRED_NORMATIVE_CLAIM_CLASSES: tuple[str, ...] = tuple(CANONICAL_CLAIM_CLASSES.keys())
+
+MANDATORY_CLAIMS_TOP_LEVEL_FIELDS: tuple[str, ...] = (
+    "schema",
+    "generation",
+    "freezeDigest",
+    "sourceDocument",
+    "prohibited",
+    "classes",
+)
+
+MANDATORY_CLAIM_ROW_FIELDS: tuple[str, ...] = (
+    "id",
+    "claim_class",
+    "meaning",
+    "minimum_evidence",
+    "requiredEvidence",
+)
+
+
+def compute_canonical_claims_digest(
+    data_or_classes: dict[str, Any] | list[dict[str, Any]],
+    schema: str = "fss.claims.v1",
+    generation: str = BASELINE_CLAIMS_GENERATION,
+    source_document: str = "registries/CLAIMS.md",
+    prohibited: list[str] | None = None,
+) -> str:
+    """Computes SHA-256 digest of canonically serialized claims registry data.
+
+    Binds top-level metadata (schema, generation, sourceDocument, prohibited)
+    and deterministically sorted classes rows with their requiredEvidence.
+    """
+    if isinstance(data_or_classes, dict):
+        data = data_or_classes
+        schema_val = str(data.get("schema", "")).strip()
+        generation_val = str(data.get("generation", "")).strip()
+        source_doc_val = str(data.get("sourceDocument", "")).strip()
+        raw_prohibited = data.get("prohibited")
+        prohibited_val = sorted(str(p).strip() for p in raw_prohibited) if isinstance(raw_prohibited, list) else []
+        raw_classes = data.get("classes", [])
+    else:
+        schema_val = schema
+        generation_val = generation
+        source_doc_val = source_document
+        prohibited_val = sorted(str(p).strip() for p in (prohibited or list(CANONICAL_PROHIBITED_PROMOTIONS)))
+        raw_classes = data_or_classes
+
+    sorted_classes = sorted(raw_classes, key=lambda r: str(r.get("id", "")))
+    canonical_payload = {
+        "classes": [
+            {
+                "claim_class": str(r.get("claim_class", "")).strip(),
+                "id": str(r.get("id", "")).strip(),
+                "meaning": str(r.get("meaning", "")).strip(),
+                "minimum_evidence": str(r.get("minimum_evidence", "")).strip(),
+                "requiredEvidence": sorted(str(e).strip() for e in r.get("requiredEvidence", [])),
+            }
+            for r in sorted_classes
+        ],
+        "generation": generation_val,
+        "prohibited": prohibited_val,
+        "schema": schema_val,
+        "sourceDocument": source_doc_val,
+    }
+    canonical_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}"
 
 
 def audit_claim_kind_registry(
@@ -1252,12 +1440,14 @@ def audit_claim_kind_registry(
     claims_md_path: Path | None = None,
 ) -> list[ClaimFinding]:
     """Audits the machine-readable claim-kind registry (architecture/claims.json)
-    against the normative human-readable registry (registries/CLAIMS.md) (fss-x4a.30.87.1).
+    against the normative human-readable registry (registries/CLAIMS.md) and the pinned baseline.
 
     Enforces fail-closed verification:
-    1. ERR_CLAIM_ID_REUSED: Reused, duplicate, or renumbered stable IDs.
-    2. ERR_CLAIM_MISSING_FIELD: Missing required normative fields in JSON or columns in Markdown.
-    3. ERR_CLAIM_REGISTRY_DRIFT: Any divergence in row count, IDs, ordering, meaning, or minimum evidence.
+    1. ERR_CLAIM_ID_REUSED: Reused, duplicate, case-folded, or tombstoned stable IDs.
+    2. ERR_CLAIM_MISSING_FIELD: Missing required normative fields in JSON, top-level metadata, or Markdown.
+    3. ERR_CLAIM_REGISTRY_DRIFT: Any divergence in row count, IDs, ordering, meaning, minimum evidence, required evidence, or prohibited promotions.
+    4. ERR_BUNDLE_DIGEST_MISMATCH: Computed canonical digest mismatch against declared freezeDigest or pinned baseline freeze digest.
+    5. ERR_STALE_GENERATION: Unrecognized or unpinned registry generation.
     """
     findings: list[ClaimFinding] = []
     json_path = claims_json_path or (root / "architecture/claims.json")
@@ -1286,9 +1476,86 @@ def audit_claim_kind_registry(
     if not isinstance(data, dict):
         return [_finding(ERR_UNREADABLE_INPUT, json_str, "file", "Claims registry root must be a JSON object")]
 
+    # Check top-level metadata fields
+    for field_name in MANDATORY_CLAIMS_TOP_LEVEL_FIELDS:
+        if field_name not in data:
+            findings.append(_finding(
+                ERR_CLAIM_MISSING_FIELD, json_str, field_name,
+                f"Claims registry root missing required '{field_name}' property",
+            ))
+
+    schema_val = data.get("schema")
+    if schema_val is not None:
+        if not isinstance(schema_val, str) or not schema_val.strip():
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, json_str, "schema", "Claims registry 'schema' must be a non-empty string"))
+        elif schema_val != "fss.claims.v1":
+            findings.append(_finding(
+                ERR_CLAIM_REGISTRY_DRIFT, json_str, "schema",
+                f"Claims registry 'schema' must be 'fss.claims.v1', observed '{schema_val}'",
+            ))
+
+    source_doc = data.get("sourceDocument")
+    if source_doc is not None:
+        if not isinstance(source_doc, str) or not source_doc.strip():
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, json_str, "sourceDocument", "Claims registry 'sourceDocument' must be a non-empty string"))
+        elif source_doc != "registries/CLAIMS.md":
+            findings.append(_finding(
+                ERR_CLAIM_REGISTRY_DRIFT, json_str, "sourceDocument",
+                f"Claims registry 'sourceDocument' must be 'registries/CLAIMS.md', observed '{source_doc}'",
+            ))
+
+    generation_val = data.get("generation")
+    if generation_val is not None:
+        if not isinstance(generation_val, str) or not generation_val.strip():
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, json_str, "generation", "Claims registry 'generation' must be a non-empty string"))
+        elif generation_val not in EXPECTED_CLAIMS_FREEZE_DIGESTS:
+            findings.append(_finding(
+                ERR_STALE_GENERATION, json_str, "generation",
+                f"Claims registry generation '{generation_val}' is not recognized or lacks an authorized freeze digest",
+            ))
+
+    prohibited_list = data.get("prohibited")
+    if prohibited_list is not None:
+        if not isinstance(prohibited_list, list) or len(prohibited_list) == 0:
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, json_str, "prohibited", "Claims registry 'prohibited' must be a non-empty list"))
+        elif not all(isinstance(p, str) and p.strip() for p in prohibited_list):
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, json_str, "prohibited", "Claims registry 'prohibited' entries must be non-empty strings"))
+        else:
+            norm_prohibited = [p.strip() for p in prohibited_list]
+            if sorted(norm_prohibited) != sorted(CANONICAL_PROHIBITED_PROMOTIONS):
+                findings.append(_finding(
+                    ERR_CLAIM_REGISTRY_DRIFT, json_str, "prohibited",
+                    f"Claims registry 'prohibited' list has diverged from canonical baseline: observed {norm_prohibited}, expected {list(CANONICAL_PROHIBITED_PROMOTIONS)}",
+                ))
+
+    # Freeze digest verification
+    declared_digest = data.get("freezeDigest")
+    computed_digest = compute_canonical_claims_digest(data)
+    if declared_digest is not None:
+        if not isinstance(declared_digest, str) or not declared_digest.strip():
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, json_str, "freezeDigest", "Claims registry 'freezeDigest' must be a non-empty string"))
+        elif declared_digest != computed_digest:
+            findings.append(_finding(
+                ERR_BUNDLE_DIGEST_MISMATCH, json_str, "freezeDigest",
+                f"Claims registry freezeDigest mismatch: declared '{declared_digest}', computed '{computed_digest}'",
+            ))
+        elif generation_val and generation_val in EXPECTED_CLAIMS_FREEZE_DIGESTS:
+            expected_digest = EXPECTED_CLAIMS_FREEZE_DIGESTS[generation_val]
+            if declared_digest != expected_digest:
+                findings.append(_finding(
+                    ERR_BUNDLE_DIGEST_MISMATCH, json_str, "freezeDigest",
+                    f"Claims registry freezeDigest '{declared_digest}' diverged from pinned baseline freeze digest '{expected_digest}'",
+                ))
+
+    # Tombstone verification
+    tombstoned_ids, tombstone_findings = load_tombstone_index(root)
+    findings.extend(tombstone_findings)
+    tombstoned_folded = {t.lower() for t in tombstoned_ids}
+
     classes = data.get("classes")
     if not isinstance(classes, list) or len(classes) == 0:
-        return [_finding(ERR_EMPTY_INPUT, json_str, "classes", "Claims registry declares no claim classes")]
+        findings.append(_finding(ERR_EMPTY_INPUT, json_str, "classes", "Claims registry declares no claim classes"))
+        return findings
 
     seen_ids: set[str] = set()
     json_rows: list[dict[str, Any]] = []
@@ -1305,21 +1572,36 @@ def audit_claim_kind_registry(
             continue
         cid = cid.strip()
 
+        # Mandatory claim_class field
         claim_class_val = item.get("claim_class")
-        if claim_class_val is not None:
-            if not isinstance(claim_class_val, str) or claim_class_val.strip() != cid:
-                findings.append(_finding(
-                    ERR_CLAIM_ID_REUSED, json_str, f"{loc}.claim_class",
-                    f"Claim class '{cid}' has conflicting or renumbered claim_class '{claim_class_val}'",
-                ))
+        if not isinstance(claim_class_val, str) or not claim_class_val.strip():
+            findings.append(_finding(
+                ERR_CLAIM_MISSING_FIELD, json_str, f"{loc}.claim_class",
+                f"Claim class '{cid}' missing required non-empty 'claim_class' field",
+            ))
+        elif claim_class_val.strip() != cid:
+            findings.append(_finding(
+                ERR_CLAIM_ID_REUSED, json_str, f"{loc}.claim_class",
+                f"Claim class '{cid}' has conflicting or renumbered claim_class '{claim_class_val}'",
+            ))
 
-        if cid in seen_ids:
+        # Case-insensitive duplicate check
+        cid_lower = cid.lower()
+        if cid_lower in seen_ids:
             findings.append(_finding(
                 ERR_CLAIM_ID_REUSED, json_str, f"{loc}.id",
-                f"Duplicate claim class ID '{cid}' at index {idx}",
+                f"Duplicate or case-colliding claim class ID '{cid}' at index {idx}",
                 {"id": cid},
             ))
-        seen_ids.add(cid)
+        seen_ids.add(cid_lower)
+
+        # Tombstone check
+        if cid in tombstoned_ids or cid_lower in tombstoned_folded:
+            findings.append(_finding(
+                ERR_CLAIM_ID_REUSED, json_str, f"{loc}.id",
+                f"Claim class '{cid}' is a tombstoned identifier and cannot be used as an active class",
+                {"id": cid},
+            ))
 
         meaning = item.get("meaning")
         if not isinstance(meaning, str) or not meaning.strip():
@@ -1344,6 +1626,31 @@ def audit_claim_kind_registry(
                 f"Claim class '{cid}' missing required non-empty 'requiredEvidence' list",
             ))
 
+        # Baseline comparison
+        if cid not in CANONICAL_CLAIM_CLASSES:
+            findings.append(_finding(
+                ERR_CLAIM_REGISTRY_DRIFT, json_str, f"{loc}.id",
+                f"Unrecognized claim class '{cid}' not present in canonical baseline",
+                {"id": cid},
+            ))
+        else:
+            baseline = CANONICAL_CLAIM_CLASSES[cid]
+            if isinstance(meaning, str) and meaning.strip() != baseline["meaning"]:
+                findings.append(_finding(
+                    ERR_CLAIM_REGISTRY_DRIFT, json_str, f"{loc}.meaning",
+                    f"Claim class '{cid}' meaning diverged from baseline: observed {meaning.strip()!r}, expected {baseline['meaning']!r}",
+                ))
+            if isinstance(min_ev, str) and min_ev.strip() != baseline["minimum_evidence"]:
+                findings.append(_finding(
+                    ERR_CLAIM_REGISTRY_DRIFT, json_str, f"{loc}.minimum_evidence",
+                    f"Claim class '{cid}' minimum_evidence diverged from baseline: observed {min_ev.strip()!r}, expected {baseline['minimum_evidence']!r}",
+                ))
+            if isinstance(req_ev, list) and sorted(e.strip() for e in req_ev) != sorted(baseline["requiredEvidence"]):
+                findings.append(_finding(
+                    ERR_CLAIM_REGISTRY_DRIFT, json_str, f"{loc}.requiredEvidence",
+                    f"Claim class '{cid}' requiredEvidence diverged from baseline: observed {sorted(req_ev)}, expected {sorted(baseline['requiredEvidence'])}",
+                ))
+
         json_rows.append({
             "id": cid,
             "meaning": meaning.strip() if isinstance(meaning, str) else "",
@@ -1351,6 +1658,16 @@ def audit_claim_kind_registry(
             "required_evidence": req_ev if isinstance(req_ev, list) else [],
         })
 
+    # Check all canonical baseline classes are present
+    for baseline_cid in CANONICAL_CLAIM_CLASSES:
+        if baseline_cid.lower() not in seen_ids:
+            findings.append(_finding(
+                ERR_CLAIM_REGISTRY_DRIFT, json_str, "classes",
+                f"Canonical claim class '{baseline_cid}' is missing from claims registry",
+                {"missing_class": baseline_cid},
+            ))
+
+    # Parse markdown source
     try:
         md_text = md_path.read_text(encoding="utf-8")
     except OSError as exc:
@@ -1396,9 +1713,16 @@ def audit_claim_kind_registry(
         if not c_id:
             findings.append(_finding(ERR_CLAIM_MISSING_FIELD, md_str, f"row[{r_idx}].id", f"Empty claim class ID at row {r_idx + 1}"))
             continue
-        if c_id in md_seen_ids:
-            findings.append(_finding(ERR_CLAIM_ID_REUSED, md_str, f"row[{r_idx}].id", f"Duplicate claim class ID '{c_id}' in markdown table"))
-        md_seen_ids.add(c_id)
+        c_id_lower = c_id.lower()
+        if c_id_lower in md_seen_ids:
+            findings.append(_finding(ERR_CLAIM_ID_REUSED, md_str, f"row[{r_idx}].id", f"Duplicate or case-colliding claim class ID '{c_id}' in markdown table"))
+        md_seen_ids.add(c_id_lower)
+
+        if c_id in tombstoned_ids or c_id_lower in tombstoned_folded:
+            findings.append(_finding(
+                ERR_CLAIM_ID_REUSED, md_str, f"row[{r_idx}].id",
+                f"Claim class '{c_id}' in markdown table is a tombstoned identifier and cannot be resurrected",
+            ))
 
         if not m_val:
             findings.append(_finding(ERR_CLAIM_MISSING_FIELD, md_str, f"row[{r_idx}].meaning", f"Claim class '{c_id}' in markdown table has empty meaning"))
@@ -1406,6 +1730,31 @@ def audit_claim_kind_registry(
             findings.append(_finding(ERR_CLAIM_MISSING_FIELD, md_str, f"row[{r_idx}].evidence", f"Claim class '{c_id}' in markdown table has empty minimum evidence"))
 
         md_rows.append({"id": c_id, "meaning": m_val, "minimum_evidence": e_val})
+
+    # Validate forbidden promotions section in markdown
+    if "## forbidden claim promotions" not in md_text.lower():
+        findings.append(_finding(
+            ERR_CLAIM_MISSING_FIELD, md_str, "section",
+            "Missing '## Forbidden claim promotions' section in CLAIMS.md",
+        ))
+    else:
+        in_forbidden = False
+        forbidden_bullets: list[str] = []
+        for line in md_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("## ") and "forbidden claim promotions" in stripped.lower():
+                in_forbidden = True
+                continue
+            if in_forbidden:
+                if stripped.startswith("## "):
+                    break
+                if stripped.startswith("- "):
+                    forbidden_bullets.append(stripped[2:].strip())
+        if len(forbidden_bullets) == 0:
+            findings.append(_finding(
+                ERR_EMPTY_INPUT, md_str, "section.forbidden",
+                "'## Forbidden claim promotions' section contains no bullet items",
+            ))
 
     lines = md_text.splitlines()
     in_claim_table = False

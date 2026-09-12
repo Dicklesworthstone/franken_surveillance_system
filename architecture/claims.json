@@ -1,5 +1,7 @@
 {
   "schema": "fss.claims.v1",
+  "generation": "gen:fss1:claims-v1",
+  "freezeDigest": "sha256:a771b73ed343bbbb04a4cc98a9a7d2853caa533b2600b60090f1ab14d74e1916",
   "sourceDocument": "registries/CLAIMS.md",
   "classes": [
     {
