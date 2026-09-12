@@ -44,6 +44,7 @@ Fail-closed verification invariants:
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import math
@@ -97,6 +98,8 @@ ERR_BOUND_EXPRESSION_UNBOUND = "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001"
 ERR_BOUND_UNITS_MISSING = "ERR-CLAIM-BOUND-UNITS-MISSING-001"
 ERR_BOUND_TIGHTER_THAN_DERIVATION = "ERR-CLAIM-BOUND-TIGHTER-THAN-DERIVATION-001"
 ERR_BOUND_SENSITIVITY_MISSING = "ERR-CLAIM-BOUND-SENSITIVITY-MISSING-001"
+ERR_BOUND_VALUE_OUT_OF_DOMAIN = "ERR-CLAIM-BOUND-VALUE-OUT-OF-DOMAIN-001"
+ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE = "ERR-CLAIM-BOUND-DERIVATION-NOT-RECOMPUTABLE-001"
 ERR_SLO_TARGET_UNBOUND = "ERR-CLAIM-SLO-TARGET-UNBOUND-001"
 ERR_SLO_COMPARATOR_OVERRIDE = "ERR-CLAIM-SLO-COMPARATOR-OVERRIDE-001"
 ERR_SLO_ACTUAL_INVALID = "ERR-CLAIM-SLO-ACTUAL-INVALID-001"
@@ -205,7 +208,7 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Complete the proof; a placeholder is never a checked proof",
     },
     ERR_CLAIM_GENERATION_UNBOUND: {
-        "trigger": "A promoted 'proof' claim is cited by no claim row declaring its current generation (Generation column), or its citing rows declare conflicting generations",
+        "trigger": "A promoted 'proof' or 'bounded_model' claim is cited by no claim row declaring its current generation (Generation column), or its citing rows declare conflicting generations",
         "remediation": "Declare the claim's current generation in its claim row and bind the proof bundle to exactly that generation",
     },
     ERR_BOUND_DERIVATION_UNBOUND: {
@@ -227,6 +230,14 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_BOUND_SENSITIVITY_MISSING: {
         "trigger": "A 'bounded_model' claim's derivation declares no sensitivity analysis or no invalidators",
         "remediation": "Retain the sensitivity analysis and the invalidating conditions with the derivation",
+    },
+    ERR_BOUND_VALUE_OUT_OF_DOMAIN: {
+        "trigger": "A 'bounded_model' claimed, derived, or input value lies outside its registered unit's domain (negative for any registered unit, above 100 for percent units, above 1 for auprc)",
+        "remediation": "Correct the value or its unit; a bound outside its unit's domain bounds nothing",
+    },
+    ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE: {
+        "trigger": "A 'bounded_model' derivation records no usable inputs {name: {value, units}} or no arithmetic formula over them, the formula is not the derived expression's right-hand side, uses anything beyond + - * / on recorded inputs and numbers, or does not recompute the derived value",
+        "remediation": "Record every input with its value and units and the exact arithmetic yielding the derived value",
     },
     ERR_SLO_TARGET_UNBOUND: {
         "trigger": "An 'slo' claim's target cannot be resolved to exactly one numeric threshold of its registries/SLOS.md row (unregistered, tombstoned, or non-numeric row), the measurement declares no or a different unit, or the measurement restates a target that differs from the row or uses a non-canonical target field",
@@ -1540,7 +1551,8 @@ def _check_assumptions(
     params: dict[str, Any],
     findings: list[ClaimFinding],
 ) -> list[str] | None:
-    """Declared assumptions must be a non-empty list of uniquely named {id, statement} entries."""
+    """Declared assumptions must be a non-empty list of {id, statement} entries whose ids are
+    exact tokens (nothing stripped) and unique ignoring case."""
     raw = bundle_data.get("assumptions")
     label = f"'{params['claim_class']}' claim '{params['claim_id']}'"
     if not isinstance(raw, list) or len(raw) == 0:
@@ -1551,26 +1563,28 @@ def _check_assumptions(
         ))
         return None
     ids: list[str] = []
+    folded: set[str] = set()
     ok = True
     for idx, item in enumerate(raw):
-        a_id = _nonempty_str(item.get("id")) if isinstance(item, dict) else None
-        statement = _nonempty_str(item.get("statement")) if isinstance(item, dict) else None
+        a_id = _exact_token(item.get("id")) if isinstance(item, dict) else None
+        statement = _exact_text(item.get("statement")) if isinstance(item, dict) else None
         if a_id is None or statement is None:
             ok = False
             findings.append(_finding(
                 ERR_CLAIM_ASSUMPTIONS_MISSING, path_str, f"assumptions[{idx}]",
-                f"{label} assumption {idx} must be an object with a non-empty 'id' and 'statement' (got {item!r})",
+                f"{label} assumption {idx} must be an object with an exact 'id' and 'statement' (got {item!r})",
                 params,
             ))
-        elif a_id in ids:
+        elif a_id.casefold() in folded:
             ok = False
             findings.append(_finding(
                 ERR_CLAIM_ASSUMPTIONS_MISSING, path_str, f"assumptions[{idx}]",
-                f"{label} declares assumption id '{a_id}' more than once",
+                f"{label} declares assumption id '{a_id}' more than once (ids are compared ignoring case)",
                 params,
             ))
         else:
             ids.append(a_id)
+            folded.add(a_id.casefold())
     return ids if ok else None
 
 
@@ -2068,6 +2082,23 @@ def _verify_proof_claim_evidence(
 # Row minimum_evidence: derivation, units, assumptions, sensitivity and invalidators.
 BOUND_DERIVATION_SCHEMA = "fss.bound_derivation.v1"
 BOUND_COMPARATORS: frozenset[str] = frozenset({"<=", ">="})
+# Units are slo_validate.REGISTERED_UNITS, compared exactly. Every registered unit is a
+# physical, rate, count, size, or score quantity, so none may be negative (slo_validate F4);
+# percent units stop at 100 and auprc at 1.
+BOUND_PERCENT_UNITS: frozenset[str] = frozenset({"%", "percent", "percentage"})
+BOUND_UNIT_MAXIMA: dict[str, float] = {**{u: 100.0 for u in BOUND_PERCENT_UNITS}, "auprc": 1.0}
+# Text that names nothing: a derivation step, sensitivity effect, or invalidator must say something.
+PLACEHOLDER_TEXT: frozenset[str] = frozenset({
+    "none", "n/a", "na", "-", "--", "?", "tbd", "tba", "todo", "unknown", "null", "nil", "nothing",
+    "not applicable", "...", ".",
+})
+_FORMULA_MAX_LENGTH = 512
+_FORMULA_NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_FORMULA_REL_TOL = 1e-9
+
+
+class _FormulaError(ValueError):
+    """A derivation formula that cannot be recomputed as plain arithmetic over its inputs."""
 
 
 def _finite_number(value: Any) -> float | None:
@@ -2080,10 +2111,67 @@ def _finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
-def _nonempty_entries(value: Any) -> bool:
-    return isinstance(value, list) and len(value) > 0 and all(
-        (isinstance(e, str) and e.strip()) or (isinstance(e, dict) and e) for e in value
-    )
+def _substantive(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    return text.casefold() not in PLACEHOLDER_TEXT and sum(ch.isalnum() for ch in text) >= 3
+
+
+def _unit_domain_violation(value: float, unit: str) -> str | None:
+    if value < 0.0:
+        return "is negative"
+    maximum = BOUND_UNIT_MAXIMA.get(unit)
+    if maximum is not None and value > maximum:
+        return f"exceeds {maximum:g} {unit}"
+    return None
+
+
+def _evaluate_formula(formula: str, inputs: dict[str, float]) -> float:
+    """Recomputes a derivation formula: + - * / and unary +/- over recorded inputs and numbers.
+    Anything else (calls, attributes, names that are not inputs, powers) is refused."""
+    if len(formula) > _FORMULA_MAX_LENGTH:
+        raise _FormulaError(f"formula exceeds {_FORMULA_MAX_LENGTH} characters")
+    try:
+        tree = ast.parse(formula, mode="eval")
+    except (SyntaxError, ValueError, RecursionError) as exc:
+        raise _FormulaError(f"formula is not arithmetic: {exc}") from exc
+
+    def evaluate(node: ast.AST) -> float:
+        if isinstance(node, ast.Expression):
+            return evaluate(node.body)
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
+            left, right = evaluate(node.left), evaluate(node.right)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if right == 0.0:
+                raise _FormulaError("formula divides by zero")
+            return left / right
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
+            operand = evaluate(node.operand)
+            return -operand if isinstance(node.op, ast.USub) else operand
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            number = _finite_number(node.value)
+            if number is None:
+                raise _FormulaError(f"formula constant {node.value!r} is not a finite number")
+            return number
+        if isinstance(node, ast.Name):
+            if node.id not in inputs:
+                raise _FormulaError(f"formula names '{node.id}', which is not a recorded input")
+            return inputs[node.id]
+        raise _FormulaError(f"formula uses unsupported syntax '{type(node).__name__}'")
+
+    try:
+        result = evaluate(tree)
+    except RecursionError as exc:
+        raise _FormulaError("formula nests too deeply") from exc
+    if not math.isfinite(result):
+        raise _FormulaError("formula result is not finite")
+    return result
 
 
 def _verify_bounded_model_claim_evidence(
@@ -2092,26 +2180,60 @@ def _verify_bounded_model_claim_evidence(
     path_str: str,
     expected_claim_id: str | None,
     findings: list[ClaimFinding],
+    claim_generation: str | None = None,
 ) -> None:
     """Opens and validates the evidence the 'bounded_model' row demands; every gap fails closed.
 
-    1. Assumptions: non-empty, each a named {id, statement}; every assumption the
-       derivation relies on is declared by the claim.
-    2. Bound: {claim_id, expression, comparator, value, units} bound to the claim ID,
-       with a finite value and explicit units.
-    3. Derivation: exactly one retained fss.bound_derivation.v1 on disk, digest-bound,
-       bound to the claim ID and generation, with derivation steps.
+    0. Generation: the bundle generation is the citing claim row's current generation.
+    1. Assumptions: non-empty, each an exact {id, statement}, ids unique ignoring case; every
+       assumption the derivation relies on is declared by the claim.
+    2. Bound: {claim_id, expression, comparator, value, units} bound to the claim ID, a finite
+       value inside its unit's domain, and a registered unit (slo_validate.REGISTERED_UNITS).
+    3. Derivation: exactly one retained fss.bound_derivation.v1 on disk, digest-bound, bound to
+       the claim ID and generation, with substantive steps.
     4. The claimed expression, comparator, and units equal the derivation's exactly.
-    5. The derivation carries sensitivity analysis and invalidators.
-    6. The claimed bound is never tighter than the derived bound (no tolerance).
+    5. Recomputation: the derivation records inputs {name: {value, units}} and the arithmetic
+       'formula' that is its expression's right-hand side; the checker recomputes it and it
+       must yield the derived value.
+    6. Sensitivity entries {parameter, partial} name recorded inputs and a substantive effect;
+       invalidators are substantive.
+    7. The claimed bound is never tighter than the derived bound (no tolerance).
     """
     claim_id = _bound_claim_id(bundle_data, expected_claim_id)
     params: dict[str, Any] = {"claim_class": "bounded_model", "claim_id": claim_id}
     label = f"'bounded_model' claim '{claim_id}'"
-    claim_generation = _nonempty_str(bundle_data.get("generation"))
+    bundle_generation = _exact_token(bundle_data.get("generation"))
+    _bind_claim_row_generation(bundle_generation, claim_generation, path_str, params, findings)
 
     # 1. Assumptions (the derivation cross-check follows below).
     assumption_ids = _check_assumptions(bundle_data, path_str, params, findings)
+
+    def registered_units(value: Any, where: str, what: str) -> str | None:
+        units = _exact_token(value)
+        if units is None:
+            findings.append(_finding(ERR_BOUND_UNITS_MISSING, path_str, where, f"{label} {what} declares no exact units (got {value!r})", params))
+            return None
+        if units not in slo_validate.REGISTERED_UNITS:
+            findings.append(_finding(
+                ERR_BOUND_UNITS_MISSING, path_str, where,
+                f"{label} {what} units '{units}' are not a registered unit (slo_validate.REGISTERED_UNITS, compared exactly)",
+                params,
+            ))
+            return None
+        return units
+
+    def in_domain(value: float | None, units: str | None, where: str, what: str) -> float | None:
+        if value is None or units is None:
+            return value
+        violation = _unit_domain_violation(value, units)
+        if violation is not None:
+            findings.append(_finding(
+                ERR_BOUND_VALUE_OUT_OF_DOMAIN, path_str, where,
+                f"{label} {what} {value} {units} {violation}; it lies outside the unit's domain",
+                {**params, "value": value, "units": units},
+            ))
+            return None
+        return value
 
     # 2. The claimed bound.
     bound = bundle_data.get("bound")
@@ -2126,12 +2248,12 @@ def _verify_bounded_model_claim_evidence(
             params,
         ))
     else:
-        bound_claim = _nonempty_str(bound.get("claim_id"))
+        bound_claim = _exact_token(bound.get("claim_id"))
         if bound_claim != claim_id:
-            findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.claim_id", f"{label} bound is bound to claim {bound_claim!r}", params))
-        expression = _nonempty_str(bound.get("expression"))
+            findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.claim_id", f"{label} bound is bound to claim {bound.get('claim_id')!r}", params))
+        expression = _exact_text(bound.get("expression"))
         if expression is None:
-            findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.expression", f"{label} bound declares no expression", params))
+            findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.expression", f"{label} bound declares no exact expression", params))
         raw_comparator = bound.get("comparator")
         if raw_comparator in BOUND_COMPARATORS:
             comparator = raw_comparator
@@ -2144,9 +2266,8 @@ def _verify_bounded_model_claim_evidence(
         value = _finite_number(bound.get("value"))
         if value is None:
             findings.append(_finding(ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.value", f"{label} bound value {bound.get('value')!r} is not a finite number", params))
-        units = _nonempty_str(bound.get("units"))
-        if units is None:
-            findings.append(_finding(ERR_BOUND_UNITS_MISSING, path_str, "bound.units", f"{label} bound declares no units", params))
+        units = registered_units(bound.get("units"), "bound.units", "bound")
+        value = in_domain(value, units, "bound.value", "claimed bound")
 
     # 3. The derivation artifact, opened and bound to the claim.
     derivation, reason = _open_role_document(bundle_data, root, "derivation", BOUND_DERIVATION_SCHEMA)
@@ -2154,27 +2275,27 @@ def _verify_bounded_model_claim_evidence(
         findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, "artifacts[role=derivation]", f"{label} derivation: {reason}", params))
         return
     d_loc = "derivation"
-    if _nonempty_str(derivation.get("claim_id")) != claim_id:
+    if _exact_token(derivation.get("claim_id")) != claim_id:
         findings.append(_finding(
             ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.claim_id",
             f"{label} derivation is bound to claim {derivation.get('claim_id')!r}",
             params,
         ))
-    d_generation = _nonempty_str(derivation.get("generation"))
-    if d_generation is None or claim_generation is None or d_generation != claim_generation:
+    d_generation = _exact_token(derivation.get("generation"))
+    if d_generation is None or bundle_generation is None or d_generation != bundle_generation:
         findings.append(_finding(
             ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.generation",
-            f"{label} derivation generation {derivation.get('generation')!r} differs from the claim generation {claim_generation!r}",
+            f"{label} derivation generation {derivation.get('generation')!r} differs from the claim generation {bundle_generation!r}",
             params,
         ))
     steps = derivation.get("steps")
-    if not (isinstance(steps, list) and len(steps) > 0 and all(isinstance(s, str) and s.strip() for s in steps)):
-        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.steps", f"{label} derivation declares no derivation steps", params))
+    if not (isinstance(steps, list) and len(steps) > 0 and all(_substantive(s) for s in steps)):
+        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.steps", f"{label} derivation declares no substantive derivation steps (got {steps!r})", params))
 
     # 4. Expression, comparator, value, and units agree exactly with the derivation.
-    d_expression = _nonempty_str(derivation.get("expression"))
+    d_expression = _exact_text(derivation.get("expression"))
     if d_expression is None:
-        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.expression", f"{label} derivation declares no derived expression", params))
+        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.expression", f"{label} derivation declares no exact derived expression", params))
     elif expression is not None and d_expression != expression:
         findings.append(_finding(
             ERR_BOUND_EXPRESSION_UNBOUND, path_str, "bound.expression",
@@ -2198,21 +2319,20 @@ def _verify_bounded_model_claim_evidence(
             f"{label} derivation derived_value {derivation.get('derived_value')!r} is not a finite number",
             params,
         ))
-    d_units = _nonempty_str(derivation.get("units"))
-    if d_units is None:
-        findings.append(_finding(ERR_BOUND_UNITS_MISSING, path_str, f"{d_loc}.units", f"{label} derivation declares no units", params))
-    elif units is not None and d_units != units:
+    d_units = registered_units(derivation.get("units"), f"{d_loc}.units", "derivation")
+    if units is not None and d_units is not None and d_units != units:
         findings.append(_finding(
             ERR_BOUND_UNITS_MISSING, path_str, "bound.units",
             f"{label} claimed units '{units}' differ from the derivation units '{d_units}'; units are never converted implicitly",
             params,
         ))
+    d_value = in_domain(d_value, d_units, f"{d_loc}.derived_value", "derived value")
 
     d_assumptions = derivation.get("assumption_ids")
-    if not (isinstance(d_assumptions, list) and len(d_assumptions) > 0 and all(isinstance(a, str) and a.strip() for a in d_assumptions)):
-        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.assumption_ids", f"{label} derivation names no assumption ids", params))
+    if not (isinstance(d_assumptions, list) and len(d_assumptions) > 0 and all(_exact_token(a) for a in d_assumptions)):
+        findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, f"{d_loc}.assumption_ids", f"{label} derivation names no exact assumption ids", params))
     elif assumption_ids is not None:
-        omitted = sorted({a.strip() for a in d_assumptions} - set(assumption_ids))
+        omitted = sorted(set(d_assumptions) - set(assumption_ids))
         if omitted:
             findings.append(_finding(
                 ERR_CLAIM_ASSUMPTIONS_MISSING, path_str, "assumptions",
@@ -2220,16 +2340,89 @@ def _verify_bounded_model_claim_evidence(
                 {**params, "omitted_assumptions": omitted},
             ))
 
-    # 5. Sensitivity analysis and invalidators.
-    for key in ("sensitivity", "invalidators"):
-        if not _nonempty_entries(derivation.get(key)):
-            findings.append(_finding(
-                ERR_BOUND_SENSITIVITY_MISSING, path_str, f"{d_loc}.{key}",
-                f"{label} derivation declares no {key} (got {derivation.get(key)!r})",
-                params,
-            ))
+    # 5. Recompute the derived value from the recorded inputs.
+    raw_inputs = derivation.get("inputs")
+    inputs: dict[str, float] | None = None
+    if not isinstance(raw_inputs, dict) or not raw_inputs:
+        findings.append(_finding(
+            ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE, path_str, f"{d_loc}.inputs",
+            f"{label} derivation records no inputs {{name: {{value, units}}}} (got {raw_inputs!r}); its derived value is self-asserted",
+            params,
+        ))
+    else:
+        inputs = {}
+        for name, entry in raw_inputs.items():
+            where = f"{d_loc}.inputs.{name}"
+            number = _finite_number(entry.get("value")) if isinstance(entry, dict) else None
+            if not isinstance(name, str) or _FORMULA_NAME_RE.fullmatch(name) is None or number is None:
+                findings.append(_finding(
+                    ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE, path_str, where,
+                    f"{label} derivation input {name!r} must be an identifier with a finite 'value' (got {entry!r})",
+                    params,
+                ))
+                inputs = None
+                continue
+            input_units = registered_units(entry.get("units"), f"{where}.units", f"derivation input '{name}'")
+            number = in_domain(number, input_units, where, f"derivation input '{name}'")
+            if input_units is None or number is None:
+                inputs = None
+            elif inputs is not None:
+                inputs[name] = number
+    formula = _exact_text(derivation.get("formula"))
+    if formula is None:
+        findings.append(_finding(
+            ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE, path_str, f"{d_loc}.formula",
+            f"{label} derivation records no arithmetic formula over its inputs (got {derivation.get('formula')!r})",
+            params,
+        ))
+    else:
+        if d_expression is not None and d_comparator is not None:
+            _, separator, rhs = d_expression.partition(f" {d_comparator} ")
+            if not separator or " ".join(rhs.split()) != " ".join(formula.split()):
+                findings.append(_finding(
+                    ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE, path_str, f"{d_loc}.formula",
+                    f"{label} derivation formula {formula!r} is not the right-hand side of its expression {d_expression!r}",
+                    params,
+                ))
+        if inputs is not None:
+            try:
+                recomputed = _evaluate_formula(formula, inputs)
+            except _FormulaError as exc:
+                findings.append(_finding(ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE, path_str, f"{d_loc}.formula", f"{label} derivation {exc}", params))
+            else:
+                if d_value is not None and not math.isclose(recomputed, d_value, rel_tol=_FORMULA_REL_TOL, abs_tol=0.0):
+                    findings.append(_finding(
+                        ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE, path_str, f"{d_loc}.derived_value",
+                        f"{label} derivation formula recomputes {recomputed}, not the asserted derived value {d_value}",
+                        {**params, "recomputed_value": recomputed, "derived_value": d_value},
+                    ))
+                    d_value = None
 
-    # 6. Never tighter than the derivation.
+    # 6. Sensitivity analysis and invalidators say something.
+    sensitivity = derivation.get("sensitivity")
+    sensitivity_ok = isinstance(sensitivity, list) and len(sensitivity) > 0
+    if sensitivity_ok:
+        for entry in sensitivity:
+            parameter = _exact_token(entry.get("parameter")) if isinstance(entry, dict) else None
+            if parameter is None or not _substantive(entry.get("partial")) or (isinstance(raw_inputs, dict) and raw_inputs and parameter not in raw_inputs):
+                sensitivity_ok = False
+                break
+    if not sensitivity_ok:
+        findings.append(_finding(
+            ERR_BOUND_SENSITIVITY_MISSING, path_str, f"{d_loc}.sensitivity",
+            f"{label} derivation declares no substantive sensitivity analysis: each entry is "
+            f"{{parameter: a recorded input, partial: its effect}} (got {sensitivity!r})",
+            params,
+        ))
+    invalidators = derivation.get("invalidators")
+    if not (isinstance(invalidators, list) and len(invalidators) > 0 and all(_substantive(i) for i in invalidators)):
+        findings.append(_finding(
+            ERR_BOUND_SENSITIVITY_MISSING, path_str, f"{d_loc}.invalidators",
+            f"{label} derivation declares no substantive invalidators (got {invalidators!r})",
+            params,
+        ))
+
+    # 7. Never tighter than the derivation.
     comparable = (
         value is not None and d_value is not None
         and comparator is not None and comparator == d_comparator
@@ -2496,7 +2689,7 @@ def verify_proof_bundle(
         elif effective_class == "proof" and _is_promoted_bundle(data, claim_level):
             _verify_proof_claim_evidence(data, root, path_str, expected_claim_id, findings, claim_generation)
         elif effective_class == "bounded_model" and _is_promoted_bundle(data, claim_level):
-            _verify_bounded_model_claim_evidence(data, root, path_str, expected_claim_id, findings)
+            _verify_bounded_model_claim_evidence(data, root, path_str, expected_claim_id, findings, claim_generation)
 
     is_valid = not any(f.severity == "error" for f in findings)
     return is_valid, findings, data
