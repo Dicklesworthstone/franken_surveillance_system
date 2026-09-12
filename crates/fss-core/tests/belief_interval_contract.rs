@@ -1051,3 +1051,95 @@ fn test_contradiction_knowledge_state_uses_canonical_parser_for_every_name() -> 
 
     Ok(())
 }
+
+/// Every knowledge state, spelled out so a new variant forces this contract to be revisited.
+const ALL_KNOWLEDGE_STATES: [KnowledgeState; 9] = [
+    KnowledgeState::Known,
+    KnowledgeState::Estimated,
+    KnowledgeState::Unknown,
+    KnowledgeState::Conflicted,
+    KnowledgeState::Stale,
+    KnowledgeState::NotObservable,
+    KnowledgeState::Redacted,
+    KnowledgeState::Indeterminate,
+    KnowledgeState::NotApplicable,
+];
+
+/// Every runtime outcome.
+const ALL_RUNTIME_OUTCOMES: [RuntimeOutcome; 7] = [
+    RuntimeOutcome::Ok,
+    RuntimeOutcome::Error,
+    RuntimeOutcome::Cancelled,
+    RuntimeOutcome::Panicked,
+    RuntimeOutcome::Partial,
+    RuntimeOutcome::Indeterminate,
+    RuntimeOutcome::Refused,
+];
+
+#[test]
+fn test_rkg27_unresolved_contradiction_stays_active_in_every_knowledge_state() -> TestResult {
+    for disposition in [
+        HypothesisDisposition::Live,
+        HypothesisDisposition::Supported,
+        HypothesisDisposition::Disfavored,
+    ] {
+        for knowledge_state in ALL_KNOWLEDGE_STATES {
+            for outcome in ALL_RUNTIME_OUTCOMES {
+                let mut params = sample_contradiction_params()?;
+                params.disposition = disposition;
+                params.knowledge_state = knowledge_state;
+                params.outcome = outcome;
+                let contra = Contradiction::new(params)?;
+                assert!(
+                    contra.is_active(),
+                    "unresolved {disposition:?} contradiction in {} with outcome {outcome:?} must stay active",
+                    knowledge_state.as_str()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_rkg27_disfavored_redacted_is_as_active_as_disfavored_known() -> TestResult {
+    let mut params = sample_contradiction_params()?;
+    params.disposition = HypothesisDisposition::Disfavored;
+    params.outcome = RuntimeOutcome::Ok;
+    params.knowledge_state = KnowledgeState::Known;
+    let known = Contradiction::new(params.clone())?;
+    params.knowledge_state = KnowledgeState::Redacted;
+    let redacted = Contradiction::new(params)?;
+    assert!(known.is_active());
+    assert_eq!(
+        redacted.is_active(),
+        known.is_active(),
+        "redaction must not make a disfavored contradiction disappear"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_rkg27_terminal_disposition_retires_contradiction_in_every_knowledge_state() -> TestResult {
+    for disposition in [
+        HypothesisDisposition::Refuted,
+        HypothesisDisposition::Resolved,
+        HypothesisDisposition::Superseded,
+    ] {
+        for knowledge_state in ALL_KNOWLEDGE_STATES {
+            for outcome in ALL_RUNTIME_OUTCOMES {
+                let mut params = sample_contradiction_params()?;
+                params.disposition = disposition;
+                params.knowledge_state = knowledge_state;
+                params.outcome = outcome;
+                let contra = Contradiction::new(params)?;
+                assert!(
+                    !contra.is_active(),
+                    "{disposition:?} contradiction in {} with outcome {outcome:?} must be retired",
+                    knowledge_state.as_str()
+                );
+            }
+        }
+    }
+    Ok(())
+}

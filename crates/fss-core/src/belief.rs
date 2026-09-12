@@ -792,23 +792,26 @@ impl Contradiction {
     }
 
     /// Returns true if this contradiction actively constrains reasoning or action.
+    ///
+    /// Only a terminal hypothesis disposition retires a contradiction: `refuted`, `resolved`, and
+    /// `superseded` are the named-witness, policy, or explicit-scope-change exits the contract
+    /// allows. Every non-terminal disposition (`live`, `supported`, `disfavored`) keeps it active
+    /// whatever its knowledge state or runtime outcome. In particular `unknown`, `stale`,
+    /// `not_observable`, `redacted`, `indeterminate`, and `not_applicable` never make a
+    /// contradiction disappear: a redacted or stale contradiction is still an unresolved conflict
+    /// the current projection cannot see through, and retiring it would flatten a non-known state
+    /// into "no conflict". Knowledge state and outcome stay orthogonal coordinates reported by
+    /// their own accessors; they do not gate activity.
     #[must_use]
     pub fn is_active(&self) -> bool {
-        if matches!(
-            self.disposition,
+        match self.disposition {
+            HypothesisDisposition::Live
+            | HypothesisDisposition::Supported
+            | HypothesisDisposition::Disfavored => true,
             HypothesisDisposition::Refuted
-                | HypothesisDisposition::Resolved
-                | HypothesisDisposition::Superseded
-        ) {
-            return false;
+            | HypothesisDisposition::Resolved
+            | HypothesisDisposition::Superseded => false,
         }
-
-        self.knowledge_state == KnowledgeState::Conflicted
-            || self.knowledge_state == KnowledgeState::Known
-            || self.knowledge_state == KnowledgeState::Indeterminate
-            || self.disposition == HypothesisDisposition::Live
-            || self.disposition == HypothesisDisposition::Supported
-            || self.outcome == RuntimeOutcome::Indeterminate
     }
 
     /// Parse from canonical serialized bytes.
