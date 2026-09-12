@@ -257,3 +257,113 @@ fn test_all_knowledge_states_universe_consistency() -> Result<(), Box<dyn Error>
 
     Ok(())
 }
+
+#[test]
+fn test_unknown_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Unknown;
+
+    // 1. Exact normative stable ID
+    assert_eq!(state.id(), "KSTATE-003");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(state.as_str(), "unknown");
+    assert_eq!(format!("{state}"), "unknown");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        state.meaning(),
+        "The authorized evidence acquired so far does not establish the proposition."
+    );
+
+    // 4. May support planning: yes, as an explicit branch or open variable
+    assert!(state.may_support_planning());
+    assert_eq!(
+        state.planning_support_description(),
+        "yes, as an explicit branch or open variable"
+    );
+
+    // 5. May authorize irreversible effect: no (hard constitutional gate)
+    assert!(!state.may_authorize_irreversible_effect());
+    assert_eq!(state.irreversible_effect_description(), "no");
+
+    // 6. Explicit assumptions required: yes
+    assert!(state.explicit_assumptions_required());
+
+    Ok(())
+}
+
+#[test]
+fn test_unknown_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = KnowledgeState::from_id("KSTATE-003")?;
+    assert_eq!(from_id, KnowledgeState::Unknown);
+
+    // Parse from schema name
+    let from_name = KnowledgeState::from_name("unknown")?;
+    assert_eq!(from_name, KnowledgeState::Unknown);
+
+    // Parse via FromStr
+    let from_str_name = KnowledgeState::from_str("unknown")?;
+    assert_eq!(from_str_name, KnowledgeState::Unknown);
+
+    let from_str_id = KnowledgeState::from_str("KSTATE-003")?;
+    assert_eq!(from_str_id, KnowledgeState::Unknown);
+
+    Ok(())
+}
+
+#[test]
+fn test_unknown_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Unknown;
+
+    let mut encoder = CanonicalEncoder::new();
+    state.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = KnowledgeState::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, state);
+    assert_eq!(decoded.id(), "KSTATE-003");
+    assert_eq!(decoded.as_str(), "unknown");
+
+    Ok(())
+}
+
+#[test]
+fn test_unknown_knowledge_cell_explicit_branch_and_hard_gate() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let evidence_digest = ContentDigest::sha256(b"preliminary_or_inconclusive_sensor_evidence");
+
+    // Construct a cell with KnowledgeState::Unknown
+    let cell = KnowledgeCell {
+        claim_id: "claim:target:presence:001".to_string(),
+        statement: "Unconfirmed target presence in zone B".to_string(),
+        knowledge_state: KnowledgeState::Unknown,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![evidence_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+    };
+
+    // Properties on KnowledgeCell
+    assert!(cell.is_unknown());
+    assert!(!cell.is_estimated());
+    assert!(cell.requires_explicit_assumptions());
+    assert!(cell.may_support_planning());
+
+    // Constitutional Hard Gate: Unknown CANNOT be used as an irreversible-effect premise,
+    // regardless of evidence presence, unexpired validity, or lack of contradictions.
+    assert!(
+        !cell.is_irreversible_effect_premise(now),
+        "Unknown knowledge state must NEVER authorize irreversible effects"
+    );
+
+    // Changing state to Known satisfies premise requirements
+    let mut resolved_cell = cell;
+    resolved_cell.knowledge_state = KnowledgeState::Known;
+    assert!(resolved_cell.is_irreversible_effect_premise(now));
+
+    Ok(())
+}

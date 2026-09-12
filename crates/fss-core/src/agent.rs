@@ -185,6 +185,12 @@ impl KnowledgeCell {
         self.knowledge_state == KnowledgeState::Estimated
     }
 
+    /// Returns whether this knowledge cell is an unknown proposition.
+    #[must_use]
+    pub fn is_unknown(&self) -> bool {
+        self.knowledge_state == KnowledgeState::Unknown
+    }
+
     /// Returns whether this cell requires explicit assumptions to be used in planning.
     #[must_use]
     pub fn requires_explicit_assumptions(&self) -> bool {
