@@ -668,6 +668,7 @@ fn context_candidates(
             } else {
                 seen_contradictions.push((cell, item_id.clone()));
                 let mut basis = BTreeSet::from([cell.claim_id.clone()]);
+                basis.extend(cell.evidence.iter().map(ToString::to_string));
                 basis.extend(cell.contradictions.iter().map(ToString::to_string));
                 insert_candidate(
                     &mut candidates,

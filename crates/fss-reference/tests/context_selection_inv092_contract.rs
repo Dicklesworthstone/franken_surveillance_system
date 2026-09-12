@@ -726,3 +726,90 @@ fn test_contradiction_dedup_must_not_drop_independent_sensor_evidence() -> Resul
     );
     Ok(())
 }
+
+#[test]
+fn test_contradiction_basis_must_include_positive_evidence() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("site:inv092:adv2");
+    let evidence_digest = ContentDigest::sha256(b"positive-claim-evidence");
+    let contra_digest = ContentDigest::sha256(b"counter-evidence");
+
+    let cell = KnowledgeCell {
+        claim_id: "claim:contra:basis".to_owned(),
+        statement: "Perimeter fence intact".to_owned(),
+        knowledge_state: KnowledgeState::Conflicted,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![evidence_digest],
+        contradictions: vec![contra_digest],
+        valid_until: None,
+    };
+
+    let world = PossibleWorld {
+        world_id: "world:adv:2".to_owned(),
+        description: "World 2".to_owned(),
+        claim_ids: BTreeSet::from(["claim:contra:basis".to_owned()]),
+        evidence: vec![evidence_digest],
+        consequence_severity: 4,
+        protected: true,
+    };
+    let envelope = WorldEnvelope {
+        envelope_id: "envelope:adv:2".to_owned(),
+        objective_id: "objective:adv:2".to_owned(),
+        anchor: anchor.clone(),
+        nominal_claim_ids: BTreeSet::from(["claim:contra:basis".to_owned()]),
+        certified_core_claim_ids: BTreeSet::new(),
+        alternatives: vec![world],
+        adversarial_residuals: Vec::new(),
+        common_invariants: BTreeSet::new(),
+        coverage_boundary_handles: BTreeSet::new(),
+    };
+    let frame = SituationFrame {
+        frame_id: "frame:adv:2".to_owned(),
+        objective_id: "objective:adv:2".to_owned(),
+        anchor: anchor.clone(),
+        world_envelope: envelope,
+        knowledge_cells: vec![cell],
+        now: vec!["Monitoring".to_owned()],
+        changed: Vec::new(),
+        why: Vec::new(),
+        unknown: Vec::new(),
+        at_risk: Vec::new(),
+        next: Vec::new(),
+        evidence_handles: BTreeSet::new(),
+    };
+    let capsule = SituationCapsule {
+        capsule_id: "situation:adv:2".to_owned(),
+        revision: 1,
+        contract_basis: test_basis(),
+        mission_id: MissionId::parse("mission:adv:2")?,
+        session_id: SessionId::parse("session:adv:2")?,
+        principal_id: PrincipalId::parse("principal:adv")?,
+        anchor,
+        previous_anchor: None,
+        frame,
+        obligations: Vec::new(),
+        affordances: Vec::new(),
+        completeness: Completeness::Partial,
+        created_at: TimestampNs(1_000_000),
+        mission_state: None,
+    };
+    let situation = ReferenceSituation {
+        capsule,
+        proof_roots: BTreeSet::from([evidence_digest]),
+    };
+
+    let publ = project_reference_situation(situation, &test_spec(10_000)?)?;
+    let contra_item = publ
+        .context_pack
+        .items
+        .iter()
+        .find(|item| item.item_id == "context:contradiction:claim:contra:basis")
+        .ok_or(ContractError::NotFound)?;
+
+    // Positive evidence MUST be preserved in the contradiction item's basis:
+    assert!(
+        contra_item.basis.contains(&evidence_digest.to_string()),
+        "Contradiction context item basis failed to retain positive evidence!"
+    );
+    Ok(())
+}
