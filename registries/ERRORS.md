@@ -159,6 +159,14 @@ operation states rather than generic errors.
 | `ERR-GRAPH-MISSING-OUTPUT-WITNESS-001` | graph algorithm row lacks declared output-size witness with bounds | declare output-size witness with bounds or record explicit owner drift |
 | `ERR-GRAPH-PROJECTION-MISMATCH-001` | graph algorithm projections differ between machine source and registry markdown mirror | reconcile machine source and registry markdown projections |
 | `ERR-GRAPH-STABLE-ID-DRIFT-001` | graph algorithm stable identifier renumbered or superseded row not tombstoned | restore stable algorithm identity and retain superseded rows as tombstones |
+| `ERR-CLAIM-ASSUMPTIONS-MISSING-001` | promoted proof or bounded_model claim declares no assumptions, or an assumption lacks a non-empty id and statement | declare every named assumption before promotion; no retry without them |
+| `ERR-CLAIM-PROOF-FORMAL-MODEL-UNBOUND-001` | proof claim declares no formal model, or its retained fss.formal_model.v1 manifest or source is missing, unreadable, digest-unbound, or not bound to the claim id | retain the declared formal model bound to the claim id before promotion |
+| `ERR-CLAIM-PROOF-MODEL-GENERATION-MISMATCH-001` | proof claim formal model generation differs from the claim generation, the declared model reference, or the check receipt | re-check the proof at the claim generation; never splice generations |
+| `ERR-CLAIM-PROOF-THEOREM-UNBOUND-001` | proof claim theorem statement is missing, bound to another claim, or differs from the statement the check receipt checked | bind the exact theorem statement to the claim and re-check |
+| `ERR-CLAIM-PROOF-FORMAL-ARTIFACT-MISSING-001` | proof claim formal artifact is absent, not on disk, empty, digest-unbound, or not written in the declared checker language | retain the exact checked formal artifact before promotion |
+| `ERR-CLAIM-PROOF-TESTS-ONLY-001` | proof claim is backed only by tests (test-runner toolchain, test source, or test results) instead of a formal artifact | demote the claim or supply a machine-checked formal proof |
+| `ERR-CLAIM-PROOF-TOOLCHAIN-UNBOUND-001` | proof claim formal checker identity is missing, unregistered, latest-aliased, or differs between bundle and check receipt | pin the exact registered formal checker and version in bundle and receipt |
+| `ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001` | proof check receipt is missing, malformed, non-passing, or not bound to the claim, formal model, and formal artifact digest | re-run the formal checker and retain a passing bound receipt |
 
 
 
