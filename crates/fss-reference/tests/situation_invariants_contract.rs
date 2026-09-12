@@ -263,6 +263,7 @@ fn synthetic_situation(
         affordances: custom_affordances,
         completeness: Completeness::Complete,
         created_at: TimestampNs(1_000),
+        mission_state: None,
     };
     capsule.validate()?;
     Ok(ReferenceSituation {
@@ -513,7 +514,7 @@ fn test_f6_alert_prepare_and_commit_are_conditional_not_robust() -> Result<(), B
     );
     assert!(
         prepare.supported_worlds.is_disjoint(&prepare.unsafe_worlds),
-        "supported and unsafe worlds must be disjoint"
+        "supported_worlds and unsafe_worlds must be disjoint"
     );
     prepare.validate_against(&situation_prepare.capsule.frame.world_envelope)?;
 
@@ -600,7 +601,7 @@ fn test_f6_alert_prepare_and_commit_are_conditional_not_robust() -> Result<(), B
     );
     assert!(
         commit.supported_worlds.is_disjoint(&commit.unsafe_worlds),
-        "supported and unsafe worlds must be disjoint"
+        "supported_worlds and unsafe_worlds must be disjoint"
     );
     assert!(
         !commit.reversible,
