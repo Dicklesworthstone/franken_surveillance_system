@@ -1,0 +1,296 @@
+#!/usr/bin/env python3
+"""Planted-negative and positive test suite for three semantic planes enforcement (fss-x4a.1.9 / ADR-0001).
+
+Enforces ADR-0001 three semantic planes doctrine from AGENTS.md:
+"Authority, cognition, and effect planes are type-distinct:
+ - A value from one plane must not convert into another plane's type without an explicit, audited boundary type.
+ - A cognition output (model score, recommendation) can never grant effect authority."
+
+Verification invariants:
+1. Positive controls: Real repository passes with 0 errors; compile-fail doctests pass.
+2. Compile-fail doctests: Forbidden cross-plane conversions (cognition -> effect authority,
+   cognition -> effect intent, effect authority -> cognition belief) fail to compile.
+3. Cross-plane import policy: A module declared for one plane (e.g. cognition) cannot import
+   authority or effect types outside registered boundary modules.
+4. Core type census: Every existing plane type in fss-core (effect.rs, event.rs, belief.rs, region.rs)
+   is mapped in architecture/semantic_plane_registry.json.
+5. Ambiguous types: Types bridging planes (e.g. AlertEffectRecord, EvidenceGraph) are honestly
+   reported as ambiguous findings, never guessed.
+6. Fail closed: Corrupt, missing, or empty registry fails closed.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+try:
+    from semantic_plane_checker import (
+        ERR_COGNITION_GRANTS_EFFECT,
+        ERR_DOCTEST_FAILED,
+        ERR_REGISTRY_INVALID,
+        ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT,
+        ERR_UNMAPPED_CORE_TYPE,
+        INFO_AMBIGUOUS_TYPE,
+        audit_semantic_planes,
+        load_semantic_plane_registry,
+        verify_compile_fail_doctests,
+    )
+except ImportError:
+    # Will fail when tests run first before implementation
+    pass
+
+
+class TestSemanticPlanesPositiveControls(unittest.TestCase):
+    """Positive controls asserting real repo passes all semantic plane checks."""
+
+    def test_real_repo_passes(self) -> None:
+        """The real repository passes semantic plane audit with zero errors."""
+        is_valid, findings, summary = audit_semantic_planes(ROOT)
+        errors = [f.message for f in findings if f.severity == "error"]
+        self.assertTrue(is_valid, f"Real repo failed semantic planes audit: {errors}")
+        self.assertEqual(summary["status"], "pass")
+        self.assertEqual(summary["error_count"], 0)
+        self.assertGreaterEqual(summary["types_mapped"], 40)
+        self.assertGreater(summary["authority_types"], 0)
+        self.assertGreater(summary["cognition_types"], 0)
+        self.assertGreater(summary["effect_types"], 0)
+        self.assertGreater(summary["ambiguous_types"], 0)
+
+    def test_cli_real_repo_passes(self) -> None:
+        """CLI invocation on the real repository exits with code 0."""
+        cmd = [sys.executable, str(ROOT / "scripts/semantic_plane_checker.py")]
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+        self.assertEqual(result.returncode, 0, f"CLI failed:\n{result.stderr}\n{result.stdout}")
+        self.assertIn("[PASS]", result.stdout)
+
+    def test_cli_json_mode(self) -> None:
+        """CLI --json emits valid JSON matching summary and findings structure."""
+        cmd = [sys.executable, str(ROOT / "scripts/semantic_plane_checker.py"), "--json"]
+        result = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+        self.assertEqual(result.returncode, 0, f"CLI JSON mode failed:\n{result.stderr}")
+        data = json.loads(result.stdout)
+        self.assertIn("summary", data)
+        self.assertIn("findings", data)
+        self.assertEqual(data["summary"]["status"], "pass")
+        self.assertEqual(data["summary"]["error_count"], 0)
+
+    def test_doctests_compile_fail_pass(self) -> None:
+        """Compile-fail doctests in docs/enforcement/three_semantic_planes_contract.md pass."""
+        contract_path = ROOT / "docs/enforcement/three_semantic_planes_contract.md"
+        self.assertTrue(contract_path.is_file(), f"Contract doctest file missing: {contract_path}")
+        success, test_count, err = verify_compile_fail_doctests(contract_path)
+        self.assertTrue(success, f"Compile-fail doctest execution failed: {err}")
+        self.assertGreaterEqual(test_count, 4)
+
+
+class TestPlantedNegativeCrossPlaneImports(unittest.TestCase):
+    """Tests failure when unauthorized cross-plane imports occur outside boundary modules."""
+
+    def test_unauthorized_cross_plane_import_fails(self) -> None:
+        """A module declared for cognition importing effect types outside boundary fails closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src_dir = tmp_root / "crates" / "fss-cognition" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            bad_module = src_dir / "unauthorized_planner.rs"
+            bad_module.write_text(
+                """//! Unauthorized planner attempting direct effect imports
+use fss_core::effect::EffectAuthority;
+use fss_core::effect::EffectIntent;
+
+pub fn trigger_unauthorized_effect(auth: EffectAuthority) {
+    // violation
+}
+""",
+                encoding="utf-8",
+            )
+
+            # Minimal registry mapping unauthorized_planner.rs to cognition
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            registry_path = reg_dir / "semantic_plane_registry.json"
+            registry_path.write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "as_of": "2026-09-01",
+                    "registered_boundary_modules": [
+                        "crates/fss-core/src/effect.rs"
+                    ],
+                    "module_declarations": {
+                        "crates/fss-cognition/src/unauthorized_planner.rs": "cognition"
+                    },
+                    "types": {
+                        "EffectAuthority": {"file": "crates/fss-core/src/effect.rs", "plane": "authority"},
+                        "EffectIntent": {"file": "crates/fss-core/src/effect.rs", "plane": "effect"}
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            is_valid, findings, summary = audit_semantic_planes(tmp_root, registry_path=registry_path)
+            self.assertFalse(is_valid)
+            self.assertEqual(summary["status"], "fail")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT, codes)
+            import_finding = next(f for f in findings if f.code == ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT)
+            self.assertIn("EffectAuthority", import_finding.message)
+
+    def test_cognition_output_cannot_grant_effect_authority_fails(self) -> None:
+        """A cognition output directly converting to EffectAuthority fails closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src_dir = tmp_root / "crates" / "fss-cognition" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            bad_module = src_dir / "model_escalator.rs"
+            bad_module.write_text(
+                """//! Prohibited cognition-to-effect bridge
+use fss_core::belief::BeliefInterval;
+use fss_core::effect::EffectAuthority;
+
+pub fn grant_authority_from_model(belief: BeliefInterval) -> EffectAuthority {
+    // Prohibited shortcut
+    EffectAuthority::new()
+}
+""",
+                encoding="utf-8",
+            )
+
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            registry_path = reg_dir / "semantic_plane_registry.json"
+            registry_path.write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "as_of": "2026-09-01",
+                    "registered_boundary_modules": [],
+                    "module_declarations": {
+                        "crates/fss-cognition/src/model_escalator.rs": "cognition"
+                    },
+                    "types": {
+                        "BeliefInterval": {"file": "crates/fss-core/src/belief.rs", "plane": "cognition"},
+                        "EffectAuthority": {"file": "crates/fss-core/src/effect.rs", "plane": "authority"}
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            is_valid, findings, summary = audit_semantic_planes(tmp_root, registry_path=registry_path)
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertTrue(
+                ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT in codes or ERR_COGNITION_GRANTS_EFFECT in codes,
+                f"Expected cross-plane import or cognition-grants-effect error, got {codes}",
+            )
+
+
+class TestPlantedNegativeCoreTypeCensus(unittest.TestCase):
+    """Tests failure when types in fss-core are missing from the registry."""
+
+    def test_unmapped_core_type_fails(self) -> None:
+        """A public type in fss-core omitted from registry fails closed with ERR_UNMAPPED_CORE_TYPE."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            # Create a mock fss-core with an unmapped type
+            core_dir = tmp_root / "crates" / "fss-core" / "src"
+            core_dir.mkdir(parents=True, exist_ok=True)
+            (core_dir / "belief.rs").write_text(
+                """pub struct BeliefInterval { pub lower: f64, pub upper: f64 }
+pub struct UnmappedGhostBelief { pub value: f64 }
+""",
+                encoding="utf-8",
+            )
+            (core_dir / "effect.rs").write_text("pub struct EffectIntent;", encoding="utf-8")
+            (core_dir / "event.rs").write_text("pub struct EventHypothesis;", encoding="utf-8")
+            (core_dir / "region.rs").write_text("pub struct ContextAuthority;", encoding="utf-8")
+
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            registry_path = reg_dir / "semantic_plane_registry.json"
+            registry_path.write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "as_of": "2026-09-01",
+                    "registered_boundary_modules": [],
+                    "module_declarations": {},
+                    "types": {
+                        "BeliefInterval": {"file": "crates/fss-core/src/belief.rs", "plane": "cognition"},
+                        "EffectIntent": {"file": "crates/fss-core/src/effect.rs", "plane": "effect"},
+                        "EventHypothesis": {"file": "crates/fss-core/src/event.rs", "plane": "cognition"},
+                        "ContextAuthority": {"file": "crates/fss-core/src/region.rs", "plane": "authority"}
+                    }
+                }),
+                encoding="utf-8",
+            )
+
+            is_valid, findings, summary = audit_semantic_planes(tmp_root, registry_path=registry_path)
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNMAPPED_CORE_TYPE, codes)
+            unmapped_finding = next(f for f in findings if f.code == ERR_UNMAPPED_CORE_TYPE)
+            self.assertIn("UnmappedGhostBelief", unmapped_finding.message)
+
+
+class TestAmbiguousTypesReporting(unittest.TestCase):
+    """Tests honest reporting of ambiguous/boundary types without guessing."""
+
+    def test_ambiguous_types_reported_honestly(self) -> None:
+        """Ambiguous types (e.g. AlertEffectRecord, EvidenceGraph) are reported as findings."""
+        is_valid, findings, summary = audit_semantic_planes(ROOT)
+        self.assertTrue(is_valid)
+        ambiguous_findings = [f for f in findings if f.code == INFO_AMBIGUOUS_TYPE]
+        self.assertGreaterEqual(len(ambiguous_findings), 2)
+        reported_names = [f.params.get("type_name") for f in ambiguous_findings]
+        self.assertIn("AlertEffectRecord", reported_names)
+        self.assertIn("EvidenceGraph", reported_names)
+        # All ambiguous findings should have non-empty explanation of ambiguity
+        for f in ambiguous_findings:
+            self.assertTrue(len(f.message) > 10)
+
+
+class TestPlantedNegativeRegistryIntegrity(unittest.TestCase):
+    """Tests failure when registry is missing, corrupt, or empty."""
+
+    def test_missing_registry_fails_closed(self) -> None:
+        """Missing registry file fails closed with ERR_REGISTRY_INVALID."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            nonexistent = tmp_root / "architecture" / "nonexistent.json"
+            is_valid, findings, summary = audit_semantic_planes(tmp_root, registry_path=nonexistent)
+            self.assertFalse(is_valid)
+            self.assertIn(ERR_REGISTRY_INVALID, [f.code for f in findings])
+
+    def test_corrupt_registry_fails_closed(self) -> None:
+        """Corrupt JSON in registry fails closed with ERR_REGISTRY_INVALID."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            reg_file = reg_dir / "semantic_plane_registry.json"
+            reg_file.write_text("{not valid json", encoding="utf-8")
+            is_valid, findings, summary = audit_semantic_planes(tmp_root, registry_path=reg_file)
+            self.assertFalse(is_valid)
+            self.assertIn(ERR_REGISTRY_INVALID, [f.code for f in findings])
+
+    def test_empty_registry_fails_closed(self) -> None:
+        """Empty (0 bytes or empty dict) registry fails closed with ERR_REGISTRY_INVALID."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            reg_file = reg_dir / "semantic_plane_registry.json"
+            reg_file.write_text("", encoding="utf-8")
+            is_valid, findings, summary = audit_semantic_planes(tmp_root, registry_path=reg_file)
+            self.assertFalse(is_valid)
+            self.assertIn(ERR_REGISTRY_INVALID, [f.code for f in findings])
+
+
+if __name__ == "__main__":
+    unittest.main()

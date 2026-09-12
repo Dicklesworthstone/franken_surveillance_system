@@ -119,6 +119,9 @@ policy_lane() {
   run unsafe-prohibition-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_unsafe_prohibition_checker.py
   run dependency-closure-scanner python3 scripts/dependency_closure_scanner.py
   run dependency-closure-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_dependency_closure_scanner.py
+  run semantic-plane-checker python3 scripts/semantic_plane_checker.py
+  run semantic-plane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_semantic_plane_checker.py
+  run semantic-plane-doctests rustdoc --test docs/enforcement/three_semantic_planes_contract.md --edition 2024
   run release-artifact-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_artifacts.py
   run diff-check git diff --check
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh
@@ -126,13 +129,13 @@ policy_lane() {
     scripts/check-policy.py scripts/dependency_audit.py scripts/manifest_audit.py scripts/stable_id_audit.py \
     scripts/schema_validate.py scripts/slo_validate.py scripts/architecture_registry_consistency.py \
     scripts/dependency_dag_checker.py scripts/claim_proof_bundle_checker.py scripts/unsafe_prohibition_checker.py \
-    scripts/dependency_closure_scanner.py \
+    scripts/dependency_closure_scanner.py scripts/semantic_plane_checker.py \
     scripts/generate-manifest.py scripts/release_artifacts.py \
     tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py \
     tests/test_schema_validate.py tests/test_slo_validate.py tests/test_slo_operation_cost_consistency.py \
     tests/test_architecture_registry_consistency.py tests/test_dependency_dag_checker.py \
     tests/test_claim_proof_bundle_checker.py tests/test_unsafe_prohibition_checker.py \
-    tests/test_dependency_closure_scanner.py
+    tests/test_dependency_closure_scanner.py tests/test_semantic_plane_checker.py
 }
 
 docs_lane() {

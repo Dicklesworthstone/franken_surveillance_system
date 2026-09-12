@@ -1,0 +1,346 @@
+{
+  "schema": "fss.semantic_plane_registry.v1",
+  "as_of": "2026-09-01",
+  "normative_adr": "docs/adr/ADR-0001-three-semantic-planes.md",
+  "doctrine": "Authority, cognition, and effect planes are type-distinct: values never convert without explicit boundary types, and cognition output can never grant effect authority.",
+  "planes": {
+    "authority": {
+      "definition": "Immutable observations, identities, policies, receipts, capability tokens, and canonical state",
+      "mutation_rule": "Authority may only be updated via verified cryptographic receipts or canonical ledger transitions"
+    },
+    "cognition": {
+      "definition": "Tracks, embeddings, hypotheses, rankings, model outputs, beliefs, and memories",
+      "mutation_rule": "Cognition may propose but cannot directly mutate authority or perform effects"
+    },
+    "effect": {
+      "definition": "Alerts, PTZ, retention, export, deletion, activation, and repair mutations",
+      "mutation_rule": "Effects require prepared intent, capability, precondition, idempotency identity, and receipt"
+    },
+    "ambiguous": {
+      "definition": "Types that bridge multiple planes or combine source evidence with derived hypotheses; reported as findings without guessing",
+      "mutation_rule": "Requires explicit boundary auditing"
+    },
+    "support": {
+      "definition": "Typed error structures, parser helpers, and foundational codec utilities"
+    }
+  },
+  "registered_boundary_modules": [
+    "crates/fss-core/src/effect.rs",
+    "crates/fss-core/src/event.rs",
+    "crates/fss-core/src/region.rs",
+    "crates/fss-reference/src/effect_plane.rs",
+    "crates/fss-reference/src/alert.rs",
+    "crates/fss-reference/src/durable_effect.rs"
+  ],
+  "module_declarations": {
+    "crates/fss-core/src/belief.rs": "cognition",
+    "crates/fss-core/src/region.rs": "authority",
+    "crates/fss-core/src/effect.rs": "effect",
+    "crates/fss-core/src/event.rs": "ambiguous",
+    "crates/fss-reference/src/mock_model.rs": "cognition",
+    "crates/fss-reference/src/calibration.rs": "cognition",
+    "crates/fss-reference/src/durable_effect.rs": "effect",
+    "crates/fss-reference/src/alert.rs": "effect",
+    "crates/fss-reference/src/clock.rs": "authority",
+    "crates/fss-reference/src/clock_sync.rs": "authority",
+    "crates/fss-reference/src/extrinsics.rs": "authority",
+    "crates/fss-reference/src/encoded_fixture.rs": "authority"
+  },
+  "types": {
+    "EffectAuthority": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Explicit capability lease granting effect execution authority; never constructible from cognition output"
+    },
+    "EffectIntent": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "effect",
+      "description": "Prepared intent for mutation or external effect with idempotency identity"
+    },
+    "PreparedEffect": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "effect",
+      "description": "Staged, capability-bound mutation waiting for reconciliation or dispatch"
+    },
+    "PreparedOperation": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "effect",
+      "description": "Type alias for PreparedEffect"
+    },
+    "EffectState": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "effect",
+      "description": "Lifecycle state of an effect: Prepared, Committed, AdapterAccepted, Observed, Verified, Indeterminate, Failed"
+    },
+    "Obligation": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "effect",
+      "description": "Terminal obligation tracking an effect to completion or safe failure"
+    },
+    "ObligationState": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "effect",
+      "description": "Lifecycle state of an obligation"
+    },
+    "EffectJournal": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Append-only canonical journal of effect transitions"
+    },
+    "EffectJournalTransition": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "effect",
+      "description": "Transition record for effect journal operations"
+    },
+    "OperationReceipt": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Authoritative receipt proving an operation completed"
+    },
+    "ProviderObservationReceipt": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "External provider execution receipt confirming observation of effect"
+    },
+    "ProviderFailureReceipt": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "External provider failure receipt confirming failure of effect"
+    },
+    "EffectReconciliationRecord": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Authoritative reconciliation record matching intent to terminal proof"
+    },
+    "ReconciliationOutcome": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Outcome status of effect reconciliation"
+    },
+    "ReceiptLookupStatus": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "authority",
+      "description": "Query lookup outcome for receipt verification"
+    },
+    "EffectSchemaError": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "support",
+      "description": "Typed error enum for effect schema codec operations"
+    },
+    "BeliefInterval": {
+      "file": "crates/fss-core/src/belief.rs",
+      "plane": "cognition",
+      "description": "Derived belief interval with upper and lower probability bounds; cognition only"
+    },
+    "Contradiction": {
+      "file": "crates/fss-core/src/belief.rs",
+      "plane": "cognition",
+      "description": "Epistemic contradiction between competing hypotheses or belief intervals"
+    },
+    "ContradictionParams": {
+      "file": "crates/fss-core/src/belief.rs",
+      "plane": "cognition",
+      "description": "Input parameters for contradiction detection"
+    },
+    "BeliefError": {
+      "file": "crates/fss-core/src/belief.rs",
+      "plane": "support",
+      "description": "Typed error enum for belief operations"
+    },
+    "ContextAuthority": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Runtime execution authority context and capability scope"
+    },
+    "RootAuthoritySpec": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Root capability specification for a regional execution context"
+    },
+    "ContextNarrowingSpec": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Narrowed capability specification for regional isolation"
+    },
+    "QuiescenceProof": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Witness and proof of complete regional quiescence without orphan work"
+    },
+    "TaskReceipt": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Authoritative task execution receipt"
+    },
+    "TaskOutcome": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Outcome status of an asynchronous task"
+    },
+    "RegionNode": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Hierarchical regional execution node"
+    },
+    "RegionTree": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Authoritative hierarchy of execution regions"
+    },
+    "SubtreeCounts": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Regional subtree metrics"
+    },
+    "RegionKind": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Classification of regional execution domain"
+    },
+    "RegionState": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Lifecycle state of an execution region"
+    },
+    "RegionId": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Stable identifier for execution regions"
+    },
+    "TaskId": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Stable identifier for asynchronous tasks"
+    },
+    "TopologyNodeDescriptor": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Topology node specification"
+    },
+    "TopologyFixture": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "authority",
+      "description": "Topology test fixture"
+    },
+    "RegionError": {
+      "file": "crates/fss-core/src/region.rs",
+      "plane": "support",
+      "description": "Typed error enum for regional operations"
+    },
+    "EventHypothesis": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "cognition",
+      "description": "Derived event hypothesis revision produced by perceptual models or tracking"
+    },
+    "EventRevision": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "cognition",
+      "description": "Type alias for EventHypothesis"
+    },
+    "ProbabilityInterval": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "cognition",
+      "description": "Model uncertainty and probability interval estimate"
+    },
+    "DecisionPath": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "cognition",
+      "description": "Cognitive decision routing and explanation path"
+    },
+    "CorroborationAnalysis": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "cognition",
+      "description": "Cross-sensor corroboration analysis and evidence overlap"
+    },
+    "EventSupersedeParams": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "cognition",
+      "description": "Parameters for cognitive revision supersession"
+    },
+    "EventTransitionParams": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "authority",
+      "description": "Parameters for authoritative event lifecycle transition"
+    },
+    "EventTransitionRule": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "authority",
+      "description": "Authoritative policy rule governing event state progression"
+    },
+    "EventKind": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "authority",
+      "description": "Authoritative semantic classification of event type"
+    },
+    "EventEvidence": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "authority",
+      "description": "Immutable reference to source observation evidence"
+    },
+    "EventLineage": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "authority",
+      "description": "Canonical, append-only history of event revisions and alert records"
+    },
+    "EvidenceEdgeRelation": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "cognition",
+      "description": "Inferred cognitive relationship between evidence nodes"
+    },
+    "EvidenceGraph": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "ambiguous",
+      "description": "Structured graph combining authoritative source evidence anchors with cognitive hypotheses",
+      "ambiguity_reason": "Bridges authority plane (immutable observation anchors) with cognition plane (inferred edge relations and hypotheses)"
+    },
+    "EvidenceNode": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "ambiguous",
+      "description": "Node in evidence graph representing either an authoritative observation or cognitive hypothesis",
+      "ambiguity_reason": "Multi-plane enum containing both raw sensor observations (authority) and inferred hypotheses (cognition)"
+    },
+    "EvidenceNodeKind": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "ambiguous",
+      "description": "Classification enum for evidence node variants spanning multiple planes",
+      "ambiguity_reason": "Variants include both authority-plane observations and cognition-plane models/hypotheses"
+    },
+    "EventState": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "ambiguous",
+      "description": "Event lifecycle state spanning cognition (Hypothesized, Corroborated), effect (AlertDelivered), and authority (Witnessed, Resolved)",
+      "ambiguity_reason": "Enum spans states across all three planes: cognition (Hypothesized), effect (AlertDelivered), authority (Resolved)"
+    },
+    "AlertEffectRecord": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "ambiguous",
+      "description": "Boundary record linking cognitive event revision to effect dispatch and provider receipt",
+      "ambiguity_reason": "Audited boundary record coupling cognition event revision digest with effect operation ID and terminal state"
+    },
+    "EventDecodeError": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "support",
+      "description": "Typed error enum for event decoding"
+    },
+    "EventTransitionError": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "support",
+      "description": "Typed error enum for event state transition violations"
+    },
+    "JsonValue": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "support",
+      "description": "Internal JSON value representation"
+    },
+    "JsonObject": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "support",
+      "description": "Internal JSON object representation"
+    },
+    "JsonParser": {
+      "file": "crates/fss-core/src/effect.rs",
+      "plane": "support",
+      "description": "Internal JSON parser helper"
+    }
+  }
+}
