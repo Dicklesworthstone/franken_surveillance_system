@@ -3344,6 +3344,236 @@ class TestProofClaimClassRealization(unittest.TestCase):
                         proof_bundles.append(path)
         self.assertEqual(proof_bundles, [])
 
+
+# ---------------------------------------------------------------------------
+# Claim class 'bounded_model' realization (fss-x4a.30.87.3)
+# ---------------------------------------------------------------------------
+
+BOUND_EVIDENCE = ["assumptions", "derivation", "sensitivity_analysis"]
+BOUND_CLAIM_ID = "BOUND-INGEST-LATENCY-001"
+BOUND_GENERATION = "gen:fss1:bound-ingest-v1"
+BOUND_DERIVATION_REL = "proofs/bounds/ingest_latency.derivation.json"
+BOUND_EXPRESSION = "L_ingest <= D_decode + Q_max * D_frame"
+BOUND_ASSUMPTIONS = [
+    {"id": "ASSUME-QUEUE-BOUND", "statement": "the ingest queue holds at most Q_max = 8 frames"},
+    {"id": "ASSUME-DECODE-WCET", "statement": "decode worst-case execution time is at most 40 ms"},
+]
+
+
+def build_bound_fixture(
+    root: Path,
+    *,
+    derivation: dict | None = None,
+    bound: dict | None = None,
+    bundle: dict | None = None,
+    omit_derivation: bool = False,
+) -> dict:
+    """Writes a complete, valid 'bounded_model' claim (derivation artifact on disk) under root
+    and returns the unsealed bundle; negative tests perturb exactly one aspect."""
+    derivation_doc = {
+        "schema": "fss.bound_derivation.v1",
+        "claim_id": BOUND_CLAIM_ID,
+        "generation": BOUND_GENERATION,
+        "expression": BOUND_EXPRESSION,
+        "comparator": "<=",
+        "derived_value": 120.0,
+        "units": "ms",
+        "assumption_ids": [a["id"] for a in BOUND_ASSUMPTIONS],
+        "steps": [
+            "L_ingest = D_decode + W_queue",
+            "W_queue <= Q_max * D_frame under FIFO service of a bounded queue",
+            "D_decode <= 40 ms, Q_max = 8, D_frame = 10 ms, so L_ingest <= 120 ms",
+        ],
+        "sensitivity": [{"parameter": "Q_max", "partial": "+10 ms per additional queued frame"}],
+        "invalidators": ["Q_max raised above 8", "decoder WCET exceeds 40 ms"],
+    }
+    for key, value in (derivation or {}).items():
+        if value is _DROP:
+            derivation_doc.pop(key, None)
+        else:
+            derivation_doc[key] = value
+    derivation_digest = _write_doc(root, BOUND_DERIVATION_REL, derivation_doc)
+    bound_obj = {"claim_id": BOUND_CLAIM_ID, "expression": BOUND_EXPRESSION, "comparator": "<=", "value": 120.0, "units": "ms"}
+    for key, value in (bound or {}).items():
+        if value is _DROP:
+            bound_obj.pop(key, None)
+        else:
+            bound_obj[key] = value
+    data = {
+        "schema": "fss.proof_bundle.v1",
+        "bundle_id": "BUNDLE-BOUND-INGEST-001",
+        "claim_id": BOUND_CLAIM_ID,
+        "claim_class": "bounded_model",
+        "supported_level": "verified",
+        "generation": BOUND_GENERATION,
+        "status": "passed",
+        "retained_evidence": list(BOUND_EVIDENCE),
+        "assumptions": [dict(a) for a in BOUND_ASSUMPTIONS],
+        "bound": bound_obj,
+        "artifacts": [] if omit_derivation else [
+            {"role": "derivation", "path": BOUND_DERIVATION_REL, "digest": derivation_digest},
+        ],
+    }
+    for key, value in (bundle or {}).items():
+        if value is _DROP:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    return data
+
+
+class TestBoundedModelClaimClassRealization(unittest.TestCase):
+    """Claim class 'bounded_model' opens and validates the evidence its row demands (fss-x4a.30.87.3)."""
+
+    def _run(self, **kwargs: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_bound_fixture(root, **kwargs)
+            return verify_class_bundle(root, data, BOUND_CLAIM_ID)
+
+    def assertRefused(self, result, expected: list[str]) -> None:
+        is_valid, findings, _ = result
+        self.assertFalse(is_valid, "planted bypass was accepted: " + repr([f.message for f in findings]))
+        self.assertEqual(error_code_set(findings), sorted(expected), [f.message for f in findings])
+
+    def test_bounded_model_row_exact_normative_fields(self) -> None:
+        data = json.loads((ROOT / "architecture/claims.json").read_text(encoding="utf-8"))
+        row = next(c for c in data["classes"] if c["id"] == "bounded_model")
+        self.assertEqual(row["claim_class"], "bounded_model")
+        self.assertEqual(row["meaning"], "analytically derived bound under assumptions")
+        self.assertEqual(row["minimum_evidence"], "derivation, units, assumptions, sensitivity and invalidators")
+        self.assertEqual(row["requiredEvidence"], ["assumptions", "derivation", "sensitivity_analysis"])
+        self.assertEqual(CANONICAL_CLAIM_CLASSES["bounded_model"], row)
+
+    def test_bounded_model_finding_ids_are_registered(self) -> None:
+        errors_md = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8")
+        expected = {
+            "ERR_BOUND_DERIVATION_UNBOUND": "ERR-CLAIM-BOUND-DERIVATION-UNBOUND-001",
+            "ERR_BOUND_EXPRESSION_UNBOUND": "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001",
+            "ERR_BOUND_UNITS_MISSING": "ERR-CLAIM-BOUND-UNITS-MISSING-001",
+            "ERR_BOUND_TIGHTER_THAN_DERIVATION": "ERR-CLAIM-BOUND-TIGHTER-THAN-DERIVATION-001",
+            "ERR_BOUND_SENSITIVITY_MISSING": "ERR-CLAIM-BOUND-SENSITIVITY-MISSING-001",
+            "ERR_CLAIM_ASSUMPTIONS_MISSING": "ERR-CLAIM-ASSUMPTIONS-MISSING-001",
+        }
+        for name, code in expected.items():
+            self.assertEqual(_code(name), code)
+            self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+            self.assertEqual(errors_md.count(f"| `{code}` |"), 1, code)
+
+    def test_bounded_model_complete_evidence_passes(self) -> None:
+        is_valid, findings, _ = self._run()
+        self.assertTrue(is_valid, [f.message for f in findings])
+        self.assertEqual(findings, [])
+
+    def test_bounded_model_looser_than_derivation_passes(self) -> None:
+        is_valid, findings, _ = self._run(bound={"value": 150.0})
+        self.assertTrue(is_valid, [f.message for f in findings])
+        self.assertEqual(findings, [])
+
+    def test_planted_bound_empty_assumptions_fails(self) -> None:
+        self.assertRefused(self._run(bundle={"assumptions": []}), [_code("ERR_CLAIM_ASSUMPTIONS_MISSING")])
+
+    def test_planted_bound_missing_assumptions_fails(self) -> None:
+        self.assertRefused(self._run(bundle={"assumptions": _DROP}), [_code("ERR_CLAIM_ASSUMPTIONS_MISSING")])
+
+    def test_planted_bound_unnamed_assumption_fails(self) -> None:
+        result = self._run(bundle={"assumptions": [{"statement": "queue is bounded"}, dict(BOUND_ASSUMPTIONS[1])]})
+        self.assertRefused(result, [_code("ERR_CLAIM_ASSUMPTIONS_MISSING")])
+
+    def test_planted_bound_claim_omits_derivation_assumption_fails(self) -> None:
+        result = self._run(bundle={"assumptions": [dict(BOUND_ASSUMPTIONS[1])]})
+        self.assertRefused(result, [_code("ERR_CLAIM_ASSUMPTIONS_MISSING")])
+
+    def test_planted_bound_without_derivation_artifact_fails(self) -> None:
+        self.assertRefused(self._run(omit_derivation=True), [_code("ERR_BOUND_DERIVATION_UNBOUND")])
+
+    def test_planted_bound_derivation_missing_on_disk_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_bound_fixture(root)
+            (root / BOUND_DERIVATION_REL).unlink()
+            result = verify_class_bundle(root, data, BOUND_CLAIM_ID)
+        self.assertRefused(result, [ERR_PROOF_BUNDLE_NOT_FOUND, _code("ERR_BOUND_DERIVATION_UNBOUND")])
+
+    def test_planted_bound_derivation_for_other_claim_fails(self) -> None:
+        self.assertRefused(self._run(derivation={"claim_id": "BOUND-OTHER-001"}), [_code("ERR_BOUND_DERIVATION_UNBOUND")])
+
+    def test_planted_bound_derivation_other_generation_fails(self) -> None:
+        result = self._run(derivation={"generation": "gen:fss1:bound-ingest-v0"})
+        self.assertRefused(result, [_code("ERR_BOUND_DERIVATION_UNBOUND")])
+
+    def test_planted_bound_derivation_without_steps_fails(self) -> None:
+        self.assertRefused(self._run(derivation={"steps": []}), [_code("ERR_BOUND_DERIVATION_UNBOUND")])
+
+    def test_planted_bound_missing_units_fails(self) -> None:
+        self.assertRefused(self._run(bound={"units": _DROP}), [_code("ERR_BOUND_UNITS_MISSING")])
+
+    def test_planted_bound_derivation_missing_units_fails(self) -> None:
+        self.assertRefused(self._run(derivation={"units": _DROP}), [_code("ERR_BOUND_UNITS_MISSING")])
+
+    def test_planted_bound_units_differ_from_derivation_fails(self) -> None:
+        self.assertRefused(self._run(bound={"units": "s"}), [_code("ERR_BOUND_UNITS_MISSING")])
+
+    def test_planted_bound_tighter_than_derivation_fails(self) -> None:
+        self.assertRefused(self._run(bound={"value": 100.0}), [_code("ERR_BOUND_TIGHTER_THAN_DERIVATION")])
+
+    def test_planted_bound_tighter_by_epsilon_fails(self) -> None:
+        self.assertRefused(self._run(bound={"value": 119.999}), [_code("ERR_BOUND_TIGHTER_THAN_DERIVATION")])
+
+    def test_planted_lower_bound_tighter_than_derivation_fails(self) -> None:
+        expression = "A_archive >= 1 - P_loss"
+        result = self._run(
+            bound={"expression": expression, "comparator": ">=", "value": 0.999, "units": "ratio"},
+            derivation={"expression": expression, "comparator": ">=", "derived_value": 0.99, "units": "ratio"},
+        )
+        self.assertRefused(result, [_code("ERR_BOUND_TIGHTER_THAN_DERIVATION")])
+
+    def test_planted_bound_missing_bound_fails(self) -> None:
+        self.assertRefused(self._run(bundle={"bound": _DROP}), [_code("ERR_BOUND_EXPRESSION_UNBOUND")])
+
+    def test_planted_bound_missing_expression_fails(self) -> None:
+        self.assertRefused(self._run(bound={"expression": _DROP}), [_code("ERR_BOUND_EXPRESSION_UNBOUND")])
+
+    def test_planted_bound_expression_differs_from_derivation_fails(self) -> None:
+        result = self._run(bound={"expression": "L_ingest <= D_decode"})
+        self.assertRefused(result, [_code("ERR_BOUND_EXPRESSION_UNBOUND")])
+
+    def test_planted_bound_bound_to_other_claim_fails(self) -> None:
+        self.assertRefused(self._run(bound={"claim_id": "BOUND-OTHER-001"}), [_code("ERR_BOUND_EXPRESSION_UNBOUND")])
+
+    def test_planted_bound_comparator_differs_from_derivation_fails(self) -> None:
+        self.assertRefused(self._run(bound={"comparator": ">="}), [_code("ERR_BOUND_EXPRESSION_UNBOUND")])
+
+    def test_planted_bound_non_finite_value_fails(self) -> None:
+        self.assertRefused(self._run(bound={"value": float("nan")}), [_code("ERR_BOUND_EXPRESSION_UNBOUND")])
+
+    def test_planted_bound_derivation_without_sensitivity_fails(self) -> None:
+        self.assertRefused(self._run(derivation={"sensitivity": []}), [_code("ERR_BOUND_SENSITIVITY_MISSING")])
+
+    def test_planted_bound_derivation_without_invalidators_fails(self) -> None:
+        self.assertRefused(self._run(derivation={"invalidators": _DROP}), [_code("ERR_BOUND_SENSITIVITY_MISSING")])
+
+    def test_bound_findings_carry_claim_class_param(self) -> None:
+        _, findings, _ = self._run(bound={"value": 100.0})
+        realized = [f for f in findings if f.code == _code("ERR_BOUND_TIGHTER_THAN_DERIVATION")]
+        self.assertEqual(len(realized), 1)
+        self.assertEqual(realized[0].params.get("claim_class"), "bounded_model")
+        self.assertEqual(realized[0].params.get("claim_id"), BOUND_CLAIM_ID)
+        self.assertEqual(realized[0].params.get("claimed_value"), 100.0)
+        self.assertEqual(realized[0].params.get("derived_value"), 120.0)
+
+    def test_live_repo_passes_only_because_no_bounded_model_claims_exist(self) -> None:
+        is_valid, findings, _ = audit_claim_proof_bundles(root=ROOT)
+        self.assertTrue(is_valid, [f.message for f in findings])
+        retention = ROOT / "qualification-artifacts"
+        bound_bundles = []
+        if retention.is_dir():
+            for path in sorted(retention.rglob("*")):
+                if path.is_file() and path.name.endswith(cpb.BUNDLE_SUFFIXES):
+                    if json.loads(path.read_text(encoding="utf-8")).get("claim_class") == "bounded_model":
+                        bound_bundles.append(path)
+        self.assertEqual(bound_bundles, [])
+
 if __name__ == "__main__":
     unittest.main()
 

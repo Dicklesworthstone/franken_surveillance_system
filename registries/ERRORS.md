@@ -167,6 +167,11 @@ operation states rather than generic errors.
 | `ERR-CLAIM-PROOF-TESTS-ONLY-001` | proof claim is backed only by tests (test-runner toolchain, test source, or test results) instead of a formal artifact | demote the claim or supply a machine-checked formal proof |
 | `ERR-CLAIM-PROOF-TOOLCHAIN-UNBOUND-001` | proof claim formal checker identity is missing, unregistered, latest-aliased, or differs between bundle and check receipt | pin the exact registered formal checker and version in bundle and receipt |
 | `ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001` | proof check receipt is missing, malformed, non-passing, or not bound to the claim, formal model, and formal artifact digest | re-run the formal checker and retain a passing bound receipt |
+| `ERR-CLAIM-BOUND-DERIVATION-UNBOUND-001` | bounded_model claim derivation is missing, not on disk, digest-unbound, malformed, stepless, or not bound to the claim id and generation | retain the fss.bound_derivation.v1 derivation bound to the claim before promotion |
+| `ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001` | bounded_model claim bound expression, comparator, or value is missing, non-finite, bound to another claim, or differs from the derivation | bind the exact derived bound expression to the claim |
+| `ERR-CLAIM-BOUND-UNITS-MISSING-001` | bounded_model claim bound or derivation declares no units, or the claimed units differ from the derivation units | declare identical explicit units in claim and derivation; never convert implicitly |
+| `ERR-CLAIM-BOUND-TIGHTER-THAN-DERIVATION-001` | bounded_model claimed bound is tighter than the analytically derived bound | claim at most the derived bound or retain a derivation supporting the tighter one |
+| `ERR-CLAIM-BOUND-SENSITIVITY-MISSING-001` | bounded_model derivation declares no sensitivity analysis or no invalidators | retain sensitivity analysis and invalidators with the derivation |
 
 
 
