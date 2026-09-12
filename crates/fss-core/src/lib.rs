@@ -8,6 +8,7 @@
 
 pub mod acquisition;
 mod agent;
+pub mod belief;
 mod canonical;
 mod compression;
 mod context_binding;
@@ -32,6 +33,12 @@ pub use agent::{
     ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
     HandoffPublishParams, KnowledgeCell, MissionLifecycleState, PossibleWorld, SituationCapsule,
     SituationFrame, WorldEnvelope,
+};
+pub use belief::{
+    BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,
+    ContradictionParams, MAX_CLAIM_ID_LEN, MAX_CONFLICTING_EVIDENCE, MAX_CONTRADICTION_ID_LEN,
+    MAX_FAILURE_DOMAINS, MAX_STATEMENT_LEN, MAX_UNRESOLVED_WORLDS, MAX_WORLD_ID_LEN,
+    MICRO_DENOMINATOR, MIN_CONFLICTING_EVIDENCE, MIN_FAILURE_DOMAINS, MIN_UNRESOLVED_WORLDS,
 };
 pub use canonical::{
     CANONICAL_FORMAT_MAGIC, CANONICAL_VERSION_1, CanonicalDecode, CanonicalDecoder,
