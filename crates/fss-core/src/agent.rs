@@ -495,6 +495,71 @@ impl CanonicalEncode for SituationFrame {
     }
 }
 
+/// Mission lifecycle state conforming to AGENT_OPERATING_MODEL.md §3.1.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum MissionLifecycleState {
+    /// Initial drafting state.
+    Draft,
+    /// Actively executing mission.
+    Active,
+    /// Temporarily paused.
+    Paused,
+    /// Awaiting required evidence.
+    AwaitingEvidence,
+    /// Awaiting explicit human or operator approval.
+    AwaitingApproval,
+    /// Executing approved plans.
+    Executing,
+    /// Reconciling external effect outcomes.
+    Reconciling,
+    /// Terminal: mission goals resolved.
+    Resolved,
+    /// Terminal: mission failed.
+    Failed,
+    /// Terminal: mission cancelled before completion.
+    Cancelled,
+    /// Indeterminate external outcome.
+    Indeterminate,
+    /// Terminal: mission concluded and closed.
+    Closed,
+}
+
+impl MissionLifecycleState {
+    /// Returns the stable spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Draft => "draft",
+            Self::Active => "active",
+            Self::Paused => "paused",
+            Self::AwaitingEvidence => "awaiting_evidence",
+            Self::AwaitingApproval => "awaiting_approval",
+            Self::Executing => "executing",
+            Self::Reconciling => "reconciling",
+            Self::Resolved => "resolved",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Indeterminate => "indeterminate",
+            Self::Closed => "closed",
+        }
+    }
+
+    /// Returns true if this state is terminal (no further operational progress transitions).
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(
+            self,
+            Self::Resolved | Self::Failed | Self::Cancelled | Self::Closed
+        )
+    }
+}
+
+impl CanonicalEncode for MissionLifecycleState {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
 /// One mission-oriented situation publication.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SituationCapsule {
@@ -524,6 +589,8 @@ pub struct SituationCapsule {
     pub completeness: Completeness,
     /// Creation time.
     pub created_at: TimestampNs,
+    /// Optional mission lifecycle state.
+    pub mission_state: Option<MissionLifecycleState>,
 }
 
 impl SituationCapsule {
@@ -593,6 +660,13 @@ impl CanonicalEncode for SituationCapsule {
         }
         encoder.u8(completeness_code(self.completeness));
         self.created_at.encode_canonical(encoder);
+        match self.mission_state {
+            Some(state) => {
+                encoder.bool(true);
+                state.encode_canonical(encoder);
+            }
+            None => encoder.bool(false),
+        }
     }
 }
 

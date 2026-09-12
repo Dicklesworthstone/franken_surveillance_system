@@ -125,6 +125,7 @@ fn situation(long_optional_why: bool) -> Result<ReferenceSituation, ContractErro
         affordances: vec![affordance],
         completeness: Completeness::Partial,
         created_at: TimestampNs(1_000),
+        mission_state: None,
     };
     capsule.validate()?;
     Ok(ReferenceSituation {

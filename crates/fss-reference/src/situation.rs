@@ -462,6 +462,7 @@ pub fn compile_reference_situation(
         affordances,
         completeness,
         created_at: request.created_at,
+        mission_state: None,
     };
     capsule.validate()?;
     Ok(ReferenceSituation {

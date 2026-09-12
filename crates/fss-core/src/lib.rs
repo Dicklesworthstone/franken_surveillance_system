@@ -27,8 +27,8 @@ mod time;
 
 pub use agent::{
     ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
-    HandoffPublishParams, KnowledgeCell, PossibleWorld, SituationCapsule, SituationFrame,
-    WorldEnvelope,
+    HandoffPublishParams, KnowledgeCell, MissionLifecycleState, PossibleWorld, SituationCapsule,
+    SituationFrame, WorldEnvelope,
 };
 pub use canonical::{
     CANONICAL_FORMAT_MAGIC, CANONICAL_VERSION_1, CanonicalDecode, CanonicalDecoder,

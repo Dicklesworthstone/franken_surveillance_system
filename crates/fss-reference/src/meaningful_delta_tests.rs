@@ -172,6 +172,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
         affordances,
         completeness: variant.completeness,
         created_at: TimestampNs(1_000 + i128::from(variant.sequence)),
+        mission_state: None,
     };
     capsule.validate()?;
     let situation = ReferenceSituation {

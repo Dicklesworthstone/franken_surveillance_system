@@ -110,6 +110,7 @@ fn situation() -> Result<ReferenceSituation, ContractError> {
         affordances: vec![affordance],
         completeness: Completeness::Partial,
         created_at: TimestampNs(1_000),
+        mission_state: None,
     };
     capsule.validate()?;
     Ok(ReferenceSituation {
