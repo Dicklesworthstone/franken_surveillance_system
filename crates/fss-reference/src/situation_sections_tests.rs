@@ -11,8 +11,8 @@ use fss_core::{
 };
 
 use crate::{
-    ReferenceError, ReferenceProjectionSpec, ReferenceSituation, project_reference_situation,
-    seal_reference_publication_handoff,
+    ReferenceError, ReferenceProjectionSpec, ReferenceSituation, ReferenceSituationPublication,
+    project_reference_situation, seal_reference_publication_handoff,
 };
 
 fn basis() -> ContractBasis {
@@ -592,6 +592,157 @@ fn stale_cell_without_basis_is_refused_at_every_capsule_entry_point() -> Result<
 {
     assert_every_capsule_entry_point_refuses(
         &basisless_cell(KnowledgeState::Stale),
+        &ContractError::StaleBasisRequired,
+    )
+}
+
+/// A valid redacted cell whose withheld statement is `secret`; evidence is shared across calls.
+fn withheld_cell(
+    claim_id: &str,
+    secret: &str,
+    contradictions: Vec<ContentDigest>,
+) -> Result<KnowledgeCell, Box<dyn Error>> {
+    Ok(KnowledgeCell {
+        claim_id: claim_id.to_owned(),
+        statement: secret.to_owned(),
+        knowledge_state: KnowledgeState::Redacted,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(b"shared-redacted-evidence")],
+        contradictions,
+        valid_until: None,
+        state_basis: Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+            reason: RedactionReason::PrivacyProjection,
+            privacy_generation: PrivacyGeneration::parse("privacy:projection:v7")?,
+        })),
+    }
+    .validated()?)
+}
+
+/// Projects two redacted cells (`claim:r1`, `claim:r2`) that differ only in withheld content.
+fn project_withheld_pair(
+    first_secret: &str,
+    second_secret: &str,
+    contradictions: &[ContentDigest],
+) -> Result<ReferenceSituationPublication, Box<dyn Error>> {
+    let cells = vec![
+        withheld_cell("claim:r1", first_secret, contradictions.to_vec())?,
+        withheld_cell("claim:r2", second_secret, contradictions.to_vec())?,
+    ];
+    let publication =
+        project_reference_situation(situation_with_cells(false, cells)?, &spec(10_000))?;
+    publication.verify()?;
+    Ok(publication)
+}
+
+fn item_ids(publication: &ReferenceSituationPublication) -> Vec<String> {
+    publication
+        .context_pack
+        .items
+        .iter()
+        .map(|item| item.item_id.clone())
+        .collect()
+}
+
+#[test]
+fn deduplication_never_reveals_whether_withheld_statements_are_equal() -> Result<(), Box<dyn Error>>
+{
+    for contradictions in [
+        Vec::new(),
+        vec![ContentDigest::sha256(b"redacted-contradiction")],
+    ] {
+        let different = project_withheld_pair(
+            "SECRET-alice-is-home",
+            "SECRET-bob-is-away",
+            &contradictions,
+        )?;
+        let same = project_withheld_pair(
+            "SECRET-alice-is-home",
+            "SECRET-alice-is-home",
+            &contradictions,
+        )?;
+
+        assert_eq!(item_ids(&different), item_ids(&same));
+        assert_eq!(
+            different.context_pack.items.len(),
+            same.context_pack.items.len()
+        );
+        assert_eq!(different.context_pack.items, same.context_pack.items);
+        assert_eq!(different.redundancy_records(), same.redundancy_records());
+
+        // Withheld statements are never asserted identical, so each claim keeps its own item.
+        let ids = item_ids(&same);
+        for claim in ["claim:r1", "claim:r2"] {
+            assert!(ids.contains(&format!("context:epistemic:{claim}")));
+            if !contradictions.is_empty() {
+                assert!(ids.contains(&format!("context:contradiction:{claim}")));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn redacted_contradiction_item_never_discloses_its_statement() -> Result<(), Box<dyn Error>> {
+    let secret = "SECRET-contradicted-resident";
+    let publication = project_reference_situation(
+        situation_with_cells(
+            false,
+            vec![withheld_cell(
+                "claim:redacted-conflict",
+                secret,
+                vec![ContentDigest::sha256(b"redacted-contradiction")],
+            )?],
+        )?,
+        &spec(10_000),
+    )?;
+    publication.verify()?;
+
+    let contradiction = publication
+        .context_pack
+        .items
+        .iter()
+        .find(|item| item.item_id == "context:contradiction:claim:redacted-conflict")
+        .ok_or("redacted contradiction missing from the context pack")?;
+    assert_eq!(contradiction.content, REDACTED_STATEMENT_MARKER);
+    assert!(
+        publication
+            .context_pack
+            .items
+            .iter()
+            .all(|item| !item.content.contains(secret))
+    );
+    assert!(!format!("{publication:?}").contains(secret));
+    Ok(())
+}
+
+/// A cell carrying a redaction basis on a state that does not name one.
+fn misattached_redaction_cell(
+    knowledge_state: KnowledgeState,
+) -> Result<KnowledgeCell, Box<dyn Error>> {
+    let mut cell = withheld_cell(
+        &format!("claim:misattached:{}", knowledge_state.as_str()),
+        "SECRET-misattached-redaction",
+        Vec::new(),
+    )?;
+    cell.knowledge_state = knowledge_state;
+    Ok(cell)
+}
+
+#[test]
+fn redaction_basis_on_known_cell_is_refused_at_every_capsule_entry_point()
+-> Result<(), Box<dyn Error>> {
+    assert_every_capsule_entry_point_refuses(
+        &misattached_redaction_cell(KnowledgeState::Known)?,
+        &ContractError::KnowledgeStateBasisMismatch,
+    )
+}
+
+#[test]
+fn redaction_basis_on_stale_cell_is_refused_at_every_capsule_entry_point()
+-> Result<(), Box<dyn Error>> {
+    assert_every_capsule_entry_point_refuses(
+        &misattached_redaction_cell(KnowledgeState::Stale)?,
         &ContractError::StaleBasisRequired,
     )
 }

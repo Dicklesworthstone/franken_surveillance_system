@@ -1593,3 +1593,33 @@ fn test_reconciliation_basis_keeps_occurred_and_not_occurred_branches_open()
 
     Ok(())
 }
+
+#[test]
+fn test_redaction_basis_on_known_or_stale_cell_is_refused_and_still_withheld()
+-> Result<(), Box<dyn Error>> {
+    let secret = "SECRET-misattached-redaction";
+    for (knowledge_state, expected) in [
+        (
+            KnowledgeState::Known,
+            ContractError::KnowledgeStateBasisMismatch,
+        ),
+        (KnowledgeState::Stale, ContractError::StaleBasisRequired),
+    ] {
+        let mut cell = redacted_cell(secret, redaction_marker()?);
+        cell.knowledge_state = knowledge_state;
+
+        // The combination is not a valid cell ...
+        assert_eq!(cell.validate(), Err(expected.clone()));
+        assert_eq!(cell.clone().validated(), Err(expected));
+
+        // ... yet a refused cell still never discloses what its redaction basis withholds.
+        assert!(cell.withholds_statement());
+        assert_eq!(cell.disclosable_statement(), REDACTED_STATEMENT_MARKER);
+        assert!(!format!("{cell:?}").contains(secret));
+        assert!(!format!("{cell:#?}").contains(secret));
+        let mut other = cell.clone();
+        other.statement = "SECRET-a-different-withheld-statement".to_string();
+        assert_eq!(cell.cell_digest(), other.cell_digest());
+    }
+    Ok(())
+}

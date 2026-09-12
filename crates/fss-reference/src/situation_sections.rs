@@ -655,7 +655,7 @@ fn context_candidates(
         if !cell.contradictions.is_empty() {
             let item_id = format!("context:contradiction:{}", cell.claim_id);
             if let Some((_, prev_item_id)) = seen_contradictions.iter().find(|(c, _)| {
-                c.statement == cell.statement && c.contradictions == cell.contradictions
+                same_disclosed_statement(c, cell) && c.contradictions == cell.contradictions
             }) {
                 if let Some(existing) = candidates.get_mut(prev_item_id) {
                     existing.item.basis.insert(cell.claim_id.clone());
@@ -709,7 +709,7 @@ fn context_candidates(
         if cell_state_lane(cell) == CellStateLane::EpistemicBoundary {
             let item_id = format!("context:epistemic:{}", cell.claim_id);
             if let Some((_, prev_item_id)) = seen_epistemic.iter().find(|(c, _)| {
-                c.statement == cell.statement
+                same_disclosed_statement(c, cell)
                     && c.knowledge_state == cell.knowledge_state
                     && c.evidence == cell.evidence
                     && c.contradictions == cell.contradictions
@@ -780,7 +780,7 @@ fn context_candidates(
         if cell_state_lane(cell) == CellStateLane::Knowledge {
             let item_id = format!("context:knowledge:{}", cell.claim_id);
             if let Some((_, prev_item_id)) = seen_knowledge.iter().find(|(c, _)| {
-                c.statement == cell.statement
+                same_disclosed_statement(c, cell)
                     && c.knowledge_state == cell.knowledge_state
                     && c.evidence == cell.evidence
             }) {
@@ -832,7 +832,7 @@ fn context_candidates(
         if cell_state_lane(cell) == CellStateLane::NotApplicable {
             let item_id = format!("context:not_applicable:{}", cell.claim_id);
             if let Some((_, prev_item_id)) = seen_not_applicable.iter().find(|(c, _)| {
-                c.statement == cell.statement
+                same_disclosed_statement(c, cell)
                     && c.evidence == cell.evidence
                     && c.contradictions == cell.contradictions
             }) {
@@ -943,6 +943,15 @@ enum CellStateLane {
     NotApplicable,
     /// Conflicted cell whose state is already carried by its critical contradiction item.
     ContradictionItem,
+}
+
+/// Returns whether two cells carry the same disclosed statement for deduplication.
+///
+/// A withheld statement is never compared: equality of redacted content is itself a disclosure,
+/// so a cell that withholds its statement is never a duplicate of any other cell, whatever the
+/// two withheld statements are.
+fn same_disclosed_statement(left: &KnowledgeCell, right: &KnowledgeCell) -> bool {
+    !left.withholds_statement() && !right.withholds_statement() && left.statement == right.statement
 }
 
 fn cell_state_lane(cell: &KnowledgeCell) -> CellStateLane {
