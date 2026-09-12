@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Contract tests for fail-closed capability registry checker (fss-x4a.30.86.1 / review-792)."""
+
 import copy
 import json
 import shutil
