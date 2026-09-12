@@ -1,0 +1,297 @@
+{
+  "schema": "fss.operation_crosswalk.v1",
+  "asOf": "2026-09-12",
+  "description": "Machine-checked crosswalk mapping every registered fss/1 operation to its CLI command, library entry point, and MCP tool name with stable error and exit identities.",
+  "crosswalk": [
+    {
+      "operation_id": "AOP-001",
+      "operation_name": "session.open",
+      "owner": "fss-agent-session",
+      "cli_command": "fss session open",
+      "library_entry_point": "fss_agent_session::session_open",
+      "mcp_tool_name": "session_open",
+      "primary_error_id": "ERR-AUTH-DENIED-001",
+      "error_identities": [
+        "ERR-AUTH-DENIED-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-002",
+      "operation_name": "session.resume",
+      "owner": "fss-agent-session",
+      "cli_command": "fss session resume",
+      "library_entry_point": "fss_agent_session::session_resume",
+      "mcp_tool_name": "session_resume",
+      "primary_error_id": "ERR-AGENT-HANDOFF-INVALID-001",
+      "error_identities": [
+        "ERR-AGENT-HANDOFF-INVALID-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-AGENT-RESUME-INDETERMINATE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-003",
+      "operation_name": "session.orient",
+      "owner": "fss-situation",
+      "cli_command": "fss session orient",
+      "library_entry_point": "fss_situation::session_orient",
+      "mcp_tool_name": "session_orient",
+      "primary_error_id": "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+      "error_identities": [
+        "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-004",
+      "operation_name": "session.follow",
+      "owner": "fss-context-pack",
+      "cli_command": "fss session follow",
+      "library_entry_point": "fss_context_pack::session_follow",
+      "mcp_tool_name": "session_follow",
+      "primary_error_id": "ERR-AGENT-RESNAPSHOT-001",
+      "error_identities": [
+        "ERR-AGENT-RESNAPSHOT-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-STREAM-CONTINUITY-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-005",
+      "operation_name": "query",
+      "owner": "fss-query-plan",
+      "cli_command": "fss query",
+      "library_entry_point": "fss_query_plan::query",
+      "mcp_tool_name": "query",
+      "primary_error_id": "ERR-AGENT-AMBIGUOUS-001",
+      "error_identities": [
+        "ERR-AGENT-AMBIGUOUS-001",
+        "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-006",
+      "operation_name": "investigate",
+      "owner": "fss-investigation",
+      "cli_command": "fss investigate",
+      "library_entry_point": "fss_investigation::investigate",
+      "mcp_tool_name": "investigate",
+      "primary_error_id": "ERR-AGENT-CASE-BUDGET-001",
+      "error_identities": [
+        "ERR-AGENT-CASE-BUDGET-001",
+        "ERR-AGENT-AMBIGUOUS-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-007",
+      "operation_name": "plan",
+      "owner": "fss-agent-plan",
+      "cli_command": "fss plan",
+      "library_entry_point": "fss_agent_plan::plan",
+      "mcp_tool_name": "plan",
+      "primary_error_id": "ERR-PRECONDITION-STALE-001",
+      "error_identities": [
+        "ERR-PRECONDITION-STALE-001",
+        "ERR-AGENT-NO-AFFORDANCE-001",
+        "ERR-AGENT-AFFORDANCE-INVALIDATED-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-008",
+      "operation_name": "commit",
+      "owner": "fss-effect",
+      "cli_command": "fss commit",
+      "library_entry_point": "fss_effect::commit",
+      "mcp_tool_name": "commit",
+      "primary_error_id": "ERR-EFFECT-INDETERMINATE-001",
+      "error_identities": [
+        "ERR-EFFECT-INDETERMINATE-001",
+        "ERR-IDEMPOTENCY-CONFLICT-001",
+        "ERR-LEASE-STALE-001",
+        "ERR-PRECONDITION-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-009",
+      "operation_name": "wait",
+      "owner": "fss-obligation",
+      "cli_command": "fss wait",
+      "library_entry_point": "fss_obligation::wait",
+      "mcp_tool_name": "wait",
+      "primary_error_id": "ERR-OP-TIMEOUT-001",
+      "error_identities": [
+        "ERR-OP-TIMEOUT-001",
+        "ERR-LEASE-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-010",
+      "operation_name": "cancel",
+      "owner": "fss-obligation",
+      "cli_command": "fss cancel",
+      "library_entry_point": "fss_obligation::cancel",
+      "mcp_tool_name": "cancel",
+      "primary_error_id": "ERR-QUIESCENCE-001",
+      "error_identities": [
+        "ERR-QUIESCENCE-001",
+        "ERR-LEASE-STALE-001",
+        "ERR-EFFECT-INDETERMINATE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-011",
+      "operation_name": "explain",
+      "owner": "fss-explain",
+      "cli_command": "fss explain",
+      "library_entry_point": "fss_explain::explain",
+      "mcp_tool_name": "explain",
+      "primary_error_id": "ERR-REPLAY-DIVERGED-001",
+      "error_identities": [
+        "ERR-REPLAY-DIVERGED-001",
+        "ERR-EVIDENCE-MISSING-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-012",
+      "operation_name": "handoff",
+      "owner": "fss-handoff",
+      "cli_command": "fss handoff",
+      "library_entry_point": "fss_handoff::handoff",
+      "mcp_tool_name": "handoff",
+      "primary_error_id": "ERR-AGENT-HANDOFF-INVALID-001",
+      "error_identities": [
+        "ERR-AGENT-HANDOFF-INVALID-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-013",
+      "operation_name": "feedback",
+      "owner": "fss-learning",
+      "cli_command": "fss feedback",
+      "library_entry_point": "fss_learning::feedback",
+      "mcp_tool_name": "feedback",
+      "primary_error_id": "ERR-AGENT-LEARNING-UNSUPPORTED-001",
+      "error_identities": [
+        "ERR-AGENT-LEARNING-UNSUPPORTED-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    },
+    {
+      "operation_id": "AOP-014",
+      "operation_name": "doctor",
+      "owner": "fss-doctor",
+      "cli_command": "fss doctor",
+      "library_entry_point": "fss_doctor::doctor",
+      "mcp_tool_name": "doctor",
+      "primary_error_id": "ERR-CLI-RUNTIME-FAILURE-001",
+      "error_identities": [
+        "ERR-CLI-RUNTIME-FAILURE-001",
+        "ERR-CLOCK-UNCERTAIN-001",
+        "ERR-STREAM-CONTINUITY-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exit_identities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "status": "specified"
+    }
+  ]
+}

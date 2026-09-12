@@ -1,0 +1,248 @@
+#![forbid(unsafe_code)]
+//! Contract test suite for MCP/CLI/library operation registry crosswalk (fss-x4a.25.1 / FSS-176).
+//!
+//! Verifies:
+//! 1. All 14 registered fss/1 operations are present in the crosswalk.
+//! 2. Total bijective mapping between operation IDs, CLI commands, library entry points, and MCP tool names.
+//! 3. Zero name collisions across any presentation or interface surface.
+//! 4. Every mapping carries stable error identities and exit identities.
+//! 5. Validation fails closed on collisions, missing surfaces, unregistered error codes, and empty registries.
+
+use std::collections::HashSet;
+use std::error::Error;
+
+use fss_cli::crosswalk::{
+    CrosswalkValidationError, REGISTERED_OPERATION_CROSSWALK, lookup_by_cli_command,
+    lookup_by_library_entry_point, lookup_by_mcp_tool_name, lookup_by_operation_id,
+    lookup_by_operation_name, validate_crosswalk_entries,
+};
+
+type TestResult = Result<(), Box<dyn Error>>;
+
+#[test]
+fn test_all_14_operations_registered_in_crosswalk() -> TestResult {
+    assert_eq!(
+        REGISTERED_OPERATION_CROSSWALK.len(),
+        14,
+        "Exactly 14 operations must be registered in the crosswalk"
+    );
+
+    let expected_ids = [
+        "AOP-001", "AOP-002", "AOP-003", "AOP-004", "AOP-005", "AOP-006", "AOP-007", "AOP-008",
+        "AOP-009", "AOP-010", "AOP-011", "AOP-012", "AOP-013", "AOP-014",
+    ];
+
+    let actual_ids: Vec<&str> = REGISTERED_OPERATION_CROSSWALK
+        .iter()
+        .map(|e| e.operation_id)
+        .collect();
+
+    assert_eq!(actual_ids, expected_ids);
+    Ok(())
+}
+
+#[test]
+fn test_bijective_surface_lookups() -> TestResult {
+    for entry in REGISTERED_OPERATION_CROSSWALK {
+        let by_id = lookup_by_operation_id(entry.operation_id);
+        assert_eq!(by_id, Some(entry));
+
+        let by_name = lookup_by_operation_name(entry.operation_name);
+        assert_eq!(by_name, Some(entry));
+
+        let by_cli = lookup_by_cli_command(entry.cli_command);
+        assert_eq!(by_cli, Some(entry));
+
+        let by_mcp = lookup_by_mcp_tool_name(entry.mcp_tool_name);
+        assert_eq!(by_mcp, Some(entry));
+
+        let by_lib = lookup_by_library_entry_point(entry.library_entry_point);
+        assert_eq!(by_lib, Some(entry));
+    }
+
+    assert_eq!(lookup_by_operation_id("AOP-999"), None);
+    assert_eq!(lookup_by_cli_command("fss non_existent"), None);
+    assert_eq!(lookup_by_mcp_tool_name("unknown_tool"), None);
+    assert_eq!(lookup_by_library_entry_point("fss_fake::unknown"), None);
+
+    Ok(())
+}
+
+#[test]
+fn test_no_surface_name_collisions() -> TestResult {
+    let mut cli_cmds = HashSet::new();
+    let mut mcp_tools = HashSet::new();
+    let mut lib_entries = HashSet::new();
+    let mut op_names = HashSet::new();
+
+    for entry in REGISTERED_OPERATION_CROSSWALK {
+        assert!(
+            cli_cmds.insert(entry.cli_command),
+            "Duplicate CLI command: {}",
+            entry.cli_command
+        );
+        assert!(
+            mcp_tools.insert(entry.mcp_tool_name),
+            "Duplicate MCP tool name: {}",
+            entry.mcp_tool_name
+        );
+        assert!(
+            lib_entries.insert(entry.library_entry_point),
+            "Duplicate library entry point: {}",
+            entry.library_entry_point
+        );
+        assert!(
+            op_names.insert(entry.operation_name),
+            "Duplicate operation name: {}",
+            entry.operation_name
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_all_entries_carry_valid_errors_and_exit_identities() -> TestResult {
+    for entry in REGISTERED_OPERATION_CROSSWALK {
+        assert!(
+            entry.primary_error_id.starts_with("ERR-"),
+            "Primary error id must start with ERR-: {}",
+            entry.primary_error_id
+        );
+        assert!(
+            !entry.error_identities.is_empty(),
+            "Error identities must not be empty for {}",
+            entry.operation_id
+        );
+        for err_id in entry.error_identities {
+            assert!(
+                err_id.starts_with("ERR-"),
+                "Error id must start with ERR-: {}",
+                err_id
+            );
+        }
+
+        assert!(
+            !entry.exit_identities.is_empty(),
+            "Exit identities must not be empty for {}",
+            entry.operation_id
+        );
+        for exit in entry.exit_identities {
+            assert!(
+                exit.identifier.starts_with("EXIT-"),
+                "Exit identifier must start with EXIT-: {}",
+                exit.identifier
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_live_crosswalk_passes_validation() -> TestResult {
+    let allowed_errors = [
+        "ERR-AUTH-DENIED-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001",
+        "ERR-AGENT-HANDOFF-INVALID-001",
+        "ERR-AGENT-RESUME-INDETERMINATE-001",
+        "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+        "ERR-AGENT-RESNAPSHOT-001",
+        "ERR-STREAM-CONTINUITY-001",
+        "ERR-AGENT-AMBIGUOUS-001",
+        "ERR-AGENT-CASE-BUDGET-001",
+        "ERR-PRECONDITION-STALE-001",
+        "ERR-AGENT-NO-AFFORDANCE-001",
+        "ERR-AGENT-AFFORDANCE-INVALIDATED-001",
+        "ERR-EFFECT-INDETERMINATE-001",
+        "ERR-IDEMPOTENCY-CONFLICT-001",
+        "ERR-LEASE-STALE-001",
+        "ERR-OP-TIMEOUT-001",
+        "ERR-QUIESCENCE-001",
+        "ERR-REPLAY-DIVERGED-001",
+        "ERR-EVIDENCE-MISSING-001",
+        "ERR-AGENT-LEARNING-UNSUPPORTED-001",
+        "ERR-CLI-RUNTIME-FAILURE-001",
+        "ERR-CLOCK-UNCERTAIN-001",
+    ];
+
+    validate_crosswalk_entries(REGISTERED_OPERATION_CROSSWALK, &allowed_errors)?;
+    Ok(())
+}
+
+#[test]
+fn test_validator_fails_closed_on_empty_registry() -> TestResult {
+    let res = validate_crosswalk_entries(&[], &[]);
+    assert_eq!(res, Err(CrosswalkValidationError::EmptyRegistry));
+    Ok(())
+}
+
+#[test]
+fn test_validator_fails_closed_on_cli_collision() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[1].cli_command = entries[0].cli_command;
+
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(matches!(
+        res,
+        Err(CrosswalkValidationError::CliCommandCollision { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_validator_fails_closed_on_mcp_collision() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[1].mcp_tool_name = entries[0].mcp_tool_name;
+
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(matches!(
+        res,
+        Err(CrosswalkValidationError::McpToolCollision { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_validator_fails_closed_on_library_collision() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[1].library_entry_point = entries[0].library_entry_point;
+
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(matches!(
+        res,
+        Err(CrosswalkValidationError::LibraryEntryCollision { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_validator_fails_closed_on_missing_surface() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[0].cli_command = "";
+
+    let res = validate_crosswalk_entries(&entries, &[]);
+    assert!(matches!(
+        res,
+        Err(CrosswalkValidationError::MissingSurfaceMapping {
+            surface: "cli_command",
+            ..
+        })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_validator_fails_closed_on_unregistered_error() -> TestResult {
+    let mut entries = REGISTERED_OPERATION_CROSSWALK.to_vec();
+    entries[0].error_identities = &["ERR-UNREGISTERED-FICTIONAL-001"];
+
+    let res = validate_crosswalk_entries(&entries, &["ERR-AUTH-DENIED-001"]);
+    assert!(matches!(
+        res,
+        Err(CrosswalkValidationError::UnregisteredError { .. })
+    ));
+    Ok(())
+}
