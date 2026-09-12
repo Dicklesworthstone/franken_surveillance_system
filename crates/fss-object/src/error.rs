@@ -63,6 +63,8 @@ pub enum ObjectError {
     },
     /// A tombstone already exists for this object with a conflicting record.
     TombstoneConflict(ContentDigest),
+    /// A tombstone record lacks mandatory deletion authority or coverage witness proof.
+    MissingDeletionAuthority(ContentDigest),
 }
 
 impl fmt::Display for ObjectError {
@@ -109,6 +111,12 @@ impl fmt::Display for ObjectError {
             ),
             Self::TombstoneConflict(digest) => {
                 write!(formatter, "tombstone conflict for object: {digest}")
+            }
+            Self::MissingDeletionAuthority(digest) => {
+                write!(
+                    formatter,
+                    "tombstone lacks deletion authority witness: {digest}"
+                )
             }
         }
     }

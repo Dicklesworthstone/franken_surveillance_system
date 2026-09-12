@@ -52,6 +52,7 @@ pub struct InMemoryObjectStore {
     limits: ObjectLimits,
     objects: BTreeMap<ContentDigest, StoredObject>,
     visible_manifests: BTreeMap<ContentDigest, ObjectManifest>,
+    invalidated_manifests: BTreeMap<ContentDigest, ObjectManifest>,
     total_bytes: u64,
 }
 
@@ -63,6 +64,7 @@ impl InMemoryObjectStore {
             limits,
             objects: BTreeMap::new(),
             visible_manifests: BTreeMap::new(),
+            invalidated_manifests: BTreeMap::new(),
             total_bytes: 0,
         }
     }
@@ -343,13 +345,16 @@ impl InMemoryObjectStore {
     /// Transitions a verified object to a permanent tombstone state.
     ///
     /// Keeps the tombstone record and content digest, but releases payload bytes and quota.
-    /// If the object was a published manifest root, it is removed from visible manifests.
+    /// A verified deletion authority witness is mandatory; if `witness_digest` is `None`,
+    /// fails with [`ObjectError::MissingDeletionAuthority`].
+    /// Any published manifest whose reachable closure contains the tombstoned object is
+    /// unpublished from visible manifests.
     /// Fails with [`ObjectError::TombstoneDigestMismatch`] if the record payload digest does not match,
-    /// [`ObjectError::Missing`] or [`ObjectError::NotVerified`] if a present witness digest is unverified,
     /// [`ObjectError::Missing`] if the object is absent,
     /// [`ObjectError::NotVerified`] if the object is staged,
+    /// [`ObjectError::Missing`] or [`ObjectError::NotVerified`] if the witness digest is unverified,
     /// or [`ObjectError::TombstoneConflict`] if a different tombstone record was already applied.
-    /// Idempotent if called with an identical tombstone record.
+    /// Idempotent if called with an identical tombstone record (even if the witness is later tombstoned).
     pub fn tombstone(
         &mut self,
         digest: ContentDigest,
@@ -361,34 +366,76 @@ impl InMemoryObjectStore {
                 actual: record.payload_digest,
             });
         }
-        if let Some(witness) = record.witness_digest {
-            self.require_verified(witness)?;
+        let (current_state, current_tombstone) = {
+            let obj = self
+                .objects
+                .get(&digest)
+                .ok_or(ObjectError::Missing(digest))?;
+            (obj.state, obj.tombstone.clone())
+        };
+
+        if current_state == ObjectState::Tombstoned {
+            if current_tombstone.as_ref() == Some(&record) {
+                return Ok(());
+            }
+            return Err(ObjectError::TombstoneConflict(digest));
         }
+
+        if current_state != ObjectState::Verified {
+            return Err(ObjectError::NotVerified(digest));
+        }
+
+        let witness = record
+            .witness_digest
+            .ok_or(ObjectError::MissingDeletionAuthority(digest))?;
+        self.require_verified(witness)?;
+
         let object = self
             .objects
             .get_mut(&digest)
             .ok_or(ObjectError::Missing(digest))?;
 
-        match object.state {
-            ObjectState::Staged => Err(ObjectError::NotVerified(digest)),
-            ObjectState::Tombstoned => {
-                if object.tombstone.as_ref() == Some(&record) {
-                    self.visible_manifests.remove(&digest);
-                    Ok(())
-                } else {
-                    Err(ObjectError::TombstoneConflict(digest))
+        let released_bytes = object.bytes.as_ref().map_or(0, |b| b.len() as u64);
+        object.bytes = None;
+        object.state = ObjectState::Tombstoned;
+        object.tombstone = Some(record);
+        self.total_bytes = self.total_bytes.saturating_sub(released_bytes);
+
+        self.visible_manifests.remove(&digest);
+
+        // Cascade unpublish all published parent manifests whose closure now contains a tombstoned object:
+        let mut newly_invalidated = BTreeMap::new();
+        let mut changed = true;
+        while changed {
+            changed = false;
+            let mut to_remove = Vec::new();
+            for (&root, manifest) in &self.visible_manifests {
+                let mut has_tombstone = false;
+                for &child in manifest.children() {
+                    if self.is_tombstoned(child)
+                        || newly_invalidated.contains_key(&child)
+                        || self.invalidated_manifests.contains_key(&child)
+                    {
+                        has_tombstone = true;
+                        break;
+                    }
+                }
+                if has_tombstone {
+                    to_remove.push(root);
                 }
             }
-            ObjectState::Verified => {
-                let released_bytes = object.bytes.as_ref().map_or(0, |b| b.len() as u64);
-                object.bytes = None;
-                object.state = ObjectState::Tombstoned;
-                object.tombstone = Some(record);
-                self.total_bytes = self.total_bytes.saturating_sub(released_bytes);
-                self.visible_manifests.remove(&digest);
-                Ok(())
+            if !to_remove.is_empty() {
+                changed = true;
+                for root in to_remove {
+                    if let Some(m) = self.visible_manifests.remove(&root) {
+                        newly_invalidated.insert(root, m);
+                    }
+                }
             }
         }
+        self.invalidated_manifests.extend(newly_invalidated);
+
+        Ok(())
     }
 
     /// Returns the tombstone record for an object, if tombstoned.
@@ -405,39 +452,49 @@ impl InMemoryObjectStore {
         self.state(digest) == Some(ObjectState::Tombstoned)
     }
 
-    /// Returns all published manifest roots whose reachable closure contains at least one tombstoned object.
+    /// Returns all manifest roots whose reachable closure contains at least one tombstoned object.
     ///
-    /// Descends into published sub-manifests bottom-up, following the same closure rules as
+    /// Descends into published or invalidated sub-manifests, following the same closure rules as
     /// [`verify_closure`]. Returns manifest roots sorted in canonical order.
     #[must_use]
     pub fn published_manifests_with_tombstoned_closure(&self) -> Vec<ContentDigest> {
-        let mut result = Vec::new();
-        for &root in self.visible_manifests.keys() {
-            if self.closure_contains_tombstone(root) {
-                result.push(root);
+        let mut result = BTreeSet::new();
+        for &root in self.invalidated_manifests.keys() {
+            if !self.is_tombstoned(root) {
+                result.insert(root);
             }
         }
-        result
+        for &root in self.visible_manifests.keys() {
+            if !self.is_tombstoned(root) && self.closure_contains_tombstone(root) {
+                result.insert(root);
+            }
+        }
+        result.into_iter().collect()
     }
 
     /// Returns true if the reachable closure from `root` contains at least one tombstoned object.
     ///
-    /// If `root` itself is tombstoned, returns true. Descends only into published sub-manifests.
+    /// If `root` itself is tombstoned, returns true. Descends into published and invalidated manifests.
     #[must_use]
     pub fn closure_contains_tombstone(&self, root: ContentDigest) -> bool {
-        if self.state(root) == Some(ObjectState::Tombstoned) {
+        if self.is_tombstoned(root) || self.invalidated_manifests.contains_key(&root) {
             return true;
         }
         let mut seen = BTreeSet::new();
         seen.insert(root);
         let mut pending = vec![root];
         while let Some(digest) = pending.pop() {
-            if let Some(manifest) = self.visible_manifests.get(&digest) {
+            let manifest_opt = self
+                .visible_manifests
+                .get(&digest)
+                .or_else(|| self.invalidated_manifests.get(&digest));
+            if let Some(manifest) = manifest_opt {
                 for &child in manifest.children() {
-                    if self.state(child) == Some(ObjectState::Tombstoned) {
+                    if self.is_tombstoned(child) || self.invalidated_manifests.contains_key(&child)
+                    {
                         return true;
                     }
-                    if seen.insert(child) && self.visible_manifests.contains_key(&child) {
+                    if seen.insert(child) {
                         pending.push(child);
                     }
                 }
