@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
+# Sealed-offline release qualification (fss-x4a.26.3, DEP-AUD-027): every cargo invocation below also
+# passes --offline, and rustup may not fetch a missing toolchain. This is Cargo/rustup sealing only,
+# not OS-level network isolation.
+export CARGO_NET_OFFLINE=true
+export RUSTUP_AUTO_INSTALL=0
 cd "$(dirname "$0")/.."
 
 usage() {
@@ -173,7 +178,7 @@ verify_release() {
 package_release() {
   release_context
   [ -f "$RECEIPT_DIR/cargo-metadata.json" ] || {
-    printf 'cargo metadata receipt missing: %s\n' "$RECEIPT_DIR/cargo-metadata.json" >&2
+    printf 'cargo-metadata receipt missing: %s\n' "$RECEIPT_DIR/cargo-metadata.json" >&2
     exit 7
   }
   python3 scripts/release_artifacts.py package \

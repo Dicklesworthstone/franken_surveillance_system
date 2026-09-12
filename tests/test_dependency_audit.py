@@ -986,7 +986,7 @@ class BuildScriptNetworkTests(unittest.TestCase):
 
 SEALED_QUALIFY = (
     "#!/usr/bin/env bash\n"
-    "set -Eeuo pipefail\n"
+    "export RUSTUP_AUTO_INSTALL=0\n"
     "export CARGO_NET_OFFLINE=true\n"
     "# cargo build is mentioned in a comment only\n"
     "rust_lane() {\n"
@@ -1192,6 +1192,148 @@ class QualifyDoctestTests(unittest.TestCase):
         findings: list = []
         dependency_audit.qualify_doctest_audit(findings, ROOT / "scripts" / "qualify.sh", root=ROOT)
         self.assertEqual(findings, [])
+
+
+class QualifyRustupAutoInstallTests(unittest.TestCase):
+    """fss-x4a.26.3 follow-up: DEP-AUD-027 also requires a top-level `export RUSTUP_AUTO_INSTALL=0`
+    so rustup cannot fetch a missing toolchain. rustup sealing, not OS-level network isolation."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.script = self.root / "scripts" / "qualify.sh"
+        self.script.parent.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def audit(self, text: str) -> list:
+        self.script.write_text(text, encoding="utf-8")
+        findings: list = []
+        dependency_audit.qualify_offline_audit(findings, self.script, root=self.root)
+        return [f for f in findings if f.code == OFFLINE_CODE]
+
+    def test_missing_rustup_export_fails(self) -> None:
+        hits = self.audit(SEALED_QUALIFY.replace("export RUSTUP_AUTO_INSTALL=0\n", ""))
+        self.assertEqual(len(hits), 1, hits)
+        self.assertIn("RUSTUP_AUTO_INSTALL", hits[0].message)
+
+    def test_rustup_export_must_disable_auto_install(self) -> None:
+        for value in ("1", "true", "yes", ""):
+            with self.subTest(value=value):
+                self.assertTrue(self.audit(SEALED_QUALIFY.replace("RUSTUP_AUTO_INSTALL=0\n", f"RUSTUP_AUTO_INSTALL={value}\n")))
+
+    def test_rustup_export_not_at_top_level_before_first_rustup_fails(self) -> None:
+        moved = SEALED_QUALIFY.replace("export RUSTUP_AUTO_INSTALL=0\n", "").replace("rust_lane() {\n", "rust_lane() {\n  export RUSTUP_AUTO_INSTALL=0\n")
+        self.assertTrue(self.audit(moved))
+        late = SEALED_QUALIFY.replace("export RUSTUP_AUTO_INSTALL=0\n", "") + "export RUSTUP_AUTO_INSTALL=0\n"
+        self.assertTrue(self.audit(late))
+
+    def test_rustup_use_before_export_fails_even_without_cargo(self) -> None:
+        self.assertTrue(self.audit(SEALED_QUALIFY.replace("#!/usr/bin/env bash\n", "#!/usr/bin/env bash\nrustup show active-toolchain\n")))
+
+    def test_rustup_override_or_unset_fails(self) -> None:
+        for extra in (
+            "unset RUSTUP_AUTO_INSTALL\n",
+            'RUSTUP_AUTO_INSTALL=1 rustup run "$tc" cargo build --offline\n',
+            'env -u RUSTUP_AUTO_INSTALL rustup run "$tc" cargo build --offline\n',
+            "export RUSTUP_AUTO_INSTALL=1\n",
+        ):
+            with self.subTest(extra=extra):
+                self.assertTrue(self.audit(SEALED_QUALIFY + extra))
+
+    def test_live_qualify_script_seals_rustup(self) -> None:
+        text = (ROOT / "scripts" / "qualify.sh").read_text(encoding="utf-8")
+        self.assertEqual(self.audit(text), [])
+
+
+SEALED_RELEASE_QUALIFY = (
+    "#!/usr/bin/env bash\n"
+    "set -euo pipefail\n"
+    "export CARGO_NET_OFFLINE=true\n"
+    "export RUSTUP_AUTO_INSTALL=0\n"
+    "host_triple() {\n"
+    "  rustup run \"$1\" rustc -Vv | sed -n 's/^host: //p'\n"
+    "}\n"
+    "build_release() {\n"
+    '  rustup run "$TOOLCHAIN" cargo build --release --workspace --locked --offline --target "$TARGET"\n'
+    "}\n"
+)
+
+
+class ReleaseQualifyOfflineTests(unittest.TestCase):
+    """fss-x4a.26.3 follow-up: scripts/release_qualify.sh runs cargo and rustup directly, so the whole
+    DEP-AUD-027 check applies to it as well as to scripts/qualify.sh."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.script = self.root / "scripts" / "release_qualify.sh"
+        self.script.parent.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def audit(self, text: str) -> list:
+        self.script.write_text(text, encoding="utf-8")
+        findings: list = []
+        dependency_audit.qualify_offline_audit(findings, self.script, root=self.root)
+        return [f for f in findings if f.code == OFFLINE_CODE]
+
+    def test_positive_control_sealed_release_script_passes(self) -> None:
+        self.assertEqual(self.audit(SEALED_RELEASE_QUALIFY), [])
+
+    def test_release_cargo_without_offline_fails_with_line(self) -> None:
+        hits = self.audit(SEALED_RELEASE_QUALIFY.replace("--locked --offline --target", "--locked --target"))
+        self.assertEqual(len(hits), 1, hits)
+        self.assertIn("scripts/release_qualify.sh:9", hits[0].message)
+
+    def test_release_script_missing_exports_fails(self) -> None:
+        hits = self.audit(SEALED_RELEASE_QUALIFY.replace("export CARGO_NET_OFFLINE=true\n", "").replace("export RUSTUP_AUTO_INSTALL=0\n", ""))
+        self.assertTrue(any("CARGO_NET_OFFLINE" in f.message for f in hits), hits)
+        self.assertTrue(any("RUSTUP_AUTO_INSTALL" in f.message for f in hits), hits)
+
+    def test_audit_workspace_wires_release_script(self) -> None:
+        make_clean_policy(self.root)
+        (self.root / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+        (self.root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n', encoding="utf-8")
+        make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
+        self.script.write_text(SEALED_RELEASE_QUALIFY.replace("export CARGO_NET_OFFLINE=true\n", ""), encoding="utf-8")
+        policy = self.root / "architecture" / "dependency_allowlist.toml"
+        report, rc = dependency_audit.audit_workspace(self.root, policy, release_script=self.script)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any(f["code"] == OFFLINE_CODE and "scripts/release_qualify.sh" in f["message"] for f in report["findings"]), report["findings"])
+
+    def test_main_audits_both_qualification_scripts(self) -> None:
+        import contextlib
+        import io
+        from unittest import mock
+
+        seen: dict = {}
+
+        def record(**kwargs):
+            seen.update(kwargs)
+            return {"findings": []}, 0
+
+        with mock.patch.object(dependency_audit, "audit_workspace", side_effect=record), mock.patch.object(sys, "argv", ["dependency_audit.py"]), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(dependency_audit.main(), 0)
+        self.assertEqual(seen.get("qualify_script"), ROOT / "scripts" / "qualify.sh")
+        self.assertEqual(seen.get("release_script"), ROOT / "scripts" / "release_qualify.sh")
+
+    def test_live_release_script_is_sealed_offline(self) -> None:
+        findings: list = []
+        dependency_audit.qualify_offline_audit(findings, ROOT / "scripts" / "release_qualify.sh", root=ROOT)
+        self.assertEqual(findings, [])
+
+    def test_live_repository_audit_with_both_scripts_passes(self) -> None:
+        report, rc = dependency_audit.audit_workspace(
+            ROOT,
+            ROOT / "architecture/dependency_allowlist.toml",
+            qualify_script=ROOT / "scripts" / "qualify.sh",
+            release_script=ROOT / "scripts" / "release_qualify.sh",
+        )
+        self.assertEqual([f for f in report["findings"] if f["severity"] == "error"], [])
+        self.assertEqual(rc, 0)
 
 
 if __name__ == "__main__":

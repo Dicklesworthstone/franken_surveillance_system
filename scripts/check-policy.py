@@ -256,12 +256,15 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
 
 
 def qualify_offline_policy() -> None:
-    """DEP-AUD-027 (fss-x4a.26.3): scripts/qualify.sh must seal every cargo invocation offline.
+    """DEP-AUD-027 (fss-x4a.26.3): scripts/qualify.sh and scripts/release_qualify.sh must seal every
+    cargo invocation offline and forbid rustup toolchain auto-install.
 
-    Cargo resolution sealing only (--offline plus a top-level CARGO_NET_OFFLINE=true export); this
-    is not OS-level network isolation. A missing script fails closed."""
+    Cargo/rustup sealing only (--offline plus top-level CARGO_NET_OFFLINE=true and
+    RUSTUP_AUTO_INSTALL=0 exports); this is not OS-level network isolation. A missing script fails
+    closed."""
     findings: list[dependency_audit.Finding] = []
-    dependency_audit.qualify_offline_audit(findings, ROOT / "scripts/qualify.sh", root=ROOT)
+    for script in ("scripts/qualify.sh", "scripts/release_qualify.sh"):
+        dependency_audit.qualify_offline_audit(findings, ROOT / script, root=ROOT)
     for finding in findings:
         fail(f"{finding.code}: {finding.message} ({finding.path})")
 

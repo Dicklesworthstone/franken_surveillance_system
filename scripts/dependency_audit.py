@@ -13,8 +13,10 @@ lexer-level deny-list, not a Rust parser, so macro-generated or ``include!``-spl
 DEP-AUD-026 (fss-x4a.26.3, FSS-183) scans every build script (implicit ``build.rs``, ``build = true``,
 ``build = "path"``, undeclared nested crates, and custom-build ``src_path`` values from resolved cargo
 metadata) for network-capable constructs. It is a STATIC DENY-LIST, NOT A PROOF OF ABSENCE.
-DEP-AUD-027 requires ``scripts/qualify.sh`` to export ``CARGO_NET_OFFLINE=true`` at top level and to pass
-``--offline`` to every cargo invocation. That seals Cargo resolution; it is not OS-level network isolation.
+DEP-AUD-027 requires ``scripts/qualify.sh`` and ``scripts/release_qualify.sh`` to export
+``CARGO_NET_OFFLINE=true`` and ``RUSTUP_AUTO_INSTALL=0`` at top level and to pass ``--offline`` to every
+cargo invocation. That seals Cargo resolution and rustup toolchain fetching; it is not OS-level network
+isolation.
 DEP-AUD-028 (fss-tgwit) requires the ``rust_lane`` of ``scripts/qualify.sh`` to record a
 ``cargo test --workspace --doc`` step, because ``cargo test --all-targets`` never runs doctests.
 """
@@ -266,8 +268,8 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
         code="DEP-AUD-027",
         severity="error",
         owner="security-policy",
-        trigger="the qualification entrypoint does not seal Cargo offline (missing top-level CARGO_NET_OFFLINE=true export, an override, or a cargo invocation without --offline)",
-        remediation="export CARGO_NET_OFFLINE=true at top level and pass --offline to every cargo invocation in scripts/qualify.sh; this is Cargo sealing, not OS network isolation",
+        trigger="a qualification script (scripts/qualify.sh or scripts/release_qualify.sh) does not seal Cargo and rustup offline (missing top-level CARGO_NET_OFFLINE=true or RUSTUP_AUTO_INSTALL=0 export, an override, or a cargo invocation without --offline)",
+        remediation="export CARGO_NET_OFFLINE=true and RUSTUP_AUTO_INSTALL=0 at top level and pass --offline to every cargo invocation in scripts/qualify.sh and scripts/release_qualify.sh; this is Cargo/rustup sealing, not OS network isolation",
     ),
     "DEP-AUD-028": DiagnosticDef(
         code="DEP-AUD-028",
@@ -1343,6 +1345,9 @@ _SHELL_OFFLINE_FLAG = re.compile(r"(?<![\w-])--offline(?![\w-])")
 _SHELL_COMMAND_BREAK = re.compile(r"&&|\|\||;|\|")
 _SEALED_OFFLINE_EXPORT = re.compile(r"""^export\s+CARGO_NET_OFFLINE=(?:true|"true"|'true')\s*$""")
 _CARGO_NET_OFFLINE_WORD = re.compile(r"\bCARGO_NET_OFFLINE\b")
+_SEALED_AUTO_INSTALL_EXPORT = re.compile(r"""^export\s+RUSTUP_AUTO_INSTALL=(?:0|"0"|'0')\s*$""")
+_RUSTUP_AUTO_INSTALL_WORD = re.compile(r"\bRUSTUP_AUTO_INSTALL\b")
+_SHELL_RUSTUP_WORD = re.compile(r"(?<![\w.-])rustup(?![\w.-])")
 _RUST_LANE_OPEN = re.compile(r"^rust_lane\s*\(\s*\)\s*\{\s*$")
 
 
@@ -1366,13 +1371,17 @@ def _shell_logical_lines(script_text: str) -> list[tuple[int, str]]:
 
 
 def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = ROOT) -> int:
-    """Require sealed-offline Cargo use in the qualification entrypoint (DEP-AUD-027, fss-x4a.26.3).
+    """Require sealed-offline Cargo and rustup use in a qualification script (DEP-AUD-027, fss-x4a.26.3).
 
-    Refused, each with ``file:line`` where one exists:
+    Applied to ``scripts/qualify.sh`` and ``scripts/release_qualify.sh``. Refused, each with
+    ``file:line`` where one exists:
     - a missing/unreadable script;
     - no unindented top-level ``export CARGO_NET_OFFLINE=true`` textually before the first cargo
-      invocation (qualify.sh dispatches its lanes at the bottom, so the export runs first);
-    - any other non-comment line naming ``CARGO_NET_OFFLINE`` (unset, override, ``env -u``, re-export);
+      invocation (both scripts dispatch at the bottom, so the export runs first);
+    - no unindented top-level ``export RUSTUP_AUTO_INSTALL=0`` textually before the first ``rustup``
+      or cargo word, so rustup cannot fetch a missing toolchain;
+    - any other non-comment line naming ``CARGO_NET_OFFLINE`` or ``RUSTUP_AUTO_INSTALL`` (unset,
+      override, ``env -u``, re-export);
     - any shell word ``cargo`` (also ``/path/to/cargo``, inside quoted ``bash -c`` strings, and inside
       heredoc bodies) whose own command segment (up to ``&&``/``||``/``;``/``|``) lacks ``--offline``.
       There is no ``cargo fmt`` exemption: the script uses ``cargo --offline fmt``.
@@ -1394,7 +1403,9 @@ def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = RO
     logical = _shell_logical_lines(script_text)
 
     export_line: int | None = None
+    auto_install_line: int | None = None
     first_cargo_line: int | None = None
+    first_rustup_line: int | None = None
     invocations = 0
     for number, line in logical:
         stripped = line.strip()
@@ -1403,8 +1414,15 @@ def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = RO
         if export_line is None and _SEALED_OFFLINE_EXPORT.match(line):
             export_line = number
             continue
+        if auto_install_line is None and _SEALED_AUTO_INSTALL_EXPORT.match(line):
+            auto_install_line = number
+            continue
         if _CARGO_NET_OFFLINE_WORD.search(line):
             add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: CARGO_NET_OFFLINE may be set only once, by the top-level `export CARGO_NET_OFFLINE=true`: {stripped[:160]}", root=root, params={"path": rel, "line": number})
+        if _RUSTUP_AUTO_INSTALL_WORD.search(line):
+            add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: RUSTUP_AUTO_INSTALL may be set only once, by the top-level `export RUSTUP_AUTO_INSTALL=0`: {stripped[:160]}", root=root, params={"path": rel, "line": number})
+        if first_rustup_line is None and _SHELL_RUSTUP_WORD.search(line):
+            first_rustup_line = number
         for match in _SHELL_CARGO_WORD.finditer(line):
             invocations += 1
             if first_cargo_line is None:
@@ -1414,6 +1432,9 @@ def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = RO
                 add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: cargo invocation lacks --offline: {stripped[:160]}", root=root, params={"path": rel, "line": number})
     if export_line is None or (first_cargo_line is not None and export_line > first_cargo_line):
         add(findings, "error", "DEP-AUD-027", script, f"{rel}: no unindented top-level `export CARGO_NET_OFFLINE=true` precedes the first cargo invocation", root=root, params={"path": rel, "line": export_line})
+    first_tool_line = min((n for n in (first_cargo_line, first_rustup_line) if n is not None), default=None)
+    if auto_install_line is None or (first_tool_line is not None and auto_install_line > first_tool_line):
+        add(findings, "error", "DEP-AUD-027", script, f"{rel}: no unindented top-level `export RUSTUP_AUTO_INSTALL=0` precedes the first rustup or cargo invocation; rustup could fetch a missing toolchain", root=root, params={"path": rel, "line": auto_install_line})
     return invocations
 
 
@@ -1634,6 +1655,7 @@ def audit_workspace(
     policy_path: Path = ALLOWLIST,
     require_metadata: bool = False,
     qualify_script: Path | None = None,
+    release_script: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     findings: list[Finding] = []
     try:
@@ -1729,6 +1751,8 @@ def audit_workspace(
     if qualify_script is not None:
         qualify_offline_audit(findings, qualify_script, root=root)
         qualify_doctest_audit(findings, qualify_script, root=root)
+    if release_script is not None:
+        qualify_offline_audit(findings, release_script, root=root)
     if not metadata_available:
         lock_file = root / "Cargo.lock"
         if lock_file.is_file():
@@ -1814,6 +1838,7 @@ def main() -> int:
         policy_path=ALLOWLIST,
         require_metadata=args.require_metadata,
         qualify_script=ROOT / "scripts/qualify.sh",
+        release_script=ROOT / "scripts/release_qualify.sh",
     )
     rendered = json.dumps(report, indent=2, sort_keys=True) + "\n"
     print(rendered, end="")

@@ -7,6 +7,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # every cargo invocation also passes --offline. This seals Cargo resolution only; it is not
 # OS-level network isolation (no network namespace / `unshare -n` is used).
 export CARGO_NET_OFFLINE=true
+# rustup must not fetch a missing pinned toolchain either (DEP-AUD-027); RUSTUP_AUTO_INSTALL=0 was
+# observed honoured by rustup 1.29.1. `rustup run` without --install does not install regardless.
+export RUSTUP_AUTO_INSTALL=0
 LANE="full"
 RECEIPT_DIR="${FSS_RECEIPT_DIR:-}"
 WRITE_RECEIPT=1

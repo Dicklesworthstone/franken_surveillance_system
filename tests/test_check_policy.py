@@ -396,5 +396,44 @@ class CheckPolicyDoctestStepTests(CheckPolicyFixtureCase):
         self.assertEqual(check_policy.errors, [])
 
 
+SEALED_QUALIFY_SH = (
+    "#!/usr/bin/env bash\nexport CARGO_NET_OFFLINE=true\nexport RUSTUP_AUTO_INSTALL=0\n"
+    'run check rustup run "$tc" cargo check --locked --offline --workspace\n'
+)
+
+
+class CheckPolicyRustupAndReleaseSealTests(CheckPolicyFixtureCase):
+    """fss-x4a.26.3 follow-up: check-policy's DEP-AUD-027 mirror requires the top-level
+    `export RUSTUP_AUTO_INSTALL=0` and polices scripts/release_qualify.sh as well as qualify.sh."""
+
+    def write(self, name: str, text: str) -> None:
+        script = self.root / "scripts" / name
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(text, encoding="utf-8")
+
+    def test_qualify_offline_policy_requires_rustup_export(self) -> None:
+        self.write("qualify.sh", SEALED_QUALIFY_SH.replace("export RUSTUP_AUTO_INSTALL=0\n", ""))
+        self.write("release_qualify.sh", SEALED_QUALIFY_SH)
+        check_policy.qualify_offline_policy()
+        self.assertTrue(any(err.startswith("DEP-AUD-027") and "RUSTUP_AUTO_INSTALL" in err and "scripts/qualify.sh" in err for err in check_policy.errors), check_policy.errors)
+
+    def test_qualify_offline_policy_polices_release_script(self) -> None:
+        self.write("qualify.sh", SEALED_QUALIFY_SH)
+        self.write("release_qualify.sh", SEALED_QUALIFY_SH.replace("--locked --offline --workspace", "--locked --workspace"))
+        check_policy.qualify_offline_policy()
+        self.assertTrue(any(err.startswith("DEP-AUD-027") and "scripts/release_qualify.sh:4" in err for err in check_policy.errors), check_policy.errors)
+
+    def test_qualify_offline_policy_missing_release_script_fails(self) -> None:
+        self.write("qualify.sh", SEALED_QUALIFY_SH)
+        check_policy.qualify_offline_policy()
+        self.assertTrue(any(err.startswith("DEP-AUD-027") and "release_qualify.sh" in err for err in check_policy.errors), check_policy.errors)
+
+    def test_positive_control_both_sealed_scripts_pass(self) -> None:
+        self.write("qualify.sh", SEALED_QUALIFY_SH)
+        self.write("release_qualify.sh", SEALED_QUALIFY_SH)
+        check_policy.qualify_offline_policy()
+        self.assertEqual(check_policy.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()
