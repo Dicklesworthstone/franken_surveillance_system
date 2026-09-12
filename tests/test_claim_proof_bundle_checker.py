@@ -903,6 +903,8 @@ def verify(root: Path, data: dict, name: str = "b.bundle.json", **kwargs: object
         if rel in referenced and not (root / rel).exists():
             (root / rel).parent.mkdir(parents=True, exist_ok=True)
             (root / rel).write_bytes(raw)
+    if referenced & set(DEFAULT_RETAINED_FILES):
+        ensure_slo_freshness_bound(root)  # the default slo measurement needs its cost row's bound (slo item 6)
     return verify_proof_bundle(bundle_path=path, root=root, **kwargs)
 
 
@@ -2655,6 +2657,29 @@ def _apply_overrides(doc: dict, overrides: dict | None) -> dict:
     return doc
 
 
+SLO_COST_ANCHOR = 'id = "COST-DETECT-001"\n'
+SLO_FIXTURE_MAX_AGE_DAYS = 30  # a test-only value: the repository registry leaves the bound unset
+
+
+def ensure_slo_freshness_bound(root: Path, days: int = SLO_FIXTURE_MAX_AGE_DAYS) -> None:
+    """Gives every operation row of the test root's cost registry (a copy of the repository's
+    when absent) a measurement_max_age_days. A registry a test planted without the
+    COST-DETECT-001 row (empty, malformed, row-less) is left exactly as planted."""
+    rel = "architecture/operation_cost_registry.toml"
+    target = root / rel
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text((ROOT / rel).read_text(encoding="utf-8"), encoding="utf-8")
+    current = target.read_text(encoding="utf-8")
+    if SLO_COST_ANCHOR in current and "measurement_max_age_days" not in current:
+        lines: list[str] = []
+        for line in current.splitlines(keepends=True):
+            lines.append(line)
+            if line.startswith('id = "COST-') and line.rstrip().endswith('"'):
+                lines.append(f"measurement_max_age_days = {days}\n")
+        target.write_text("".join(lines), encoding="utf-8")
+
+
 def build_slo_fixture(
     root: Path,
     *,
@@ -2666,6 +2691,7 @@ def build_slo_fixture(
     """Writes a complete, valid 'slo' claim for SLO-DETECT-001 (retained environment manifest,
     retained measurement bound to it) under root and returns the unsealed bundle. Each
     negative test perturbs exactly one aspect through the override dictionaries."""
+    ensure_slo_freshness_bound(root)
     env_doc = _apply_overrides(dict(DEFAULT_ENVIRONMENT_DATA), environment)
     env_digest = _write_doc(root, SLO_ENVIRONMENT_REL, env_doc)
     meas_doc = _apply_overrides({
@@ -4193,6 +4219,159 @@ class TestBoundedModelReviewFindings(unittest.TestCase):
 
     def test_claim_row_without_generation_fails(self) -> None:
         self.assertRefused(self._run(claim_generation=None), [_code("ERR_CLAIM_GENERATION_UNBOUND")])
+
+
+# ---------------------------------------------------------------------------
+# 'slo' review of f00d2a0, items 1-7 (fss-x4a.30.87.5)
+# ---------------------------------------------------------------------------
+
+SLOS_REL = "registries/SLOS.md"
+COST_REL = "architecture/operation_cost_registry.toml"
+DETECT_TARGET = "≤ 1.5 s"
+
+
+def _repo_detect_row() -> tuple[str, str]:
+    text = (ROOT / SLOS_REL).read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.startswith(f"| `{SLO_CLAIM_ID}` |"))
+    assert DETECT_TARGET in row, row
+    return text, row
+
+
+def put_slos(transform):
+    """A setup hook writing a copy of registries/SLOS.md transformed by transform(text, row)."""
+    def setup(root: Path) -> None:
+        text, row = _repo_detect_row()
+        (root / SLOS_REL).parent.mkdir(parents=True, exist_ok=True)
+        (root / SLOS_REL).write_text(transform(text, row), encoding="utf-8")
+    return setup
+
+
+def put_cost_registry(extra_line: str | None):
+    """An after hook writing the repository cost registry with only extra_line after the
+    COST-DETECT-001 id (None: exactly the repository's own registry, which sets no bound)."""
+    def after(root: Path) -> None:
+        text = (ROOT / COST_REL).read_text(encoding="utf-8")
+        if extra_line is not None:
+            text = text.replace(SLO_COST_ANCHOR, SLO_COST_ANCHOR + extra_line + "\n", 1)
+        (root / COST_REL).write_text(text, encoding="utf-8")
+    return after
+
+
+class TestSloReviewItems1to7(unittest.TestCase):
+    """Each slo bypass found in the review of f00d2a0 fails closed with an exact finding-id set."""
+
+    UNBOUND = _code("ERR_SLO_TARGET_UNBOUND")
+
+    def run_case(self, *, measurement: dict | None = None, setup=None, after=None, now: datetime = SLO_NOW):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            if setup is not None:
+                setup(root)
+            data = build_slo_fixture(root, measurement=measurement)
+            if after is not None:
+                after(root)
+            ok, findings, _ = verify_slo_bundle(root, data, now=now)
+            return ok, findings
+
+    def assert_refused(self, expected: list[str], **case: object) -> None:
+        ok, findings = self.run_case(**case)
+        self.assertFalse(ok, "planted bypass was accepted: " + repr([f"{f.code}: {f.message}" for f in findings]))
+        self.assertEqual(error_code_set(findings), sorted(set(expected)), [f"{f.code}: {f.message}" for f in findings])
+
+    def test_review_finding_id_is_registered(self) -> None:
+        code = "ERR-CLAIM-SLO-FRESHNESS-BOUND-UNSET-001"
+        self.assertEqual(_code("ERR_SLO_FRESHNESS_UNSET"), code)
+        self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+        self.assertEqual((ROOT / "registries/ERRORS.md").read_text(encoding="utf-8").count(f"| `{code}` |"), 1)
+
+    def test_positive_control_with_a_registry_freshness_bound_passes(self) -> None:
+        ok, findings = self.run_case()
+        self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+        self.assertEqual(findings, [])
+
+    # 1. Units compared exactly ----------------------------------------------------
+
+    def test_1_measurement_unit_case_variant_fails(self) -> None:
+        for unit in ("S", " s", "s "):
+            with self.subTest(unit=unit):
+                self.assert_refused([self.UNBOUND], measurement={"unit": unit})
+
+    def test_1_registry_unit_case_variant_fails(self) -> None:
+        self.assert_refused([self.UNBOUND], setup=put_slos(lambda text, row: text.replace(row, row.replace(DETECT_TARGET, "≤ 1.5 S"))))
+
+    # 2. Rows hidden in comments or fences are not authoritative -------------------
+
+    def test_2_row_hidden_in_an_html_comment_fails(self) -> None:
+        def hide(text: str, row: str) -> str:
+            return text.replace(row + "\n", "") + "\n<!--\n" + row.replace(DETECT_TARGET, "≤ 100 s") + "\n-->\n"
+        self.assert_refused([self.UNBOUND], measurement={"actual": 50.0}, setup=put_slos(hide))
+
+    def test_2_row_hidden_in_a_code_fence_fails(self) -> None:
+        def fence(text: str, row: str) -> str:
+            return text.replace(row + "\n", "") + "\n```\n" + row.replace(DETECT_TARGET, "≤ 100 s") + "\n```\n"
+        self.assert_refused([self.UNBOUND], measurement={"actual": 50.0}, setup=put_slos(fence))
+
+    # 3. The comparator is a standalone, unnegated token ----------------------------
+
+    def test_3_negated_or_glued_comparators_fail(self) -> None:
+        for target in ("not > 1.5 s", "-> 1.5 s", "never ≤ 1.5 s", "<≤ 1.5 s"):
+            with self.subTest(target=target):
+                self.assert_refused([self.UNBOUND], setup=put_slos(lambda text, row, t=target: text.replace(row, row.replace(DETECT_TARGET, t))))
+
+    # 4. A non-finite target is never a threshold ---------------------------------
+
+    def test_4_overflowing_target_fails(self) -> None:
+        huge = "≤ 1" + "0" * 400 + " s"
+        self.assert_refused([self.UNBOUND], setup=put_slos(lambda text, row: text.replace(row, row.replace(DETECT_TARGET, huge))))
+
+    # 5. Cost-registry integers beyond the parser's limit are a registry finding ----
+
+    def test_5_oversized_integer_in_cost_registry_is_a_finding(self) -> None:
+        def setup(root: Path) -> None:
+            text = (ROOT / COST_REL).read_text(encoding="utf-8") + "\noversized = 1" + "0" * 5000 + "\n"
+            (root / COST_REL).parent.mkdir(parents=True, exist_ok=True)
+            (root / COST_REL).write_text(text, encoding="utf-8")
+        self.assert_refused([_code("ERR_SLO_REGISTRY_INVALID")], setup=setup)
+
+    # 6. The freshness bound comes only from the registry --------------------------
+
+    def test_6_no_hard_coded_freshness_bound(self) -> None:
+        self.assertFalse(hasattr(cpb, "SLO_MEASUREMENT_MAX_AGE"))
+
+    def test_6_unset_freshness_bound_fails_closed(self) -> None:
+        self.assert_refused([_code("ERR_SLO_FRESHNESS_UNSET")], after=put_cost_registry(None))
+
+    def test_6_malformed_freshness_bound_is_a_registry_finding(self) -> None:
+        for value in ("0", "-1", '"30"', "true", "1.5", "1000000"):
+            with self.subTest(value=value):
+                self.assert_refused([_code("ERR_SLO_REGISTRY_INVALID")], after=put_cost_registry(f"measurement_max_age_days = {value}"))
+
+    def test_6_registry_bound_governs_staleness(self) -> None:
+        ten_days_old = {"measurement_window": {"started_at": "2026-08-23T00:00:00Z", "finished_at": "2026-08-23T01:00:00Z"}}
+        self.assert_refused([ERR_STALE_GENERATION], measurement=ten_days_old, after=put_cost_registry("measurement_max_age_days = 7"))
+        sixty_days_old = {"measurement_window": {"started_at": "2026-07-04T00:00:00Z", "finished_at": "2026-07-04T01:00:00Z"}}
+        ok, findings = self.run_case(measurement=sixty_days_old, after=put_cost_registry("measurement_max_age_days = 90"))
+        self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+        self.assertEqual(findings, [])
+
+    # 7. Naive instants and non-finite actuals ---------------------------------------
+
+    def test_7_naive_evaluation_instant_is_a_finding(self) -> None:
+        self.assert_refused([ERR_UNRECOGNIZED_STATE_CODE()], now=datetime(2026, 9, 2))
+
+    def test_7_naive_evaluation_instant_fails_the_audit(self) -> None:
+        ok, findings, _ = audit_claim_proof_bundles(ROOT, now=datetime(2026, 9, 2))
+        self.assertFalse(ok)
+        self.assertEqual(error_code_set(findings), [ERR_UNRECOGNIZED_STATE_CODE()])
+
+    def test_7_non_finite_actual_is_actual_invalid(self) -> None:
+        for actual in (float("inf"), 1e309):
+            with self.subTest(actual=actual):
+                self.assert_refused([_code("ERR_SLO_ACTUAL_INVALID")], measurement={"actual": actual})
+
+
+def ERR_UNRECOGNIZED_STATE_CODE() -> str:
+    return _code("ERR_UNRECOGNIZED_STATE")
 
 if __name__ == "__main__":
     unittest.main()
