@@ -263,7 +263,6 @@ fn synthetic_situation(
         affordances: custom_affordances,
         completeness: Completeness::Complete,
         created_at: TimestampNs(1_000),
-        mission_state: None,
     };
     capsule.validate()?;
     Ok(ReferenceSituation {
