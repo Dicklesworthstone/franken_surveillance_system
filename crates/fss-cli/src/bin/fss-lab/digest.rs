@@ -22,11 +22,6 @@ impl Digest {
     pub const ZERO: Self = Self([0; 32]);
 
     #[must_use]
-    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    #[must_use]
     pub const fn as_bytes(self) -> [u8; 32] {
         self.0
     }
@@ -113,11 +108,6 @@ impl CanonicalWriter {
         self.push_u64(length);
         self.bytes.extend_from_slice(value);
         Ok(())
-    }
-
-    #[must_use]
-    pub fn finish(self) -> Vec<u8> {
-        self.bytes
     }
 
     pub fn digest(self) -> Result<Digest, DigestError> {

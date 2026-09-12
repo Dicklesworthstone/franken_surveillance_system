@@ -171,11 +171,6 @@ impl EvidenceLedger {
             root: self.root,
         }
     }
-
-    #[must_use]
-    pub fn records(&self) -> &[EvidenceRecord] {
-        &self.records
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

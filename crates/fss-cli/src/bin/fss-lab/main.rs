@@ -1,5 +1,4 @@
 #![forbid(unsafe_code)]
-#![allow(dead_code)]
 //! Deterministic reference surveillance laboratory CLI.
 
 mod digest;

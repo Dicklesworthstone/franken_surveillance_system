@@ -118,6 +118,7 @@ impl SourceSpool {
         self.root
     }
 
+    #[cfg(test)]
     #[must_use]
     pub const fn published_count(&self) -> u64 {
         self.published_count
@@ -233,6 +234,7 @@ impl SourceSpool {
         })
     }
 
+    #[cfg(test)]
     pub fn state(&self, key: &SourceKey) -> Result<SourceState, SpoolError> {
         self.entries
             .get(key)
