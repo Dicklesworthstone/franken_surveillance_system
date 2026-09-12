@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    BatchId, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, EventEvidence,
-    EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceDelta,
+    BatchId, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, DecisionPath,
+    EventEvidence, EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceDelta,
     EvidenceEdgeRelation, LedgerAnchor, ObjectId, Plane, ProbabilityInterval,
 };
 use fss_ledger::DurableReferenceLedger;
@@ -266,7 +266,7 @@ fn policy_decision_path(
     evidence: &[EventEvidence],
     state: EventState,
     action: ReferencePolicyAction,
-) -> ContentDigest {
+) -> DecisionPath {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_unknown_presence_policy.v1");
     event_id.encode_canonical(&mut encoder);
@@ -279,5 +279,11 @@ fn policy_decision_path(
     for edge in evidence {
         edge.encode_canonical(&mut encoder);
     }
-    ContentDigest::sha256(&encoder.finish())
+    let fingerprint = ContentDigest::sha256(&encoder.finish());
+    DecisionPath {
+        policy_generation: ContentDigest::sha256(b"fss.reference_unknown_presence_policy.v1"),
+        fingerprint,
+        abstained: false,
+        abstention_reason: None,
+    }
 }

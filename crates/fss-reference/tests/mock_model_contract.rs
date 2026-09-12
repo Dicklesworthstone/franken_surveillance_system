@@ -891,7 +891,7 @@ fn test_bounds_detections_per_output_at_bound_and_bound_plus_one() -> Result<(),
         provenance_class: ProvenanceClass::Predicted,
         detections: make_detections(2)?,
         corroboration: CorroborationStatus::UncorroboratedSingleSource {
-            sensor_id: sensor_2,
+            sensor_id: sensor_2.clone(),
             model_generation: generation.as_str().to_string(),
         },
         virtual_latency_ns: 10_000_000,

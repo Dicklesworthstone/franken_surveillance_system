@@ -709,7 +709,7 @@ fn alert_precondition_digest(
         .authority_anchor
         .encode_canonical(&mut encoder);
     encoder.text(decision.event.state.as_str());
-    encoder.digest(decision.event.decision_path);
+    encoder.digest(decision.event.decision_path.fingerprint);
     ContentDigest::sha256(&encoder.finish())
 }
 
