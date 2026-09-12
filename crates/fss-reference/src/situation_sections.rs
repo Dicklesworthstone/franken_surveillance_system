@@ -44,7 +44,11 @@ impl ReferenceProjectionSpec {
         if self.view_id.is_empty()
             || self.view_id.len() > MAX_VIEW_ID_BYTES
             || self.target_tokens == 0
-            || self.target_tokens > self.available_resources.tokens
+            || self.target_tokens
+                > self
+                    .available_resources
+                    .tokens
+                    .saturating_sub(self.reserved_resources.tokens)
         {
             return Err(ContractError::BudgetExhausted);
         }

@@ -977,3 +977,33 @@ fn test_single_contradiction_does_not_double_count_tokens() -> Result<(), Box<dy
     );
     Ok(())
 }
+
+#[test]
+fn test_spec_validation_rejects_reserved_token_incursion() -> Result<(), Box<dyn Error>> {
+    let available = BudgetVector::builder()
+        .latency_ms(10_000)
+        .tokens(100) // 100 available
+        .bytes(10_000)
+        .build()?;
+    let reserved = BudgetVector::builder()
+        .latency_ms(100)
+        .tokens(80) // 80 reserved -> only 20 unreserved
+        .bytes(1_000)
+        .build()?;
+
+    let spec = ReferenceProjectionSpec {
+        view_id: "AVIEW-RESERVED-TEST".to_owned(),
+        available_resources: available,
+        reserved_resources: reserved,
+        pressure: ResourcePressure::Nominal,
+        degraded_dimensions: BTreeSet::new(),
+        target_tokens: 90, // 90 > (100 - 80) -> encroaches on reserved budget!
+    };
+
+    let res = spec.validate();
+    assert!(
+        res.is_err(),
+        "ReferenceProjectionSpec::validate() must reject target_tokens (90) that exceeds unreserved budget (20)"
+    );
+    Ok(())
+}
