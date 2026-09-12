@@ -967,7 +967,113 @@ impl AdapterIdentity {
         next.verify()?;
         Ok(next)
     }
+
+    /// Verifies standards-first compliance under NEG-002.
+    ///
+    /// Fail-closed rules:
+    /// 1. Standards claims (ONVIF, RTSP, UVC) must not rely on marketing, box claims,
+    ///    cloud viewing, or consumer app presence.
+    /// 2. Proprietary/vendor/app-automation paths cannot use `IsolationMode::NativePureRust`
+    ///    as a production native driver without authorized lab isolation (`IsolationMode::SealedLaboratoryProcess`).
+    /// 3. Vendor tokens must be explicitly scoped and cannot run under ambient unisolated credentials.
+    pub fn verify_standards_compliance(&self) -> Result<(), StandardsComplianceError> {
+        let profile_lower = self.protocol_profile.to_ascii_lowercase();
+
+        // Rule 1: Reject marketing / app presence / consumer box claims
+        for forbidden in &[
+            "marketing",
+            "advertised",
+            "inferred",
+            "app_presence",
+            "app presence",
+            "packaging",
+            "box",
+            "cloud_viewing",
+            "cloud viewing",
+            "unverified",
+        ] {
+            if profile_lower.contains(forbidden) {
+                return Err(StandardsComplianceError::UnverifiedStandardsClaim {
+                    detail: format!(
+                        "protocol profile '{}' contains forbidden marketing/app-presence indicator '{}'",
+                        self.protocol_profile, forbidden
+                    ),
+                });
+            }
+        }
+
+        // Rule 2: Proprietary paths cannot claim NativePureRust
+        let id_lower = self.adapter_id.as_str().to_ascii_lowercase();
+        let is_proprietary = id_lower.contains("wyze")
+            || id_lower.contains("aosu")
+            || id_lower.contains("dji")
+            || id_lower.contains("lab")
+            || profile_lower.contains("vendor")
+            || profile_lower.contains("screen_capture")
+            || profile_lower.contains("app_automation");
+
+        if is_proprietary && self.isolation_mode == IsolationMode::NativePureRust {
+            return Err(StandardsComplianceError::ProprietaryNativePromotion {
+                detail: format!(
+                    "adapter '{}' is proprietary/vendor path but specifies NativePureRust; NEG-002 requires SealedLaboratoryProcess isolation",
+                    self.adapter_id
+                ),
+            });
+        }
+
+        // Rule 3: Vendor tokens must be used with explicit isolation
+        if self.credential_method == CredentialMethod::Token
+            && self.isolation_mode == IsolationMode::NativePureRust
+        {
+            return Err(StandardsComplianceError::UnscopedVendorToken {
+                detail: format!(
+                    "adapter '{}' uses vendor token authentication without process boundary isolation",
+                    self.adapter_id
+                ),
+            });
+        }
+
+        Ok(())
+    }
 }
+
+/// Standards-first camera access compliance error (NEG-002).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StandardsComplianceError {
+    /// Standards claim (ONVIF/RTSP) inferred from marketing or app presence rather than qualifying evidence.
+    UnverifiedStandardsClaim {
+        /// Diagnostic detail describing the unverified standards claim.
+        detail: String,
+    },
+    /// Proprietary/vendor path registered as native pure Rust production driver rather than sealed laboratory process.
+    ProprietaryNativePromotion {
+        /// Diagnostic detail describing the illegal proprietary promotion.
+        detail: String,
+    },
+    /// Vendor token/credential unscoped or escaping adapter capability boundary.
+    UnscopedVendorToken {
+        /// Diagnostic detail describing the unscoped vendor token usage.
+        detail: String,
+    },
+}
+
+impl fmt::Display for StandardsComplianceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnverifiedStandardsClaim { detail } => {
+                write!(f, "NEG-002 unverified standards claim: {detail}")
+            }
+            Self::ProprietaryNativePromotion { detail } => {
+                write!(f, "NEG-002 proprietary native promotion: {detail}")
+            }
+            Self::UnscopedVendorToken { detail } => {
+                write!(f, "NEG-002 unscoped vendor token: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StandardsComplianceError {}
 
 impl fmt::Display for AdapterIdentity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

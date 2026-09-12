@@ -101,6 +101,7 @@ pub use hydration::{
 pub use identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, DeviceCapabilities,
     DeviceClass, DeviceIdentity, IsolationMode, MediaKind, SourceIdentity, SourceKind,
+    StandardsComplianceError,
 };
 pub use ids::{
     AdapterEpoch, AdapterGeneration, AdapterId, AffordanceId, AppGeneration, ApplicationGeneration,
