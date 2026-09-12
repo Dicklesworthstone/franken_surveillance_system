@@ -65,6 +65,8 @@ from claim_proof_bundle_checker import (
 import claim_proof_bundle_checker as cpb
 
 ERR_CLAIM_BINDING_MISMATCH = cpb.ERR_CLAIM_BINDING_MISMATCH
+ERR_BOUND_DERIVATION_UNBOUND = cpb.ERR_BOUND_DERIVATION_UNBOUND
+ERR_BOUND_EXPRESSION_UNBOUND = cpb.ERR_BOUND_EXPRESSION_UNBOUND
 
 
 class TestClaimProofBundlePositiveControls(unittest.TestCase):
@@ -128,7 +130,8 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             self.assertIsNotNone(loaded_data)
 
     def test_positive_bundle_with_verified_artifacts(self) -> None:
-        """A proof bundle declaring artifacts with matching sha256 digests passes."""
+        """A proof bundle declaring artifacts with matching sha256 digests passes; uncited, its
+        class is resolved from the SLO registry by its claim id, not taken from the bundle."""
         with tempfile.TemporaryDirectory() as tmpdir:
             tmp_root = Path(tmpdir)
             known_classes, prohibited, _ = load_authoritative_claims(ROOT / "architecture/claims.json")
@@ -138,37 +141,16 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             art1_file.write_bytes(art1_content)
             art1_digest = compute_sha256(art1_content)
 
-            bundle_data = {
-                "schema": "fss.proof_bundle.v1",
-                "bundle_id": "BUNDLE-ART-001",
-                "claim_id": "INV-TEST-001",
-                "claim_class": "invariant",
-                "supported_level": "achieved",
-                "generation": "gen-2026-09-01",
-                "status": "verified",
-                "retained_evidence": [
-                    "contract",
-                    "mechanical_check",
-                    "counterexample_suite",
-                ],
-                "artifacts": [
-                    {
-                        "path": "artifact1.bin",
-                        "digest": art1_digest,
-                    }
-                ],
-            }
-            digest = compute_bundle_digest(bundle_data)
-            bundle_data["content_digest"] = digest
-
-            bundle_file = tmp_root / "art.bundle.json"
-            bundle_file.write_text(json.dumps(bundle_data), encoding="utf-8")
+            bundle_data = build_slo_fixture(tmp_root)
+            bundle_data["artifacts"].append({"path": "artifact1.bin", "digest": art1_digest})
+            bundle_file = write_slo_bundle(tmp_root, bundle_data)
 
             is_valid, findings, _ = verify_proof_bundle(
                 bundle_path=bundle_file,
                 root=tmp_root,
                 known_classes=known_classes,
                 prohibited_promotions=prohibited,
+                now=SLO_NOW,
             )
             self.assertTrue(is_valid, f"Expected pass, got findings: {[f.message for f in findings]}")
             self.assertEqual(len(findings), 0)
@@ -215,6 +197,38 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             self.assertEqual(summary["error_count"], 0)
             self.assertEqual(summary["promoted_claim_rows"], 1)
             self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (2, 2))
+            result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_positive_markdown_row_cites_complete_proof_bundle(self) -> None:
+        """A claim row (ID | Class | Status | Proof root) citing a complete 'proof' bundle passes;
+        the row status reaches the bundle as its claim level and the row class governs."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
+            findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` |"))
+            self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (1, 1, 1))
+
+    def test_positive_markdown_row_cites_complete_bounded_model_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_json(root / BOUND_BUNDLE_REL, seal(build_bound_fixture(root)))
+            findings, stats = scan_with_stats(root, class_table(f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{BOUND_BUNDLE_REL}` |"))
+            self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (1, 1, 1))
+
+    def test_positive_readme_row_cites_complete_proof_bundle_end_to_end(self) -> None:
+        """README.md claim row with a Class column citing a complete proof bundle: the audit
+        (markdown scan + retention walk, which inherits the citing row's class) and CLI pass."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
+            append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` |"))
+            ok, findings, summary = audit_claim_proof_bundles(root, now=FIXED_NOW)
+            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (2, 2))
+            self.assertEqual(summary.get("unpromoted_bundles_count", 0), 0)
             result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -469,6 +483,7 @@ class TestPlantedNegativeClaimLevelExceeded(unittest.TestCase):
             is_valid, findings, _ = verify_proof_bundle(
                 bundle_path=bundle_file,
                 root=tmp_root,
+                claim_class="slo",  # the citing claim row's class; a bundle never picks its own
                 known_classes=known_classes,
             )
             self.assertFalse(is_valid)
@@ -3021,13 +3036,22 @@ def build_proof_fixture(
     return data
 
 
-def verify_class_bundle(root: Path, data: dict, claim_id: str, claim_level: str | None = "verified"):
+def verify_class_bundle(
+    root: Path,
+    data: dict,
+    claim_id: str,
+    claim_level: str | None = "verified",
+    claim_class: str | None = None,
+):
+    """Verifies data as cited by the claim row claim_id; the row's class is claim_class, else
+    the class of that fixture claim (CLAIM_ROW_CLASSES), never the bundle's own declaration."""
     path = write_json(root / "qualification-artifacts/claim.bundle.json", seal(data))
     return verify_proof_bundle(
         bundle_path=path,
         root=root,
         expected_claim_id=claim_id,
         claim_level=claim_level,
+        claim_class=claim_class if claim_class is not None else CLAIM_ROW_CLASSES.get(claim_id),
         known_classes=_known_classes(),
         tombstoned_ids=set(),
         prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS),
@@ -3250,6 +3274,10 @@ BOUND_CLAIM_ID = "BOUND-INGEST-LATENCY-001"
 BOUND_GENERATION = "gen:fss1:bound-ingest-v1"
 BOUND_DERIVATION_REL = "proofs/bounds/ingest_latency.derivation.json"
 BOUND_EXPRESSION = "L_ingest <= D_decode + Q_max * D_frame"
+BOUND_BUNDLE_REL = "qualification-artifacts/bounds/ingest-latency.bundle.json"
+PROOF_BUNDLE_REL = "qualification-artifacts/proof/formal-002.bundle.json"
+# The class each fixture claim row declares (claim tables carry it in their Class column).
+CLAIM_ROW_CLASSES = {PROOF_CLAIM_ID: "proof", BOUND_CLAIM_ID: "bounded_model"}
 BOUND_ASSUMPTIONS = [
     {"id": "ASSUME-QUEUE-BOUND", "statement": "the ingest queue holds at most Q_max = 8 frames"},
     {"id": "ASSUME-DECODE-WCET", "statement": "decode worst-case execution time is at most 40 ms"},
@@ -3469,6 +3497,180 @@ class TestBoundedModelClaimClassRealization(unittest.TestCase):
                     if json.loads(path.read_text(encoding="utf-8")).get("claim_class") == "bounded_model":
                         bound_bundles.append(path)
         self.assertEqual(bound_bundles, [])
+
+# ---------------------------------------------------------------------------
+# Cross-class fail-opens from the proof/bounded_model review (fss-x4a.30.87.2)
+# ---------------------------------------------------------------------------
+
+HUGE_INT = 10 ** 400  # a valid JSON integer literal that float() cannot represent
+OVERSIZED_INT_TEXT = "1" + "0" * 5000  # beyond CPython's int-parsing digit limit
+
+
+def class_table(*rows: str) -> str:
+    return "| ID | Class | Status | Proof root |\n|---|---|---|---|\n" + "".join(r + "\n" for r in rows)
+
+
+def scan_with_stats(root: Path, text: str, name: str = "table.md") -> tuple[list, dict]:
+    md_file = root / name
+    md_file.write_text(text, encoding="utf-8")
+    stats: dict[str, int] = {}
+    findings = scan_markdown_claim_tables(
+        md_file, root, _known_classes(), set(),
+        prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS), stats=stats, now=FIXED_NOW,
+    )
+    return findings, stats
+
+
+def append_readme_table(root: Path, table: str) -> None:
+    readme = root / "README.md"
+    readme.write_text(readme.read_text(encoding="utf-8") + "\n\n" + table, encoding="utf-8")
+
+
+def relabelled_proof(root: Path, relabel: str) -> dict:
+    """A complete proof claim whose bundle relabels itself and strips the proof evidence names."""
+    return build_proof_fixture(root, bundle={"claim_class": relabel, "retained_evidence": list(_known_classes()[relabel])})
+
+
+class TestCrossClassReviewFailOpens(unittest.TestCase):
+    """fss-x4a.30.87.2 cross-class review: each planted fail-open fails closed with an exact
+    finding-id set, or (overflow) yields a registered finding instead of a traceback."""
+
+    UNRESOLVED = _code("ERR_CLAIM_CLASS_UNRESOLVED")
+
+    def assert_codes(self, findings: list, expected: list[str]) -> None:
+        self.assertEqual(error_code_set(findings), sorted(set(expected)), [f"{f.code}: {f.message}" for f in findings])
+
+    def test_a_relabelled_proof_bundle_without_claim_row_class_fails(self) -> None:
+        for relabel in ("statistical", "invariant", "benchmark"):
+            with self.subTest(relabel=relabel), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                path = write_json(root / PROOF_BUNDLE_REL, seal(relabelled_proof(root, relabel)))
+                ok, findings, _ = verify_proof_bundle(
+                    bundle_path=path, root=root, expected_claim_id=PROOF_CLAIM_ID, claim_level="verified",
+                    known_classes=_known_classes(), tombstoned_ids=set(),
+                    prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS), now=FIXED_NOW,
+                )
+                self.assertFalse(ok, f"proof bundle relabelled '{relabel}' was accepted on its own say-so")
+                self.assert_codes(findings, [self.UNRESOLVED])
+
+    def test_a_markdown_row_without_class_citing_bare_statistical_bundle_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_json(root / "proof_bundles/stat1.bundle.json", seal({
+                "schema": "fss.proof_bundle.v1",
+                "claim_id": "STAT-001",
+                "claim_class": "statistical",
+                "supported_level": "achieved",
+                "generation": "gen-active-01",
+                "status": "passed",
+                "retained_evidence": list(STATISTICAL_EVIDENCE),
+            }))
+            findings, stats = scan_with_stats(root, claim_table("| `STAT-001` | achieved | `proof_bundles/stat1.bundle.json` |"))
+            self.assert_codes(findings, [self.UNRESOLVED])
+            self.assertEqual(stats["bundles_passed"], 0)
+
+    def test_a_class_column_governs_relabelled_proof_bundle(self) -> None:
+        for relabel in ("statistical", "invariant", "benchmark"):
+            with self.subTest(relabel=relabel), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                write_json(root / PROOF_BUNDLE_REL, seal(relabelled_proof(root, relabel)))
+                findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` |"))
+                self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED])
+                self.assertEqual(stats["bundles_passed"], 0)
+
+    def test_a_row_class_cannot_override_the_slo_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_slo_bundle(root, build_slo_fixture(root))
+            findings, _ = scan_with_stats(root, class_table(f"| `{SLO_CLAIM_ID}` | proof | achieved | `{SLO_BUNDLE_REL}` |"))
+            self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH])
+
+    def test_a_relabel_end_to_end_through_readme_and_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / PROOF_BUNDLE_REL, seal(relabelled_proof(root, "statistical")))
+            append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` |"))
+            ok, findings, summary = audit_claim_proof_bundles(root, now=FIXED_NOW)
+            self.assertFalse(ok, "relabelled proof bundle passed the repository audit")
+            self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED])
+            self.assertEqual(summary["verified_bundles_count"], 0)
+            result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_b_unpromoted_bundle_is_not_counted_as_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            for rel, raw in DEFAULT_RETAINED_FILES.items():
+                (root / rel).parent.mkdir(parents=True, exist_ok=True)
+                (root / rel).write_bytes(raw)
+            write_json(root / "qualification-artifacts/p/spec.bundle.json", seal(make_bundle(supported_level="specified")))
+            ok, findings, summary = audit_claim_proof_bundles(root, now=FIXED_NOW)
+            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual(summary["bundles_checked"], 1)
+            self.assertEqual(summary["verified_bundles_count"], 0, "an unpromoted bundle was reported as verified")
+            self.assertEqual(summary.get("unpromoted_bundles_count"), 1)
+            result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("0/1 proof bundles verified", result.stdout)
+            self.assertIn("1 unpromoted", result.stdout)
+
+    def test_b_draft_absent_and_unknown_supported_levels_fail(self) -> None:
+        for level, expected in (("draft", ERR_CLAIM_LEVEL_EXCEEDED), ("absent", ERR_CLAIM_LEVEL_EXCEEDED), ("gold", cpb.ERR_UNRECOGNIZED_STATE)):
+            with self.subTest(level=level), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(supported_level=level)))
+                self.assertFalse(ok, f"supported level '{level}' was accepted")
+                self.assert_codes(findings, [expected])
+
+    def test_c_overflowing_integers_are_findings_not_crashes(self) -> None:
+        def bound_value(root: Path):
+            return verify_class_bundle(root, build_bound_fixture(root, bound={"value": HUGE_INT}), BOUND_CLAIM_ID)
+
+        def derived_value(root: Path):
+            return verify_class_bundle(root, build_bound_fixture(root, derivation={"derived_value": HUGE_INT}), BOUND_CLAIM_ID)
+
+        def slo_actual(root: Path):
+            return verify_slo_bundle(root, build_slo_fixture(root, measurement={"actual": HUGE_INT}))
+
+        def slo_target(root: Path):
+            return verify_slo_bundle(root, build_slo_fixture(root, measurement={"target": HUGE_INT}))
+
+        def oversized_bundle(root: Path):
+            text = json.dumps(seal(make_bundle()))
+            path = root / "big.bundle.json"
+            path.write_text(text[:-1] + f', "huge": {OVERSIZED_INT_TEXT}}}', encoding="utf-8")
+            return verify_proof_bundle(bundle_path=path, root=root, known_classes=_known_classes(), now=FIXED_NOW)
+
+        def oversized_measurement(root: Path):
+            data = build_slo_fixture(root)
+            meas_path = root / SLO_MEASUREMENT_REL
+            raw = meas_path.read_text(encoding="utf-8")
+            meas_path.write_text(raw[:-1] + f', "huge": {OVERSIZED_INT_TEXT}}}', encoding="utf-8")
+            data["artifacts"][0]["digest"] = compute_sha256(meas_path.read_bytes())
+            return verify_slo_bundle(root, data)
+
+        for label, run, expected in (
+            ("bounded_model bound value", bound_value, [ERR_BOUND_EXPRESSION_UNBOUND]),
+            ("bounded_model derived value", derived_value, [ERR_BOUND_DERIVATION_UNBOUND]),
+            ("slo actual", slo_actual, [_code("ERR_SLO_ACTUAL_INVALID")]),
+            ("slo restated target", slo_target, [_code("ERR_SLO_TARGET_UNBOUND")]),
+            ("bundle with oversized integer", oversized_bundle, [ERR_UNREADABLE_INPUT]),
+            ("measurement with oversized integer", oversized_measurement, [ERR_CLAIM_LEVEL_EXCEEDED]),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = run(Path(tmpdir))
+                self.assertFalse(ok)
+                self.assert_codes(findings, expected)
+
+    def test_c_cli_reports_overflow_instead_of_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_slo_bundle(root, build_slo_fixture(root, measurement={"actual": HUGE_INT}))
+            promote_slos_row(root, SLO_CLAIM_ID, SLO_BUNDLE_REL)
+            result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertNotIn("Traceback", result.stderr)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("ERR-CLAIM-SLO-ACTUAL-INVALID-001", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
