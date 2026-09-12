@@ -64,6 +64,9 @@ ERR_TOMBSTONE_INDEX_UNAVAILABLE = "ERR-CLAIM-PROOF-TOMBSTONE-INDEX-UNAVAILABLE-0
 ERR_CLAIM_BINDING_MISMATCH = "ERR-CLAIM-PROOF-CLAIM-BINDING-MISMATCH-001"
 ERR_UNRECOGNIZED_STATE = "ERR-CLAIM-PROOF-UNRECOGNIZED-STATE-001"
 WARN_NONPASSING_RECEIPT = "WARN-CLAIM-PROOF-NONPASSING-RECEIPT-001"
+ERR_CLAIM_REGISTRY_DRIFT = "ERR-CLAIM-REGISTRY-DRIFT-001"
+ERR_CLAIM_ID_REUSED = "ERR-CLAIM-ID-REUSED-001"
+ERR_CLAIM_MISSING_FIELD = "ERR-CLAIM-MISSING-FIELD-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_PROOF_BUNDLE_NOT_FOUND: {
@@ -113,6 +116,18 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     WARN_NONPASSING_RECEIPT: {
         "trigger": "A retained qualification receipt under qualification-artifacts/ records a non-passing run",
         "remediation": "Nothing may cite this receipt as proof; re-run qualification to produce a passed receipt",
+    },
+    ERR_CLAIM_REGISTRY_DRIFT: {
+        "trigger": "The machine-readable claims registry (architecture/claims.json) and its human-readable markdown source (registries/CLAIMS.md) differ in claim class IDs, ordering, meaning, minimum evidence, or row count",
+        "remediation": "Reconcile architecture/claims.json and registries/CLAIMS.md so that all normative rows and fields are mirror-equal",
+    },
+    ERR_CLAIM_ID_REUSED: {
+        "trigger": "A claim class ID is duplicated, renumbered, or reused across different claim classes",
+        "remediation": "Preserve stable identities; never reuse, duplicate, or renumber an existing claim class ID",
+    },
+    ERR_CLAIM_MISSING_FIELD: {
+        "trigger": "A claim class entry in the registry is missing required normative fields (id, meaning, minimum_evidence, requiredEvidence) or a table row lacks required columns",
+        "remediation": "Provide all required normative fields for each claim class row in both JSON and Markdown",
     },
 }
 
@@ -1220,6 +1235,241 @@ def scan_markdown_claim_tables(
     return findings
 
 
+REQUIRED_NORMATIVE_CLAIM_CLASSES: tuple[str, ...] = (
+    "invariant",
+    "proof",
+    "bounded_model",
+    "statistical",
+    "slo",
+    "benchmark",
+    "compatibility",
+)
+
+
+def audit_claim_kind_registry(
+    root: Path = ROOT,
+    claims_json_path: Path | None = None,
+    claims_md_path: Path | None = None,
+) -> list[ClaimFinding]:
+    """Audits the machine-readable claim-kind registry (architecture/claims.json)
+    against the normative human-readable registry (registries/CLAIMS.md) (fss-x4a.30.87.1).
+
+    Enforces fail-closed verification:
+    1. ERR_CLAIM_ID_REUSED: Reused, duplicate, or renumbered stable IDs.
+    2. ERR_CLAIM_MISSING_FIELD: Missing required normative fields in JSON or columns in Markdown.
+    3. ERR_CLAIM_REGISTRY_DRIFT: Any divergence in row count, IDs, ordering, meaning, or minimum evidence.
+    """
+    findings: list[ClaimFinding] = []
+    json_path = claims_json_path or (root / "architecture/claims.json")
+    md_path = claims_md_path or (root / "registries/CLAIMS.md")
+    json_str = sanitize_path(json_path, root)
+    md_str = sanitize_path(md_path, root)
+
+    if not json_path.is_file():
+        return [_finding(ERR_UNREADABLE_INPUT, json_str, "file", f"Claims registry file not found: '{json_path}'")]
+    if not md_path.is_file():
+        return [_finding(ERR_UNREADABLE_INPUT, md_str, "file", f"Claims markdown source file not found: '{md_path}'")]
+
+    try:
+        json_bytes = json_path.read_bytes()
+    except OSError as exc:
+        return [_finding(ERR_UNREADABLE_INPUT, json_str, "file", f"Could not read claims registry '{json_path}': {exc}")]
+
+    if len(json_bytes.strip()) == 0:
+        return [_finding(ERR_EMPTY_INPUT, json_str, "file", "Claims registry file is empty (0 bytes)")]
+
+    try:
+        data = json.loads(json_bytes.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return [_finding(ERR_UNREADABLE_INPUT, json_str, "file", f"Claims registry '{json_path}' is invalid JSON: {exc}")]
+
+    if not isinstance(data, dict):
+        return [_finding(ERR_UNREADABLE_INPUT, json_str, "file", "Claims registry root must be a JSON object")]
+
+    classes = data.get("classes")
+    if not isinstance(classes, list) or len(classes) == 0:
+        return [_finding(ERR_EMPTY_INPUT, json_str, "classes", "Claims registry declares no claim classes")]
+
+    seen_ids: set[str] = set()
+    json_rows: list[dict[str, Any]] = []
+
+    for idx, item in enumerate(classes):
+        loc = f"classes[{idx}]"
+        if not isinstance(item, dict):
+            findings.append(_finding(ERR_UNREADABLE_INPUT, json_str, loc, f"Malformed claim class entry at index {idx}"))
+            continue
+
+        cid = item.get("id")
+        if not isinstance(cid, str) or not cid.strip():
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, json_str, f"{loc}.id", f"Claim class at index {idx} missing required 'id' field"))
+            continue
+        cid = cid.strip()
+
+        claim_class_val = item.get("claim_class")
+        if claim_class_val is not None:
+            if not isinstance(claim_class_val, str) or claim_class_val.strip() != cid:
+                findings.append(_finding(
+                    ERR_CLAIM_ID_REUSED, json_str, f"{loc}.claim_class",
+                    f"Claim class '{cid}' has conflicting or renumbered claim_class '{claim_class_val}'",
+                ))
+
+        if cid in seen_ids:
+            findings.append(_finding(
+                ERR_CLAIM_ID_REUSED, json_str, f"{loc}.id",
+                f"Duplicate claim class ID '{cid}' at index {idx}",
+                {"id": cid},
+            ))
+        seen_ids.add(cid)
+
+        meaning = item.get("meaning")
+        if not isinstance(meaning, str) or not meaning.strip():
+            findings.append(_finding(
+                ERR_CLAIM_MISSING_FIELD, json_str, f"{loc}.meaning",
+                f"Claim class '{cid}' missing required non-empty 'meaning' field",
+            ))
+
+        min_ev = item.get("minimum_evidence")
+        if min_ev is None:
+            min_ev = item.get("minimumEvidence")
+        if not isinstance(min_ev, str) or not min_ev.strip():
+            findings.append(_finding(
+                ERR_CLAIM_MISSING_FIELD, json_str, f"{loc}.minimum_evidence",
+                f"Claim class '{cid}' missing required non-empty 'minimum_evidence' field",
+            ))
+
+        req_ev = item.get("requiredEvidence")
+        if not isinstance(req_ev, list) or len(req_ev) == 0 or not all(isinstance(e, str) and e.strip() for e in req_ev):
+            findings.append(_finding(
+                ERR_CLAIM_MISSING_FIELD, json_str, f"{loc}.requiredEvidence",
+                f"Claim class '{cid}' missing required non-empty 'requiredEvidence' list",
+            ))
+
+        json_rows.append({
+            "id": cid,
+            "meaning": meaning.strip() if isinstance(meaning, str) else "",
+            "minimum_evidence": min_ev.strip() if isinstance(min_ev, str) else "",
+            "required_evidence": req_ev if isinstance(req_ev, list) else [],
+        })
+
+    try:
+        md_text = md_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        findings.append(_finding(ERR_UNREADABLE_INPUT, md_str, "file", f"Could not read markdown source '{md_path}': {exc}"))
+        return findings
+
+    tables = parse_markdown_tables(md_text)
+    claim_table: tuple[list[str], list[list[str]]] | None = None
+    for headers, rows in tables:
+        normalized_headers = [h.strip().lower() for h in headers]
+        if "claim class" in normalized_headers:
+            if claim_table is not None:
+                findings.append(_finding(ERR_CLAIM_REGISTRY_DRIFT, md_str, "table", "Duplicate claim table found in markdown source"))
+            claim_table = (headers, rows)
+
+    if claim_table is None:
+        findings.append(_finding(ERR_CLAIM_MISSING_FIELD, md_str, "table", "No claim table with 'Claim class' header found in markdown source"))
+        return findings
+
+    headers, data_rows = claim_table
+    norm_headers = [h.strip().lower() for h in headers]
+    try:
+        class_col = norm_headers.index("claim class")
+        meaning_col = norm_headers.index("meaning")
+        evidence_col = norm_headers.index("minimum evidence")
+    except ValueError as exc:
+        findings.append(_finding(ERR_CLAIM_MISSING_FIELD, md_str, "headers", f"Missing required column in claims table: {exc}"))
+        return findings
+
+    md_seen_ids: set[str] = set()
+    md_rows: list[dict[str, str]] = []
+    for r_idx, row in enumerate(data_rows):
+        if len(row) <= max(class_col, meaning_col, evidence_col):
+            findings.append(_finding(
+                ERR_CLAIM_MISSING_FIELD, md_str, f"row[{r_idx}]",
+                f"Claim table row {r_idx + 1} has insufficient columns: {row}",
+            ))
+            continue
+        c_id = row[class_col].strip().strip("`")
+        m_val = row[meaning_col].strip()
+        e_val = row[evidence_col].strip()
+
+        if not c_id:
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, md_str, f"row[{r_idx}].id", f"Empty claim class ID at row {r_idx + 1}"))
+            continue
+        if c_id in md_seen_ids:
+            findings.append(_finding(ERR_CLAIM_ID_REUSED, md_str, f"row[{r_idx}].id", f"Duplicate claim class ID '{c_id}' in markdown table"))
+        md_seen_ids.add(c_id)
+
+        if not m_val:
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, md_str, f"row[{r_idx}].meaning", f"Claim class '{c_id}' in markdown table has empty meaning"))
+        if not e_val:
+            findings.append(_finding(ERR_CLAIM_MISSING_FIELD, md_str, f"row[{r_idx}].evidence", f"Claim class '{c_id}' in markdown table has empty minimum evidence"))
+
+        md_rows.append({"id": c_id, "meaning": m_val, "minimum_evidence": e_val})
+
+    lines = md_text.splitlines()
+    in_claim_table = False
+    table_ended = False
+    for l_idx, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if stripped.startswith("|") and "claim class" in stripped.lower():
+            in_claim_table = True
+            continue
+        if in_claim_table:
+            if not stripped or stripped.startswith("##"):
+                in_claim_table = False
+                table_ended = True
+                continue
+        elif table_ended and stripped.startswith("|") and not stripped.startswith("##"):
+            findings.append(_finding(
+                ERR_CLAIM_REGISTRY_DRIFT, md_str, f"line {l_idx}",
+                f"Orphan claim row outside header-bounded table: '{stripped}'",
+            ))
+
+    json_ids = [r["id"] for r in json_rows]
+    md_ids = [r["id"] for r in md_rows]
+
+    if json_ids != md_ids:
+        findings.append(_finding(
+            ERR_CLAIM_REGISTRY_DRIFT, json_str, "classes",
+            f"Claim class ordering or IDs differ between {json_str} and {md_str}: JSON has {json_ids}, Markdown has {md_ids}",
+            {"json_ids": json_ids, "markdown_ids": md_ids},
+        ))
+
+    for j_row, m_row in zip(json_rows, md_rows):
+        cid = j_row["id"]
+        if cid != m_row["id"]:
+            continue
+        if j_row["meaning"] != m_row["meaning"]:
+            findings.append(_finding(
+                ERR_CLAIM_REGISTRY_DRIFT, json_str, f"{cid}.meaning",
+                f"Claim class '{cid}' meaning differs between JSON and Markdown: {j_row['meaning']!r} != {m_row['meaning']!r}",
+                {"id": cid, "json_meaning": j_row["meaning"], "md_meaning": m_row["meaning"]},
+            ))
+        if j_row["minimum_evidence"] != m_row["minimum_evidence"]:
+            findings.append(_finding(
+                ERR_CLAIM_REGISTRY_DRIFT, json_str, f"{cid}.minimum_evidence",
+                f"Claim class '{cid}' minimum_evidence differs between JSON and Markdown: {j_row['minimum_evidence']!r} != {m_row['minimum_evidence']!r}",
+                {"id": cid, "json_evidence": j_row["minimum_evidence"], "md_evidence": m_row["minimum_evidence"]},
+            ))
+
+    for req_class in REQUIRED_NORMATIVE_CLAIM_CLASSES:
+        if req_class not in json_ids:
+            findings.append(_finding(
+                ERR_CLAIM_REGISTRY_DRIFT, json_str, "classes",
+                f"Mandatory normative claim class '{req_class}' missing from claims registry",
+                {"missing_class": req_class},
+            ))
+        if req_class not in md_ids:
+            findings.append(_finding(
+                ERR_CLAIM_REGISTRY_DRIFT, md_str, "table",
+                f"Mandatory normative claim class '{req_class}' missing from CLAIMS.md table",
+                {"missing_class": req_class},
+            ))
+
+    return findings
+
+
 def audit_claim_proof_bundles(
     root: Path = ROOT,
     claims_json_path: Path | None = None,
@@ -1231,6 +1481,14 @@ def audit_claim_proof_bundles(
     known_classes, prohibited_promotions, findings = load_authoritative_claims(claims_path)
     tombstoned_ids, tombstone_findings = load_tombstone_index(root)
     findings.extend(tombstone_findings)
+
+    # Validate claim-kind registry mirror equality
+    registry_findings = audit_claim_kind_registry(
+        root=root,
+        claims_json_path=claims_path,
+        claims_md_path=root / "registries/CLAIMS.md",
+    )
+    findings.extend(registry_findings)
 
     stats = _new_scan_stats()
     surfaces_scanned: list[str] = []

@@ -36,13 +36,17 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from claim_proof_bundle_checker import (
     ERR_BUNDLE_DIGEST_MISMATCH,
+    ERR_CLAIM_ID_REUSED,
     ERR_CLAIM_LEVEL_EXCEEDED,
+    ERR_CLAIM_MISSING_FIELD,
+    ERR_CLAIM_REGISTRY_DRIFT,
     ERR_EMPTY_INPUT,
     ERR_INVALID_CLAIM_CLASS,
     ERR_PROHIBITED_CLAIM_PROMOTION,
     ERR_PROOF_BUNDLE_NOT_FOUND,
     ERR_STALE_GENERATION,
     ERR_UNREADABLE_INPUT,
+    audit_claim_kind_registry,
     audit_claim_proof_bundles,
     compute_bundle_digest,
     compute_sha256,
@@ -2092,5 +2096,128 @@ class TestSharedAtomicWriter(unittest.TestCase):
             self.assertEqual(qr.load_command_records(Path(tmpdir) / "absent.jsonl"), ([], False))
 
 
+
+class TestClaimKindRegistryAuditing(unittest.TestCase):
+    """Audits the machine-readable claim-kind registry against registries/CLAIMS.md (fss-x4a.30.87.1)."""
+
+    def setUp(self) -> None:
+        self.claims_json_path = ROOT / "architecture/claims.json"
+        self.claims_md_path = ROOT / "registries/CLAIMS.md"
+
+    def test_live_claim_kind_registry_passes(self) -> None:
+        """The real claims.json and registries/CLAIMS.md must pass with 0 errors and all 7 normative rows."""
+        findings = audit_claim_kind_registry(ROOT, self.claims_json_path, self.claims_md_path)
+        errors = [f for f in findings if f.severity == "error"]
+        self.assertEqual(errors, [], f"Claim kind registry audit failed on real files: {errors}")
+
+    def test_claim_kind_registry_drift_meaning_mismatch(self) -> None:
+        """Mismatch in meaning between claims.json and CLAIMS.md emits ERR-CLAIM-REGISTRY-DRIFT-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            md_content = self.claims_md_path.read_text(encoding="utf-8")
+            (reg / "CLAIMS.md").write_text(md_content, encoding="utf-8")
+
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            if "classes" in data and len(data["classes"]) > 0:
+                data["classes"][0]["meaning"] = "altered unauthorized meaning description"
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_REGISTRY_DRIFT, codes)
+
+    def test_claim_kind_registry_drift_evidence_mismatch(self) -> None:
+        """Mismatch in minimum evidence between claims.json and CLAIMS.md emits ERR-CLAIM-REGISTRY-DRIFT-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            md_content = self.claims_md_path.read_text(encoding="utf-8")
+            (reg / "CLAIMS.md").write_text(md_content, encoding="utf-8")
+
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            if "classes" in data and len(data["classes"]) > 0:
+                data["classes"][0]["minimum_evidence"] = "fabricated evidence requirement"
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_REGISTRY_DRIFT, codes)
+
+    def test_claim_kind_registry_drift_order_mismatch(self) -> None:
+        """Reordered claim classes between claims.json and CLAIMS.md emit ERR-CLAIM-REGISTRY-DRIFT-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            md_content = self.claims_md_path.read_text(encoding="utf-8")
+            (reg / "CLAIMS.md").write_text(md_content, encoding="utf-8")
+
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            if "classes" in data and len(data["classes"]) >= 2:
+                data["classes"][0], data["classes"][1] = data["classes"][1], data["classes"][0]
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_REGISTRY_DRIFT, codes)
+
+    def test_claim_kind_registry_id_reused(self) -> None:
+        """Duplicate or reused claim class ID emits ERR-CLAIM-ID-REUSED-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            md_content = self.claims_md_path.read_text(encoding="utf-8")
+            (reg / "CLAIMS.md").write_text(md_content, encoding="utf-8")
+
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            if "classes" in data and len(data["classes"]) >= 2:
+                # duplicate the first class ID onto the second
+                data["classes"][1]["id"] = data["classes"][0]["id"]
+                data["classes"][1]["claim_class"] = data["classes"][0]["id"]
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_ID_REUSED, codes)
+
+    def test_claim_kind_registry_missing_field(self) -> None:
+        """Missing required normative field (meaning, minimum_evidence, id) emits ERR-CLAIM-MISSING-FIELD-001."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            arch = root / "architecture"
+            reg = root / "registries"
+            arch.mkdir(parents=True)
+            reg.mkdir(parents=True)
+
+            md_content = self.claims_md_path.read_text(encoding="utf-8")
+            (reg / "CLAIMS.md").write_text(md_content, encoding="utf-8")
+
+            data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+            if "classes" in data and len(data["classes"]) > 0:
+                data["classes"][0].pop("meaning", None)
+            (arch / "claims.json").write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+            findings = audit_claim_kind_registry(root, arch / "claims.json", reg / "CLAIMS.md")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CLAIM_MISSING_FIELD, codes)
+
+
 if __name__ == "__main__":
     unittest.main()
+

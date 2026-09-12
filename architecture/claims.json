@@ -1,8 +1,12 @@
 {
   "schema": "fss.claims.v1",
+  "sourceDocument": "registries/CLAIMS.md",
   "classes": [
     {
       "id": "invariant",
+      "claim_class": "invariant",
+      "meaning": "behavior forbidden/required for all reachable states",
+      "minimum_evidence": "contract, mechanical check, adversarial counterexample suite",
       "requiredEvidence": [
         "contract",
         "mechanical_check",
@@ -11,6 +15,9 @@
     },
     {
       "id": "proof",
+      "claim_class": "proof",
+      "meaning": "theorem under declared formal model",
+      "minimum_evidence": "formal artifact, assumptions, toolchain identity, check receipt",
       "requiredEvidence": [
         "formal_artifact",
         "toolchain_identity",
@@ -19,6 +26,9 @@
     },
     {
       "id": "bounded_model",
+      "claim_class": "bounded_model",
+      "meaning": "analytically derived bound under assumptions",
+      "minimum_evidence": "derivation, units, assumptions, sensitivity and invalidators",
       "requiredEvidence": [
         "assumptions",
         "derivation",
@@ -27,6 +37,9 @@
     },
     {
       "id": "statistical",
+      "claim_class": "statistical",
+      "meaning": "estimated population/task behavior",
+      "minimum_evidence": "sealed dataset manifest, sampling protocol, raw results, confidence interval",
       "requiredEvidence": [
         "dataset_manifest",
         "sampling_protocol",
@@ -36,6 +49,9 @@
     },
     {
       "id": "slo",
+      "claim_class": "slo",
+      "meaning": "operational latency/availability/cost target achieved",
+      "minimum_evidence": "operation-cost row, environment, workload, raw measurements, failures",
       "requiredEvidence": [
         "operation_cost_row",
         "measurement_artifact",
@@ -44,6 +60,9 @@
     },
     {
       "id": "benchmark",
+      "claim_class": "benchmark",
+      "meaning": "comparative performance",
+      "minimum_evidence": "pinned same-workload oracle, exact versions, raw samples, variance, command",
       "requiredEvidence": [
         "same_workload_oracle",
         "raw_samples",
@@ -53,6 +72,9 @@
     },
     {
       "id": "compatibility",
+      "claim_class": "compatibility",
+      "meaning": "exact device/model/provider tuple works",
+      "minimum_evidence": "tuple identity, fixture, conformance/soak/crash/security evidence",
       "requiredEvidence": [
         "device_firmware_app_tuple",
         "fixture_digest",
@@ -61,6 +83,9 @@
     },
     {
       "id": "agent_task",
+      "claim_class": "agent_task",
+      "meaning": "task-level agent correctness, calibration, safety, and efficiency",
+      "minimum_evidence": "sealed task corpus, anchor-aligned transcripts, CognitiveFacet owner/anchor compatibility, WorldEnvelope/control classification, task/evidence/safety metrics, resource cost vector, failures/abstentions/interventions",
       "requiredEvidence": [
         "sealed_task_corpus_manifest",
         "anchor_aligned_transcripts",
@@ -74,6 +99,9 @@
     },
     {
       "id": "agent_accretion",
+      "claim_class": "agent_accretion",
+      "meaning": "improvement from retained handoff/experience/procedures across repeated tasks",
+      "minimum_evidence": "repeated-task corpus, no-memory baseline, quality non-regression, resource-savings distribution, harmful-transfer/trauma-guard evidence",
       "requiredEvidence": [
         "sealed_repeated_task_corpus",
         "baseline_without_prior_experience",
