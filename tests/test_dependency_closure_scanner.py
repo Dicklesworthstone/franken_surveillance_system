@@ -31,7 +31,10 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 try:
     from dependency_closure_scanner import (
+        ERR_ADAPTER_DJI_SDK_FORBIDDEN,
+        ERR_ADAPTER_REGISTRY_UNREADABLE,
         ERR_DECLARED_RUNTIME_UNRESOLVED,
+        ERR_DJI_SDK_DEPENDENCY_FORBIDDEN,
         ERR_EMPTY_ALLOWLIST,
         ERR_FORBIDDEN_CRATE,
         ERR_METADATA_UNREADABLE,
@@ -39,6 +42,7 @@ try:
         ERR_UNALLOWLISTED_SOURCE,
         ERR_VERSION_SOURCE_MISMATCH,
         STATUS_DECLARED_RUNTIME_UNRESOLVED,
+        audit_adapter_registry,
         audit_dependency_closure,
         load_allowlist,
     )
@@ -147,6 +151,20 @@ version = 4
 {"".join(lock_pkgs)}""",
         encoding="utf-8",
     )
+
+    reg_dir = tmp_path / "registries"
+    reg_dir.mkdir(parents=True, exist_ok=True)
+    (reg_dir / "DEVICE_ADAPTERS.md").write_text(
+        """# Device adapter registry
+
+| ID | Surface | Tier | Current state | Promotion gate |
+|---|---|---:|---|---|
+| `ADP-REPLAY-001` | deterministic replay | T0 | specified | `GATE-010` |
+| `ADP-DJI-FLIP-LAB-001` | DJI Flip manual capture/import lab (NEG-001 non-SDK) | T3/T4 | research target | `GATE-100` |
+""",
+        encoding="utf-8",
+    )
+
     return tmp_path, allowlist_path
 
 
@@ -1042,6 +1060,83 @@ untrusted_feature = ["dep:fsqlite-sys"]
             self.assertFalse(is_valid, "Untrusted git dependency in manifest must fail closed")
             codes = [f.code for f in findings]
             self.assertIn(ERR_UNALLOWLISTED_SOURCE, codes)
+
+    def test_planted_negative_dji_sdk_dependency_rejected(self) -> None:
+        """NEG-001: A dependency declaring or implying DJI Mobile SDK in Cargo.lock must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            ws_root, allowlist_path = make_valid_isolated_workspace(Path(td))
+            lock_path = ws_root / "Cargo.lock"
+            current_lock = lock_path.read_text(encoding="utf-8")
+            # Inject forbidden DJI mobile SDK package into Cargo.lock
+            injected_lock = current_lock + """
+[[package]]
+name = "dji-mobile-sdk"
+version = "4.16.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0000000000000000000000000000000000000000000000000000000000000000"
+"""
+            lock_path.write_text(injected_lock, encoding="utf-8")
+            is_valid, findings, summary = audit_dependency_closure(ws_root, allowlist_path=allowlist_path)
+            self.assertFalse(is_valid, "DJI Mobile SDK dependency must fail closed under NEG-001")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_DJI_SDK_DEPENDENCY_FORBIDDEN, codes)
+
+    def test_planted_negative_adapter_registry_dji_sdk_rejected(self) -> None:
+        """NEG-001: An adapter registry entry declaring or implying DJI Mobile SDK must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            adapter_md = tmp / "DEVICE_ADAPTERS.md"
+            adapter_md.write_text(
+                """# Device adapter registry
+
+| ID | Surface | Tier | Current state | Promotion gate |
+|---|---|---:|---|---|
+| `ADP-REPLAY-001` | deterministic replay | T0 | specified | `GATE-010` |
+| `ADP-DJI-FLIP-SDK-001` | DJI Flip Mobile SDK live capture | T1 | specified | `GATE-100` |
+""",
+                encoding="utf-8",
+            )
+            findings = audit_adapter_registry(adapter_md, tmp)
+            self.assertTrue(len(findings) > 0, "Adapter registry declaring DJI Mobile SDK must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_ADAPTER_DJI_SDK_FORBIDDEN, codes)
+
+    def test_planted_negative_adapter_registry_dji_streaming_rejected(self) -> None:
+        """NEG-001: An adapter registry entry claiming production streaming for DJI Flip must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            adapter_md = tmp / "DEVICE_ADAPTERS.md"
+            adapter_md.write_text(
+                """# Device adapter registry
+
+| ID | Surface | Tier | Current state | Promotion gate |
+|---|---|---:|---|---|
+| `ADP-REPLAY-001` | deterministic replay | T0 | specified | `GATE-010` |
+| `ADP-DJI-FLIP-LAB-001` | DJI Flip live streaming | T3 | research target | `GATE-100` |
+""",
+                encoding="utf-8",
+            )
+            findings = audit_adapter_registry(adapter_md, tmp)
+            self.assertTrue(len(findings) > 0, "Adapter registry declaring DJI Flip streaming must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_ADAPTER_DJI_SDK_FORBIDDEN, codes)
+
+    def test_planted_negative_adapter_registry_missing_fails_closed(self) -> None:
+        """NEG-001: Missing adapter registry must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            non_existent = tmp / "DEVICE_ADAPTERS.md"
+            findings = audit_adapter_registry(non_existent, tmp)
+            self.assertTrue(len(findings) > 0, "Missing adapter registry must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_ADAPTER_REGISTRY_UNREADABLE, codes)
+
+    def test_positive_adapter_registry_neg001_compliant(self) -> None:
+        """NEG-001: Real repository adapter registry must pass cleanly without declaring DJI Mobile SDK."""
+        real_adapter_md = ROOT / "registries/DEVICE_ADAPTERS.md"
+        findings = audit_adapter_registry(real_adapter_md, ROOT)
+        errors = [f for f in findings if f.severity == "error"]
+        self.assertEqual(errors, [], f"Real adapter registry must have zero errors: {errors}")
 
 
 if __name__ == "__main__":

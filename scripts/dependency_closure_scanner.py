@@ -43,8 +43,26 @@ ERR_METADATA_UNREADABLE = "ERR-DEP-CLOSURE-METADATA-UNREADABLE-001"
 ERR_EMPTY_ALLOWLIST = "ERR-DEP-CLOSURE-EMPTY-ALLOWLIST-001"
 ERR_DECLARED_RUNTIME_UNRESOLVED = "ERR-DEP-CLOSURE-DECLARED-RUNTIME-UNRESOLVED-001"
 STATUS_DECLARED_RUNTIME_UNRESOLVED = "STATUS-DEP-CLOSURE-DECLARED-RUNTIME-UNRESOLVED-001"
+ERR_DJI_SDK_DEPENDENCY_FORBIDDEN = "ERR-DEP-CLOSURE-DJI-SDK-FORBIDDEN-001"
+ERR_ADAPTER_DJI_SDK_FORBIDDEN = "ERR-ADAPTER-REGISTRY-DJI-SDK-FORBIDDEN-001"
+ERR_ADAPTER_REGISTRY_UNREADABLE = "ERR-ADAPTER-REGISTRY-UNREADABLE-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
+    ERR_DJI_SDK_DEPENDENCY_FORBIDDEN: {
+        "trigger": "A crate or dependency in the closure or allowlist declares or implies DJI Mobile/Flip SDK support, violating negative-evidence constraint NEG-001",
+        "remediation": "Remove the prohibited DJI SDK dependency; FSS has no architectural dependency on unestablished DJI Mobile SDK",
+        "standard_code": "NEG-001",
+    },
+    ERR_ADAPTER_DJI_SDK_FORBIDDEN: {
+        "trigger": "A device adapter registry entry declares or implies DJI Flip Mobile SDK support or streaming readiness, violating negative-evidence constraint NEG-001",
+        "remediation": "Constrain DJI Flip adapter entry to manual capture/import lab under GATE-100 without declaring Mobile SDK support or streaming",
+        "standard_code": "NEG-001",
+    },
+    ERR_ADAPTER_REGISTRY_UNREADABLE: {
+        "trigger": "Device adapter registry file registries/DEVICE_ADAPTERS.md is missing, unreadable, or contains no valid table rows",
+        "remediation": "Ensure registries/DEVICE_ADAPTERS.md exists, is readable, and contains the registered adapter definitions",
+        "standard_code": "DEP-AUD-001",
+    },
     ERR_UNALLOWLISTED_CRATE: {
         "trigger": "A crate in the resolved dependency closure is outside the registered allowlist",
         "remediation": "Remove the unallowlisted dependency or obtain reviewed constitutional ADR admission with closure proof",
@@ -110,6 +128,139 @@ def sanitize_path(path: Path | str, root: Path) -> str:
         return str(rel).replace("\\", "/")
     except ValueError:
         return str(path).replace("\\", "/")
+
+
+def is_forbidden_dji_sdk(name: str) -> bool:
+    """True if crate or dependency name declares or implies DJI Mobile/Flip SDK (NEG-001)."""
+    lower = name.lower()
+    return "dji" in lower and ("sdk" in lower or "mobile" in lower or "flip" in lower)
+
+
+def audit_adapter_registry(adapter_path: Path, root: Path) -> list[ClosureFinding]:
+    """Audits device adapter registry (registries/DEVICE_ADAPTERS.md) against negative constraints (NEG-001)."""
+    findings: list[ClosureFinding] = []
+    rel_path = sanitize_path(adapter_path, root)
+
+    if not adapter_path.is_file():
+        findings.append(
+            ClosureFinding(
+                code=ERR_ADAPTER_REGISTRY_UNREADABLE,
+                file=rel_path,
+                location="file",
+                message=f"Device adapter registry file not found: {rel_path}",
+                severity="error",
+                remediation=DIAGNOSTIC_REGISTRY[ERR_ADAPTER_REGISTRY_UNREADABLE]["remediation"],
+            )
+        )
+        return findings
+
+    try:
+        content = adapter_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        findings.append(
+            ClosureFinding(
+                code=ERR_ADAPTER_REGISTRY_UNREADABLE,
+                file=rel_path,
+                location="read",
+                message=f"Could not read device adapter registry: {exc}",
+                severity="error",
+                remediation=DIAGNOSTIC_REGISTRY[ERR_ADAPTER_REGISTRY_UNREADABLE]["remediation"],
+            )
+        )
+        return findings
+
+    if not content.strip():
+        findings.append(
+            ClosureFinding(
+                code=ERR_ADAPTER_REGISTRY_UNREADABLE,
+                file=rel_path,
+                location="content",
+                message="Device adapter registry is empty (0 bytes)",
+                severity="error",
+                remediation=DIAGNOSTIC_REGISTRY[ERR_ADAPTER_REGISTRY_UNREADABLE]["remediation"],
+            )
+        )
+        return findings
+
+    rows: list[list[str]] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("|") and stripped.endswith("|"):
+            cells = [c.strip().strip("`") for c in stripped.split("|")[1:-1]]
+            if cells and not all(re.match(r"^:?-+:?$", c) for c in cells):
+                rows.append(cells)
+
+    if len(rows) < 2:
+        findings.append(
+            ClosureFinding(
+                code=ERR_ADAPTER_REGISTRY_UNREADABLE,
+                file=rel_path,
+                location="content",
+                message="Device adapter registry contains no valid table rows",
+                severity="error",
+                remediation=DIAGNOSTIC_REGISTRY[ERR_ADAPTER_REGISTRY_UNREADABLE]["remediation"],
+            )
+        )
+        return findings
+
+    for row in rows[1:]:
+        if not row:
+            continue
+        adapter_id = row[0]
+        row_text = " ".join(row).lower()
+
+        if "dji" in row_text:
+            has_sdk = bool(re.search(r"\bmobile[-_ ]*sdk\b", row_text)) or (
+                bool(re.search(r"\bsdk\b", row_text)) and not bool(re.search(r"\b(non[-_ ]*sdk|no[-_ ]*sdk)\b", row_text))
+            )
+            if has_sdk:
+                findings.append(
+                    ClosureFinding(
+                        code=ERR_ADAPTER_DJI_SDK_FORBIDDEN,
+                        file=rel_path,
+                        location=f"row.{adapter_id}",
+                        message=(
+                            f"Adapter registry entry '{adapter_id}' declares or implies DJI Mobile SDK support: "
+                            f"'{' | '.join(row)}', violating NEG-001"
+                        ),
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_ADAPTER_DJI_SDK_FORBIDDEN]["remediation"],
+                        params={"adapter_id": adapter_id, "row": row},
+                    )
+                )
+            if "streaming" in row_text or "live stream" in row_text:
+                findings.append(
+                    ClosureFinding(
+                        code=ERR_ADAPTER_DJI_SDK_FORBIDDEN,
+                        file=rel_path,
+                        location=f"row.{adapter_id}",
+                        message=(
+                            f"Adapter registry entry '{adapter_id}' claims production streaming for DJI Flip: "
+                            f"'{' | '.join(row)}', violating NEG-001 (manual capture/import lab only)"
+                        ),
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_ADAPTER_DJI_SDK_FORBIDDEN]["remediation"],
+                        params={"adapter_id": adapter_id, "row": row},
+                    )
+                )
+            current_state = row[3].lower() if len(row) > 3 else ""
+            if any(term in current_state for term in ("ready", "qualified", "streaming", "accepted")):
+                findings.append(
+                    ClosureFinding(
+                        code=ERR_ADAPTER_DJI_SDK_FORBIDDEN,
+                        file=rel_path,
+                        location=f"row.{adapter_id}",
+                        message=(
+                            f"Adapter registry entry '{adapter_id}' claims readiness for unestablished DJI Flip: "
+                            f"'{' | '.join(row)}', violating NEG-001"
+                        ),
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_ADAPTER_DJI_SDK_FORBIDDEN]["remediation"],
+                        params={"adapter_id": adapter_id, "row": row},
+                    )
+                )
+
+    return findings
 
 
 def load_allowlist(allowlist_path: Path, root: Path) -> tuple[dict[str, Any] | None, list[ClosureFinding]]:
@@ -480,6 +631,18 @@ def scan_manifest_dependencies(
 
     for section_name, table in dep_tables:
         for dep_name, dep_spec in table.items():
+            if is_forbidden_dji_sdk(dep_name):
+                findings.append(
+                    ClosureFinding(
+                        code=ERR_DJI_SDK_DEPENDENCY_FORBIDDEN,
+                        file=rel_manifest,
+                        location=f"{section_name}.{dep_name}",
+                        message=f"DJI Mobile SDK dependency '{dep_name}' in '{rel_manifest}' is forbidden by NEG-001",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_DJI_SDK_DEPENDENCY_FORBIDDEN]["remediation"],
+                        params={"dependency": dep_name, "file": rel_manifest},
+                    )
+                )
             if isinstance(dep_spec, dict):
                 if "git" in dep_spec:
                     git_url = str(dep_spec["git"])
@@ -562,6 +725,7 @@ def audit_dependency_closure(
     allowlist_path: Path | None = None,
     manifest_path: Path | None = None,
     lock_path: Path | None = None,
+    adapter_path: Path | None = None,
     require_resolved_runtime: bool = True,
     allow_unresolved_runtime: bool = False,
 ) -> tuple[bool, list[ClosureFinding], dict[str, Any]]:
@@ -571,6 +735,10 @@ def audit_dependency_closure(
     target_allowlist = allowlist_path or (root / "architecture/dependency_allowlist.toml")
     target_manifest = manifest_path or (root / "Cargo.toml")
     target_lock = lock_path or (root / "Cargo.lock")
+    target_adapter = adapter_path or (root / "registries/DEVICE_ADAPTERS.md")
+
+    # 0. Audit adapter registry against negative constraints (NEG-001)
+    findings.extend(audit_adapter_registry(target_adapter, root))
 
     summary: dict[str, Any] = {
         "status": "fail",
@@ -640,6 +808,20 @@ def audit_dependency_closure(
 
     # Enumerate and inspect [workspace.dependencies] table
     for dep_name, dep_spec in sorted(workspace_deps.items()):
+        if is_forbidden_dji_sdk(dep_name):
+            findings.append(
+                ClosureFinding(
+                    code=ERR_DJI_SDK_DEPENDENCY_FORBIDDEN,
+                    file=sanitize_path(target_manifest, root),
+                    location=f"[workspace.dependencies].{dep_name}",
+                    message=f"DJI Mobile SDK dependency '{dep_name}' in [workspace.dependencies] is forbidden by NEG-001",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_DJI_SDK_DEPENDENCY_FORBIDDEN]["remediation"],
+                    params={"package": dep_name},
+                )
+            )
+            continue
+
         if dep_name in forbidden_crates or dep_name in oracle_crates:
             findings.append(
                 ClosureFinding(
@@ -746,6 +928,20 @@ def audit_dependency_closure(
         summary["error_count"] = sum(1 for f in findings if f.severity == "error")
         summary["warning_count"] = sum(1 for f in findings if f.severity == "warning")
         return False, findings, summary
+
+    for pkg_name in sorted(lock_packages.keys()):
+        if is_forbidden_dji_sdk(pkg_name):
+            findings.append(
+                ClosureFinding(
+                    code=ERR_DJI_SDK_DEPENDENCY_FORBIDDEN,
+                    file=sanitize_path(target_lock, root),
+                    location=f"package.{pkg_name}",
+                    message=f"DJI Mobile SDK crate '{pkg_name}' in Cargo.lock is forbidden by NEG-001",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_DJI_SDK_DEPENDENCY_FORBIDDEN]["remediation"],
+                    params={"package": pkg_name},
+                )
+            )
 
     # 4. Fetch cargo metadata
     metadata, meta_err = run_cargo_metadata(root, target_manifest)
@@ -985,6 +1181,20 @@ def audit_dependency_closure(
             continue
         checked_names.add(name)
 
+        if is_forbidden_dji_sdk(name):
+            findings.append(
+                ClosureFinding(
+                    code=ERR_DJI_SDK_DEPENDENCY_FORBIDDEN,
+                    file=sanitize_path(target_lock, root),
+                    location=f"package.{name}",
+                    message=f"DJI Mobile SDK crate '{name}' is forbidden in dependency closure by NEG-001",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_DJI_SDK_DEPENDENCY_FORBIDDEN]["remediation"],
+                    params={"package": name},
+                )
+            )
+            continue
+
         if name in forbidden_crates:
             findings.append(
                 ClosureFinding(
@@ -1128,6 +1338,9 @@ def main() -> int:
         "--lock-path", type=Path, default=None, help="Path to Cargo.lock"
     )
     parser.add_argument(
+        "--adapter-registry", type=Path, default=None, help="Path to DEVICE_ADAPTERS.md"
+    )
+    parser.add_argument(
         "--require-resolved-runtime",
         action="store_true",
         default=True,
@@ -1152,6 +1365,7 @@ def main() -> int:
         allowlist_path=args.allowlist,
         manifest_path=args.manifest_path,
         lock_path=args.lock_path,
+        adapter_path=args.adapter_registry,
         require_resolved_runtime=args.require_resolved_runtime,
         allow_unresolved_runtime=args.allow_unresolved_runtime,
     )

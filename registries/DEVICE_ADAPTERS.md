@@ -13,5 +13,5 @@ See `DEVICE_ADAPTER_MATRIX.md` for research details.
 | `ADP-ONVIF-M-001` | ONVIF Profile M metadata | T1 | specified | `GATE-030` |
 | `ADP-WYZE-V4-LAB-001` | Wyze Cam v4 owner-auth lab | T3 | research target | `GATE-090` |
 | `ADP-AOSU-P1MAX-LAB-001` | AOSU P1 Max owner-auth lab | T3 | research target | `GATE-090` |
-| `ADP-DJI-FLIP-LAB-001` | DJI Flip manual capture/import lab | T3/T4 | research target | `GATE-100` |
+| `ADP-DJI-FLIP-LAB-001` | DJI Flip manual capture/import lab (NEG-001 non-SDK) | T3/T4 | research target | `GATE-100` |
 | `ADP-S3-IMPORT-001` | S3-compatible import | T4 | specified | `GATE-040` |

@@ -51,6 +51,10 @@ pub const SCHEMA_QUIESCENCE: &str = "fss.acquisition.quiescence.v1";
 pub const SCHEMA_INDETERMINATE: &str = "fss.acquisition.indeterminate.v1";
 /// Canonical schema for transition audit records.
 pub const SCHEMA_TRANSITION_RECORD: &str = "fss.acquisition.transition_record.v1";
+/// Architecture constraint identifier for DJI Flip Mobile SDK non-dependency (NEG-001).
+pub const CONSTRAINT_NEG_001: &str = "NEG-001";
+/// Canonical schema for negative-evidence scenario logs.
+pub const SCHEMA_NEG001_SCENARIO_LOG: &str = "fss.negative_evidence.scenario_log.v1";
 
 /// Maximum length of session handle string.
 pub const MAX_SESSION_HANDLE_LEN: usize = 128;
@@ -633,6 +637,18 @@ pub enum AcquisitionError {
         /// Actual observed length.
         actual: usize,
     },
+    /// Live capture route is unsupported by architectural or negative constraint (NEG-001).
+    UnsupportedLiveRoute {
+        /// Constraint identifier (e.g. "NEG-001").
+        constraint_id: &'static str,
+        /// Detail of unsupported route.
+        detail: String,
+    },
+    /// Live capture route is temporarily unavailable.
+    UnavailableLiveRoute {
+        /// Detail of unavailable route.
+        detail: String,
+    },
     /// Frame decodability verification failed.
     DecodabilityError {
         /// Decode error details.
@@ -714,6 +730,13 @@ impl fmt::Display for AcquisitionError {
                     f,
                     "bounds violation on '{field}': limit {max}, got {actual}"
                 )
+            }
+            Self::UnsupportedLiveRoute {
+                constraint_id,
+                detail,
+            } => write!(f, "unsupported live route ({constraint_id}): {detail}"),
+            Self::UnavailableLiveRoute { detail } => {
+                write!(f, "unavailable live route: {detail}")
             }
             Self::DecodabilityError { detail } => write!(f, "frame decodability error: {detail}"),
             Self::NonCanonicalEncoding { detail } => {
@@ -835,6 +858,21 @@ impl AcquisitionRequest {
                     "adapter capabilities {:?} do not contain requested capabilities {:?}",
                     self.adapter_identity.capabilities, self.requested_capabilities
                 ),
+            });
+        }
+
+        let adapter_str = self.adapter_identity.adapter_id.as_str().to_lowercase();
+        let device_str = self.device_identity.device_id.as_str().to_lowercase();
+        let is_dji_flip = (adapter_str.contains("dji") && adapter_str.contains("flip"))
+            || (device_str.contains("dji") && device_str.contains("flip"));
+        if is_dji_flip
+            && self
+                .requested_capabilities
+                .contains(AdapterCapabilities::STREAMING)
+        {
+            return Err(AcquisitionError::UnsupportedLiveRoute {
+                constraint_id: CONSTRAINT_NEG_001,
+                detail: "DJI Flip live streaming acquisition request is prohibited by NEG-001; manual capture/import only".to_string(),
             });
         }
 
@@ -2548,6 +2586,20 @@ impl AcquisitionSession {
             &request.request_digest(),
             &request.adapter_identity.adapter_id,
         )?;
+        let adapter_str = request.adapter_identity.adapter_id.as_str().to_lowercase();
+        let device_str = request.device_identity.device_id.as_str().to_lowercase();
+        let is_dji_flip = (adapter_str.contains("dji") && adapter_str.contains("flip"))
+            || (device_str.contains("dji") && device_str.contains("flip"));
+        if is_dji_flip
+            && request
+                .requested_capabilities
+                .contains(AdapterCapabilities::STREAMING)
+        {
+            return Err(AcquisitionError::UnsupportedLiveRoute {
+                constraint_id: CONSTRAINT_NEG_001,
+                detail: "DJI Flip live streaming adapter acceptance is prohibited by NEG-001; manual capture/import only".to_string(),
+            });
+        }
         self.record_transition(
             from_kind,
             AcquisitionStateKind::AdapterAccepted,
@@ -3397,4 +3449,570 @@ fn decode_canonical_device_id(
         return Err(ContractError::NonCanonicalOrdering);
     }
     DeviceId::parse(raw)
+}
+
+// =========================================================================
+// Capture Device Tuple and Route Evaluation Contract (NEG-001 / GATE-100)
+// =========================================================================
+
+/// Exact capture device tuple pinning hardware, firmware, controller, app, platform, and account.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct CaptureDeviceTuple {
+    /// Device model identity (e.g. "DJI Flip", "Wyze Cam v4").
+    pub device_model: String,
+    /// Exact firmware version string (e.g. "v01.00.0100").
+    pub firmware_version: String,
+    /// Controller hardware identifier (e.g. "DJI RC-N3", "none").
+    pub controller_hardware: String,
+    /// Controller application and version (e.g. "DJI Fly v1.14.0", "none").
+    pub controller_app: String,
+    /// Host operating system and platform (e.g. "linux-x86_64").
+    pub host_platform: String,
+    /// Authorized account or capability scope (e.g. "owner-authorized-lab", "production").
+    pub account_scope: String,
+}
+
+impl CaptureDeviceTuple {
+    /// Constructs and validates an exact capture device tuple.
+    pub fn new(
+        device_model: impl Into<String>,
+        firmware_version: impl Into<String>,
+        controller_hardware: impl Into<String>,
+        controller_app: impl Into<String>,
+        host_platform: impl Into<String>,
+        account_scope: impl Into<String>,
+    ) -> Result<Self, ContractError> {
+        let dm = device_model.into();
+        let fv = firmware_version.into();
+        let ch = controller_hardware.into();
+        let ca = controller_app.into();
+        let hp = host_platform.into();
+        let as_ = account_scope.into();
+
+        if dm.trim().is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if fv.trim().is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if hp.trim().is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if as_.trim().is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+
+        Ok(Self {
+            device_model: dm,
+            firmware_version: fv,
+            controller_hardware: ch,
+            controller_app: ca,
+            host_platform: hp,
+            account_scope: as_,
+        })
+    }
+
+    /// Returns true if this tuple identifies a DJI Flip device.
+    #[must_use]
+    pub fn is_dji_flip(&self) -> bool {
+        let model = self.device_model.to_lowercase();
+        model.contains("dji") && model.contains("flip")
+    }
+}
+
+impl CanonicalEncode for CaptureDeviceTuple {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(&self.device_model);
+        encoder.text(&self.firmware_version);
+        encoder.text(&self.controller_hardware);
+        encoder.text(&self.controller_app);
+        encoder.text(&self.host_platform);
+        encoder.text(&self.account_scope);
+    }
+}
+
+impl CanonicalDecode for CaptureDeviceTuple {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let device_model = decoder.text()?.to_string();
+        let firmware_version = decoder.text()?.to_string();
+        let controller_hardware = decoder.text()?.to_string();
+        let controller_app = decoder.text()?.to_string();
+        let host_platform = decoder.text()?.to_string();
+        let account_scope = decoder.text()?.to_string();
+        Self::new(
+            device_model,
+            firmware_version,
+            controller_hardware,
+            controller_app,
+            host_platform,
+            account_scope,
+        )
+    }
+}
+
+/// Category of capture route requested.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum CaptureRouteKind {
+    /// Bounded recorded-file media/telemetry import (GATE-100 supported for DJI Flip).
+    RecordedFileImport,
+    /// Owner-authorized capture-bridge laboratory experiment (GATE-100 supported for DJI Flip lab).
+    OwnerAuthorizedLabBridge,
+    /// Live video/audio streaming route (unestablished / unsupported for DJI Flip).
+    LiveStreaming,
+    /// Vendor proprietary mobile SDK live capture (prohibited by NEG-001).
+    ProprietarySdkLiveCapture,
+}
+
+impl fmt::Display for CaptureRouteKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RecordedFileImport => write!(f, "recorded_file_import"),
+            Self::OwnerAuthorizedLabBridge => write!(f, "owner_authorized_lab_bridge"),
+            Self::LiveStreaming => write!(f, "live_streaming"),
+            Self::ProprietarySdkLiveCapture => write!(f, "proprietary_sdk_live_capture"),
+        }
+    }
+}
+
+impl CanonicalEncode for CaptureRouteKind {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.u8(match self {
+            Self::RecordedFileImport => 1,
+            Self::OwnerAuthorizedLabBridge => 2,
+            Self::LiveStreaming => 3,
+            Self::ProprietarySdkLiveCapture => 4,
+        });
+    }
+}
+
+impl CanonicalDecode for CaptureRouteKind {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.u8()? {
+            1 => Ok(Self::RecordedFileImport),
+            2 => Ok(Self::OwnerAuthorizedLabBridge),
+            3 => Ok(Self::LiveStreaming),
+            4 => Ok(Self::ProprietarySdkLiveCapture),
+            _ => Err(ContractError::NonCanonicalOrdering),
+        }
+    }
+}
+
+/// Readiness classification for capture routes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash)]
+pub enum CaptureReadinessState {
+    /// Fully qualified, authorized, and ready for capture.
+    QualifiedReady,
+    /// Route is unsupported by architecture or negative constraint (e.g. NEG-001).
+    Unsupported,
+    /// Route is temporarily unavailable (e.g. auth revoked, disconnected, scope mismatch).
+    Unavailable,
+}
+
+impl fmt::Display for CaptureReadinessState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::QualifiedReady => write!(f, "qualified_ready"),
+            Self::Unsupported => write!(f, "unsupported"),
+            Self::Unavailable => write!(f, "unavailable"),
+        }
+    }
+}
+
+impl CanonicalEncode for CaptureReadinessState {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.u8(match self {
+            Self::QualifiedReady => 1,
+            Self::Unsupported => 2,
+            Self::Unavailable => 3,
+        });
+    }
+}
+
+impl CanonicalDecode for CaptureReadinessState {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.u8()? {
+            1 => Ok(Self::QualifiedReady),
+            2 => Ok(Self::Unsupported),
+            3 => Ok(Self::Unavailable),
+            _ => Err(ContractError::NonCanonicalOrdering),
+        }
+    }
+}
+
+/// Specific reason why a capture route is unsupported.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum UnsupportedCaptureReason {
+    /// Prohibited vendor SDK dependency (NEG-001).
+    ProhibitedSdkDependency {
+        /// Prohibited SDK name.
+        sdk_name: String,
+        /// Negative constraint identifier.
+        constraint_id: &'static str,
+    },
+    /// Live capture route is not supported for this device model.
+    UnsupportedLiveRouteForDevice {
+        /// Device model.
+        device_model: String,
+        /// Route kind.
+        route_kind: CaptureRouteKind,
+        /// Negative constraint identifier.
+        constraint_id: &'static str,
+    },
+    /// Tuple members are unestablished or uncertified.
+    UnestablishedDeviceTuple {
+        /// Missing or unestablished dimension.
+        missing_dimension: String,
+    },
+    /// Tuple drift detected between authorized reference and requested runtime.
+    TupleDrift {
+        /// Expected dimension.
+        expected: String,
+        /// Observed actual dimension.
+        actual: String,
+    },
+    /// Misleading vendor claim: marketing claims live support but no compatible capture surface exists.
+    MisleadingVendorClaim {
+        /// Stated claim.
+        claim: String,
+        /// Technical finding.
+        finding: String,
+    },
+}
+
+impl fmt::Display for UnsupportedCaptureReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProhibitedSdkDependency {
+                sdk_name,
+                constraint_id,
+            } => {
+                write!(
+                    f,
+                    "prohibited SDK dependency '{sdk_name}' ({constraint_id})"
+                )
+            }
+            Self::UnsupportedLiveRouteForDevice {
+                device_model,
+                route_kind,
+                constraint_id,
+            } => {
+                write!(
+                    f,
+                    "unsupported live route {route_kind} for '{device_model}' ({constraint_id})"
+                )
+            }
+            Self::UnestablishedDeviceTuple { missing_dimension } => {
+                write!(f, "unestablished device tuple: {missing_dimension}")
+            }
+            Self::TupleDrift { expected, actual } => {
+                write!(f, "tuple drift: expected {expected}, got {actual}")
+            }
+            Self::MisleadingVendorClaim { claim, finding } => {
+                write!(f, "misleading vendor claim '{claim}': {finding}")
+            }
+        }
+    }
+}
+
+/// Specific reason why a capture route is unavailable.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub enum UnavailableCaptureReason {
+    /// Owner authorization has been revoked or expired.
+    AuthRevoked {
+        /// Revocation detail.
+        detail: String,
+    },
+    /// Operation or session was cancelled.
+    Cancelled {
+        /// Cancellation detail.
+        detail: String,
+    },
+    /// Hardware device is disconnected or offline.
+    HardwareDisconnected {
+        /// Disconnect detail.
+        detail: String,
+    },
+    /// Privacy taint or capability scope exceeded.
+    PrivacyScopeExceeded {
+        /// Current scope.
+        scope: String,
+        /// Required scope.
+        required: String,
+    },
+}
+
+impl fmt::Display for UnavailableCaptureReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AuthRevoked { detail } => write!(f, "authority revoked: {detail}"),
+            Self::Cancelled { detail } => write!(f, "operation cancelled: {detail}"),
+            Self::HardwareDisconnected { detail } => write!(f, "hardware disconnected: {detail}"),
+            Self::PrivacyScopeExceeded { scope, required } => {
+                write!(
+                    f,
+                    "privacy scope exceeded: '{scope}' does not satisfy '{required}'"
+                )
+            }
+        }
+    }
+}
+
+/// Details of an established, permitted capture route.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EstablishedCaptureRoute {
+    /// Device tuple.
+    pub tuple: CaptureDeviceTuple,
+    /// Route kind.
+    pub route_kind: CaptureRouteKind,
+    /// Promotion gate.
+    pub promotion_gate: &'static str,
+    /// Lease identifier.
+    pub authority_lease_id: String,
+}
+
+/// Details of an unsupported capture route.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnsupportedCaptureRoute {
+    /// Device tuple.
+    pub tuple: CaptureDeviceTuple,
+    /// Route kind.
+    pub route_kind: CaptureRouteKind,
+    /// Reason route is unsupported.
+    pub reason: UnsupportedCaptureReason,
+    /// Bound negative constraint identifier, if any.
+    pub constraint_id: Option<&'static str>,
+    /// Actionable repair guidance.
+    pub remediation: String,
+}
+
+/// Details of an unavailable capture route.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnavailableCaptureRoute {
+    /// Device tuple.
+    pub tuple: CaptureDeviceTuple,
+    /// Route kind.
+    pub route_kind: CaptureRouteKind,
+    /// Reason route is unavailable.
+    pub reason: UnavailableCaptureReason,
+    /// Detail.
+    pub detail: String,
+}
+
+/// Typed result of evaluating a capture route.
+///
+/// Invariants:
+/// - [`Self::Unsupported`] and [`Self::Unavailable`] CANNOT be reported as adapter acceptance,
+///   streaming, or readiness.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LiveCaptureRouteResult {
+    /// Route is supported and established.
+    Established(EstablishedCaptureRoute),
+    /// Route is unsupported; cannot be reported as adapter acceptance, streaming, or readiness.
+    Unsupported(UnsupportedCaptureRoute),
+    /// Route is unavailable; cannot be reported as adapter acceptance, streaming, or readiness.
+    Unavailable(UnavailableCaptureRoute),
+}
+
+impl LiveCaptureRouteResult {
+    /// Non-negotiable invariant: unsupported or unavailable routes NEVER report as adapter acceptance.
+    #[must_use]
+    pub const fn is_adapter_accepted(&self) -> bool {
+        false
+    }
+
+    /// Non-negotiable invariant (INV-005): route evaluation NEVER reports as streaming.
+    #[must_use]
+    pub const fn is_streaming(&self) -> bool {
+        false
+    }
+
+    /// Non-negotiable invariant: unsupported or unavailable routes NEVER report as ready.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        matches!(self, Self::Established(_))
+    }
+
+    /// Returns the typed readiness state.
+    #[must_use]
+    pub fn readiness_state(&self) -> CaptureReadinessState {
+        match self {
+            Self::Established(_) => CaptureReadinessState::QualifiedReady,
+            Self::Unsupported(_) => CaptureReadinessState::Unsupported,
+            Self::Unavailable(_) => CaptureReadinessState::Unavailable,
+        }
+    }
+}
+
+/// Evaluates a requested capture route for a device tuple against architecture constraints (including NEG-001).
+pub fn evaluate_capture_route(
+    tuple: &CaptureDeviceTuple,
+    route_kind: CaptureRouteKind,
+    authority_active: bool,
+    privacy_scope_matches: bool,
+) -> LiveCaptureRouteResult {
+    if !authority_active {
+        return LiveCaptureRouteResult::Unavailable(UnavailableCaptureRoute {
+            tuple: tuple.clone(),
+            route_kind,
+            reason: UnavailableCaptureReason::AuthRevoked {
+                detail: "owner authority lease has expired or been revoked".to_string(),
+            },
+            detail: "active authority lease required for capture operations".to_string(),
+        });
+    }
+
+    if !privacy_scope_matches {
+        return LiveCaptureRouteResult::Unavailable(UnavailableCaptureRoute {
+            tuple: tuple.clone(),
+            route_kind,
+            reason: UnavailableCaptureReason::PrivacyScopeExceeded {
+                scope: tuple.account_scope.clone(),
+                required: "owner-authorized-lab".to_string(),
+            },
+            detail: "privacy or account scope exceeds authorized boundary".to_string(),
+        });
+    }
+
+    if tuple.is_dji_flip() {
+        match route_kind {
+            CaptureRouteKind::ProprietarySdkLiveCapture => {
+                LiveCaptureRouteResult::Unsupported(UnsupportedCaptureRoute {
+                    tuple: tuple.clone(),
+                    route_kind,
+                    reason: UnsupportedCaptureReason::ProhibitedSdkDependency {
+                        sdk_name: "DJI Mobile SDK".to_string(),
+                        constraint_id: CONSTRAINT_NEG_001,
+                    },
+                    constraint_id: Some(CONSTRAINT_NEG_001),
+                    remediation: "NEG-001 forbids DJI Mobile SDK architectural dependency; use GATE-100 recorded-file import or owner-authorized capture bridge".to_string(),
+                })
+            }
+            CaptureRouteKind::LiveStreaming => {
+                LiveCaptureRouteResult::Unsupported(UnsupportedCaptureRoute {
+                    tuple: tuple.clone(),
+                    route_kind,
+                    reason: UnsupportedCaptureReason::UnsupportedLiveRouteForDevice {
+                        device_model: tuple.device_model.clone(),
+                        route_kind,
+                        constraint_id: CONSTRAINT_NEG_001,
+                    },
+                    constraint_id: Some(CONSTRAINT_NEG_001),
+                    remediation: "DJI Flip has no established live streaming surface; use GATE-100 recorded-file import or owner-authorized capture bridge".to_string(),
+                })
+            }
+            CaptureRouteKind::RecordedFileImport => {
+                LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
+                    tuple: tuple.clone(),
+                    route_kind,
+                    promotion_gate: "GATE-100",
+                    authority_lease_id: format!("lease:{}:recorded-import", tuple.device_model),
+                })
+            }
+            CaptureRouteKind::OwnerAuthorizedLabBridge => {
+                LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
+                    tuple: tuple.clone(),
+                    route_kind,
+                    promotion_gate: "GATE-100",
+                    authority_lease_id: format!("lease:{}:lab-bridge", tuple.device_model),
+                })
+            }
+        }
+    } else if tuple.firmware_version.starts_with("unestablished")
+        || tuple.controller_app.starts_with("unestablished")
+    {
+        LiveCaptureRouteResult::Unsupported(UnsupportedCaptureRoute {
+            tuple: tuple.clone(),
+            route_kind,
+            reason: UnsupportedCaptureReason::UnestablishedDeviceTuple {
+                missing_dimension: "firmware or controller app is unestablished".to_string(),
+            },
+            constraint_id: None,
+            remediation: "device tuple must be established with verified firmware and controller"
+                .to_string(),
+        })
+    } else {
+        LiveCaptureRouteResult::Established(EstablishedCaptureRoute {
+            tuple: tuple.clone(),
+            route_kind,
+            promotion_gate: "GATE-020",
+            authority_lease_id: format!("lease:{}:route", tuple.device_model),
+        })
+    }
+}
+
+/// Bounded, secret-free structured JSONL log entry for NEG-001 negative-evidence qualification.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Neg001ScenarioLog {
+    /// Canonical schema identifier.
+    pub schema_version: &'static str,
+    /// Unique run identifier.
+    pub run_id: String,
+    /// Negative constraint identifier.
+    pub neg_id: &'static str,
+    /// Content digest of source evidence.
+    pub source_digest: ContentDigest,
+    /// Content digest of adapter registry.
+    pub registry_digest: ContentDigest,
+    /// Exact device tuple evaluated.
+    pub tuple: CaptureDeviceTuple,
+    /// Capture route kind evaluated.
+    pub route_kind: CaptureRouteKind,
+    /// Authority scope name.
+    pub authority_scope: String,
+    /// Privacy scope name.
+    pub privacy_scope: String,
+    /// Hypothesis state.
+    pub hypothesis_state: &'static str,
+    /// Finding state.
+    pub finding_state: &'static str,
+    /// Decision state.
+    pub decision_state: &'static str,
+    /// Expected readiness.
+    pub expected_readiness: CaptureReadinessState,
+    /// Observed readiness.
+    pub observed_readiness: CaptureReadinessState,
+    /// Whether adapter acceptance was reported (must be false for unsupported).
+    pub is_adapter_accepted: bool,
+    /// Whether streaming was reported (must be false).
+    pub is_streaming: bool,
+    /// Whether official revival condition is met.
+    pub revival_condition_met: bool,
+    /// Proof hash.
+    pub proof_hash: ContentDigest,
+    /// Reproduction command without credentials.
+    pub reproduction_command: String,
+}
+
+impl Neg001ScenarioLog {
+    /// Formats this scenario record as a single-line secret-free JSON string.
+    #[must_use]
+    pub fn to_jsonl_line(&self) -> String {
+        format!(
+            "{{\"schema_version\":\"{}\",\"run_id\":\"{}\",\"neg_id\":\"{}\",\"source_digest\":\"{}\",\"registry_digest\":\"{}\",\"tuple\":{{\"device_model\":\"{}\",\"firmware_version\":\"{}\",\"controller_hardware\":\"{}\",\"controller_app\":\"{}\",\"host_platform\":\"{}\",\"account_scope\":\"{}\"}},\"route_kind\":\"{}\",\"authority_scope\":\"{}\",\"privacy_scope\":\"{}\",\"hypothesis_state\":\"{}\",\"finding_state\":\"{}\",\"decision_state\":\"{}\",\"expected_readiness\":\"{}\",\"observed_readiness\":\"{}\",\"is_adapter_accepted\":{},\"is_streaming\":{},\"revival_condition_met\":{},\"proof_hash\":\"{}\",\"reproduction_command\":\"{}\"}}",
+            self.schema_version,
+            self.run_id,
+            self.neg_id,
+            self.source_digest,
+            self.registry_digest,
+            self.tuple.device_model,
+            self.tuple.firmware_version,
+            self.tuple.controller_hardware,
+            self.tuple.controller_app,
+            self.tuple.host_platform,
+            self.tuple.account_scope,
+            self.route_kind,
+            self.authority_scope,
+            self.privacy_scope,
+            self.hypothesis_state,
+            self.finding_state,
+            self.decision_state,
+            self.expected_readiness,
+            self.observed_readiness,
+            self.is_adapter_accepted,
+            self.is_streaming,
+            self.revival_condition_met,
+            self.proof_hash,
+            self.reproduction_command,
+        )
+    }
 }
