@@ -51,6 +51,6 @@ pub use replay::{
     MAX_REPLAY_TOTAL_BYTES, REPLAY_BUNDLE_DOMAIN, REPLAY_BUNDLE_FORMAT_VERSION,
     REPLAY_BUNDLE_MAGIC, REPLAY_TRAILER_LEN, ReplayBundle, ReplayBundleError, ReplayBundleLimits,
     ReplayBundleReader, ReplayBundleReceipt, ReplayBundleWriter, ReplayFaultAction,
-    ReplayFaultDirective, ReplayFaultSchedule, ReplayMetadata, ReplayObject, replay_bundle_digest,
-    replay_temp_path_for,
+    ReplayFaultDirective, ReplayFaultSchedule, ReplayMetadata, ReplayObject, ReplayWriteRollback,
+    replay_bundle_digest, replay_object_set_manifest, replay_temp_path_for,
 };
