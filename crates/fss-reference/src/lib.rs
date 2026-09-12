@@ -10,6 +10,7 @@ mod alert;
 mod bundle;
 mod capture;
 mod clock;
+mod clock_sync;
 mod context_binding;
 mod delivery;
 mod durable_effect;
@@ -62,6 +63,10 @@ pub use capture::{
     run_reference_capture_with_clock,
 };
 pub use clock::{MAX_SKEW_PPM, VirtualClock};
+pub use clock_sync::{
+    ClockOffsetSkewEstimator, ClockSyncEstimate, EstimatorConfig, EstimatorState, SyncFitResidual,
+    TimeSyncSample,
+};
 pub use context_binding::{
     BoundReferenceSituationPublication, ReferenceContextBindingError,
     ReferenceExpansionBindingSpec, seal_bound_reference_publication_handoff,

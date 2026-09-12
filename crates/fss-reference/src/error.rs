@@ -47,6 +47,45 @@ pub enum ReferenceError {
         /// Reason for unobservable read.
         reason: String,
     },
+    /// Insufficient synchronization samples were provided to compute an offset/skew fit.
+    InsufficientSyncSamples {
+        /// Number of samples provided.
+        count: usize,
+        /// Minimum required samples.
+        minimum_required: usize,
+    },
+    /// Synchronization samples are non-monotonic in reference or sensor time.
+    NonMonotonicSyncSamples {
+        /// Previous timestamp.
+        previous: TimestampNs,
+        /// Current non-monotonic timestamp.
+        current: TimestampNs,
+    },
+    /// Synchronization fit is dominated by outliers exceeding tolerance.
+    OutlierDominatedFit {
+        /// Number of outliers detected.
+        outlier_count: usize,
+        /// Total sample count.
+        total_samples: usize,
+        /// Maximum residual observed in nanoseconds.
+        max_residual_ns: u64,
+    },
+    /// Clock synchronization estimate has expired or is requested outside its validity interval.
+    StaleEstimatePastValidity {
+        /// Timestamp requested.
+        requested: TimestampNs,
+        /// Upper bound of estimate validity.
+        valid_until: TimestampNs,
+    },
+    /// A new synchronization sample contradicts the active clock estimate.
+    ContradictedEstimate {
+        /// Expected offset in nanoseconds.
+        expected_offset_ns: i64,
+        /// Observed offset in nanoseconds.
+        observed_offset_ns: i64,
+        /// Absolute deviation in nanoseconds.
+        deviation_ns: u64,
+    },
 }
 
 impl fmt::Display for ReferenceError {
@@ -87,6 +126,50 @@ impl fmt::Display for ReferenceError {
                     "virtual source emission unobservable at sequence {sequence}: {reason}"
                 )
             }
+            Self::InsufficientSyncSamples {
+                count,
+                minimum_required,
+            } => {
+                write!(
+                    formatter,
+                    "insufficient synchronization samples: {count} provided, minimum {minimum_required} required"
+                )
+            }
+            Self::NonMonotonicSyncSamples { previous, current } => {
+                write!(
+                    formatter,
+                    "synchronization samples are non-monotonic: previous {previous}, current {current}"
+                )
+            }
+            Self::OutlierDominatedFit {
+                outlier_count,
+                total_samples,
+                max_residual_ns,
+            } => {
+                write!(
+                    formatter,
+                    "clock sync fit is outlier-dominated: {outlier_count}/{total_samples} outliers, max residual {max_residual_ns} ns"
+                )
+            }
+            Self::StaleEstimatePastValidity {
+                requested,
+                valid_until,
+            } => {
+                write!(
+                    formatter,
+                    "clock sync estimate is stale past validity interval: requested {requested}, valid until {valid_until}"
+                )
+            }
+            Self::ContradictedEstimate {
+                expected_offset_ns,
+                observed_offset_ns,
+                deviation_ns,
+            } => {
+                write!(
+                    formatter,
+                    "clock sync estimate contradicted by new sample: expected offset {expected_offset_ns} ns, observed {observed_offset_ns} ns, deviation {deviation_ns} ns"
+                )
+            }
         }
     }
 }
@@ -104,7 +187,12 @@ impl Error for ReferenceError {
             | Self::BackwardStepAttempt { .. }
             | Self::InvalidClockParameter(_)
             | Self::IndeterminateSourceCapture { .. }
-            | Self::UnobservableSourceCapture { .. } => None,
+            | Self::UnobservableSourceCapture { .. }
+            | Self::InsufficientSyncSamples { .. }
+            | Self::NonMonotonicSyncSamples { .. }
+            | Self::OutlierDominatedFit { .. }
+            | Self::StaleEstimatePastValidity { .. }
+            | Self::ContradictedEstimate { .. } => None,
         }
     }
 }
