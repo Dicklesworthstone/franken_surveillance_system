@@ -3,6 +3,7 @@
 
 use std::error::Error;
 use std::fs;
+use std::io::ErrorKind;
 use std::path::PathBuf;
 
 use fss_core::{
@@ -10,12 +11,13 @@ use fss_core::{
     TimestampNs,
 };
 use fss_ledger::{LedgerOracle, OracleLimits};
-use fss_object::{SpoolLimits, StagingSpool};
+use fss_object::{FaultInjectingSpoolIo, SpoolFaultPlan, SpoolIoCall, SpoolLimits, StagingSpool};
 use fss_publication::{
     MAX_REPLAY_FAULT_DIRECTIVES, MAX_REPLAY_FAULT_REORDER_WINDOW, MAX_REPLAY_TEMP_ATTEMPTS,
     REPLAY_BUNDLE_DOMAIN, REPLAY_TRAILER_LEN, ReplayBundle, ReplayBundleError, ReplayBundleLimits,
     ReplayBundleReader, ReplayBundleWriter, ReplayFaultAction, ReplayFaultDirective,
-    ReplayFaultSchedule, ReplayMetadata, ReplayObject, replay_bundle_digest, replay_temp_path_for,
+    ReplayFaultSchedule, ReplayMetadata, ReplayObject, ReplayWriteRollback, replay_bundle_digest,
+    replay_object_set_manifest, replay_temp_path_for,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -86,7 +88,7 @@ fn create_test_fixture(lineage: &str) -> Result<TestReplayFixture, Box<dyn Error
     let payload1 = b"camera-alpha-capture-packet-001".to_vec();
     let witness1 = b"witness-proof-for-alpha-001".to_vec();
     let obj_payload1 = ReplayObject::new(
-        ObjectId::parse("object:payload:alpha:1")?,
+        ObjectId::parse("object:camera:alpha")?,
         Plane::Authority,
         payload1,
     );
@@ -128,7 +130,7 @@ fn create_test_fixture(lineage: &str) -> Result<TestReplayFixture, Box<dyn Error
     // Object 2 payload
     let payload2 = b"camera-beta-capture-packet-002".to_vec();
     let obj_payload2 = ReplayObject::new(
-        ObjectId::parse("object:payload:beta:2")?,
+        ObjectId::parse("object:camera:beta")?,
         Plane::Authority,
         payload2,
     );
@@ -1182,6 +1184,504 @@ fn test_writer_syncs_parent_directory_after_rename() -> TestResult {
     let read_bundle = ReplayBundleReader::read_from_path(&path)?;
     assert_eq!(read_bundle.manifest_root(), fixture.manifest_root);
 
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// review-528 findings 4 and 5 (fss-x4a.7.7)
+// ---------------------------------------------------------------------------------------------
+
+/// review-528 finding 5: the closure must bind the payload object's `ObjectId` to the delta's.
+#[test]
+fn test_manifest_closure_rejects_object_id_mismatch_between_delta_and_payload() -> TestResult {
+    let lineage = "site:test:replay:object_id_mismatch";
+    let fixture = create_test_fixture(lineage)?;
+    let delta_object_id = fixture.batches[0].deltas[0].object_id.clone();
+    let mut objects = fixture.objects.clone();
+    assert_eq!(
+        objects[0].digest,
+        fixture.batches[0].deltas[0].payload_digest
+    );
+    assert_eq!(objects[0].object_id, delta_object_id);
+    objects[0].object_id = ObjectId::parse("object:camera:impostor")?;
+    let payload_digest = objects[0].digest;
+
+    let res = ReplayBundle::new(
+        fixture.manifest_root,
+        sample_metadata(lineage),
+        clean_fault_schedule(),
+        fixture.batches,
+        objects,
+    );
+    assert!(
+        res.is_err(),
+        "manifest closure accepted a payload object whose ObjectId disagrees with its delta"
+    );
+    match res {
+        Err(ReplayBundleError::ObjectIdMismatch {
+            digest,
+            expected,
+            actual,
+        }) => {
+            assert_eq!(digest, payload_digest);
+            assert_eq!(expected, delta_object_id);
+            assert_eq!(actual.as_str(), "object:camera:impostor");
+        }
+        other => return Err(format!("expected ObjectIdMismatch, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// review-528 finding 4: an object the manifest root does not commit to must be rejected.
+#[test]
+fn test_manifest_root_rejects_extra_unreferenced_object() -> TestResult {
+    let lineage = "site:test:replay:extra_object";
+    let fixture = create_test_fixture(lineage)?;
+    let mut objects = fixture.objects.clone();
+    let orphan = ReplayObject::new(
+        ObjectId::parse("object:orphan:1")?,
+        Plane::Authority,
+        b"orphan-object-never-referenced".to_vec(),
+    );
+    let orphan_digest = orphan.digest;
+    objects.push(orphan);
+
+    let res = ReplayBundle::new(
+        fixture.manifest_root,
+        sample_metadata(lineage),
+        clean_fault_schedule(),
+        fixture.batches,
+        objects,
+    );
+    assert!(
+        res.is_err(),
+        "bundle carried an object that neither the manifest root nor any delta commits to"
+    );
+    match res {
+        Err(ReplayBundleError::UnreferencedObject { digest }) => {
+            assert_eq!(digest, orphan_digest);
+        }
+        other => return Err(format!("expected UnreferencedObject, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// review-528 finding 4: a committed object that is absent from the bundle must be rejected.
+#[test]
+fn test_manifest_root_rejects_missing_object() -> TestResult {
+    let lineage = "site:test:replay:missing_object";
+    let fixture = create_test_fixture(lineage)?;
+    let mut objects = fixture.objects.clone();
+    let removed = objects.remove(1);
+
+    let res = ReplayBundle::new(
+        fixture.manifest_root,
+        sample_metadata(lineage),
+        clean_fault_schedule(),
+        fixture.batches,
+        objects,
+    );
+    match res {
+        Err(ReplayBundleError::BrokenManifestClosure { missing_digest }) => {
+            assert_eq!(missing_digest, removed.digest);
+        }
+        other => return Err(format!("expected BrokenManifestClosure, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// review-528 finding 4: substituting a committed object with different bytes must be rejected.
+#[test]
+fn test_manifest_root_rejects_substituted_object() -> TestResult {
+    let lineage = "site:test:replay:substituted_object";
+    let fixture = create_test_fixture(lineage)?;
+    let mut objects = fixture.objects.clone();
+    let original = objects[1].clone();
+    objects[1] = ReplayObject::new(
+        original.object_id.clone(),
+        original.plane,
+        b"substituted-witness-bytes".to_vec(),
+    );
+    assert_ne!(objects[1].digest, original.digest);
+
+    let res = ReplayBundle::new(
+        fixture.manifest_root,
+        sample_metadata(lineage),
+        clean_fault_schedule(),
+        fixture.batches,
+        objects,
+    );
+    assert!(
+        res.is_err(),
+        "bundle accepted an object substituted for a committed one"
+    );
+    match res {
+        Err(ReplayBundleError::BrokenManifestClosure { missing_digest }) => {
+            assert_eq!(missing_digest, original.digest);
+        }
+        other => return Err(format!("expected BrokenManifestClosure, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+/// review-528 finding 4: a manifest object whose payload does not commit to the bundle's object
+/// set must not be accepted as the manifest root, whatever its `ObjectId` says.
+#[test]
+fn test_manifest_object_root_rejects_payload_not_committing_to_object_set() -> TestResult {
+    let lineage = "site:test:replay:manifest_payload";
+    let fixture = create_test_fixture(lineage)?;
+    let mut objects = fixture.objects.clone();
+    let fake_manifest = ReplayObject::new(
+        ObjectId::parse("object:manifest:bundle-root")?,
+        Plane::Authority,
+        b"not-a-canonical-object-set-listing".to_vec(),
+    );
+    let fake_root = fake_manifest.digest;
+    objects.push(fake_manifest);
+
+    let res = ReplayBundle::new(
+        fake_root,
+        sample_metadata(lineage),
+        clean_fault_schedule(),
+        fixture.batches,
+        objects,
+    );
+    assert!(
+        res.is_err(),
+        "an Authority object named like a manifest was accepted as manifest root without committing to the object set"
+    );
+    expect_object_set_mismatch(res, fake_root)
+}
+
+fn expect_object_set_mismatch(
+    res: Result<ReplayBundle, ReplayBundleError>,
+    root: ContentDigest,
+) -> TestResult {
+    match res {
+        Err(ReplayBundleError::ManifestObjectSetMismatch {
+            manifest_root,
+            carried_set,
+        }) => {
+            assert_eq!(manifest_root, root);
+            assert_ne!(carried_set, root);
+            Ok(())
+        }
+        other => Err(format!("expected ManifestObjectSetMismatch, got {other:?}").into()),
+    }
+}
+
+/// review-528 finding 4: a manifest object root commits to exactly the carried object set; an
+/// extra, missing, or relabeled object, or a manifest on the wrong plane, fails verification.
+#[test]
+fn test_manifest_object_root_commits_to_exact_object_set() -> TestResult {
+    let lineage = "site:test:replay:manifest_object_set";
+    let fixture = create_test_fixture(lineage)?;
+    let manifest = ReplayObject::new(
+        ObjectId::parse("object:manifest:bundle-root")?,
+        Plane::Authority,
+        replay_object_set_manifest(&fixture.objects),
+    );
+    let root = manifest.digest;
+    assert_ne!(root, fixture.manifest_root);
+    let mut objects = fixture.objects.clone();
+    objects.push(manifest.clone());
+    let build = |root: ContentDigest, objects: Vec<ReplayObject>| {
+        ReplayBundle::new(
+            root,
+            sample_metadata(lineage),
+            clean_fault_schedule(),
+            fixture.batches.clone(),
+            objects,
+        )
+    };
+
+    // The exact set is accepted in any catalog order and survives bytes and replay.
+    let bundle = build(root, objects.clone())?;
+    let decoded = ReplayBundleReader::from_bytes(&ReplayBundleWriter::to_bytes(&bundle)?)?;
+    assert_eq!(decoded.manifest_root(), root);
+    assert_eq!(decoded.objects().len(), fixture.objects.len() + 1);
+    let replayed = decoded.replay()?;
+    assert_eq!(replayed.head_anchor(), fixture.oracle.head_anchor());
+    let mut reversed = objects.clone();
+    reversed.reverse();
+    assert_eq!(build(root, reversed)?.manifest_root(), root);
+
+    // Extra: the bundle carries an object the manifest does not list.
+    let orphan = ReplayObject::new(
+        ObjectId::parse("object:orphan:1")?,
+        Plane::Authority,
+        b"orphan-object-not-listed".to_vec(),
+    );
+    let mut extra = objects.clone();
+    extra.push(orphan.clone());
+    expect_object_set_mismatch(build(root, extra), root)?;
+
+    // Missing: the manifest lists an object the bundle does not carry.
+    let mut listed = fixture.objects.clone();
+    listed.push(orphan);
+    let over_listing = ReplayObject::new(
+        ObjectId::parse("object:manifest:bundle-root")?,
+        Plane::Authority,
+        replay_object_set_manifest(&listed),
+    );
+    let over_root = over_listing.digest;
+    let mut missing = fixture.objects.clone();
+    missing.push(over_listing);
+    expect_object_set_mismatch(build(over_root, missing), over_root)?;
+
+    // Substituted: a committed witness keeps its bytes but carries another ObjectId.
+    let mut relabeled = objects.clone();
+    relabeled[1].object_id = ObjectId::parse("object:witness:forged")?;
+    expect_object_set_mismatch(build(root, relabeled), root)?;
+
+    // The manifest object itself must be on the Authority plane.
+    let mut wrong_plane = fixture.objects.clone();
+    let mut cognition_manifest = manifest;
+    cognition_manifest.plane = Plane::Cognition;
+    wrong_plane.push(cognition_manifest);
+    match build(root, wrong_plane) {
+        Err(ReplayBundleError::InvalidManifestRoot(reported)) => assert_eq!(reported, root),
+        other => return Err(format!("expected InvalidManifestRoot, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// review-528 finding 2 (fss-x4a.7.7): injected rename and parent-directory fsync failures
+// ---------------------------------------------------------------------------------------------
+
+fn sample_bundle(lineage: &str) -> Result<ReplayBundle, Box<dyn Error>> {
+    let fixture = create_test_fixture(lineage)?;
+    Ok(ReplayBundle::new(
+        fixture.manifest_root,
+        sample_metadata(lineage),
+        clean_fault_schedule(),
+        fixture.batches,
+        fixture.objects,
+    )?)
+}
+
+/// The happy path through the capability syncs the staged file, renames it, then syncs the
+/// parent directory, and only then returns a receipt.
+#[test]
+fn test_writer_through_io_syncs_file_renames_then_syncs_parent_dir() -> TestResult {
+    let bundle = sample_bundle("site:test:replay:io_happy")?;
+    let path = temp_bundle_path("io-happy");
+    let _ = fs::remove_file(&path);
+    let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
+
+    let receipt = ReplayBundleWriter::write_to_path_with_io(
+        &path,
+        &bundle,
+        &ReplayBundleLimits::default(),
+        &io,
+    )?;
+    assert_eq!(receipt.bundle_digest, bundle.digest()?);
+    assert_eq!(io.calls(SpoolIoCall::CreateNew), 1);
+    assert_eq!(io.calls(SpoolIoCall::SyncFile), 1);
+    assert_eq!(io.calls(SpoolIoCall::Rename), 1);
+    assert_eq!(io.calls(SpoolIoCall::SyncDirectory), 1);
+    assert_eq!(io.calls(SpoolIoCall::RemoveFile), 0);
+    assert_eq!(ReplayBundleReader::read_from_path(&path)?, bundle);
+
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+/// A failed parent-directory fsync after the rename is indeterminate, never durable, and the
+/// visible bundle is rolled back.
+#[test]
+fn test_writer_parent_dir_sync_failure_is_indeterminate_and_removes_visible_bundle() -> TestResult {
+    let bundle = sample_bundle("site:test:replay:dir_sync_fault")?;
+    let path = temp_bundle_path("dir-sync-fault");
+    let _ = fs::remove_file(&path);
+    let staged = replay_temp_path_for(&path, bundle.digest()?, 0);
+    let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new().fail(
+        SpoolIoCall::SyncDirectory,
+        1,
+        ErrorKind::Other,
+    ));
+
+    let res = ReplayBundleWriter::write_to_path_with_io(
+        &path,
+        &bundle,
+        &ReplayBundleLimits::default(),
+        &io,
+    );
+    match res {
+        Err(ReplayBundleError::Indeterminate {
+            path: reported,
+            operation,
+            kind,
+            rollback,
+        }) => {
+            assert_eq!(reported, path);
+            assert_eq!(operation, "sync_parent_dir");
+            assert_eq!(kind, ErrorKind::Other);
+            assert_eq!(rollback, ReplayWriteRollback::Removed);
+        }
+        other => {
+            return Err(format!(
+                "expected Indeterminate after a failed parent-dir fsync, got {other:?}"
+            )
+            .into());
+        }
+    }
+    assert!(io.all_fired(), "the parent-directory fsync fault must fire");
+    assert_eq!(io.calls(SpoolIoCall::Rename), 1);
+    assert!(
+        !path.exists(),
+        "rollback must remove the renamed, non-durable bundle"
+    );
+    assert!(!staged.exists(), "no staging file may be left behind");
+    Ok(())
+}
+
+/// When the rollback of a failed parent-directory fsync fails too, the outcome says so instead
+/// of claiming the target is clean.
+#[test]
+fn test_writer_parent_dir_sync_failure_reports_failed_rollback() -> TestResult {
+    let bundle = sample_bundle("site:test:replay:dir_sync_rollback_fault")?;
+    let path = temp_bundle_path("dir-sync-rollback-fault");
+    let _ = fs::remove_file(&path);
+    let io = FaultInjectingSpoolIo::new(
+        SpoolFaultPlan::new()
+            .fail(SpoolIoCall::SyncDirectory, 1, ErrorKind::Other)
+            .fail(SpoolIoCall::RemoveFile, 1, ErrorKind::PermissionDenied),
+    );
+
+    let res = ReplayBundleWriter::write_to_path_with_io(
+        &path,
+        &bundle,
+        &ReplayBundleLimits::default(),
+        &io,
+    );
+    match res {
+        Err(ReplayBundleError::Indeterminate {
+            operation,
+            rollback,
+            ..
+        }) => {
+            assert_eq!(operation, "sync_parent_dir");
+            assert_eq!(
+                rollback,
+                ReplayWriteRollback::Failed(ErrorKind::PermissionDenied)
+            );
+        }
+        other => {
+            return Err(
+                format!("expected Indeterminate with failed rollback, got {other:?}").into(),
+            );
+        }
+    }
+    assert!(io.all_fired(), "both faults must fire");
+    assert!(
+        path.exists(),
+        "the failed rollback is reported, and the non-durable file is still present"
+    );
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+/// A rename that fails without moving the staged file is a typed error: nothing became visible,
+/// the staged file is removed, and durability is never attempted.
+#[test]
+fn test_writer_rename_failure_is_typed_error_and_leaves_target_absent() -> TestResult {
+    let bundle = sample_bundle("site:test:replay:rename_fault")?;
+    let path = temp_bundle_path("rename-fault");
+    let _ = fs::remove_file(&path);
+    let staged = replay_temp_path_for(&path, bundle.digest()?, 0);
+    let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new().fail(
+        SpoolIoCall::Rename,
+        1,
+        ErrorKind::PermissionDenied,
+    ));
+
+    let res = ReplayBundleWriter::write_to_path_with_io(
+        &path,
+        &bundle,
+        &ReplayBundleLimits::default(),
+        &io,
+    );
+    match res {
+        Err(ReplayBundleError::Io { operation, kind }) => {
+            assert_eq!(operation, "rename_temp_file");
+            assert_eq!(kind, ErrorKind::PermissionDenied);
+        }
+        other => return Err(format!("expected Io(rename_temp_file), got {other:?}").into()),
+    }
+    assert!(io.all_fired(), "the rename fault must fire");
+    assert_eq!(io.calls(SpoolIoCall::SyncDirectory), 0);
+    assert!(
+        !path.exists(),
+        "a failed rename must not make the bundle visible"
+    );
+    assert!(!staged.exists(), "the staged file must be removed");
+    Ok(())
+}
+
+/// A rename that moved the staged file but reported failure is indeterminate, never durable,
+/// and the visible bundle is rolled back.
+#[test]
+fn test_writer_rename_reported_failed_after_applying_is_indeterminate_and_rolled_back() -> TestResult
+{
+    let bundle = sample_bundle("site:test:replay:rename_applied_fault")?;
+    let path = temp_bundle_path("rename-applied-fault");
+    let _ = fs::remove_file(&path);
+    let staged = replay_temp_path_for(&path, bundle.digest()?, 0);
+    let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new().fail_after_applying(
+        SpoolIoCall::Rename,
+        1,
+        ErrorKind::Other,
+    ));
+
+    let res = ReplayBundleWriter::write_to_path_with_io(
+        &path,
+        &bundle,
+        &ReplayBundleLimits::default(),
+        &io,
+    );
+    match res {
+        Err(ReplayBundleError::Indeterminate {
+            path: reported,
+            operation,
+            kind,
+            rollback,
+        }) => {
+            assert_eq!(reported, path);
+            assert_eq!(operation, "rename_temp_file");
+            assert_eq!(kind, ErrorKind::Other);
+            assert_eq!(rollback, ReplayWriteRollback::Removed);
+        }
+        other => return Err(format!("expected Indeterminate after rename, got {other:?}").into()),
+    }
+    assert!(io.all_fired(), "the rename fault must fire");
+    assert_eq!(io.calls(SpoolIoCall::SyncDirectory), 0);
+    assert!(!path.exists(), "rollback must remove the renamed bundle");
+    assert!(!staged.exists(), "no staging file may be left behind");
+    Ok(())
+}
+
+/// The writer never replaces an existing file, so the rollbacks above only ever remove this
+/// write's own bundle.
+#[test]
+fn test_writer_refuses_existing_target_and_leaves_it_untouched() -> TestResult {
+    let bundle = sample_bundle("site:test:replay:existing_target")?;
+    let path = temp_bundle_path("existing-target");
+    let staged = replay_temp_path_for(&path, bundle.digest()?, 0);
+    fs::write(&path, b"existing-bundle-bytes")?;
+
+    let res = ReplayBundleWriter::write_to_path(&path, &bundle);
+    match res {
+        Err(ReplayBundleError::TargetExists { path: reported }) => assert_eq!(reported, path),
+        other => return Err(format!("expected TargetExists, got {other:?}").into()),
+    }
+    assert_eq!(fs::read(&path)?, b"existing-bundle-bytes");
+    assert!(
+        !staged.exists(),
+        "nothing may be staged for a refused write"
+    );
     let _ = fs::remove_file(&path);
     Ok(())
 }

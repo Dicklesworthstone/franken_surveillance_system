@@ -20,17 +20,36 @@
 //!    digest, and checked for anchor sequence continuity (`prior == prev.successor`).
 //! 5. Every object payload is rehashed to match its declared [`ContentDigest`].
 //! 6. **Manifest Closure**: every object digest referenced by any delta in the batch history
-//!    (payload, witness, or child root) is proved to exist in the object catalog.
-//! 7. The manifest root must be verified in the object catalog or match the final state root.
+//!    (payload, witness, or child root) is proved to exist in the object catalog with the plane
+//!    the reference requires, and a delta's payload object carries the delta's [`ObjectId`].
+//! 7. **Exact object set**: the manifest root commits to exactly the bundle's object set. When it
+//!    is the final state root, the committed set is the set of digests the batch history
+//!    references, so every catalog object must be referenced. Otherwise it must name a
+//!    [`Plane::Authority`] catalog object whose payload is exactly
+//!    [`replay_object_set_manifest`] over every other catalog object. An extra, missing, or
+//!    substituted object fails verification.
 //!
 //! Any corruption, truncation, missing dependency, or reordering causes an immediate typed
 //! [`ReplayBundleError`]. Partial replays are strictly impossible.
+//!
+//! # Crash-safe writes
+//!
+//! [`ReplayBundleWriter`] performs every filesystem call of a write through one
+//! [`fss_object::SpoolIo`] capability. [`ReplayBundleWriter::write_to_path`] uses
+//! [`fss_object::HostSpoolIo`]; [`ReplayBundleWriter::write_to_path_with_io`] accepts any
+//! capability, so a test can fail the rename or the parent-directory fsync with
+//! `fss_object::FaultInjectingSpoolIo`. A write never replaces an existing file. A receipt is
+//! returned only after the staged file is synced, renamed onto the target, and the parent
+//! directory is synced. A failure before anything became visible returns
+//! [`ReplayBundleError::Io`] with the target still absent; a failure after the bundle may have
+//! become visible returns [`ReplayBundleError::Indeterminate`], never a receipt, and reports in
+//! [`ReplayWriteRollback`] whether the visible, non-durable file was removed.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{self, Write as _};
-use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read, Write};
+use std::fs::File;
+use std::io::{self, ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use fss_core::{
@@ -41,7 +60,9 @@ use fss_ledger::{
     BatchCodecError, CommitReceipt, LedgerOracle, OracleError, OracleLimits, decode_batch,
     encode_batch,
 };
-use fss_object::{SpoolError, StageReceipt, StagingSpool};
+use fss_object::{
+    HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, SpoolError, SpoolIo, StageReceipt, StagingSpool,
+};
 
 /// Registered digest domain for replay bundles.
 pub const REPLAY_BUNDLE_DOMAIN: &str = "fss.replay_bundle.v1";
@@ -84,6 +105,51 @@ pub fn replay_bundle_digest(body: &[u8]) -> ContentDigest {
     input.push(0);
     input.extend_from_slice(body);
     ContentDigest::sha256(&input)
+}
+
+/// Canonical object-set listing that a manifest object's payload must equal.
+///
+/// The listing commits to every entry's digest, plane, and [`ObjectId`], sorted by digest and
+/// then by `ObjectId`, so it is independent of catalog order. A [`Plane::Authority`] object whose
+/// payload is this listing has a digest, the manifest root, that commits to exactly that object
+/// set. Layout: the [`REPLAY_BUNDLE_DOMAIN`] bytes, a `0` byte, the ASCII tag `object_set`, a
+/// big-endian `u64` entry count, then per entry the digest algorithm tag `1`, the 32 digest
+/// bytes, the plane tag (`0` authority, `1` cognition, `2` effect), a big-endian `u64`
+/// `ObjectId` byte length, and the `ObjectId` bytes.
+#[must_use]
+pub fn replay_object_set_manifest(objects: &[ReplayObject]) -> Vec<u8> {
+    object_set_listing(objects.iter())
+}
+
+fn object_set_listing<'a>(objects: impl Iterator<Item = &'a ReplayObject>) -> Vec<u8> {
+    let mut entries: Vec<&ReplayObject> = objects.collect();
+    entries.sort_by(|left, right| {
+        left.digest
+            .cmp(&right.digest)
+            .then_with(|| left.object_id.as_str().cmp(right.object_id.as_str()))
+    });
+    let mut out = Vec::new();
+    out.extend_from_slice(REPLAY_BUNDLE_DOMAIN.as_bytes());
+    out.push(0);
+    out.extend_from_slice(b"object_set");
+    out.extend_from_slice(&(entries.len() as u64).to_be_bytes());
+    for entry in entries {
+        out.push(1);
+        out.extend_from_slice(&entry.digest.bytes());
+        out.push(plane_tag(entry.plane));
+        let id = entry.object_id.as_str().as_bytes();
+        out.extend_from_slice(&(id.len() as u64).to_be_bytes());
+        out.extend_from_slice(id);
+    }
+    out
+}
+
+const fn plane_tag(plane: Plane) -> u8 {
+    match plane {
+        Plane::Authority => 0,
+        Plane::Cognition => 1,
+        Plane::Effect => 2,
+    }
 }
 
 /// Upper bound on distinct staging names tried when writing a replay bundle.
@@ -133,16 +199,13 @@ fn sibling_path(target_path: &Path, file_name: String) -> PathBuf {
 /// earlier write) and is skipped, never opened or removed. When every bounded name is taken the
 /// call fails with [`ReplayBundleError::ReplayTempExhausted`] before the target file is touched.
 fn create_replay_temp(
+    io: &dyn SpoolIo,
     target_path: &Path,
     digest: ContentDigest,
 ) -> Result<(PathBuf, File), ReplayBundleError> {
     for attempt in 0..MAX_REPLAY_TEMP_ATTEMPTS {
         let candidate = replay_temp_path_for(target_path, digest, attempt);
-        match OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&candidate)
-        {
+        match io.create_new(&candidate) {
             Ok(file) => return Ok((candidate, file)),
             Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
             Err(err) => {
@@ -160,6 +223,82 @@ fn create_replay_temp(
             .to_path_buf(),
         attempts: MAX_REPLAY_TEMP_ATTEMPTS,
     })
+}
+
+/// Directory whose fsync makes a rename onto `path` durable.
+fn parent_directory(path: &Path) -> &Path {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    }
+}
+
+/// Writes all of `bytes` through `io`, with the same bounded loop the local publisher uses.
+///
+/// A short write advances by the accepted bytes; an [`ErrorKind::Interrupted`] write is retried
+/// at the same offset until the [`MAX_INTERRUPTED_ATTEMPTS`]-th consecutive interruption, which
+/// is returned. Every iteration either advances by at least one byte or spends one attempt.
+fn write_all_through(io: &dyn SpoolIo, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+    let mut written = 0_usize;
+    let mut interrupted = 0_u32;
+    while let Some(rest) = bytes.get(written..).filter(|rest| !rest.is_empty()) {
+        match io.write(file, rest) {
+            Ok(0) => {
+                return Err(io::Error::new(
+                    ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ));
+            }
+            Ok(accepted) => {
+                written = written.saturating_add(accepted.min(rest.len()));
+                interrupted = 0;
+            }
+            Err(error) if error.kind() == ErrorKind::Interrupted => {
+                interrupted = interrupted.saturating_add(1);
+                if interrupted >= MAX_INTERRUPTED_ATTEMPTS {
+                    return Err(error);
+                }
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+/// Classifies a failed rename by whether the staged file left its name.
+///
+/// If the staged file is still present, the rename did not happen: it is removed and the target,
+/// verified absent before staging, is untouched, so the outcome is a plain [`ReplayBundleError::Io`].
+/// If it is gone, the rename may have moved it onto the target, so the target is rolled back and
+/// the outcome is [`ReplayBundleError::Indeterminate`].
+fn rollback_failed_rename(
+    io: &dyn SpoolIo,
+    temp_path: &Path,
+    target: &Path,
+    kind: ErrorKind,
+) -> ReplayBundleError {
+    match io.remove_file(temp_path) {
+        Err(error) if error.kind() == ErrorKind::NotFound => ReplayBundleError::Indeterminate {
+            path: target.to_path_buf(),
+            operation: "rename_temp_file",
+            kind,
+            rollback: remove_visible_bundle(io, target),
+        },
+        _ => ReplayBundleError::Io {
+            operation: "rename_temp_file",
+            kind,
+        },
+    }
+}
+
+/// Removes a bundle that may be visible at `target` but is not durable.
+fn remove_visible_bundle(io: &dyn SpoolIo, target: &Path) -> ReplayWriteRollback {
+    match io.remove_file(target) {
+        Err(error) if error.kind() != ErrorKind::NotFound => {
+            ReplayWriteRollback::Failed(error.kind())
+        }
+        _ => ReplayWriteRollback::Removed,
+    }
 }
 
 /// Configurable limits for validating replay bundles.
@@ -361,6 +500,16 @@ pub struct ReplayBundleReceipt {
     pub total_bytes: usize,
 }
 
+/// Outcome of rolling back a replay bundle write that may have become visible but is not durable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayWriteRollback {
+    /// The target path holds no file after the rollback.
+    Removed,
+    /// Removing the file at the target path failed with this kind; a visible, non-durable bundle
+    /// may remain there and must be inspected before it is trusted or removed.
+    Failed(ErrorKind),
+}
+
 /// Typed errors emitted during replay bundle encoding, decoding, or execution.
 #[derive(Debug)]
 pub enum ReplayBundleError {
@@ -483,6 +632,46 @@ pub enum ReplayBundleError {
         expected: Plane,
         /// Actual plane found.
         actual: Plane,
+    },
+    /// A delta's payload object carries a different [`ObjectId`] than the delta names.
+    ObjectIdMismatch {
+        /// Payload object digest.
+        digest: ContentDigest,
+        /// `ObjectId` named by the delta.
+        expected: ObjectId,
+        /// `ObjectId` carried by the catalog object.
+        actual: ObjectId,
+    },
+    /// A catalog object is not committed to by the manifest root.
+    UnreferencedObject {
+        /// Digest of the uncommitted object.
+        digest: ContentDigest,
+    },
+    /// The manifest object's payload is not the canonical listing of the carried object set.
+    ManifestObjectSetMismatch {
+        /// Declared manifest root, the manifest object's digest.
+        manifest_root: ContentDigest,
+        /// Digest of the canonical listing of the object set the bundle actually carries.
+        carried_set: ContentDigest,
+    },
+    /// The write target already exists; a replay bundle is never written over an existing file.
+    TargetExists {
+        /// Target path.
+        path: PathBuf,
+    },
+    /// The rename or the parent-directory fsync failed after the bundle may have become visible.
+    ///
+    /// The bundle is never durable in this outcome. `rollback` reports whether the file at
+    /// `path` was removed; whether a crash would preserve the directory entry is unknown.
+    Indeterminate {
+        /// Target path at which the bundle may have become visible.
+        path: PathBuf,
+        /// Operation that failed.
+        operation: &'static str,
+        /// Error kind of the failed operation.
+        kind: ErrorKind,
+        /// Outcome of removing the visible, non-durable file.
+        rollback: ReplayWriteRollback,
     },
 }
 
@@ -611,6 +800,40 @@ impl fmt::Display for ReplayBundleError {
                     "object {digest} plane mismatch: expected {expected:?}, got {actual:?}"
                 )
             }
+            Self::ObjectIdMismatch {
+                digest,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "object {digest} identity mismatch: delta names {expected}, catalog carries {actual}"
+            ),
+            Self::UnreferencedObject { digest } => write!(
+                formatter,
+                "object {digest} is not committed to by the manifest root"
+            ),
+            Self::ManifestObjectSetMismatch {
+                manifest_root,
+                carried_set,
+            } => write!(
+                formatter,
+                "manifest object {manifest_root} does not commit to the carried object set (canonical listing digest {carried_set})"
+            ),
+            Self::TargetExists { path } => write!(
+                formatter,
+                "refusing to write replay bundle over existing file {}",
+                path.display()
+            ),
+            Self::Indeterminate {
+                path,
+                operation,
+                kind,
+                rollback,
+            } => write!(
+                formatter,
+                "replay bundle at {} is not durable: {operation} failed with {kind:?}; rollback: {rollback:?}",
+                path.display()
+            ),
         }
     }
 }
@@ -780,7 +1003,9 @@ impl ReplayBundle {
             }
         }
 
-        // Verify Manifest Closure: every digest referenced in batches must exist in objects with matching plane
+        // Verify Manifest Closure: every digest referenced in batches must exist in objects with
+        // matching plane, and a delta's payload object must carry the delta's ObjectId.
+        let mut referenced = BTreeSet::new();
         for batch in &batches {
             for delta in &batch.deltas {
                 let payload_idx = objects_by_digest.get(&delta.payload_digest).ok_or(
@@ -796,6 +1021,14 @@ impl ReplayBundle {
                         actual: payload_obj.plane,
                     });
                 }
+                if payload_obj.object_id != delta.object_id {
+                    return Err(ReplayBundleError::ObjectIdMismatch {
+                        digest: delta.payload_digest,
+                        expected: delta.object_id.clone(),
+                        actual: payload_obj.object_id.clone(),
+                    });
+                }
+                referenced.insert(delta.payload_digest);
 
                 if let Some(witness) = delta.witness_digest {
                     let witness_idx = objects_by_digest.get(&witness).ok_or(
@@ -811,6 +1044,7 @@ impl ReplayBundle {
                             actual: witness_obj.plane,
                         });
                     }
+                    referenced.insert(witness);
                 }
             }
             for child in &batch.children {
@@ -827,25 +1061,43 @@ impl ReplayBundle {
                         actual: child_obj.plane,
                     });
                 }
+                referenced.insert(*child);
             }
         }
 
-        // Verify manifest root: must match state root of final batch, or be an Authority manifest object
+        // Verify manifest root: it must commit to exactly the carried object set, either as the
+        // final batch's state root or as an Authority manifest object listing the set.
         let final_state_root = batches
             .last()
             .map(|b| b.new_anchor.state_root)
             .ok_or(ReplayBundleError::EmptyBundle)?;
-        if manifest_root != final_state_root {
+        if manifest_root == final_state_root {
+            // The final state root commits to the batch history, and the batch history commits
+            // to exactly the referenced digests: every catalog object must be one of them.
+            if let Some(orphan) = objects.iter().find(|obj| !referenced.contains(&obj.digest)) {
+                return Err(ReplayBundleError::UnreferencedObject {
+                    digest: orphan.digest,
+                });
+            }
+        } else {
+            // The manifest root names an Authority object whose payload is the canonical listing
+            // of every other catalog object; its digest therefore commits to exactly that set.
             let root_idx = objects_by_digest.get(&manifest_root).ok_or(
                 ReplayBundleError::BrokenManifestClosure {
                     missing_digest: manifest_root,
                 },
             )?;
             let root_obj = &objects[*root_idx];
-            if root_obj.plane != Plane::Authority
-                || !root_obj.object_id.as_str().contains("manifest")
-            {
+            if root_obj.plane != Plane::Authority {
                 return Err(ReplayBundleError::InvalidManifestRoot(manifest_root));
+            }
+            let carried =
+                object_set_listing(objects.iter().filter(|obj| obj.digest != manifest_root));
+            if root_obj.payload != carried {
+                return Err(ReplayBundleError::ManifestObjectSetMismatch {
+                    manifest_root,
+                    carried_set: ContentDigest::sha256(&carried),
+                });
             }
         }
 
@@ -1082,9 +1334,8 @@ impl ReplayBundleWriter {
 
     /// Writes a replay bundle atomically and crash-safely to a file path.
     ///
-    /// Uses an atomic temporary file write in the same directory, syncs data to disk,
-    /// and atomically renames to the final destination. If writing fails, cleans up the
-    /// temporary file and leaves the target file untouched.
+    /// Uses the host filesystem through [`Self::write_to_path_with_io`]; see it for the durable,
+    /// error, and indeterminate outcomes.
     pub fn write_to_path(
         path: &Path,
         bundle: &ReplayBundle,
@@ -1092,47 +1343,87 @@ impl ReplayBundleWriter {
         Self::write_to_path_with_limits(path, bundle, &ReplayBundleLimits::default())
     }
 
-    /// Writes a replay bundle atomically with explicit limits.
+    /// Writes a replay bundle atomically with explicit limits through the host filesystem.
     pub fn write_to_path_with_limits(
         path: &Path,
         bundle: &ReplayBundle,
         limits: &ReplayBundleLimits,
     ) -> Result<ReplayBundleReceipt, ReplayBundleError> {
+        Self::write_to_path_with_io(path, bundle, limits, &HostSpoolIo)
+    }
+
+    /// Writes a replay bundle atomically, performing every filesystem call through `io`.
+    ///
+    /// The target must not exist. The bytes are staged in a fresh sibling file (`create_new`,
+    /// bounded names), the staged file is fsynced, renamed onto the target, and the parent
+    /// directory is fsynced. The receipt is returned only after all of these succeed; no other
+    /// outcome is durable.
+    ///
+    /// # Errors
+    ///
+    /// - [`ReplayBundleError::TargetExists`]: `path` already exists; nothing is written.
+    /// - [`ReplayBundleError::Io`]: staging, or a rename that did not move the staged file,
+    ///   failed. The staged file is removed and `path` is still absent.
+    /// - [`ReplayBundleError::Indeterminate`]: the rename reported failure after the staged file
+    ///   left its name, or the parent-directory fsync failed after the rename. The file at `path`
+    ///   is removed as rollback and [`ReplayWriteRollback`] reports whether that succeeded.
+    pub fn write_to_path_with_io(
+        path: &Path,
+        bundle: &ReplayBundle,
+        limits: &ReplayBundleLimits,
+        io: &dyn SpoolIo,
+    ) -> Result<ReplayBundleReceipt, ReplayBundleError> {
         let bytes = Self::to_bytes_with_limits(bundle, limits)?;
         let body_len = bytes.len() - REPLAY_TRAILER_LEN;
         let bundle_digest = replay_bundle_digest(&bytes[..body_len]);
 
-        let (temp_path, mut file) = create_replay_temp(path, bundle_digest)?;
+        // A bundle is immutable: never replace an existing file. This also makes the rollback
+        // below exact, because any file at `path` after the rename can only be this write's.
+        match io.symlink_metadata(path) {
+            Ok(_) => {
+                return Err(ReplayBundleError::TargetExists {
+                    path: path.to_path_buf(),
+                });
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(ReplayBundleError::Io {
+                    operation: "inspect_target",
+                    kind: error.kind(),
+                });
+            }
+        }
 
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let write_res = (|| -> Result<(), ReplayBundleError> {
-            file.write_all(&bytes).map_err(|e| ReplayBundleError::Io {
+        let (temp_path, mut file) = create_replay_temp(io, path, bundle_digest)?;
+        let staged = write_all_through(io, &mut file, &bytes)
+            .map_err(|error| ReplayBundleError::Io {
                 operation: "write_temp_file",
-                kind: e.kind(),
-            })?;
-            file.sync_all().map_err(|e| ReplayBundleError::Io {
-                operation: "sync_temp_file",
-                kind: e.kind(),
-            })?;
-            drop(file);
-            fs::rename(&temp_path, path).map_err(|e| ReplayBundleError::Io {
-                operation: "rename_temp_file",
-                kind: e.kind(),
-            })?;
-            let parent_dir = File::open(parent).map_err(|e| ReplayBundleError::Io {
-                operation: "open_parent_dir",
-                kind: e.kind(),
-            })?;
-            parent_dir.sync_all().map_err(|e| ReplayBundleError::Io {
-                operation: "sync_parent_dir",
-                kind: e.kind(),
-            })?;
-            Ok(())
-        })();
+                kind: error.kind(),
+            })
+            .and_then(|()| {
+                io.sync_file(&file).map_err(|error| ReplayBundleError::Io {
+                    operation: "sync_temp_file",
+                    kind: error.kind(),
+                })
+            });
+        drop(file);
+        if let Err(error) = staged {
+            // Nothing is visible yet; the staged file was created by this call.
+            let _ = io.remove_file(&temp_path);
+            return Err(error);
+        }
 
-        if let Err(err) = write_res {
-            let _ = fs::remove_file(&temp_path);
-            return Err(err);
+        if let Err(error) = io.rename(&temp_path, path) {
+            return Err(rollback_failed_rename(io, &temp_path, path, error.kind()));
+        }
+
+        if let Err(error) = io.sync_directory(parent_directory(path)) {
+            return Err(ReplayBundleError::Indeterminate {
+                path: path.to_path_buf(),
+                operation: "sync_parent_dir",
+                kind: error.kind(),
+                rollback: remove_visible_bundle(io, path),
+            });
         }
 
         Ok(ReplayBundleReceipt {
