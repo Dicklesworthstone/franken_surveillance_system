@@ -215,6 +215,11 @@ pub struct RootLedgerReceipt {
 pub enum RootLedgerState {
     /// No root is visible in the slot and the ledger names none.
     Absent,
+    /// A manifest is staged in the spool for the slot, but not yet visible.
+    Staged {
+        /// Manifest root.
+        root: ContentDigest,
+    },
     /// The root is visible but its durability was never observed; it is never ledgered.
     VisibleNotDurable {
         /// Manifest root.
@@ -858,7 +863,9 @@ impl<'a> LedgeredRootPublisher<'a> {
                     ledgered_family,
                 }),
                 // `slot` holds a visible root, so classification never reports it absent.
-                RootLedgerState::Absent | RootLedgerState::LedgerWithoutDurableRoot { .. } => {}
+                RootLedgerState::Absent
+                | RootLedgerState::Staged { .. }
+                | RootLedgerState::LedgerWithoutDurableRoot { .. } => {}
             }
         }
         for (object_id, claim) in &claims {
@@ -893,17 +900,22 @@ impl<'a> LedgeredRootPublisher<'a> {
     }
 
     fn classify(&self, slot: &SlotName, claim: Option<&LedgerClaim>) -> RootLedgerState {
-        let Some((visible, closure)) = self.local.root(slot).zip(self.local.root_closure(slot))
-        else {
+        let Some(visible) = self.local.root(slot) else {
             return claim.map_or(RootLedgerState::Absent, |claim| {
                 RootLedgerState::LedgerWithoutDurableRoot {
                     ledgered_root: claim.root,
                 }
             });
         };
+        if visible.state == LocalPublicationState::Staged {
+            return RootLedgerState::Staged { root: visible.root };
+        }
         if visible.state != LocalPublicationState::Durable {
             return RootLedgerState::VisibleNotDurable { root: visible.root };
         }
+        let Some(closure) = self.local.root_closure(slot) else {
+            return RootLedgerState::VisibleNotDurable { root: visible.root };
+        };
         match claim {
             None => RootLedgerState::PendingLedger(PendingLedgerRoot {
                 slot: slot.clone(),

@@ -273,6 +273,8 @@ pub enum LocalPublicationState {
 pub enum ClaimStatus {
     /// No evidence for this rung exists; it must not be inferred from local durability.
     NotClaimed,
+    /// Evidence for this rung exists.
+    Claimed,
 }
 
 /// Every rung of the staged → visible → durable → replicated → protected → retrievable lattice.
@@ -289,7 +291,25 @@ pub struct PublicationClaims {
 }
 
 impl PublicationClaims {
-    const fn local_only(local: LocalPublicationState) -> Self {
+    /// Constructs claims with explicit status for every rung.
+    #[must_use]
+    pub const fn new(
+        local: LocalPublicationState,
+        replicated: ClaimStatus,
+        protected: ClaimStatus,
+        retrievable: ClaimStatus,
+    ) -> Self {
+        Self {
+            local,
+            replicated,
+            protected,
+            retrievable,
+        }
+    }
+
+    /// Constructs claims with local durability only and all remote rungs unclaimed.
+    #[must_use]
+    pub const fn local_only(local: LocalPublicationState) -> Self {
         Self {
             local,
             replicated: ClaimStatus::NotClaimed,
@@ -504,6 +524,7 @@ pub struct LocalRootPublisher {
     limits: LocalPublicationLimits,
     spool: StagingSpool,
     visible: BTreeMap<SlotName, RootEntry>,
+    staged: BTreeMap<SlotName, RootEntry>,
     broken_slots: BTreeSet<SlotName>,
     orphan_temps: BTreeSet<PathBuf>,
     tombstones: BTreeMap<ContentDigest, TombstoneRecord>,
@@ -514,9 +535,9 @@ pub struct LocalRootPublisher {
 }
 
 impl LocalRootPublisher {
-    /// Opens or creates a publication directory, takes its lock, and classifies every entry.
+    /// Opens the publication directory at `root`, recovering any visible roots and tombstones.
     ///
-    /// Every durable tombstone must verify or the open fails closed. Every root record is
+    /// Acquires an exclusive advisory lock on `root/fss.local_publication.lock`. Every root record is
     /// re-verified with its manifest body and children before admission; broken ones are reported
     /// and never admitted. Admitted roots are reported `Durable` only after this call fsyncs the
     /// roots directory.
@@ -577,6 +598,7 @@ impl LocalRootPublisher {
             limits,
             spool,
             visible: BTreeMap::new(),
+            staged: BTreeMap::new(),
             broken_slots: BTreeSet::new(),
             orphan_temps: BTreeSet::new(),
             tombstones: BTreeMap::new(),
@@ -639,10 +661,14 @@ impl LocalRootPublisher {
     /// The root this instance reports visible in `slot`, if any.
     ///
     /// Remains readable on a poisoned instance so a crash after the rename is reported as
-    /// `Visible` rather than hidden or upgraded.
+    /// `Visible` rather than hidden or upgraded. If a manifest has been staged for `slot`
+    /// but not yet renamed, reports [`LocalPublicationState::Staged`].
     #[must_use]
     pub fn root(&self, slot: &SlotName) -> Option<&VisibleRoot> {
-        self.visible.get(slot).map(|entry| &entry.visible)
+        self.visible
+            .get(slot)
+            .or_else(|| self.staged.get(slot))
+            .map(|entry| &entry.visible)
     }
 
     /// Every visible root, in slot order.
@@ -659,6 +685,52 @@ impl LocalRootPublisher {
         self.visible
             .get(slot)
             .map(|entry| self.closure(entry.visible.root, &entry.children))
+    }
+
+    /// Stages `manifest` body for `slot` without publishing it to disk as a root record.
+    ///
+    /// The manifest is verified and decodes from the spool, and every reference is verified.
+    /// The slot's root state becomes observable as [`LocalPublicationState::Staged`].
+    pub fn stage_manifest(
+        &mut self,
+        slot: &SlotName,
+        manifest: &ObjectManifest,
+    ) -> Result<ContentDigest, LocalPublicationError> {
+        self.require_live()?;
+        let root = manifest.root();
+        if manifest.computed_root() != root {
+            return Err(LocalPublicationError::ManifestMismatch { root });
+        }
+        if let Some(entry) = self.visible.get(slot) {
+            return Err(LocalPublicationError::SlotConflict {
+                slot: slot.clone(),
+                existing: entry.visible.root,
+                requested: root,
+            });
+        }
+        let child_count = manifest.children().len();
+        if child_count > self.limits.max_children {
+            return Err(LocalPublicationError::ManifestChildBound {
+                count: child_count,
+                maximum: self.limits.max_children,
+            });
+        }
+        self.require_references(manifest)?;
+        self.stage_manifest_body(manifest)?;
+        self.staged.insert(
+            slot.clone(),
+            RootEntry {
+                visible: VisibleRoot {
+                    slot: slot.clone(),
+                    root,
+                    record_digest: ContentDigest::sha256(b""),
+                    child_count,
+                    state: LocalPublicationState::Staged,
+                },
+                children: manifest.children().to_vec(),
+            },
+        );
+        Ok(root)
     }
 
     /// Stages `bytes` in the spool and verifies them, returning their content digest.
@@ -802,9 +874,11 @@ impl LocalRootPublisher {
             None => self.io.rename(&temp_path, &target_path),
         };
         if let Err(error) = renamed {
+            let _ = self.io.remove_file(&target_path);
             self.remove_temp(&temp_relative, &temp_path)?;
             return Err(io_error(LocalIoOperation::Rename, &target_path, &error));
         }
+        self.staged.remove(slot);
         transitions.push(PublicationTransition::RootRenamed);
         let closure_object_count = self.closure(root, manifest.children()).len();
         let record_digest = ContentDigest::sha256(&record);
@@ -908,6 +982,17 @@ impl LocalRootPublisher {
         let temp_path = self.root.join(&temp_relative);
         let target_path = self.tombstones_dir.join(&name);
         self.write_temp(&temp_relative, &temp_path, &bytes)?;
+        match self.io.symlink_metadata(&target_path) {
+            Ok(_) => {
+                self.remove_temp(&temp_relative, &temp_path)?;
+                return Err(LocalPublicationError::InvalidLayout { path: target_path });
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                self.remove_temp(&temp_relative, &temp_path)?;
+                return Err(io_error(LocalIoOperation::Inspect, &target_path, &error));
+            }
+        }
         if let Err(error) = self.io.rename(&temp_path, &target_path) {
             self.remove_temp(&temp_relative, &temp_path)?;
             return Err(io_error(LocalIoOperation::Rename, &target_path, &error));
@@ -1004,12 +1089,18 @@ impl LocalRootPublisher {
     }
 
     /// Every object reachable from `root`: the root, its direct `children`, and, transitively, the
-    /// children of any reached object that is itself the root of a visible slot. Any other object
-    /// is an opaque leaf, exactly as in `fss_object::InMemoryObjectStore::verify_closure`.
-    fn closure(&self, root: ContentDigest, children: &[ContentDigest]) -> BTreeSet<ContentDigest> {
+    /// children of any reached object that is itself the root of a visible durable slot. Any other
+    /// object is an opaque leaf, exactly as in `fss_object::InMemoryObjectStore::verify_closure`.
+    #[must_use]
+    pub fn closure(
+        &self,
+        root: ContentDigest,
+        children: &[ContentDigest],
+    ) -> BTreeSet<ContentDigest> {
         let manifests: BTreeMap<ContentDigest, &[ContentDigest]> = self
             .visible
             .values()
+            .filter(|entry| entry.visible.state == LocalPublicationState::Durable)
             .map(|entry| (entry.visible.root, entry.children.as_slice()))
             .collect();
         let mut seen = BTreeSet::from([root]);
@@ -1078,6 +1169,15 @@ impl LocalRootPublisher {
                     reason: BlockReason::Tombstoned,
                 });
             }
+            if let Some(entry) = self.visible.values().find(|e| e.visible.root == *child)
+                && entry.visible.state != LocalPublicationState::Durable
+            {
+                return Err(LocalPublicationError::ReferenceBlocked {
+                    object: *child,
+                    role,
+                    reason: BlockReason::NotVerified,
+                });
+            }
             self.spool.require_verified(*child).map_err(|error| {
                 LocalPublicationError::ReferenceBlocked {
                     object: *child,
@@ -1096,6 +1196,15 @@ impl LocalRootPublisher {
                     object: descendant,
                     role: ReferenceRole::Descendant,
                     reason: BlockReason::Tombstoned,
+                });
+            }
+            if let Some(entry) = self.visible.values().find(|e| e.visible.root == descendant)
+                && entry.visible.state != LocalPublicationState::Durable
+            {
+                return Err(LocalPublicationError::ReferenceBlocked {
+                    object: descendant,
+                    role: ReferenceRole::Descendant,
+                    reason: BlockReason::NotVerified,
                 });
             }
             self.spool.require_verified(descendant).map_err(|error| {
@@ -1173,6 +1282,11 @@ impl LocalRootPublisher {
         if let Err(error) = written {
             self.remove_temp(relative, path)?;
             return Err(io_error(LocalIoOperation::WriteTemp, path, &error));
+        }
+        let parent = path.parent().unwrap_or(&self.root).to_path_buf();
+        if let Err(error) = self.io.sync_directory(&parent) {
+            self.remove_temp(relative, path)?;
+            return Err(io_error(LocalIoOperation::SyncDirectory, &parent, &error));
         }
         let limit = bytes.len() as u64;
         match read_bounded(self.io.as_ref(), path, limit) {
@@ -1380,6 +1494,17 @@ impl LocalRootPublisher {
             &self.roots_dir,
             self.limits.max_scan_entries,
         )?;
+
+        struct CandidateRoot {
+            relative: PathBuf,
+            root: ContentDigest,
+            manifest: ObjectManifest,
+            record_bytes: Vec<u8>,
+        }
+
+        let mut candidates: BTreeMap<SlotName, CandidateRoot> = BTreeMap::new();
+        let mut broken_slot_roots: BTreeSet<ContentDigest> = BTreeSet::new();
+
         for (name, file_type) in entries {
             let relative = Path::new(LOCAL_ROOTS_DIR).join(&name);
             let Some(text) = name.to_str() else {
@@ -1399,24 +1524,228 @@ impl LocalRootPublisher {
                 report.foreign.push(relative);
                 continue;
             };
-            let classified = if file_type.is_file() {
-                self.admit_root(&slot)?
-            } else {
-                Err(BrokenRootReason::NotRegularFile)
+            if !file_type.is_file() {
+                self.broken_slots.insert(slot);
+                report.broken_roots.push(BrokenRoot {
+                    path: relative,
+                    reason: BrokenRootReason::NotRegularFile,
+                });
+                continue;
+            }
+            let path = self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
+            let Some(bytes) = read_bounded(self.io.as_ref(), &path, MAX_ROOT_RECORD_BYTES)? else {
+                self.broken_slots.insert(slot);
+                report.broken_roots.push(BrokenRoot {
+                    path: relative,
+                    reason: BrokenRootReason::RecordTooLarge,
+                });
+                continue;
             };
-            match classified {
-                Ok(entry) => {
-                    self.visible.insert(slot, entry);
-                }
+            let decoded = match record::decode_root_record(&bytes) {
+                Ok(decoded) => decoded,
                 Err(reason) => {
                     self.broken_slots.insert(slot);
                     report.broken_roots.push(BrokenRoot {
                         path: relative,
                         reason,
                     });
+                    continue;
+                }
+            };
+            if decoded.slot != slot.as_str() {
+                broken_slot_roots.insert(decoded.root);
+                self.broken_slots.insert(slot);
+                report.broken_roots.push(BrokenRoot {
+                    path: relative,
+                    reason: BrokenRootReason::SlotMismatch,
+                });
+                continue;
+            }
+            let root = decoded.root;
+            if let Err(reason) = self.verify_reference(root)? {
+                broken_slot_roots.insert(root);
+                self.broken_slots.insert(slot);
+                report.broken_roots.push(BrokenRoot {
+                    path: relative,
+                    reason: BrokenRootReason::ReferenceBlocked {
+                        object: root,
+                        role: ReferenceRole::ManifestBody,
+                        reason,
+                    },
+                });
+                continue;
+            }
+            let body = self
+                .spool
+                .read(root)
+                .map_err(|error| self.spool_error(error))?;
+            let manifest = match ObjectManifest::from_canonical_bytes(&body) {
+                Ok(manifest) if manifest.root() == root => manifest,
+                _ => {
+                    broken_slot_roots.insert(root);
+                    self.broken_slots.insert(slot);
+                    report.broken_roots.push(BrokenRoot {
+                        path: relative,
+                        reason: BrokenRootReason::ManifestUndecodable,
+                    });
+                    continue;
+                }
+            };
+            let child_count = manifest.children().len();
+            if decoded.child_count != child_count as u64 {
+                broken_slot_roots.insert(root);
+                self.broken_slots.insert(slot);
+                report.broken_roots.push(BrokenRoot {
+                    path: relative,
+                    reason: BrokenRootReason::ChildCountMismatch {
+                        recorded: decoded.child_count,
+                        actual: child_count,
+                    },
+                });
+                continue;
+            }
+            if child_count > self.limits.max_children {
+                broken_slot_roots.insert(root);
+                self.broken_slots.insert(slot);
+                report.broken_roots.push(BrokenRoot {
+                    path: relative,
+                    reason: BrokenRootReason::ChildBoundExceeded {
+                        count: child_count,
+                        maximum: self.limits.max_children,
+                    },
+                });
+                continue;
+            }
+            candidates.insert(
+                slot,
+                CandidateRoot {
+                    relative,
+                    root,
+                    manifest,
+                    record_bytes: bytes,
+                },
+            );
+        }
+
+        // Multi-pass fixed-point validation of direct references and transitive descendants
+        loop {
+            let mut newly_broken = Vec::new();
+            let candidate_manifests: BTreeMap<ContentDigest, Vec<ContentDigest>> = candidates
+                .values()
+                .map(|c| (c.root, c.manifest.children().to_vec()))
+                .collect();
+
+            for (slot, candidate) in &candidates {
+                let mut broken_reason = None;
+
+                // 1. Direct children
+                for child in candidate.manifest.children() {
+                    let role = if candidate.manifest.metadata_digest() == Some(*child) {
+                        ReferenceRole::Metadata
+                    } else {
+                        ReferenceRole::Child
+                    };
+                    if broken_slot_roots.contains(child) {
+                        broken_reason = Some(BrokenRootReason::ReferenceBlocked {
+                            object: *child,
+                            role,
+                            reason: BlockReason::NotVerified,
+                        });
+                        break;
+                    }
+                    match self.verify_reference(*child)? {
+                        Ok(()) => {}
+                        Err(reason) => {
+                            broken_reason = Some(BrokenRootReason::ReferenceBlocked {
+                                object: *child,
+                                role,
+                                reason,
+                            });
+                            break;
+                        }
+                    }
+                }
+
+                // 2. Transitive descendants
+                if broken_reason.is_none() {
+                    let direct: BTreeSet<ContentDigest> =
+                        candidate.manifest.children().iter().copied().collect();
+                    let mut seen = BTreeSet::from([candidate.root]);
+                    let mut pending = candidate.manifest.children().to_vec();
+                    while let Some(digest) = pending.pop() {
+                        if seen.insert(digest)
+                            && let Some(grandchildren) = candidate_manifests.get(&digest)
+                        {
+                            pending.extend_from_slice(grandchildren);
+                        }
+                    }
+                    for descendant in seen {
+                        if descendant == candidate.root || direct.contains(&descendant) {
+                            continue;
+                        }
+                        if broken_slot_roots.contains(&descendant) {
+                            broken_reason = Some(BrokenRootReason::ReferenceBlocked {
+                                object: descendant,
+                                role: ReferenceRole::Descendant,
+                                reason: BlockReason::NotVerified,
+                            });
+                            break;
+                        }
+                        match self.verify_reference(descendant)? {
+                            Ok(()) => {}
+                            Err(reason) => {
+                                broken_reason = Some(BrokenRootReason::ReferenceBlocked {
+                                    object: descendant,
+                                    role: ReferenceRole::Descendant,
+                                    reason,
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                if let Some(reason) = broken_reason {
+                    newly_broken.push((slot.clone(), reason));
+                }
+            }
+
+            if newly_broken.is_empty() {
+                break;
+            }
+
+            for (slot, reason) in newly_broken {
+                if let Some(candidate) = candidates.remove(&slot) {
+                    broken_slot_roots.insert(candidate.root);
+                    self.broken_slots.insert(slot);
+                    report.broken_roots.push(BrokenRoot {
+                        path: candidate.relative,
+                        reason,
+                    });
                 }
             }
         }
+
+        report
+            .broken_roots
+            .sort_by(|left, right| left.path.cmp(&right.path));
+
+        for (slot, candidate) in candidates {
+            self.visible.insert(
+                slot.clone(),
+                RootEntry {
+                    visible: VisibleRoot {
+                        slot,
+                        root: candidate.root,
+                        record_digest: ContentDigest::sha256(&candidate.record_bytes),
+                        child_count: candidate.manifest.children().len(),
+                        state: LocalPublicationState::Visible,
+                    },
+                    children: candidate.manifest.children().to_vec(),
+                },
+            );
+        }
+
         if self.visible.len() > self.limits.max_roots {
             return Err(LocalPublicationError::Capacity {
                 resource: CapacityResource::Roots,
@@ -1425,77 +1754,6 @@ impl LocalRootPublisher {
             });
         }
         Ok(())
-    }
-
-    /// Fully verifies one root record found on open.
-    fn admit_root(
-        &mut self,
-        slot: &SlotName,
-    ) -> Result<Result<RootEntry, BrokenRootReason>, LocalPublicationError> {
-        let path = self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
-        let Some(bytes) = read_bounded(self.io.as_ref(), &path, MAX_ROOT_RECORD_BYTES)? else {
-            return Ok(Err(BrokenRootReason::RecordTooLarge));
-        };
-        let decoded = match record::decode_root_record(&bytes) {
-            Ok(decoded) => decoded,
-            Err(reason) => return Ok(Err(reason)),
-        };
-        if decoded.slot != slot.as_str() {
-            return Ok(Err(BrokenRootReason::SlotMismatch));
-        }
-        let root = decoded.root;
-        if let Err(reason) = self.verify_reference(root)? {
-            return Ok(Err(BrokenRootReason::ReferenceBlocked {
-                object: root,
-                role: ReferenceRole::ManifestBody,
-                reason,
-            }));
-        }
-        let body = self
-            .spool
-            .read(root)
-            .map_err(|error| self.spool_error(error))?;
-        let manifest = match ObjectManifest::from_canonical_bytes(&body) {
-            Ok(manifest) if manifest.root() == root => manifest,
-            _ => return Ok(Err(BrokenRootReason::ManifestUndecodable)),
-        };
-        let child_count = manifest.children().len();
-        if decoded.child_count != child_count as u64 {
-            return Ok(Err(BrokenRootReason::ChildCountMismatch {
-                recorded: decoded.child_count,
-                actual: child_count,
-            }));
-        }
-        if child_count > self.limits.max_children {
-            return Ok(Err(BrokenRootReason::ChildBoundExceeded {
-                count: child_count,
-                maximum: self.limits.max_children,
-            }));
-        }
-        for child in manifest.children() {
-            let role = if manifest.metadata_digest() == Some(*child) {
-                ReferenceRole::Metadata
-            } else {
-                ReferenceRole::Child
-            };
-            if let Err(reason) = self.verify_reference(*child)? {
-                return Ok(Err(BrokenRootReason::ReferenceBlocked {
-                    object: *child,
-                    role,
-                    reason,
-                }));
-            }
-        }
-        Ok(Ok(RootEntry {
-            visible: VisibleRoot {
-                slot: slot.clone(),
-                root,
-                record_digest: ContentDigest::sha256(&bytes),
-                child_count,
-                state: LocalPublicationState::Visible,
-            },
-            children: manifest.children().to_vec(),
-        }))
     }
 }
 
