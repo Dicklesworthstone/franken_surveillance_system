@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://franken-surveillance-system.dev/schemas/sensor_capsule.v1.json",
   "title": "FSS Sensor Capsule v1",
+  "$comment": "Mirrors SensorCapsuleV1 in crates/fss-core/src/sensor_capsule.rs field-for-field (pinned by crates/fss-core/tests/sensor_capsule_contract.rs). Rust length bounds count UTF-8 bytes while maxLength counts code points, so for non-ASCII text the Rust byte bound is the stricter, authoritative limit. integrity.metadataDigest is the fss.sensor_capsule.metadata.v1 digest of every capsule field except itself.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -26,6 +27,32 @@
     "privacy",
     "publication"
   ],
+  "anyOf": [
+    {
+      "$comment": "Retained under source custody...",
+      "properties": {
+        "custody": {
+          "properties": {
+            "isRetained": {
+              "const": true
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "...or carrying an explicit omission; never neither.",
+      "properties": {
+        "omission": {
+          "properties": {
+            "isOmitted": {
+              "const": true
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schema": {
       "const": "fss.sensor_capsule.v1"
@@ -37,22 +64,25 @@
       "pattern": "^[A-Za-z0-9_.:-]+$"
     },
     "sourceId": {
+      "$comment": "Canonical form only: the alias prefix 'source:' is rejected.",
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_.:-]+$"
+      "pattern": "^(?!source:)[A-Za-z0-9_.:-]+$"
     },
     "deviceId": {
+      "$comment": "Canonical form only: the alias prefix 'dev:' is rejected.",
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_.:-]+$"
+      "pattern": "^(?!dev:)[A-Za-z0-9_.:-]+$"
     },
     "adapterId": {
+      "$comment": "Canonical form only: the alias prefix 'adp:' is rejected.",
       "type": "string",
       "minLength": 1,
       "maxLength": 128,
-      "pattern": "^[A-Za-z0-9_.:-]+$"
+      "pattern": "^(?!adp:)[A-Za-z0-9_.:-]+$"
     },
     "sensorId": {
       "type": "string",
@@ -67,23 +97,69 @@
       "pattern": "^[A-Za-z0-9_.:-]+$"
     },
     "sourceIdentity": {
-      "$ref": "source_identity.v1.json"
+      "allOf": [
+        {
+          "$ref": "source_identity.v1.json"
+        },
+        {
+          "properties": {
+            "sourceId": {
+              "pattern": "^(?!source:)[A-Za-z0-9_.:-]+$"
+            },
+            "deviceId": {
+              "pattern": "^(?!dev:)[A-Za-z0-9_.:-]+$"
+            },
+            "adapterId": {
+              "pattern": "^(?!adp:)[A-Za-z0-9_.:-]+$"
+            }
+          }
+        }
+      ]
     },
     "deviceIdentity": {
-      "$ref": "device_identity.v1.json"
+      "allOf": [
+        {
+          "$ref": "device_identity.v1.json"
+        },
+        {
+          "required": [
+            "applicationVersion",
+            "modelGeneration"
+          ],
+          "properties": {
+            "deviceId": {
+              "pattern": "^(?!dev:)[A-Za-z0-9_.:-]+$"
+            }
+          }
+        }
+      ]
     },
     "adapterIdentity": {
-      "$ref": "adapter_identity.v1.json"
+      "allOf": [
+        {
+          "$ref": "adapter_identity.v1.json"
+        },
+        {
+          "properties": {
+            "adapterId": {
+              "pattern": "^(?!adp:)[A-Za-z0-9_.:-]+$"
+            }
+          }
+        }
+      ]
     },
     "sequence": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "maximum": 18446744073709551615
     },
     "captureInterval": {
-      "$ref": "#/$defs/timeInterval"
+      "$ref": "#/$defs/captureInterval"
     },
     "receiveTimeNs": {
-      "type": "integer"
+      "type": "integer",
+      "minimum": -170141183460469231731687303715884105728,
+      "maximum": 170141183460469231731687303715884105727
     },
     "clockBasis": {
       "enum": [
@@ -114,10 +190,17 @@
   },
   "$defs": {
     "digest": {
+      "$comment": "Shared by other FSS schemas; the capsule's own fields use the exact contentDigest grammar below.",
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9_-]*:[0-9a-f]{32,}$"
     },
+    "contentDigest": {
+      "$comment": "Exact grammar accepted by ContentDigest::parse.",
+      "type": "string",
+      "pattern": "^(sha256|blake3):[0-9a-f]{64}$"
+    },
     "timeInterval": {
+      "$comment": "Shared by other FSS schemas; the capsule uses captureInterval below.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -138,35 +221,97 @@
         }
       }
     },
+    "captureInterval": {
+      "$comment": "CaptureInterval (i128 nanoseconds, earliestNs <= latestNs) plus SensorCapsuleV1.capture_uncertainty_reason.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "earliestNs",
+        "latestNs",
+        "uncertaintyReason"
+      ],
+      "properties": {
+        "earliestNs": {
+          "type": "integer",
+          "minimum": -170141183460469231731687303715884105728,
+          "maximum": 170141183460469231731687303715884105727
+        },
+        "latestNs": {
+          "type": "integer",
+          "minimum": -170141183460469231731687303715884105728,
+          "maximum": 170141183460469231731687303715884105727
+        },
+        "uncertaintyReason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
     "custody": {
       "type": "object",
       "additionalProperties": false,
       "required": [
         "isRetained",
         "sourceBytes",
+        "sourceDigest",
         "storageHandle"
       ],
       "properties": {
         "isRetained": {
           "type": "boolean"
         },
+        "sourceBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
         "sourceDigest": {
           "anyOf": [
             {
-              "$ref": "#/$defs/digest"
+              "$ref": "#/$defs/contentDigest"
             },
             {
               "type": "null"
             }
           ]
         },
-        "sourceBytes": {
-          "type": "integer",
-          "minimum": 0
-        },
         "storageHandle": {
           "type": "string",
           "maxLength": 256
+        }
+      },
+      "if": {
+        "required": [
+          "isRetained"
+        ],
+        "properties": {
+          "isRetained": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "sourceDigest": {
+            "$ref": "#/$defs/contentDigest"
+          },
+          "storageHandle": {
+            "minLength": 1
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "sourceBytes": {
+            "const": 0
+          },
+          "sourceDigest": {
+            "type": "null"
+          },
+          "storageHandle": {
+            "const": ""
+          }
         }
       }
     },
@@ -176,11 +321,27 @@
       "required": [
         "isOmitted",
         "omittedBytes",
-        "omittedFrames"
+        "omittedFrames",
+        "policyRule",
+        "reason"
       ],
       "properties": {
         "isOmitted": {
           "type": "boolean"
+        },
+        "omittedBytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "omittedFrames": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "policyRule": {
+          "type": "string",
+          "maxLength": 256
         },
         "reason": {
           "enum": [
@@ -192,18 +353,44 @@
             "transient_preview_only",
             "upstream_missing"
           ]
-        },
-        "policyRule": {
-          "type": "string",
-          "maxLength": 256
-        },
-        "omittedBytes": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "omittedFrames": {
-          "type": "integer",
-          "minimum": 0
+        }
+      },
+      "if": {
+        "required": [
+          "isOmitted"
+        ],
+        "properties": {
+          "isOmitted": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "policyRule": {
+            "minLength": 1
+          },
+          "reason": {
+            "not": {
+              "const": "none"
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "omittedBytes": {
+            "const": 0
+          },
+          "omittedFrames": {
+            "const": 0
+          },
+          "policyRule": {
+            "const": ""
+          },
+          "reason": {
+            "const": "none"
+          }
         }
       }
     },
@@ -211,10 +398,15 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "kind",
         "codec",
+        "container",
+        "frameCount",
+        "height",
+        "kind",
+        "proxyDigest",
         "sourceBytes",
-        "frameCount"
+        "sourceDigest",
+        "width"
       ],
       "properties": {
         "kind": {
@@ -228,6 +420,7 @@
         },
         "codec": {
           "type": "string",
+          "minLength": 1,
           "maxLength": 64
         },
         "container": {
@@ -242,27 +435,31 @@
             "integer",
             "null"
           ],
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 4294967295
         },
         "height": {
           "type": [
             "integer",
             "null"
           ],
-          "minimum": 1
+          "minimum": 1,
+          "maximum": 4294967295
         },
         "sourceBytes": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 18446744073709551615
         },
         "frameCount": {
           "type": "integer",
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 4294967295
         },
         "sourceDigest": {
           "anyOf": [
             {
-              "$ref": "#/$defs/digest"
+              "$ref": "#/$defs/contentDigest"
             },
             {
               "type": "null"
@@ -272,7 +469,7 @@
         "proxyDigest": {
           "anyOf": [
             {
-              "$ref": "#/$defs/digest"
+              "$ref": "#/$defs/contentDigest"
             },
             {
               "type": "null"
@@ -285,13 +482,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "metadataDigest",
         "continuity",
-        "decode"
+        "decode",
+        "firmwareFingerprint",
+        "metadataDigest"
       ],
       "properties": {
         "metadataDigest": {
-          "$ref": "#/$defs/digest"
+          "$ref": "#/$defs/contentDigest"
         },
         "continuity": {
           "enum": [
@@ -322,6 +520,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "maskGeneration",
         "redactionState",
         "retentionClass"
       ],
@@ -329,7 +528,7 @@
         "maskGeneration": {
           "anyOf": [
             {
-              "$ref": "#/$defs/digest"
+              "$ref": "#/$defs/contentDigest"
             },
             {
               "type": "null"
@@ -354,8 +553,9 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "state",
-        "rootDigest"
+        "ledgerRevision",
+        "rootDigest",
+        "state"
       ],
       "properties": {
         "state": {
@@ -368,14 +568,15 @@
           ]
         },
         "rootDigest": {
-          "$ref": "#/$defs/digest"
+          "$ref": "#/$defs/contentDigest"
         },
         "ledgerRevision": {
           "type": [
             "integer",
             "null"
           ],
-          "minimum": 0
+          "minimum": 0,
+          "maximum": 18446744073709551615
         }
       }
     }
