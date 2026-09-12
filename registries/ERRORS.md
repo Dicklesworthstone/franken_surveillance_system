@@ -114,6 +114,16 @@ operation states rather than generic errors.
 | `ERR-PUBLICATION-LOCAL-TOMBSTONE-REACHABLE-001` | object is reachable from a visible root and cannot be tombstoned locally | run deletion closure through its owner; no silent unpublish |
 | `ERR-PUBLICATION-LOCAL-CORRUPT-TOMBSTONE-001` | a durable tombstone record failed verification on open | repair the tombstone store; open fails closed |
 | `ERR-PUBLICATION-LOCAL-ENCODING-001` | canonical encoding of a publication record exceeded its encoder bound | reject input; repair the oversized field |
+| `ERR-PUBLICATION-LEDGER-SLOT-IDENTITY-001` | slot cannot be expressed as a stable ledger object or batch identity | reject input; choose a slot within the ledgered slot bound |
+| `ERR-PUBLICATION-LEDGER-NOT-DURABLE-001` | slot holds no durable root; its reachability is never committed to the ledger | publish durably or reopen to reconcile first |
+| `ERR-PUBLICATION-LEDGER-CONFLICT-001` | canonical ledger already names a different root or family for the slot; nothing appended | repair the ledger identity explicitly; never overwrite either record |
+| `ERR-PUBLICATION-LEDGER-PREPARED-MISMATCH-001` | offered batch is not the reachability batch of the slot's durable root | reject input; prepare against the durable root |
+| `ERR-PUBLICATION-LEDGER-ALREADY-LEDGERED-001` | root reachability is already canonical; nothing to prepare | no retry; root is already ledgered |
+| `ERR-PUBLICATION-LEDGER-UNLEDGERED-001` | root is durable but the ledger refused or could not prepare its reachability batch; explicit pending-ledger state | follow the nested cause, then retry the idempotent ledger commit |
+| `ERR-PUBLICATION-LEDGER-INDETERMINATE-001` | root is durable and its reachability append became indeterminate | reconcile the ledger append before any retry |
+| `ERR-PUBLICATION-LEDGER-RECONCILIATION-REQUIRED-001` | an indeterminate ledger append must be reconciled before root-ledger work | reconcile the pending ledger append |
+| `ERR-PUBLICATION-LEDGER-RECONCILE-001` | reconciling an indeterminate ledger append failed | repair ledger storage, then reconcile again |
+| `ERR-PUBLICATION-LEDGER-INJECTED-CRASH-001` | a root-ledger fault-injection cut point fired after the root became durable | reopen both owners to reconcile |
 
 ## Subordinate dependency audit diagnostic registry (DEP-AUD)
 

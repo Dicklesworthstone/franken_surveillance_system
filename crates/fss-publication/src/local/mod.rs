@@ -16,7 +16,8 @@
 //! root record names it), `Visible` (the root record was renamed into place but the directory
 //! fsync that makes the rename durable has not been observed), and `Durable` (the directory fsync
 //! succeeded). Replication, protection, and retrievability are outside this crate's authority and
-//! every receipt reports them as [`ClaimStatus::NotClaimed`].
+//! every receipt reports them as [`ClaimStatus::NotClaimed`]. Committing a durable root's
+//! reachability to the canonical ledger is the job of [`crate::LedgeredRootPublisher`].
 //!
 //! # Protocol
 //!
@@ -615,6 +616,17 @@ impl LocalRootPublisher {
         self.visible.values().map(|entry| &entry.visible)
     }
 
+    /// Every object reachable from the root visible in `slot`, including the manifest body.
+    ///
+    /// Descent follows the publication rule: a reached object that is itself the root of a visible
+    /// slot is descended into; any other object is an opaque leaf.
+    #[must_use]
+    pub fn root_closure(&self, slot: &SlotName) -> Option<BTreeSet<ContentDigest>> {
+        self.visible
+            .get(slot)
+            .map(|entry| self.closure(entry.visible.root, &entry.children))
+    }
+
     /// Stages `bytes` in the spool and verifies them, returning their content digest.
     ///
     /// Staging is custody, not publication: a tombstoned digest may still be staged, but it can
@@ -917,6 +929,31 @@ impl LocalRootPublisher {
             return Err(LocalPublicationError::Poisoned);
         }
         Ok(())
+    }
+
+    /// Marks this instance as a dead process, exactly as an injected crash does.
+    pub(crate) fn poison(&mut self) {
+        self.poisoned = true;
+    }
+
+    /// Proves the root in `slot` is `Durable` and its on-disk record still has the digest this
+    /// instance observed. Any divergence is [`LocalPublicationError::BrokenSlot`].
+    pub(crate) fn require_durable_record(
+        &self,
+        slot: &SlotName,
+    ) -> Result<(), LocalPublicationError> {
+        self.require_live()?;
+        let record_digest = match self.visible.get(slot) {
+            Some(entry) if entry.visible.state == LocalPublicationState::Durable => {
+                entry.visible.record_digest
+            }
+            _ => return Err(LocalPublicationError::BrokenSlot { slot: slot.clone() }),
+        };
+        let path = self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
+        match read_bounded(&path, MAX_ROOT_RECORD_BYTES)? {
+            Some(bytes) if ContentDigest::sha256(&bytes) == record_digest => Ok(()),
+            _ => Err(LocalPublicationError::BrokenSlot { slot: slot.clone() }),
+        }
     }
 
     /// Disarms and returns the injected error kind if the armed fault is at `point`.
