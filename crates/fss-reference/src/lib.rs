@@ -14,6 +14,7 @@ mod clock_sync;
 mod context_binding;
 mod delivery;
 mod durable_effect;
+mod encoded_fixture;
 mod error;
 mod hydration;
 mod meaningful_delta;
@@ -77,6 +78,12 @@ pub use delivery::{
     MAX_DELIVERY_DIRECTIVES,
 };
 pub use durable_effect::{DurableEffectError, DurableEffectJournal, EFFECT_TRANSITION_RECORD_KIND};
+pub use encoded_fixture::{
+    ContainerFormat, EncodedCameraGenerator, EncodedCameraSpec, EncodedFixtureError,
+    EncodedFixtureKind, EncodedFrameFixture, FrameType, MAX_FIXTURE_FRAMES,
+    MAX_FIXTURE_PAYLOAD_BYTES, MAX_FRAME_HEIGHT, MAX_FRAME_WIDTH, MAX_KEYFRAME_CADENCE,
+    MIN_KEYFRAME_CADENCE, VideoCodec,
+};
 pub use error::ReferenceError;
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use meaningful_delta::classify_reference_meaningful_delta;
