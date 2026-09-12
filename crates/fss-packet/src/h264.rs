@@ -218,16 +218,35 @@ pub struct H264Depacketizer {
 
 impl H264Depacketizer {
     /// Open a bounded derivative receiver; the caller separately owns source custody/authority.
-    pub fn new(key: StreamKey, payload_type: u8, mode: H264Mode, limits: H264Limits) -> Result<Self, H264Failure> {
-        if key.ingress == 0 || key.generation == 0 || payload_type > 127
+    pub fn new(
+        key: StreamKey,
+        payload_type: u8,
+        mode: H264Mode,
+        limits: H264Limits,
+    ) -> Result<Self, H264Failure> {
+        if key.ingress == 0
+            || key.generation == 0
+            || payload_type > 127
             || !(1..=16 * 1_024 * 1_024).contains(&limits.max_nal_bytes)
             || !(1..=256).contains(&limits.max_packet_nals)
             || !(2..=4_096).contains(&limits.max_fragment_packets)
             || !(1..=60_000_000_000).contains(&limits.max_pending_age_ns)
         {
-            return Err(H264Failure { reason: H264Error::Configuration, discarded: None });
+            return Err(H264Failure {
+                reason: H264Error::Configuration,
+                discarded: None,
+            });
         }
-        Ok(Self { key, payload_type, mode, limits, last_sequence: None, last_now_ns: 0, pending: None, closed: false })
+        Ok(Self {
+            key,
+            payload_type,
+            mode,
+            limits,
+            last_sequence: None,
+            last_now_ns: 0,
+            pending: None,
+            closed: false,
+        })
     }
 
     /// Current retained derivative bytes; never includes the independently owned source spool.
@@ -236,9 +255,20 @@ impl H264Depacketizer {
     }
 
     /// Process one complete parsed RTP packet with its caller-validated extended sequence.
-    pub fn push(&mut self, key: StreamKey, sequence: u64, packet: RtpPacket<'_>, now_ns: u64) -> Result<H264Output, H264Failure> {
-        let failure = |reason| H264Failure { reason, discarded: None };
-        if key != self.key || packet.ssrc() != key.ssrc || packet.payload_type() != self.payload_type
+    pub fn push(
+        &mut self,
+        key: StreamKey,
+        sequence: u64,
+        packet: RtpPacket<'_>,
+        now_ns: u64,
+    ) -> Result<H264Output, H264Failure> {
+        let failure = |reason| H264Failure {
+            reason,
+            discarded: None,
+        };
+        if key != self.key
+            || packet.ssrc() != key.ssrc
+            || packet.payload_type() != self.payload_type
             || packet.sequence() != sequence as u16
         {
             return Err(failure(H264Error::StreamMismatch));
@@ -251,9 +281,16 @@ impl H264Depacketizer {
         }
         let mut discarded = self.expire(now_ns)?;
         if self.last_sequence.is_some_and(|last| sequence <= last) {
-            return Ok(H264Output { status: H264Status::IgnoredNonIncreasing, nals: Vec::new(), gap_before: false, discarded });
+            return Ok(H264Output {
+                status: H264Status::IgnoredNonIncreasing,
+                nals: Vec::new(),
+                gap_before: false,
+                discarded,
+            });
         }
-        let gap = self.last_sequence.is_some_and(|last| last.checked_add(1) != Some(sequence));
+        let gap = self
+            .last_sequence
+            .is_some_and(|last| last.checked_add(1) != Some(sequence));
         if gap && discarded.is_none() {
             discarded = self.discard(H264Error::Gap);
         }
@@ -266,7 +303,10 @@ impl H264Depacketizer {
             }
             Err(reason) => {
                 let remaining = self.discard(reason);
-                Err(H264Failure { reason, discarded: discarded.or(remaining) })
+                Err(H264Failure {
+                    reason,
+                    discarded: discarded.or(remaining),
+                })
             }
         }
     }
@@ -274,11 +314,21 @@ impl H264Depacketizer {
     /// Retire expired pending work even when no more packets arrive; supplied time is monotonic.
     pub fn expire(&mut self, now_ns: u64) -> Result<Option<FragmentDiscard>, H264Failure> {
         if now_ns < self.last_now_ns {
-            return Err(H264Failure { reason: H264Error::ClockReversed, discarded: None });
+            return Err(H264Failure {
+                reason: H264Error::ClockReversed,
+                discarded: None,
+            });
         }
         self.last_now_ns = now_ns;
-        let expired = self.pending.as_ref().is_some_and(|nal| now_ns - nal.started_ns >= self.limits.max_pending_age_ns);
-        Ok(if expired { self.discard(H264Error::Deadline) } else { None })
+        let expired = self
+            .pending
+            .as_ref()
+            .is_some_and(|nal| now_ns - nal.started_ns >= self.limits.max_pending_age_ns);
+        Ok(if expired {
+            self.discard(H264Error::Deadline)
+        } else {
+            None
+        })
     }
 
     /// Cancel permanently and report the incomplete derivative rather than publishing it.
@@ -299,13 +349,22 @@ impl H264Depacketizer {
             key: nal.key,
             reason,
             first_sequence: nal.first_sequence,
-            last_sequence: nal.sources.last().map_or(nal.first_sequence, |span| span.sequence),
+            last_sequence: nal
+                .sources
+                .last()
+                .map_or(nal.first_sequence, |span| span.sequence),
             byte_len: nal.bytes.len(),
             fragments: nal.sources.len(),
         })
     }
 
-    fn consume(&mut self, sequence: u64, packet: RtpPacket<'_>, now_ns: u64, discarded: &mut Option<FragmentDiscard>) -> Result<H264Output, H264Error> {
+    fn consume(
+        &mut self,
+        sequence: u64,
+        packet: RtpPacket<'_>,
+        now_ns: u64,
+        discarded: &mut Option<FragmentDiscard>,
+    ) -> Result<H264Output, H264Error> {
         let payload = packet.payload();
         let header = *payload.first().ok_or(H264Error::Malformed)?;
         if header & 0x80 != 0 {
@@ -319,8 +378,11 @@ impl H264Depacketizer {
         match kind {
             1..=23 => {
                 reserve(&mut nals, 1, self.limits.max_packet_nals)?;
-                let nal = self.copy_nal(sequence, packet, 0..payload.len(), now_ns, packet.marker())?;
-                *discarded = discarded.take().or_else(|| self.discard(H264Error::Interrupted));
+                let nal =
+                    self.copy_nal(sequence, packet, 0..payload.len(), now_ns, packet.marker())?;
+                *discarded = discarded
+                    .take()
+                    .or_else(|| self.discard(H264Error::Interrupted));
                 nals.push(nal);
             }
             24 => {
@@ -328,13 +390,22 @@ impl H264Depacketizer {
                 reserve(&mut nals, count, self.limits.max_packet_nals)?;
                 let mut offset = 1;
                 for index in 0..count {
-                    let length = usize::from(u16::from_be_bytes([payload[offset], payload[offset + 1]]));
+                    let length =
+                        usize::from(u16::from_be_bytes([payload[offset], payload[offset + 1]]));
                     offset += 2;
-                    let nal = self.copy_nal(sequence, packet, offset..offset + length, now_ns, packet.marker() && index + 1 == count)?;
+                    let nal = self.copy_nal(
+                        sequence,
+                        packet,
+                        offset..offset + length,
+                        now_ns,
+                        packet.marker() && index + 1 == count,
+                    )?;
                     nals.push(nal);
                     offset += length;
                 }
-                *discarded = discarded.take().or_else(|| self.discard(H264Error::Interrupted));
+                *discarded = discarded
+                    .take()
+                    .or_else(|| self.discard(H264Error::Interrupted));
             }
             28 => {
                 let fu = *payload.get(1).ok_or(H264Error::Malformed)?;
@@ -351,18 +422,34 @@ impl H264Depacketizer {
                     bytes.push(nal_header);
                     let mut sources = Vec::new();
                     reserve(&mut sources, 1, self.limits.max_fragment_packets)?;
-                    *discarded = discarded.take().or_else(|| self.discard(H264Error::Interrupted));
-                    self.pending = Some(NalUnit { key: self.key, timestamp: packet.timestamp(), bytes, sources, marker: false, started_ns: now_ns, first_sequence: sequence });
+                    *discarded = discarded
+                        .take()
+                        .or_else(|| self.discard(H264Error::Interrupted));
+                    self.pending = Some(NalUnit {
+                        key: self.key,
+                        timestamp: packet.timestamp(),
+                        bytes,
+                        sources,
+                        marker: false,
+                        started_ns: now_ns,
+                        first_sequence: sequence,
+                    });
                 }
                 let nal = self.pending.as_mut().ok_or(H264Error::MissingStart)?;
                 if nal.timestamp != packet.timestamp() || nal.bytes[0] != nal_header {
                     return Err(H264Error::FragmentMismatch);
                 }
                 let begin = nal.bytes.len();
-                let needed = begin.checked_add(payload.len() - 2).ok_or(H264Error::Limit)?;
+                let needed = begin
+                    .checked_add(payload.len() - 2)
+                    .ok_or(H264Error::Limit)?;
                 reserve(&mut nal.bytes, needed, self.limits.max_nal_bytes)?;
                 let source_count = nal.sources.len() + 1;
-                reserve(&mut nal.sources, source_count, self.limits.max_fragment_packets)?;
+                reserve(
+                    &mut nal.sources,
+                    source_count,
+                    self.limits.max_fragment_packets,
+                )?;
                 let wire = packet.payload_range().start;
                 nal.bytes.extend_from_slice(&payload[2..]);
                 nal.sources.push(NalSourceSpan {
@@ -380,22 +467,46 @@ impl H264Depacketizer {
             _ => return Err(H264Error::Unsupported),
         }
         Ok(H264Output {
-            status: if nals.is_empty() { H264Status::FragmentPending } else { H264Status::Complete },
+            status: if nals.is_empty() {
+                H264Status::FragmentPending
+            } else {
+                H264Status::Complete
+            },
             nals,
             gap_before: false,
             discarded: None,
         })
     }
 
-    fn copy_nal(&self, sequence: u64, packet: RtpPacket<'_>, range: Range<usize>, now_ns: u64, marker: bool) -> Result<NalUnit, H264Error> {
+    fn copy_nal(
+        &self,
+        sequence: u64,
+        packet: RtpPacket<'_>,
+        range: Range<usize>,
+        now_ns: u64,
+        marker: bool,
+    ) -> Result<NalUnit, H264Error> {
         let mut bytes = Vec::new();
         reserve(&mut bytes, range.len(), self.limits.max_nal_bytes)?;
         bytes.extend_from_slice(&packet.payload()[range.clone()]);
         let mut sources = Vec::new();
         reserve(&mut sources, 1, self.limits.max_fragment_packets)?;
         let wire = packet.payload_range().start;
-        sources.push(NalSourceSpan { sequence, wire_range: wire + range.start..wire + range.end, nal_range: 0..bytes.len(), fragment_header_range: None });
-        Ok(NalUnit { key: self.key, timestamp: packet.timestamp(), bytes, sources, marker, started_ns: now_ns, first_sequence: sequence })
+        sources.push(NalSourceSpan {
+            sequence,
+            wire_range: wire + range.start..wire + range.end,
+            nal_range: 0..bytes.len(),
+            fragment_header_range: None,
+        });
+        Ok(NalUnit {
+            key: self.key,
+            timestamp: packet.timestamp(),
+            bytes,
+            sources,
+            marker,
+            started_ns: now_ns,
+            first_sequence: sequence,
+        })
     }
 }
 
@@ -405,7 +516,9 @@ fn reserve<T>(buffer: &mut Vec<T>, needed: usize, ceiling: usize) -> Result<(), 
     }
     if needed > buffer.capacity() {
         let target = needed.saturating_mul(2).min(ceiling);
-        buffer.try_reserve_exact(target - buffer.len()).map_err(|_| H264Error::Allocation)?;
+        buffer
+            .try_reserve_exact(target - buffer.len())
+            .map_err(|_| H264Error::Allocation)?;
     }
     Ok(())
 }
@@ -418,13 +531,21 @@ fn validate_stap(payload: &[u8], limits: H264Limits) -> Result<usize, H264Error>
         if count == limits.max_packet_nals {
             return Err(H264Error::Limit);
         }
-        let pair = payload.get(offset..offset + 2).ok_or(H264Error::Malformed)?;
+        let pair = payload
+            .get(offset..offset + 2)
+            .ok_or(H264Error::Malformed)?;
         let length = usize::from(u16::from_be_bytes([pair[0], pair[1]]));
         offset += 2;
         if length == 0 || length > limits.max_nal_bytes {
-            return Err(if length == 0 { H264Error::Malformed } else { H264Error::Limit });
+            return Err(if length == 0 {
+                H264Error::Malformed
+            } else {
+                H264Error::Limit
+            });
         }
-        let bytes = payload.get(offset..offset + length).ok_or(H264Error::Malformed)?;
+        let bytes = payload
+            .get(offset..offset + length)
+            .ok_or(H264Error::Malformed)?;
         if bytes[0] & 0x80 != 0 {
             return Err(H264Error::Corrupt);
         }

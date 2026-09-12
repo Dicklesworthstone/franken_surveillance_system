@@ -340,11 +340,7 @@ fn validate_packet(packet: RtcpPacket<'_>, sender: Option<u32>) -> Result<bool, 
     Ok(false)
 }
 
-fn validate_sdes(
-    body: &[u8],
-    count: usize,
-    sender: Option<u32>,
-) -> Result<bool, PacketError> {
+fn validate_sdes(body: &[u8], count: usize, sender: Option<u32>) -> Result<bool, PacketError> {
     let mut offset = 0;
     let mut cname = false;
     for _ in 0..count {

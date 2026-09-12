@@ -92,7 +92,10 @@ pub struct SequenceObservation {
 impl SequenceObservation {
     /// Whether this is a new, sequence-validated packet rather than a duplicate or refusal.
     pub fn is_unique(self) -> bool {
-        matches!(self.class, SequenceClass::Baseline | SequenceClass::Advanced | SequenceClass::Reordered)
+        matches!(
+            self.class,
+            SequenceClass::Baseline | SequenceClass::Advanced | SequenceClass::Reordered
+        )
     }
 }
 
@@ -169,7 +172,11 @@ impl SequenceTracker {
     }
 
     fn observation(&self, class: SequenceClass, sequence: Option<u64>) -> SequenceObservation {
-        SequenceObservation { class, extended_sequence: sequence, stats: self.stats }
+        SequenceObservation {
+            class,
+            extended_sequence: sequence,
+            stats: self.stats,
+        }
     }
 
     fn advance(&mut self, sequence: u16) -> Result<SequenceObservation, ContinuityError> {
@@ -185,13 +192,25 @@ impl SequenceTracker {
             self.base = Some(extended);
             self.highest = extended;
             self.seen = 1;
-            self.stats = SequenceStats { expected: 1, received: 1, unique: 1, missing: 0 };
+            self.stats = SequenceStats {
+                expected: 1,
+                received: 1,
+                unique: 1,
+                missing: 0,
+            };
             return Ok(self.observation(SequenceClass::Baseline, Some(extended)));
         };
         let forward = sequence.wrapping_sub(self.highest as u16);
         let (class, extended) = if forward != 0 && forward < 3_000 {
-            let extended = self.highest.checked_add(u64::from(forward)).ok_or(ContinuityError::Exhausted)?;
-            self.seen = if forward >= 128 { 1 } else { (self.seen << forward) | 1 };
+            let extended = self
+                .highest
+                .checked_add(u64::from(forward))
+                .ok_or(ContinuityError::Exhausted)?;
+            self.seen = if forward >= 128 {
+                1
+            } else {
+                (self.seen << forward) | 1
+            };
             self.highest = extended;
             self.bad_next = None;
             (SequenceClass::Advanced, extended)
@@ -204,7 +223,11 @@ impl SequenceTracker {
                 return Ok(self.observation(SequenceClass::BeforeBaseline, None));
             }
             let mask = 1_u128 << behind;
-            let class = if self.seen & mask != 0 { SequenceClass::Duplicate } else { SequenceClass::Reordered };
+            let class = if self.seen & mask != 0 {
+                SequenceClass::Duplicate
+            } else {
+                SequenceClass::Reordered
+            };
             self.seen |= mask;
             self.bad_next = None;
             (class, extended)
@@ -216,10 +239,22 @@ impl SequenceTracker {
             self.bad_next = Some(sequence.wrapping_add(1));
             return Ok(self.observation(SequenceClass::DiscontinuitySuspected, None));
         };
-        self.stats.expected = self.highest.checked_sub(base).and_then(|n| n.checked_add(1)).ok_or(ContinuityError::Exhausted)?;
-        self.stats.received = self.stats.received.checked_add(1).ok_or(ContinuityError::Exhausted)?;
+        self.stats.expected = self
+            .highest
+            .checked_sub(base)
+            .and_then(|n| n.checked_add(1))
+            .ok_or(ContinuityError::Exhausted)?;
+        self.stats.received = self
+            .stats
+            .received
+            .checked_add(1)
+            .ok_or(ContinuityError::Exhausted)?;
         if class != SequenceClass::Duplicate {
-            self.stats.unique = self.stats.unique.checked_add(1).ok_or(ContinuityError::Exhausted)?;
+            self.stats.unique = self
+                .stats
+                .unique
+                .checked_add(1)
+                .ok_or(ContinuityError::Exhausted)?;
         }
         self.stats.missing = self.stats.expected - self.stats.unique;
         Ok(self.observation(class, Some(extended)))

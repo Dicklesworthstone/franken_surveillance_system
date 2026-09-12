@@ -67,7 +67,10 @@ fn empty_payload_and_zero_word_extension_are_valid() -> TestResult {
     bytes[0] = 0x90;
     let packet = RtpPacket::parse(&bytes, PacketLimits::default())?;
     assert!(packet.payload().is_empty());
-    assert_eq!(packet.extension().ok_or("missing extension")?.bytes.len(), 0);
+    assert_eq!(
+        packet.extension().ok_or("missing extension")?.bytes.len(),
+        0
+    );
     Ok(())
 }
 
@@ -76,46 +79,89 @@ fn padding_cannot_consume_header_or_extension() {
     for padding in [0, 2, 255] {
         let mut bytes = rtp(&[padding]);
         bytes[0] |= 0x20;
-        assert_eq!(RtpPacket::parse(&bytes, PacketLimits::default()), Err(PacketError::Padding));
+        assert_eq!(
+            RtpPacket::parse(&bytes, PacketLimits::default()),
+            Err(PacketError::Padding)
+        );
     }
 }
 
 #[test]
 fn fixed_header_and_extension_limits_fail_closed() {
     for length in 0..12 {
-        assert_eq!(RtpPacket::parse(&[0; 12][..length], PacketLimits::default()), Err(PacketError::Truncated));
+        assert_eq!(
+            RtpPacket::parse(&[0; 12][..length], PacketLimits::default()),
+            Err(PacketError::Truncated)
+        );
     }
     let mut bytes = rtp(&[]);
     bytes[0] = 0x40;
-    assert_eq!(RtpPacket::parse(&bytes, PacketLimits::default()), Err(PacketError::Version));
+    assert_eq!(
+        RtpPacket::parse(&bytes, PacketLimits::default()),
+        Err(PacketError::Version)
+    );
     bytes[0] = 0x90;
     bytes.extend_from_slice(&[0, 0, 0xff, 0xff]);
-    assert_eq!(RtpPacket::parse(&bytes, PacketLimits::default()), Err(PacketError::ExtensionLimit));
-    let limits = PacketLimits { max_packet_bytes: 12, ..PacketLimits::default() };
-    assert_eq!(RtpPacket::parse(&bytes, limits), Err(PacketError::ByteLimit));
-    let limits = PacketLimits { max_rtcp_packets: 0, ..PacketLimits::default() };
-    assert_eq!(RtpPacket::parse(&bytes, limits), Err(PacketError::InvalidLimits));
+    assert_eq!(
+        RtpPacket::parse(&bytes, PacketLimits::default()),
+        Err(PacketError::ExtensionLimit)
+    );
+    let limits = PacketLimits {
+        max_packet_bytes: 12,
+        ..PacketLimits::default()
+    };
+    assert_eq!(
+        RtpPacket::parse(&bytes, limits),
+        Err(PacketError::ByteLimit)
+    );
+    let limits = PacketLimits {
+        max_rtcp_packets: 0,
+        ..PacketLimits::default()
+    };
+    assert_eq!(
+        RtpPacket::parse(&bytes, limits),
+        Err(PacketError::InvalidLimits)
+    );
 }
 
 #[test]
 fn conventional_rtcp_requires_matching_cname() -> TestResult {
     let mut bytes = rr(7);
-    assert_eq!(RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::Compound), Err(PacketError::Compound));
+    assert_eq!(
+        RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::Compound),
+        Err(PacketError::Compound)
+    );
     assert!(RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize).is_ok());
     bytes.extend_from_slice(&sdes(8));
-    assert_eq!(RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::Compound), Err(PacketError::Compound));
+    assert_eq!(
+        RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::Compound),
+        Err(PacketError::Compound)
+    );
     bytes.extend_from_slice(&sdes(7));
     let compound = RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::Compound)?;
     assert_eq!(compound.packet_count(), 3);
     assert_eq!(compound.packets().len(), 3);
-    assert_eq!(compound.packets().map(|p| p.packet_type()).collect::<Vec<_>>(), [201, 202, 202]);
+    assert_eq!(
+        compound
+            .packets()
+            .map(|p| p.packet_type())
+            .collect::<Vec<_>>(),
+        [201, 202, 202]
+    );
     Ok(())
 }
 
 #[test]
 fn sender_report_preserves_mapping_and_counter_wrap() -> TestResult {
     let mut bytes = vec![0x80, 200, 0, 6];
-    for word in [7_u32, 0xffff_ffff, 0x8000_1234, 0xffff_fff0, 0xffff_fffe, 1234] {
+    for word in [
+        7_u32,
+        0xffff_ffff,
+        0x8000_1234,
+        0xffff_fff0,
+        0xffff_fffe,
+        1234,
+    ] {
         bytes.extend_from_slice(&word.to_be_bytes());
     }
     let compound = RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize)?;
@@ -132,7 +178,12 @@ fn sender_report_preserves_mapping_and_counter_wrap() -> TestResult {
 
 #[test]
 fn reception_report_sign_extends_loss_and_preserves_extensions() -> TestResult {
-    for (wire, expected) in [(0x00_0001_u32, 1), (0x7f_ffff, 8_388_607), (0x80_0000, -8_388_608), (0xff_ffff, -1)] {
+    for (wire, expected) in [
+        (0x00_0001_u32, 1),
+        (0x7f_ffff, 8_388_607),
+        (0x80_0000, -8_388_608),
+        (0xff_ffff, -1),
+    ] {
         let mut bytes = vec![0x81, 201, 0, 8];
         bytes.extend_from_slice(&7_u32.to_be_bytes());
         bytes.extend_from_slice(&99_u32.to_be_bytes());
@@ -161,10 +212,16 @@ fn reception_report_sign_extends_loss_and_preserves_extensions() -> TestResult {
 fn malformed_suffix_never_returns_a_valid_report_prefix() {
     let mut bytes = rr(7);
     bytes.extend_from_slice(&[0x80, 200, 0, 6]);
-    assert_eq!(RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize), Err(PacketError::Truncated));
+    assert_eq!(
+        RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize),
+        Err(PacketError::Truncated)
+    );
     bytes = rr(7);
     bytes[0] |= 1;
-    assert_eq!(RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize), Err(PacketError::Report));
+    assert_eq!(
+        RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize),
+        Err(PacketError::Report)
+    );
 }
 
 #[test]
@@ -174,13 +231,22 @@ fn rtcp_padding_only_belongs_to_last_packet() -> TestResult {
     padded[3] = 2;
     padded.extend_from_slice(&[0, 0, 0, 4]);
     let parsed = RtcpCompound::parse(&padded, PacketLimits::default(), RtcpMode::ReducedSize)?;
-    assert_eq!(parsed.packets().next().ok_or("missing packet")?.body(), 7_u32.to_be_bytes());
+    assert_eq!(
+        parsed.packets().next().ok_or("missing packet")?.body(),
+        7_u32.to_be_bytes()
+    );
     let mut bytes = padded.clone();
     bytes.extend_from_slice(&rr(8));
-    assert_eq!(RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize), Err(PacketError::Padding));
+    assert_eq!(
+        RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize),
+        Err(PacketError::Padding)
+    );
     for padding in [0, 1, 3, 12] {
         padded[11] = padding;
-        assert_eq!(RtcpCompound::parse(&padded, PacketLimits::default(), RtcpMode::ReducedSize), Err(PacketError::Padding));
+        assert_eq!(
+            RtcpCompound::parse(&padded, PacketLimits::default(), RtcpMode::ReducedSize),
+            Err(PacketError::Padding)
+        );
     }
     Ok(())
 }
@@ -190,7 +256,9 @@ fn source_description_must_terminate_and_match_chunk_count() {
     for (index, value) in [(0, 0x82), (9, 200), (13, 2), (15, 1)] {
         let mut bytes = sdes(7);
         bytes[index] = value;
-        assert!(RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize).is_err());
+        assert!(
+            RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize).is_err()
+        );
     }
 }
 
@@ -200,10 +268,16 @@ fn goodbye_reason_and_application_minima_are_checked() -> TestResult {
     assert!(RtcpCompound::parse(&bytes, PacketLimits::default(), RtcpMode::ReducedSize).is_ok());
     let mut bad = bytes;
     bad[8] = 4;
-    assert_eq!(RtcpCompound::parse(&bad, PacketLimits::default(), RtcpMode::ReducedSize), Err(PacketError::Goodbye));
+    assert_eq!(
+        RtcpCompound::parse(&bad, PacketLimits::default(), RtcpMode::ReducedSize),
+        Err(PacketError::Goodbye)
+    );
     let mut app = rr(7);
     app[1] = 204;
-    assert_eq!(RtcpCompound::parse(&app, PacketLimits::default(), RtcpMode::ReducedSize), Err(PacketError::Application));
+    assert_eq!(
+        RtcpCompound::parse(&app, PacketLimits::default(), RtcpMode::ReducedSize),
+        Err(PacketError::Application)
+    );
     app[3] = 2;
     app.extend_from_slice(b"FSS1");
     assert!(RtcpCompound::parse(&app, PacketLimits::default(), RtcpMode::ReducedSize).is_ok());
@@ -220,8 +294,14 @@ fn unknown_types_stay_opaque_and_counts_are_bounded() -> TestResult {
     assert_eq!(packet.body(), [1, 2, 3, 4]);
     let mut doubled = bytes.to_vec();
     doubled.extend_from_slice(&bytes);
-    let limits = PacketLimits { max_rtcp_packets: 1, ..PacketLimits::default() };
-    assert_eq!(RtcpCompound::parse(&doubled, limits, RtcpMode::ReducedSize), Err(PacketError::PacketCount));
+    let limits = PacketLimits {
+        max_rtcp_packets: 1,
+        ..PacketLimits::default()
+    };
+    assert_eq!(
+        RtcpCompound::parse(&doubled, limits, RtcpMode::ReducedSize),
+        Err(PacketError::PacketCount)
+    );
     Ok(())
 }
 
@@ -259,7 +339,13 @@ fn deterministic_hostile_corpus_never_panics_or_exposes_out_of_bounds_spans() {
             for mode in [RtcpMode::Compound, RtcpMode::ReducedSize] {
                 if let Ok(compound) = RtcpCompound::parse(&bytes, PacketLimits::default(), mode) {
                     assert_eq!(compound.packets().count(), compound.packet_count());
-                    assert_eq!(compound.packets().map(|p| p.wire_bytes().len()).sum::<usize>(), bytes.len());
+                    assert_eq!(
+                        compound
+                            .packets()
+                            .map(|p| p.wire_bytes().len())
+                            .sum::<usize>(),
+                        bytes.len()
+                    );
                     for packet in compound.packets() {
                         let _ = packet.sender_report();
                         let _ = packet.report_blocks().collect::<Vec<_>>();

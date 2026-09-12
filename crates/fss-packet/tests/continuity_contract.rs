@@ -2,15 +2,22 @@
 //! Sequence, generation, loss, and conservative clock contracts.
 
 use fss_packet::{
-    ContinuityError, JitterEstimator, NtpTimestamp, PacketLimits, RtpPacket,
-    SenderReport, SenderReportClock, SequenceClass, SequenceObservation, SequenceTracker,
-    StreamKey, arrival_ticks,
+    ContinuityError, JitterEstimator, NtpTimestamp, PacketLimits, RtpPacket, SenderReport,
+    SenderReportClock, SequenceClass, SequenceObservation, SequenceTracker, StreamKey,
+    arrival_ticks,
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-const KEY: StreamKey = StreamKey { ingress: 1, generation: 1, ssrc: 7 };
+const KEY: StreamKey = StreamKey {
+    ingress: 1,
+    generation: 1,
+    ssrc: 7,
+};
 
-fn observe(tracker: &mut SequenceTracker, sequence: u16) -> Result<SequenceObservation, Box<dyn std::error::Error>> {
+fn observe(
+    tracker: &mut SequenceTracker,
+    sequence: u16,
+) -> Result<SequenceObservation, Box<dyn std::error::Error>> {
     let [hi, lo] = sequence.to_be_bytes();
     let bytes = [0x80, 96, hi, lo, 0, 0, 0, 0, 0, 0, 0, 7];
     Ok(tracker.observe(KEY, RtpPacket::parse(&bytes, PacketLimits::default())?)?)
@@ -53,7 +60,10 @@ fn wrap_reorder_and_duplicates_do_not_fabricate_recovered_loss() -> TestResult {
     assert_eq!(duplicate.stats.missing, 1);
     let late = observe(&mut tracker, 0)?;
     assert_eq!(late.stats.missing, 0);
-    assert_eq!(observe(&mut tracker, 65_533)?.class, SequenceClass::BeforeBaseline);
+    assert_eq!(
+        observe(&mut tracker, 65_533)?.class,
+        SequenceClass::BeforeBaseline
+    );
     Ok(())
 }
 
@@ -65,7 +75,10 @@ fn reordering_bitmap_never_aliases_a_new_cycle_or_old_position() -> TestResult {
     observe(&mut tracker, 200)?;
     assert_eq!(observe(&mut tracker, 73)?.class, SequenceClass::Reordered);
     assert_eq!(observe(&mut tracker, 73)?.class, SequenceClass::Duplicate);
-    assert_eq!(observe(&mut tracker, 72)?.class, SequenceClass::DiscontinuitySuspected);
+    assert_eq!(
+        observe(&mut tracker, 72)?.class,
+        SequenceClass::DiscontinuitySuspected
+    );
     assert_eq!(observe(&mut tracker, 201)?.class, SequenceClass::Advanced);
     for extended in 202..=150_000_u64 {
         let observation = observe(&mut tracker, extended as u16)?;
@@ -82,12 +95,27 @@ fn source_restart_requires_new_epoch_and_never_resets_old_statistics() -> TestRe
     observe(&mut tracker, 10)?;
     observe(&mut tracker, 11)?;
     let stats = tracker.stats();
-    assert_eq!(observe(&mut tracker, 20_000)?.class, SequenceClass::DiscontinuitySuspected);
-    assert_eq!(observe(&mut tracker, 20_001)?.class, SequenceClass::RestartRequired);
-    assert_eq!(observe(&mut tracker, 12)?.class, SequenceClass::RestartRequired);
+    assert_eq!(
+        observe(&mut tracker, 20_000)?.class,
+        SequenceClass::DiscontinuitySuspected
+    );
+    assert_eq!(
+        observe(&mut tracker, 20_001)?.class,
+        SequenceClass::RestartRequired
+    );
+    assert_eq!(
+        observe(&mut tracker, 12)?.class,
+        SequenceClass::RestartRequired
+    );
     assert_eq!(tracker.stats(), stats);
-    assert_eq!(tracker.restart(KEY, 96), Err(ContinuityError::GenerationRequired));
-    let new_key = StreamKey { generation: 2, ..KEY };
+    assert_eq!(
+        tracker.restart(KEY, 96),
+        Err(ContinuityError::GenerationRequired)
+    );
+    let new_key = StreamKey {
+        generation: 2,
+        ..KEY
+    };
     let fresh = tracker.restart(new_key, 96)?;
     assert_eq!(fresh.stats().received, 0);
     Ok(())
@@ -99,15 +127,27 @@ fn generation_ssrc_and_payload_mismatch_leave_state_unchanged() -> TestResult {
     let before = tracker.clone();
     let mut bytes = [0x80, 96, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7];
     let packet = RtpPacket::parse(&bytes, PacketLimits::default())?;
-    let other = StreamKey { generation: 2, ..KEY };
-    assert_eq!(tracker.observe(other, packet), Err(ContinuityError::StreamMismatch));
+    let other = StreamKey {
+        generation: 2,
+        ..KEY
+    };
+    assert_eq!(
+        tracker.observe(other, packet),
+        Err(ContinuityError::StreamMismatch)
+    );
     bytes[11] = 8;
     let packet = RtpPacket::parse(&bytes, PacketLimits::default())?;
-    assert_eq!(tracker.observe(KEY, packet), Err(ContinuityError::StreamMismatch));
+    assert_eq!(
+        tracker.observe(KEY, packet),
+        Err(ContinuityError::StreamMismatch)
+    );
     bytes[11] = 7;
     bytes[1] = 97;
     let packet = RtpPacket::parse(&bytes, PacketLimits::default())?;
-    assert_eq!(tracker.observe(KEY, packet), Err(ContinuityError::PayloadType));
+    assert_eq!(
+        tracker.observe(KEY, packet),
+        Err(ContinuityError::PayloadType)
+    );
     assert_eq!(tracker, before);
     Ok(())
 }
@@ -138,8 +178,14 @@ fn ambiguous_or_reversed_clocks_refuse_atomically() -> TestResult {
     jitter.observe(100, 20)?;
     let before = jitter;
     assert_eq!(jitter.observe(99, 21), Err(ContinuityError::ClockReversed));
-    assert_eq!(jitter.observe(101, 0x8000_0014), Err(ContinuityError::ClockAmbiguous));
-    assert_eq!(jitter.observe(100 + 0x8000_0000, 21), Err(ContinuityError::ClockAmbiguous));
+    assert_eq!(
+        jitter.observe(101, 0x8000_0014),
+        Err(ContinuityError::ClockAmbiguous)
+    );
+    assert_eq!(
+        jitter.observe(100 + 0x8000_0000, 21),
+        Err(ContinuityError::ClockAmbiguous)
+    );
     assert_eq!(jitter, before);
     Ok(())
 }
@@ -147,7 +193,10 @@ fn ambiguous_or_reversed_clocks_refuse_atomically() -> TestResult {
 fn report() -> SenderReport {
     SenderReport {
         ssrc: 7,
-        ntp: NtpTimestamp { seconds: 100, fraction: 0 },
+        ntp: NtpTimestamp {
+            seconds: 100,
+            fraction: 0,
+        },
         rtp_timestamp: 0xffff_fff0,
         packet_count: 2,
         octet_count: 10,
@@ -165,11 +214,26 @@ fn sender_clock_mapping_is_conservative_bidirectional_and_epoch_bound() -> TestR
     assert_eq!(past.latest_ntp_ns, 99_999_988_900);
     assert_eq!(clock.report_delay(2_000_000_000)?, (100 << 16, 65_536));
     assert_eq!(clock.report_delay(0), Err(ContinuityError::ClockReversed));
-    assert_eq!(clock.report_delay(u64::MAX), Err(ContinuityError::ClockAmbiguous));
-    let other = StreamKey { generation: 2, ..KEY };
-    assert_eq!(clock.estimate(other, 16), Err(ContinuityError::StreamMismatch));
-    assert_eq!(clock.estimate(KEY, 0x7fff_fff0), Err(ContinuityError::ClockAmbiguous));
-    assert_eq!(clock.estimate(KEY, 100_000), Err(ContinuityError::ClockAmbiguous));
+    assert_eq!(
+        clock.report_delay(u64::MAX),
+        Err(ContinuityError::ClockAmbiguous)
+    );
+    let other = StreamKey {
+        generation: 2,
+        ..KEY
+    };
+    assert_eq!(
+        clock.estimate(other, 16),
+        Err(ContinuityError::StreamMismatch)
+    );
+    assert_eq!(
+        clock.estimate(KEY, 0x7fff_fff0),
+        Err(ContinuityError::ClockAmbiguous)
+    );
+    assert_eq!(
+        clock.estimate(KEY, 100_000),
+        Err(ContinuityError::ClockAmbiguous)
+    );
     Ok(())
 }
 

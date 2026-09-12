@@ -14,8 +14,8 @@ mod timing;
 
 pub use error::{PacketError, PacketLimits};
 pub use rtcp::{
-    NtpTimestamp, ReceptionReport, ReportBlocks, RtcpCompound, RtcpMode, RtcpPacket,
-    RtcpPackets, SenderReport,
+    NtpTimestamp, ReceptionReport, ReportBlocks, RtcpCompound, RtcpMode, RtcpPacket, RtcpPackets,
+    SenderReport,
 };
 pub use rtp::{HeaderExtension, RtpPacket};
 
@@ -25,6 +25,6 @@ pub use continuity::{
 pub use timing::{JitterEstimator, SenderReportClock, SenderTimeEstimate, arrival_ticks};
 
 pub use h264::{
-    FragmentDiscard, H264Depacketizer, H264Error, H264Failure, H264Limits, H264Mode,
-    H264Output, H264Status, NalSourceSpan, NalUnit,
+    FragmentDiscard, H264Depacketizer, H264Error, H264Failure, H264Limits, H264Mode, H264Output,
+    H264Status, NalSourceSpan, NalUnit,
 };

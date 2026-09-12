@@ -19,7 +19,9 @@ impl JitterEstimator {
     /// Observe arrivals in arrival order, including accepted duplicates/reordered packets.
     pub fn observe(&mut self, arrival_ticks: u64, timestamp: u32) -> Result<u32, ContinuityError> {
         if let Some((previous_arrival, previous_timestamp)) = self.previous {
-            let arrival_delta = arrival_ticks.checked_sub(previous_arrival).ok_or(ContinuityError::ClockReversed)?;
+            let arrival_delta = arrival_ticks
+                .checked_sub(previous_arrival)
+                .ok_or(ContinuityError::ClockReversed)?;
             let raw_delta = timestamp.wrapping_sub(previous_timestamp);
             if arrival_delta >= 0x8000_0000 || raw_delta == 0x8000_0000 {
                 return Err(ContinuityError::ClockAmbiguous);
@@ -73,8 +75,12 @@ impl SenderReportClock {
         uncertainty_ns: u64,
         max_distance_ticks: u32,
     ) -> Result<Self, ContinuityError> {
-        if key.ingress == 0 || key.generation == 0 || rate == 0 || rate > 1_000_000_000
-            || max_distance_ticks == 0 || max_distance_ticks >= 0x8000_0000
+        if key.ingress == 0
+            || key.generation == 0
+            || rate == 0
+            || rate > 1_000_000_000
+            || max_distance_ticks == 0
+            || max_distance_ticks >= 0x8000_0000
         {
             return Err(ContinuityError::Configuration);
         }
@@ -84,14 +90,25 @@ impl SenderReportClock {
         if report.ntp.seconds == 0 && report.ntp.fraction == 0 {
             return Err(ContinuityError::NoSenderReport);
         }
-        Ok(Self { key, rate, report, received_ns, uncertainty_ns, max_distance_ticks })
+        Ok(Self {
+            key,
+            rate,
+            report,
+            received_ns,
+            uncertainty_ns,
+            max_distance_ticks,
+        })
     }
 
     /// Map a nearby timestamp to a conservative sender assertion, not physical capture truth.
     ///
     /// The owner must include drift/measurement uncertainty in `uncertainty_ns` and choose
     /// a distance ceiling justified by its clock model. Unsupported extrapolation is refused.
-    pub fn estimate(&self, key: StreamKey, timestamp: u32) -> Result<SenderTimeEstimate, ContinuityError> {
+    pub fn estimate(
+        &self,
+        key: StreamKey,
+        timestamp: u32,
+    ) -> Result<SenderTimeEstimate, ContinuityError> {
         if key != self.key {
             return Err(ContinuityError::StreamMismatch);
         }
@@ -104,7 +121,8 @@ impl SenderReportClock {
             return Err(ContinuityError::ClockAmbiguous);
         }
         let fraction = i128::from(self.report.ntp.fraction) * 1_000_000_000;
-        let ntp_floor = i128::from(self.report.ntp.seconds) * 1_000_000_000 + fraction / (1_i128 << 32);
+        let ntp_floor =
+            i128::from(self.report.ntp.seconds) * 1_000_000_000 + fraction / (1_i128 << 32);
         let numerator = i128::from(delta) * 1_000_000_000;
         let rate = i128::from(self.rate);
         let offset_floor = numerator.div_euclid(rate);
@@ -118,7 +136,9 @@ impl SenderReportClock {
 
     /// LSR and DLSR fields for a later report, refusing unrepresentable elapsed time.
     pub fn report_delay(&self, now_ns: u64) -> Result<(u32, u32), ContinuityError> {
-        let elapsed = now_ns.checked_sub(self.received_ns).ok_or(ContinuityError::ClockReversed)?;
+        let elapsed = now_ns
+            .checked_sub(self.received_ns)
+            .ok_or(ContinuityError::ClockReversed)?;
         let delay = u128::from(elapsed) * 65_536 / 1_000_000_000;
         let delay = u32::try_from(delay).map_err(|_| ContinuityError::ClockAmbiguous)?;
         Ok((self.report.ntp.middle_32(), delay))
