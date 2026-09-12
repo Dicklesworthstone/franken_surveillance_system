@@ -696,8 +696,12 @@ impl Expected {
         Ok(expected)
     }
 
-    const fn root_temp_orphaned(&self) -> bool {
+    const fn root_temp_on_disk(&self) -> bool {
         self.root_temp_created && !self.root_temp_removed
+    }
+
+    const fn root_temp_orphaned(&self) -> bool {
+        self.root_temp_created && !self.root_renamed
     }
 
     const fn incomplete_tail(&self) -> bool {
@@ -1020,7 +1024,7 @@ fn crash_and_recover(
     );
     assert_eq!(
         post_crash.contains_key(&temp_key),
-        expected.root_temp_orphaned(),
+        expected.root_temp_on_disk(),
         "step {step}: root temporary record"
     );
     let raw_journal = if journal.exists() {
