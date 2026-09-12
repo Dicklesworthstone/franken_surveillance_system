@@ -104,6 +104,7 @@ ERR_SLO_TARGET_UNBOUND = "ERR-CLAIM-SLO-TARGET-UNBOUND-001"
 ERR_SLO_COMPARATOR_OVERRIDE = "ERR-CLAIM-SLO-COMPARATOR-OVERRIDE-001"
 ERR_SLO_ACTUAL_INVALID = "ERR-CLAIM-SLO-ACTUAL-INVALID-001"
 ERR_SLO_GENERATION_UNBOUND = "ERR-CLAIM-SLO-GENERATION-UNBOUND-001"
+ERR_SLO_FRESHNESS_UNSET = "ERR-CLAIM-SLO-FRESHNESS-BOUND-UNSET-001"
 ERR_SLO_WINDOW_INVALID = "ERR-CLAIM-SLO-WINDOW-INVALID-001"
 ERR_SLO_MEASUREMENT_NOT_PASSED = "ERR-CLAIM-SLO-MEASUREMENT-NOT-PASSED-001"
 ERR_SLO_ENVIRONMENT_UNRETAINED = "ERR-CLAIM-SLO-ENVIRONMENT-UNRETAINED-001"
@@ -170,6 +171,10 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_CLAIM_MISSING_FIELD: {
         "trigger": "A claim class entry in the registry is missing required normative fields (id, meaning, minimum_evidence, requiredEvidence) or a table row lacks required columns",
         "remediation": "Provide all required normative fields for each claim class row in both JSON and Markdown",
+    },
+    ERR_SLO_FRESHNESS_UNSET: {
+        "trigger": "The operation-cost row of an 'slo' measurement declares no measurement_max_age_days, so the measurement freshness bound is unset and staleness cannot be decided",
+        "remediation": "A user decision: set measurement_max_age_days on the operation's row in architecture/operation_cost_registry.toml; the checker never assumes a default",
     },
     ERR_CLAIM_ASSUMPTIONS_MISSING: {
         "trigger": "A promoted 'proof' or 'bounded_model' claim declares no assumptions, or an assumption lacks a non-empty 'id' and 'statement', or an assumption id is duplicated",
@@ -410,9 +415,14 @@ SLO_REGISTRY_FILE = "registries/SLOS.md"
 OPERATION_COST_REGISTRY_FILE = "architecture/operation_cost_registry.toml"
 SLO_MEASUREMENT_SCHEMA = "fss.slo_measurement.v1"
 SLO_ENVIRONMENT_SCHEMA = "fss.environment_manifest.v1"
-# No registry row declares a per-SLO staleness allowance, so one conservative bound applies to
-# every slo measurement window (evaluated against the injected evaluation instant).
-SLO_MEASUREMENT_MAX_AGE = timedelta(days=30)
+# The measurement freshness bound is a policy value the user sets per operation-cost row
+# (measurement_max_age_days); none is hard-coded here, and an unset bound fails closed.
+SLO_MAX_AGE_FIELD = "measurement_max_age_days"
+SLO_MAX_AGE_RANGE_DAYS = (1, 36500)
+# Words that negate a following comparator ('not > 1.5 s' is not '> 1.5 s').
+_SLO_NEGATION_WORDS: frozenset[str] = frozenset({"not", "no", "never", "non", "nor"})
+_SLO_COMPARATOR_TOKEN_RE = re.compile(r"\u2264|<=|\u2265|>=|<|>|=")
+_SLO_NUMBER_RE = re.compile(r"\s*(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)")
 # slo_validate findings that make the SLO target definitions themselves untrustworthy.
 SLO_STRUCTURAL_CODES: frozenset[str] = frozenset({
     slo_validate.CODE_INVALID_SLO_ID,
@@ -1036,7 +1046,7 @@ def load_operation_cost_registry(root: Path) -> tuple[CostRegistry | None, list[
         return None, findings
     try:
         data = tomllib.loads(text)
-    except tomllib.TOMLDecodeError as exc:
+    except (ValueError, OverflowError) as exc:  # TOMLDecodeError, or an integer beyond the digit limit
         return None, _registry_invalid(OPERATION_COST_REGISTRY_FILE, f"Registry '{OPERATION_COST_REGISTRY_FILE}' is not valid TOML: {exc}")
     generation = _nonempty_str(data.get("generation"))
     if generation is None:
@@ -1062,6 +1072,26 @@ def load_operation_cost_registry(root: Path) -> tuple[CostRegistry | None, list[
     return CostRegistry(generation=generation, operations=operations), []
 
 
+def _visible_markdown(text: str) -> str:
+    """Markdown as the claim-table scan (parse_markdown_tables) sees it: HTML comments removed
+    and fenced blocks blanked, so the SLO target parser and the claim scan agree on which rows
+    exist. A row inside <!-- --> or a code fence is never authoritative."""
+    visible = stable_id_audit._strip_html_comments(text)
+    lines: list[str] = []
+    fence: str | None = None
+    for line in visible.splitlines():
+        marker = line.strip()[:3]
+        if marker in ("```", "~~~"):
+            if fence is None:
+                fence = marker
+            elif fence == marker:
+                fence = None
+            lines.append("")
+            continue
+        lines.append("" if fence is not None else line)
+    return "\n".join(lines) + "\n"
+
+
 def load_slo_registry(root: Path) -> tuple[dict[str, slo_validate.SloRow], list[ClaimFinding]]:
     """Resolves the authoritative SLO rows through slo_validate.parse_slos (the one SLOS.md
     parser). Structural defects (IDs, duplicates, table shape, target grammar, tombstones,
@@ -1072,7 +1102,7 @@ def load_slo_registry(root: Path) -> tuple[dict[str, slo_validate.SloRow], list[
     if text is None:
         return {}, findings
     slo_findings: list[slo_validate.SloFinding] = []
-    rows = slo_validate.parse_slos(text, path, base, slo_findings)
+    rows = slo_validate.parse_slos(_visible_markdown(text), path, base, slo_findings)
     structural = [f for f in slo_findings if f.severity == "error" and f.code in SLO_STRUCTURAL_CODES]
     if structural:
         return {}, _registry_invalid(
@@ -1086,11 +1116,12 @@ def load_slo_registry(root: Path) -> tuple[dict[str, slo_validate.SloRow], list[
 
 def _slo_thresholds(target: str) -> list[SloThreshold]:
     """Every '<comparator> <number> <registered unit>' threshold in an SLO target cell. Units
-    are slo_validate.REGISTERED_UNITS, longest first, so 'ms' never reads as 's'."""
+    are slo_validate.REGISTERED_UNITS matched exactly as written (no case folding), longest
+    first, so 'ms' never reads as 's' and 'S' or 'MS' is no registered unit."""
     units = sorted(slo_validate.REGISTERED_UNITS, key=len, reverse=True)
     found: list[SloThreshold] = []
     for match in _SLO_THRESHOLD_RE.finditer(target):
-        rest = target[match.end():].lstrip().lower()
+        rest = target[match.end():].lstrip()
         unit = next(
             (u for u in units if rest.startswith(u) and (len(rest) == len(u) or not rest[len(u)].isalnum())),
             None,
@@ -1098,6 +1129,25 @@ def _slo_thresholds(target: str) -> list[SloThreshold]:
         if unit is not None:
             found.append(SloThreshold(_COMPARATOR_ALIASES[match.group(1)], float(match.group(2).replace(",", "")), unit))
     return found
+
+
+def _slo_target_defect(target: str) -> str | None:
+    """Why an SLO target's comparators cannot be read as thresholds: every comparator must be a
+    standalone token (start of cell or after whitespace), not negated by the preceding word, and
+    followed by a finite number. Anything else leaves the target unbound (review items 3, 4)."""
+    for match in _SLO_COMPARATOR_TOKEN_RE.finditer(target):
+        token, before = match.group(0), target[:match.start()]
+        if before and not before[-1].isspace():
+            return f"comparator '{token}' at offset {match.start()} is not a standalone token"
+        words = before.split()
+        if words and words[-1].casefold().strip(",;:") in _SLO_NEGATION_WORDS:
+            return f"comparator '{token}' is negated by '{words[-1]}'"
+        number = _SLO_NUMBER_RE.match(target, match.end())
+        if number is None:
+            return f"comparator '{token}' is not followed by a number"
+        if not math.isfinite(float(number.group(1).replace(",", ""))):
+            return f"threshold '{token} {number.group(1)[:24]}...' is not a finite number"
+    return None
 
 
 def _registry_claim_class(claim_id: Any, class_bindings: dict[str, str] | None = None) -> str | None:
@@ -1173,13 +1223,15 @@ def _scan_nan_inf_negative(obj: Any, path_str: str, location: str, findings: lis
 def _check_slo_window(
     meas: dict[str, Any],
     now: datetime,
+    max_age: timedelta | None,
     path_str: str,
     loc: str,
     params: dict[str, Any],
     findings: list[ClaimFinding],
 ) -> None:
     """The measurement window is a real validity interval: both ends zone-qualified ISO-8601,
-    finished strictly after started, not in the future, and no older than the allowed staleness."""
+    finished strictly after started, not in the future, and no older than the operation-cost
+    row's measurement_max_age_days (an unset bound is reported by the caller, never assumed)."""
     window = meas.get("measurement_window")
     if not isinstance(window, dict):
         findings.append(_finding(ERR_SLO_WINDOW_INVALID, path_str, f"{loc}.measurement_window",
@@ -1205,12 +1257,12 @@ def _check_slo_window(
             f"Measurement window ends at {finished_raw}, after the evaluation instant {now.isoformat()}",
             params,
         ))
-    elif now - finished > SLO_MEASUREMENT_MAX_AGE:
+    elif max_age is not None and now - finished > max_age:
         findings.append(_finding(
             ERR_STALE_GENERATION, path_str, f"{loc}.measurement_window",
-            f"Measurement window ended at {finished_raw}, older than the allowed staleness of "
-            f"{SLO_MEASUREMENT_MAX_AGE.days} days as of {now.isoformat()}",
-            {**params, "finished_at": finished_raw, "max_age_days": SLO_MEASUREMENT_MAX_AGE.days},
+            f"Measurement window ended at {finished_raw}, older than the registry's measurement_max_age_days "
+            f"of {max_age.days} days as of {now.isoformat()}",
+            {**params, "finished_at": finished_raw, "max_age_days": max_age.days},
         ))
 
 
@@ -1234,15 +1286,19 @@ def _resolve_slo_threshold(
     if row.is_tombstone:
         unbound(f"SLO '{claim_id}' is tombstoned; it has no active target")
         return None
+    defect = _slo_target_defect(row.target)
+    if defect is not None:
+        unbound(f"SLO '{claim_id}' target '{row.target[:120]}' cannot be read: {defect}")
+        return None
     thresholds = _slo_thresholds(row.target) if slo_validate.validate_target_units(row.target, False) else []
     if not thresholds:
         unbound(f"SLO '{claim_id}' target '{row.target}' declares no numeric threshold a measurement can establish")
         return None
-    unit = _nonempty_str(meas.get("unit"))
+    unit = _exact_text(meas.get("unit"))
     if unit is None:
-        unbound(f"Measurement declares no unit; SLO '{claim_id}' thresholds are in {sorted({t.unit for t in thresholds})}")
+        unbound(f"Measurement declares no exact unit (got {meas.get('unit')!r}); SLO '{claim_id}' thresholds are in {sorted({t.unit for t in thresholds})}")
         return None
-    matching = [t for t in thresholds if t.unit == unit.lower()]
+    matching = [t for t in thresholds if t.unit == unit]
     if len(matching) != 1:
         unbound(
             f"Measurement unit '{unit}' selects {len(matching)} thresholds of SLO '{claim_id}' target "
@@ -1267,7 +1323,8 @@ def _verify_slo_claim_evidence(
     - one retained, digest-bound fss.slo_measurement.v1 with status 'passed', bound to the
       claim's SLO id, a registered operation associated with that SLO, the bundle generation,
       and the operation-cost registry generation;
-    - a real validity window (ISO-8601, ordered, not future, not older than the staleness bound)
+    - a real validity window (ISO-8601, ordered, not future, not older than the operation-cost row's
+      measurement_max_age_days; an unset bound fails closed)
       evaluated against the injected ``now``;
     - exactly one canonical numeric ``actual`` compared, unrounded, against the target and
       comparator of the authoritative SLO row; the measurement can neither restate nor override them.
@@ -1313,8 +1370,8 @@ def _verify_slo_claim_evidence(
                                  f"SLO claim requires a retained measurement: {meas_reason}", params))
         return
     loc = f"artifact[{_artifact_locator(_role_artifacts(bundle_data, 'measurement_artifact')[0])}]"
-    if _scan_nan_inf_negative(meas, path_str, loc, findings):
-        return
+    if _scan_nan_inf_negative({k: v for k, v in meas.items() if k != "actual"}, path_str, loc, findings):
+        return  # the actual itself is judged below, as ERR-CLAIM-SLO-ACTUAL-INVALID-001
 
     if meas.get("status") != "passed":
         findings.append(_finding(ERR_SLO_MEASUREMENT_NOT_PASSED, path_str, f"{loc}.status",
@@ -1330,6 +1387,7 @@ def _verify_slo_claim_evidence(
                                  f"Measurement binds SLO '{meas_slo}', expected '{claim_id}'",
                                  {**params, "bound_slo": meas_slo}))
     meas_op = _nonempty_str(meas.get("operation_id"))
+    op_row: dict[str, Any] | None = None
     if meas_op is None:
         findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.operation_id",
                                  "Measurement names no 'operation_id' from the operation-cost registry", params))
@@ -1372,7 +1430,25 @@ def _verify_slo_claim_evidence(
                                  f"Measurement binds environment manifest '{bound_env}', not the retained '{env_digest}'",
                                  params))
 
-    _check_slo_window(meas, now, path_str, loc, params, findings)
+    max_age: timedelta | None = None
+    if op_row is not None and claim_id in op_row["slo_ids"]:  # only the claim's own cost row sets its bound
+        raw_age = op_row.get(SLO_MAX_AGE_FIELD)
+        low, high = SLO_MAX_AGE_RANGE_DAYS
+        if raw_age is None:
+            findings.append(_finding(
+                ERR_SLO_FRESHNESS_UNSET, path_str, f"{loc}.operation_id",
+                f"Operation '{meas_op}' declares no {SLO_MAX_AGE_FIELD} in {OPERATION_COST_REGISTRY_FILE}; "
+                "the measurement freshness bound is unset, so staleness cannot be decided",
+                {**params, "operation_id": meas_op},
+            ))
+        elif isinstance(raw_age, bool) or not isinstance(raw_age, int) or not low <= raw_age <= high:
+            findings.extend(_registry_invalid(
+                OPERATION_COST_REGISTRY_FILE,
+                f"Operation '{meas_op}' {SLO_MAX_AGE_FIELD} {raw_age!r} is not a whole number of days in [{low}, {high}]",
+            ))
+        else:
+            max_age = timedelta(days=raw_age)
+    _check_slo_window(meas, now, max_age, path_str, loc, params, findings)
 
     # Target and comparator come only from the authoritative SLO row.
     threshold = None
@@ -2439,6 +2515,15 @@ def _verify_bounded_model_claim_evidence(
             ))
 
 
+def _naive_instant_finding(now: datetime | None, where: str) -> ClaimFinding | None:
+    if now is not None and (now.tzinfo is None or now.utcoffset() is None):
+        return _finding(
+            ERR_UNRECOGNIZED_STATE, where, "now",
+            f"Evaluation instant {now.isoformat()} is not zone-qualified; expiry and measurement windows are indeterminate",
+        )
+    return None
+
+
 def verify_proof_bundle(
     bundle_path: Path,
     root: Path,
@@ -2456,6 +2541,9 @@ def verify_proof_bundle(
     claim_generation is the citing claim row's current generation (Generation column)."""
     findings: list[ClaimFinding] = []
     path_str = sanitize_path(bundle_path, root)
+    naive = _naive_instant_finding(now, path_str)
+    if naive is not None:
+        return False, [naive], None
 
     # 1. Path checks: traversal refusal, then containment for repository-relative citations.
     if ".." in bundle_path.parts:
@@ -3574,6 +3662,9 @@ def audit_claim_proof_bundles(
     receipts = {"inspected": 0, "passed": 0, "nonpassing": 0}
     # Class bindings come from the owning registries; an explicit binding (Python API only, never
     # a claim row or bundle) may add ids no registry covers but never overrides a registry.
+    naive = _naive_instant_finding(now, "audit")
+    if naive is not None:
+        findings.append(naive)
     registry_bindings, binding_findings = load_claim_class_bindings(root)
     findings.extend(binding_findings)
     bindings: dict[str, str] = {**(class_bindings or {}), **registry_bindings}
