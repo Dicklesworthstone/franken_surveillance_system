@@ -7,6 +7,7 @@
 //! <root>/spool/                        fss_object::StagingSpool (children and manifest bodies)
 //! <root>/roots/<slot>.root             one visible root record per slot
 //! <root>/roots/<slot>.root.tmp         in-flight root record, never visible
+//! <root>/roots/<slot>.root.indeterminate  durable marker: the slot's root visibility is unknown
 //! <root>/tombstones/<alg>-<hex>.tomb   one durable tombstone per object digest
 //! ```
 //!
@@ -30,6 +31,14 @@
 //! 5. Rename the record to `<slot>.root` (the commit point; the root is now `Visible`).
 //! 6. Fsync the roots directory (the root is now `Durable`).
 //!
+//! A rename reported failed may still have taken effect. The publisher then removes
+//! `<slot>.root` (the slot had no record before the rename) and fsyncs the roots directory;
+//! `NotFound` proves the rename did not take effect. If that rollback fails, the root may be
+//! visible or may reappear after a crash: the publisher durably records
+//! `<slot>.root.indeterminate`, poisons itself, and returns
+//! [`LocalPublicationError::RootVisibilityIndeterminate`] with the rename, rollback, and marker
+//! outcomes. Such a slot is never reported as a plain rename failure.
+//!
 //! A crash or cancellation at any cut point before step 5 leaves nothing visible. Cancellation is
 //! never consulted after the rename. Manifest descent is bottom-up as in
 //! [`fss_object::InMemoryObjectStore`]: a child that is itself the root of a visible slot is
@@ -40,7 +49,9 @@
 //!
 //! [`LocalRootPublisher::open`] re-verifies every root record, its manifest body, and every child
 //! before admitting it, fsyncs the roots directory, and only then reports roots as `Durable`.
-//! Records that fail are reported as [`BrokenRoot`] and never admitted. Objects not reachable from
+//! Records that fail are reported as [`BrokenRoot`] and never admitted. A slot with an
+//! indeterminate marker is reported as [`BrokenRootReason::VisibilityIndeterminate`], and its
+//! record, if any, is never admitted. Objects not reachable from
 //! any admitted root are reported as `unreferenced_objects`; temporary records are reported as
 //! `orphaned_temps`. Nothing found on open is deleted implicitly.
 //!
@@ -106,6 +117,8 @@ pub const ROOT_RECORD_SUFFIX: &str = ".root";
 pub const TOMBSTONE_RECORD_SUFFIX: &str = ".tomb";
 /// Suffix appended to a record name while it is being written.
 pub const ROOT_TEMP_SUFFIX: &str = ".tmp";
+/// Suffix appended to a root record name to mark the slot's root visibility indeterminate.
+pub const ROOT_INDETERMINATE_SUFFIX: &str = ".indeterminate";
 /// Ceiling on the configurable number of visible roots.
 pub const MAX_LOCAL_ROOTS: usize = 65_536;
 /// Ceiling on the configurable number of durable tombstones.
@@ -424,6 +437,12 @@ pub enum BrokenRootReason {
         /// Why it blocks.
         reason: BlockReason,
     },
+    /// A durable marker records that a root rename of this slot was reported failed and its
+    /// rollback failed, so whether a root became visible is unknown.
+    VisibilityIndeterminate {
+        /// Whether a root record for the slot exists on disk.
+        record_present: bool,
+    },
 }
 
 impl fmt::Display for BrokenRootReason {
@@ -451,6 +470,10 @@ impl fmt::Display for BrokenRootReason {
                 role,
                 reason,
             } => write!(formatter, "{role:?} reference {object} is {reason}"),
+            Self::VisibilityIndeterminate { record_present } => write!(
+                formatter,
+                "root visibility is indeterminate (record present: {record_present})"
+            ),
         }
     }
 }
@@ -656,6 +679,18 @@ impl LocalRootPublisher {
     #[must_use]
     pub const fn is_poisoned(&self) -> bool {
         self.poisoned
+    }
+
+    /// True when `slot` holds a root record that failed verification on open, or its root
+    /// visibility is indeterminate; publication into it is refused.
+    #[must_use]
+    pub fn is_broken_slot(&self, slot: &SlotName) -> bool {
+        self.broken_slots.contains(slot)
+    }
+
+    /// Every slot [`Self::is_broken_slot`] reports, in slot order.
+    pub fn broken_slots(&self) -> impl Iterator<Item = &SlotName> {
+        self.broken_slots.iter()
     }
 
     /// The root this instance reports visible in `slot`, if any.
@@ -874,9 +909,13 @@ impl LocalRootPublisher {
             None => self.io.rename(&temp_path, &target_path),
         };
         if let Err(error) = renamed {
-            let _ = self.io.remove_file(&target_path);
-            self.remove_temp(&temp_relative, &temp_path)?;
-            return Err(io_error(LocalIoOperation::Rename, &target_path, &error));
+            return Err(self.roll_back_failed_rename(
+                slot,
+                (&temp_relative, &temp_path),
+                &target_path,
+                &record,
+                error.kind(),
+            ));
         }
         self.staged.remove(slot);
         transitions.push(PublicationTransition::RootRenamed);
@@ -1261,12 +1300,91 @@ impl LocalRootPublisher {
         }
     }
 
+    /// Rolls back a root rename that was reported failed and returns the error to report.
+    ///
+    /// The rename may have taken effect anyway, so the record at `target` is removed (the slot
+    /// had no record before the rename) and the removal is fsynced; `NotFound` proves the rename
+    /// did not take effect. When the rollback completes, nothing is visible and the rename error
+    /// is returned. When the removal or its fsync fails, the root may be visible or may reappear
+    /// after a crash: the slot is marked indeterminate on disk and in this instance, the instance
+    /// is poisoned, and [`LocalPublicationError::RootVisibilityIndeterminate`] carries every
+    /// observed outcome. A temporary record left in that case is classified on reopen.
+    fn roll_back_failed_rename(
+        &mut self,
+        slot: &SlotName,
+        (temp_relative, temp_path): (&Path, &Path),
+        target: &Path,
+        record: &[u8],
+        rename_kind: io::ErrorKind,
+    ) -> LocalPublicationError {
+        let rollback = match self.io.remove_file(target) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => Some((LocalIoOperation::RemoveRecord, error.kind())),
+            Ok(()) => match self.io.sync_directory(&self.roots_dir) {
+                Ok(()) => None,
+                Err(error) => Some((LocalIoOperation::SyncDirectory, error.kind())),
+            },
+        };
+        let Some((rollback_operation, rollback_kind)) = rollback else {
+            return match self.remove_temp(temp_relative, temp_path) {
+                Ok(()) => LocalPublicationError::Io {
+                    operation: LocalIoOperation::Rename,
+                    path: target.to_path_buf(),
+                    kind: rename_kind,
+                },
+                Err(cleanup) => cleanup,
+            };
+        };
+        self.poisoned = true;
+        self.staged.remove(slot);
+        self.broken_slots.insert(slot.clone());
+        // The marker's success value is `()`, so its failure kind is all there is to keep.
+        let marker_kind = self.record_indeterminate_marker(slot, record).err();
+        LocalPublicationError::RootVisibilityIndeterminate {
+            slot: slot.clone(),
+            path: target.to_path_buf(),
+            rename_kind,
+            rollback_operation,
+            rollback_kind,
+            marker_kind,
+        }
+    }
+
+    /// Durably records `<slot>.root.indeterminate`, holding the attempted root `record`.
+    ///
+    /// A marker that already exists records the same fact and is kept. A marker left partially
+    /// written by a failure here still marks the slot on reopen, which classifies it by
+    /// existence alone.
+    fn record_indeterminate_marker(
+        &self,
+        slot: &SlotName,
+        record: &[u8],
+    ) -> Result<(), io::ErrorKind> {
+        let path = self.roots_dir.join(format!(
+            "{slot}{ROOT_RECORD_SUFFIX}{ROOT_INDETERMINATE_SUFFIX}"
+        ));
+        match self.io.create_new(&path) {
+            Ok(mut file) => {
+                let written = write_all(self.io.as_ref(), &mut file, record)
+                    .and_then(|()| self.io.sync_file(&file));
+                drop(file);
+                written.map_err(|error| error.kind())?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.kind()),
+        }
+        self.io
+            .sync_directory(&self.roots_dir)
+            .map_err(|error| error.kind())
+    }
+
     fn write_temp(
         &mut self,
         relative: &Path,
         path: &Path,
         bytes: &[u8],
     ) -> Result<(), LocalPublicationError> {
+        let parent = record_directory(path)?.to_path_buf();
         let mut file = match self.io.create_new(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
@@ -1283,7 +1401,6 @@ impl LocalRootPublisher {
             self.remove_temp(relative, path)?;
             return Err(io_error(LocalIoOperation::WriteTemp, path, &error));
         }
-        let parent = path.parent().unwrap_or(&self.root).to_path_buf();
         if let Err(error) = self.io.sync_directory(&parent) {
             self.remove_temp(relative, path)?;
             return Err(io_error(LocalIoOperation::SyncDirectory, &parent, &error));
@@ -1309,6 +1426,13 @@ impl LocalRootPublisher {
     /// Removes a temporary record this call created. If removal fails, the path is remembered
     /// as an orphan so it is never silently reused, and the removal failure is returned.
     fn remove_temp(&mut self, relative: &Path, path: &Path) -> Result<(), LocalPublicationError> {
+        let parent = match record_directory(path) {
+            Ok(parent) => parent.to_path_buf(),
+            Err(error) => {
+                self.orphan_temps.insert(relative.to_path_buf());
+                return Err(error);
+            }
+        };
         match self.io.remove_file(path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -1317,7 +1441,6 @@ impl LocalRootPublisher {
                 return Err(io_error(LocalIoOperation::RemoveTemp, path, &error));
             }
         }
-        let parent = path.parent().unwrap_or(&self.root).to_path_buf();
         self.io
             .sync_directory(&parent)
             .map_err(|error| io_error(LocalIoOperation::SyncDirectory, &parent, &error))
@@ -1504,6 +1627,8 @@ impl LocalRootPublisher {
 
         let mut candidates: BTreeMap<SlotName, CandidateRoot> = BTreeMap::new();
         let mut broken_slot_roots: BTreeSet<ContentDigest> = BTreeSet::new();
+        let mut indeterminate: BTreeMap<SlotName, PathBuf> = BTreeMap::new();
+        let mut record_slots: BTreeSet<SlotName> = BTreeSet::new();
 
         for (name, file_type) in entries {
             let relative = Path::new(LOCAL_ROOTS_DIR).join(&name);
@@ -1511,6 +1636,16 @@ impl LocalRootPublisher {
                 report.foreign.push(relative);
                 continue;
             };
+            if let Some(stem) = text.strip_suffix(ROOT_INDETERMINATE_SUFFIX) {
+                // Classified by existence alone, whatever its type or contents: fail closed.
+                match stem.strip_suffix(ROOT_RECORD_SUFFIX).map(SlotName::parse) {
+                    Some(Ok(slot)) => {
+                        indeterminate.insert(slot, relative);
+                    }
+                    Some(Err(_)) | None => report.foreign.push(relative),
+                }
+                continue;
+            }
             if let Some(stem) = text.strip_suffix(ROOT_TEMP_SUFFIX) {
                 let parsed = stem.strip_suffix(ROOT_RECORD_SUFFIX).map(SlotName::parse);
                 if matches!(parsed, Some(Ok(_))) && file_type.is_file() {
@@ -1524,6 +1659,7 @@ impl LocalRootPublisher {
                 report.foreign.push(relative);
                 continue;
             };
+            record_slots.insert(slot.clone());
             if !file_type.is_file() {
                 self.broken_slots.insert(slot);
                 report.broken_roots.push(BrokenRoot {
@@ -1625,6 +1761,20 @@ impl LocalRootPublisher {
                     record_bytes: bytes,
                 },
             );
+        }
+
+        // A durable indeterminate marker overrides whatever the slot's record says: its record,
+        // if any, is never admitted, and roots that reach it are broken below.
+        for (slot, relative) in indeterminate {
+            if let Some(candidate) = candidates.remove(&slot) {
+                broken_slot_roots.insert(candidate.root);
+            }
+            let record_present = record_slots.contains(&slot);
+            self.broken_slots.insert(slot);
+            report.broken_roots.push(BrokenRoot {
+                path: relative,
+                reason: BrokenRootReason::VisibilityIndeterminate { record_present },
+            });
         }
 
         // Multi-pass fixed-point validation of direct references and transitive descendants
@@ -1892,4 +2042,41 @@ fn parse_digest_file_stem(stem: &str) -> Option<ContentDigest> {
     let (algorithm, hex) = stem.split_once('-')?;
     let digest = ContentDigest::parse(format!("{algorithm}:{hex}")).ok()?;
     (digest_file_stem(digest) == stem).then_some(digest)
+}
+
+/// The directory holding the record at `path`, whose fsync makes the record's creation, rename,
+/// or removal durable. A path without a non-empty parent is [`LocalPublicationError::InvalidLayout`]:
+/// there is no directory to fsync, and silently fsyncing another one would claim durability that
+/// was never observed.
+fn record_directory(path: &Path) -> Result<&Path, LocalPublicationError> {
+    match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => Ok(parent),
+        Some(_) | None => Err(LocalPublicationError::InvalidLayout {
+            path: path.to_path_buf(),
+        }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use super::{LocalPublicationError, record_directory};
+
+    #[test]
+    fn record_directory_is_a_typed_error_for_a_path_without_a_parent_directory() {
+        for path in ["", "/", "slot.root.tmp"] {
+            assert_eq!(
+                record_directory(Path::new(path)),
+                Err(LocalPublicationError::InvalidLayout {
+                    path: PathBuf::from(path),
+                }),
+                "{path:?}"
+            );
+        }
+        assert_eq!(
+            record_directory(Path::new("publication/roots/slot.root.tmp")),
+            Ok(Path::new("publication/roots"))
+        );
+    }
 }

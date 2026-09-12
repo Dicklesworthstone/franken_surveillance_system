@@ -215,6 +215,9 @@ pub struct RootLedgerReceipt {
 pub enum RootLedgerState {
     /// No root is visible in the slot and the ledger names none.
     Absent,
+    /// No root is admitted in the slot because its local root record failed verification or its
+    /// root visibility is indeterminate, and the ledger names none. Never reported as `Absent`.
+    BrokenLocalRoot,
     /// A manifest is staged in the spool for the slot, but not yet visible.
     Staged {
         /// Manifest root.
@@ -308,6 +311,9 @@ pub struct RootLedgerReconciliation {
     pub unledgerable: Vec<SlotName>,
     /// Ledger claims that no durable root backs.
     pub unbacked_ledger_claims: Vec<UnbackedLedgerClaim>,
+    /// Slots whose local root record failed verification or whose root visibility is
+    /// indeterminate; none of them is admitted or ledgered.
+    pub broken: Vec<SlotName>,
 }
 
 impl RootLedgerReconciliation {
@@ -319,6 +325,7 @@ impl RootLedgerReconciliation {
             && self.conflicts.is_empty()
             && self.unledgerable.is_empty()
             && self.unbacked_ledger_claims.is_empty()
+            && self.broken.is_empty()
     }
 }
 
@@ -864,6 +871,7 @@ impl<'a> LedgeredRootPublisher<'a> {
                 }),
                 // `slot` holds a visible root, so classification never reports it absent.
                 RootLedgerState::Absent
+                | RootLedgerState::BrokenLocalRoot
                 | RootLedgerState::Staged { .. }
                 | RootLedgerState::LedgerWithoutDurableRoot { .. } => {}
             }
@@ -878,6 +886,7 @@ impl<'a> LedgeredRootPublisher<'a> {
                 });
             }
         }
+        report.broken = self.local.broken_slots().cloned().collect();
         Ok(report)
     }
 
@@ -901,11 +910,13 @@ impl<'a> LedgeredRootPublisher<'a> {
 
     fn classify(&self, slot: &SlotName, claim: Option<&LedgerClaim>) -> RootLedgerState {
         let Some(visible) = self.local.root(slot) else {
-            return claim.map_or(RootLedgerState::Absent, |claim| {
-                RootLedgerState::LedgerWithoutDurableRoot {
+            return match claim {
+                Some(claim) => RootLedgerState::LedgerWithoutDurableRoot {
                     ledgered_root: claim.root,
-                }
-            });
+                },
+                None if self.local.is_broken_slot(slot) => RootLedgerState::BrokenLocalRoot,
+                None => RootLedgerState::Absent,
+            };
         };
         if visible.state == LocalPublicationState::Staged {
             return RootLedgerState::Staged { root: visible.root };

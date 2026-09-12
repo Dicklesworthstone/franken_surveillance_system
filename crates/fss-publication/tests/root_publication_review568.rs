@@ -95,7 +95,21 @@ fn test_publish_rejects_child_root_that_is_only_visible_not_durable() -> TestRes
     let slot_b = SlotName::parse("slot-b")?;
 
     // Publish Slot B: directory fsync fails, leaves slot-b VisibleNotDurable
-    let _ = publisher.publish(&slot_b, &manifest_b);
+    match publisher.publish(&slot_b, &manifest_b) {
+        Err(error) => assert_eq!(
+            error,
+            LocalPublicationError::Indeterminate {
+                path: root.join("roots").join("slot-b.root"),
+                kind: std::io::ErrorKind::Other,
+            },
+            "the injected directory fsync failure must surface as exactly Indeterminate"
+        ),
+        Ok(receipt) => {
+            return Err(
+                format!("expected the injected directory fsync to fail: {receipt:?}").into(),
+            );
+        }
+    }
     let root_b = publisher.root(&slot_b).ok_or("slot-b root missing")?;
     assert_eq!(root_b.state, LocalPublicationState::Visible);
 

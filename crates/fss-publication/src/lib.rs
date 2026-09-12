@@ -41,8 +41,9 @@ pub use local::{
     LocalPublicationReceipt, LocalPublicationState, LocalRecoveryReport, LocalRootPublisher,
     MAX_LOCAL_ROOTS, MAX_LOCAL_TOMBSTONES, MAX_ROOT_RECORD_BYTES, MAX_SLOT_NAME_BYTES,
     MAX_TOMBSTONE_RECORD_BYTES, PublicationClaims, PublicationTransition, PublishCancellation,
-    PublishCutPoint, PublishOutcome, ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, ReferenceRole, SlotName,
-    SlotViolation, TOMBSTONE_RECORD_SUFFIX, TombstoneOutcome, VisibleRoot, root_record_bytes,
+    PublishCutPoint, PublishOutcome, ROOT_INDETERMINATE_SUFFIX, ROOT_RECORD_SUFFIX,
+    ROOT_TEMP_SUFFIX, ReferenceRole, SlotName, SlotViolation, TOMBSTONE_RECORD_SUFFIX,
+    TombstoneOutcome, VisibleRoot, root_record_bytes,
 };
 pub use publisher::AuthorityPublisher;
 pub use replay::{

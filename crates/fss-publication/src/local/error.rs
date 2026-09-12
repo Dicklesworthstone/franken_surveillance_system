@@ -33,6 +33,7 @@ pub const LOCAL_PUBLICATION_ERROR_CODES: &[&str] = &[
     "ERR-PUBLICATION-LOCAL-LOCKED-001",
     "ERR-PUBLICATION-LOCAL-LAYOUT-001",
     "ERR-PUBLICATION-LOCAL-INDETERMINATE-001",
+    "ERR-PUBLICATION-LOCAL-ROOT-VISIBILITY-INDETERMINATE-001",
     "ERR-PUBLICATION-LOCAL-INJECTED-CRASH-001",
     "ERR-PUBLICATION-LOCAL-CANCELLED-001",
     "ERR-PUBLICATION-LOCAL-POISONED-001",
@@ -244,6 +245,8 @@ pub enum LocalIoOperation {
     SyncDirectory,
     /// Removing a temporary record.
     RemoveTemp,
+    /// Removing a root record whose rename was reported failed (rollback).
+    RemoveRecord,
 }
 
 impl fmt::Display for LocalIoOperation {
@@ -260,6 +263,7 @@ impl fmt::Display for LocalIoOperation {
             Self::Rename => "rename",
             Self::SyncDirectory => "sync_directory",
             Self::RemoveTemp => "remove_temp",
+            Self::RemoveRecord => "remove_record",
         })
     }
 }
@@ -394,6 +398,28 @@ pub enum LocalPublicationError {
         /// I/O failure kind.
         kind: io::ErrorKind,
     },
+    /// The root rename was reported failed and rolling back the possibly renamed record failed
+    /// too: whether the root is visible, or could reappear after a crash, is unknown.
+    ///
+    /// The instance is poisoned and the slot is refused. Unless `marker_kind` is set, a durable
+    /// `<slot>.root.indeterminate` marker names the slot, so a reopen reports it broken and
+    /// never admits its record.
+    RootVisibilityIndeterminate {
+        /// Slot whose root visibility is unknown.
+        slot: SlotName,
+        /// Absolute path of the root record.
+        path: PathBuf,
+        /// Failure kind the rename reported.
+        rename_kind: io::ErrorKind,
+        /// Rollback step that failed: [`LocalIoOperation::RemoveRecord`] or
+        /// [`LocalIoOperation::SyncDirectory`].
+        rollback_operation: LocalIoOperation,
+        /// Failure kind of that rollback step.
+        rollback_kind: io::ErrorKind,
+        /// `None` when the indeterminate marker was made durable; otherwise the failure kind of
+        /// creating, writing, or fsyncing it, and a reopen may not see it.
+        marker_kind: Option<io::ErrorKind>,
+    },
     /// A fault-injection cut point fired; this instance behaves as a dead process.
     InjectedCrash {
         /// Cut point that fired.
@@ -460,6 +486,9 @@ impl LocalPublicationError {
             Self::Locked { .. } => "ERR-PUBLICATION-LOCAL-LOCKED-001",
             Self::InvalidLayout { .. } => "ERR-PUBLICATION-LOCAL-LAYOUT-001",
             Self::Indeterminate { .. } => "ERR-PUBLICATION-LOCAL-INDETERMINATE-001",
+            Self::RootVisibilityIndeterminate { .. } => {
+                "ERR-PUBLICATION-LOCAL-ROOT-VISIBILITY-INDETERMINATE-001"
+            }
             Self::InjectedCrash { .. } => "ERR-PUBLICATION-LOCAL-INJECTED-CRASH-001",
             Self::Cancelled { .. } => "ERR-PUBLICATION-LOCAL-CANCELLED-001",
             Self::Poisoned => "ERR-PUBLICATION-LOCAL-POISONED-001",
@@ -511,9 +540,10 @@ impl LocalPublicationError {
                 LocalPublicationGuidance::RepairStorage
             }
             Self::Locked { .. } => LocalPublicationGuidance::WaitForOwner,
-            Self::Indeterminate { .. } | Self::InjectedCrash { .. } | Self::Poisoned => {
-                LocalPublicationGuidance::ReopenAndReconcile
-            }
+            Self::Indeterminate { .. }
+            | Self::RootVisibilityIndeterminate { .. }
+            | Self::InjectedCrash { .. }
+            | Self::Poisoned => LocalPublicationGuidance::ReopenAndReconcile,
             Self::Cancelled { .. } => LocalPublicationGuidance::RetryIdempotently,
             Self::MissingDeletionAuthority { .. } => {
                 LocalPublicationGuidance::SupplyDeletionAuthority
@@ -597,6 +627,25 @@ impl fmt::Display for LocalPublicationError {
                 "record {} renamed but directory fsync failed: {kind}",
                 path.display()
             ),
+            Self::RootVisibilityIndeterminate {
+                slot,
+                path,
+                rename_kind,
+                rollback_operation,
+                rollback_kind,
+                marker_kind,
+            } => {
+                write!(
+                    formatter,
+                    "rename of root record {} for slot {slot} reported {rename_kind} and its \
+                     rollback {rollback_operation} failed: {rollback_kind}; visibility unknown; ",
+                    path.display()
+                )?;
+                match marker_kind {
+                    None => formatter.write_str("indeterminate marker is durable"),
+                    Some(kind) => write!(formatter, "indeterminate marker not recorded: {kind}"),
+                }
+            }
             Self::InjectedCrash { point } => write!(formatter, "injected crash {point}"),
             Self::Cancelled { point } => write!(formatter, "cancelled {point}"),
             Self::Poisoned => formatter.write_str("publisher is poisoned; reopen to reconcile"),
@@ -708,6 +757,14 @@ mod tests {
             LocalPublicationError::Indeterminate {
                 path: PathBuf::from("roots/slot.root"),
                 kind: std::io::ErrorKind::Other,
+            },
+            LocalPublicationError::RootVisibilityIndeterminate {
+                slot: slot.clone(),
+                path: PathBuf::from("roots/slot.root"),
+                rename_kind: std::io::ErrorKind::Other,
+                rollback_operation: LocalIoOperation::RemoveRecord,
+                rollback_kind: std::io::ErrorKind::PermissionDenied,
+                marker_kind: None,
             },
             LocalPublicationError::InjectedCrash {
                 point: PublishCutPoint::AfterRootRename,
