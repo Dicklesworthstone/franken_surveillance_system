@@ -1778,8 +1778,19 @@ impl LocalRootPublisher {
             }
             if let Some(stem) = text.strip_suffix(ROOT_TEMP_SUFFIX) {
                 let parsed = stem.strip_suffix(ROOT_RECORD_SUFFIX).map(SlotName::parse);
-                if matches!(parsed, Some(Ok(_))) && file_type.is_file() {
-                    self.orphan_temps.insert(relative);
+                if let Some(Ok(slot)) = parsed {
+                    if file_type.is_file() {
+                        let target_path =
+                            self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
+                        if self.io.symlink_metadata(&target_path).is_ok() {
+                            let temp_path = self.root.join(&relative);
+                            let _ = self.io.remove_file(&temp_path);
+                            continue;
+                        }
+                        self.orphan_temps.insert(relative);
+                    } else {
+                        report.foreign.push(relative);
+                    }
                 } else {
                     report.foreign.push(relative);
                 }
