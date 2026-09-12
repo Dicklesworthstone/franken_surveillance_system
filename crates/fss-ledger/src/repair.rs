@@ -7,7 +7,6 @@ use std::fmt::{self, Write as _};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(unix)]
 use std::os::unix::fs::MetadataExt;
@@ -22,7 +21,13 @@ use crate::format::{
 };
 use crate::recovery::recover_bytes;
 
-static ATTEMPT_COUNTER: AtomicU64 = AtomicU64::new(1);
+/// Upper bound on distinct staging names tried when writing a quarantine sidecar.
+///
+/// Each repair call owns its own attempt sequence `0..MAX_QUARANTINE_TEMP_ATTEMPTS`; no
+/// process-global state participates in staging names. `create_new` guarantees that a name held
+/// by a concurrent repairer or left behind by an interrupted one is never opened, overwritten, or
+/// removed by this call.
+pub const MAX_QUARANTINE_TEMP_ATTEMPTS: u32 = 16;
 
 const PLAN_DIGEST_DOMAIN: &[u8] = b"FSS-LEDGER-REPAIR-PLAN-DIGEST-V1\0";
 
@@ -619,16 +624,74 @@ pub fn plan_with_cut(
 /// Computes the deterministic quarantine sidecar path for a journal and content digest.
 #[must_use]
 pub fn quarantine_path_for(journal_path: &Path, digest: ContentDigest) -> PathBuf {
-    let parent = journal_path.parent().unwrap_or_else(|| Path::new("."));
+    sibling_path(journal_path, format!("{}.quarantine", digest_hex(digest)))
+}
+
+/// Computes the staging path used by `attempt` while writing the quarantine sidecar.
+///
+/// The name is `{digest-hex}.tmp.{pid}.{attempt}` next to the journal. It is a pure function of
+/// its inputs and the current process id and never consults shared mutable state.
+#[must_use]
+pub fn quarantine_temp_path_for(
+    journal_path: &Path,
+    digest: ContentDigest,
+    attempt: u32,
+) -> PathBuf {
+    sibling_path(
+        journal_path,
+        format!(
+            "{}.tmp.{}.{attempt}",
+            digest_hex(digest),
+            std::process::id()
+        ),
+    )
+}
+
+fn digest_hex(digest: ContentDigest) -> String {
     let mut hex = String::with_capacity(64);
     for byte in digest.bytes() {
         let _ = write!(&mut hex, "{byte:02x}");
     }
+    hex
+}
+
+fn sibling_path(journal_path: &Path, file_name: String) -> PathBuf {
+    let parent = journal_path.parent().unwrap_or_else(|| Path::new("."));
     if parent.as_os_str().is_empty() {
-        PathBuf::from(format!("{hex}.quarantine"))
+        PathBuf::from(file_name)
     } else {
-        parent.join(format!("{hex}.quarantine"))
+        parent.join(file_name)
     }
+}
+
+/// Creates a fresh staging file for the quarantine sidecar with a bounded `create_new` retry.
+///
+/// A name that already exists belongs to someone else (a concurrent repairer or an interrupted
+/// earlier repair) and is skipped, never opened or removed. When every bounded name is taken the
+/// call fails with [`RepairError::QuarantineTempExhausted`] before the journal is touched.
+fn create_quarantine_temp(
+    journal_path: &Path,
+    digest: ContentDigest,
+) -> Result<(PathBuf, fs::File), RepairError> {
+    for attempt in 0..MAX_QUARANTINE_TEMP_ATTEMPTS {
+        let candidate = quarantine_temp_path_for(journal_path, digest, attempt);
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(err) => return Err(RepairError::Io(err)),
+        }
+    }
+    Err(RepairError::QuarantineTempExhausted {
+        directory: journal_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+        attempts: MAX_QUARANTINE_TEMP_ATTEMPTS,
+    })
 }
 
 /// Typed receipt emitted upon applying a verified repair plan.
@@ -832,27 +895,16 @@ pub fn apply(plan: &SealedRepairPlan) -> Result<RepairReceipt, RepairError> {
             });
         }
     } else {
-        let mut hex = String::with_capacity(64);
-        for byte in actual_digest.bytes() {
-            let _ = write!(&mut hex, "{byte:02x}");
-        }
-        let attempt = ATTEMPT_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let tmp_file_name = format!("{hex}.tmp.{}.{attempt}", std::process::id());
-        let tmp_quarantine_path = if parent.as_os_str().is_empty() {
-            PathBuf::from(tmp_file_name)
-        } else {
-            parent.join(tmp_file_name)
-        };
+        // Only a staging file this call created via `create_new` is written, renamed, or removed.
+        let (tmp_quarantine_path, mut qfile) =
+            create_quarantine_temp(&plan.journal_path, actual_digest)?;
 
         let write_res = (|| -> io::Result<()> {
-            let mut qfile = OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&tmp_quarantine_path)?;
             qfile.write_all(actual_foreign)?;
             qfile.sync_all()?;
             Ok(())
         })();
+        drop(qfile);
 
         if let Err(err) = write_res {
             let _ = fs::remove_file(&tmp_quarantine_path);
@@ -988,6 +1040,16 @@ pub enum RepairError {
         /// Expected content digest.
         expected_digest: ContentDigest,
     },
+    /// Every bounded staging name for the quarantine sidecar already exists.
+    ///
+    /// Stale staging files from interrupted repairs (or concurrent repairers holding every name)
+    /// must be inspected; the journal was not modified.
+    QuarantineTempExhausted {
+        /// Directory in which staging was attempted.
+        directory: PathBuf,
+        /// Number of distinct staging names tried.
+        attempts: u32,
+    },
     /// Concurrent append or modification detected immediately before truncate.
     ConcurrentModification {
         /// Expected file length.
@@ -1059,6 +1121,14 @@ impl fmt::Display for RepairError {
                 formatter,
                 "quarantine sidecar file exists with conflicting content: path {}, expected digest {expected_digest}",
                 path.display()
+            ),
+            Self::QuarantineTempExhausted {
+                directory,
+                attempts,
+            } => write!(
+                formatter,
+                "could not stage quarantine sidecar in {}: all {attempts} bounded staging names already exist; inspect stale *.tmp.* files from interrupted repairs",
+                directory.display()
             ),
             Self::ConcurrentModification {
                 expected_len,
