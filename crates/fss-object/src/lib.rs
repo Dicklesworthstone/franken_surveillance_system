@@ -9,6 +9,7 @@
 mod error;
 mod manifest;
 mod memory;
+pub mod model_license_policy;
 pub mod model_manifest;
 pub mod model_package;
 mod spool;
@@ -20,6 +21,7 @@ pub use error::ObjectError;
 pub use fss_core::TombstoneRecord;
 pub use manifest::ObjectManifest;
 pub use memory::{InMemoryObjectStore, ObjectLimits};
+pub use model_license_policy::*;
 pub use model_manifest::*;
 pub use model_package::*;
 pub use spool::{

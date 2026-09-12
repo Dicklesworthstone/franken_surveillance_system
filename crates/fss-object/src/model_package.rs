@@ -35,6 +35,7 @@ use std::path::{Component, Path, PathBuf};
 
 use fss_core::{ContentDigest, ContractError, DigestAlgorithm, ModelGeneration};
 
+use crate::model_license_policy::{ModelLicensePolicy, ModelLicensePolicyError, ModelUseProfile};
 use crate::model_manifest::{
     MAX_ARTIFACT_DIGESTS_COUNT, MODEL_MANIFEST_MAGIC, ModelManifestError, ModelManifestV1,
 };
@@ -876,6 +877,7 @@ pub struct ModelPackageImporter {
     spool: StagingSpool,
     limits: ModelPackageLimits,
     generations: BTreeMap<ModelGeneration, GenerationRecord>,
+    license_policy: ModelLicensePolicy,
 }
 
 impl ModelPackageImporter {
@@ -942,7 +944,28 @@ impl ModelPackageImporter {
             spool,
             limits,
             generations,
+            license_policy: ModelLicensePolicy::default_for_profile(
+                ModelUseProfile::InternalEvaluation,
+            ),
         })
+    }
+
+    /// Configures the license and operational profile policy on the importer via builder pattern.
+    #[must_use]
+    pub fn with_license_policy(mut self, policy: ModelLicensePolicy) -> Self {
+        self.license_policy = policy;
+        self
+    }
+
+    /// Sets the license and operational profile policy on the importer.
+    pub fn set_license_policy(&mut self, policy: ModelLicensePolicy) {
+        self.license_policy = policy;
+    }
+
+    /// Returns a reference to the active license and operational profile policy.
+    #[must_use]
+    pub fn license_policy(&self) -> &ModelLicensePolicy {
+        &self.license_policy
     }
 
     /// Read-only access to the underlying staging spool.
@@ -1028,6 +1051,7 @@ impl ModelPackageImporter {
         }
         package.validate(&self.limits)?;
         package.verify_contents()?;
+        self.license_policy.check_manifest(&package.manifest)?;
         let manifest_digest = ContentDigest::sha256(&package.manifest_bytes);
         let total_staged_bytes = package.total_bytes()?;
 
@@ -1317,6 +1341,8 @@ pub enum ModelPackageError {
     },
     /// Core semantic contract error.
     Contract(ContractError),
+    /// Model license or operational profile policy rejection.
+    LicensePolicy(ModelLicensePolicyError),
 }
 
 impl fmt::Display for ModelPackageError {
@@ -1424,7 +1450,14 @@ impl fmt::Display for ModelPackageError {
                 )
             }
             Self::Contract(err) => write!(f, "contract error: {err}"),
+            Self::LicensePolicy(err) => write!(f, "model license policy error: {err}"),
         }
+    }
+}
+
+impl From<ModelLicensePolicyError> for ModelPackageError {
+    fn from(err: ModelLicensePolicyError) -> Self {
+        Self::LicensePolicy(err)
     }
 }
 

@@ -413,6 +413,64 @@ pub struct ModelLicenseRecord {
 }
 
 impl ModelLicenseRecord {
+    /// Constructs and validates a new bounded `ModelLicenseRecord`.
+    pub fn new(
+        spdx_or_identity: impl Into<String>,
+        text_digest: Option<ContentDigest>,
+        use_approved: bool,
+        restrictions: Vec<String>,
+        source_identity: impl Into<String>,
+        artifact_digests: Vec<ContentDigest>,
+        upstream_revision: Option<String>,
+    ) -> Result<Self, ModelManifestError> {
+        let record = Self {
+            spdx_or_identity: spdx_or_identity.into(),
+            text_digest,
+            use_approved,
+            restrictions,
+            source_identity: source_identity.into(),
+            artifact_digests,
+            upstream_revision,
+        };
+        record.validate()?;
+        Ok(record)
+    }
+
+    /// SPDX license identifier or proprietary identity string.
+    pub fn spdx_or_identity(&self) -> &str {
+        &self.spdx_or_identity
+    }
+
+    /// Optional digest of license legal text.
+    pub const fn text_digest(&self) -> Option<ContentDigest> {
+        self.text_digest
+    }
+
+    /// Whether this model license has been explicitly reviewed and approved for use.
+    pub const fn is_use_approved(&self) -> bool {
+        self.use_approved
+    }
+
+    /// Declared operational or commercial restrictions.
+    pub fn restrictions(&self) -> &[String] {
+        &self.restrictions
+    }
+
+    /// Upstream source or repository identity.
+    pub fn source_identity(&self) -> &str {
+        &self.source_identity
+    }
+
+    /// Upstream artifact digests verifying the source package.
+    pub fn artifact_digests(&self) -> &[ContentDigest] {
+        &self.artifact_digests
+    }
+
+    /// Upstream commit revision, tag, or version string if available.
+    pub fn upstream_revision(&self) -> Option<&str> {
+        self.upstream_revision.as_deref()
+    }
+
     /// Validates all structural bounds on the license and provenance record.
     pub fn validate(&self) -> Result<(), ModelManifestError> {
         if self.spdx_or_identity.len() < MIN_SPDX_LEN {
