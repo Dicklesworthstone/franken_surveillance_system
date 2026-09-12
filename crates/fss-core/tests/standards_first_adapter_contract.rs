@@ -173,10 +173,10 @@ fn test_unverified_standards_claim_without_evidence_fails_closed()
 #[test]
 fn test_marketing_underscore_and_synonyms_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let bad_adapter = AdapterIdentity {
-        adapter_id: AdapterId::parse("adapter:marketing-cam-001")?,
+        adapter_id: AdapterId::parse("adapter:synonym-cam-001")?,
         generation: AdapterGeneration::parse("gen:adapter:cam-v1")?,
         adapter_kind: AdapterKind::Rtsp,
-        protocol_profile: "rtsp:app_presence:datasheet".to_string(),
+        protocol_profile: "rtsp:rfc2326:datasheet".to_string(),
         isolation_mode: IsolationMode::NativePureRust,
         credential_method: CredentialMethod::None,
         capabilities: AdapterCapabilities::STREAMING,
@@ -188,7 +188,8 @@ fn test_marketing_underscore_and_synonyms_fails_closed() -> Result<(), Box<dyn s
     let res = bad_adapter.verify_standards_compliance();
     assert!(matches!(
         res,
-        Err(StandardsComplianceError::UnverifiedStandardsClaim { .. })
+        Err(StandardsComplianceError::UnverifiedStandardsClaim { ref detail })
+            if detail.contains("datasheet")
     ));
     Ok(())
 }
@@ -200,7 +201,7 @@ fn test_proprietary_vendor_ring_nest_in_native_fails_closed()
         adapter_id: AdapterId::parse("adapter:ring-doorbell-001")?,
         generation: AdapterGeneration::parse("gen:adapter:ring-v1")?,
         adapter_kind: AdapterKind::VirtualSimulated,
-        protocol_profile: "vendor:ring-cloud-stream".to_string(),
+        protocol_profile: "ring-cloud-stream".to_string(),
         isolation_mode: IsolationMode::NativePureRust,
         credential_method: CredentialMethod::None,
         capabilities: AdapterCapabilities::STREAMING,
@@ -212,14 +213,15 @@ fn test_proprietary_vendor_ring_nest_in_native_fails_closed()
     let res = ring_adapter.verify_standards_compliance();
     assert!(matches!(
         res,
-        Err(StandardsComplianceError::ProprietaryNativePromotion { .. })
+        Err(StandardsComplianceError::ProprietaryNativePromotion { ref detail })
+            if detail.contains("ring")
     ));
 
     let nest_adapter = AdapterIdentity {
         adapter_id: AdapterId::parse("adapter:nest-cam-001")?,
         generation: AdapterGeneration::parse("gen:adapter:nest-v1")?,
         adapter_kind: AdapterKind::VirtualSimulated,
-        protocol_profile: "vendor:nest-webrtc-stream".to_string(),
+        protocol_profile: "nest-webrtc-stream".to_string(),
         isolation_mode: IsolationMode::NativePureRust,
         credential_method: CredentialMethod::None,
         capabilities: AdapterCapabilities::STREAMING,
@@ -231,7 +233,8 @@ fn test_proprietary_vendor_ring_nest_in_native_fails_closed()
     let res = nest_adapter.verify_standards_compliance();
     assert!(matches!(
         res,
-        Err(StandardsComplianceError::ProprietaryNativePromotion { .. })
+        Err(StandardsComplianceError::ProprietaryNativePromotion { ref detail })
+            if detail.contains("nest")
     ));
     Ok(())
 }
@@ -319,9 +322,7 @@ fn test_security_boundary_violation_in_rust_fails_closed() -> Result<(), Box<dyn
         request_timeout_ns: 5_000_000_000,
     };
     let res = adapter.verify_standards_compliance();
-    assert!(matches!(
-        res,
-        Err(StandardsComplianceError::SecurityBoundaryViolation { .. })
-    ));
+    let err_str = format!("{res:?}");
+    assert!(err_str.contains("SecurityBoundaryViolation"));
     Ok(())
 }
