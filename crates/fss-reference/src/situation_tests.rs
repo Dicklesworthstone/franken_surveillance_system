@@ -5,13 +5,17 @@ use std::fs;
 use fss_core::{
     AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContentDigest, ContractBasis,
     ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, EventState, HandoffId,
-    IdempotencyKey, KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId,
-    ProbabilityInterval, SensorId, SessionId, TimestampNs,
+    HypothesisDisposition, IdempotencyKey, KnowledgeCell, KnowledgeState, MissionId, ObligationId,
+    OperationId, PrincipalId, ProbabilityInterval, ProvenanceClass, SensorId, SessionId,
+    TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 
-use crate::situation::physical_knowledge_state;
+use crate::policy::ReferencePolicyAction;
+use crate::situation::{
+    physical_knowledge_state, physical_statement, policy_hypothesis, policy_statement,
+};
 use crate::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
     ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
@@ -568,4 +572,225 @@ fn physical_knowledge_state_maps_every_event_state_explicitly() {
             contradicting.len()
         );
     }
+}
+
+#[test]
+fn physical_cell_stays_conflicted_after_post_corroboration_stages() -> Result<(), Box<dyn Error>> {
+    let support = [ContentDigest::sha256(b"supporting-witness")];
+    let contra = [ContentDigest::sha256(b"contradicting-witness")];
+    let none: [ContentDigest; 0] = [];
+    // Each post-corroboration stage is reachable from `indeterminate` without new evidence, so
+    // retained evidence pointing both ways must stay conflicted there exactly as it is while
+    // indeterminate: no typed adjudication basis exists that could retire the contradiction.
+    let cases: [(
+        EventState,
+        &[ContentDigest],
+        &[ContentDigest],
+        KnowledgeState,
+    ); 10] = [
+        (
+            EventState::Indeterminate,
+            &support,
+            &contra,
+            KnowledgeState::Conflicted,
+        ),
+        (
+            EventState::Adjudicated,
+            &support,
+            &contra,
+            KnowledgeState::Conflicted,
+        ),
+        (
+            EventState::AlertDelivered,
+            &support,
+            &contra,
+            KnowledgeState::Conflicted,
+        ),
+        (
+            EventState::Resolved,
+            &support,
+            &contra,
+            KnowledgeState::Conflicted,
+        ),
+        // Without contradicting roots the stages stay estimated from retained support.
+        (
+            EventState::Adjudicated,
+            &support,
+            &none,
+            KnowledgeState::Estimated,
+        ),
+        (
+            EventState::AlertDelivered,
+            &support,
+            &none,
+            KnowledgeState::Estimated,
+        ),
+        (
+            EventState::Resolved,
+            &support,
+            &none,
+            KnowledgeState::Estimated,
+        ),
+        // Contradiction alone, with nothing supporting, is unknown rather than conflicted.
+        (
+            EventState::Adjudicated,
+            &none,
+            &contra,
+            KnowledgeState::Unknown,
+        ),
+        (
+            EventState::AlertDelivered,
+            &none,
+            &contra,
+            KnowledgeState::Unknown,
+        ),
+        (
+            EventState::Resolved,
+            &none,
+            &contra,
+            KnowledgeState::Unknown,
+        ),
+    ];
+    for (state, supporting, contradicting, expected) in cases {
+        let actual = physical_knowledge_state(state, supporting, contradicting);
+        if actual != expected {
+            return Err(format!(
+                "event state {} with {} supporting and {} contradicting roots: expected {expected:?}, got {actual:?}",
+                state.as_str(),
+                supporting.len(),
+                contradicting.len()
+            )
+            .into());
+        }
+        // The projected cell must remain a valid contract cell carrying its contradictions.
+        let cell = KnowledgeCell {
+            claim_id: format!("claim:event:{}:unknown-presence", state.as_str()),
+            statement: physical_statement(state).to_owned(),
+            knowledge_state: actual,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: Some(policy_hypothesis(state)),
+            evidence: supporting.to_vec(),
+            contradictions: contradicting.to_vec(),
+            valid_until: None,
+            state_basis: None,
+        }
+        .validated()?;
+        if !supporting.is_empty() && !contradicting.is_empty() && !cell.is_conflicted() {
+            return Err(format!(
+                "event state {} flattened an unresolved contradiction to {:?}",
+                state.as_str(),
+                cell.knowledge_state
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+const PHYSICAL_CORROBORATED: &str =
+    "Independent failure domains support unknown-person presence in the retained interval.";
+const PHYSICAL_WITNESSED: &str = "Unknown-person presence is supported by retained evidence but lacks independent corroboration.";
+const PHYSICAL_INDETERMINATE: &str = "Unknown-person presence remains unresolved under retained supporting, contradictory, or degraded evidence.";
+const PHYSICAL_REJECTED: &str =
+    "The event candidate is rejected, but physical absence is not certified by this policy result.";
+const PHYSICAL_BOUNDED: &str =
+    "The physical event interpretation remains bounded by the retained lifecycle state.";
+const POLICY_PREPARE: &str = "The reference policy independently corroborated unknown-person presence and exposed alert preparation as a separate affordance.";
+const POLICY_WITNESSED_HOLD: &str = "The reference policy retained a witnessed candidate but withheld alert preparation pending independent corroboration.";
+const POLICY_INDETERMINATE_HOLD: &str =
+    "The reference policy retained an indeterminate candidate and withheld alert preparation.";
+const POLICY_REJECTED_HOLD: &str = "The reference policy rejected this event candidate without asserting complete physical absence.";
+const POLICY_NO_AUTHORITY: &str =
+    "The reference policy retained the event lifecycle state without granting effect authority.";
+
+/// Pinned projection of one event state. The match is exhaustive with no wildcard, so a new
+/// `EventState` fails to compile here until its mapping is chosen deliberately.
+fn pinned_projection(
+    state: EventState,
+) -> (
+    HypothesisDisposition,
+    &'static str,
+    &'static str,
+    &'static str,
+) {
+    // (hypothesis, physical statement, statement under Hold, statement under PrepareAlert)
+    match state {
+        EventState::Hypothesized => (
+            HypothesisDisposition::Live,
+            PHYSICAL_BOUNDED,
+            POLICY_NO_AUTHORITY,
+            POLICY_NO_AUTHORITY,
+        ),
+        EventState::Witnessed => (
+            HypothesisDisposition::Supported,
+            PHYSICAL_WITNESSED,
+            POLICY_WITNESSED_HOLD,
+            POLICY_NO_AUTHORITY,
+        ),
+        EventState::Corroborated => (
+            HypothesisDisposition::Supported,
+            PHYSICAL_CORROBORATED,
+            POLICY_NO_AUTHORITY,
+            POLICY_PREPARE,
+        ),
+        EventState::Adjudicated => (
+            HypothesisDisposition::Live,
+            PHYSICAL_BOUNDED,
+            POLICY_NO_AUTHORITY,
+            POLICY_NO_AUTHORITY,
+        ),
+        EventState::AlertDelivered => (
+            HypothesisDisposition::Live,
+            PHYSICAL_BOUNDED,
+            POLICY_NO_AUTHORITY,
+            POLICY_NO_AUTHORITY,
+        ),
+        EventState::Resolved => (
+            HypothesisDisposition::Resolved,
+            PHYSICAL_BOUNDED,
+            POLICY_NO_AUTHORITY,
+            POLICY_NO_AUTHORITY,
+        ),
+        // Unresolved evidence keeps the hypothesis open (live): never supported, never refuted,
+        // and never granted effect authority.
+        EventState::Indeterminate => (
+            HypothesisDisposition::Live,
+            PHYSICAL_INDETERMINATE,
+            POLICY_INDETERMINATE_HOLD,
+            POLICY_NO_AUTHORITY,
+        ),
+        EventState::Rejected => (
+            HypothesisDisposition::Refuted,
+            PHYSICAL_REJECTED,
+            POLICY_REJECTED_HOLD,
+            POLICY_NO_AUTHORITY,
+        ),
+    }
+}
+
+#[test]
+fn event_state_projection_is_pinned_for_every_state() -> Result<(), Box<dyn Error>> {
+    let states: Vec<EventState> = (0..=u8::MAX)
+        .filter_map(|tag| EventState::from_u8(tag).ok())
+        .collect();
+    if states.len() != 8 {
+        return Err(format!("expected 8 decodable event states, found {}", states.len()).into());
+    }
+    for state in states {
+        let expected = pinned_projection(state);
+        let actual = (
+            policy_hypothesis(state),
+            physical_statement(state),
+            policy_statement(state, ReferencePolicyAction::Hold),
+            policy_statement(state, ReferencePolicyAction::PrepareAlert),
+        );
+        if actual != expected {
+            return Err(format!(
+                "event state {} projection drifted: expected {expected:?}, got {actual:?}",
+                state.as_str()
+            )
+            .into());
+        }
+    }
+    Ok(())
 }

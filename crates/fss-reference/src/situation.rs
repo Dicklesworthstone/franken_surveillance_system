@@ -146,7 +146,8 @@ pub fn compile_reference_situation(
 
     let policy_cell = KnowledgeCell {
         claim_id: policy_claim_id.clone(),
-        statement: policy_statement(request.decision).to_owned(),
+        statement: policy_statement(request.decision.event.state, request.decision.action)
+            .to_owned(),
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::Derived,
         hypothesis: Some(policy_hypothesis(request.decision.event.state)),
@@ -938,7 +939,11 @@ fn compile_worlds(params: WorldCompilationParams<'_>) -> (WorldEnvelope, Vec<Str
                 ));
             }
         }
-        _ => {
+        // Candidate, policy, delivery, and resolution stages carry no stronger physical reading.
+        EventState::Hypothesized
+        | EventState::Adjudicated
+        | EventState::AlertDelivered
+        | EventState::Resolved => {
             alternatives.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:policy-state"),
                 description: "The current event state is retained without promoting it to physical certainty.".to_owned(),
@@ -1106,8 +1111,8 @@ fn world_identity(
     ContentDigest::sha256(&encoder.finish())
 }
 
-fn policy_statement(decision: &ReferencePolicyDecision) -> &'static str {
-    match (decision.event.state, decision.action) {
+pub(crate) fn policy_statement(state: EventState, action: ReferencePolicyAction) -> &'static str {
+    match (state, action) {
         (EventState::Corroborated, ReferencePolicyAction::PrepareAlert) => {
             "The reference policy independently corroborated unknown-person presence and exposed alert preparation as a separate affordance."
         }
@@ -1120,7 +1125,19 @@ fn policy_statement(decision: &ReferencePolicyDecision) -> &'static str {
         (EventState::Rejected, ReferencePolicyAction::Hold) => {
             "The reference policy rejected this event candidate without asserting complete physical absence."
         }
-        _ => {
+        // Every other pairing grants no effect authority; `Indeterminate` never prepares an alert.
+        (EventState::Corroborated, ReferencePolicyAction::Hold)
+        | (
+            EventState::Witnessed | EventState::Indeterminate | EventState::Rejected,
+            ReferencePolicyAction::PrepareAlert,
+        )
+        | (
+            EventState::Hypothesized
+            | EventState::Adjudicated
+            | EventState::AlertDelivered
+            | EventState::Resolved,
+            ReferencePolicyAction::Hold | ReferencePolicyAction::PrepareAlert,
+        ) => {
             "The reference policy retained the event lifecycle state without granting effect authority."
         }
     }
@@ -1142,13 +1159,19 @@ fn reconciliation_basis_for(
 /// resolution progress; those are dispositions and effect outcomes, not physical evidence, so
 /// they never upgrade the physical proposition (`docs/AGENT_OPERATING_MODEL.md` §6). `estimated`
 /// (KSTATE-002) requires a supporting derivation, so a stage with no retained supporting roots is
-/// `unknown` (KSTATE-003) rather than estimated.
+/// `unknown` (KSTATE-003) rather than estimated. Retained evidence that points both ways is an
+/// unresolved contradiction: the model has no typed adjudication basis that could retire it, so a
+/// post-corroboration stage keeps it `conflicted` exactly as `indeterminate` does, instead of
+/// flattening it to `estimated` while the cell still carries the contradicting roots.
 pub(crate) fn physical_knowledge_state(
     state: EventState,
     supporting: &[ContentDigest],
     contradicting: &[ContentDigest],
 ) -> KnowledgeState {
-    let supported_estimate = if supporting.is_empty() {
+    let unresolved_conflict = !supporting.is_empty() && !contradicting.is_empty();
+    let post_corroboration = if unresolved_conflict {
+        KnowledgeState::Conflicted
+    } else if supporting.is_empty() {
         KnowledgeState::Unknown
     } else {
         KnowledgeState::Estimated
@@ -1163,15 +1186,16 @@ pub(crate) fn physical_knowledge_state(
         EventState::Corroborated => KnowledgeState::Known,
         // Policy selected a disposition. Adjudication is also reachable through an urgent
         // single-sensor exception or policy reconciliation from indeterminate, so it cannot imply
-        // corroboration: at most estimated from retained support.
-        EventState::Adjudicated => supported_estimate,
+        // corroboration: at most estimated from retained support, and conflicted while retained
+        // contradicting roots remain unresolved.
+        EventState::Adjudicated => post_corroboration,
         // A durable delivery receipt proves the alert effect, not the physical event.
-        EventState::AlertDelivered => supported_estimate,
+        EventState::AlertDelivered => post_corroboration,
         // Resolution is a disposition; it neither confirms nor refutes physical presence.
-        EventState::Resolved => supported_estimate,
+        EventState::Resolved => post_corroboration,
         // Unresolved: conflicted when retained evidence points both ways, else indeterminate.
         EventState::Indeterminate => {
-            if !supporting.is_empty() && !contradicting.is_empty() {
+            if unresolved_conflict {
                 KnowledgeState::Conflicted
             } else {
                 KnowledgeState::Indeterminate
@@ -1182,7 +1206,7 @@ pub(crate) fn physical_knowledge_state(
     }
 }
 
-fn physical_statement(state: EventState) -> &'static str {
+pub(crate) fn physical_statement(state: EventState) -> &'static str {
     match state {
         EventState::Corroborated => {
             "Independent failure domains support unknown-person presence in the retained interval."
@@ -1196,17 +1220,30 @@ fn physical_statement(state: EventState) -> &'static str {
         EventState::Rejected => {
             "The event candidate is rejected, but physical absence is not certified by this policy result."
         }
-        _ => "The physical event interpretation remains bounded by the retained lifecycle state.",
+        // Candidate, policy, delivery, and resolution stages are not physical evidence.
+        EventState::Hypothesized
+        | EventState::Adjudicated
+        | EventState::AlertDelivered
+        | EventState::Resolved => {
+            "The physical event interpretation remains bounded by the retained lifecycle state."
+        }
     }
 }
 
-fn policy_hypothesis(state: EventState) -> HypothesisDisposition {
+pub(crate) fn policy_hypothesis(state: EventState) -> HypothesisDisposition {
     match state {
-        EventState::Corroborated => HypothesisDisposition::Supported,
+        // A detector/rule candidate with no retained witness is possible but not yet supported.
+        EventState::Hypothesized => HypothesisDisposition::Live,
         EventState::Witnessed => HypothesisDisposition::Supported,
-        EventState::Rejected => HypothesisDisposition::Refuted,
+        EventState::Corroborated => HypothesisDisposition::Supported,
+        // Adjudication may rest on an urgent single-sensor exception, so it claims no more support.
+        EventState::Adjudicated => HypothesisDisposition::Live,
+        // A delivery receipt proves the alert effect, not the physical hypothesis.
+        EventState::AlertDelivered => HypothesisDisposition::Live,
         EventState::Resolved => HypothesisDisposition::Resolved,
-        _ => HypothesisDisposition::Live,
+        // Unresolved evidence neither supports nor disfavors it: only `live` keeps it fully open.
+        EventState::Indeterminate => HypothesisDisposition::Live,
+        EventState::Rejected => HypothesisDisposition::Refuted,
     }
 }
 
