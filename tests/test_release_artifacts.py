@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -13,6 +14,30 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "release_artifacts.py"
+RECEIPT_FILES = ["STAGE_SHA256SUMS.txt", "build.json", "verification.json"]
+FSIZE_LIMIT = 2048
+
+# Runs the real `release_artifacts.py verify` entry point. With "after-verification-json" the
+# RLIMIT_FSIZE ceiling is lowered only once verification.json has been written, so the injected
+# EFBIG lands inside the STAGE_SHA256SUMS.txt write (Python ignores SIGXFSZ, so the oversized
+# write fails with EFBIG part-way instead of killing the process).
+VERIFY_HARNESS = """
+import pathlib, resource, sys
+script, limit, mode, argv = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4:]
+sys.path.insert(0, str(pathlib.Path(script).parent))
+import release_artifacts
+if mode == "immediately":
+    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+else:
+    original_write_json = release_artifacts.write_json
+    def write_json_then_limit(path, value):
+        original_write_json(path, value)
+        if path.name == "verification.json":
+            resource.setrlimit(resource.RLIMIT_FSIZE, (limit, limit))
+    release_artifacts.write_json = write_json_then_limit
+sys.argv = [script, *argv]
+raise SystemExit(release_artifacts.main())
+"""
 EPOCH = 1_700_000_000
 COMMIT = "0000000000000000000000000000000000000001"
 
@@ -157,6 +182,80 @@ class ReleaseArtifactTests(unittest.TestCase):
                 self.assertIn("fss", archive.getnames())
             with zipfile.ZipFile(win1 / "fss-x86_64-pc-windows-msvc.zip") as archive:
                 self.assertIn("fss", archive.namelist())
+
+
+    def verify_args(self, root: Path, target: str = "x86_64-unknown-linux-gnu") -> list[str]:
+        return [
+            "verify", "--version", "0.0.1", "--target", target,
+            "--stage", str(root / "stage"), "--artifacts", str(root / "artifacts"),
+            "--receipts", str(root / "receipts"), "--source-date-epoch", str(EPOCH),
+        ]
+
+    def grow_stage(self, root: Path, count: int) -> None:
+        for index in range(count):
+            (root / "stage" / "docs" / f"grown-fixture-{index:03d}.txt").write_text(f"grown {index}\n", encoding="utf-8")
+
+    def run_verify_with_limit(self, root: Path, mode: str) -> subprocess.CompletedProcess[str]:
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        return subprocess.run(
+            [sys.executable, "-c", VERIFY_HARNESS, os.fspath(SCRIPT), str(FSIZE_LIMIT), mode, *self.verify_args(root)],
+            cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+        )
+
+    def test_verify_efbig_mid_verification_json_keeps_previous_receipt(self) -> None:
+        """fss-xhxwh: verification.json is rewritten atomically. A write that fails part-way
+        (RLIMIT_FSIZE -> EFBIG after 2 KiB of a much larger document) must leave the previous
+        verification.json byte-identical and no partial or temp file in the receipt directory."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_input(root)
+            subprocess.run([os.fspath(SCRIPT), *self.verify_args(root)], cwd=ROOT, check=True)
+            receipts = root / "receipts"
+            previous_verification = (receipts / "verification.json").read_bytes()
+            previous_sums = (receipts / "STAGE_SHA256SUMS.txt").read_bytes()
+            self.grow_stage(root, 40)
+
+            crashed = self.run_verify_with_limit(root, "immediately")
+            self.assertNotEqual(crashed.returncode, 0, "a verify whose receipt could not be written must fail")
+            self.assertIn("File too large", crashed.stderr)
+            self.assertEqual((receipts / "verification.json").read_bytes(), previous_verification, crashed.stderr)
+            self.assertEqual((receipts / "STAGE_SHA256SUMS.txt").read_bytes(), previous_sums)
+            self.assertEqual(sorted(path.name for path in receipts.iterdir()), RECEIPT_FILES, "no partial or temp file may remain")
+
+            # Control: without the limit the same verify writes the new, complete receipts.
+            subprocess.run([os.fspath(SCRIPT), *self.verify_args(root)], cwd=ROOT, check=True)
+            verification = json.loads((receipts / "verification.json").read_text(encoding="utf-8"))
+            self.assertEqual(verification["fileCount"], 43)
+            self.assertGreater(len((receipts / "verification.json").read_bytes()), FSIZE_LIMIT)
+
+    def test_verify_efbig_mid_stage_sums_keeps_previous_checksums(self) -> None:
+        """fss-xhxwh: STAGE_SHA256SUMS.txt is rewritten atomically. EFBIG part-way through it must
+        leave the previous checksum file byte-identical and no partial or temp file behind."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_input(root)
+            subprocess.run([os.fspath(SCRIPT), *self.verify_args(root)], cwd=ROOT, check=True)
+            receipts = root / "receipts"
+            previous_sums = (receipts / "STAGE_SHA256SUMS.txt").read_bytes()
+            self.grow_stage(root, 40)
+
+            crashed = self.run_verify_with_limit(root, "after-verification-json")
+            self.assertNotEqual(crashed.returncode, 0, "a verify whose checksums could not be written must fail")
+            self.assertIn("File too large", crashed.stderr)
+            self.assertEqual((receipts / "STAGE_SHA256SUMS.txt").read_bytes(), previous_sums, crashed.stderr)
+            self.assertEqual(json.loads((receipts / "verification.json").read_text(encoding="utf-8"))["fileCount"], 43)
+            self.assertEqual(sorted(path.name for path in receipts.iterdir()), RECEIPT_FILES, "no partial or temp file may remain")
+
+            subprocess.run([os.fspath(SCRIPT), *self.verify_args(root)], cwd=ROOT, check=True)
+            self.assertEqual(len((receipts / "STAGE_SHA256SUMS.txt").read_text(encoding="utf-8").splitlines()), 43)
+            self.assertGreater(len((receipts / "STAGE_SHA256SUMS.txt").read_bytes()), FSIZE_LIMIT)
+
+    def test_release_artifacts_uses_the_shared_atomic_writer(self) -> None:
+        """fss-xhxwh: no second copy of the atomic-write logic and no in-place receipt writes."""
+        text = SCRIPT.read_text(encoding="utf-8")
+        self.assertTrue("from qualification_receipt import" in text, "release_artifacts.py must import the shared writer")
+        for forbidden in ("tempfile", ".write_text(", ".write_bytes(", "os.replace"):
+            self.assertFalse(forbidden in text, f"release_artifacts.py must not write in place or copy the writer: {forbidden}")
 
 
 if __name__ == "__main__":

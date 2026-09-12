@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """The one durable writer for qualification receipts and release receipt outputs (fss-1geb3).
 
-Every receipt byte that ``scripts/qualify.sh``, ``scripts/release_qualify.sh`` and
-``scripts/claim_proof_bundle_checker.py`` persist goes through :func:`atomic_write_bytes`:
+Every receipt byte that ``scripts/qualify.sh``, ``scripts/release_qualify.sh``,
+``scripts/release_artifacts.py`` (verification.json, STAGE/ARTIFACT_SHA256SUMS.txt, the JSON and
+checksum release assets) and ``scripts/claim_proof_bundle_checker.py`` persist goes through
+:func:`atomic_write_bytes` (release archives themselves are not receipts):
 
 1. missing parent directories are created one at a time and each new entry is fsynced into its
    parent, so a crash cannot lose the directory that holds a durable receipt;
@@ -20,7 +22,8 @@ Command-line entry points used by the shell scripts (stdlib only):
 ``prepare-run-dir (--unique BASE | --exact DIR)``
     Creates the per-run receipt directory and exclusively creates its empty ``commands.jsonl``;
     prints the absolute directory. ``--unique`` appends ``-<pid>[-<n>]`` and never reuses an
-    existing directory; ``--exact`` refuses (exit 4) a directory that already holds a run's log.
+    existing directory; ``--exact`` refuses (exit 4) a directory that already holds a run's log
+    and a path that is (or lies under) a regular file.
 ``finalize --output ... --records ... --lane ... [...]``
     Builds the qualification receipt from ``commands.jsonl`` and writes it atomically. Any
     malformed record becomes a failed ``corrupt_record`` command and fails the receipt. Prints the
@@ -35,6 +38,7 @@ Command-line entry points used by the shell scripts (stdlib only):
 from __future__ import annotations
 
 import argparse
+import errno
 import hashlib
 import json
 import os
@@ -86,10 +90,29 @@ def make_durable_dirs(path: Path | str) -> Path:
             os.mkdir(directory)
         except FileExistsError:
             if not directory.is_dir():
-                raise
+                raise NotADirectoryError(
+                    errno.ENOTDIR, "exists and is not a directory", os.fspath(directory)
+                ) from None
             continue
         fsync_directory(directory.parent)
     return target
+
+
+def _discard_temp(temp_path: Path) -> None:
+    """Removes an unrenamed temp file while a write is failing. A removal error other than
+    FileNotFoundError is attached to the in-flight exception and logged, never raised in its
+    place: the caller must see why the write failed, not why the cleanup failed."""
+    original = sys.exc_info()[1]
+    try:
+        os.unlink(temp_path)
+    except FileNotFoundError:
+        pass
+    except OSError as secondary:
+        if original is None:
+            raise
+        note = f"additionally failed to remove temp file {temp_path}: {secondary!r}"
+        original.add_note(note)
+        print(f"qualification_receipt: {note}", file=sys.stderr)
 
 
 def atomic_write_bytes(output_path: Path | str, data: bytes, mode: int = 0o644) -> Path:
@@ -98,19 +121,25 @@ def atomic_write_bytes(output_path: Path | str, data: bytes, mode: int = 0o644) 
     make_durable_dirs(target.parent)
     descriptor, temp_name = tempfile.mkstemp(prefix=f".{target.name}.tmp.", dir=target.parent)
     temp_path = Path(temp_name)
+    replaced = False
     try:
-        os.fchmod(descriptor, mode)
-        with os.fdopen(descriptor, "wb") as handle:
+        handle = None
+        try:
+            os.fchmod(descriptor, mode)
+            handle = os.fdopen(descriptor, "wb")
+        finally:
+            if handle is None:
+                os.close(descriptor)
+        with handle:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temp_path, target)
+        replaced = True
         fsync_directory(target.parent)
     finally:
-        try:
-            temp_path.unlink()
-        except FileNotFoundError:
-            pass
+        if not replaced:
+            _discard_temp(temp_path)
     return target
 
 
@@ -317,6 +346,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "prepare-run-dir":
         try:
             run_dir = prepare_unique_run_dir(args.unique) if args.unique else prepare_exact_run_dir(args.exact)
+        except NotADirectoryError as exc:
+            where = args.unique or args.exact
+            print(
+                f"refusing qualification run directory {where}: {exc.filename} is not a directory "
+                f"(it is an existing regular or special file); choose a fresh --receipt-dir",
+                file=sys.stderr,
+            )
+            return EXIT_RUN_DIR_IN_USE
         except FileExistsError as exc:
             where = args.unique or args.exact
             print(
