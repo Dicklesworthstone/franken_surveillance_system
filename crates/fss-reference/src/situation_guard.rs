@@ -124,11 +124,25 @@ pub fn compile_reference_situation_with_durable_journal(
     authority: &DurableReferenceLedger,
 ) -> Result<ReferenceSituation, ReferenceError> {
     if let Some(plan) = request.alert_plan {
-        durable_journal
+        let obligation = durable_journal
             .acknowledge_obligation(&plan.obligation_id)
             .map_err(|_| ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
+        if obligation.operation_id != plan.intent.operation_id {
+            return Err(ReferenceError::InvalidSpec("obligation_operation_mismatch"));
+        }
         let operation_receipt = durable_journal
             .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
+        compile_reference_situation_with_operation_receipt(request, operation_receipt, authority)
+    } else if let Some(outcome) = request.alert_outcome {
+        let obligation = durable_journal
+            .acknowledge_obligation(&outcome.outcome.obligation_id)
+            .map_err(|_| ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
+        if obligation.operation_id != outcome.outcome.operation_receipt.intent.operation_id {
+            return Err(ReferenceError::InvalidSpec("obligation_operation_mismatch"));
+        }
+        let operation_receipt = durable_journal
+            .operation(&outcome.outcome.operation_receipt.intent.operation_id)
             .ok_or(ReferenceError::InvalidSpec("transient_obligation_rejected"))?;
         compile_reference_situation_with_operation_receipt(request, operation_receipt, authority)
     } else {

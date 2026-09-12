@@ -6,12 +6,13 @@ use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 
 use fss_core::{
-    AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContentDigest, ContractBasis,
-    ContractBasisRegistryBytes, ContractError, EffectIntent, EffectJournal, EffectState, EventId,
-    HandoffId, IdempotencyKey, MissionId, ObligationId, ObligationState, OperationId, PrincipalId,
-    ProbabilityInterval, SensorId, SessionId, TimestampNs,
+    AffordanceClass, BatchId, CapsuleId, CaptureInterval, Completeness, ContentDigest,
+    ContractBasis, ContractBasisRegistryBytes, ContractError, EffectIntent, EffectJournal,
+    EffectState, EventId, EvidenceDelta, HandoffId, IdempotencyKey, MissionId, ObjectId,
+    ObligationId, ObligationState, OperationId, Plane, PrincipalId, ProbabilityInterval, SensorId,
+    SessionId, TimestampNs,
 };
-use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy, JournalError};
+use fss_ledger::{AppendPhase, DurableReferenceLedger, IncompleteTailPolicy, JournalError};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 use fss_reference::{
     CAPABILITY_EFFECT_RECONCILE, DeliveryPlan, DurableEffectError, DurableEffectJournal,
@@ -605,42 +606,64 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
             None,
         )?;
         assert_eq!(commit_receipt.state, EffectState::Committed);
-        // Process crash occurs here: state is Committed on disk, provider dispatch never ran.
+        // Process crash occurs here: external provider dispatch executed, but crash happened before
+        // journal recorded adapter acceptance or completion. State remains Committed on disk.
+        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
     }
 
     // Session 2: System reboots; journal is replayed from disk.
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let authority = DurableReferenceLedger::open(
+            &ledger_path,
+            "site:durable_alert",
+            IncompleteTailPolicy::Reject,
+        )?;
         let receipt = journal
             .operation(&plan.intent.operation_id)
             .ok_or(ContractError::NotFound)?;
         assert_eq!(receipt.state, EffectState::Committed);
 
-        // Recovery: Re-dispatching must succeed as idempotent continuation without failing Committed -> Committed
-        let redispatch_receipt = journal.dispatch_alert(
+        // Recovery: Re-dispatching MUST be refused with ReconciliationRequired to prevent duplicate external effect!
+        let redispatch_res = journal.dispatch_alert(
             &plan,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),
             &mut provider,
-        )?;
-        assert_eq!(redispatch_receipt.state, EffectState::AdapterAccepted);
+        );
+        assert!(matches!(
+            redispatch_res,
+            Err(DurableEffectError::Contract(
+                ContractError::ReconciliationRequired
+            ))
+        ));
 
+        // Reconcile alert with provider evidence instead of re-sending:
         let provider_proof = provider
             .lookup(&plan.intent)?
             .ok_or("missing provider receipt")?
             .receipt_digest();
-        let _ = journal.observe_alert(&plan, provider_proof, TimestampNs(215), &provider)?;
-
-        // Verification must be able to complete normally
-        let verified_receipt = journal.verify_alert(&plan, TimestampNs(220), &provider)?;
-        assert_eq!(verified_receipt.state, EffectState::Verified);
+        let reconciled_receipt = journal
+            .reconcile_alert(&plan, TimestampNs(215), &provider)?
+            .ok_or("reconciliation failed")?;
+        assert_eq!(reconciled_receipt.state, EffectState::Verified);
+        assert_eq!(reconciled_receipt.result_digest, Some(provider_proof));
 
         let obligation = journal
             .obligations()
             .find(|o| o.obligation_id == plan.obligation_id)
             .ok_or(ContractError::NotFound)?;
         assert_eq!(obligation.state, ObligationState::Verified);
+
+        // Obligation is now verified and classified as PendingLedger
+        match journal.classify_obligation(&plan.obligation_id, &authority)? {
+            ObligationLedgerState::PendingLedger(pending) => {
+                assert_eq!(pending.obligation.obligation_id, plan.obligation_id);
+                assert_eq!(pending.obligation.state, ObligationState::Verified);
+            }
+            other => return Err(format!("expected PendingLedger, got {other:?}").into()),
+        }
     }
 
     let _ = fs::remove_file(path);
@@ -872,9 +895,14 @@ fn test_inv_111_crash_with_open_indeterminate_obligation_reopens_with_reconcile_
     // Session 2: System reboots; verify INV-111 continuity from durable journal
     {
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let mut authority = DurableReferenceLedger::open(
+            &ledger_path,
+            "site:durable_alert",
+            IncompleteTailPolicy::Reject,
+        )?;
 
         // 1. Classification against ledger must report PendingLedger (durable on disk, unledgered)
-        let state = journal.classify_obligation(&plan.obligation_id, &ctx.authority)?;
+        let state = journal.classify_obligation(&plan.obligation_id, &authority)?;
         match state {
             ObligationLedgerState::PendingLedger(pending) => {
                 assert_eq!(pending.obligation.obligation_id, plan.obligation_id);
@@ -889,7 +917,7 @@ fn test_inv_111_crash_with_open_indeterminate_obligation_reopens_with_reconcile_
         // 2. Compile situation using durable journal projection
         let req = situation_request(&ctx.decision, &ctx.event_receipt, Some(&plan))?;
         let situation =
-            compile_reference_situation_with_durable_journal(req, &journal, &ctx.authority)?;
+            compile_reference_situation_with_durable_journal(req, &journal, &authority)?;
 
         // Obligation risk and reconciliation necessity are explicitly projected
         assert!(
@@ -950,19 +978,15 @@ fn test_inv_111_crash_with_open_indeterminate_obligation_reopens_with_reconcile_
         assert_eq!(obl.state, ObligationState::Verified);
 
         // 5. Durably publish outcome to canonical ledger
-        let outcome_receipt = journal.publish_alert_outcome(
-            &plan,
-            &mut ctx.objects,
-            &mut ctx.authority,
-            &provider,
-        )?;
+        let outcome_receipt =
+            journal.publish_alert_outcome(&plan, &mut ctx.objects, &mut authority, &provider)?;
         assert_eq!(
             outcome_receipt.outcome.operation_receipt.state,
             EffectState::Verified
         );
 
         // 6. Classification now reports Ledgered
-        let state = journal.classify_obligation(&plan.obligation_id, &ctx.authority)?;
+        let state = journal.classify_obligation(&plan.obligation_id, &authority)?;
         match state {
             ObligationLedgerState::Ledgered(ledgered) => {
                 assert_eq!(ledgered.obligation.obligation_id, plan.obligation_id);
@@ -1080,7 +1104,7 @@ fn test_inv_111_obligation_classification_states() -> Result<(), Box<dyn Error>>
         ObligationLedgerState::Absent
     );
 
-    // 2. PendingLedger: prepared in journal, but unledgered
+    // 2. InFlight: prepared in journal, but unledgered and non-terminal
     let plan = journal.prepare_alert(PrepareAlertParams {
         decision: &ctx.decision,
         event_receipt: &ctx.event_receipt,
@@ -1093,12 +1117,16 @@ fn test_inv_111_obligation_classification_states() -> Result<(), Box<dyn Error>>
     })?;
     let state = journal.classify_obligation(&plan.obligation_id, &ctx.authority)?;
     match state {
-        ObligationLedgerState::PendingLedger(pending) => {
-            assert_eq!(pending.obligation.obligation_id, plan.obligation_id);
-            assert_eq!(pending.obligation.state, ObligationState::Pending);
+        ObligationLedgerState::InFlight {
+            obligation,
+            receipt,
+        } => {
+            assert_eq!(obligation.obligation_id, plan.obligation_id);
+            assert_eq!(obligation.state, ObligationState::Pending);
+            assert_eq!(receipt.state, EffectState::Prepared);
         }
         other => {
-            return Err(format!("expected PendingLedger, got {other:?}").into());
+            return Err(format!("expected InFlight, got {other:?}").into());
         }
     }
 
@@ -1164,5 +1192,506 @@ fn test_inv_111_obligation_classification_states() -> Result<(), Box<dyn Error>>
     let _ = fs::remove_file(path);
     let _ = fs::remove_file(ledger_path);
     let _ = fs::remove_file(empty_path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-crash-redispatch");
+    let ledger_path = temp_journal("finding-crash-redispatch-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:redispatch");
+
+    // Session 1: Committed on disk; external dispatch occurred before crash
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let _ = journal.prepare(
+            plan.intent.clone(),
+            plan.obligation_id.clone(),
+            "delivery_acknowledged_by_provider",
+            TimestampNs(100),
+        )?;
+        let _ = journal.transition(
+            &plan.intent.operation_id,
+            EffectState::Committed,
+            TimestampNs(110),
+            None,
+            None,
+        )?;
+        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+    }
+
+    // Session 2: System reboots; journal is in Committed state.
+    // Calling dispatch_alert MUST NOT blindly redispatch to the provider!
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let redispatch_res = journal.dispatch_alert(
+            &plan,
+            ReferenceProviderBehavior::Deliver,
+            TimestampNs(200),
+            TimestampNs(210),
+            &mut provider,
+        );
+
+        match redispatch_res {
+            Err(DurableEffectError::Contract(ContractError::ReconciliationRequired)) => {
+                // Correct behavior: fails closed to prevent duplicate physical/external effect
+            }
+            Ok(_) => {
+                return Err("CRITICAL: dispatch_alert allowed blind duplicate provider dispatch on Committed state!".into());
+            }
+            Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+        }
+
+        // Reconcile alert instead of re-dispatching
+        let reconciled = journal.reconcile_alert(&plan, TimestampNs(220), &provider)?;
+        let receipt = reconciled.ok_or(ContractError::NotFound)?;
+        assert_eq!(receipt.state, EffectState::Verified);
+    }
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_f2_classify_obligation_fails_closed_on_unreconciled_ledger_append()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-pending-ledger-append");
+    let ledger_path = temp_journal("finding-pending-ledger-append-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let mut ctx = setup_alert_context(&ledger_path)?;
+    let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+
+    let plan = journal.prepare_alert(PrepareAlertParams {
+        decision: &ctx.decision,
+        event_receipt: &ctx.event_receipt,
+        authority: &ctx.authority,
+        operation_id: OperationId::parse("op:alert:finding:pending_append")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:finding:pending_append")?,
+        obligation_id: ObligationId::parse("obligation:alert:finding:pending_append")?,
+        channel: "security-sms".to_string(),
+        now: TimestampNs(30_000),
+    })?;
+
+    // Simulate unreconciled pending append in ledger
+    let delta = EvidenceDelta {
+        delta_id: "delta:test:pending:classify".to_owned(),
+        family: "sensor_capsule".to_owned(),
+        object_id: ObjectId::parse("object:camera:pending_test")?,
+        prior_generation: None,
+        new_generation: 1,
+        validity: CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+        plane: Plane::Authority,
+        payload_digest: ContentDigest::sha256(b"payload"),
+        witness_digest: Some(ContentDigest::sha256(b"witness")),
+        operation_id: None,
+    };
+    let batch = ctx.authority.prepare_batch(
+        BatchId::parse("batch:pending:classify:test")?,
+        vec![delta],
+        [ContentDigest::sha256(b"child")],
+    )?;
+    ctx.authority
+        .fail_journal_after_phase(AppendPhase::CommitSync);
+    let _ = ctx.authority.append(batch);
+    let expected_sequence = ctx
+        .authority
+        .pending_append_sequence()
+        .ok_or("missing pending append sequence")?;
+
+    let classify_res = journal.classify_obligation(&plan.obligation_id, &ctx.authority);
+    match classify_res {
+        Err(DurableEffectError::LedgerReconciliationRequired { sequence })
+            if sequence == expected_sequence =>
+        {
+            // Correct behavior
+        }
+        Ok(state) => {
+            return Err(format!(
+                "CRITICAL: classify_obligation ignored pending append in ledger and returned {:?}",
+                state
+            )
+            .into());
+        }
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    let classify_op_res = journal.classify_operation(&plan.intent.operation_id, &ctx.authority);
+    match classify_op_res {
+        Err(DurableEffectError::LedgerReconciliationRequired { sequence })
+            if sequence == expected_sequence =>
+        {
+            // Correct behavior
+        }
+        Ok(state) => {
+            return Err(format!(
+                "CRITICAL: classify_operation ignored pending append in ledger and returned {:?}",
+                state
+            )
+            .into());
+        }
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_f3_classify_obligation_rejects_prepared_as_pending_ledger()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-prepared-pending-ledger");
+    let ledger_path = temp_journal("finding-prepared-pending-ledger-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let ctx = setup_alert_context(&ledger_path)?;
+    let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+
+    let plan = journal.prepare_alert(PrepareAlertParams {
+        decision: &ctx.decision,
+        event_receipt: &ctx.event_receipt,
+        authority: &ctx.authority,
+        operation_id: OperationId::parse("op:alert:finding:in_flight")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:finding:in_flight")?,
+        obligation_id: ObligationId::parse("obligation:alert:finding:in_flight")?,
+        channel: "security-sms".to_string(),
+        now: TimestampNs(30_000),
+    })?;
+
+    // 1. Prepared must be classified as InFlight, NOT PendingLedger
+    let state = journal.classify_obligation(&plan.obligation_id, &ctx.authority)?;
+    match state {
+        ObligationLedgerState::InFlight {
+            obligation,
+            receipt,
+        } => {
+            assert_eq!(obligation.obligation_id, plan.obligation_id);
+            assert_eq!(obligation.state, ObligationState::Pending);
+            assert_eq!(receipt.state, EffectState::Prepared);
+        }
+        ObligationLedgerState::PendingLedger(_) => {
+            return Err("DEFECT: Prepared obligation was classified as PendingLedger even though publish_alert_outcome rejects it as alert_outcome_not_publishable!".into());
+        }
+        other => return Err(format!("unexpected state: {:?}", other).into()),
+    }
+
+    // 2. Committed must also be InFlight
+    let _ = journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Committed,
+        TimestampNs(31_000),
+        None,
+        None,
+    )?;
+    let state_committed = journal.classify_obligation(&plan.obligation_id, &ctx.authority)?;
+    match state_committed {
+        ObligationLedgerState::InFlight { receipt, .. } => {
+            assert_eq!(receipt.state, EffectState::Committed);
+        }
+        other => return Err(format!("expected InFlight for Committed, got {:?}", other).into()),
+    }
+
+    // 3. Indeterminate is terminal and publishable, so it CAN be PendingLedger
+    let _ = journal.mark_indeterminate(
+        &plan.intent.operation_id,
+        TimestampNs(32_000),
+        "test_timeout",
+    )?;
+    let state_indet = journal.classify_obligation(&plan.obligation_id, &ctx.authority)?;
+    match state_indet {
+        ObligationLedgerState::PendingLedger(pending) => {
+            assert_eq!(pending.obligation.state, ObligationState::Indeterminate);
+            assert_eq!(pending.receipt.state, EffectState::Indeterminate);
+        }
+        other => {
+            return Err(
+                format!("expected PendingLedger for Indeterminate, got {:?}", other).into(),
+            );
+        }
+    }
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_f4_reconcile_alert_must_not_drop_provider_failure() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-reconcile-drop-failure");
+    let ledger_path = temp_journal("finding-reconcile-drop-failure-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:fail_drop");
+
+    // Session 1: Indeterminate with terminal provider failure
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let _ = journal.prepare(
+            plan.intent.clone(),
+            plan.obligation_id.clone(),
+            "delivery_acknowledged_by_provider",
+            TimestampNs(100),
+        )?;
+        let _ = journal.transition(
+            &plan.intent.operation_id,
+            EffectState::Committed,
+            TimestampNs(110),
+            None,
+            None,
+        )?;
+        let _ = journal.mark_indeterminate(
+            &plan.intent.operation_id,
+            TimestampNs(120),
+            "provider_timeout",
+        )?;
+        let _ = provider.record_failure(&plan.intent, "carrier_rejected")?;
+    }
+
+    // Session 2: System reboots; operator reconciles indeterminate alert
+    {
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let reconciled = journal.reconcile_alert(&plan, TimestampNs(200), &provider)?;
+        let receipt = reconciled.ok_or("DEFECT: reconcile_alert silently returned Ok(None) when provider had a recorded failure!")?;
+        assert_eq!(receipt.state, EffectState::Failed);
+        assert_eq!(receipt.error_code, Some("carrier_rejected".to_string()));
+
+        let obl = journal
+            .obligation(&plan.obligation_id)
+            .ok_or(ContractError::NotFound)?;
+        assert_eq!(obl.state, ObligationState::Failed);
+    }
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_f5_reopen_from_disk_with_reopened_authority_ledger() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-reopen-authority");
+    let ledger_path = temp_journal("finding-reopen-authority-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let plan;
+    {
+        let ctx = setup_alert_context(&ledger_path)?;
+        let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        plan = journal.prepare_alert(PrepareAlertParams {
+            decision: &ctx.decision,
+            event_receipt: &ctx.event_receipt,
+            authority: &ctx.authority,
+            operation_id: OperationId::parse("op:alert:finding:reboot")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:alert:finding:reboot")?,
+            obligation_id: ObligationId::parse("obligation:alert:finding:reboot")?,
+            channel: "security-sms".to_string(),
+            now: TimestampNs(30_000),
+        })?;
+    }
+
+    // Session 2: Reopen both files from disk
+    {
+        let journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+        let authority = DurableReferenceLedger::open(
+            &ledger_path,
+            "site:durable_alert",
+            IncompleteTailPolicy::Reject,
+        )?;
+
+        let state = journal.classify_obligation(&plan.obligation_id, &authority)?;
+        match state {
+            ObligationLedgerState::InFlight {
+                obligation,
+                receipt,
+            } => {
+                assert_eq!(obligation.obligation_id, plan.obligation_id);
+                assert_eq!(obligation.state, ObligationState::Pending);
+                assert_eq!(receipt.state, EffectState::Prepared);
+            }
+            other => {
+                return Err(format!("expected InFlight on true reboot, got {:?}", other).into());
+            }
+        }
+    }
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_f6_delta_payload_mismatch_fails_closed_to_ledger_conflict()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-f6-conflict");
+    let ledger_path = temp_journal("finding-f6-conflict-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let mut ctx = setup_alert_context(&ledger_path)?;
+    let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:f6");
+
+    let plan = journal.prepare_alert(PrepareAlertParams {
+        decision: &ctx.decision,
+        event_receipt: &ctx.event_receipt,
+        authority: &ctx.authority,
+        operation_id: OperationId::parse("op:alert:finding:f6")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:finding:f6")?,
+        obligation_id: ObligationId::parse("obligation:alert:finding:f6")?,
+        channel: "security-sms".to_string(),
+        now: TimestampNs(30_000),
+    })?;
+    let _ = journal.dispatch_alert(
+        &plan,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(31_000),
+        TimestampNs(32_000),
+        &mut provider,
+    )?;
+    let _ = journal.reconcile_alert(&plan, TimestampNs(33_000), &provider)?;
+    let _outcome_receipt =
+        journal.publish_alert_outcome(&plan, &mut ctx.objects, &mut ctx.authority, &provider)?;
+
+    // Tamper with delta payload in ledger by creating a batch with mismatched payload digest
+    let effect_object_id = ObjectId::parse(format!(
+        "object:effect:{}",
+        plan.intent.operation_id.as_str()
+    ))?;
+    let delta = EvidenceDelta {
+        delta_id: "delta:test:tampered".to_owned(),
+        family: "alert_effect_outcome".to_owned(),
+        object_id: effect_object_id,
+        prior_generation: Some(1),
+        new_generation: 2,
+        validity: CaptureInterval::new(TimestampNs(10), TimestampNs(20))?,
+        plane: Plane::Effect,
+        payload_digest: ContentDigest::sha256(b"corrupted_payload_digest"),
+        witness_digest: Some(ContentDigest::sha256(b"wrong_witness")),
+        operation_id: Some(plan.intent.operation_id.clone()),
+    };
+    let batch = ctx.authority.prepare_batch(
+        BatchId::parse("batch:tampered:f6")?,
+        vec![delta],
+        [ContentDigest::sha256(b"child")],
+    )?;
+    ctx.authority.append(batch)?;
+
+    // Classify obligation must fail closed to LedgerConflict, NOT default to passing equality
+    let state = journal.classify_obligation(&plan.obligation_id, &ctx.authority)?;
+    match state {
+        ObligationLedgerState::LedgerConflict { obligation_id, .. } => {
+            assert_eq!(obligation_id, plan.obligation_id);
+        }
+        other => return Err(format!("expected LedgerConflict, got {:?}", other).into()),
+    }
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
+    Ok(())
+}
+
+#[test]
+fn test_finding_f7_situation_guard_rejects_transient_and_mismatched_obligation()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("finding-f7-guard");
+    let ledger_path = temp_journal("finding-f7-guard-ledger");
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_file(&ledger_path);
+
+    let mut ctx = setup_alert_context(&ledger_path)?;
+    let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
+    let provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:f7");
+
+    let valid_plan = journal.prepare_alert(PrepareAlertParams {
+        decision: &ctx.decision,
+        event_receipt: &ctx.event_receipt,
+        authority: &ctx.authority,
+        operation_id: OperationId::parse("op:alert:finding:f7:valid")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:finding:f7:valid")?,
+        obligation_id: ObligationId::parse("obligation:alert:finding:f7:valid")?,
+        channel: "security-sms".to_string(),
+        now: TimestampNs(30_000),
+    })?;
+
+    // 1. Mismatched obligation ID vs operation ID in alert_plan
+    let mut mismatched_plan = valid_plan.clone();
+    mismatched_plan.intent.operation_id = OperationId::parse("op:alert:finding:f7:other")?;
+    let req1 = situation_request(&ctx.decision, &ctx.event_receipt, Some(&mismatched_plan))?;
+    let err1 = compile_reference_situation_with_durable_journal(req1, &journal, &ctx.authority);
+    assert!(matches!(
+        err1,
+        Err(ReferenceError::InvalidSpec("obligation_operation_mismatch"))
+    ));
+
+    // 2. Alert outcome provided with alert_plan = None, but outcome was NEVER in durable journal
+    let mut transient_journal = EffectJournal::new();
+    let transient_plan = prepare_reference_alert(
+        PrepareAlertParams {
+            decision: &ctx.decision,
+            event_receipt: &ctx.event_receipt,
+            authority: &ctx.authority,
+            operation_id: OperationId::parse("op:alert:finding:f7:transient")?,
+            idempotency_key: IdempotencyKey::parse("idempotency:alert:finding:f7:transient")?,
+            obligation_id: ObligationId::parse("obligation:alert:finding:f7:transient")?,
+            channel: "security-sms".to_string(),
+            now: TimestampNs(30_000),
+        },
+        &mut transient_journal,
+    )?;
+    let _ = transient_journal.transition(
+        &transient_plan.intent.operation_id,
+        EffectState::Committed,
+        TimestampNs(31_000),
+        None,
+        None,
+    )?;
+    let _ = transient_journal.mark_indeterminate(
+        &transient_plan.intent.operation_id,
+        TimestampNs(32_000),
+        "transient_indeterminate",
+    )?;
+    let transient_outcome = fss_reference::publish_reference_alert_outcome(
+        &transient_plan,
+        &transient_journal,
+        &mut ctx.objects,
+        &mut ctx.authority,
+        &provider,
+    )?;
+
+    // Passing transient outcome with alert_plan: None must be rejected by durable journal guard
+    let mut req2 = situation_request(&ctx.decision, &ctx.event_receipt, None)?;
+    req2.alert_outcome = Some(&transient_outcome);
+    let err2 = compile_reference_situation_with_durable_journal(req2, &journal, &ctx.authority);
+    assert!(matches!(
+        err2,
+        Err(ReferenceError::InvalidSpec("transient_obligation_rejected"))
+    ));
+
+    // 3. Mismatched obligation ID vs operation ID in alert_outcome
+    let mut mismatched_outcome = transient_outcome.clone();
+    mismatched_outcome.outcome.obligation_id =
+        ObligationId::parse("obligation:alert:finding:f7:mismatch")?;
+    let mut req3 = situation_request(&ctx.decision, &ctx.event_receipt, None)?;
+    req3.alert_outcome = Some(&mismatched_outcome);
+    let err3 = compile_reference_situation_with_durable_journal(req3, &journal, &ctx.authority);
+    assert!(matches!(
+        err3,
+        Err(ReferenceError::InvalidSpec("transient_obligation_rejected"))
+            | Err(ReferenceError::InvalidSpec("obligation_operation_mismatch"))
+    ));
+
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(ledger_path);
     Ok(())
 }

@@ -56,6 +56,11 @@ pub enum DurableEffectError {
         /// Offending transient obligation identity.
         obligation_id: ObligationId,
     },
+    /// Canonical reference ledger has an uncommitted or pending append that requires reconciliation.
+    LedgerReconciliationRequired {
+        /// Sequence of the pending append.
+        sequence: u64,
+    },
 }
 
 impl fmt::Display for DurableEffectError {
@@ -76,6 +81,10 @@ impl fmt::Display for DurableEffectError {
                 formatter,
                 "obligation {obligation_id} is transient and not durably recorded (INV-111 violation)"
             ),
+            Self::LedgerReconciliationRequired { sequence } => write!(
+                formatter,
+                "canonical ledger has uncommitted pending append at sequence {sequence} requiring reconciliation"
+            ),
         }
     }
 }
@@ -86,7 +95,9 @@ impl Error for DurableEffectError {
             Self::Journal(error) => Some(error),
             Self::Contract(error) => Some(error),
             Self::Reference(error) => Some(error),
-            Self::UnexpectedRecordKind { .. } | Self::TransientObligation { .. } => None,
+            Self::UnexpectedRecordKind { .. }
+            | Self::TransientObligation { .. }
+            | Self::LedgerReconciliationRequired { .. } => None,
             Self::Decode { error, .. } => Some(error),
         }
     }
@@ -139,7 +150,14 @@ pub struct LedgeredObligation {
 pub enum ObligationLedgerState {
     /// The obligation is not recorded in the durable journal and the ledger names none.
     Absent,
-    /// The obligation is durably journaled, but its outcome has not been published to the canonical ledger.
+    /// The obligation is in an in-flight, non-terminal state (Prepared, Committed, AdapterAccepted, Observed) and cannot yet be published to the ledger.
+    InFlight {
+        /// The durable obligation recorded in the journal.
+        obligation: Obligation,
+        /// The operation receipt recorded in the journal.
+        receipt: OperationReceipt,
+    },
+    /// The obligation is durably in a terminal state (Verified, Failed, or Indeterminate) in the journal, but not yet published to the canonical ledger.
     PendingLedger(PendingLedgerObligation),
     /// The obligation is durably journaled and its exact outcome is published in the canonical ledger.
     Ledgered(LedgeredObligation),
@@ -286,6 +304,9 @@ impl DurableEffectJournal {
         obligation_id: &ObligationId,
         ledger: &DurableReferenceLedger,
     ) -> Result<ObligationLedgerState, DurableEffectError> {
+        if let Some(sequence) = ledger.pending_append_sequence() {
+            return Err(DurableEffectError::LedgerReconciliationRequired { sequence });
+        }
         let Some(obligation) = self.obligation(obligation_id) else {
             return Ok(ObligationLedgerState::Absent);
         };
@@ -297,12 +318,22 @@ impl DurableEffectJournal {
             obligation.operation_id.as_str()
         ))?;
         let Some(published) = ledger.current().objects.get(&effect_object_id) else {
-            return Ok(ObligationLedgerState::PendingLedger(
-                PendingLedgerObligation {
+            if matches!(
+                receipt.state,
+                EffectState::Verified | EffectState::Failed | EffectState::Indeterminate
+            ) {
+                return Ok(ObligationLedgerState::PendingLedger(
+                    PendingLedgerObligation {
+                        obligation: obligation.clone(),
+                        receipt: receipt.clone(),
+                    },
+                ));
+            } else {
+                return Ok(ObligationLedgerState::InFlight {
                     obligation: obligation.clone(),
                     receipt: receipt.clone(),
-                },
-            ));
+                });
+            }
         };
         if published.family != ALERT_OUTCOME_FAMILY || published.plane != Plane::Effect {
             return Ok(ObligationLedgerState::LedgerConflict {
@@ -326,11 +357,9 @@ impl DurableEffectJournal {
                 .find(|delta| delta.object_id == effect_object_id)
         });
         let ledgered_witness = matching_delta.and_then(|d| d.witness_digest);
+        let delta_payload = matching_delta.map(|d| d.payload_digest);
         if ledgered_witness == Some(receipt.receipt_digest())
-            && published.payload_digest
-                == matching_delta
-                    .map(|d| d.payload_digest)
-                    .unwrap_or(published.payload_digest)
+            && delta_payload == Some(published.payload_digest)
         {
             let batch = matching_batch.ok_or(ContractError::NotFound)?;
             Ok(ObligationLedgerState::Ledgered(LedgeredObligation {
@@ -356,6 +385,9 @@ impl DurableEffectJournal {
         operation_id: &OperationId,
         ledger: &DurableReferenceLedger,
     ) -> Result<ObligationLedgerState, DurableEffectError> {
+        if let Some(sequence) = ledger.pending_append_sequence() {
+            return Err(DurableEffectError::LedgerReconciliationRequired { sequence });
+        }
         let effect_object_id = ObjectId::parse(format!("object:effect:{}", operation_id.as_str()))?;
         let Some(_receipt) = self.operation(operation_id) else {
             if let Some(published) = ledger.current().objects.get(&effect_object_id) {
@@ -535,7 +567,9 @@ impl DurableEffectJournal {
                 )?;
             }
             EffectState::Committed => {
-                // Idempotent continuation after restart: commitment already journaled.
+                // A Committed operation across restart cannot be blindly re-dispatched to the external provider!
+                // It must be reconciled or resolved via reconcile_alert.
+                return Err(ContractError::ReconciliationRequired.into());
             }
             EffectState::Indeterminate => {
                 // Indeterminate effects must be reconciled, not blindly retried!
@@ -632,10 +666,22 @@ impl DurableEffectJournal {
         provider: &ReferenceAlertProvider,
     ) -> Result<Option<OperationReceipt>, DurableEffectError> {
         crate::alert::validate_reference_alert_plan(plan)?;
+        let op = &plan.intent.operation_id;
+
+        // Finding 4: Must check for recorded provider failures and transition to Failed
+        if let Some(failure_receipt) = provider.lookup_failure(&plan.intent)? {
+            let receipt = self.reconcile_failed(
+                op,
+                failure_receipt.receipt_digest(),
+                now,
+                failure_receipt.error_code.clone(),
+            )?;
+            return Ok(Some(receipt.clone()));
+        }
+
         let Some(provider_receipt) = provider.lookup(&plan.intent)? else {
             return Ok(None);
         };
-        let op = &plan.intent.operation_id;
         let current_state = self
             .operation(op)
             .map(|r| r.state)
@@ -667,10 +713,14 @@ impl DurableEffectJournal {
                 Ok(Some(receipt.clone()))
             }
             EffectState::Committed => {
-                let acc_time = now;
+                let ind_time = now;
                 let obs_time = TimestampNs(now.0.saturating_add(1));
                 let ver_time = TimestampNs(now.0.saturating_add(2));
-                self.transition(op, EffectState::AdapterAccepted, acc_time, None, None)?;
+                self.mark_indeterminate(
+                    op,
+                    ind_time,
+                    "restart_reconciliation_pending_observation",
+                )?;
                 self.transition(
                     op,
                     EffectState::Observed,
