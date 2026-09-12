@@ -173,10 +173,28 @@ impl KnowledgeCell {
     /// Returns whether this cell may be used as an irreversible-effect premise.
     #[must_use]
     pub fn is_irreversible_effect_premise(&self, now: TimestampNs) -> bool {
-        self.knowledge_state == KnowledgeState::Known
+        self.knowledge_state.may_authorize_irreversible_effect()
             && !self.evidence.is_empty()
             && self.contradictions.is_empty()
             && self.valid_until.is_none_or(|limit| now <= limit)
+    }
+
+    /// Returns whether this knowledge cell is an estimated proposition.
+    #[must_use]
+    pub fn is_estimated(&self) -> bool {
+        self.knowledge_state == KnowledgeState::Estimated
+    }
+
+    /// Returns whether this cell requires explicit assumptions to be used in planning.
+    #[must_use]
+    pub fn requires_explicit_assumptions(&self) -> bool {
+        self.knowledge_state.explicit_assumptions_required()
+    }
+
+    /// Returns whether this cell may support planning.
+    #[must_use]
+    pub fn may_support_planning(&self) -> bool {
+        self.knowledge_state.may_support_planning()
     }
 
     /// Returns the cell digest.

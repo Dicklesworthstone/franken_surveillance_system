@@ -73,6 +73,22 @@ pub enum KnowledgeState {
 }
 
 impl KnowledgeState {
+    /// Returns the stable canonical ID for this knowledge state (e.g. `KSTATE-001`).
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Known => "KSTATE-001",
+            Self::Estimated => "KSTATE-002",
+            Self::Unknown => "KSTATE-003",
+            Self::Conflicted => "KSTATE-004",
+            Self::Stale => "KSTATE-005",
+            Self::NotObservable => "KSTATE-006",
+            Self::Redacted => "KSTATE-007",
+            Self::Indeterminate => "KSTATE-008",
+            Self::NotApplicable => "KSTATE-009",
+        }
+    }
+
     /// Returns the stable schema spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -87,6 +103,157 @@ impl KnowledgeState {
             Self::Indeterminate => "indeterminate",
             Self::NotApplicable => "not_applicable",
         }
+    }
+
+    /// Parses a knowledge state from its stable ID (`KSTATE-001` .. `KSTATE-009`).
+    pub fn from_id(id: &str) -> Result<Self, ContractError> {
+        match id {
+            "KSTATE-001" => Ok(Self::Known),
+            "KSTATE-002" => Ok(Self::Estimated),
+            "KSTATE-003" => Ok(Self::Unknown),
+            "KSTATE-004" => Ok(Self::Conflicted),
+            "KSTATE-005" => Ok(Self::Stale),
+            "KSTATE-006" => Ok(Self::NotObservable),
+            "KSTATE-007" => Ok(Self::Redacted),
+            "KSTATE-008" => Ok(Self::Indeterminate),
+            "KSTATE-009" => Ok(Self::NotApplicable),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+
+    /// Parses a knowledge state from its schema spelling (`known`, `estimated`, etc.).
+    pub fn from_name(name: &str) -> Result<Self, ContractError> {
+        match name {
+            "known" => Ok(Self::Known),
+            "estimated" => Ok(Self::Estimated),
+            "unknown" => Ok(Self::Unknown),
+            "conflicted" => Ok(Self::Conflicted),
+            "stale" => Ok(Self::Stale),
+            "not_observable" => Ok(Self::NotObservable),
+            "redacted" => Ok(Self::Redacted),
+            "indeterminate" => Ok(Self::Indeterminate),
+            "not_applicable" => Ok(Self::NotApplicable),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+
+    /// Returns the exact normative meaning of this knowledge state from the contract registry.
+    #[must_use]
+    pub const fn meaning(self) -> &'static str {
+        match self {
+            Self::Known => {
+                "The proposition is established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition."
+            }
+            Self::Estimated => {
+                "The proposition is supported by a declared derivation or model with explicit uncertainty and operating-envelope limits."
+            }
+            Self::Unknown => {
+                "The authorized evidence acquired so far does not establish the proposition."
+            }
+            Self::Conflicted => {
+                "Material admissible evidence supports incompatible propositions or generations."
+            }
+            Self::Stale => {
+                "The proposition was valid only at an older anchor or generation and has not been revalidated."
+            }
+            Self::NotObservable => {
+                "The declared sensor/authorization/model domain could not have established the proposition for the requested interval."
+            }
+            Self::Redacted => {
+                "The proposition or its evidence exists but is intentionally withheld by the current privacy/capability projection."
+            }
+            Self::Indeterminate => {
+                "A consequential external outcome may have occurred but is not yet proved or safely negated."
+            }
+            Self::NotApplicable => {
+                "The proposition has no meaning for the named object, scope, or lifecycle state."
+            }
+        }
+    }
+
+    /// Returns whether this knowledge state may support planning.
+    #[must_use]
+    pub const fn may_support_planning(self) -> bool {
+        match self {
+            Self::Known
+            | Self::Estimated
+            | Self::Unknown
+            | Self::Conflicted
+            | Self::Stale
+            | Self::NotObservable
+            | Self::Redacted
+            | Self::Indeterminate => true,
+            Self::NotApplicable => false,
+        }
+    }
+
+    /// Returns the exact normative rule for planning support.
+    #[must_use]
+    pub const fn planning_support_description(self) -> &'static str {
+        match self {
+            Self::Known => "yes",
+            Self::Estimated => "yes",
+            Self::Unknown => "yes, as an explicit branch or open variable",
+            Self::Conflicted => "yes, only as competing branches",
+            Self::Stale => "yes, only as a revalidation candidate",
+            Self::NotObservable => "yes, as a protected residual possibility",
+            Self::Redacted => "yes, only through non-leaking abstract constraints",
+            Self::Indeterminate => "yes, only in reconciliation branches",
+            Self::NotApplicable => "no",
+        }
+    }
+
+    /// Returns whether this knowledge state may authorize an irreversible effect.
+    ///
+    /// CONSTITUTIONAL HARD GATE:
+    /// Only `Known` may authorize irreversible effects (subject to capability and policy).
+    /// All other states (estimated, unknown, conflicted, stale, not_observable, redacted, indeterminate, not_applicable)
+    /// strictly return `false`.
+    #[must_use]
+    pub const fn may_authorize_irreversible_effect(self) -> bool {
+        matches!(self, Self::Known)
+    }
+
+    /// Returns the exact normative rule for irreversible effect authorization.
+    #[must_use]
+    pub const fn irreversible_effect_description(self) -> &'static str {
+        match self {
+            Self::Known => "yes, subject to capability and policy",
+            _ => "no",
+        }
+    }
+
+    /// Returns whether explicit assumptions are required to use this knowledge state.
+    #[must_use]
+    pub const fn explicit_assumptions_required(self) -> bool {
+        !matches!(self, Self::Known | Self::NotApplicable)
+    }
+}
+
+impl CanonicalEncode for KnowledgeState {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for KnowledgeState {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        Self::from_name(text).or_else(|_| Self::from_id(text))
+    }
+}
+
+impl fmt::Display for KnowledgeState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for KnowledgeState {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_name(s).or_else(|_| Self::from_id(s))
     }
 }
 
