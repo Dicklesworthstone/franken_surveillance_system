@@ -196,7 +196,9 @@ impl fmt::Display for ModelLicensePolicyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingLicense => f.write_str("model license specification is missing or empty"),
-            Self::MissingProfile => f.write_str("operational profile specification is missing or empty"),
+            Self::MissingProfile => {
+                f.write_str("operational profile specification is missing or empty")
+            }
             Self::MissingLicenseTextDigest => {
                 f.write_str("required license legal text digest is missing")
             }
@@ -204,12 +206,21 @@ impl fmt::Display for ModelLicensePolicyError {
                 write!(f, "invalid operational profile identifier: '{name}'")
             }
             Self::UnknownLicense { spdx_or_identity } => {
-                write!(f, "model license '{spdx_or_identity}' is unknown or not admitted")
+                write!(
+                    f,
+                    "model license '{spdx_or_identity}' is unknown or not admitted"
+                )
             }
             Self::UnknownLicenseTerm { term } => {
-                write!(f, "unknown license term '{term}' is never treated as permissive")
+                write!(
+                    f,
+                    "unknown license term '{term}' is never treated as permissive"
+                )
             }
-            Self::LicenseExpired { expiry, evaluated_at } => {
+            Self::LicenseExpired {
+                expiry,
+                evaluated_at,
+            } => {
                 write!(
                     f,
                     "model license expired at ns {} (evaluated at ns {})",
@@ -239,10 +250,20 @@ impl fmt::Display for ModelLicensePolicyError {
                 )
             }
             Self::ForbiddenRestriction { restriction } => {
-                write!(f, "restriction '{restriction}' is strictly forbidden by policy")
+                write!(
+                    f,
+                    "restriction '{restriction}' is strictly forbidden by policy"
+                )
             }
-            Self::BoundExceeded { bound, limit, actual } => {
-                write!(f, "policy bound '{bound}' exceeded: limit {limit}, actual {actual}")
+            Self::BoundExceeded {
+                bound,
+                limit,
+                actual,
+            } => {
+                write!(
+                    f,
+                    "policy bound '{bound}' exceeded: limit {limit}, actual {actual}"
+                )
             }
             Self::Contract(err) => write!(f, "contract error: {err}"),
         }
@@ -437,7 +458,10 @@ impl ModelLicensePolicy {
     }
 
     /// Adds an admitted SPDX license identifier or proprietary identity to the policy.
-    pub fn allow_license(&mut self, spdx: impl Into<String>) -> Result<(), ModelLicensePolicyError> {
+    pub fn allow_license(
+        &mut self,
+        spdx: impl Into<String>,
+    ) -> Result<(), ModelLicensePolicyError> {
         let spdx = spdx.into();
         if self.allowed_licenses.len() >= MAX_POLICY_ALLOWED_LICENSES_COUNT
             && !self.allowed_licenses.contains(&spdx)

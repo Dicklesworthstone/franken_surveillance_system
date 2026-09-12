@@ -7,12 +7,11 @@ use std::path::{Path, PathBuf};
 
 use fss_core::{CalibrationGeneration, ContentDigest, ModelGeneration, SchemaId, TimestampNs};
 use fss_object::{
-    ImportOutcome, MAX_POLICY_ALLOWED_LICENSES_COUNT,
-    MAX_POLICY_FORBIDDEN_RESTRICTIONS_COUNT, MAX_POLICY_KNOWN_TERMS_COUNT, MAX_POLICY_NAME_LEN,
-    MAX_PROFILE_NAME_LEN, ModelId, ModelLicenseDecision, ModelLicensePolicy,
-    ModelLicensePolicyError, ModelLicenseRecord, ModelManifestV1, ModelPackage,
-    ModelPackageArtifact, ModelPackageError, ModelPackageImporter, ModelPackageLimits,
-    ModelUseProfile, SpoolLimits, StagingSpool,
+    ImportOutcome, MAX_POLICY_ALLOWED_LICENSES_COUNT, MAX_POLICY_FORBIDDEN_RESTRICTIONS_COUNT,
+    MAX_POLICY_KNOWN_TERMS_COUNT, MAX_POLICY_NAME_LEN, MAX_PROFILE_NAME_LEN, ModelId,
+    ModelLicenseDecision, ModelLicensePolicy, ModelLicensePolicyError, ModelLicenseRecord,
+    ModelManifestV1, ModelPackage, ModelPackageArtifact, ModelPackageError, ModelPackageImporter,
+    ModelPackageLimits, ModelUseProfile, SpoolLimits, StagingSpool,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -63,7 +62,9 @@ fn sample_manifest_with_license(
     )?)
 }
 
-fn sample_package_with_license(license: ModelLicenseRecord) -> Result<ModelPackage, Box<dyn Error>> {
+fn sample_package_with_license(
+    license: ModelLicenseRecord,
+) -> Result<ModelPackage, Box<dyn Error>> {
     let weights_payload = b"weights-bytes-v1".to_vec();
     let weights_digest = ContentDigest::sha256(&weights_payload);
 
@@ -137,7 +138,10 @@ fn test_missing_profile_fails_closed() -> TestResult {
     assert!(matches!(res, Err(ModelLicensePolicyError::MissingProfile)));
 
     let res_ws = ModelUseProfile::parse("   ");
-    assert!(matches!(res_ws, Err(ModelLicensePolicyError::MissingProfile)));
+    assert!(matches!(
+        res_ws,
+        Err(ModelLicensePolicyError::MissingProfile)
+    ));
 
     Ok(())
 }
@@ -439,7 +443,9 @@ fn test_noncommercial_spdx_incompatible_with_commercial_profile() -> TestResult 
             assert_eq!(spdx_or_identity, "CC-BY-NC-4.0");
             assert_eq!(requested_profile, ModelUseProfile::CommercialProduction);
         }
-        other => return Err(format!("expected LicenseIncompatibleWithProfile, got {other:?}").into()),
+        other => {
+            return Err(format!("expected LicenseIncompatibleWithProfile, got {other:?}").into());
+        }
     }
 
     Ok(())
@@ -630,7 +636,9 @@ fn test_importer_rejects_unknown_license_at_import_time() -> TestResult {
         })) => {
             assert_eq!(spdx_or_identity, "GPL-2.0-only");
         }
-        other => return Err(format!("expected LicensePolicy(UnknownLicense), got {other:?}").into()),
+        other => {
+            return Err(format!("expected LicensePolicy(UnknownLicense), got {other:?}").into());
+        }
     }
 
     // Nothing was staged into the spool
@@ -666,7 +674,9 @@ fn test_importer_rejects_expired_license_at_import_time() -> TestResult {
             assert_eq!(expiry, TimestampNs(1_000_000_000));
             assert_eq!(evaluated_at, TimestampNs(2_000_000_000));
         }
-        other => return Err(format!("expected LicensePolicy(LicenseExpired), got {other:?}").into()),
+        other => {
+            return Err(format!("expected LicensePolicy(LicenseExpired), got {other:?}").into());
+        }
     }
 
     assert_eq!(importer.spool().digests().count(), 0);
@@ -701,7 +711,11 @@ fn test_importer_rejects_unpermitted_profile_at_import_time() -> TestResult {
             assert_eq!(requested_profile, ModelUseProfile::CommercialProduction);
             assert_eq!(conflicting_restriction, "internal_evaluation_only");
         }
-        other => return Err(format!("expected LicensePolicy(NotPermittedForUse), got {other:?}").into()),
+        other => {
+            return Err(
+                format!("expected LicensePolicy(NotPermittedForUse), got {other:?}").into(),
+            );
+        }
     }
 
     assert_eq!(importer.spool().digests().count(), 0);
@@ -730,7 +744,11 @@ fn test_importer_rejects_unknown_term_at_import_time() -> TestResult {
         })) => {
             assert_eq!(term, "arbitrary_unknown_restriction_clause");
         }
-        other => return Err(format!("expected LicensePolicy(UnknownLicenseTerm), got {other:?}").into()),
+        other => {
+            return Err(
+                format!("expected LicensePolicy(UnknownLicenseTerm), got {other:?}").into(),
+            );
+        }
     }
 
     assert_eq!(importer.spool().digests().count(), 0);
