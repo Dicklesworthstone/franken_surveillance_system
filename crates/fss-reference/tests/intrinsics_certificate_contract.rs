@@ -11,7 +11,7 @@ use fss_reference::{
     CalibrationError, CalibrationLifecycle, CalibrationLifecycleState, CalibrationSample,
     CameraIntrinsics, DistortionModel, Fixed64, IntrinsicsCertificateBuilder, IntrinsicsCovariance,
     IntrinsicsResidual, MAX_CALIBRATION_SAMPLES, MAX_CERTIFICATE_ID_BYTES,
-    MAX_REPROJECTION_TOLERANCE_UPX, MIN_CALIBRATION_SAMPLES,
+    MAX_IMAGE_DIMENSION_PX, MAX_REPROJECTION_TOLERANCE_UPX, MIN_CALIBRATION_SAMPLES,
 };
 
 /// Helper to generate synthetic, non-degenerate calibration sample points.
@@ -1100,3 +1100,393 @@ fn test_finding_f7_max_reprojection_tolerance_at_exact_bound() -> Result<(), Box
     );
     Ok(())
 }
+
+#[test]
+fn test_finding_f2_distinct_3d_points_bound_and_bound_minus_one() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    let base_samples = generate_synthetic_samples(16, &intrinsics, 1_000_000_000)?;
+
+    // Bound - 1: exactly 7 distinct 3D points across 16 samples must be REJECTED fail-closed
+    let mut samples_7_distinct = Vec::with_capacity(16);
+    for i in 0..16 {
+        let mut s = base_samples[i % 7].clone();
+        s.point_id = (i + 1) as u64;
+        samples_7_distinct.push(s);
+    }
+
+    let res_7 = IntrinsicsCertificateBuilder::new("cert:f2:distinct_7")?
+        .device(dev_id.clone(), dev_gen.clone(), fw_gen.clone())
+        .calibration_generation(cal_gen.clone())
+        .intrinsics(intrinsics.clone())
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples_7_distinct)?
+        .build();
+
+    match res_7 {
+        Err(CalibrationError::DegenerateEvidence { reason }) => {
+            if !reason.contains("insufficient distinct 3D points: 7 distinct, minimum 8 required") {
+                return Err(format!("Expected insufficient distinct 3D points message, got: {reason}").into());
+            }
+        }
+        Ok(_) => return Err("CRITICAL: builder accepted 7 distinct 3D points (bound-1)!".into()),
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    // Bound: exactly 8 distinct 3D points across 16 samples must SUCCEED
+    let mut samples_8_distinct = Vec::with_capacity(16);
+    for i in 0..16 {
+        let mut s = base_samples[i % 8].clone();
+        s.point_id = (i + 1) as u64;
+        samples_8_distinct.push(s);
+    }
+
+    let res_8 = IntrinsicsCertificateBuilder::new("cert:f2:distinct_8")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples_8_distinct)?
+        .build();
+
+    if res_8.is_err() {
+        return Err(format!("CRITICAL: builder rejected 8 distinct 3D points at exact bound: {:?}", res_8).into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_f2_distinct_2d_points_bound_minus_one() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    let base_samples = generate_synthetic_samples(16, &intrinsics, 1_000_000_000)?;
+
+    // 16 distinct 3D points, but only 7 distinct 2D observations
+    let mut samples_7_2d = Vec::with_capacity(16);
+    for i in 0..16 {
+        let mut s = base_samples[i].clone();
+        s.observed_pixel_upx = base_samples[i % 7].observed_pixel_upx;
+        samples_7_2d.push(s);
+    }
+
+    let res = IntrinsicsCertificateBuilder::new("cert:f2:distinct_2d_7")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples_7_2d)?
+        .build();
+
+    match res {
+        Err(CalibrationError::DegenerateEvidence { reason }) => {
+            if !reason.contains("insufficient distinct 2D observations: 7 distinct, minimum 8 required") {
+                return Err(format!("Expected insufficient distinct 2D observations message, got: {reason}").into());
+            }
+        }
+        Ok(_) => return Err("CRITICAL: builder accepted 7 distinct 2D observations (bound-1)!".into()),
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_f2_positive_depth_bound_and_bound_minus_one() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    // Bound - 1: Z = 0 mm must be REJECTED fail-closed
+    let mut samples_z0 = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+    samples_z0[0] = CalibrationSample::new(
+        samples_z0[0].point_id,
+        [samples_z0[0].world_point_mm[0], samples_z0[0].world_point_mm[1], 0],
+        samples_z0[0].observed_pixel_upx,
+        samples_z0[0].frame_index,
+        samples_z0[0].capture_time,
+    )?;
+
+    let res_z0 = IntrinsicsCertificateBuilder::new("cert:depth:z0")?
+        .device(dev_id.clone(), dev_gen.clone(), fw_gen.clone())
+        .calibration_generation(cal_gen.clone())
+        .intrinsics(intrinsics.clone())
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples_z0)?
+        .build();
+
+    match res_z0 {
+        Err(CalibrationError::DegenerateEvidence { reason }) => {
+            if !reason.contains("non-positive depth Z = 0 mm") {
+                return Err(format!("Expected non-positive depth message, got: {reason}").into());
+            }
+        }
+        Ok(_) => return Err("CRITICAL: builder accepted sample with Z = 0 mm (bound-1)!".into()),
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    // Bound: Z = 1 mm must pass the depth check (remains strictly positive)
+    let mut samples_z1 = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+    samples_z1[0] = CalibrationSample::new(
+        samples_z1[0].point_id,
+        [samples_z1[0].world_point_mm[0], samples_z1[0].world_point_mm[1], 1],
+        samples_z1[0].observed_pixel_upx,
+        samples_z1[0].frame_index,
+        samples_z1[0].capture_time,
+    )?;
+
+    let res_z1 = IntrinsicsCertificateBuilder::new("cert:depth:z1")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples_z1)?
+        .build();
+
+    if res_z1.is_err() {
+        return Err(format!("CRITICAL: builder rejected sample with Z = 1 mm at exact bound: {:?}", res_z1).into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_f2_3d_spatial_spread_bound_and_bound_minus_one() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    // Bound - 1: Maximum 3D distance between any pair is 9 mm (e.g. coordinates spanning only 9 mm)
+    // d^2 = 9^2 = 81 < 100 mm^2. Must fail with DegenerateEvidence
+    let mut samples_span9 = Vec::new();
+    for i in 0..16 {
+        let x = if i == 0 { 0 } else if i == 1 { 9 } else { i % 9 };
+        let s = CalibrationSample::new(
+            (i + 1) as u64,
+            [x, 0, 1000],
+            ((i as i64) * 20_000_000, ((i % 4) as i64) * 20_000_000),
+            0,
+            TimestampNs(1_000_000_000),
+        )?;
+        samples_span9.push(s);
+    }
+
+    let res_9 = IntrinsicsCertificateBuilder::new("cert:span:9mm")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples_span9)?
+        .build();
+
+    match res_9 {
+        Err(CalibrationError::DegenerateEvidence { reason }) => {
+            if !reason.contains("insufficient 3D spatial spread (< 10mm)") {
+                return Err(format!("Expected insufficient 3D spatial spread message, got: {reason}").into());
+            }
+        }
+        Ok(_) => return Err("CRITICAL: builder accepted 3D span of 9 mm (bound-1)!".into()),
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_f2_3d_non_collinearity_bound_and_bound_minus_one() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    // Bound - 1: 3D points have large spread along line (750 mm along X axis),
+    // but perpendicular deviation from the line is at most 9 mm.
+    // perp_d2 = 9^2 = 81 < 100 mm^2. Must fail with DegenerateEvidence
+    let mut samples_collinear9 = Vec::new();
+    for i in 0..16 {
+        let x = i * 50;
+        let y = if i == 0 || i == 15 { 0 } else { (i % 3 - 1) * 9 };
+        let s = CalibrationSample::new(
+            (i + 1) as u64,
+            [x, y, 1000],
+            (
+                960_000_000 + (i as i64) * 20_000_000,
+                540_000_000 + (y as i64) * 20_000_000,
+            ),
+            0,
+            TimestampNs(1_000_000_000),
+        )?;
+        samples_collinear9.push(s);
+    }
+
+    let res_collinear = IntrinsicsCertificateBuilder::new("cert:collinear:9mm")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples_collinear9)?
+        .build();
+
+    match res_collinear {
+        Err(CalibrationError::DegenerateEvidence { reason }) => {
+            if !reason.contains("collinear in 3D: perpendicular deviation from line < 10mm") {
+                return Err(format!("Expected 3D collinear message, got: {reason}").into());
+            }
+        }
+        Ok(_) => return Err("CRITICAL: builder accepted 3D perpendicular deviation of 9 mm (bound-1)!".into()),
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_f2_2d_pixel_spread_bound_and_bound_minus_one() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    // 3D points are non-degenerate, but 2D observations fit within 9 px diameter (9,000,000 upx)
+    // max_2d_d2 = 9_000_000^2 = 81 * 10^12 < 100 * 10^12 upx^2. Must fail with DegenerateEvidence
+    let mut samples_2d_9px = generate_synthetic_samples(16, &intrinsics, 1_000_000_000)?;
+    for (i, s) in samples_2d_9px.iter_mut().enumerate() {
+        let u = 960_000_000 + (if i == 15 { 9_000_000 } else { (i as i64) * 500_000 });
+        let v = 540_000_000;
+        s.observed_pixel_upx = (u, v);
+    }
+
+    let res = IntrinsicsCertificateBuilder::new("cert:2d:spread_9px")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples_2d_9px)?
+        .build();
+
+    match res {
+        Err(CalibrationError::DegenerateEvidence { reason }) => {
+            if !reason.contains("insufficient 2D pixel spread (< 10 pixels)") {
+                return Err(format!("Expected insufficient 2D pixel spread message, got: {reason}").into());
+            }
+        }
+        Ok(_) => return Err("CRITICAL: builder accepted 2D pixel spread of 9 pixels (bound-1)!".into()),
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_f2_2d_collinear_observations_rejected() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    // Non-collinear 3D points, but 2D observations collapsed to diagonal line u = v
+    let mut samples_2d_collinear = Vec::new();
+    for i in 0..MIN_CALIBRATION_SAMPLES {
+        let coord = (i as i32) * 50;
+        let s3d = [coord, coord * ((i % 3) as i32 + 1), 1500 + coord];
+        let pixel_u = (i as i64) * 20_000_000;
+        let s = CalibrationSample::new(
+            (i + 1) as u64,
+            s3d,
+            (pixel_u, pixel_u),
+            0,
+            TimestampNs(1_000_000_000),
+        )?;
+        samples_2d_collinear.push(s);
+    }
+
+    let res = IntrinsicsCertificateBuilder::new("cert:2d:collinear")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples_2d_collinear)?
+        .build();
+
+    match res {
+        Err(CalibrationError::DegenerateEvidence { reason }) => {
+            if !reason.contains("collinear in 2D image plane") {
+                return Err(format!("Expected 2D collinear message, got: {reason}").into());
+            }
+        }
+        Ok(_) => return Err("CRITICAL: builder accepted 2D collinear observations!".into()),
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_f7_image_dimension_bound_and_bound_plus_one() -> Result<(), Box<dyn Error>> {
+    let mut intrinsics = sample_intrinsics_brown_conrady();
+
+    // Bound: 65536 px must be valid
+    intrinsics.width_px = MAX_IMAGE_DIMENSION_PX;
+    intrinsics.height_px = MAX_IMAGE_DIMENSION_PX;
+    if let Err(e) = intrinsics.validate() {
+        return Err(format!("65536 px must be valid at exact bound, got error: {:?}", e).into());
+    }
+
+    // Bound + 1: 65537 px must be rejected
+    intrinsics.width_px = MAX_IMAGE_DIMENSION_PX + 1;
+    match intrinsics.validate() {
+        Err(CalibrationError::InvalidIntrinsics(msg)) => {
+            if !msg.contains("exceed maximum supported bound") {
+                return Err(format!("Expected exceed maximum supported bound message, got: {msg}").into());
+            }
+        }
+        Ok(_) => return Err("CRITICAL: validate accepted 65537 px (bound+1)!".into()),
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    // Zero bound: 0 px must be rejected
+    intrinsics.width_px = 0;
+    match intrinsics.validate() {
+        Err(CalibrationError::InvalidIntrinsics(msg)) => {
+            if !msg.contains("must be strictly positive") {
+                return Err(format!("Expected strictly positive message, got: {msg}").into());
+            }
+        }
+        Ok(_) => return Err("CRITICAL: validate accepted width_px = 0!".into()),
+        Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
+    }
+
+    Ok(())
+}
+

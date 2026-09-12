@@ -66,8 +66,8 @@ pub use calibration::{
     CalibrationError, CalibrationLifecycle, CalibrationLifecycleState, CalibrationSample,
     CameraIntrinsics, DistortionModel, Fixed64, IntrinsicsCertificate,
     IntrinsicsCertificateBuilder, IntrinsicsCovariance, IntrinsicsResidual,
-    MAX_CALIBRATION_SAMPLES, MAX_CERTIFICATE_ID_BYTES, MAX_REPROJECTION_TOLERANCE_UPX,
-    MICRO_UNIT_SCALE, MIN_CALIBRATION_SAMPLES,
+    MAX_CALIBRATION_SAMPLES, MAX_CERTIFICATE_ID_BYTES, MAX_IMAGE_DIMENSION_PX,
+    MAX_REPROJECTION_TOLERANCE_UPX, MICRO_UNIT_SCALE, MIN_CALIBRATION_SAMPLES,
 };
 pub use capture::{
     ReferenceCapture, ReferenceCaptureReceipt, SourceFaultSchedule, run_reference_capture,
