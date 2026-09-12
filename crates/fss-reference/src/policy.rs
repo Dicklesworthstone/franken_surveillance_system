@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use fss_core::{
     BatchId, CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, EventEvidence,
-    EventHypothesis, EventId, EventKind, EventState, EvidenceDelta, LedgerAnchor, ObjectId, Plane,
-    ProbabilityInterval,
+    EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceDelta,
+    EvidenceEdgeRelation, LedgerAnchor, ObjectId, Plane, ProbabilityInterval,
 };
 use fss_ledger::DurableReferenceLedger;
 use fss_object::{InMemoryObjectStore, ObjectManifest, VerifiedObjectCatalog};
@@ -148,8 +148,16 @@ pub fn evaluate_unknown_presence(
         };
         evidence.push(EventEvidence {
             digest: result_digest,
+            class: EvidenceClass::Derived,
             failure_domain: observation.failure_domain.clone(),
             supports,
+            relation: if supports {
+                EvidenceEdgeRelation::Supports
+            } else {
+                EvidenceEdgeRelation::Contradicts
+            },
+            capsule_digest: None,
+            identity_digest: None,
         });
         model_receipts.push(result_digest);
     }
@@ -177,11 +185,16 @@ pub fn evaluate_unknown_presence(
     let probability = ProbabilityInterval::new(0.0, 1.0)?;
     let decision_path = policy_decision_path(&event_id, &evidence, state, action);
     let event = EventHypothesis {
+        schema: EventHypothesis::SCHEMA.to_string(),
         event_id,
         revision: 1,
+        supersedes: None,
         state,
         kind: EventKind::UnknownPresence,
         interval,
+        uncertainty_reason: None,
+        zone_ids: Vec::new(),
+        track_ids: Vec::new(),
         probability,
         evidence,
         model_receipts,

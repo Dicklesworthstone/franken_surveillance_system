@@ -1,0 +1,145 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/evidence_graph.v1.json",
+  "title": "FSS Evidence Graph v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "graphId",
+    "eventId",
+    "revision",
+    "rootDigest",
+    "nodes",
+    "edges"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.evidence_graph.v1"
+    },
+    "graphId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "eventId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "rootDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "digest",
+          "kind",
+          "label",
+          "failureDomain"
+        ],
+        "properties": {
+          "digest": {
+            "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+          },
+          "kind": {
+            "enum": [
+              "sensor_capsule",
+              "source_identity",
+              "device_identity",
+              "adapter_identity",
+              "model_receipt",
+              "event_hypothesis",
+              "adjudication",
+              "observation"
+            ]
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "failureDomain": {
+            "type": "string",
+            "maxLength": 128
+          }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "digest",
+          "class",
+          "failureDomain",
+          "supports",
+          "relation"
+        ],
+        "properties": {
+          "digest": {
+            "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+          },
+          "class": {
+            "enum": [
+              "assertion",
+              "derived",
+              "observed",
+              "corroborated",
+              "verified"
+            ]
+          },
+          "failureDomain": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "supports": {
+            "type": "boolean"
+          },
+          "relation": {
+            "enum": [
+              "derived_from",
+              "supports",
+              "contradicts",
+              "invalidates",
+              "supersedes",
+              "observed_after",
+              "required_by",
+              "explains"
+            ]
+          },
+          "capsuleDigest": {
+            "anyOf": [
+              {
+                "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "identityDigest": {
+            "anyOf": [
+              {
+                "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

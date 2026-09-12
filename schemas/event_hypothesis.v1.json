@@ -8,6 +8,7 @@
     "schema",
     "eventId",
     "revision",
+    "supersedes",
     "state",
     "kind",
     "timeInterval",
@@ -25,7 +26,17 @@
     },
     "revision": {
       "type": "integer",
-      "minimum": 0
+      "minimum": 1
+    },
+    "supersedes": {
+      "anyOf": [
+        {
+          "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "state": {
       "enum": [
@@ -52,18 +63,29 @@
     "timeInterval": {
       "$ref": "sensor_capsule.v1.json#/$defs/timeInterval"
     },
+    "uncertaintyReason": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 256
+    },
     "zoneIds": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "maxLength": 64
       },
+      "maxItems": 64,
       "uniqueItems": true
     },
     "trackIds": {
       "type": "array",
       "items": {
-        "type": "string"
+        "type": "string",
+        "maxLength": 64
       },
+      "maxItems": 64,
       "uniqueItems": true
     },
     "probability": {
@@ -86,24 +108,33 @@
           "maximum": 1
         },
         "calibrationGeneration": {
-          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          "anyOf": [
+            {
+              "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       }
     },
     "evidence": {
       "type": "array",
-      "minItems": 1,
+      "maxItems": 256,
       "items": {
         "type": "object",
         "additionalProperties": false,
         "required": [
           "digest",
           "class",
-          "failureDomain"
+          "failureDomain",
+          "supports",
+          "relation"
         ],
         "properties": {
           "digest": {
-            "$ref": "sensor_capsule.v1.json#/$defs/digest"
+            "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
           },
           "class": {
             "enum": [
@@ -117,14 +148,50 @@
           "failureDomain": {
             "type": "string",
             "maxLength": 128
+          },
+          "supports": {
+            "type": "boolean"
+          },
+          "relation": {
+            "enum": [
+              "derived_from",
+              "supports",
+              "contradicts",
+              "invalidates",
+              "supersedes",
+              "observed_after",
+              "required_by",
+              "explains"
+            ]
+          },
+          "capsuleDigest": {
+            "anyOf": [
+              {
+                "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "identityDigest": {
+            "anyOf": [
+              {
+                "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         }
       }
     },
     "modelReceipts": {
       "type": "array",
+      "maxItems": 64,
       "items": {
-        "$ref": "sensor_capsule.v1.json#/$defs/digest"
+        "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
       }
     },
     "decisionPath": {
@@ -137,10 +204,10 @@
       ],
       "properties": {
         "policyGeneration": {
-          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
         },
         "fingerprint": {
-          "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
         },
         "abstained": {
           "type": "boolean"
