@@ -17,14 +17,15 @@
 use std::error::Error;
 
 use fss_core::{
-    CaptureInterval, ContentDigest, ContractError, EVENT_HYPOTHESIS_MAGIC, EVENT_HYPOTHESIS_SCHEMA,
-    EVENT_HYPOTHESIS_VERSION_1, EVIDENCE_GRAPH_MAGIC, EVIDENCE_GRAPH_SCHEMA,
-    EVIDENCE_GRAPH_VERSION_1, EventDecodeError, EventEvidence, EventHypothesis, EventId, EventKind,
-    EventState, EvidenceClass, EvidenceEdgeRelation, EvidenceGraph, EvidenceNode, EvidenceNodeKind,
-    MAX_EDGES_COUNT, MAX_EVENT_ID_LEN, MAX_EVIDENCE_COUNT, MAX_FAILURE_DOMAIN_LEN,
-    MAX_GRAPH_ID_LEN, MAX_MODEL_RECEIPTS_COUNT, MAX_NODE_LABEL_LEN, MAX_NODES_COUNT,
-    MAX_TRACK_ID_LEN, MAX_TRACKS_COUNT, MAX_UNCERTAINTY_REASON_LEN, MAX_ZONE_ID_LEN,
-    MAX_ZONES_COUNT, ProbabilityInterval, TimestampNs,
+    CaptureInterval, ContentDigest, ContractError, DecisionPath, EVENT_HYPOTHESIS_MAGIC,
+    EVENT_HYPOTHESIS_SCHEMA, EVENT_HYPOTHESIS_VERSION_1, EVIDENCE_GRAPH_MAGIC,
+    EVIDENCE_GRAPH_SCHEMA, EVIDENCE_GRAPH_VERSION_1, EventDecodeError, EventEvidence,
+    EventHypothesis, EventId, EventKind, EventState, EvidenceClass, EvidenceEdgeRelation,
+    EvidenceGraph, EvidenceNode, EvidenceNodeKind, MAX_ABSTENTION_REASON_LEN, MAX_EDGES_COUNT,
+    MAX_EVENT_ID_LEN, MAX_EVIDENCE_COUNT, MAX_FAILURE_DOMAIN_LEN, MAX_GRAPH_ID_LEN,
+    MAX_MODEL_RECEIPTS_COUNT, MAX_NODE_LABEL_LEN, MAX_NODES_COUNT, MAX_TRACK_ID_LEN,
+    MAX_TRACKS_COUNT, MAX_UNCERTAINTY_REASON_LEN, MAX_ZONE_ID_LEN, MAX_ZONES_COUNT,
+    ProbabilityInterval, TimestampNs,
 };
 
 fn sample_interval() -> Result<CaptureInterval, ContractError> {
@@ -70,7 +71,12 @@ fn sample_genesis_event() -> Result<EventHypothesis, Box<dyn Error>> {
         ContentDigest::sha256(b"receipt:model:yolo-pose-v1"),
         ContentDigest::sha256(b"receipt:model:radar-tracker-v1"),
     ];
-    let decision_path = ContentDigest::sha256(b"policy:boundary-defense-v1");
+    let decision_path = DecisionPath {
+        policy_generation: ContentDigest::sha256(b"policy:gen:1"),
+        fingerprint: ContentDigest::sha256(b"policy:boundary-defense-v1"),
+        abstained: false,
+        abstention_reason: None,
+    };
 
     let event = EventHypothesis {
         schema: EVENT_HYPOTHESIS_SCHEMA.to_string(),
@@ -96,19 +102,45 @@ fn sample_evidence_graph() -> Result<EvidenceGraph, Box<dyn Error>> {
     let event = sample_genesis_event()?;
     let root_digest = event.revision_digest();
 
-    let node1 = EvidenceNode {
+    let node_ev_cam = EvidenceNode {
+        digest: ContentDigest::sha256(b"evidence:cam-east-1"),
+        kind: EvidenceNodeKind::Observation,
+        label: "Camera East 1 Observation".to_string(),
+        failure_domain: "domain:cam-east-1".to_string(),
+    };
+    let node_cap_cam = EvidenceNode {
         digest: ContentDigest::sha256(b"capsule:cam-east-1"),
         kind: EvidenceNodeKind::SensorCapsule,
         label: "Camera East 1 Frame 42".to_string(),
         failure_domain: "domain:cam-east-1".to_string(),
     };
-    let node2 = EvidenceNode {
+    let node_id_cam = EvidenceNode {
+        digest: ContentDigest::sha256(b"identity:cam-east-1"),
+        kind: EvidenceNodeKind::SourceIdentity,
+        label: "Camera East 1 Identity".to_string(),
+        failure_domain: "domain:cam-east-1".to_string(),
+    };
+
+    let node_ev_radar = EvidenceNode {
+        digest: ContentDigest::sha256(b"evidence:radar-east-1"),
+        kind: EvidenceNodeKind::Observation,
+        label: "Radar East 1 Observation".to_string(),
+        failure_domain: "domain:radar-east-1".to_string(),
+    };
+    let node_cap_radar = EvidenceNode {
         digest: ContentDigest::sha256(b"capsule:radar-east-1"),
         kind: EvidenceNodeKind::SensorCapsule,
         label: "Radar East 1 Track 42".to_string(),
         failure_domain: "domain:radar-east-1".to_string(),
     };
-    let node3 = EvidenceNode {
+    let node_id_radar = EvidenceNode {
+        digest: ContentDigest::sha256(b"identity:radar-east-1"),
+        kind: EvidenceNodeKind::SourceIdentity,
+        label: "Radar East 1 Identity".to_string(),
+        failure_domain: "domain:radar-east-1".to_string(),
+    };
+
+    let node_receipt1 = EvidenceNode {
         digest: ContentDigest::sha256(b"receipt:model:yolo-pose-v1"),
         kind: EvidenceNodeKind::ModelReceipt,
         label: "YOLO Pose Evaluation Receipt".to_string(),
@@ -121,7 +153,15 @@ fn sample_evidence_graph() -> Result<EvidenceGraph, Box<dyn Error>> {
         event_id: event.event_id.clone(),
         revision: 1,
         root_digest,
-        nodes: vec![node1, node2, node3],
+        nodes: vec![
+            node_ev_cam,
+            node_cap_cam,
+            node_id_cam,
+            node_ev_radar,
+            node_cap_radar,
+            node_id_radar,
+            node_receipt1,
+        ],
         edges: event.evidence.clone(),
     };
     graph.verify()?;
@@ -356,9 +396,30 @@ fn test_evidence_graph_canonical_json_roundtrip() -> Result<(), Box<dyn Error>> 
 #[test]
 fn test_evidence_graph_queries() -> Result<(), Box<dyn Error>> {
     let mut graph = sample_evidence_graph()?;
-    graph
-        .edges
-        .push(sample_evidence("contradictory-sensor", false));
+    let contr_evidence = sample_evidence("contradictory-sensor", false);
+    graph.nodes.push(EvidenceNode {
+        digest: contr_evidence.digest,
+        kind: EvidenceNodeKind::Observation,
+        label: "Contradictory Observation".to_string(),
+        failure_domain: "domain:contradictory-sensor".to_string(),
+    });
+    if let Some(cd) = contr_evidence.capsule_digest {
+        graph.nodes.push(EvidenceNode {
+            digest: cd,
+            kind: EvidenceNodeKind::SensorCapsule,
+            label: "Contradictory Capsule".to_string(),
+            failure_domain: "domain:contradictory-sensor".to_string(),
+        });
+    }
+    if let Some(id) = contr_evidence.identity_digest {
+        graph.nodes.push(EvidenceNode {
+            digest: id,
+            kind: EvidenceNodeKind::SourceIdentity,
+            label: "Contradictory Identity".to_string(),
+            failure_domain: "domain:contradictory-sensor".to_string(),
+        });
+    }
+    graph.edges.push(contr_evidence);
     graph.verify()?;
 
     let supporting: Vec<_> = graph.supporting_edges().collect();
@@ -727,6 +788,7 @@ fn test_bound_model_receipts_count() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_bound_nodes_count() -> Result<(), Box<dyn Error>> {
     let mut graph = sample_evidence_graph()?;
+    graph.edges.clear();
 
     // Bound: 256
     graph.nodes = (0..MAX_NODES_COUNT)
@@ -768,13 +830,13 @@ fn test_bound_edges_count() -> Result<(), Box<dyn Error>> {
 
     // Bound: 256
     graph.edges = (0..MAX_EDGES_COUNT)
-        .map(|i| sample_evidence(&format!("cam-{i}"), true))
+        .map(|_| sample_evidence("cam-east-1", true))
         .collect();
     assert!(graph.verify().is_ok());
 
     // Bound + 1: 257
     graph.edges = (0..=MAX_EDGES_COUNT)
-        .map(|i| sample_evidence(&format!("cam-{i}"), true))
+        .map(|_| sample_evidence("cam-east-1", true))
         .collect();
     let Err(err) = graph.verify() else {
         return Err("expected error".into());
@@ -787,5 +849,368 @@ fn test_bound_edges_count() -> Result<(), Box<dyn Error>> {
             actual: 257
         }
     ));
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial review (review-470) regression tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_failing_surrogate_pair_skips_subsequent_character() -> Result<(), Box<dyn std::error::Error>>
+{
+    // BUG 3: Off-by-one self.pos += 1 in parse_string skips the character after surrogate pair
+    let json = r#"{"schema":"fss.event_hypothesis.v1","eventId":"event:001","revision":1,"supersedes":null,"state":"hypothesized","kind":"unclassified","timeInterval":{"earliestNs":1000,"latestNs":2000,"uncertaintyReason":""},"uncertaintyReason":"\uD83D\uDE00X","zoneIds":[],"trackIds":[],"probability":{"lower":0.5,"upper":0.5,"calibrationGeneration":null},"evidence":[],"modelReceipts":[],"decisionPath":{"abstained":false,"fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","policyGeneration":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#;
+    let ev = EventHypothesis::from_json(json)?;
+    assert_eq!(ev.uncertainty_reason.as_deref(), Some("😀X"));
+    Ok(())
+}
+
+#[test]
+fn test_failing_surrogate_pair_at_end_of_string_truncates() -> Result<(), Box<dyn std::error::Error>>
+{
+    // BUG 3: Off-by-one self.pos += 1 skips the closing quote when surrogate is at end of string
+    let json = r#"{"schema":"fss.event_hypothesis.v1","eventId":"event:001","revision":1,"supersedes":null,"state":"hypothesized","kind":"unclassified","timeInterval":{"earliestNs":1000,"latestNs":2000,"uncertaintyReason":""},"uncertaintyReason":"\uD83D\uDE00","zoneIds":[],"trackIds":[],"probability":{"lower":0.5,"upper":0.5,"calibrationGeneration":null},"evidence":[],"modelReceipts":[],"decisionPath":{"abstained":false,"fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","policyGeneration":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#;
+    let res = EventHypothesis::from_json(json);
+    assert!(
+        res.is_ok(),
+        "Expected Ok for valid surrogate pair string, got error: {:?}",
+        res.err()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_failing_decision_path_schema_object_roundtrip() -> Result<(), Box<dyn std::error::Error>> {
+    // BUG 2: schemas/event_hypothesis.v1.json mandates decisionPath is an object, but to_canonical_json outputs a string
+    let json = r#"{"decisionPath":{"abstained":false,"fingerprint":"sha256:2222222222222222222222222222222222222222222222222222222222222222","policyGeneration":"sha256:1111111111111111111111111111111111111111111111111111111111111111"},"eventId":"event:001","evidence":[],"kind":"unclassified","modelReceipts":[],"probability":{"calibrationGeneration":null,"lower":0.5,"upper":0.5},"revision":1,"schema":"fss.event_hypothesis.v1","state":"hypothesized","supersedes":null,"timeInterval":{"earliestNs":1000,"latestNs":2000,"uncertaintyReason":""},"trackIds":[],"uncertaintyReason":null,"zoneIds":[]}"#;
+    let decoded = EventHypothesis::from_json(json)?;
+    let re_json = decoded.to_canonical_json();
+    assert_eq!(
+        json, re_json,
+        "Canonical JSON round-trip from schema object must be bit-identical"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_failing_non_canonical_duplicate_keys_accepted() {
+    // BUG 5: Canonical JSON must reject duplicate keys
+    let json = r#"{"schema":"fss.event_hypothesis.v1","eventId":"event:001","revision":1,"revision":2,"supersedes":null,"state":"hypothesized","kind":"unclassified","timeInterval":{"earliestNs":1000,"latestNs":2000,"uncertaintyReason":""},"uncertaintyReason":null,"zoneIds":[],"trackIds":[],"probability":{"lower":0.5,"upper":0.5,"calibrationGeneration":null},"evidence":[],"modelReceipts":[],"decisionPath":{"abstained":false,"fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","policyGeneration":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#;
+    let res = EventHypothesis::from_json(json);
+    assert!(
+        res.is_err(),
+        "Duplicate keys must be rejected as non-canonical, but were accepted"
+    );
+}
+
+#[test]
+fn test_failing_evidence_graph_accepts_supersession_cycle() -> Result<(), Box<dyn std::error::Error>>
+{
+    // BUG 8: EvidenceGraph accepts cycles in supersession edges
+    let mut graph = sample_evidence_graph()?;
+    let d1 = ContentDigest::sha256(b"node:1");
+    let d2 = ContentDigest::sha256(b"node:2");
+    graph.nodes.push(EvidenceNode {
+        digest: d1,
+        kind: EvidenceNodeKind::EventHypothesis,
+        label: "Node 1".to_string(),
+        failure_domain: "domain:test".to_string(),
+    });
+    graph.nodes.push(EvidenceNode {
+        digest: d2,
+        kind: EvidenceNodeKind::EventHypothesis,
+        label: "Node 2".to_string(),
+        failure_domain: "domain:test".to_string(),
+    });
+    graph.edges.push(EventEvidence {
+        digest: d1,
+        class: EvidenceClass::Derived,
+        failure_domain: "domain:test".to_string(),
+        supports: true,
+        relation: EvidenceEdgeRelation::Supersedes,
+        capsule_digest: None,
+        identity_digest: None,
+    });
+    graph.edges.push(EventEvidence {
+        digest: d2,
+        class: EvidenceClass::Derived,
+        failure_domain: "domain:test".to_string(),
+        supports: true,
+        relation: EvidenceEdgeRelation::Supersedes,
+        capsule_digest: None,
+        identity_digest: None,
+    });
+    assert!(
+        graph.verify().is_err(),
+        "Supersession cycles in evidence graph must be rejected"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_failing_graph_edges_referencing_nonexistent_capsule_and_identity_digests()
+-> Result<(), Box<dyn std::error::Error>> {
+    // BUG 9: EvidenceGraph verify accepts edges referencing capsule/identity digests that do not exist in graph nodes
+    let mut graph = sample_evidence_graph()?;
+    graph.nodes.clear();
+    graph.edges.push(EventEvidence {
+        digest: ContentDigest::sha256(b"dangling-evidence"),
+        class: EvidenceClass::Derived,
+        failure_domain: "domain:test".to_string(),
+        supports: true,
+        relation: EvidenceEdgeRelation::Supports,
+        capsule_digest: Some(ContentDigest::sha256(b"dangling-capsule")),
+        identity_digest: Some(ContentDigest::sha256(b"dangling-identity")),
+    });
+    assert!(
+        graph.verify().is_err(),
+        "Dangling edge capsule/identity digest references must be rejected"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_failing_untested_bound_max_abstention_reason_len() -> Result<(), Box<dyn std::error::Error>>
+{
+    // BUG 10: MAX_ABSTENTION_REASON_LEN (512) untested at bound and bound + 1
+    let reason_512 = "a".repeat(MAX_ABSTENTION_REASON_LEN);
+    let dp = DecisionPath {
+        policy_generation: ContentDigest::sha256(b"policy"),
+        fingerprint: ContentDigest::sha256(b"fp"),
+        abstained: true,
+        abstention_reason: Some(reason_512),
+    };
+    assert!(dp.verify().is_ok());
+
+    let reason_513 = "a".repeat(MAX_ABSTENTION_REASON_LEN + 1);
+    let dp_overflow = DecisionPath {
+        policy_generation: ContentDigest::sha256(b"policy"),
+        fingerprint: ContentDigest::sha256(b"fp"),
+        abstained: true,
+        abstention_reason: Some(reason_513),
+    };
+    assert!(
+        dp_overflow.verify().is_err(),
+        "Bound+1 (513) for abstention reason must fail"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_failing_null_on_non_nullable_arrays_accepted() {
+    // BUG 6: null silently defaulted on non-nullable array fields
+    let json_null_zone = r#"{"schema":"fss.event_hypothesis.v1","eventId":"event:001","revision":1,"supersedes":null,"state":"hypothesized","kind":"unclassified","timeInterval":{"earliestNs":1000,"latestNs":2000,"uncertaintyReason":""},"uncertaintyReason":null,"zoneIds":null,"trackIds":[],"probability":{"lower":0.5,"upper":0.5,"calibrationGeneration":null},"evidence":[],"modelReceipts":[],"decisionPath":{"abstained":false,"fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","policyGeneration":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#;
+    assert!(
+        EventHypothesis::from_json(json_null_zone).is_err(),
+        "zoneIds: null must be rejected"
+    );
+
+    let json_null_track = r#"{"schema":"fss.event_hypothesis.v1","eventId":"event:001","revision":1,"supersedes":null,"state":"hypothesized","kind":"unclassified","timeInterval":{"earliestNs":1000,"latestNs":2000,"uncertaintyReason":""},"uncertaintyReason":null,"zoneIds":[],"trackIds":null,"probability":{"lower":0.5,"upper":0.5,"calibrationGeneration":null},"evidence":[],"modelReceipts":[],"decisionPath":{"abstained":false,"fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","policyGeneration":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#;
+    assert!(
+        EventHypothesis::from_json(json_null_track).is_err(),
+        "trackIds: null must be rejected"
+    );
+
+    let json_null_evidence = r#"{"schema":"fss.event_hypothesis.v1","eventId":"event:001","revision":1,"supersedes":null,"state":"hypothesized","kind":"unclassified","timeInterval":{"earliestNs":1000,"latestNs":2000,"uncertaintyReason":""},"uncertaintyReason":null,"zoneIds":[],"trackIds":[],"probability":{"lower":0.5,"upper":0.5,"calibrationGeneration":null},"evidence":null,"modelReceipts":[],"decisionPath":{"abstained":false,"fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","policyGeneration":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#;
+    assert!(
+        EventHypothesis::from_json(json_null_evidence).is_err(),
+        "evidence: null must be rejected"
+    );
+}
+
+#[test]
+fn test_uncertainty_reason_contradiction_rejected() {
+    // BUG 4: timeInterval.uncertaintyReason and top-level uncertaintyReason contradiction must be rejected
+    let json = r#"{"schema":"fss.event_hypothesis.v1","eventId":"event:001","revision":1,"supersedes":null,"state":"hypothesized","kind":"unclassified","timeInterval":{"earliestNs":1000,"latestNs":2000,"uncertaintyReason":"reason_a"},"uncertaintyReason":"reason_b","zoneIds":[],"trackIds":[],"probability":{"lower":0.5,"upper":0.5,"calibrationGeneration":null},"evidence":[],"modelReceipts":[],"decisionPath":{"abstained":false,"fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","policyGeneration":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#;
+    let res = EventHypothesis::from_json(json);
+    assert!(matches!(
+        res,
+        Err(EventDecodeError::Contradiction { field, .. }) if field == "uncertaintyReason"
+    ));
+}
+
+#[test]
+fn test_uncertainty_reason_recovered_from_time_interval() -> Result<(), Box<dyn Error>> {
+    // BUG 4: When top-level uncertaintyReason is null, recovered from timeInterval.uncertaintyReason
+    let json = r#"{"schema":"fss.event_hypothesis.v1","eventId":"event:001","revision":1,"supersedes":null,"state":"hypothesized","kind":"unclassified","timeInterval":{"earliestNs":1000,"latestNs":2000,"uncertaintyReason":"variance < 5ms"},"uncertaintyReason":null,"zoneIds":[],"trackIds":[],"probability":{"lower":0.5,"upper":0.5,"calibrationGeneration":null},"evidence":[],"modelReceipts":[],"decisionPath":{"abstained":false,"fingerprint":"sha256:0000000000000000000000000000000000000000000000000000000000000000","policyGeneration":"sha256:0000000000000000000000000000000000000000000000000000000000000000"}}"#;
+    let ev = EventHypothesis::from_json(json)?;
+    assert_eq!(ev.uncertainty_reason.as_deref(), Some("variance < 5ms"));
+    Ok(())
+}
+
+#[test]
+fn test_decision_path_invariants() -> Result<(), Box<dyn Error>> {
+    // BUG 10: Invariants on DecisionPath: abstained=false forbids reason; abstained=true requires reason
+    let dp_valid_false = DecisionPath {
+        policy_generation: ContentDigest::sha256(b"pol"),
+        fingerprint: ContentDigest::sha256(b"fp"),
+        abstained: false,
+        abstention_reason: None,
+    };
+    assert!(dp_valid_false.verify().is_ok());
+
+    let dp_invalid_false_with_reason = DecisionPath {
+        policy_generation: ContentDigest::sha256(b"pol"),
+        fingerprint: ContentDigest::sha256(b"fp"),
+        abstained: false,
+        abstention_reason: Some("unexpected reason".to_string()),
+    };
+    assert!(matches!(
+        dp_invalid_false_with_reason.verify(),
+        Err(EventDecodeError::Contradiction { .. })
+    ));
+
+    let dp_valid_true = DecisionPath {
+        policy_generation: ContentDigest::sha256(b"pol"),
+        fingerprint: ContentDigest::sha256(b"fp"),
+        abstained: true,
+        abstention_reason: Some("sensor occlusion".to_string()),
+    };
+    assert!(dp_valid_true.verify().is_ok());
+
+    let dp_invalid_true_no_reason = DecisionPath {
+        policy_generation: ContentDigest::sha256(b"pol"),
+        fingerprint: ContentDigest::sha256(b"fp"),
+        abstained: true,
+        abstention_reason: None,
+    };
+    assert!(matches!(
+        dp_invalid_true_no_reason.verify(),
+        Err(EventDecodeError::Contradiction { .. })
+    ));
+
+    // Round trip via from_json and to_canonical_json
+    let json = dp_valid_true.to_canonical_json();
+    let decoded = DecisionPath::from_json(&json)?;
+    assert_eq!(dp_valid_true, decoded);
+    assert_eq!(json, decoded.to_canonical_json());
+    Ok(())
+}
+
+#[test]
+fn test_immutable_supersession_transition_and_chain() -> Result<(), Box<dyn Error>> {
+    // BUG 7 & 8: supersede() creates valid N+1 revision and verify_chain() validates DAG
+    let genesis = sample_genesis_event()?;
+    assert_eq!(genesis.revision, 1);
+    assert!(genesis.supersedes.is_none());
+
+    let rev2 = genesis.supersede(fss_core::event::EventSupersedeParams {
+        state: EventState::Adjudicated,
+        kind: EventKind::PerimeterBreach,
+        interval: genesis.interval,
+        uncertainty_reason: genesis.uncertainty_reason.clone(),
+        zone_ids: genesis.zone_ids.clone(),
+        track_ids: genesis.track_ids.clone(),
+        probability: genesis.probability,
+        evidence: genesis.evidence.clone(),
+        model_receipts: genesis.model_receipts.clone(),
+        decision_path: genesis.decision_path.clone(),
+    })?;
+    assert_eq!(rev2.revision, 2);
+    assert_eq!(rev2.supersedes, Some(genesis.revision_digest()));
+    assert_eq!(rev2.state, EventState::Adjudicated);
+
+    // Verify valid 2-node chain
+    EventHypothesis::verify_chain(&[genesis.clone(), rev2.clone()])?;
+
+    let rev3 = rev2.supersede(fss_core::event::EventSupersedeParams {
+        state: EventState::Resolved,
+        kind: EventKind::PerimeterBreach,
+        interval: rev2.interval,
+        uncertainty_reason: rev2.uncertainty_reason.clone(),
+        zone_ids: rev2.zone_ids.clone(),
+        track_ids: rev2.track_ids.clone(),
+        probability: rev2.probability,
+        evidence: rev2.evidence.clone(),
+        model_receipts: rev2.model_receipts.clone(),
+        decision_path: rev2.decision_path.clone(),
+    })?;
+    assert_eq!(rev3.revision, 3);
+    assert_eq!(rev3.supersedes, Some(rev2.revision_digest()));
+
+    // Verify valid 3-node chain
+    EventHypothesis::verify_chain(&[genesis.clone(), rev2.clone(), rev3.clone()])?;
+
+    // Chain validation rejects empty chain
+    assert!(EventHypothesis::verify_chain(&[]).is_err());
+
+    // Chain validation rejects revision gap (rev 1 directly to rev 3)
+    assert!(EventHypothesis::verify_chain(&[genesis.clone(), rev3.clone()]).is_err());
+
+    // Chain validation rejects wrong predecessor digest
+    let mut bad_rev2 = rev2.clone();
+    bad_rev2.supersedes = Some(ContentDigest::sha256(b"wrong-predecessor"));
+    assert!(EventHypothesis::verify_chain(&[genesis.clone(), bad_rev2]).is_err());
+
+    // Chain validation rejects eventId mismatch
+    let mut other_genesis = genesis.clone();
+    other_genesis.event_id = EventId::parse("event:other-id")?;
+    assert!(EventHypothesis::verify_chain(&[other_genesis, rev2.clone()]).is_err());
+
+    Ok(())
+}
+
+#[test]
+fn test_graph_edge_individual_digest_validation() -> Result<(), Box<dyn Error>> {
+    // BUG 9: capsule_digest and identity_digest must independently be grounded in graph nodes
+    let mut graph = sample_evidence_graph()?;
+
+    // Missing capsule digest in nodes
+    let edge_missing_cap = EventEvidence {
+        digest: ContentDigest::sha256(b"evidence:cam-east-1"), // exists
+        class: EvidenceClass::Derived,
+        failure_domain: "domain:cam-east-1".to_string(),
+        supports: true,
+        relation: EvidenceEdgeRelation::Supports,
+        capsule_digest: Some(ContentDigest::sha256(b"capsule:unregistered")),
+        identity_digest: Some(ContentDigest::sha256(b"identity:cam-east-1")), // exists
+    };
+    graph.edges.push(edge_missing_cap);
+    assert!(matches!(
+        graph.verify(),
+        Err(EventDecodeError::Contradiction { field, .. }) if field == "edges.capsuleDigest"
+    ));
+    graph.edges.pop();
+
+    // Missing identity digest in nodes
+    let edge_missing_id = EventEvidence {
+        digest: ContentDigest::sha256(b"evidence:cam-east-1"), // exists
+        class: EvidenceClass::Derived,
+        failure_domain: "domain:cam-east-1".to_string(),
+        supports: true,
+        relation: EvidenceEdgeRelation::Supports,
+        capsule_digest: Some(ContentDigest::sha256(b"capsule:cam-east-1")), // exists
+        identity_digest: Some(ContentDigest::sha256(b"identity:unregistered")),
+    };
+    graph.edges.push(edge_missing_id);
+    assert!(matches!(
+        graph.verify(),
+        Err(EventDecodeError::Contradiction { field, .. }) if field == "edges.identityDigest"
+    ));
+    graph.edges.pop();
+
+    // Self-supersession cycle rejected
+    let self_supersede_edge = EventEvidence {
+        digest: graph.root_digest, // targets self
+        class: EvidenceClass::Derived,
+        failure_domain: "domain:test".to_string(),
+        supports: true,
+        relation: EvidenceEdgeRelation::Supersedes,
+        capsule_digest: None,
+        identity_digest: None,
+    };
+    graph.nodes.push(EvidenceNode {
+        digest: graph.root_digest,
+        kind: EvidenceNodeKind::EventHypothesis,
+        label: "Self Root".to_string(),
+        failure_domain: "domain:test".to_string(),
+    });
+    graph.edges.push(self_supersede_edge);
+    assert!(matches!(
+        graph.verify(),
+        Err(EventDecodeError::Contradiction { field, ref detail }) if field == "edges.relation" && detail.contains("cycle detected")
+    ));
+
     Ok(())
 }

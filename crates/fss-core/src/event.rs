@@ -696,6 +696,107 @@ impl DecisionPath {
         }
         Ok(())
     }
+
+    /// Decodes a decision path from canonical decoder with strict bounds and invariant checks.
+    pub fn decode_canonical_checked(
+        decoder: &mut CanonicalDecoder<'_>,
+    ) -> Result<Self, EventDecodeError> {
+        let policy_generation = decoder.digest().map_err(EventDecodeError::Contract)?;
+        let fingerprint = decoder.digest().map_err(EventDecodeError::Contract)?;
+        let abstained = decoder.bool().map_err(|_| EventDecodeError::Truncated {
+            expected_min: 1,
+            actual: 0,
+        })?;
+        let has_reason = decoder.bool().map_err(|_| EventDecodeError::Truncated {
+            expected_min: 1,
+            actual: 0,
+        })?;
+        let abstention_reason = if has_reason {
+            let reason = decoder.text().map_err(|_| EventDecodeError::Truncated {
+                expected_min: 1,
+                actual: 0,
+            })?;
+            if reason.len() > MAX_ABSTENTION_REASON_LEN {
+                return Err(EventDecodeError::OverLimitLength {
+                    field: "decisionPath.abstentionReason",
+                    limit: MAX_ABSTENTION_REASON_LEN,
+                    actual: reason.len(),
+                });
+            }
+            Some(reason.to_string())
+        } else {
+            None
+        };
+        let dp = Self {
+            policy_generation,
+            fingerprint,
+            abstained,
+            abstention_reason,
+        };
+        dp.verify()?;
+        Ok(dp)
+    }
+
+    /// Emits a deterministic canonical JSON string projection.
+    #[must_use]
+    pub fn to_canonical_json(&self) -> String {
+        let mut out = String::with_capacity(256);
+        out.push('{');
+        out.push_str("\"abstained\":");
+        out.push_str(if self.abstained { "true" } else { "false" });
+        if let Some(reason) = &self.abstention_reason {
+            out.push_str(",\"abstentionReason\":");
+            json_write_str(&mut out, reason);
+        }
+        out.push_str(",\"fingerprint\":");
+        json_write_str(&mut out, &self.fingerprint.to_string());
+        out.push_str(",\"policyGeneration\":");
+        json_write_str(&mut out, &self.policy_generation.to_string());
+        out.push('}');
+        out
+    }
+
+    /// Parses a decision path from a JSON string.
+    pub fn from_json(json: &str) -> Result<Self, EventDecodeError> {
+        let val = parse_json_value(json)?;
+        let obj = JsonObject::from_value(&val, "decisionPath")?;
+        Self::from_json_obj(&obj)
+    }
+
+    /// Parses a decision path from a JsonObject.
+    fn from_json_obj(obj: &JsonObject<'_>) -> Result<Self, EventDecodeError> {
+        let abstained = obj.get("abstained")?.as_bool()?;
+        let abstention_reason = match obj.get_opt("abstentionReason") {
+            Some(JsonValue::Null) | None => None,
+            Some(JsonValue::String(s)) => {
+                if s.len() > MAX_ABSTENTION_REASON_LEN {
+                    return Err(EventDecodeError::OverLimitLength {
+                        field: "decisionPath.abstentionReason",
+                        limit: MAX_ABSTENTION_REASON_LEN,
+                        actual: s.len(),
+                    });
+                }
+                Some(s.clone())
+            }
+            Some(_) => {
+                return Err(EventDecodeError::JsonError {
+                    detail: "decisionPath.abstentionReason must be string or null".to_string(),
+                });
+            }
+        };
+        let fingerprint =
+            ContentDigest::parse(obj.str("fingerprint")?).map_err(EventDecodeError::Contract)?;
+        let policy_generation = ContentDigest::parse(obj.str("policyGeneration")?)
+            .map_err(EventDecodeError::Contract)?;
+        let dp = Self {
+            policy_generation,
+            fingerprint,
+            abstained,
+            abstention_reason,
+        };
+        dp.verify()?;
+        Ok(dp)
+    }
 }
 
 impl CanonicalEncode for DecisionPath {
@@ -712,6 +813,15 @@ impl CanonicalEncode for DecisionPath {
                 encoder.bool(false);
             }
         }
+    }
+}
+
+impl CanonicalDecode for DecisionPath {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        Self::decode_canonical_checked(decoder).map_err(|e| match e {
+            EventDecodeError::Contract(c) => c,
+            _ => ContractError::InvalidIdentifier,
+        })
     }
 }
 
@@ -839,6 +949,31 @@ impl CanonicalEncode for EvidenceNode {
     }
 }
 
+/// Parameters for constructing a superseding event revision.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventSupersedeParams {
+    /// Successor lifecycle state.
+    pub state: EventState,
+    /// Successor semantic class.
+    pub kind: EventKind,
+    /// Physical observation time bounds.
+    pub interval: CaptureInterval,
+    /// Bounded explanation for temporal uncertainty.
+    pub uncertainty_reason: Option<String>,
+    /// Impacted spatial zones.
+    pub zone_ids: Vec<String>,
+    /// Associated entity tracks.
+    pub track_ids: Vec<String>,
+    /// Epistemic probability interval.
+    pub probability: ProbabilityInterval,
+    /// Corroborating and contradictory evidence edges.
+    pub evidence: Vec<EventEvidence>,
+    /// Model execution receipts.
+    pub model_receipts: Vec<ContentDigest>,
+    /// Evaluated decision path.
+    pub decision_path: DecisionPath,
+}
+
 /// Immutable event revision carrying provenance rather than model prose alone.
 #[derive(Clone, Debug, PartialEq)]
 pub struct EventHypothesis {
@@ -868,8 +1003,8 @@ pub struct EventHypothesis {
     pub evidence: Vec<EventEvidence>,
     /// Exact model execution receipts.
     pub model_receipts: Vec<ContentDigest>,
-    /// Decision-path fingerprint.
-    pub decision_path: ContentDigest,
+    /// Decision-path fingerprint and policy execution.
+    pub decision_path: DecisionPath,
 }
 
 /// Type alias reflecting event immutability: an event revision is an event hypothesis.
@@ -887,6 +1022,8 @@ impl EventHypothesis {
                 found: self.schema.clone(),
             });
         }
+
+        self.decision_path.verify()?;
 
         if self.event_id.as_str().len() > MAX_EVENT_ID_LEN {
             return Err(EventDecodeError::OverLimitLength {
@@ -1041,6 +1178,98 @@ impl EventHypothesis {
         encoder.text(Self::SCHEMA);
         self.encode_canonical(&mut encoder);
         ContentDigest::sha256(&encoder.finish())
+    }
+
+    /// Constructs a successor revision that supersedes this event hypothesis.
+    ///
+    /// The successor has `revision = self.revision + 1` and `supersedes = Some(self.revision_digest())`.
+    pub fn supersede(&self, params: EventSupersedeParams) -> Result<Self, EventDecodeError> {
+        let rev = Self {
+            schema: Self::SCHEMA.to_string(),
+            event_id: self.event_id.clone(),
+            revision: self
+                .revision
+                .checked_add(1)
+                .ok_or(EventDecodeError::OutOfRange {
+                    field: "revision",
+                    minimum: 1,
+                    maximum: u64::MAX,
+                    actual: u64::MAX,
+                })?,
+            supersedes: Some(self.revision_digest()),
+            state: params.state,
+            kind: params.kind,
+            interval: params.interval,
+            uncertainty_reason: params.uncertainty_reason,
+            zone_ids: params.zone_ids,
+            track_ids: params.track_ids,
+            probability: params.probability,
+            evidence: params.evidence,
+            model_receipts: params.model_receipts,
+            decision_path: params.decision_path,
+        };
+        rev.verify()?;
+        Ok(rev)
+    }
+
+    /// Validates an ordered supersession chain of event hypotheses.
+    pub fn verify_chain(chain: &[EventHypothesis]) -> Result<(), EventDecodeError> {
+        if chain.is_empty() {
+            return Err(EventDecodeError::Contradiction {
+                field: "chain",
+                detail: "supersession chain cannot be empty".to_string(),
+            });
+        }
+        let event_id = &chain[0].event_id;
+        let mut prior_digest: Option<ContentDigest> = None;
+        for (i, rev) in chain.iter().enumerate() {
+            rev.verify()?;
+            if &rev.event_id != event_id {
+                return Err(EventDecodeError::Contradiction {
+                    field: "chain.eventId",
+                    detail: format!(
+                        "chain eventId mismatch: expected {}, found {}",
+                        event_id, rev.event_id
+                    ),
+                });
+            }
+            let expected_rev = (i as u64) + 1;
+            if rev.revision != expected_rev {
+                return Err(EventDecodeError::OutOfRange {
+                    field: "chain.revision",
+                    minimum: expected_rev,
+                    maximum: expected_rev,
+                    actual: rev.revision,
+                });
+            }
+            if i == 0 {
+                if rev.supersedes.is_some() {
+                    return Err(EventDecodeError::Contradiction {
+                        field: "supersedes",
+                        detail: "genesis revision 1 cannot supersede a prior revision".to_string(),
+                    });
+                }
+            } else {
+                let expected_prior =
+                    prior_digest.ok_or_else(|| EventDecodeError::Contradiction {
+                        field: "supersedes",
+                        detail: "missing predecessor digest".to_string(),
+                    })?;
+                if rev.supersedes != Some(expected_prior) {
+                    return Err(EventDecodeError::Contradiction {
+                        field: "supersedes",
+                        detail: format!(
+                            "revision {} supersedes digest mismatch: expected {:?}, found {:?}",
+                            rev.revision,
+                            Some(expected_prior),
+                            rev.supersedes
+                        ),
+                    });
+                }
+            }
+            prior_digest = Some(rev.revision_digest());
+        }
+        Ok(())
     }
 
     /// Serializes this event revision into the canonical versioned binary envelope (`FSSE` v1).
@@ -1345,7 +1574,7 @@ impl EventHypothesis {
             model_receipts.push(decoder.digest().map_err(EventDecodeError::Contract)?);
         }
 
-        let decision_path = decoder.digest().map_err(EventDecodeError::Contract)?;
+        let decision_path = DecisionPath::decode_canonical_checked(decoder)?;
 
         Ok(Self {
             schema: schema.to_string(),
@@ -1374,7 +1603,7 @@ impl EventHypothesis {
         // Deterministic alphabetical key serialization
         // 1. decisionPath
         out.push_str("\"decisionPath\":");
-        json_write_str(&mut out, &self.decision_path.to_string());
+        out.push_str(&self.decision_path.to_canonical_json());
         out.push(',');
 
         // 2. eventId
@@ -1557,7 +1786,31 @@ impl EventHypothesis {
         let interval = CaptureInterval::new(TimestampNs(earliest_ns), TimestampNs(latest_ns))
             .map_err(EventDecodeError::Contract)?;
 
-        let uncertainty_reason = match obj.get_opt("uncertaintyReason") {
+        let interval_uncertainty = match interval_obj.get_opt("uncertaintyReason") {
+            Some(JsonValue::String(s)) => {
+                if s.len() > MAX_UNCERTAINTY_REASON_LEN {
+                    return Err(EventDecodeError::OverLimitLength {
+                        field: "timeInterval.uncertaintyReason",
+                        limit: MAX_UNCERTAINTY_REASON_LEN,
+                        actual: s.len(),
+                    });
+                }
+                s.as_str()
+            }
+            Some(JsonValue::Null) => {
+                return Err(EventDecodeError::JsonError {
+                    detail: "timeInterval.uncertaintyReason cannot be null".to_string(),
+                });
+            }
+            None => "",
+            _ => {
+                return Err(EventDecodeError::JsonError {
+                    detail: "timeInterval.uncertaintyReason must be a string".to_string(),
+                });
+            }
+        };
+
+        let top_uncertainty = match obj.get_opt("uncertaintyReason") {
             Some(JsonValue::String(s)) => {
                 if s.len() > MAX_UNCERTAINTY_REASON_LEN {
                     return Err(EventDecodeError::OverLimitLength {
@@ -1566,13 +1819,37 @@ impl EventHypothesis {
                         actual: s.len(),
                     });
                 }
-                Some(s.clone())
+                Some(s.as_str())
             }
             Some(JsonValue::Null) | None => None,
             _ => {
                 return Err(EventDecodeError::JsonError {
                     detail: "uncertaintyReason must be string or null".to_string(),
                 });
+            }
+        };
+
+        let uncertainty_reason = match (top_uncertainty, interval_uncertainty) {
+            (Some(top), inter) => {
+                if !inter.is_empty() && top != inter {
+                    return Err(EventDecodeError::Contradiction {
+                        field: "uncertaintyReason",
+                        detail: "timeInterval.uncertaintyReason and top-level uncertaintyReason contradict"
+                            .to_string(),
+                    });
+                }
+                if top.is_empty() {
+                    None
+                } else {
+                    Some(top.to_string())
+                }
+            }
+            (None, inter) => {
+                if inter.is_empty() {
+                    None
+                } else {
+                    Some(inter.to_string())
+                }
             }
         };
 
@@ -1607,7 +1884,12 @@ impl EventHypothesis {
                 }
                 zones
             }
-            Some(JsonValue::Null) | None => Vec::new(),
+            Some(JsonValue::Null) => {
+                return Err(EventDecodeError::JsonError {
+                    detail: "zoneIds cannot be null, must be an array".to_string(),
+                });
+            }
+            None => Vec::new(),
             _ => {
                 return Err(EventDecodeError::JsonError {
                     detail: "zoneIds must be an array".to_string(),
@@ -1646,7 +1928,12 @@ impl EventHypothesis {
                 }
                 tracks
             }
-            Some(JsonValue::Null) | None => Vec::new(),
+            Some(JsonValue::Null) => {
+                return Err(EventDecodeError::JsonError {
+                    detail: "trackIds cannot be null, must be an array".to_string(),
+                });
+            }
+            None => Vec::new(),
             _ => {
                 return Err(EventDecodeError::JsonError {
                     detail: "trackIds must be an array".to_string(),
@@ -1678,7 +1965,7 @@ impl EventHypothesis {
             JsonValue::Array(arr) => arr,
             _ => {
                 return Err(EventDecodeError::JsonError {
-                    detail: "evidence must be an array".to_string(),
+                    detail: "evidence must be an array, not null".to_string(),
                 });
             }
         };
@@ -1740,8 +2027,14 @@ impl EventHypothesis {
             });
         }
 
-        let receipts_arr = match obj.get("modelReceipts")? {
-            JsonValue::Array(arr) => arr,
+        let receipts_arr = match obj.get_opt("modelReceipts") {
+            Some(JsonValue::Array(arr)) => arr,
+            Some(JsonValue::Null) => {
+                return Err(EventDecodeError::JsonError {
+                    detail: "modelReceipts cannot be null, must be an array".to_string(),
+                });
+            }
+            None => &[][..],
             _ => {
                 return Err(EventDecodeError::JsonError {
                     detail: "modelReceipts must be an array".to_string(),
@@ -1770,20 +2063,9 @@ impl EventHypothesis {
             }
         }
 
-        let decision_path = match obj.get("decisionPath")? {
-            JsonValue::String(s) => ContentDigest::parse(s).map_err(EventDecodeError::Contract)?,
-            JsonValue::Object(_) => {
-                let dp_obj = JsonObject::from_value(obj.get("decisionPath")?, "decisionPath")?;
-                ContentDigest::parse(dp_obj.str("fingerprint")?)
-                    .map_err(EventDecodeError::Contract)?
-            }
-            _ => {
-                return Err(EventDecodeError::JsonError {
-                    detail: "decisionPath must be string digest or object with fingerprint"
-                        .to_string(),
-                });
-            }
-        };
+        let dp_val = obj.get("decisionPath")?;
+        let dp_obj = JsonObject::from_value(dp_val, "decisionPath")?;
+        let decision_path = DecisionPath::from_json_obj(&dp_obj)?;
 
         let event = Self {
             schema: schema_val.to_string(),
@@ -1849,7 +2131,7 @@ impl CanonicalEncode for EventHypothesis {
         for receipt in &self.model_receipts {
             encoder.digest(*receipt);
         }
-        encoder.digest(self.decision_path);
+        self.decision_path.encode_canonical(encoder);
     }
 }
 
@@ -1938,8 +2220,50 @@ impl EvidenceGraph {
                 actual: self.edges.len(),
             });
         }
+        let node_digests: std::collections::BTreeSet<ContentDigest> =
+            self.nodes.iter().map(|n| n.digest).collect();
+
+        let mut supersedes_count = 0;
         for edge in &self.edges {
             edge.verify()?;
+            if !node_digests.contains(&edge.digest) {
+                return Err(EventDecodeError::Contradiction {
+                    field: "edges.digest",
+                    detail: format!("edge digest {} not found in graph nodes", edge.digest),
+                });
+            }
+            if let Some(cd) = &edge.capsule_digest
+                && !node_digests.contains(cd)
+            {
+                return Err(EventDecodeError::Contradiction {
+                    field: "edges.capsuleDigest",
+                    detail: format!("edge capsule digest {cd} not found in graph nodes"),
+                });
+            }
+            if let Some(id) = &edge.identity_digest
+                && !node_digests.contains(id)
+            {
+                return Err(EventDecodeError::Contradiction {
+                    field: "edges.identityDigest",
+                    detail: format!("edge identity digest {id} not found in graph nodes"),
+                });
+            }
+            if edge.relation == EvidenceEdgeRelation::Supersedes {
+                supersedes_count += 1;
+                if supersedes_count > 1 {
+                    return Err(EventDecodeError::Contradiction {
+                        field: "edges.relation",
+                        detail: "evidence graph cannot contain multiple supersession edges (fork rejected)".to_string(),
+                    });
+                }
+                if edge.digest == self.root_digest {
+                    return Err(EventDecodeError::Contradiction {
+                        field: "edges.relation",
+                        detail: "supersession edge cannot target own root digest (cycle detected)"
+                            .to_string(),
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -2774,134 +3098,130 @@ impl<'a> JsonParser<'a> {
                 detail: "expected string opening quote".to_string(),
             });
         }
-        self.pos += 1;
+        self.pos += 1; // skip opening quote
         let mut s = String::new();
-        while self.pos < self.src.len() {
-            let b = self.src[self.pos];
-            if b == b'"' {
+        loop {
+            let run_start = self.pos;
+            while self.pos < self.src.len()
+                && !matches!(self.src[self.pos], b'"' | b'\\' | 0x00..=0x1f)
+            {
                 self.pos += 1;
-                return Ok(s);
             }
-            if b == b'\\' {
-                self.pos += 1;
-                if self.pos >= self.src.len() {
-                    return Err(EventDecodeError::Truncated {
-                        expected_min: 1,
-                        actual: 0,
+            let run = core::str::from_utf8(&self.src[run_start..self.pos]).map_err(|_| {
+                EventDecodeError::JsonError {
+                    detail: "invalid utf-8 in string".to_string(),
+                }
+            })?;
+            s.push_str(run);
+            if self.pos >= self.src.len() {
+                return Err(EventDecodeError::Truncated {
+                    expected_min: 1,
+                    actual: 0,
+                });
+            }
+            let b = self.src[self.pos];
+            self.pos += 1;
+            match b {
+                b'"' => return Ok(s),
+                b'\\' => self.parse_escape(&mut s)?,
+                control => {
+                    return Err(EventDecodeError::JsonError {
+                        detail: format!("unescaped control character U+{control:04X} in string"),
                     });
                 }
-                match self.src[self.pos] {
-                    b'"' => s.push('"'),
-                    b'\\' => s.push('\\'),
-                    b'/' => s.push('/'),
-                    b'b' => s.push('\u{8}'),
-                    b'f' => s.push('\u{c}'),
-                    b'n' => s.push('\n'),
-                    b'r' => s.push('\r'),
-                    b't' => s.push('\t'),
-                    b'u' => {
-                        self.pos += 1;
-                        if self.pos + 4 > self.src.len() {
-                            return Err(EventDecodeError::Truncated {
-                                expected_min: 4,
-                                actual: self.src.len() - self.pos,
-                            });
+            }
+        }
+    }
+
+    fn parse_escape(&mut self, s: &mut String) -> Result<(), EventDecodeError> {
+        if self.pos >= self.src.len() {
+            return Err(EventDecodeError::Truncated {
+                expected_min: 1,
+                actual: 0,
+            });
+        }
+        let esc = self.src[self.pos];
+        self.pos += 1;
+        match esc {
+            b'"' => s.push('"'),
+            b'\\' => s.push('\\'),
+            b'/' => s.push('/'),
+            b'b' => s.push('\x08'),
+            b'f' => s.push('\x0c'),
+            b'n' => s.push('\n'),
+            b'r' => s.push('\r'),
+            b't' => s.push('\t'),
+            b'u' => {
+                if self.pos + 4 > self.src.len() {
+                    return Err(EventDecodeError::Truncated {
+                        expected_min: 4,
+                        actual: self.src.len() - self.pos,
+                    });
+                }
+                let hex_str =
+                    core::str::from_utf8(&self.src[self.pos..self.pos + 4]).map_err(|_| {
+                        EventDecodeError::JsonError {
+                            detail: "invalid unicode escape".to_string(),
                         }
-                        let hex = core::str::from_utf8(&self.src[self.pos..self.pos + 4]).map_err(
-                            |_| EventDecodeError::JsonError {
-                                detail: "invalid unicode escape UTF-8".to_string(),
-                            },
-                        )?;
-                        let codepoint = u16::from_str_radix(hex, 16).map_err(|_| {
+                    })?;
+                self.pos += 4;
+                let codepoint =
+                    u16::from_str_radix(hex_str, 16).map_err(|_| EventDecodeError::JsonError {
+                        detail: "invalid unicode hex digits".to_string(),
+                    })?;
+                if (0xD800..=0xDBFF).contains(&codepoint) {
+                    if self.pos + 6 <= self.src.len() && &self.src[self.pos..self.pos + 2] == b"\\u"
+                    {
+                        let low_hex = core::str::from_utf8(&self.src[self.pos + 2..self.pos + 6])
+                            .map_err(|_| EventDecodeError::JsonError {
+                            detail: "invalid unicode escape in low surrogate".to_string(),
+                        })?;
+                        let low_codepoint = u16::from_str_radix(low_hex, 16).map_err(|_| {
                             EventDecodeError::JsonError {
-                                detail: format!("invalid unicode hex digits: {hex}"),
+                                detail: "invalid unicode hex digits in low surrogate".to_string(),
                             }
                         })?;
-                        self.pos += 4;
-
-                        // Surrogate pair handling
-                        if (0xD800..=0xDBFF).contains(&codepoint) {
-                            if self.pos + 6 <= self.src.len()
-                                && &self.src[self.pos..self.pos + 2] == b"\\u"
-                            {
-                                let low_hex =
-                                    core::str::from_utf8(&self.src[self.pos + 2..self.pos + 6])
-                                        .map_err(|_| EventDecodeError::JsonError {
-                                            detail: "invalid low surrogate escape".to_string(),
-                                        })?;
-                                let low_codepoint =
-                                    u16::from_str_radix(low_hex, 16).map_err(|_| {
-                                        EventDecodeError::JsonError {
-                                            detail: "invalid low surrogate hex digits".to_string(),
-                                        }
-                                    })?;
-                                if (0xDC00..=0xDFFF).contains(&low_codepoint) {
-                                    self.pos += 6;
-                                    let full_cp = 0x10000
-                                        + (((u32::from(codepoint) - 0xD800) << 10)
-                                            | (u32::from(low_codepoint) - 0xDC00));
-                                    let ch = char::from_u32(full_cp).ok_or(
-                                        EventDecodeError::InvalidUnicodeEscape {
-                                            codepoint: full_cp,
-                                        },
-                                    )?;
-                                    s.push(ch);
-                                } else {
-                                    return Err(EventDecodeError::InvalidUnicodeEscape {
-                                        codepoint: u32::from(codepoint),
-                                    });
-                                }
-                            } else {
-                                return Err(EventDecodeError::InvalidUnicodeEscape {
-                                    codepoint: u32::from(codepoint),
-                                });
-                            }
-                        } else if (0xDC00..=0xDFFF).contains(&codepoint) {
-                            return Err(EventDecodeError::InvalidUnicodeEscape {
-                                codepoint: u32::from(codepoint),
-                            });
-                        } else {
-                            let ch = char::from_u32(u32::from(codepoint)).ok_or(
+                        if (0xDC00..=0xDFFF).contains(&low_codepoint) {
+                            self.pos += 6;
+                            let full_codepoint = 0x10000
+                                + (((u32::from(codepoint) - 0xD800) << 10)
+                                    | (u32::from(low_codepoint) - 0xDC00));
+                            let ch = char::from_u32(full_codepoint).ok_or(
                                 EventDecodeError::InvalidUnicodeEscape {
-                                    codepoint: u32::from(codepoint),
+                                    codepoint: full_codepoint,
                                 },
                             )?;
                             s.push(ch);
-                            continue;
+                        } else {
+                            return Err(EventDecodeError::InvalidUnicodeEscape {
+                                codepoint: u32::from(codepoint),
+                            });
                         }
-                    }
-                    other => {
-                        return Err(EventDecodeError::JsonError {
-                            detail: format!("invalid escape sequence \\{}", other as char),
+                    } else {
+                        return Err(EventDecodeError::InvalidUnicodeEscape {
+                            codepoint: u32::from(codepoint),
                         });
                     }
+                } else if (0xDC00..=0xDFFF).contains(&codepoint) {
+                    return Err(EventDecodeError::InvalidUnicodeEscape {
+                        codepoint: u32::from(codepoint),
+                    });
+                } else {
+                    let ch = char::from_u32(u32::from(codepoint)).ok_or(
+                        EventDecodeError::InvalidUnicodeEscape {
+                            codepoint: u32::from(codepoint),
+                        },
+                    )?;
+                    s.push(ch);
                 }
-                self.pos += 1;
-            } else if b < 0x20 {
+            }
+            other => {
                 return Err(EventDecodeError::JsonError {
-                    detail: format!("unescaped control character in string: 0x{b:02X}"),
+                    detail: format!("unsupported escape sequence '\\{}'", other as char),
                 });
-            } else {
-                let start = self.pos;
-                while self.pos < self.src.len()
-                    && self.src[self.pos] != b'"'
-                    && self.src[self.pos] != b'\\'
-                    && self.src[self.pos] >= 0x20
-                {
-                    self.pos += 1;
-                }
-                let piece = core::str::from_utf8(&self.src[start..self.pos]).map_err(|_| {
-                    EventDecodeError::JsonError {
-                        detail: "invalid UTF-8 in string literal".to_string(),
-                    }
-                })?;
-                s.push_str(piece);
             }
         }
-        Err(EventDecodeError::Truncated {
-            expected_min: 1,
-            actual: 0,
-        })
+        Ok(())
     }
 
     fn parse_number(&mut self) -> Result<JsonValue, EventDecodeError> {
@@ -3033,6 +3353,11 @@ impl<'a> JsonParser<'a> {
                 self.skip_whitespace();
             }
             let key = self.parse_string()?;
+            if fields.iter().any(|(existing, _)| existing == &key) {
+                return Err(EventDecodeError::JsonError {
+                    detail: format!("duplicate object key '{key}'"),
+                });
+            }
             self.skip_whitespace();
             if self.pos >= self.src.len() || self.src[self.pos] != b':' {
                 return Err(EventDecodeError::JsonError {
@@ -3099,7 +3424,12 @@ mod tests {
             probability,
             evidence,
             model_receipts: vec![ContentDigest::sha256(b"receipt-1")],
-            decision_path: ContentDigest::sha256(b"decision-path-1"),
+            decision_path: DecisionPath {
+                policy_generation: ContentDigest::sha256(b"policy:camera-v1"),
+                fingerprint: ContentDigest::sha256(b"decision-path-1"),
+                abstained: false,
+                abstention_reason: None,
+            },
         })
     }
 
@@ -3114,7 +3444,9 @@ mod tests {
         assert_eq!(event.validate(), Err(ContractError::CorroborationRequired));
         assert_eq!(
             event.verify(),
-            Err(EventDecodeError::Contract(ContractError::CorroborationRequired))
+            Err(EventDecodeError::Contract(
+                ContractError::CorroborationRequired
+            ))
         );
         Ok(())
     }
