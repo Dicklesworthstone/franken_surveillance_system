@@ -113,7 +113,8 @@ def write_single_checksum(path: Path) -> Path:
 
 
 def verify_stage(ctx: Context) -> dict[str, Any]:
-    files = normalized_files(ctx.stage)
+    release_artifact_files(ctx.receipts)
+    files = release_artifact_files(ctx.stage)
     if not files:
         raise ValueError(f"release stage is empty: {ctx.stage}")
     inventory = [
@@ -348,9 +349,11 @@ def artifact_row(path: Path) -> dict[str, Any]:
 def package(ctx: Context, metadata_path: Path, source_commit: str) -> None:
     # Preflight before any write: a leftover from an earlier killed run is refused up front.
     release_artifact_files(ctx.artifacts)
+    release_artifact_files(ctx.stage)
+    release_artifact_files(ctx.receipts)
     verification = verify_stage(ctx)
     metadata = load_metadata(metadata_path)
-    stage_files = [(path, path.relative_to(ctx.stage).as_posix()) for path in normalized_files(ctx.stage)]
+    stage_files = [(path, path.relative_to(ctx.stage).as_posix()) for path in release_artifact_files(ctx.stage)]
 
     if "windows" in ctx.target:
         primary = ctx.artifacts / f"{ctx.target_base}.zip"
@@ -453,12 +456,12 @@ def main() -> int:
     ctx = parse_context(args)
     ctx.artifacts.mkdir(parents=True, exist_ok=True)
     ctx.receipts.mkdir(parents=True, exist_ok=True)
-    if args.command == "verify":
-        verify_stage(ctx)
-        return 0
-    if args.metadata is None or args.source_commit is None:
-        parser.error("package requires --metadata and --source-commit")
     try:
+        if args.command == "verify":
+            verify_stage(ctx)
+            return 0
+        if args.metadata is None or args.source_commit is None:
+            parser.error("package requires --metadata and --source-commit")
         package(ctx, args.metadata.resolve(), args.source_commit)
     except LeftoverAtomicTempFileError as exc:
         print(f"release_artifacts: {type(exc).__name__}: {exc}", file=sys.stderr)

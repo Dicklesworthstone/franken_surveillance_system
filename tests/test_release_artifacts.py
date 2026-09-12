@@ -260,6 +260,10 @@ class ReleaseArtifactTests(unittest.TestCase):
     def run_verify_then_package(self, root: Path, target: str = "x86_64-unknown-linux-gnu") -> subprocess.CompletedProcess[str]:
         """Runs the real `verify` then `package` entry points; returns the package process."""
         subprocess.run([os.fspath(SCRIPT), *self.verify_args(root, target)], cwd=ROOT, check=True)
+        return self.run_package(root, target)
+
+    def run_package(self, root: Path, target: str = "x86_64-unknown-linux-gnu") -> subprocess.CompletedProcess[str]:
+        """Runs the real `package` entry point directly; returns the package process."""
         package_args = [
             "package", *self.verify_args(root, target)[1:],
             "--metadata", str(root / "metadata.json"), "--source-commit", COMMIT,
@@ -311,6 +315,69 @@ class ReleaseArtifactTests(unittest.TestCase):
             for name, listed in listings.items():
                 self.assertIn("fss-x86_64-unknown-linux-gnu.sbom.spdx.json", listed, name)
                 self.assertFalse([entry for entry in listed if ".tmp." in entry or entry.startswith(".")], f"{name}: {listed}")
+
+    def test_package_refuses_leftover_atomic_writer_temp_file_in_stage(self) -> None:
+        """fss-0uofb: a `.<name>.tmp.<suffix>` file left in the stage directory by a killed
+        atomic write must make package fail closed, naming the file, and write nothing to artifacts
+        instead of hashing it into verification.json / STAGE_SHA256SUMS.txt and shipping it."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_input(root)
+            subprocess.run([os.fspath(SCRIPT), *self.verify_args(root)], cwd=ROOT, check=True)
+            leftover_name = ".fss.tmp.killed"
+            leftover = root / "stage" / leftover_name
+            leftover.write_text("killed write\n", encoding="utf-8")
+
+            packaged = self.run_package(root)
+            self.assertNotEqual(packaged.returncode, 0, packaged.stderr)
+            self.assertIn(leftover_name, packaged.stderr)
+            self.assertIn("LeftoverAtomicTempFileError", packaged.stderr)
+            self.assertNotIn("Traceback", packaged.stderr, "the refusal must be a clear typed error, not a crash")
+            self.assertEqual(list((root / "artifacts").iterdir()), [], "package must write nothing when stage has a leftover temp file")
+            self.assertTrue(leftover.is_file(), "package must not silently delete the evidence of the killed write")
+
+    def test_package_refuses_leftover_atomic_writer_temp_file_in_receipts(self) -> None:
+        """fss-0uofb: a `.<name>.tmp.<suffix>` file left in the receipts directory by a killed
+        atomic write must make package fail closed, naming the file, and write nothing to artifacts."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_input(root)
+            subprocess.run([os.fspath(SCRIPT), *self.verify_args(root)], cwd=ROOT, check=True)
+            leftover_name = ".verification.json.tmp.killed"
+            leftover = root / "receipts" / leftover_name
+            leftover.write_text('{"partial": ', encoding="utf-8")
+
+            packaged = self.run_package(root)
+            self.assertNotEqual(packaged.returncode, 0, packaged.stderr)
+            self.assertIn(leftover_name, packaged.stderr)
+            self.assertIn("LeftoverAtomicTempFileError", packaged.stderr)
+            self.assertNotIn("Traceback", packaged.stderr, "the refusal must be a clear typed error, not a crash")
+            self.assertEqual(list((root / "artifacts").iterdir()), [], "package must write nothing when receipts has a leftover temp file")
+            self.assertTrue(leftover.is_file(), "package must not silently delete the evidence of the killed write")
+
+    def test_verify_refuses_leftover_atomic_writer_temp_file_in_stage(self) -> None:
+        """fss-0uofb: a `.<name>.tmp.<suffix>` file left in the stage directory by a killed
+        atomic write must make verify fail closed, naming the file, and write no stage receipts."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_input(root)
+            leftover_name = ".fss.tmp.killed"
+            leftover = root / "stage" / leftover_name
+            leftover.write_text("killed write\n", encoding="utf-8")
+
+            env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+            verified = subprocess.run(
+                [os.fspath(SCRIPT), *self.verify_args(root)],
+                cwd=ROOT, env=env, capture_output=True, text=True, timeout=120,
+            )
+            self.assertNotEqual(verified.returncode, 0, verified.stderr)
+            self.assertIn(leftover_name, verified.stderr)
+            self.assertIn("LeftoverAtomicTempFileError", verified.stderr)
+            self.assertNotIn("Traceback", verified.stderr, "the refusal must be a clear typed error, not a crash")
+            receipt_names = [p.name for p in (root / "receipts").iterdir()]
+            self.assertNotIn("verification.json", receipt_names)
+            self.assertNotIn("STAGE_SHA256SUMS.txt", receipt_names)
+            self.assertTrue(leftover.is_file(), "verify must not silently delete the evidence of the killed write")
 
 
 if __name__ == "__main__":
