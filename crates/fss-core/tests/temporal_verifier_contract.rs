@@ -672,3 +672,108 @@ fn test_step_limit_budget_exhaustion() -> TestResult {
 
     Ok(())
 }
+
+// ============================================================================
+// Planted Defect Tests (Adversarial Review 787 Rework)
+// ============================================================================
+
+#[test]
+fn test_planted_defect_out_of_order_boundary_touch_yields_violated() -> TestResult {
+    let anchor = test_anchor();
+    // e1 [2000, 3000] followed by e2 [1000, 2000]: inverted order, touching at boundary 2000
+    let e1 = make_event("event:001", 2_000, 3_000, EventKind::BenignRoutine)?;
+    let e2 = make_event("event:002", 1_000, 2_000, EventKind::BenignRoutine)?;
+    let window_interval = CaptureInterval::new(TimestampNs(500), TimestampNs(5_000))?;
+    let window = AnchorPinnedEventWindow::new(
+        anchor.clone(),
+        window_interval,
+        vec![e1, e2],
+        Some(make_continuous_witness(&anchor, 1)),
+        1,
+        1,
+    )?;
+    let mut orchestrator = TemporalOrchestrator::default();
+    orchestrator.register_verifier(Box::new(OrderingVerifier::new()?))?;
+    let report = orchestrator.execute(VerificationRunId::parse("run:test:planted01")?, &window)?;
+    assert!(
+        report.state.is_violated(),
+        "e1 [2000, 3000] followed by e2 [1000, 2000] is out of order, got: {:?}",
+        report.state
+    );
+    Ok(())
+}
+
+#[test]
+fn test_planted_defect_empty_orchestrator_must_not_be_satisfied() -> TestResult {
+    let anchor = test_anchor();
+    let window = AnchorPinnedEventWindow::new(
+        anchor.clone(),
+        CaptureInterval::new(TimestampNs(500), TimestampNs(5_000))?,
+        vec![],
+        None,
+        1,
+        1,
+    )?;
+    let mut orchestrator = TemporalOrchestrator::default();
+    let report = orchestrator.execute(VerificationRunId::parse("run:test:planted02")?, &window)?;
+    assert!(
+        !report.state.is_satisfied(),
+        "Empty orchestrator must not be Satisfied, got: {:?}",
+        report.state
+    );
+    assert!(
+        report.state.is_indeterminate(),
+        "Empty orchestrator must yield Indeterminate, got: {:?}",
+        report.state
+    );
+    Ok(())
+}
+
+#[test]
+fn test_planted_defect_gap_verifier_budget_exhausted_stop_reason() -> TestResult {
+    let anchor = test_anchor();
+    let mut witness = make_continuous_witness(&anchor, 1);
+    witness.stop_reason = CoverageStopReason::BudgetExhausted;
+    witness.completeness = Completeness::Partial;
+    let window = AnchorPinnedEventWindow::new(
+        anchor.clone(),
+        CaptureInterval::new(TimestampNs(500), TimestampNs(5_000))?,
+        vec![],
+        Some(witness),
+        1,
+        1,
+    )?;
+    let mut orchestrator = TemporalOrchestrator::default();
+    orchestrator.register_verifier(Box::new(GapVerifier::new()?))?;
+    let report = orchestrator.execute(VerificationRunId::parse("run:test:planted03")?, &window)?;
+    assert!(
+        report.state.is_indeterminate(),
+        "BudgetExhausted stop_reason must yield Indeterminate, got: {:?}",
+        report.state
+    );
+    Ok(())
+}
+
+#[test]
+fn test_planted_defect_duration_verifier_unknown_continuity() -> TestResult {
+    let anchor = test_anchor();
+    let mut witness = make_continuous_witness(&anchor, 1);
+    witness.continuity = CoverageContinuity::Unknown;
+    let window = AnchorPinnedEventWindow::new(
+        anchor.clone(),
+        CaptureInterval::new(TimestampNs(500), TimestampNs(5_000))?,
+        vec![],
+        Some(witness),
+        1,
+        1,
+    )?;
+    let mut orchestrator = TemporalOrchestrator::default();
+    orchestrator.register_verifier(Box::new(DurationVerifier::new(Some(1_000), Some(10_000))?))?;
+    let report = orchestrator.execute(VerificationRunId::parse("run:test:planted04")?, &window)?;
+    assert!(
+        report.state.is_indeterminate(),
+        "Unknown coverage continuity must yield Indeterminate, got: {:?}",
+        report.state
+    );
+    Ok(())
+}

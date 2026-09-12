@@ -28,7 +28,7 @@ use core::str::FromStr;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
-use crate::contract::ContractError;
+use crate::contract::{Completeness, ContractError};
 use crate::event::{EventHypothesis, EventKind};
 use crate::evidence::{
     ClockBasis, CoverageContinuity, CoverageStopReason, CoverageWitness, LedgerAnchor,
@@ -380,6 +380,11 @@ pub enum IndeterminateReason {
         /// Quarantine error message.
         error: String,
     },
+    /// No temporal verifiers were registered for this orchestration run.
+    NoVerifiersRegistered {
+        /// Explanation why evaluation cannot proceed without registered verifiers.
+        detail: String,
+    },
 }
 
 impl fmt::Display for IndeterminateReason {
@@ -435,6 +440,9 @@ impl fmt::Display for IndeterminateReason {
             }
             Self::VerifierQuarantined { verifier_id, error } => {
                 write!(f, "verifier '{verifier_id}' quarantined: {error}")
+            }
+            Self::NoVerifiersRegistered { detail } => {
+                write!(f, "zero verifiers registered: {detail}")
             }
         }
     }
@@ -772,7 +780,7 @@ impl TemporalVerifier for OrderingVerifier {
             }
 
             match curr.interval.temporal_precedence(next.interval) {
-                TemporalPrecedence::After { .. } => {
+                TemporalPrecedence::After { .. } | TemporalPrecedence::AfterOrAt { .. } => {
                     return Ok(VerifierOutcome::Violated {
                         reason: format!(
                             "events out of chronological order: event '{}' occurs after event '{}'",
@@ -790,9 +798,7 @@ impl TemporalVerifier for OrderingVerifier {
                         },
                     });
                 }
-                TemporalPrecedence::Before { .. }
-                | TemporalPrecedence::BeforeOrAt { .. }
-                | TemporalPrecedence::AfterOrAt { .. } => {
+                TemporalPrecedence::Before { .. } | TemporalPrecedence::BeforeOrAt { .. } => {
                     // Valid non-inverted ordering
                 }
             }
@@ -845,6 +851,27 @@ impl TemporalVerifier for DurationVerifier {
                     reason: IndeterminateReason::CoverageGap {
                         gap_interval: window.window_interval,
                         gap_ns: window.window_interval.uncertainty_ns(),
+                    },
+                });
+            }
+            if witness.continuity == CoverageContinuity::Unknown {
+                return Ok(VerifierOutcome::Indeterminate {
+                    reason: IndeterminateReason::Unobservable {
+                        domain: "coverage".to_string(),
+                        detail: "coverage continuity is unknown over duration window".to_string(),
+                    },
+                });
+            }
+            if witness.stop_reason != CoverageStopReason::Complete
+                || witness.completeness != Completeness::Complete
+            {
+                return Ok(VerifierOutcome::Indeterminate {
+                    reason: IndeterminateReason::Unobservable {
+                        domain: "coverage".to_string(),
+                        detail: format!(
+                            "coverage evaluation incomplete over duration window (stop_reason: {:?}, completeness: {:?})",
+                            witness.stop_reason, witness.completeness
+                        ),
                     },
                 });
             }
@@ -945,6 +972,18 @@ impl TemporalVerifier for GapVerifier {
                         reason: IndeterminateReason::CoverageGap {
                             gap_interval: window.window_interval,
                             gap_ns: window.window_interval.uncertainty_ns(),
+                        },
+                    })
+                } else if witness.stop_reason != CoverageStopReason::Complete
+                    || witness.completeness != Completeness::Complete
+                {
+                    Ok(VerifierOutcome::Indeterminate {
+                        reason: IndeterminateReason::Unobservable {
+                            domain: "coverage".to_string(),
+                            detail: format!(
+                                "coverage evaluation stopped prematurely (stop_reason: {:?}, completeness: {:?})",
+                                witness.stop_reason, witness.completeness
+                            ),
                         },
                     })
                 } else {
@@ -1297,6 +1336,25 @@ impl TemporalOrchestrator {
             });
         }
 
+        // AGENTS.md Prime Directive: Never pass on an empty registry or no-op.
+        // Zero registered verifiers must yield Indeterminate, never Satisfied.
+        if self.verifiers.is_empty() {
+            return Ok(VerificationRunReport {
+                run_id,
+                basis_anchor: window.anchor.clone(),
+                state: VerificationState::Indeterminate(IndeterminateDetail {
+                    verifier_id: None,
+                    reason: IndeterminateReason::NoVerifiersRegistered {
+                        detail: "zero temporal verifiers registered: cannot certify verification on empty registry".to_string(),
+                    },
+                    step: 0,
+                }),
+                outcomes: Vec::new(),
+                steps_consumed: 0,
+                quarantined_verifiers: self.quarantined_verifiers.clone(),
+            });
+        }
+
         // 5. Deterministic evaluation loop
         let mut outcomes: Vec<(TemporalVerifierId, VerifierOutcome)> =
             Vec::with_capacity(self.verifiers.len());
@@ -1469,6 +1527,14 @@ impl TemporalOrchestrator {
             VerificationState::Violated(violation)
         } else if let Some(indeterminate) = aggregate_indeterminate {
             VerificationState::Indeterminate(indeterminate)
+        } else if verifiers_completed == 0 {
+            VerificationState::Indeterminate(IndeterminateDetail {
+                verifier_id: None,
+                reason: IndeterminateReason::NoVerifiersRegistered {
+                    detail: "zero verifiers evaluated".to_string(),
+                },
+                step: tracker.steps_consumed(),
+            })
         } else {
             VerificationState::Satisfied(SatisfiedDetail {
                 verifiers_evaluated: verifiers_completed,
