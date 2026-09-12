@@ -757,6 +757,38 @@ class SerdeDurableBytesTests(unittest.TestCase):
                     (label, hits),
                 )
 
+    def test_scan_serde_source_grouped_and_raw_identifiers(self) -> None:
+        """fss-x4a.9.17: scan_serde_source must detect grouped use-trees, 'as' renames,
+        pub/pub(crate) prefixes, and r# raw identifiers while preserving masking."""
+        cases = {
+            "use {bincode}": "use {bincode};",
+            "pub use {postcard}": "pub use {postcard};",
+            "use {serde, rmp_serde}": "use {serde, rmp_serde};",
+            "use {postcard as pc}": "use {postcard as pc};",
+            "use r#bincode": "use r#bincode;",
+            "extern crate r#serde": "extern crate r#serde;",
+            "pub(crate) use {postcard}": "pub(crate) use {postcard};",
+            "nested braces": "use {foo, {postcard}};",
+            "nested path with as rename": "use a::{b, c::{postcard as pc}};",
+        }
+        for label, snippet in cases.items():
+            with self.subTest(label=label):
+                hits = dependency_audit.scan_serde_source(snippet)
+                self.assertTrue(bool(hits), f"{label} returned [] for {snippet!r}")
+
+        # Ensure comment and literal masking still holds
+        masked_cases = [
+            "// use {bincode};",
+            "/* pub use {postcard}; */",
+            'pub const A: &str = "use {bincode};";',
+            'pub const B: &str = "pub use {postcard};";',
+        ]
+        for snippet in masked_cases:
+            with self.subTest(masked=snippet):
+                hits = dependency_audit.scan_serde_source(snippet)
+                self.assertEqual(hits, [], f"false positive on masked source: {snippet!r}")
+
+
     def test_non_root_module_and_integration_test_are_scanned(self) -> None:
         make_valid_crate(self.crate, "crate-a")
         (self.crate / "src" / "codec.rs").write_text("pub fn f() {}\n#[derive(Deserialize)]\npub struct Wire;\n", encoding="utf-8")

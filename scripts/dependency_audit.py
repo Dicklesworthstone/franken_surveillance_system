@@ -941,7 +941,7 @@ _RUST_PREFIXED_STRING_START = re.compile(r'[bc]"')
 _RUST_MAX_CHAR_LITERAL = 12  # len("'\\u{10FFFF}'")
 
 
-def mask_rust_source(text: str) -> tuple[str, list[RustLiteral]]:
+def mask_rust_source(text: str, mask_literals: bool = True) -> tuple[str, list[RustLiteral]]:
     """Mask comments and literals in Rust source text.
 
     Returns ``(masked, literals)``. ``masked`` has exactly the length and newline positions of
@@ -969,8 +969,9 @@ def mask_rust_source(text: str) -> tuple[str, list[RustLiteral]]:
 
     def record(start: int, body_start: int, body_end: int, end: int) -> None:
         literals.append(RustLiteral(start=start, end=end, line=line_of(start), content=text[body_start:body_end]))
-        blank(start, end)
-        out[start] = '"'
+        if mask_literals:
+            blank(start, end)
+            out[start] = '"'
 
     def char_literal_end(quote: int) -> int | None:
         nxt = text[quote + 1] if quote + 1 < n else ""
@@ -1033,7 +1034,8 @@ def mask_rust_source(text: str) -> tuple[str, list[RustLiteral]]:
             if char == "b" and nxt == "'":
                 end = char_literal_end(i + 1)
                 if end is not None:
-                    blank(i, end)
+                    if mask_literals:
+                        blank(i, end)
                     i = end
                     continue
             j = i
@@ -1049,7 +1051,8 @@ def mask_rust_source(text: str) -> tuple[str, list[RustLiteral]]:
         if char == "'":
             end = char_literal_end(i)
             if end is not None:
-                blank(i, end)
+                if mask_literals:
+                    blank(i, end)
                 i = end
                 continue
         i += 1
@@ -1070,12 +1073,14 @@ def display_path(path: Path, root: Path) -> str:
 # Serde-family and serde-ecosystem binary codec crates (fss-x4a.9.17 / FSS-110). Names are compared
 # after lower-casing and mapping ``_`` to ``-`` (Cargo treats them as the same crate name).
 SERDE_CODEC_CRATE_PATTERNS = ("serde*", "bincode", "postcard", "ciborium", "rmp-serde")
-_SERDE_CODEC_IDENT = r"(?:serde\w*|bincode|postcard|ciborium|rmp_serde)"
+_SERDE_IDENT_BASE = r"(?:serde\w*|bincode|postcard|ciborium|rmp_serde)"
+_SERDE_CODEC_IDENT = rf"(?:r#)?{_SERDE_IDENT_BASE}"
+_SERDE_CODEC_IDENT_RE = re.compile(rf"\b{_SERDE_CODEC_IDENT}\b")
+_USE_DECL = re.compile(r"\b(?:pub(?:\s*\([^)]*\))?\s+)?use\s+([^;]+);", re.DOTALL)
 SERDE_SOURCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("serde-family crate path", re.compile(rf"\b{_SERDE_CODEC_IDENT}\s*::")),
     ("serde attribute", re.compile(r"\bserde\s*\(")),
     ("extern crate of a serde-family codec", re.compile(rf"\bextern\s+crate\s+{_SERDE_CODEC_IDENT}\b")),
-    ("use of a serde-family codec", re.compile(rf"\buse\s+(?:::\s*)?{_SERDE_CODEC_IDENT}\b")),
 )
 _DERIVE_OPEN = re.compile(r"\bderive\s*\(")
 _SERDE_DERIVE_TRAIT = re.compile(r"\b(?:Serialize|Deserialize)\b")
@@ -1107,6 +1112,11 @@ def scan_serde_source(text: str) -> list[tuple[int, str]]:
     for label, pattern in SERDE_SOURCE_PATTERNS:
         for match in pattern.finditer(masked):
             hits.add((source_line(masked, match.start()), label))
+    for match in _USE_DECL.finditer(masked):
+        tree = match.group(1)
+        tree_start = match.start(1)
+        for hit in _SERDE_CODEC_IDENT_RE.finditer(tree):
+            hits.add((source_line(masked, tree_start + hit.start()), "use of a serde-family codec"))
     return sorted(hits)
 
 
@@ -1740,7 +1750,11 @@ def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: lis
         targets = discover_crate_targets(manifest.parent, data, crate_name, manifest_rel, root, findings)
         all_targets.extend(targets)
 
-    rust_files = sorted(path for path in root.rglob("*.rs") if not any(part in {".git", "target", "dist", "qualification-artifacts"} for part in path.parts))
+    rust_files = sorted(
+        path
+        for path in root.rglob("*.rs")
+        if not any(part in {".git", "target", "dist", "qualification-artifacts", ".claude"} for part in path.parts)
+    )
 
     patterns = {
         "unsafe token": re.compile(r"\bunsafe\b"),
@@ -1753,7 +1767,8 @@ def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: lis
     }
     for path in rust_files:
         text = path.read_text(encoding="utf-8")
-        scan = text.replace("#![forbid(unsafe_code)]", "")
+        masked, _ = mask_rust_source(text, mask_literals=False)
+        scan = masked.replace("#![forbid(unsafe_code)]", "")
         for label, pattern in patterns.items():
             if label == "foreign production command" and ("tests" in path.parts or "examples" in path.parts):
                 continue
@@ -1935,7 +1950,7 @@ def audit_workspace(
     undeclared_manifests: list[Path] = []
     for cand_cargo in sorted(root.rglob("Cargo.toml")):
         parts = cand_cargo.parts
-        if "target" in parts or ".git" in parts or any(v in parts for v in vendored_fixture_dirs):
+        if "target" in parts or ".git" in parts or ".claude" in parts or any(v in parts for v in vendored_fixture_dirs):
             continue
         if cand_cargo.resolve() not in known_manifests:
             undeclared_manifests.append(cand_cargo)

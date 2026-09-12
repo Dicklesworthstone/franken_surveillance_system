@@ -334,6 +334,26 @@ class CheckPolicySerdeDurableBytesTests(CheckPolicyFixtureCase):
         check_policy.cargo_policy(make_clean_policy_dict())
         self.assertEqual(check_policy.errors, [])
 
+    def test_cargo_policy_serde_grouped_use_and_raw_ident_fails(self) -> None:
+        cases = [
+            "use {bincode};\n",
+            "pub use {postcard};\n",
+            "use {serde, rmp_serde};\n",
+            "use {postcard as pc};\n",
+            "use r#bincode;\n",
+            "extern crate r#serde;\n",
+        ]
+        for src in cases:
+            with self.subTest(src=src):
+                check_policy.errors.clear()
+                self._workspace(src)
+                check_policy.cargo_policy(make_clean_policy_dict())
+                self.assertTrue(
+                    any(err.startswith("DEP-AUD-023") and "src/lib.rs:2" in err for err in check_policy.errors),
+                    (src, check_policy.errors),
+                )
+
+
 
 class CheckPolicyOfflineBuildTests(CheckPolicyFixtureCase):
     """fss-x4a.26.3: check-policy enforces DEP-AUD-026 (build-script network deny-list) and
