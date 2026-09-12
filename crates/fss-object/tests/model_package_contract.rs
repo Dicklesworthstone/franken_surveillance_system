@@ -1122,10 +1122,11 @@ fn test_every_inconsistency_rejected_before_any_staging() -> TestResult {
 #[test]
 fn test_artifact_names_reject_traversal_and_escape_forms() -> TestResult {
     use ArtifactNameViolation::{DisallowedByte, DotSegment, Empty, PathSeparator, Reserved};
-    let cases: [(&str, ArtifactNameViolation); 16] = [
+    let cases: [(&str, ArtifactNameViolation); 17] = [
         ("", Empty),
         (".", DotSegment),
         ("..", DotSegment),
+        ("...", DotSegment),
         ("../escaped.bin", PathSeparator),
         ("../../etc/cron.d/evil", PathSeparator),
         ("/etc/passwd", PathSeparator),
@@ -1190,12 +1191,7 @@ fn test_artifact_names_reject_traversal_and_escape_forms() -> TestResult {
         })
     ));
 
-    for name in [
-        "weights.bin",
-        "LICENSE.txt",
-        "part-2_v1+fp16.safetensors",
-        "...",
-    ] {
+    for name in ["weights.bin", "LICENSE.txt", "part-2_v1+fp16.safetensors"] {
         ModelPackageArtifact::new(name, Vec::new())?;
     }
 
@@ -1278,6 +1274,269 @@ fn test_archive_with_traversal_name_rejected() -> TestResult {
         Err(ModelPackageError::InvalidArtifactName { .. })
     ));
     assert_eq!(importer.spool().object_count(), 0);
+    Ok(())
+}
+
+/// Every ASCII Windows reserved device stem: `CON`, `PRN`, `AUX`, `NUL`, `COM0`-`COM9`, and
+/// `LPT0`-`LPT9`.
+fn device_stems() -> Vec<String> {
+    let mut stems: Vec<String> = ["CON", "PRN", "AUX", "NUL"]
+        .iter()
+        .map(|stem| (*stem).to_string())
+        .collect();
+    for digit in 0..=9 {
+        stems.push(format!("COM{digit}"));
+        stems.push(format!("LPT{digit}"));
+    }
+    stems
+}
+
+/// Upper-, lower-, and alternating-case spellings of `stem`.
+fn case_forms(stem: &str) -> [String; 3] {
+    let mixed = stem
+        .chars()
+        .enumerate()
+        .map(|(index, ch)| {
+            if index % 2 == 0 {
+                ch.to_ascii_uppercase()
+            } else {
+                ch.to_ascii_lowercase()
+            }
+        })
+        .collect();
+    [stem.to_ascii_uppercase(), stem.to_ascii_lowercase(), mixed]
+}
+
+/// Asserts that building an artifact named `name` fails with exactly `reason`.
+fn expect_name_violation(name: &str, reason: ArtifactNameViolation) -> TestResult {
+    match ModelPackageArtifact::new(name, b"payload".to_vec()) {
+        Err(ModelPackageError::InvalidArtifactName {
+            name: rejected,
+            reason: observed,
+        }) if rejected == name && observed == reason => Ok(()),
+        other => Err(format!("{name:?}: expected {reason:?}, got {other:?}").into()),
+    }
+}
+
+/// Review-564 finding 9A: a Windows reserved device stem (before the first `.`, any ASCII
+/// case, with or without extensions) is refused, while names that merely contain one are not.
+#[test]
+fn test_artifact_names_reject_windows_device_names() -> TestResult {
+    let mut checked = 0_usize;
+    for stem in device_stems() {
+        for form in case_forms(&stem) {
+            for extension in ["", ".bin", ".safetensors", ".txt", ".weights", ".tar.gz"] {
+                expect_name_violation(
+                    &format!("{form}{extension}"),
+                    ArtifactNameViolation::WindowsDeviceName,
+                )?;
+                checked += 1;
+            }
+        }
+    }
+    assert_eq!(checked, 24 * 3 * 6);
+    for name in [
+        "con.bin",
+        "aux.safetensors",
+        "nul.txt",
+        "COM1.weights",
+        "Lpt9",
+    ] {
+        expect_name_violation(name, ArtifactNameViolation::WindowsDeviceName)?;
+    }
+
+    for name in [
+        "console.bin",
+        "auxiliary.bin",
+        "com10.bin",
+        "lpt.bin",
+        "com.bin",
+        "LPT10.weights",
+        "nullify.bin",
+        "prn_2.txt",
+        "xcon.bin",
+        "con-1.bin",
+        "aux+1.bin",
+        "CON_",
+        "a.con",
+        "weights.nul",
+    ] {
+        ModelPackageArtifact::new(name, Vec::new())?;
+    }
+    Ok(())
+}
+
+/// Review-564 finding 9B: Windows strips trailing dots, so a name ending in `.` aliases a
+/// different file and a dot-only name aliases the directory itself; both are refused.
+#[test]
+fn test_artifact_names_reject_trailing_dots_and_dot_only_names() -> TestResult {
+    use ArtifactNameViolation::{DotSegment, TrailingDot};
+    for (name, reason) in [
+        ("weights.bin.", TrailingDot),
+        ("foo.", TrailingDot),
+        ("a..", TrailingDot),
+        ("x.y...", TrailingDot),
+        ("...", DotSegment),
+        ("....", DotSegment),
+    ] {
+        expect_name_violation(name, reason)?;
+    }
+    expect_name_violation(&".".repeat(MAX_ARTIFACT_NAME_LEN), DotSegment)?;
+
+    for name in ["a.b.c", ".hidden", "a..b", ".a", "weights.bin"] {
+        ModelPackageArtifact::new(name, Vec::new())?;
+    }
+    Ok(())
+}
+
+/// Review-564 findings 9A and 9B: device and trailing-dot names are refused when decoding an
+/// archive, when reading a package directory, and by `write_to_directory` before any
+/// filesystem call.
+#[test]
+fn test_device_and_trailing_dot_names_refused_on_every_path() -> TestResult {
+    use ArtifactNameViolation::{DotSegment, TrailingDot, WindowsDeviceName};
+    let root = temp_dir("device_names_every_path")?;
+
+    // Decode: each replacement has the same length as `part2.bin`.
+    let archive = sample_package()?.to_archive_bytes()?;
+    for (replacement, reason) in [
+        ("aux.2.bin", WindowsDeviceName),
+        ("COM9.part", WindowsDeviceName),
+        ("part2.bi.", TrailingDot),
+        (".........", DotSegment),
+    ] {
+        let mut tampered = replace_once(&archive, b"part2.bin", replacement.as_bytes())?;
+        reseal(&mut tampered);
+        match ModelPackageArchive::decode(&tampered, &ModelPackageLimits::default()) {
+            Err(ModelPackageError::InvalidArtifactName {
+                name,
+                reason: observed,
+            }) if name == replacement && observed == reason => {}
+            other => return Err(format!("decode {replacement:?}: {other:?}").into()),
+        }
+    }
+
+    // Write: refused before the first filesystem call.
+    for (index, (bad, reason)) in [
+        ("con.bin", WindowsDeviceName),
+        ("COM1.weights", WindowsDeviceName),
+        ("weights.bin.", TrailingDot),
+        ("...", DotSegment),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (manifest, mut artifacts) = sample_manifest_and_artifacts()?;
+        artifacts[0].name = bad.to_string();
+        let package = literal_package(manifest, artifacts)?;
+        let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
+        let target = root.join(format!("out-{index}"));
+        match package.write_to_directory(&target, &io) {
+            Err(ModelPackageError::InvalidArtifactName {
+                name,
+                reason: observed,
+            }) if name == bad && observed == reason => {}
+            other => return Err(format!("write {bad:?}: {other:?}").into()),
+        }
+        assert_eq!(
+            call_counts(&io),
+            vec![0; SpoolIoCall::ALL.len()],
+            "filesystem touched before refusing {bad:?}"
+        );
+        assert!(!target.exists());
+    }
+
+    // Read: a directory whose artifact file was renamed to a refused name.
+    for (index, (bad, reason)) in [
+        ("nul.txt", WindowsDeviceName),
+        ("Aux", WindowsDeviceName),
+        ("part2.bin.", TrailingDot),
+        ("...", DotSegment),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let dir = root.join(format!("read-{index}"));
+        sample_package()?.write_to_directory(&dir, &HostSpoolIo)?;
+        fs::rename(dir.join("part2.bin"), dir.join(bad))?;
+        match ModelPackage::from_directory(&dir, &HostSpoolIo, &ModelPackageLimits::default()) {
+            Err(ModelPackageError::InvalidArtifactName {
+                name,
+                reason: observed,
+            }) if name == bad && observed == reason => {}
+            other => return Err(format!("read {bad:?}: {other:?}").into()),
+        }
+    }
+    Ok(())
+}
+
+/// Review-564 finding 9B: names that differ only by ASCII case collide on Windows and macOS
+/// filesystems, so a package refuses them when built, decoded, imported, or written.
+#[test]
+fn test_case_insensitive_artifact_name_collision_rejected() -> TestResult {
+    fn is_weights_collision(error: &ModelPackageError) -> bool {
+        match error {
+            ModelPackageError::ArtifactNameCaseCollision { name, existing } => {
+                let mut pair = [name.as_str(), existing.as_str()];
+                pair.sort_unstable();
+                pair == ["Weights.bin", "weights.bin"]
+            }
+            _ => false,
+        }
+    }
+    let root = temp_dir("case_collision")?;
+
+    let (manifest, mut artifacts) = sample_manifest_and_artifacts()?;
+    artifacts[0].name = "weights.bin".to_string();
+    artifacts[1].name = "Weights.bin".to_string();
+    let colliding = literal_package(manifest.clone(), artifacts.clone())?;
+
+    // Build.
+    match ModelPackage::new(manifest, artifacts) {
+        Err(error) if is_weights_collision(&error) => {}
+        other => return Err(format!("build: {other:?}").into()),
+    }
+    match colliding.verify_contents() {
+        Err(error) if is_weights_collision(&error) => {}
+        other => return Err(format!("verify_contents: {other:?}").into()),
+    }
+
+    // Write: refused before the first filesystem call.
+    let out = root.join("out");
+    let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
+    match colliding.write_to_directory(&out, &io) {
+        Err(error) if is_weights_collision(&error) => {}
+        other => return Err(format!("write: {other:?}").into()),
+    }
+    assert_eq!(call_counts(&io), vec![0; SpoolIoCall::ALL.len()]);
+    assert!(!out.exists());
+
+    // Import: refused before the first staging call.
+    let io = Arc::new(FaultInjectingSpoolIo::new(SpoolFaultPlan::new()));
+    let spool = sample_spool_with_io(&root.join("spool"), io.clone())?;
+    let mut importer = ModelPackageImporter::new(spool, ModelPackageLimits::default())?;
+    let before = call_counts(&io);
+    match importer.import_package(&colliding, GENERATION) {
+        Err(error) if is_weights_collision(&error) => {}
+        other => return Err(format!("import: {other:?}").into()),
+    }
+    assert_eq!(call_counts(&io), before);
+    assert_eq!(importer.spool().object_count(), 0);
+
+    // Decode: `LICENSE.txt` and `Weights.bin` have the same length.
+    let archive = sample_package()?.to_archive_bytes()?;
+    let mut tampered = replace_once(&archive, b"LICENSE.txt", b"Weights.bin")?;
+    reseal(&mut tampered);
+    match ModelPackageArchive::decode(&tampered, &ModelPackageLimits::default()) {
+        Err(error) if is_weights_collision(&error) => {}
+        other => return Err(format!("decode: {other:?}").into()),
+    }
+
+    // Case variants of the manifest file names would overwrite the manifest on such a
+    // filesystem, so they are reserved too.
+    for name in ["MANIFEST.BIN", "Manifest.json", "manifest.JSON"] {
+        expect_name_violation(name, ArtifactNameViolation::Reserved)?;
+    }
     Ok(())
 }
 
