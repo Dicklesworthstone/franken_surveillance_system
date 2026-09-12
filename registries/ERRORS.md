@@ -69,6 +69,26 @@ operation states rather than generic errors.
 | `ERR-OP-ID-MALFORMED-001` | error identity does not conform to stable ERR pattern | fix error identity to match stable registry format |
 | `ERR-OP-INVALID-OUTCOME-001` | operation outcome state transition or representation is invalid | inspect outcome payload and repair state machine |
 | `ERR-LEDGER-LENGTH-OVERFLOW-001` | journal byte offset or file length exceeds addressable 64-bit bounds | archive or rotate journal; no in-place append possible |
+| `ERR-LEDGER-ORACLE-INVALID-CONFIG-001` | ledger oracle limit or site lineage outside its admitted range | repair configuration; do not retry unchanged |
+| `ERR-LEDGER-ORACLE-BOUND-001` | batch delta count, child count, or text field exceeds the canonical batch bound | reject input; split or repair the producer |
+| `ERR-LEDGER-ORACLE-NON-CANONICAL-001` | batch deltas or child roots are not in strictly increasing canonical order | reject input; re-prepare canonically |
+| `ERR-LEDGER-ORACLE-DIGEST-MISMATCH-001` | declared batch digest does not match batch content | reject input; never retry unchanged |
+| `ERR-LEDGER-ORACLE-DUPLICATE-BATCH-001` | exact batch is already committed at the reported sequence | no retry; batch is already canonical |
+| `ERR-LEDGER-ORACLE-BATCH-ID-CONFLICT-001` | committed batch identity reused with different content | reject input; stable batch IDs are never reused |
+| `ERR-LEDGER-ORACLE-CAPACITY-001` | committed-batch capacity of the oracle is exhausted | archive or rotate before appending |
+| `ERR-LEDGER-ORACLE-SEQUENCE-GAP-001` | batch basis is beyond the head; predecessor batches are missing | supply predecessors in canonical order, then retry |
+| `ERR-LEDGER-ORACLE-BASIS-FORKED-001` | batch basis anchor is not the committed anchor at its sequence | reject input; foreign lineage, epoch, or state root |
+| `ERR-LEDGER-ORACLE-SUCCESSOR-CONFLICT-001` | another batch already committed on the same basis (first committer wins) | rebase onto the current head and prepare a new batch |
+| `ERR-LEDGER-ORACLE-INVALID-SUCCESSOR-001` | successor anchor lineage, epoch, or sequence does not follow its basis | reject input; re-prepare against the head |
+| `ERR-LEDGER-ORACLE-SEQUENCE-EXHAUSTED-001` | commit sequence space is exhausted | archive or rotate; no in-place append possible |
+| `ERR-LEDGER-ORACLE-DUPLICATE-OBJECT-001` | one batch carries more than one delta for the same object | reject input; merge or split deltas |
+| `ERR-LEDGER-ORACLE-GENERATION-CONFLICT-001` | delta generations do not follow the committed object generation | reject input; re-prepare against the head |
+| `ERR-LEDGER-ORACLE-OBJECT-CAPACITY-001` | batch would exceed the live-object capacity of the oracle | archive or rotate before appending |
+| `ERR-LEDGER-ORACLE-STATE-ROOT-MISMATCH-001` | declared successor state root does not match the applied deltas | reject input; never retry unchanged |
+| `ERR-LEDGER-ORACLE-STALE-STAGE-001` | staged batch was validated against a head that has since moved or another history | stage again against the current head |
+| `ERR-LEDGER-ORACLE-ENCODING-001` | canonical encoding of a digest input exceeded its encoder bound | reject input; repair the oversized field |
+| `ERR-LEDGER-ORACLE-READ-BEYOND-HEAD-001` | anchor-pinned read requested a sequence beyond the committed head | wait for commit or read at a committed anchor |
+| `ERR-LEDGER-ORACLE-READ-ANCHOR-MISMATCH-001` | anchor-pinned read named an anchor that is not committed in this history | resnapshot from a committed anchor of this lineage |
 
 ## Subordinate dependency audit diagnostic registry (DEP-AUD)
 

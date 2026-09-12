@@ -10,6 +10,7 @@ mod durable;
 mod error;
 mod format;
 mod journal;
+mod oracle;
 mod recovery;
 mod repair;
 
@@ -28,6 +29,13 @@ pub use error::{
     AppendPhase, CorruptionKind, ERR_LEDGER_LENGTH_OVERFLOW_001, ExternalMutationKind, JournalError,
 };
 pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
+pub use oracle::{
+    AnchorField, AnchoredView, CommitReceipt, LEDGER_ORACLE_HISTORY_DOMAIN, LedgerOracle,
+    MAX_ORACLE_BATCHES, MAX_ORACLE_CHILDREN_PER_BATCH, MAX_ORACLE_DELTAS_PER_BATCH,
+    MAX_ORACLE_OBJECTS, MAX_ORACLE_TEXT_BYTES, ObjectRead, OracleBoundField, OracleConfigField,
+    OracleError, OracleFingerprint, OracleGuidance, OracleLimits, OracleReadError,
+    OracleReplayError, StagedBatch,
+};
 pub use recovery::{JournalRecord, RecoveryReport, inspect, recover_bytes};
 pub use repair::{
     DoctorReport, ForeignRange, JournalDoctorReport, MAX_QUARANTINE_TEMP_ATTEMPTS,
