@@ -3,11 +3,11 @@ use std::error::Error;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest, ContractBasis,
-    ContractBasisRegistryBytes, DeltaPriority, Generation, KnowledgeCell, KnowledgeState,
-    KnowledgeStateBasis, LedgerAnchor, MeaningfulDeltaClass, MissionId, ObligationId, PrincipalId,
-    PrivacyGeneration, ProvenanceClass, ReconciliationBasis, RedactionMarker, RedactionReason,
-    ResourcePressure, SessionId, SituationCapsule, SituationFrame, StaleBasis, TimestampNs,
-    WorldEnvelope,
+    ContractBasisRegistryBytes, DeltaPriority, Generation, HypothesisDisposition, KnowledgeCell,
+    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, MeaningfulDeltaClass, MissionId,
+    ObligationId, PrincipalId, PrivacyGeneration, ProvenanceClass, ReconciliationBasis,
+    RedactionMarker, RedactionReason, ResourcePressure, SessionId, SituationCapsule,
+    SituationFrame, StaleBasis, TimestampNs, WorldEnvelope,
 };
 
 use crate::{
@@ -27,6 +27,8 @@ struct Variant {
     effect_state: Option<KnowledgeState>,
     effect_evidence: bool,
     effect_contradicted: bool,
+    effect_hypothesis: Option<HypothesisDisposition>,
+    effect_valid_until: Option<TimestampNs>,
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
 }
@@ -47,6 +49,8 @@ impl Variant {
             effect_state: None,
             effect_evidence: true,
             effect_contradicted: false,
+            effect_hypothesis: None,
+            effect_valid_until: None,
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
         })
@@ -162,7 +166,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             .to_owned(),
             knowledge_state: effect_state,
             provenance: ProvenanceClass::Observed,
-            hypothesis: None,
+            hypothesis: variant.effect_hypothesis,
             evidence: if variant.effect_evidence {
                 vec![ContentDigest::sha256(b"effect-outcome")]
             } else {
@@ -175,7 +179,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             } else {
                 Vec::new()
             },
-            valid_until: None,
+            valid_until: variant.effect_valid_until,
             state_basis: fixture_state_basis(
                 effect_state,
                 ContentDigest::sha256(b"effect-outcome"),
@@ -540,7 +544,7 @@ const EFFECT_CLAIM: &str = "claim:effect:meaningful-delta:outcome";
 /// `successor` (`None` removes the cell), with the result cell further shaped by `configure`.
 fn indeterminate_effect_delta(
     successor: Option<KnowledgeState>,
-    configure: fn(&mut Variant),
+    configure: impl FnOnce(&mut Variant),
 ) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>> {
     let mut basis_variant = Variant::baseline()?;
     basis_variant.effect_state = Some(KnowledgeState::Indeterminate);
@@ -818,4 +822,124 @@ fn estimated_premise_staying_estimated_is_not_invalidated() -> Result<(), Box<dy
     assert!(!delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss));
     delta.validate()?;
     Ok(())
+}
+
+/// Validity end before every fixture capsule's `created_at` (`1_000 + sequence`), so a cell that
+/// carries it is expired at both the basis and the result anchor.
+const EXPIRED_VALIDITY: TimestampNs = TimestampNs(1);
+
+const TERMINAL_HYPOTHESES: [HypothesisDisposition; 3] = [
+    HypothesisDisposition::Refuted,
+    HypothesisDisposition::Resolved,
+    HypothesisDisposition::Superseded,
+];
+
+#[test]
+fn indeterminate_effect_becoming_known_with_evidence_alone_is_terminal()
+-> Result<(), Box<dyn Error>> {
+    // No obligation is carried or removed and no other cell changes, so the retained outcome
+    // evidence is the only thing that can terminalize this transition.
+    let delta = indeterminate_effect_delta(Some(KnowledgeState::Known), keep_effect_evidence)?;
+
+    assert!(delta.obligation_changes.is_empty());
+    assert!(!delta.classes.contains(&MeaningfulDeltaClass::Obligation));
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "Indeterminate->Known with a proved outcome is terminal: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::EffectUncertainty)
+    );
+    assert_eq!(
+        delta.effect_uncertainty_changes,
+        vec![format!(
+            "effect uncertainty resolved: {EFFECT_CLAIM} became known with retained outcome evidence"
+        )]
+    );
+    assert_eq!(delta.priority, DeltaPriority::Critical);
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn indeterminate_effect_becoming_known_with_expired_validity_stays_unresolved()
+-> Result<(), Box<dyn Error>> {
+    let delta = indeterminate_effect_delta(Some(KnowledgeState::Known), |variant| {
+        variant.effect_valid_until = Some(EXPIRED_VALIDITY);
+    })?;
+    assert_effect_unresolved(
+        &delta,
+        &became(KnowledgeState::Known),
+        Some(&degraded_to(KnowledgeState::Known)),
+    )
+}
+
+/// Asserts that a terminal hypothesis disposition on a basis-indeterminate effect cell whose
+/// successor is `successor` never terminalizes the unproved effect.
+fn assert_terminal_hypothesis_leaves_indeterminate_effect_open(
+    successor: KnowledgeState,
+) -> Result<(), Box<dyn Error>> {
+    for hypothesis in TERMINAL_HYPOTHESES {
+        let delta = indeterminate_effect_delta(Some(successor), |variant| {
+            variant.effect_hypothesis = Some(hypothesis);
+        })?;
+        assert!(
+            !delta
+                .classes
+                .contains(&MeaningfulDeltaClass::TerminalTransition),
+            "indeterminate->{} with hypothesis {hypothesis:?} is not terminal: {:?}",
+            successor.as_str(),
+            delta.classes
+        );
+        assert!(
+            !delta
+                .effect_uncertainty_changes
+                .iter()
+                .any(|change| change.contains("resolved")),
+            "indeterminate->{} with hypothesis {hypothesis:?} is not resolved: {:?}",
+            successor.as_str(),
+            delta.effect_uncertainty_changes
+        );
+        if successor != KnowledgeState::Indeterminate {
+            assert!(
+                delta
+                    .classes
+                    .contains(&MeaningfulDeltaClass::EffectUncertainty)
+            );
+            assert!(
+                delta
+                    .effect_uncertainty_changes
+                    .contains(&became(successor)),
+                "missing {:?} in {:?}",
+                became(successor),
+                delta.effect_uncertainty_changes
+            );
+        }
+        assert_eq!(delta.priority, DeltaPriority::Critical);
+        delta.validate()?;
+    }
+    Ok(())
+}
+
+#[test]
+fn indeterminate_effect_becoming_unknown_with_terminal_hypothesis_is_not_terminal()
+-> Result<(), Box<dyn Error>> {
+    assert_terminal_hypothesis_leaves_indeterminate_effect_open(KnowledgeState::Unknown)
+}
+
+#[test]
+fn indeterminate_effect_staying_indeterminate_with_terminal_hypothesis_is_not_terminal()
+-> Result<(), Box<dyn Error>> {
+    assert_terminal_hypothesis_leaves_indeterminate_effect_open(KnowledgeState::Indeterminate)
+}
+
+#[test]
+fn indeterminate_effect_becoming_estimated_with_terminal_hypothesis_is_not_terminal()
+-> Result<(), Box<dyn Error>> {
+    assert_terminal_hypothesis_leaves_indeterminate_effect_open(KnowledgeState::Estimated)
 }
