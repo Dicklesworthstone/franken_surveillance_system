@@ -1815,7 +1815,7 @@ fn test_defect_invalid_probability_preserves_inner_error() -> Result<(), Box<dyn
         [0.1, 0.1, 0.5, 0.5],
     )?;
 
-    // Construct det_b with raw field values where probability has lower > upper via unsafe/raw struct
+    // Construct det_b with raw field values where probability has lower > upper via direct struct-literal construction
     // or test compare_model_scores NaN comparison
     let mut det_nan = det_a.clone();
     det_nan.probability = ProbabilityInterval {
