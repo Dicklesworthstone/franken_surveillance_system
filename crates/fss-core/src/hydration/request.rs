@@ -141,10 +141,12 @@ impl HydrationRequest {
                 return Err(HydrationError::WrongContinuation);
             }
             cursor.validate_at(self.issued_at)?;
+            if cursor.session_id != self.session_id {
+                return Err(HydrationError::ContinuationCrossSession);
+            }
             if cursor.scope != ContinuationScope::EvidenceHydration
                 || cursor.stream_id != self.handle_id
                 || cursor.contract_basis != self.contract_basis
-                || cursor.session_id != self.session_id
                 || cursor.view_id != HYDRATION_VIEW_ID
                 || cursor.basis_anchor != self.anchor
                 || cursor.resume_anchor != self.anchor

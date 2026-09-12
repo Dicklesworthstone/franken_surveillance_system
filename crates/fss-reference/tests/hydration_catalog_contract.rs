@@ -247,7 +247,7 @@ fn continuations_verify_prior_artifact_and_preserve_expiry_ceiling() -> Result<(
     reseal_request(&mut tampered_request);
     assert_eq!(
         catalog.hydrate(&tampered_request, TimestampNs(40)),
-        Err(HydrationError::WrongContinuation)
+        Err(HydrationError::ContinuationUnissued)
     );
 
     // Tampered artifact witness is rejected
@@ -262,23 +262,133 @@ fn continuations_verify_prior_artifact_and_preserve_expiry_ceiling() -> Result<(
     reseal_request(&mut bad_witness_request);
     assert_eq!(
         catalog.hydrate(&bad_witness_request, TimestampNs(40)),
-        Err(HydrationError::WrongContinuation)
+        Err(HydrationError::ContinuationUnissued)
     );
 
-    // Cross-session replay is rejected
-    let mut other_session_request = next.clone();
+    // Replay of already-consumed cursor is rejected
+    assert_eq!(
+        catalog.hydrate(&next, TimestampNs(40)),
+        Err(HydrationError::ContinuationAlreadyConsumed)
+    );
+
+    // Cross-session presentation of active cursor is rejected
+    let mut other_session_request = request(&handle)?;
     other_session_request.session_id = SessionId::parse("session:other")?;
+    other_session_request.requested_level = HydrationLevel::H2;
+    other_session_request.issued_at = TimestampNs(40);
+    other_session_request.continuation = Some(next_cursor.clone());
     reseal_request(&mut other_session_request);
     assert_eq!(
         catalog.hydrate(&other_session_request, TimestampNs(40)),
-        Err(HydrationError::WrongContinuation)
+        Err(HydrationError::ContinuationCrossSession)
     );
 
     // Continuation presented after expiry is rejected
+    let mut expired_request = request(&handle)?;
+    expired_request.requested_level = HydrationLevel::H2;
+    expired_request.issued_at = TimestampNs(40);
+    expired_request.continuation = Some(next_cursor);
+    reseal_request(&mut expired_request);
     assert_eq!(
-        catalog.hydrate(&next, TimestampNs(100)),
-        Err(HydrationError::WrongContinuation)
+        catalog.hydrate(&expired_request, TimestampNs(100)),
+        Err(HydrationError::ContinuationExpired)
     );
+    Ok(())
+}
+
+#[test]
+fn issued_cursor_cannot_be_reused_twice_for_ordinal_replay()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (mut catalog, handle) = catalog()?;
+    let first_request = request(&handle)?;
+    let first_resp = catalog.hydrate(&first_request, TimestampNs(20))?;
+    let cursor = first_resp
+        .receipt
+        .continuation
+        .ok_or(HydrationError::WrongContinuation)?;
+
+    // First use: advance from H0 to H1
+    let mut next_request = request(&handle)?;
+    next_request.requested_level = HydrationLevel::H1;
+    next_request.issued_at = TimestampNs(30);
+    next_request.continuation = Some(cursor.clone());
+    reseal_request(&mut next_request);
+
+    let second_resp = catalog.hydrate(&next_request, TimestampNs(35))?;
+    assert_eq!(
+        second_resp.receipt.delivered_level,
+        Some(HydrationLevel::H1)
+    );
+
+    // Replay attempt: presenting the exact same cursor again must fail
+    let replay_result = catalog.hydrate(&next_request, TimestampNs(40));
+    assert_eq!(
+        replay_result,
+        Err(HydrationError::ContinuationAlreadyConsumed)
+    );
+    Ok(())
+}
+
+#[test]
+fn cursor_capacity_is_bounded_and_evicts_consumed_or_expired() -> Result<(), HydrationError> {
+    let handle = descriptor("cursor-capacity")?;
+    let mut catalog = ReferenceHydrationCatalog::with_limits(ReferenceHydrationLimits {
+        max_descriptors: 10,
+        max_payload_bytes: 1024 * 1024,
+        max_issued_cursors: 2,
+    });
+    catalog.register_descriptor(handle.clone())?;
+    for level in &handle.levels {
+        catalog.register_artifact(
+            &handle.handle_id,
+            handle.descriptor_digest,
+            artifact(&handle, *level)?,
+        )?;
+    }
+
+    // 1st request -> issues cursor 1 (1 / 2 slots used)
+    let first_request = request(&handle)?;
+    let first_resp = catalog.hydrate(&first_request, TimestampNs(10))?;
+    let cursor1 = first_resp
+        .receipt
+        .continuation
+        .ok_or(HydrationError::WrongContinuation)?;
+    assert_eq!(catalog.issued_cursor_count(), 1);
+
+    // 2nd request -> issues cursor 2 (2 / 2 slots used)
+    let second_request = request(&handle)?;
+    let second_resp = catalog.hydrate(&second_request, TimestampNs(12))?;
+    let _cursor2 = second_resp
+        .receipt
+        .continuation
+        .ok_or(HydrationError::WrongContinuation)?;
+    assert_eq!(catalog.issued_cursor_count(), 2);
+
+    // 3rd request without continuation -> capacity is full, neither cursor is expired or consumed
+    let third_request = request(&handle)?;
+    assert_eq!(
+        catalog.hydrate(&third_request, TimestampNs(15)),
+        Err(HydrationError::CapacityExceeded)
+    );
+
+    // Advance cursor1: cursor1 is consumed and evicted under capacity pressure
+    let mut advance_request = request(&handle)?;
+    advance_request.requested_level = HydrationLevel::H1;
+    advance_request.issued_at = TimestampNs(20);
+    advance_request.continuation = Some(cursor1.clone());
+    reseal_request(&mut advance_request);
+    let advance_resp = catalog.hydrate(&advance_request, TimestampNs(25))?;
+    let _cursor3 = advance_resp
+        .receipt
+        .continuation
+        .ok_or(HydrationError::WrongContinuation)?;
+    assert_eq!(catalog.issued_cursor_count(), 2);
+    assert!(catalog.issued_cursor(&cursor1.cursor_digest).is_none());
+
+    // Prune expired cursors at timestamp 100
+    catalog.prune_expired_cursors(TimestampNs(100));
+    assert_eq!(catalog.issued_cursor_count(), 0);
+
     Ok(())
 }
 
@@ -308,6 +418,7 @@ fn rejected_and_duplicate_writes_do_not_consume_capacity() -> Result<(), Hydrati
     let mut catalog = ReferenceHydrationCatalog::with_limits(ReferenceHydrationLimits {
         max_descriptors: 1,
         max_payload_bytes: 3,
+        max_issued_cursors: 4_096,
     });
     catalog.register_descriptor(handle.clone())?;
     let first = artifact(&handle, HydrationLevel::H0)?;

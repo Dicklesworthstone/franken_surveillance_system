@@ -23,6 +23,14 @@ pub enum HydrationError {
     CapacityExceeded,
     /// A progressive cursor belongs to another handle, session, basis, or position.
     WrongContinuation,
+    /// A progressive cursor was presented after its expiration time.
+    ContinuationExpired,
+    /// A progressive cursor was presented that was never issued by the catalog.
+    ContinuationUnissued,
+    /// A progressive cursor was presented by a different session than the one to which it was issued.
+    ContinuationCrossSession,
+    /// A progressive cursor was already consumed by a prior hydration request.
+    ContinuationAlreadyConsumed,
 }
 
 impl HydrationError {
@@ -40,6 +48,10 @@ impl HydrationError {
             Self::BudgetExceeded => "hydration_budget_exceeded",
             Self::CapacityExceeded => "hydration_capacity_exceeded",
             Self::WrongContinuation => "hydration_wrong_continuation",
+            Self::ContinuationExpired => "hydration_continuation_expired",
+            Self::ContinuationUnissued => "hydration_continuation_unissued",
+            Self::ContinuationCrossSession => "hydration_continuation_cross_session",
+            Self::ContinuationAlreadyConsumed => "hydration_continuation_already_consumed",
         }
     }
 
@@ -49,15 +61,19 @@ impl HydrationError {
         match self {
             Self::Contract(ContractError::StaleAnchor)
             | Self::DescriptorNotFound
-            | Self::WrongContinuation => RecoveryClass::RebaseRequired,
+            | Self::WrongContinuation
+            | Self::ContinuationExpired
+            | Self::ContinuationAlreadyConsumed => RecoveryClass::RebaseRequired,
             Self::CapabilityDenied
             | Self::PrivacyDenied
             | Self::LaboratoryGrantRequired
             | Self::BudgetExceeded
             | Self::CapacityExceeded => RecoveryClass::OperatorActionRequired,
-            Self::Contract(_) | Self::HandleRebound | Self::LevelUnavailable => {
-                RecoveryClass::NeverUnchanged
-            }
+            Self::Contract(_)
+            | Self::HandleRebound
+            | Self::LevelUnavailable
+            | Self::ContinuationUnissued
+            | Self::ContinuationCrossSession => RecoveryClass::NeverUnchanged,
         }
     }
 }
@@ -80,7 +96,11 @@ impl std::error::Error for HydrationError {
             | Self::LaboratoryGrantRequired
             | Self::BudgetExceeded
             | Self::CapacityExceeded
-            | Self::WrongContinuation => None,
+            | Self::WrongContinuation
+            | Self::ContinuationExpired
+            | Self::ContinuationUnissued
+            | Self::ContinuationCrossSession
+            | Self::ContinuationAlreadyConsumed => None,
         }
     }
 }
@@ -95,10 +115,10 @@ impl From<ContinuationError> for HydrationError {
     fn from(value: ContinuationError) -> Self {
         match value {
             ContinuationError::Contract(error) => Self::Contract(error),
-            ContinuationError::Expired | ContinuationError::WrongStream => Self::WrongContinuation,
-            ContinuationError::NonMonotone | ContinuationError::OutOfRange => {
-                Self::WrongContinuation
-            }
+            ContinuationError::Expired => Self::ContinuationExpired,
+            ContinuationError::WrongStream
+            | ContinuationError::NonMonotone
+            | ContinuationError::OutOfRange => Self::WrongContinuation,
         }
     }
 }

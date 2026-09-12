@@ -380,19 +380,31 @@ fn request_set_capacity_is_bounded() -> Result<(), HydrationError> {
         anchor: handle.anchor.clone(),
         requested_level: HydrationLevel::H0,
         allow_lower_level: false,
-        available_capabilities: (0..1_025).map(|i| format!("cap:{i}")).collect(),
+        available_capabilities: (0..1_024).map(|i| format!("cap:{i}")).collect(),
         authorized_privacy_classes: BTreeSet::from([handle.privacy_class.clone()]),
         budget: BudgetVector::default(),
         purpose: HydrationPurpose::Routine,
         continuation: None,
         issued_at: TimestampNs(10),
     };
+    // Exact bound (1_024) succeeds
+    let request_bound = HydrationRequest::publish(spec.clone())?;
+    assert_eq!(request_bound.available_capabilities.len(), 1_024);
+
+    // Bound + 1 (1_025) fails
+    spec.available_capabilities = (0..1_025).map(|i| format!("cap:{i}")).collect();
     assert_eq!(
         HydrationRequest::publish(spec.clone()),
         Err(HydrationError::CapacityExceeded)
     );
 
+    // Exact bound (1_024) for privacy classes succeeds
     spec.available_capabilities.clear();
+    spec.authorized_privacy_classes = (0..1_024).map(|i| format!("priv:{i}")).collect();
+    let request_priv_bound = HydrationRequest::publish(spec.clone())?;
+    assert_eq!(request_priv_bound.authorized_privacy_classes.len(), 1_024);
+
+    // Bound + 1 (1_025) for privacy classes fails
     spec.authorized_privacy_classes = (0..1_025).map(|i| format!("priv:{i}")).collect();
     assert_eq!(
         HydrationRequest::publish(spec),

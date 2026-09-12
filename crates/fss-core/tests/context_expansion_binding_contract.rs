@@ -155,6 +155,73 @@ fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt
     Ok((pack, receipt))
 }
 
+fn pack_and_receipt_with_handles(
+    count: usize,
+) -> Result<(SemanticContextPack, SemanticCompressionReceipt), Box<dyn Error>> {
+    let pack = SemanticContextPack::publish(
+        "context-pack:capacity",
+        basis(),
+        MissionId::parse("mission:context-binding")?,
+        SessionId::parse("session:context-binding")?,
+        "AVIEW-001",
+        anchor(0),
+        ContentDigest::sha256(b"situation-frame"),
+        vec![ContextItem {
+            item_id: "context:knowledge:selected".to_owned(),
+            kind: "knowledge".to_owned(),
+            epistemic_state: KnowledgeState::Known,
+            content: "A bounded selected context item.".to_owned(),
+            basis: BTreeSet::from(["claim:selected".to_owned()]),
+            expansion_handles: BTreeSet::new(),
+        }],
+        "compression:context-binding",
+        Some("continuation:context-binding".to_owned()),
+        TimestampNs(2),
+    )?;
+    let expansion_handles = (0..count)
+        .map(|i| {
+            Ok(ExpansionHandle {
+                handle: format!("slot:{i:04}"),
+                purpose: "Expansion handle".to_owned(),
+                estimated_cost: BudgetVector::builder().tokens(10).bytes(100).build()?,
+            })
+        })
+        .collect::<Result<Vec<_>, ContractError>>()?;
+    let receipt = SemanticCompressionReceipt {
+        receipt_id: "compression:context-binding".to_owned(),
+        source_anchor: pack.anchor.clone(),
+        view_id: pack.view_id.clone(),
+        target_tokens: pack.token_count + 1_024,
+        selected_classes: BTreeSet::from(["knowledge".to_owned()]),
+        omitted_classes: BTreeSet::from(["knowledge".to_owned()]),
+        transforms: vec![CompressionTransform {
+            kind: CompressionTransformKind::Select,
+            scope: "knowledge".to_owned(),
+            loss_class: CompressionLossClass::BoundedLoss,
+            details: Some("one optional knowledge item remains hydratable".to_owned()),
+        }],
+        completeness: vec![CompressionCompleteness {
+            domain: "knowledge".to_owned(),
+            state: Completeness::Bounded,
+            omitted_count: 1,
+        }],
+        critical_preservation: CriticalPreservation {
+            known_critical_items: 0,
+            omitted_critical_items: 0,
+            omitted_invalidations: 0,
+            omitted_contradictions: 0,
+        },
+        actual_tokens: pack.token_count,
+        actual_bytes: pack.encoded_bytes(),
+        expansion_handles,
+        selection_frontier_digest: Some(ContentDigest::sha256(b"selection-frontier")),
+        stop_reason: CompressionStopReason::TargetBudget,
+        output_digest: pack.pack_digest,
+    };
+    receipt.validate_for(&pack)?;
+    Ok((pack, receipt))
+}
+
 #[test]
 fn exact_slot_bindings_validate_against_descriptor_catalog() -> Result<(), Box<dyn Error>> {
     let (pack, receipt) = pack_and_receipt()?;
@@ -376,7 +443,22 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         Err(ContextBindingError::NonCanonicalOrdering(slot)) if slot == "slot:item:evidence"
     ));
 
-    // Capacity exceeded
+    // Capacity at bound (4_096) succeeds
+    let (cap_pack, cap_receipt) = pack_and_receipt_with_handles(4_096)?;
+    let max_bindings = (0..4_096)
+        .map(|i| {
+            ContextExpansionBinding::publish(
+                format!("slot:{i:04}"),
+                &item_handle,
+                HydrationLevel::H1,
+                "Bound binding",
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let bound_set = ContextExpansionBindingSet::publish(&cap_pack, &cap_receipt, max_bindings)?;
+    assert_eq!(bound_set.bindings.len(), 4_096);
+
+    // Capacity exceeded at bound + 1 (4_097) fails
     let excessive_bindings = (0..4_097)
         .map(|i| {
             ContextExpansionBinding::publish(
@@ -388,7 +470,7 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         })
         .collect::<Result<Vec<_>, _>>()?;
     assert!(matches!(
-        ContextExpansionBindingSet::publish(&pack, &receipt, excessive_bindings),
+        ContextExpansionBindingSet::publish(&cap_pack, &cap_receipt, excessive_bindings),
         Err(ContextBindingError::CapacityExceeded)
     ));
 

@@ -18,6 +18,8 @@ pub struct ReferenceHydrationLimits {
     pub max_descriptors: usize,
     /// Maximum aggregate artifact payload bytes; does not measure allocator or metadata overhead.
     pub max_payload_bytes: usize,
+    /// Maximum number of retained cursor records (active and consumed).
+    pub max_issued_cursors: usize,
 }
 
 impl Default for ReferenceHydrationLimits {
@@ -25,6 +27,7 @@ impl Default for ReferenceHydrationLimits {
         Self {
             max_descriptors: 4_096,
             max_payload_bytes: 64 * 1_024 * 1_024,
+            max_issued_cursors: 4_096,
         }
     }
 }
@@ -42,6 +45,8 @@ pub struct IssuedCursorRecord {
     pub expires_at: TimestampNs,
     /// Exact ladder ordinal resumed by this cursor.
     pub next_ordinal: u8,
+    /// Whether this cursor has already been consumed by a successful continuation request.
+    pub consumed: bool,
 }
 
 /// In-memory oracle with exact historical identities and one current descriptor per handle.
@@ -71,6 +76,7 @@ impl ReferenceHydrationCatalog {
         Self::with_limits(ReferenceHydrationLimits {
             max_descriptors: 4_096,
             max_payload_bytes: 64 * 1_024 * 1_024,
+            max_issued_cursors: 4_096,
         })
     }
 
@@ -109,6 +115,17 @@ impl ReferenceHydrationCatalog {
     #[must_use]
     pub fn issued_cursor_count(&self) -> usize {
         self.issued_cursors.len()
+    }
+
+    /// Prunes expired cursor issuance records whose retention lease has lapsed.
+    pub fn prune_expired_cursors(&mut self, now: TimestampNs) {
+        self.issued_cursors
+            .retain(|_, record| now < record.expires_at);
+    }
+
+    /// Prunes consumed cursor issuance records to reclaim cursor capacity.
+    pub fn prune_consumed_cursors(&mut self) {
+        self.issued_cursors.retain(|_, record| !record.consumed);
     }
 
     /// Registers an exact revision without allowing rollback, equal-anchor forks, or resurrection.
@@ -240,13 +257,19 @@ impl ReferenceHydrationCatalog {
             let record = self
                 .issued_cursors
                 .get(&cursor.cursor_digest)
-                .ok_or(HydrationError::WrongContinuation)?
+                .ok_or(HydrationError::ContinuationUnissued)?
                 .clone();
-            if record.session_id != request.session_id
-                || record.handle_id != descriptor.handle_id
-                || now >= record.expires_at
-            {
+            if record.consumed {
+                return Err(HydrationError::ContinuationAlreadyConsumed);
+            }
+            if record.session_id != request.session_id {
+                return Err(HydrationError::ContinuationCrossSession);
+            }
+            if record.handle_id != descriptor.handle_id {
                 return Err(HydrationError::WrongContinuation);
+            }
+            if now >= record.expires_at {
+                return Err(HydrationError::ContinuationExpired);
             }
             let ordinal =
                 u8::try_from(cursor.position).map_err(|_| HydrationError::WrongContinuation)?;
@@ -335,9 +358,30 @@ impl ReferenceHydrationCatalog {
                 receipt,
             };
             response.validate_for(request, &descriptor)?;
+            if let Some(cursor) = &request.continuation {
+                if let Some(record) = self.issued_cursors.get_mut(&cursor.cursor_digest) {
+                    record.consumed = true;
+                }
+            }
             if let Some(cursor) = &continuation {
                 let next_ordinal =
                     u8::try_from(cursor.position).map_err(|_| HydrationError::WrongContinuation)?;
+                if self.issued_cursors.len() >= self.limits.max_issued_cursors {
+                    self.prune_expired_cursors(now);
+                }
+                if self.issued_cursors.len() >= self.limits.max_issued_cursors {
+                    self.prune_consumed_cursors();
+                }
+                if self.issued_cursors.len() >= self.limits.max_issued_cursors {
+                    if let Some(prior_cursor) = &request.continuation {
+                        if let Some(record) =
+                            self.issued_cursors.get_mut(&prior_cursor.cursor_digest)
+                        {
+                            record.consumed = false;
+                        }
+                    }
+                    return Err(HydrationError::CapacityExceeded);
+                }
                 self.issued_cursors.insert(
                     cursor.cursor_digest,
                     IssuedCursorRecord {
@@ -346,6 +390,7 @@ impl ReferenceHydrationCatalog {
                         handle_id: descriptor.handle_id.clone(),
                         expires_at: cursor.expires_at,
                         next_ordinal,
+                        consumed: false,
                     },
                 );
             }
