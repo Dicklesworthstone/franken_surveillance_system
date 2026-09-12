@@ -1088,19 +1088,22 @@ fn test_not_applicable_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_not_applicable_knowledge_cell_no_planning_and_hard_gate() -> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
+    let power_topology = ContentDigest::sha256(b"fixed_sensor_mains_power_topology_record");
 
-    // Construct a cell with KnowledgeState::NotApplicable (e.g. flight battery status on stationary camera)
+    // Non-empty evidence, no contradictions, and no validity bound, so only the knowledge
+    // state can refuse the premise (e.g. flight battery status on a mains-powered camera).
     let cell = KnowledgeCell {
         claim_id: "claim:camera:battery_temp:001".to_string(),
         statement: "Battery temperature proposition on mains-powered fixed sensor".to_string(),
         knowledge_state: KnowledgeState::NotApplicable,
         provenance: ProvenanceClass::Policy,
         hypothesis: None,
-        evidence: vec![],
+        evidence: vec![power_topology],
         contradictions: vec![],
         valid_until: None,
         state_basis: None,
-    };
+    }
+    .validated()?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_not_applicable());
@@ -1123,6 +1126,12 @@ fn test_not_applicable_knowledge_cell_no_planning_and_hard_gate() -> Result<(), 
         !cell.is_irreversible_effect_premise(now),
         "NotApplicable knowledge state must NEVER authorize irreversible effects"
     );
+
+    // The identical fixture relabelled Known is a premise, so the refusal above came from the
+    // knowledge state alone rather than from missing evidence.
+    let mut applicable = cell;
+    applicable.knowledge_state = KnowledgeState::Known;
+    assert!(applicable.is_irreversible_effect_premise(now));
 
     Ok(())
 }
