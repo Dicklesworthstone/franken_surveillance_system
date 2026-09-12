@@ -770,23 +770,73 @@ fn test_compiled_operation_table_equals_frozen_registry() -> TestResult {
     validate_frozen_registry_against_compiled(&json_val).map_err(|e| e.into())
 }
 
+fn get_ops_arr_mut(root: &mut JsonVal) -> Option<&mut Vec<JsonVal>> {
+    match root {
+        JsonVal::Obj(map) => match map.get_mut("operations") {
+            Some(JsonVal::Arr(arr)) => Some(arr),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn get_op_mut(
+    root: &mut JsonVal,
+    idx: usize,
+) -> Option<&mut std::collections::BTreeMap<String, JsonVal>> {
+    match root {
+        JsonVal::Obj(map) => match map.get_mut("operations") {
+            Some(JsonVal::Arr(arr)) => match arr.get_mut(idx) {
+                Some(JsonVal::Obj(op)) => Some(op),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn get_resources_arr_mut(root: &mut JsonVal) -> Option<&mut Vec<JsonVal>> {
+    match root {
+        JsonVal::Obj(map) => match map.get_mut("resources") {
+            Some(JsonVal::Arr(arr)) => Some(arr),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn get_resource_mut(
+    root: &mut JsonVal,
+    idx: usize,
+) -> Option<&mut std::collections::BTreeMap<String, JsonVal>> {
+    match root {
+        JsonVal::Obj(map) => match map.get_mut("resources") {
+            Some(JsonVal::Arr(arr)) => match arr.get_mut(idx) {
+                Some(JsonVal::Obj(res)) => Some(res),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[test]
 fn test_planted_negative_swapped_operation_owner_fails() -> TestResult {
     let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
     let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
-    if let JsonVal::Obj(ref mut root) = json_val {
-        if let Some(JsonVal::Arr(ops)) = root.get_mut("operations") {
-            if let Some(JsonVal::Obj(op0)) = ops.get_mut(0) {
-                op0.insert(
-                    "owner".to_string(),
-                    JsonVal::Str("fss-situation".to_string()),
-                );
-            }
-        }
+    if let Some(op0) = get_op_mut(&mut json_val, 0) {
+        op0.insert(
+            "owner".to_string(),
+            JsonVal::Str("fss-situation".to_string()),
+        );
     }
     let res = validate_frozen_registry_against_compiled(&json_val);
-    assert!(res.is_err());
-    assert!(res.unwrap_err().contains("owner mismatch"));
+    match res {
+        Err(err) => assert!(err.contains("owner mismatch")),
+        Ok(()) => return Err("expected validation error but got Ok(())".into()),
+    }
     Ok(())
 }
 
@@ -794,24 +844,24 @@ fn test_planted_negative_swapped_operation_owner_fails() -> TestResult {
 fn test_planted_negative_extra_operation_fails() -> TestResult {
     let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
     let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
-    if let JsonVal::Obj(ref mut root) = json_val {
-        if let Some(JsonVal::Arr(ops)) = root.get_mut("operations") {
-            let mut extra = std::collections::BTreeMap::new();
-            extra.insert("id".to_string(), JsonVal::Str("AOP-015".to_string()));
-            extra.insert("name".to_string(), JsonVal::Str("extra.op".to_string()));
-            extra.insert("owner".to_string(), JsonVal::Str("fss-extra".to_string()));
-            extra.insert(
-                "cliCommand".to_string(),
-                JsonVal::Str("fss extra".to_string()),
-            );
-            extra.insert("mcpToolName".to_string(), JsonVal::Str("extra".to_string()));
-            extra.insert("status".to_string(), JsonVal::Str("specified".to_string()));
-            ops.push(JsonVal::Obj(extra));
-        }
+    if let Some(ops) = get_ops_arr_mut(&mut json_val) {
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("id".to_string(), JsonVal::Str("AOP-015".to_string()));
+        extra.insert("name".to_string(), JsonVal::Str("extra.op".to_string()));
+        extra.insert("owner".to_string(), JsonVal::Str("fss-extra".to_string()));
+        extra.insert(
+            "cliCommand".to_string(),
+            JsonVal::Str("fss extra".to_string()),
+        );
+        extra.insert("mcpToolName".to_string(), JsonVal::Str("extra".to_string()));
+        extra.insert("status".to_string(), JsonVal::Str("specified".to_string()));
+        ops.push(JsonVal::Obj(extra));
     }
     let res = validate_frozen_registry_against_compiled(&json_val);
-    assert!(res.is_err());
-    assert!(res.unwrap_err().contains("operation count mismatch"));
+    match res {
+        Err(err) => assert!(err.contains("operation count mismatch")),
+        Ok(()) => return Err("expected validation error but got Ok(())".into()),
+    }
     Ok(())
 }
 
@@ -819,16 +869,14 @@ fn test_planted_negative_extra_operation_fails() -> TestResult {
 fn test_planted_negative_non_aop_pattern_operation_fails() -> TestResult {
     let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
     let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
-    if let JsonVal::Obj(ref mut root) = json_val {
-        if let Some(JsonVal::Arr(ops)) = root.get_mut("operations") {
-            if let Some(JsonVal::Obj(op0)) = ops.get_mut(0) {
-                op0.insert("id".to_string(), JsonVal::Str("OP-001".to_string()));
-            }
-        }
+    if let Some(op0) = get_op_mut(&mut json_val, 0) {
+        op0.insert("id".to_string(), JsonVal::Str("OP-001".to_string()));
     }
     let res = validate_frozen_registry_against_compiled(&json_val);
-    assert!(res.is_err());
-    assert!(res.unwrap_err().contains("invalid operation id pattern"));
+    match res {
+        Err(err) => assert!(err.contains("invalid operation id pattern")),
+        Ok(()) => return Err("expected validation error but got Ok(())".into()),
+    }
     Ok(())
 }
 
@@ -846,8 +894,10 @@ fn test_planted_negative_freeze_digest_mismatch_fails() -> TestResult {
         );
     }
     let res = validate_frozen_registry_against_compiled(&json_val);
-    assert!(res.is_err());
-    assert!(res.unwrap_err().contains("freeze digest mismatch"));
+    match res {
+        Err(err) => assert!(err.contains("freeze digest mismatch")),
+        Ok(()) => return Err("expected validation error but got Ok(())".into()),
+    }
     Ok(())
 }
 
@@ -855,19 +905,17 @@ fn test_planted_negative_freeze_digest_mismatch_fails() -> TestResult {
 fn test_planted_negative_swapped_resource_uri_fails() -> TestResult {
     let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
     let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
-    if let JsonVal::Obj(ref mut root) = json_val {
-        if let Some(JsonVal::Arr(res)) = root.get_mut("resources") {
-            if let Some(JsonVal::Obj(res0)) = res.get_mut(0) {
-                res0.insert(
-                    "uriTemplate".to_string(),
-                    JsonVal::Str("fss://corrupted".to_string()),
-                );
-            }
-        }
+    if let Some(res0) = get_resource_mut(&mut json_val, 0) {
+        res0.insert(
+            "uriTemplate".to_string(),
+            JsonVal::Str("fss://corrupted".to_string()),
+        );
     }
     let res = validate_frozen_registry_against_compiled(&json_val);
-    assert!(res.is_err());
-    assert!(res.unwrap_err().contains("uriTemplate mismatch"));
+    match res {
+        Err(err) => assert!(err.contains("uriTemplate mismatch")),
+        Ok(()) => return Err("expected validation error but got Ok(())".into()),
+    }
     Ok(())
 }
 
@@ -875,30 +923,30 @@ fn test_planted_negative_swapped_resource_uri_fails() -> TestResult {
 fn test_planted_negative_extra_resource_fails() -> TestResult {
     let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
     let mut json_val = parse_json(frozen_str).map_err(|e| format!("parse error: {e}"))?;
-    if let JsonVal::Obj(ref mut root) = json_val {
-        if let Some(JsonVal::Arr(res)) = root.get_mut("resources") {
-            let mut extra = std::collections::BTreeMap::new();
-            extra.insert("id".to_string(), JsonVal::Str("ARES-016".to_string()));
-            extra.insert("name".to_string(), JsonVal::Str("extra.res".to_string()));
-            extra.insert(
-                "uriTemplate".to_string(),
-                JsonVal::Str("fss://extra".to_string()),
-            );
-            extra.insert("owner".to_string(), JsonVal::Str("fss-extra".to_string()));
-            extra.insert(
-                "payloadSchema".to_string(),
-                JsonVal::Str("fss.extra.v1".to_string()),
-            );
-            extra.insert(
-                "compatibilityClass".to_string(),
-                JsonVal::Str("backward_compatible".to_string()),
-            );
-            extra.insert("status".to_string(), JsonVal::Str("specified".to_string()));
-            res.push(JsonVal::Obj(extra));
-        }
+    if let Some(res) = get_resources_arr_mut(&mut json_val) {
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("id".to_string(), JsonVal::Str("ARES-016".to_string()));
+        extra.insert("name".to_string(), JsonVal::Str("extra.res".to_string()));
+        extra.insert(
+            "uriTemplate".to_string(),
+            JsonVal::Str("fss://extra".to_string()),
+        );
+        extra.insert("owner".to_string(), JsonVal::Str("fss-extra".to_string()));
+        extra.insert(
+            "payloadSchema".to_string(),
+            JsonVal::Str("fss.extra.v1".to_string()),
+        );
+        extra.insert(
+            "compatibilityClass".to_string(),
+            JsonVal::Str("backward_compatible".to_string()),
+        );
+        extra.insert("status".to_string(), JsonVal::Str("specified".to_string()));
+        res.push(JsonVal::Obj(extra));
     }
     let res = validate_frozen_registry_against_compiled(&json_val);
-    assert!(res.is_err());
-    assert!(res.unwrap_err().contains("resource count mismatch"));
+    match res {
+        Err(err) => assert!(err.contains("resource count mismatch")),
+        Ok(()) => return Err("expected validation error but got Ok(())".into()),
+    }
     Ok(())
 }
