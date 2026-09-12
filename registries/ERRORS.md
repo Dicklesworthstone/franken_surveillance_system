@@ -180,6 +180,7 @@ operation states rather than generic errors.
 | `ERR-CLAIM-SLO-MEASUREMENT-NOT-PASSED-001` | slo measurement status is missing or anything other than 'passed' | re-run the measurement; a failed, partial, or unlabelled run never supports an slo claim |
 | `ERR-CLAIM-SLO-ENVIRONMENT-UNRETAINED-001` | slo claim retains no single digest-bound fss.environment_manifest.v1 artifact, or the measurement is not bound to that manifest's digest | retain the exact environment manifest and bind the measurement to its digest |
 | `ERR-CLAIM-SLO-REGISTRY-INVALID-001` | the SLO registry (registries/SLOS.md) or operation-cost registry (architecture/operation_cost_registry.toml) consulted for an slo claim is missing, unreadable, empty, malformed, or declares no rows or generation | repair the registry under the audited root; slo claims are never checked against a silently skipped registry |
+| `ERR-CLAIM-CLASS-UNRESOLVED-001` | a promoted proof bundle's claim class cannot be resolved from its citing claim row (Class column) or a registry, so only the bundle's own class declaration remains | declare the class in the citing claim row; a bundle never chooses the class its evidence is checked against |
 
 
 

@@ -34,6 +34,11 @@ Fail-closed verification invariants:
    its own class: the citing claim's class (for SLO ids, the SLO registry's) governs, and a
    bundle class that disagrees fails. An ``slo`` target and comparator come only from the
    authoritative registries/SLOS.md row (parsed by slo_validate), never from the measurement.
+   A claim row declares its class in a ``Class`` column (the SLO registry governs SLO ids); a
+   promoted bundle whose class no claim row or registry resolves fails closed, and a retained
+   bundle inherits the class of the claim row that cites it.
+9. Counting: only a passing bundle at a promoted level counts as verified; passing unpromoted
+   bundles are reported separately, and 'draft'/'absent' support no readiness level at all.
 """
 
 from __future__ import annotations
@@ -97,6 +102,7 @@ ERR_SLO_WINDOW_INVALID = "ERR-CLAIM-SLO-WINDOW-INVALID-001"
 ERR_SLO_MEASUREMENT_NOT_PASSED = "ERR-CLAIM-SLO-MEASUREMENT-NOT-PASSED-001"
 ERR_SLO_ENVIRONMENT_UNRETAINED = "ERR-CLAIM-SLO-ENVIRONMENT-UNRETAINED-001"
 ERR_SLO_REGISTRY_INVALID = "ERR-CLAIM-SLO-REGISTRY-INVALID-001"
+ERR_CLAIM_CLASS_UNRESOLVED = "ERR-CLAIM-CLASS-UNRESOLVED-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_PROOF_BUNDLE_NOT_FOUND: {
@@ -243,6 +249,10 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "trigger": "The SLO registry (registries/SLOS.md) or operation-cost registry (architecture/operation_cost_registry.toml) consulted for an 'slo' claim is missing, unreadable, empty, malformed, or declares no rows or generation",
         "remediation": "Repair the registry under the audited root; slo claims are never checked against a silently skipped registry",
     },
+    ERR_CLAIM_CLASS_UNRESOLVED: {
+        "trigger": "A promoted proof bundle's claim class cannot be resolved from its citing claim row (Class column) or a registry, so only the bundle's own class declaration remains",
+        "remediation": "Declare the class in the citing claim row; a bundle never chooses the class its evidence is checked against",
+    },
 }
 
 READINESS_LEVEL_RANKS: dict[str, int] = {
@@ -267,6 +277,9 @@ NON_CLAIMING_STATES: frozenset[str] = frozenset({
     "tombstoned",
     "superseded",
 })
+
+# Registered levels a proof bundle can never support (they assert that nothing exists yet).
+UNSUPPORTING_LEVELS: frozenset[str] = frozenset({"absent", "draft"})
 
 # Claims at or above this rank require retained proof.
 PROMOTION_RANK = READINESS_LEVEL_RANKS["reference_implemented"]
@@ -502,7 +515,7 @@ def _read_json_document(path: Path, display: str, kind: str) -> tuple[dict[str, 
         return None, [_finding(ERR_EMPTY_INPUT, display, "file", f"{label} '{display}' is empty (0 bytes); existence is not proof")]
     try:
         data = json.loads(raw_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
         return None, [_finding(ERR_UNREADABLE_INPUT, display, "file", f"{label} '{display}' contains invalid JSON: {exc}", {"error": str(exc)})]
     if not isinstance(data, dict):
         return None, [_finding(ERR_UNREADABLE_INPUT, display, "root", f"{label} '{display}' JSON root must be an object")]
@@ -534,7 +547,7 @@ def load_authoritative_claims(claims_json_path: Path) -> tuple[dict[str, list[st
 
     try:
         data = json.loads(raw_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
         findings.append(_finding(ERR_UNREADABLE_INPUT, path_str, "root", f"Authoritative claims registry '{claims_json_path}' is invalid JSON: {exc}"))
         return classes, prohibited, findings
 
@@ -626,7 +639,7 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
         return unavailable(f"'{display}' is empty (0 bytes)")
     try:
         data = json.loads(raw_bytes.decode("utf-8-sig"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
         return unavailable(f"'{display}' is not valid JSON: {exc}", error=str(exc))
     if not isinstance(data, dict):
         return unavailable(f"'{display}' root must be a JSON object")
@@ -1318,7 +1331,7 @@ def _verify_slo_claim_evidence(
                                  params))
     if "target" in meas and threshold is not None:
         restated = meas["target"]
-        if isinstance(restated, bool) or not isinstance(restated, (int, float)) or float(restated) != threshold.value:
+        if _finite_number(restated) != threshold.value:
             findings.append(_finding(
                 ERR_SLO_TARGET_UNBOUND, path_str, f"{loc}.target",
                 f"Measurement target {restated!r} differs from the authoritative SLO target {threshold.value} {threshold.unit}",
@@ -1452,7 +1465,7 @@ def _open_retained_file(root: Path, rel_val: Any, declared_digest: Any) -> tuple
 def _json_object(raw: bytes) -> dict[str, Any] | None:
     try:
         doc = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, ValueError):
         return None
     return doc if isinstance(doc, dict) else None
 
@@ -1839,7 +1852,10 @@ BOUND_COMPARATORS: frozenset[str] = frozenset({"<=", ">="})
 def _finite_number(value: Any) -> float | None:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    number = float(value)
+    try:
+        number = float(value)
+    except OverflowError:  # a JSON integer beyond float range is not a finite measurement
+        return None
     return number if math.isfinite(number) else None
 
 
@@ -2143,7 +2159,7 @@ def verify_proof_bundle(
             ERR_CLAIM_LEVEL_EXCEEDED, path_str, "supported_level",
             f"Proof bundle '{path_str}' declares conflicting supported levels {[data[f] for f in level_fields]}",
         ))
-    elif supported_str in NON_CLAIMING_STATES:
+    elif supported_str in NON_CLAIMING_STATES or supported_str in UNSUPPORTING_LEVELS:
         findings.append(_finding(
             ERR_CLAIM_LEVEL_EXCEEDED, path_str, "supported_level",
             f"Proof bundle supported level '{supported_str}' supports no readiness claim",
@@ -2175,15 +2191,30 @@ def verify_proof_bundle(
                 {"claimed_level": claim_level, "supported_level": supported_str},
             ))
 
-    # 8. Claim class and required evidence. The class is the citing claim's: the one passed by
-    # the claim row, else the registry's (every SLO id is an 'slo' claim). A bundle never picks
-    # its own class; one that declares none or disagrees fails closed.
+    # 8. Claim class and required evidence. The class is the citing claim's: the registry's
+    # where one governs the claim id (every SLO id is an 'slo' claim), else the claim row's Class
+    # column. A bundle never picks its own class: one that declares none or disagrees fails, and
+    # a promoted bundle whose class nothing but the bundle itself asserts fails closed.
     _, raw_bundle_class = _single_field(data, CLAIM_CLASS_FIELDS)
     bundle_class = _nonempty_str(raw_bundle_class)
-    citing_class = claim_class if claim_class is not None else _registry_claim_class(
-        expected_claim_id if expected_claim_id is not None else bundle_claim_id
-    )
-    effective_class = citing_class if citing_class is not None else bundle_class
+    row_class = _nonempty_str(claim_class)
+    registry_class = _registry_claim_class(expected_claim_id if expected_claim_id is not None else bundle_claim_id)
+    if row_class is not None and registry_class is not None and row_class != registry_class:
+        findings.append(_finding(
+            ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_class",
+            f"Citing claim row class '{row_class}' contradicts the registry class '{registry_class}' of its claim",
+            {"row_claim_class": row_class, "claim_class": registry_class},
+        ))
+    citing_class = registry_class if registry_class is not None else row_class
+    unresolved = citing_class is None and _is_promoted_bundle(data, claim_level)
+    effective_class = None if unresolved else (citing_class if citing_class is not None else bundle_class)
+    if unresolved:
+        findings.append(_finding(
+            ERR_CLAIM_CLASS_UNRESOLVED, path_str, "claim_class",
+            f"Promoted proof bundle '{path_str}' has no claim class from a citing claim row or registry; "
+            f"its own declaration {raw_bundle_class!r} is not authoritative, so no evidence can be verified",
+            {"bundle_claim_class": raw_bundle_class},
+        ))
     if citing_class is not None and bundle_class is not None and bundle_class != citing_class:
         findings.append(_finding(
             ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_class",
@@ -2200,6 +2231,8 @@ def verify_proof_bundle(
             ERR_INVALID_CLAIM_CLASS, path_str, "claim_class",
             "No authoritative claim-class registry was supplied; required evidence cannot be verified",
         ))
+    elif unresolved:
+        pass  # reported above; required evidence of an unknown class is never checked
     elif effective_class is None:
         findings.append(_finding(
             ERR_INVALID_CLAIM_CLASS, path_str, "claim_class",
@@ -2320,7 +2353,26 @@ def parse_markdown_tables(text: str) -> list[tuple[list[str], list[list[str]]]]:
 
 
 def _new_scan_stats() -> dict[str, int]:
-    return {"claim_tables": 0, "rows": 0, "promoted": 0, "bundles_checked": 0, "bundles_passed": 0}
+    return {"claim_tables": 0, "rows": 0, "promoted": 0, "bundles_checked": 0, "bundles_passed": 0, "bundles_unpromoted": 0}
+
+
+def _count_bundle(stats: dict[str, int], ok: bool, data: dict[str, Any] | None, claim_level: str | None) -> None:
+    """A bundle counts as verified only when it passes at a promoted level; a passing bundle
+    below it supports no readiness and is counted separately."""
+    if not ok:
+        return
+    if data is not None and _is_promoted_bundle(data, claim_level):
+        stats["bundles_passed"] += 1
+    else:
+        stats["bundles_unpromoted"] += 1
+
+
+def _citation_key(root: Path, path: Path) -> str:
+    target = path if path.is_absolute() else root / path
+    try:
+        return str(target.resolve())
+    except (OSError, RuntimeError):
+        return str(target)
 
 
 def scan_markdown_claim_tables(
@@ -2333,8 +2385,11 @@ def scan_markdown_claim_tables(
     require_claim_table: bool = False,
     stats: dict[str, int] | None = None,
     now: datetime | None = None,
+    cited_classes: dict[str, set[str | None]] | None = None,
 ) -> list[ClaimFinding]:
-    """Scans markdown tables for status and proof root/bundle citations."""
+    """Scans markdown tables for status and proof root/bundle citations. A ``Class`` column
+    declares each claim row's class; cited_classes records, per cited bundle, the classes its
+    citing rows declare (the retention walk inherits them)."""
     findings: list[ClaimFinding] = []
     counters = stats if stats is not None else _new_scan_stats()
     for key, value in _new_scan_stats().items():
@@ -2354,7 +2409,7 @@ def scan_markdown_claim_tables(
     claim_tables_here = 0
     for headers, data_rows in parse_markdown_tables(raw_text):
         normalized_headers = [normalize_cell(h).lower() for h in headers]
-        columns: dict[str, list[int]] = {"status": [], "proof": [], "id": []}
+        columns: dict[str, list[int]] = {"status": [], "proof": [], "id": [], "class": []}
         for col_idx, col_name in enumerate(normalized_headers):
             if col_name == "status":
                 columns["status"].append(col_idx)
@@ -2362,6 +2417,8 @@ def scan_markdown_claim_tables(
                 columns["proof"].append(col_idx)
             elif col_name in ("id", "claim", "claim id"):
                 columns["id"].append(col_idx)
+            elif col_name in ("class", "claim class", "claim_class"):
+                columns["class"].append(col_idx)
 
         if not columns["status"] and not columns["proof"]:
             continue
@@ -2376,6 +2433,7 @@ def scan_markdown_claim_tables(
         status_col = columns["status"][0] if columns["status"] else None
         proof_col = columns["proof"][0] if columns["proof"] else None
         id_col = columns["id"][0] if columns["id"] else None
+        class_col = columns["class"][0] if columns["class"] else None
 
         for r_idx, row in enumerate(data_rows):
             counters["rows"] += 1
@@ -2388,6 +2446,8 @@ def scan_markdown_claim_tables(
             if status_col is not None:
                 status_val = normalize_cell(row[status_col]).lower() if status_col < len(row) else ""
             proof_val = normalize_cell(row[proof_col]) if proof_col is not None and proof_col < len(row) else ""
+            class_val = normalize_cell(row[class_col]).lower() if class_col is not None and class_col < len(row) else ""
+            row_class = class_val if class_val not in NON_PROOF_ROOTS else None
 
             claimed_rank: int | None = None
             if status_val is not None and status_val not in NON_CLAIMING_STATES:
@@ -2427,18 +2487,20 @@ def scan_markdown_claim_tables(
                     ))
                     continue
                 counters["bundles_checked"] += 1
-                bundle_ok, bundle_findings, _ = verify_proof_bundle(
+                bundle_ok, bundle_findings, bundle_data = verify_proof_bundle(
                     bundle_path=proof_path,
                     root=root,
                     expected_claim_id=row_id,
                     claim_level=status_val,
+                    claim_class=row_class,
                     known_classes=known_classes,
                     tombstoned_ids=tombstoned_ids,
                     prohibited_promotions=prohibited_promotions,
                     now=now,
                 )
-                if bundle_ok:
-                    counters["bundles_passed"] += 1
+                _count_bundle(counters, bundle_ok, bundle_data, status_val)
+                if cited_classes is not None:
+                    cited_classes.setdefault(_citation_key(root, proof_path), set()).add(row_class)
                 for bf in bundle_findings:
                     findings.append(ClaimFinding(
                         code=bf.code,
@@ -2694,7 +2756,7 @@ def audit_claim_kind_registry(
 
     try:
         data = json.loads(json_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (UnicodeDecodeError, ValueError) as exc:
         return [_finding(ERR_UNREADABLE_INPUT, json_str, "file", f"Claims registry '{json_path}' is invalid JSON: {exc}")]
 
     if not isinstance(data, dict):
@@ -3066,10 +3128,11 @@ def audit_claim_proof_bundles(
     stats = _new_scan_stats()
     surfaces_scanned: list[str] = []
     receipts = {"inspected": 0, "passed": 0, "nonpassing": 0}
+    cited_classes: dict[str, set[str | None]] = {}
 
     if target_bundle is not None:
         stats["bundles_checked"] += 1
-        bundle_ok, b_findings, _ = verify_proof_bundle(
+        bundle_ok, b_findings, b_data = verify_proof_bundle(
             bundle_path=target_bundle,
             root=root,
             known_classes=known_classes,
@@ -3078,7 +3141,7 @@ def audit_claim_proof_bundles(
             now=now,
         )
         findings.extend(b_findings)
-        stats["bundles_passed"] += int(bundle_ok)
+        _count_bundle(stats, bundle_ok, b_data, None)
     else:
         for rel_file in MANDATORY_AUTHORITY_FILES:
             full_path = root / rel_file
@@ -3106,6 +3169,7 @@ def audit_claim_proof_bundles(
                 require_claim_table=rel_file in CLAIM_TABLE_REQUIRED_SURFACES,
                 stats=stats,
                 now=now,
+                cited_classes=cited_classes,
             ))
             surfaces_scanned.append(rel_file)
 
@@ -3134,16 +3198,18 @@ def audit_claim_proof_bundles(
                             receipts["nonpassing"] += 1
                     elif name.endswith(BUNDLE_SUFFIXES):
                         stats["bundles_checked"] += 1
-                        bundle_ok, b_findings, _ = verify_proof_bundle(
+                        citing = cited_classes.get(_citation_key(root, f_path), set())
+                        bundle_ok, b_findings, b_data = verify_proof_bundle(
                             bundle_path=f_path,
                             root=root,
+                            claim_class=next(iter(citing)) if len(citing) == 1 else None,
                             known_classes=known_classes,
                             tombstoned_ids=tombstoned_ids,
                             prohibited_promotions=prohibited_promotions,
                             now=now,
                         )
                         findings.extend(b_findings)
-                        stats["bundles_passed"] += int(bundle_ok)
+                        _count_bundle(stats, bundle_ok, b_data, None)
 
     error_count = sum(1 for f in findings if f.severity == "error")
     warning_count = sum(1 for f in findings if f.severity == "warning")
@@ -3154,6 +3220,7 @@ def audit_claim_proof_bundles(
         "error_count": error_count,
         "warning_count": warning_count,
         "verified_bundles_count": stats["bundles_passed"],
+        "unpromoted_bundles_count": stats["bundles_unpromoted"],
         "bundles_checked": stats["bundles_checked"],
         "authoritative_classes_count": len(known_classes),
         "prohibited_promotions_count": len(prohibited_promotions),
@@ -3208,7 +3275,8 @@ def main() -> int:
             print(
                 f"[{tag}] Claim/proof-bundle audit: {summary['claim_rows_evaluated']} claim rows on "
                 f"{len(summary['claim_surfaces_scanned'])} surfaces ({summary['promoted_claim_rows']} promoted), "
-                f"{summary['verified_bundles_count']}/{summary['bundles_checked']} proof bundles verified, "
+                f"{summary['verified_bundles_count']}/{summary['bundles_checked']} proof bundles verified "
+                f"({summary['unpromoted_bundles_count']} unpromoted, not counted as verified), "
                 f"{summary['receipts_inspected']} qualification receipts inspected "
                 f"({summary['receipts_nonpassing']} non-passing), "
                 f"{summary['authoritative_classes_count']} claim classes, "
