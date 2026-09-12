@@ -446,12 +446,12 @@ impl ContextExpansionBindingSet {
         let mut prior: Option<&str> = None;
         for binding in &self.bindings {
             binding.verify()?;
-            if let Some(prior_slot) = prior {
-                if prior_slot > binding.slot_id.as_str() {
-                    return Err(ContextBindingError::NonCanonicalOrdering(
-                        binding.slot_id.clone(),
-                    ));
-                }
+            if let Some(prior_slot) = prior
+                && prior_slot > binding.slot_id.as_str()
+            {
+                return Err(ContextBindingError::NonCanonicalOrdering(
+                    binding.slot_id.clone(),
+                ));
             }
             prior = Some(&binding.slot_id);
             if !actual.insert(binding.slot_id.clone()) {

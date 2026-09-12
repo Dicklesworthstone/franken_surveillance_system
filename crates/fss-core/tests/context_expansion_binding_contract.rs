@@ -358,21 +358,29 @@ fn binding_set_enforces_capacity_ordering_and_duplicate_checks() -> Result<(), B
         HydrationLevel::H1,
         "Receipt binding",
     )?;
+    // publish automatically canonicalizes ordering
+    let published_set = ContextExpansionBindingSet::publish(
+        &pack,
+        &receipt,
+        vec![receipt_binding.clone(), item_binding.clone()],
+    )?;
+    assert_eq!(published_set.bindings[0].slot_id, "slot:item:evidence");
+    assert_eq!(published_set.bindings[1].slot_id, "slot:receipt:knowledge");
+
+    // Presenting an uncanonically ordered binding set fails validation:
     // "slot:receipt:knowledge" > "slot:item:evidence", so reversed order is non-canonical
+    let mut uncanonical_set = published_set;
+    uncanonical_set.bindings = vec![receipt_binding, item_binding];
     assert!(matches!(
-        ContextExpansionBindingSet::publish(
-            &pack,
-            &receipt,
-            vec![receipt_binding, item_binding],
-        ),
+        uncanonical_set.validate_for(&pack, &receipt),
         Err(ContextBindingError::NonCanonicalOrdering(slot)) if slot == "slot:item:evidence"
     ));
 
     // Capacity exceeded
-    let excessive_bindings = (0..257)
+    let excessive_bindings = (0..4_097)
         .map(|i| {
             ContextExpansionBinding::publish(
-                &format!("slot:{i:04}"),
+                format!("slot:{i:04}"),
                 &item_handle,
                 HydrationLevel::H1,
                 "Excessive binding",
