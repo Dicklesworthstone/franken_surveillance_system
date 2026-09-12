@@ -25,6 +25,7 @@ mod evidence;
 pub mod hydration;
 pub mod identity;
 mod ids;
+pub mod negative_evidence;
 mod outcome;
 pub mod pricing;
 mod projection;
@@ -115,6 +116,7 @@ pub use ids::{
     StreamId, TombstoneId, TombstoneReason, TombstoneRecord, TombstoneRegistry, TrackId,
     WorkspaceId,
 };
+pub use negative_evidence::*;
 
 pub use outcome::{
     ERR_AUTH_DENIED_001, ERR_COVERAGE_UNKNOWN_001, ERR_EFFECT_INDETERMINATE_001,
