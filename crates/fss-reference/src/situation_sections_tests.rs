@@ -586,3 +586,12 @@ fn redacted_cell_without_marker_is_refused_at_every_capsule_entry_point()
         &ContractError::RedactionMarkerRequired,
     )
 }
+
+#[test]
+fn stale_cell_without_basis_is_refused_at_every_capsule_entry_point() -> Result<(), Box<dyn Error>>
+{
+    assert_every_capsule_entry_point_refuses(
+        &basisless_cell(KnowledgeState::Stale),
+        &ContractError::StaleBasisRequired,
+    )
+}
