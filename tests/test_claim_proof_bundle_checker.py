@@ -2218,6 +2218,136 @@ class TestClaimKindRegistryAuditing(unittest.TestCase):
             self.assertIn(ERR_CLAIM_MISSING_FIELD, codes)
 
 
+class TestSloClaimClassRealization(unittest.TestCase):
+    """Verifies the realization of claim class 'slo' (fss-x4a.30.87.5)."""
+
+    def setUp(self) -> None:
+        self.claims_json_path = ROOT / "architecture/claims.json"
+        self.claims_md_path = ROOT / "registries/CLAIMS.md"
+        self.known_classes, self.prohibited, _ = load_authoritative_claims(self.claims_json_path)
+
+    def test_slo_claim_class_exact_normative_fields(self) -> None:
+        """The 'slo' claim class has exact normative fields in both JSON and Markdown."""
+        self.assertIn("slo", self.known_classes)
+        data = json.loads(self.claims_json_path.read_text(encoding="utf-8"))
+        slo_entry = next((c for c in data.get("classes", []) if c.get("id") == "slo"), None)
+        self.assertIsNotNone(slo_entry, "slo entry not found in claims.json classes")
+        self.assertEqual(slo_entry.get("claim_class"), "slo")
+        self.assertEqual(slo_entry.get("meaning"), "operational latency/availability/cost target achieved")
+        self.assertEqual(
+            slo_entry.get("minimum_evidence"),
+            "operation-cost row, environment, workload, raw measurements, failures",
+        )
+        self.assertEqual(
+            slo_entry.get("requiredEvidence"),
+            ["operation_cost_row", "measurement_artifact", "environment_manifest"],
+        )
+
+    def test_slo_proof_bundle_complete_evidence_passes(self) -> None:
+        """A well-formed proof bundle for an SLO with complete required evidence passes verification."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            bundle_data = {
+                "schema": "fss.proof_bundle.v1",
+                "bundle_id": "BUNDLE-SLO-INGEST-001",
+                "claim_id": "SLO-INGEST-001",
+                "claim_class": "slo",
+                "supported_level": "achieved",
+                "generation": "gen-2026-09-01",
+                "status": "passed",
+                "retained_evidence": [
+                    "operation_cost_row",
+                    "measurement_artifact",
+                    "environment_manifest",
+                ],
+            }
+            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
+            bundle_file = tmp_root / "slo_ingest.bundle.json"
+            bundle_file.write_text(json.dumps(bundle_data, indent=2), encoding="utf-8")
+
+            is_valid, findings, loaded_data = verify_proof_bundle(
+                bundle_path=bundle_file,
+                root=tmp_root,
+                expected_claim_id="SLO-INGEST-001",
+                claim_level="achieved",
+                known_classes=self.known_classes,
+                prohibited_promotions=self.prohibited,
+            )
+            self.assertTrue(is_valid, f"Expected pass, got findings: {[f.message for f in findings]}")
+            self.assertEqual(len(findings), 0)
+            self.assertIsNotNone(loaded_data)
+
+    def test_slo_proof_bundle_missing_evidence_fails(self) -> None:
+        """Dropping any required evidence from an 'slo' proof bundle emits ERR-CLAIM-PROOF-LEVEL-EXCEEDED-001."""
+        for dropped in ("operation_cost_row", "measurement_artifact", "environment_manifest"):
+            with tempfile.TemporaryDirectory() as tmpdir:
+                tmp_root = Path(tmpdir)
+                evidence = [
+                    e for e in ["operation_cost_row", "measurement_artifact", "environment_manifest"]
+                    if e != dropped
+                ]
+                bundle_data = {
+                    "schema": "fss.proof_bundle.v1",
+                    "bundle_id": "BUNDLE-SLO-INGEST-FAIL",
+                    "claim_id": "SLO-INGEST-001",
+                    "claim_class": "slo",
+                    "supported_level": "achieved",
+                    "generation": "gen-2026-09-01",
+                    "status": "passed",
+                    "retained_evidence": evidence,
+                }
+                bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
+                bundle_file = tmp_root / "slo_fail.bundle.json"
+                bundle_file.write_text(json.dumps(bundle_data, indent=2), encoding="utf-8")
+
+                is_valid, findings, _ = verify_proof_bundle(
+                    bundle_path=bundle_file,
+                    root=tmp_root,
+                    expected_claim_id="SLO-INGEST-001",
+                    claim_level="achieved",
+                    known_classes=self.known_classes,
+                    prohibited_promotions=self.prohibited,
+                )
+                self.assertFalse(is_valid)
+                codes = [f.code for f in findings]
+                self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes)
+
+    def test_slo_proof_bundle_stale_generation_fails(self) -> None:
+        """A proof bundle referencing prohibited 'latest' alias emits ERR-CLAIM-PROOF-STALE-GENERATION-001."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp_root = Path(tmpdir)
+            bundle_data = {
+                "schema": "fss.proof_bundle.v1",
+                "bundle_id": "BUNDLE-SLO-INGEST-STALE",
+                "claim_id": "SLO-INGEST-001",
+                "claim_class": "slo",
+                "supported_level": "achieved",
+                "generation": "latest",
+                "status": "passed",
+                "retained_evidence": [
+                    "operation_cost_row",
+                    "measurement_artifact",
+                    "environment_manifest",
+                ],
+            }
+            bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
+            bundle_file = tmp_root / "slo_stale.bundle.json"
+            bundle_file.write_text(json.dumps(bundle_data, indent=2), encoding="utf-8")
+
+            is_valid, findings, _ = verify_proof_bundle(
+                bundle_path=bundle_file,
+                root=tmp_root,
+                expected_claim_id="SLO-INGEST-001",
+                claim_level="achieved",
+                known_classes=self.known_classes,
+                prohibited_promotions=self.prohibited,
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_STALE_GENERATION, codes)
+
+
 if __name__ == "__main__":
     unittest.main()
+
 
