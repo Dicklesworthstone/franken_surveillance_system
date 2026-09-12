@@ -450,6 +450,8 @@ pub enum LocalPublicationError {
         original: Box<LocalPublicationError>,
         /// Cleanup error.
         cleanup: Box<LocalPublicationError>,
+        /// Chained cause linking original and cleanup for [`Error::source`] traversal.
+        cause: Box<CleanupChain>,
     },
     /// A fault-injection cut point fired; this instance behaves as a dead process.
     InjectedCrash {
@@ -590,6 +592,19 @@ impl LocalPublicationError {
             }
         }
     }
+
+    /// Constructs a [`CleanupFailed`](Self::CleanupFailed) error carrying both `original` and `cleanup`.
+    #[must_use]
+    pub fn cleanup_failed(original: Self, cleanup: Self) -> Self {
+        Self::CleanupFailed {
+            cause: Box::new(CleanupChain {
+                original: Box::new(original.clone()),
+                cleanup: Box::new(cleanup.clone()),
+            }),
+            original: Box::new(original),
+            cleanup: Box::new(cleanup),
+        }
+    }
 }
 
 impl fmt::Display for LocalPublicationError {
@@ -702,7 +717,9 @@ impl fmt::Display for LocalPublicationError {
                     Some(kind) => write!(formatter, "indeterminate marker not recorded: {kind}"),
                 }
             }
-            Self::CleanupFailed { original, cleanup } => {
+            Self::CleanupFailed {
+                original, cleanup, ..
+            } => {
                 write!(
                     formatter,
                     "cleanup failed ({cleanup}) after earlier failure: {original}"
@@ -728,12 +745,34 @@ impl fmt::Display for LocalPublicationError {
     }
 }
 
+/// Helper in [`LocalPublicationError::CleanupFailed`] that enables standard [`Error::source`]
+/// traversal to visit both the original error and the secondary cleanup error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CleanupChain {
+    /// Original error that triggered cleanup.
+    pub original: Box<LocalPublicationError>,
+    /// Cleanup error.
+    pub cleanup: Box<LocalPublicationError>,
+}
+
+impl fmt::Display for CleanupChain {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.original, formatter)
+    }
+}
+
+impl Error for CleanupChain {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(self.cleanup.as_ref())
+    }
+}
+
 impl Error for LocalPublicationError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Spool(error) => Some(error),
             Self::InvalidSlot { violation } => Some(violation),
-            Self::CleanupFailed { original, .. } => Some(original.as_ref()),
+            Self::CleanupFailed { cause, .. } => Some(cause.as_ref()),
             _ => None,
         }
     }
@@ -837,16 +876,16 @@ mod tests {
                 rollback_kind: std::io::ErrorKind::PermissionDenied,
                 marker_kind: None,
             },
-            LocalPublicationError::CleanupFailed {
-                original: Box::new(LocalPublicationError::InvalidLayout {
+            LocalPublicationError::cleanup_failed(
+                LocalPublicationError::InvalidLayout {
                     path: PathBuf::from("roots"),
-                }),
-                cleanup: Box::new(LocalPublicationError::Io {
+                },
+                LocalPublicationError::Io {
                     operation: LocalIoOperation::RemoveTemp,
                     path: PathBuf::from("roots/slot.root.tmp"),
                     kind: std::io::ErrorKind::Other,
-                }),
-            },
+                },
+            ),
             LocalPublicationError::InjectedCrash {
                 point: PublishCutPoint::AfterRootRename,
             },
@@ -876,6 +915,38 @@ mod tests {
             seen.insert(error.code());
         }
         assert_eq!(seen.len(), LOCAL_PUBLICATION_ERROR_CODES.len());
+        Ok(())
+    }
+
+    #[test]
+    fn test_cleanup_failed_error_source_chain_includes_cleanup_details()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::error::Error;
+        use std::io;
+
+        let original = LocalPublicationError::InvalidSlot {
+            violation: SlotViolation::Empty,
+        };
+        let cleanup = LocalPublicationError::Io {
+            operation: LocalIoOperation::RemoveTemp,
+            path: PathBuf::from("test.tmp"),
+            kind: io::ErrorKind::PermissionDenied,
+        };
+        let original_str = original.to_string();
+        let composite = LocalPublicationError::cleanup_failed(original, cleanup);
+
+        let Some(source) = composite.source() else {
+            return Err("composite.source() must not be None".into());
+        };
+        assert_eq!(source.to_string(), original_str);
+        assert!(source.to_string().contains("slot name is empty"));
+        let Some(next_source) = source.source() else {
+            return Err("source.source() must not be None".into());
+        };
+        assert!(
+            next_source.to_string().contains("remove_temp"),
+            "source.source() must yield cleanup error: {next_source}"
+        );
         Ok(())
     }
 }

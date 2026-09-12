@@ -14,9 +14,9 @@ use fss_object::{
     SpoolLimits,
 };
 use fss_publication::{
-    ClaimStatus, InjectedIoFault, IoFaultPoint, LedgeredRootPublisher, LocalPublicationError,
-    LocalPublicationLimits, LocalPublicationState, LocalRootPublisher, PublicationClaims,
-    RootLedgerState, SlotName,
+    BlockReason, ClaimStatus, LedgeredRootPublisher, LocalPublicationError, LocalPublicationLimits,
+    LocalPublicationState, LocalRootPublisher, PublicationClaims, ReferenceRole, RootLedgerState,
+    SlotName,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -88,76 +88,80 @@ fn test_publish_rejects_child_root_that_is_only_visible_not_durable() -> TestRes
     let root = fresh_root("test_publish_rejects_child_root_that_is_only_visible_not_durable")?;
     let limits = test_limits();
 
-    // Create publisher with injected fault on RootDirectorySync for Slot B
-    let mut publisher = LocalRootPublisher::open_with_injected_io_fault(
-        &root,
-        limits,
-        InjectedIoFault::new(IoFaultPoint::RootDirectorySync, std::io::ErrorKind::Other),
-    )?;
-    let leaf = publisher.stage_object(b"leaf")?;
-    let manifest_b = ObjectManifest::new("clip", [leaf], None)?;
+    // 1. Cleanly publish child slot-b
     let slot_b = SlotName::parse("slot-b")?;
+    let (leaf, manifest_b) = {
+        let mut publisher = LocalRootPublisher::open(&root, limits)?;
+        let leaf = publisher.stage_object(b"leaf")?;
+        let manifest_b = ObjectManifest::new("clip", [leaf], None)?;
+        publisher.publish(&slot_b, &manifest_b)?;
+        (leaf, manifest_b)
+    };
 
-    // Publish Slot B: directory fsync fails, leaves slot-b VisibleNotDurable
-    match publisher.publish(&slot_b, &manifest_b) {
-        Err(error) => assert_eq!(
-            error,
-            LocalPublicationError::Indeterminate {
-                path: root.join("roots").join("slot-b.root"),
-                kind: std::io::ErrorKind::Other,
-            },
-            "the injected directory fsync failure must surface as exactly Indeterminate"
-        ),
-        Ok(receipt) => {
+    // 2. Reopen fresh publisher with FaultInjectingSpoolIo that fails SyncDirectory on recovery.
+    // This leaves slot-b in Visible state (not promoted to Durable), while publisher remains unpoisoned.
+    let plan = SpoolFaultPlan::new().fail(SpoolIoCall::SyncDirectory, 3, io::ErrorKind::Other);
+    let fault_io = Arc::new(FaultInjectingSpoolIo::new(plan));
+    let mut fresh =
+        LocalRootPublisher::open_with_io(&root, limits, fault_io.clone() as Arc<dyn SpoolIo>)?;
+
+    let root_b = fresh
+        .root(&slot_b)
+        .ok_or("slot-b root must be visible on fresh publisher")?;
+    assert_eq!(
+        root_b.state,
+        LocalPublicationState::Visible,
+        "slot-b must remain Visible when recovery directory sync fails"
+    );
+    assert!(!fresh.is_poisoned(), "fresh publisher must not be poisoned");
+
+    // 3. Attempting to publish parent slot-a referencing slot-b must fail with ReferenceBlocked
+    let manifest_a = ObjectManifest::new("archive", [manifest_b.root()], None)?;
+    let slot_a = SlotName::parse("slot-a")?;
+
+    match fresh.publish(&slot_a, &manifest_a) {
+        Err(LocalPublicationError::ReferenceBlocked {
+            object,
+            role,
+            reason,
+        }) => {
+            assert_eq!(object, manifest_b.root());
+            assert_eq!(role, ReferenceRole::Child);
+            assert_eq!(reason, BlockReason::NotVerified);
+        }
+        other => {
             return Err(
-                format!("expected the injected directory fsync to fail: {receipt:?}").into(),
+                format!("expected ReferenceBlocked on fresh publisher, got {other:?}").into(),
             );
         }
     }
-    let root_b = publisher.root(&slot_b).ok_or("slot-b root missing")?;
-    assert_eq!(root_b.state, LocalPublicationState::Visible);
 
-    // Attempt to publish Slot A referencing Slot B while publisher is poisoned:
-    // This fails with Poisoned rather than ReferenceBlocked because the publisher is poisoned.
-    let manifest_a = ObjectManifest::new("archive", [manifest_b.root()], None)?;
-    let slot_a = SlotName::parse("slot-a")?;
-    let error = match publisher.publish(&slot_a, &manifest_a) {
-        Err(err) => err,
-        Ok(receipt) => return Err(format!("expected Poisoned, got Ok({receipt:?})").into()),
-    };
-
-    assert_eq!(
-        error,
-        LocalPublicationError::Poisoned,
-        "Publishing on the faulted publisher must fail with Poisoned"
+    assert!(
+        fault_io.all_fired(),
+        "recovery SyncDirectory fault must fire"
     );
 
     // Furthermore, closure() must NOT descend into Slot B's children while Slot B is not Durable
-    let closure_a = publisher.closure(manifest_a.root(), manifest_a.children());
+    let closure_a = fresh.closure(manifest_a.root(), manifest_a.children());
     assert!(
         !closure_a.contains(&leaf),
         "closure() must not descend into Slot B while Slot B is not Durable"
     );
+    drop(fresh);
 
-    // Drop faulted publisher and reopen fresh publisher
-    drop(publisher);
-    let mut reopened = LocalRootPublisher::open(&root, limits)?;
-    let root_b = reopened
-        .root(&slot_b)
-        .ok_or("slot-b root missing on reopen")?;
-    assert_eq!(root_b.state, LocalPublicationState::Durable);
-    assert!(
-        !reopened.is_poisoned(),
-        "reopened publisher must be unpoisoned"
+    // 4. Settled publisher opened without faults promotes Slot B to Durable; parent publish succeeds
+    let mut settled = LocalRootPublisher::open(&root, limits)?;
+    assert_eq!(
+        settled.root(&slot_b).ok_or("slot-b must exist")?.state,
+        LocalPublicationState::Durable
     );
-
-    // After recovery promoted Slot B to Durable, publishing Slot A succeeds
-    reopened.publish(&slot_a, &manifest_a)?;
-    let closure_reopened = reopened.closure(manifest_a.root(), manifest_a.children());
+    settled.publish(&slot_a, &manifest_a)?;
+    let closure_settled = settled.closure(manifest_a.root(), manifest_a.children());
     assert!(
-        closure_reopened.contains(&leaf),
+        closure_settled.contains(&leaf),
         "closure() must descend into Slot B once Slot B is Durable"
     );
+
     Ok(())
 }
 

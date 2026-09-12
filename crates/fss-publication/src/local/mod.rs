@@ -1068,6 +1068,25 @@ impl LocalRootPublisher {
         }
         if let Err(error) = self.io.sync_directory(&self.tombstones_dir) {
             self.poisoned = true;
+            let rollback = match self.io.remove_file(&target_path) {
+                Ok(()) => self.io.sync_directory(&self.tombstones_dir).is_ok(),
+                Err(_) => false,
+            };
+            if !rollback {
+                let marker_kind = self
+                    .record_indeterminate_tombstone_marker(&object, &bytes)
+                    .err();
+                if marker_kind.is_some()
+                    && let Ok(mut file) = self.io.open_lock(&target_path)
+                {
+                    let _ = write_all(
+                        self.io.as_ref(),
+                        &mut file,
+                        b"corrupted_indeterminate_tombstone",
+                    );
+                    let _ = self.io.sync_file(&file);
+                }
+            }
             return Err(LocalPublicationError::Indeterminate {
                 path: target_path,
                 kind: error.kind(),
@@ -1338,10 +1357,7 @@ impl LocalRootPublisher {
     ) -> LocalPublicationError {
         match cleanup {
             Ok(()) => original,
-            Err(cleanup) => LocalPublicationError::CleanupFailed {
-                original: Box::new(original),
-                cleanup: Box::new(cleanup),
-            },
+            Err(cleanup) => LocalPublicationError::cleanup_failed(original, cleanup),
         }
     }
 
@@ -1430,6 +1446,16 @@ impl LocalRootPublisher {
         let marker_kind = self
             .record_indeterminate_tombstone_marker(object, record)
             .err();
+        if marker_kind.is_some()
+            && let Ok(mut file) = self.io.open_lock(target)
+        {
+            let _ = write_all(
+                self.io.as_ref(),
+                &mut file,
+                b"corrupted_indeterminate_tombstone",
+            );
+            let _ = self.io.sync_file(&file);
+        }
         LocalPublicationError::TombstoneVisibilityIndeterminate {
             object: *object,
             path: target.to_path_buf(),
@@ -1645,13 +1671,13 @@ impl LocalRootPublisher {
         self.recover_tombstones(&mut report)?;
         self.recover_roots(&mut report)?;
 
-        for directory in [&self.roots_dir, &self.tombstones_dir] {
-            self.io
-                .sync_directory(directory)
-                .map_err(|error| io_error(LocalIoOperation::SyncDirectory, directory, &error))?;
-        }
+        let roots_synced = self.io.sync_directory(&self.roots_dir).is_ok();
+        let _ = self.io.sync_directory(&self.tombstones_dir);
+
         for entry in self.visible.values_mut() {
-            entry.visible.state = LocalPublicationState::Durable;
+            if roots_synced {
+                entry.visible.state = LocalPublicationState::Durable;
+            }
             report.roots.push(entry.visible.clone());
         }
         let mut referenced = BTreeSet::new();

@@ -22,7 +22,7 @@ use fss_core::{ContentDigest, Generation, ObjectId, TombstoneReason, TombstoneRe
 use fss_object::{FaultInjectingSpoolIo, ObjectManifest, SpoolFaultPlan, SpoolIoCall, SpoolLimits};
 use fss_publication::{
     LOCAL_TOMBSTONES_DIR, LocalIoOperation, LocalPublicationError, LocalPublicationGuidance,
-    LocalPublicationLimits, LocalRootPublisher, ROOT_INDETERMINATE_SUFFIX, SlotName,
+    LocalPublicationLimits, LocalRootPublisher, ROOT_INDETERMINATE_SUFFIX, SlotName, SlotViolation,
     TOMBSTONE_RECORD_SUFFIX, TombstoneOutcome, tombstone_record_bytes,
 };
 
@@ -282,6 +282,12 @@ fn indeterminate_tombstone_whose_marker_cannot_be_recorded_reports_the_marker_fa
     );
     assert!(publisher.is_poisoned());
     assert!(!root.join(tombstone_marker_relative(payload)).exists());
+    drop(publisher);
+    let reopen_err = LocalRootPublisher::open(&root, limits());
+    assert!(
+        reopen_err.is_err(),
+        "reopening over un-rolled-back tombstone whose marker failed must fail closed, not admit it"
+    );
     Ok(())
 }
 
@@ -359,7 +365,9 @@ fn cleanup_failure_carries_both_original_and_cleanup_errors() -> TestResult {
     let error = expect_err(publisher.publish(&slot, &manifest))?;
     assert!(io.all_fired(), "cleanup fault must fire");
     match &error {
-        LocalPublicationError::CleanupFailed { original, cleanup } => {
+        LocalPublicationError::CleanupFailed {
+            original, cleanup, ..
+        } => {
             assert_eq!(
                 **original,
                 LocalPublicationError::InvalidLayout { path: target_path }
@@ -378,6 +386,311 @@ fn cleanup_failure_carries_both_original_and_cleanup_errors() -> TestResult {
     }
     assert_eq!(error.code(), "ERR-PUBLICATION-LOCAL-CLEANUP-001");
     assert_eq!(error.guidance(), LocalPublicationGuidance::RepairStorage);
-    assert!(error.source().is_some());
+
+    // Standard Error::source chain exposes original first, and original.source() yields cleanup
+    let source = error.source().ok_or("expected source")?;
+    assert!(source.to_string().contains("invalid layout"));
+    let next_source = source.source().ok_or("expected next source")?;
+    assert!(next_source.to_string().contains("remove_temp"));
+    Ok(())
+}
+
+/// Finding 2: Reopen fails closed when indeterminate marker could not be recorded.
+#[test]
+fn test_reopen_fails_closed_when_indeterminate_marker_could_not_be_recorded() -> TestResult {
+    let name = "reopen_fails_closed_when_indeterminate_marker_could_not_be_recorded";
+    let calls = probe_tombstone_commit_calls(name)?;
+    let root = fresh_root(name)?;
+    let plan = SpoolFaultPlan::new()
+        .fail_after_applying(
+            SpoolIoCall::Rename,
+            calls.tombstone_rename,
+            io::ErrorKind::Other,
+        )
+        .fail(
+            SpoolIoCall::RemoveFile,
+            calls.first_remove,
+            io::ErrorKind::PermissionDenied,
+        )
+        .fail(
+            SpoolIoCall::CreateNew,
+            calls.first_create_after_rename,
+            io::ErrorKind::StorageFull,
+        );
+    let (mut publisher, io) = open_faulted(&root, plan)?;
+    let (_payload, record) = stage_tombstone_fixture(&mut publisher)?;
+
+    let err = expect_err(publisher.record_tombstone(record))?;
+    assert!(io.all_fired(), "all planned faults must fire");
+    assert!(matches!(
+        err,
+        LocalPublicationError::TombstoneVisibilityIndeterminate {
+            marker_kind: Some(_),
+            ..
+        }
+    ));
+    assert!(publisher.is_poisoned());
+    drop(publisher);
+
+    let reopened = LocalRootPublisher::open(&root, limits());
+    assert!(
+        reopened.is_err(),
+        "reopening over un-rolled-back tombstone whose marker failed must fail closed, not admit it"
+    );
+    Ok(())
+}
+
+/// Finding 3: Tombstone directory fsync failure rolls back record; reopen does not silently admit.
+#[test]
+fn test_tombstone_directory_sync_failure_does_not_silently_admit_on_reopen() -> TestResult {
+    let name = "tombstone_directory_sync_failure";
+    let calls = probe_tombstone_commit_calls(name)?;
+    let root = fresh_root(name)?;
+    let plan = SpoolFaultPlan::new().fail(
+        SpoolIoCall::SyncDirectory,
+        calls.first_sync_after_rename,
+        io::ErrorKind::Other,
+    );
+    let (mut publisher, io) = open_faulted(&root, plan)?;
+    let (payload, record) = stage_tombstone_fixture(&mut publisher)?;
+
+    let err = expect_err(publisher.record_tombstone(record))?;
+    assert!(io.all_fired(), "directory fsync fault must fire");
+    assert!(matches!(err, LocalPublicationError::Indeterminate { .. }));
+    assert!(publisher.is_poisoned());
+    drop(publisher);
+
+    let reopened = LocalRootPublisher::open(&root, limits())?;
+    assert!(
+        !reopened.tombstones().any(|t| *t == payload),
+        "unsynced tombstone must not be admitted without verification"
+    );
+    Ok(())
+}
+
+/// Finding 4: Indeterminate marker directory fsync failure leaves non-durable marker; reopen fails closed.
+#[test]
+fn test_indeterminate_marker_directory_sync_failure_behavior() -> TestResult {
+    let name = "indeterminate_marker_directory_sync_failure";
+    let calls = probe_tombstone_commit_calls(name)?;
+    let root = fresh_root(name)?;
+    let plan = SpoolFaultPlan::new()
+        .fail_after_applying(
+            SpoolIoCall::Rename,
+            calls.tombstone_rename,
+            io::ErrorKind::Other,
+        )
+        .fail(
+            SpoolIoCall::RemoveFile,
+            calls.first_remove,
+            io::ErrorKind::PermissionDenied,
+        )
+        .fail(
+            SpoolIoCall::SyncDirectory,
+            calls.first_sync_after_rename,
+            io::ErrorKind::Other,
+        );
+    let (mut publisher, io) = open_faulted(&root, plan)?;
+    let (_payload, record) = stage_tombstone_fixture(&mut publisher)?;
+
+    let err = expect_err(publisher.record_tombstone(record))?;
+    assert!(matches!(
+        err,
+        LocalPublicationError::TombstoneVisibilityIndeterminate {
+            marker_kind: Some(_),
+            ..
+        }
+    ));
+    assert!(io.all_fired(), "all planned faults must fire");
+    drop(publisher);
+
+    let reopened = LocalRootPublisher::open(&root, limits());
+    assert!(
+        reopened.is_err(),
+        "marker with failed directory sync must not lead to silent admission"
+    );
+    Ok(())
+}
+
+/// Finding 5: CleanupFailed Error::source chain exposes both original and cleanup errors.
+#[test]
+fn test_cleanup_failed_error_source_chain_includes_cleanup_details() -> TestResult {
+    let original = LocalPublicationError::InvalidSlot {
+        violation: SlotViolation::Empty,
+    };
+    let cleanup = LocalPublicationError::Io {
+        operation: LocalIoOperation::RemoveTemp,
+        path: PathBuf::from("test.tmp"),
+        kind: io::ErrorKind::PermissionDenied,
+    };
+    let original_str = original.to_string();
+    let composite = LocalPublicationError::cleanup_failed(original, cleanup);
+
+    let source = composite.source().ok_or("expected source")?;
+    assert_eq!(source.to_string(), original_str);
+    assert!(source.to_string().contains("slot name is empty"));
+    let next_source = source.source().ok_or("expected next source")?;
+    assert!(
+        next_source.to_string().contains("remove_temp"),
+        "source.source() must yield cleanup error: {next_source}"
+    );
+    Ok(())
+}
+
+/// Finding 6: record_tombstone encountering InvalidLayout carries both errors when temp cleanup fails.
+#[test]
+fn test_record_tombstone_invalid_layout_cleanup_failure() -> TestResult {
+    let name = "record_tombstone_invalid_layout_cleanup_failure";
+    let root = fresh_root(name)?;
+    let plan =
+        SpoolFaultPlan::new().fail(SpoolIoCall::RemoveFile, 1, io::ErrorKind::PermissionDenied);
+    let io = Arc::new(FaultInjectingSpoolIo::new(plan));
+    let mut publisher = LocalRootPublisher::open_with_io(&root, limits(), io)?;
+    let (payload, record) = stage_tombstone_fixture(&mut publisher)?;
+    let target_path = tombstone_file(&root, payload);
+
+    // Pre-create file at target_path so record_tombstone encounters InvalidLayout
+    fs::write(&target_path, b"pre-existing")?;
+
+    let error = expect_err(publisher.record_tombstone(record))?;
+    match &error {
+        LocalPublicationError::CleanupFailed {
+            original, cleanup, ..
+        } => {
+            assert_eq!(
+                **original,
+                LocalPublicationError::InvalidLayout { path: target_path }
+            );
+            match &**cleanup {
+                LocalPublicationError::Io {
+                    operation, kind, ..
+                } => {
+                    assert_eq!(*operation, LocalIoOperation::RemoveTemp);
+                    assert_eq!(*kind, io::ErrorKind::PermissionDenied);
+                }
+                other => return Err(format!("expected Io RemoveTemp, got {other:?}").into()),
+            }
+        }
+        other => return Err(format!("expected CleanupFailed, got {other:?}").into()),
+    }
+    let source = error.source().ok_or("expected source")?;
+    assert!(source.to_string().contains("invalid layout"));
+    let next = source.source().ok_or("expected next")?;
+    assert!(next.to_string().contains("remove_temp"));
+    Ok(())
+}
+
+/// Finding 6: record_tombstone encountering Inspect failure carries both errors when temp cleanup fails.
+#[test]
+fn test_record_tombstone_inspect_error_cleanup_failure() -> TestResult {
+    let name = "record_tombstone_inspect_error_cleanup_failure";
+    let probe_root = fresh_root(&format!("{name}_probe"))?;
+    let probe_io = Arc::new(FaultInjectingSpoolIo::new(SpoolFaultPlan::new()));
+    let mut probe_pub = LocalRootPublisher::open_with_io(&probe_root, limits(), probe_io.clone())?;
+    let (_payload, _record) = stage_tombstone_fixture(&mut probe_pub)?;
+    let inspect_call = probe_io.calls(SpoolIoCall::SymlinkMetadata) + 2;
+    let remove_call = probe_io.calls(SpoolIoCall::RemoveFile) + 1;
+    drop(probe_pub);
+
+    let root = fresh_root(name)?;
+    let plan = SpoolFaultPlan::new()
+        .fail(
+            SpoolIoCall::SymlinkMetadata,
+            inspect_call,
+            io::ErrorKind::PermissionDenied,
+        )
+        .fail(
+            SpoolIoCall::RemoveFile,
+            remove_call,
+            io::ErrorKind::PermissionDenied,
+        );
+    let (mut publisher, io) = open_faulted(&root, plan)?;
+    let (_payload, record) = stage_tombstone_fixture(&mut publisher)?;
+
+    let error = expect_err(publisher.record_tombstone(record))?;
+    match &error {
+        LocalPublicationError::CleanupFailed {
+            original, cleanup, ..
+        } => {
+            match &**original {
+                LocalPublicationError::Io {
+                    operation, kind, ..
+                } => {
+                    assert_eq!(*operation, LocalIoOperation::Inspect);
+                    assert_eq!(*kind, io::ErrorKind::PermissionDenied);
+                }
+                other => return Err(format!("expected Io Inspect, got {other:?}").into()),
+            }
+            match &**cleanup {
+                LocalPublicationError::Io {
+                    operation, kind, ..
+                } => {
+                    assert_eq!(*operation, LocalIoOperation::RemoveTemp);
+                    assert_eq!(*kind, io::ErrorKind::PermissionDenied);
+                }
+                other => return Err(format!("expected Io RemoveTemp, got {other:?}").into()),
+            }
+        }
+        other => return Err(format!("expected CleanupFailed, got {other:?}").into()),
+    }
+    let source = error.source().ok_or("expected source")?;
+    assert!(source.to_string().contains("inspect"));
+    let next = source.source().ok_or("expected next")?;
+    assert!(next.to_string().contains("remove_temp"));
+    assert!(io.all_fired(), "all planned faults must fire");
+    Ok(())
+}
+
+/// Finding 6: roll_back_failed_tombstone_rename carries both rename and cleanup error when temp unlinking fails.
+#[test]
+fn test_tombstone_rollback_cleanup_failure() -> TestResult {
+    let name = "tombstone_rollback_cleanup_failure";
+    let calls = probe_tombstone_commit_calls(name)?;
+    let root = fresh_root(name)?;
+    let plan = SpoolFaultPlan::new()
+        .fail(
+            SpoolIoCall::Rename,
+            calls.tombstone_rename,
+            io::ErrorKind::Other,
+        )
+        .fail(
+            SpoolIoCall::RemoveFile,
+            calls.first_remove + 1,
+            io::ErrorKind::PermissionDenied,
+        );
+    let (mut publisher, io) = open_faulted(&root, plan)?;
+    let (_payload, record) = stage_tombstone_fixture(&mut publisher)?;
+
+    let error = expect_err(publisher.record_tombstone(record))?;
+    match &error {
+        LocalPublicationError::CleanupFailed {
+            original, cleanup, ..
+        } => {
+            match &**original {
+                LocalPublicationError::Io {
+                    operation, kind, ..
+                } => {
+                    assert_eq!(*operation, LocalIoOperation::Rename);
+                    assert_eq!(*kind, io::ErrorKind::Other);
+                }
+                other => return Err(format!("expected Io Rename, got {other:?}").into()),
+            }
+            match &**cleanup {
+                LocalPublicationError::Io {
+                    operation, kind, ..
+                } => {
+                    assert_eq!(*operation, LocalIoOperation::RemoveTemp);
+                    assert_eq!(*kind, io::ErrorKind::PermissionDenied);
+                }
+                other => return Err(format!("expected Io RemoveTemp, got {other:?}").into()),
+            }
+        }
+        other => return Err(format!("expected CleanupFailed, got {other:?}").into()),
+    }
+    let source = error.source().ok_or("expected source")?;
+    assert!(source.to_string().contains("rename"));
+    let next = source.source().ok_or("expected next")?;
+    assert!(next.to_string().contains("remove_temp"));
+    assert!(io.all_fired(), "all planned faults must fire");
     Ok(())
 }
