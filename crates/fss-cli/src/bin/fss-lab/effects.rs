@@ -9,29 +9,19 @@ pub enum EffectState {
     Dispatching,
     AppliedAwaitingVerification,
     Verified,
-    CancelRequested,
-    Cancelled,
-    Failed,
     Indeterminate,
 }
 
 impl EffectState {
+    /// Canonical digest codes. Codes 4-6 are retired and must not be reassigned.
     const fn code(self) -> u8 {
         match self {
             Self::Prepared => 0,
             Self::Dispatching => 1,
             Self::AppliedAwaitingVerification => 2,
             Self::Verified => 3,
-            Self::CancelRequested => 4,
-            Self::Cancelled => 5,
-            Self::Failed => 6,
             Self::Indeterminate => 7,
         }
-    }
-
-    #[must_use]
-    pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Verified | Self::Cancelled | Self::Failed)
     }
 }
 
@@ -39,16 +29,15 @@ impl EffectState {
 pub enum ObligationState {
     Pending,
     Satisfied,
-    Failed,
     Indeterminate,
 }
 
 impl ObligationState {
+    /// Canonical digest codes. Code 2 is retired and must not be reassigned.
     const fn code(self) -> u8 {
         match self {
             Self::Pending => 0,
             Self::Satisfied => 1,
-            Self::Failed => 2,
             Self::Indeterminate => 3,
         }
     }
@@ -57,15 +46,12 @@ impl ObligationState {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DispatchOutcome {
     Acknowledged,
-    Rejected,
     LostAcknowledgement,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReconciliationObservation {
     AppliedAndVerified,
-    ProvenNotApplied,
-    StillUnknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -287,7 +273,6 @@ impl EffectCoordinator {
         self.transition_effect(idempotency_key, EffectState::Dispatching, None)?;
         let terminal_state = match outcome {
             DispatchOutcome::Acknowledged => EffectState::AppliedAwaitingVerification,
-            DispatchOutcome::Rejected => EffectState::Failed,
             DispatchOutcome::LostAcknowledgement => EffectState::Indeterminate,
         };
         self.transition_effect(idempotency_key, terminal_state, Some(true))?;
@@ -344,55 +329,11 @@ impl EffectCoordinator {
             ReconciliationObservation::AppliedAndVerified => {
                 self.transition_effect(idempotency_key, EffectState::Verified, None)?;
             }
-            ReconciliationObservation::ProvenNotApplied => {
-                self.transition_effect(idempotency_key, EffectState::Prepared, None)?;
-            }
-            ReconciliationObservation::StillUnknown => {
-                self.advance_root(idempotency_key)?;
-            }
         }
         self.sync_obligation(idempotency_key)?;
         self.operations
             .get(idempotency_key)
             .cloned()
-            .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))
-    }
-
-    pub fn cancel(&mut self, idempotency_key: &str) -> Result<EffectOperation, EffectError> {
-        let (current, operation_id, existing_op) = {
-            let op = self
-                .operations
-                .get(idempotency_key)
-                .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?;
-            (op.state, op.id.clone(), op.clone())
-        };
-        let next = match current {
-            EffectState::Prepared => EffectState::Cancelled,
-            EffectState::Dispatching | EffectState::AppliedAwaitingVerification => {
-                EffectState::CancelRequested
-            }
-            EffectState::Indeterminate => {
-                return Err(EffectError::InvalidTransition {
-                    operation_id,
-                    from: current,
-                    attempted: "cancel without reconciliation",
-                });
-            }
-            _ => {
-                return Ok(existing_op);
-            }
-        };
-        self.transition_effect(idempotency_key, next, None)?;
-        self.sync_obligation(idempotency_key)?;
-        self.operations
-            .get(idempotency_key)
-            .cloned()
-            .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))
-    }
-
-    pub fn operation(&self, idempotency_key: &str) -> Result<&EffectOperation, EffectError> {
-        self.operations
-            .get(idempotency_key)
             .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))
     }
 
@@ -451,7 +392,6 @@ impl EffectCoordinator {
             .ok_or_else(|| EffectError::MissingOperation(idempotency_key.to_owned()))?;
         obligation.state = match operation.state {
             EffectState::Verified => ObligationState::Satisfied,
-            EffectState::Failed | EffectState::Cancelled => ObligationState::Failed,
             EffectState::Indeterminate => ObligationState::Indeterminate,
             _ => ObligationState::Pending,
         };
@@ -620,18 +560,6 @@ mod tests {
                 .state,
             ObligationState::Satisfied
         );
-        Ok(())
-    }
-
-    #[test]
-    fn proven_non_application_allows_same_key_retry() -> Result<(), Box<dyn std::error::Error>> {
-        let mut coordinator = EffectCoordinator::default();
-        coordinator.prepare("op-1", "key-1", "obl-1", "send-alert", "delivery observed")?;
-        coordinator.dispatch("key-1", DispatchOutcome::LostAcknowledgement)?;
-        coordinator.reconcile("key-1", ReconciliationObservation::ProvenNotApplied)?;
-        let operation = coordinator.dispatch("key-1", DispatchOutcome::Acknowledged)?;
-        assert_eq!(operation.state, EffectState::AppliedAwaitingVerification);
-        assert_eq!(operation.dispatch_attempts, 2);
         Ok(())
     }
 }

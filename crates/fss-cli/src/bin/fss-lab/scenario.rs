@@ -508,17 +508,18 @@ pub fn run_scenario(kind: ScenarioKind) -> Result<ScenarioReport, ScenarioError>
     };
 
     let affordances = affordances_for(envelope, transient_indeterminate);
-    let situation_digest = situation_digest(
+    let situation_digest = SituationDigestInput {
         kind,
-        ledger.anchor(),
-        spool.root(),
-        event.digest,
-        absence.as_ref().map(|value| value.digest),
-        effects.root(),
+        anchor: ledger.anchor(),
+        source_root: spool.root(),
+        event_digest: event.digest,
+        absence_digest: absence.as_ref().map(|value| value.digest),
+        effect_root: effects.root(),
         envelope,
-        &affordances,
-        &warnings,
-    )?;
+        affordances: &affordances,
+        warnings: &warnings,
+    }
+    .digest()?;
     ledger.append(
         SCENARIO_END,
         RecordKind::Situation,
@@ -662,8 +663,8 @@ fn affordances_for(envelope: EnvelopeClass, transient_indeterminate: bool) -> Ve
     affordances
 }
 
-#[allow(clippy::too_many_arguments)]
-fn situation_digest(
+/// Everything a situation capsule digest binds, in canonical field order.
+struct SituationDigestInput<'a> {
     kind: ScenarioKind,
     anchor: EvidenceAnchor,
     source_root: Digest,
@@ -671,33 +672,40 @@ fn situation_digest(
     absence_digest: Option<Digest>,
     effect_root: Digest,
     envelope: EnvelopeClass,
-    affordances: &[Affordance],
-    warnings: &[String],
-) -> Result<Digest, ScenarioError> {
-    let mut writer = CanonicalWriter::new("fss-situation-capsule-v1")?;
-    writer.push_str(kind.as_str())?;
-    writer.push_u64(anchor.sequence);
-    writer.push_u64(anchor.observed_at);
-    writer.push_digest(anchor.root);
-    writer.push_digest(source_root);
-    writer.push_digest(event_digest);
-    writer.push_bool(absence_digest.is_some());
-    if let Some(digest) = absence_digest {
-        writer.push_digest(digest);
+    affordances: &'a [Affordance],
+    warnings: &'a [String],
+}
+
+impl SituationDigestInput<'_> {
+    fn digest(&self) -> Result<Digest, ScenarioError> {
+        let mut writer = CanonicalWriter::new("fss-situation-capsule-v1")?;
+        writer.push_str(self.kind.as_str())?;
+        writer.push_u64(self.anchor.sequence);
+        writer.push_u64(self.anchor.observed_at);
+        writer.push_digest(self.anchor.root);
+        writer.push_digest(self.source_root);
+        writer.push_digest(self.event_digest);
+        writer.push_bool(self.absence_digest.is_some());
+        if let Some(digest) = self.absence_digest {
+            writer.push_digest(digest);
+        }
+        writer.push_digest(self.effect_root);
+        writer.push_str(self.envelope.as_str())?;
+        writer.push_u64(
+            u64::try_from(self.affordances.len()).map_err(|_| DigestError::FieldTooLarge)?,
+        );
+        for affordance in self.affordances {
+            writer.push_str(affordance.class.as_str())?;
+            writer.push_str(&affordance.operation)?;
+            writer.push_str(&affordance.reason)?;
+        }
+        writer
+            .push_u64(u64::try_from(self.warnings.len()).map_err(|_| DigestError::FieldTooLarge)?);
+        for warning in self.warnings {
+            writer.push_str(warning)?;
+        }
+        Ok(writer.digest()?)
     }
-    writer.push_digest(effect_root);
-    writer.push_str(envelope.as_str())?;
-    writer.push_u64(u64::try_from(affordances.len()).map_err(|_| DigestError::FieldTooLarge)?);
-    for affordance in affordances {
-        writer.push_str(affordance.class.as_str())?;
-        writer.push_str(&affordance.operation)?;
-        writer.push_str(&affordance.reason)?;
-    }
-    writer.push_u64(u64::try_from(warnings.len()).map_err(|_| DigestError::FieldTooLarge)?);
-    for warning in warnings {
-        writer.push_str(warning)?;
-    }
-    Ok(writer.digest()?)
 }
 
 fn seal_handoff(
@@ -855,9 +863,6 @@ fn effect_state_str(value: EffectState) -> &'static str {
         EffectState::Dispatching => "dispatching",
         EffectState::AppliedAwaitingVerification => "applied_awaiting_verification",
         EffectState::Verified => "verified",
-        EffectState::CancelRequested => "cancel_requested",
-        EffectState::Cancelled => "cancelled",
-        EffectState::Failed => "failed",
         EffectState::Indeterminate => "indeterminate",
     }
 }
@@ -866,7 +871,6 @@ fn obligation_state_str(value: ObligationState) -> &'static str {
     match value {
         ObligationState::Pending => "pending",
         ObligationState::Satisfied => "satisfied",
-        ObligationState::Failed => "failed",
         ObligationState::Indeterminate => "indeterminate",
     }
 }
