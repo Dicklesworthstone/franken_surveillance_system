@@ -944,6 +944,378 @@ cost_vector = { latency_ms = 5, cpu_millis = 2, bytes = 65536, storage_operation
 
 
 
+class OperationCostProofOwnershipTests(unittest.TestCase):
+    """fss-x4a.30.103: Tests for machine-readable operation-cost vectors, proof ownership, and drift."""
+
+    def test_planted_missing_proof_owner_fails_closed_val_017(self) -> None:
+        """Operation row missing proof_owner must fail closed with SLO-VAL-017."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+# missing proof_owner
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-017", codes)
+
+    def test_planted_unknown_proof_owner_fails_closed_val_017(self) -> None:
+        """Operation row with unknown/nonexistent crate or module proof_owner must fail closed with SLO-VAL-017."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "crates/fss-nonexistent-crate"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-017", codes)
+
+    def test_planted_undeclared_drift_proof_owner_fails_closed_val_017(self) -> None:
+        """Operation row with drift owner not declared in [[drift]] table must fail closed with SLO-VAL-017."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "drift:DRIFT-COST-UNDECLARED-001"
+proof_reference = "drift:DRIFT-COST-UNDECLARED-001"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-017", codes)
+
+    def test_planted_nonexistent_proof_reference_file_fails_closed_val_018(self) -> None:
+        """Operation row with nonexistent proof_reference file must fail closed with SLO-VAL-018."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/nonexistent_contract_file.rs::test_fn"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-018", codes)
+
+    def test_planted_nonexistent_proof_reference_fn_fails_closed_val_018(self) -> None:
+        """Operation row with existing file but nonexistent test fn must fail closed with SLO-VAL-018."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::nonexistent_test_function_symbol"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-018", codes)
+
+    def test_planted_proof_reference_missing_fn_separator_fails_closed_val_018(self) -> None:
+        """Operation row with proof_reference missing '::' fn specifier must fail closed with SLO-VAL-018."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-018", codes)
+
+    def test_planted_owner_mirror_disagreement_fails_closed_val_019(self) -> None:
+        """Disagreement between TOML proof_owner and Markdown Proof owner must fail closed with SLO-VAL-019."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_costs_md = Path(td) / "OPERATION_COSTS.md"
+            planted_costs.write_text("""schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+""", encoding="utf-8")
+            planted_costs_md.write_text("""# Operation cost registry
+
+| Cost ID | Unit | Mandatory semantic work | Key variables | Proof owner | Proof reference |
+|---|---|---|---|---|---|
+| `COST-TEST-001` | operation | semantic work | variables | `crates/fss-ledger` | `crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip` |
+""", encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=planted_costs_md
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-019", codes)
+
+    def test_planted_reference_mirror_disagreement_fails_closed_val_019(self) -> None:
+        """Disagreement between TOML proof_reference and Markdown Proof reference must fail closed with SLO-VAL-019."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_costs_md = Path(td) / "OPERATION_COSTS.md"
+            planted_costs.write_text("""schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+""", encoding="utf-8")
+            planted_costs_md.write_text("""# Operation cost registry
+
+| Cost ID | Unit | Mandatory semantic work | Key variables | Proof owner | Proof reference |
+|---|---|---|---|---|---|
+| `COST-TEST-001` | operation | semantic work | variables | `crates/fss-core` | `crates/fss-core/tests/durable_format_contract.rs::different_test_fn` |
+""", encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=planted_costs_md
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-019", codes)
+
+    def test_planted_measured_status_without_artifact_fails_closed_val_020(self) -> None:
+        """Operation with status 'measured' lacking measurement_artifact must fail closed with SLO-VAL-020."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "measured"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-020", codes)
+
+    def test_planted_measured_status_with_nonexistent_artifact_fails_closed_val_020(self) -> None:
+        """Operation with status 'measured' and nonexistent measurement_artifact must fail closed with SLO-VAL-020."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "measured"
+measurement_artifact = "qualification-artifacts/nonexistent_measurement.json"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-020", codes)
+
+    def test_planted_duplicate_cost_id_emits_val_021(self) -> None:
+        """Duplicate or case-colliding operation IDs must emit SLO-VAL-021."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-TEST-001"
+name = "test operation 1"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+
+[[operation]]
+id = "cost-test-001"
+name = "test operation duplicate"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-021", codes)
+
+    def test_planted_malformed_or_renumbered_cost_id_emits_val_021(self) -> None:
+        """Malformed or non-conforming cost ID must emit SLO-VAL-021."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "INVALID_COST_ID_FORMAT"
+name = "test operation"
+unit = "operation"
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid)
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-021", codes)
+
+    def test_live_repo_all_operations_have_cost_vector_and_proof_ownership(self) -> None:
+        """Every operation in architecture/operation_cost_registry.toml must have complete cost_vector, proof_owner, and proof_reference."""
+        import re
+        costs_data = tomllib.loads(COSTS_PATH.read_text(encoding="utf-8"))
+        operations = costs_data.get("operation", [])
+        self.assertGreaterEqual(len(operations), 41)
+        drifts = {d["id"]: d for d in costs_data.get("drift", [])}
+
+        for op in operations:
+            cid = op.get("id")
+            self.assertIn("cost_vector", op, f"{cid} missing cost_vector")
+            cv = op["cost_vector"]
+            self.assertIsInstance(cv, dict, f"{cid} cost_vector must be dict")
+            for dim in HotConsequentialOperationCostTests.REQUIRED_DIMENSIONS:
+                self.assertIn(dim, cv, f"{cid} cost_vector missing dimension {dim}")
+                val = cv[dim]
+                self.assertIsInstance(val, (int, float), f"{cid} dimension {dim} must be number")
+                self.assertFalse(isinstance(val, bool), f"{cid} dimension {dim} must not be bool")
+                self.assertFalse(math.isnan(val), f"{cid} dimension {dim} must not be NaN")
+                self.assertFalse(math.isinf(val), f"{cid} dimension {dim} must not be inf")
+                self.assertGreaterEqual(val, 0, f"{cid} dimension {dim} must be non-negative")
+
+            self.assertIn("proof_owner", op, f"{cid} missing proof_owner")
+            owner = op["proof_owner"]
+            self.assertIsInstance(owner, str, f"{cid} proof_owner must be string")
+            self.assertTrue(bool(owner.strip()), f"{cid} proof_owner must not be empty")
+
+            self.assertIn("proof_reference", op, f"{cid} missing proof_reference")
+            ref = op["proof_reference"]
+            self.assertIsInstance(ref, str, f"{cid} proof_reference must be string")
+            self.assertTrue(bool(ref.strip()), f"{cid} proof_reference must not be empty")
+
+            if owner.startswith("drift:"):
+                drift_id = owner.split(":", 1)[1].strip()
+                self.assertIn(drift_id, drifts, f"{cid} drift owner '{drift_id}' not found in [[drift]]")
+            else:
+                self.assertTrue((ROOT / owner).exists(), f"{cid} proof_owner path '{owner}' does not exist")
+                self.assertIn("::", ref, f"{cid} proof_reference must contain '::'")
+                file_part, fn_name = ref.split("::", 1)
+                ref_file = ROOT / file_part
+                self.assertTrue(ref_file.is_file(), f"{cid} proof_reference file '{file_part}' does not exist")
+                content = ref_file.read_text(encoding="utf-8", errors="replace")
+                has_fn = bool(re.search(r"\b(?:async\s+)?fn\s+" + re.escape(fn_name) + r"\b", content))
+                self.assertTrue(has_fn, f"{cid} test fn '{fn_name}' not found in '{file_part}'")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
 

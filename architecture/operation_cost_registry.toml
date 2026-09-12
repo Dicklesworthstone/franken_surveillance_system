@@ -9,6 +9,9 @@ semantic_steps = ["adapter_receive", "timestamp_bound", "packet_index", "content
 variable_costs = ["source_bytes", "packet_count", "loss_reorder", "durability_barriers"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/acquisition_lifecycle_contract.rs::test_happy_path_lifecycle_and_streaming_invariants"
+cost_vector = { latency_ms = 10.0, cpu_millis = 5.0, bytes = 1048576, storage_operations = 4, network_bytes = 1048576, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 20.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-RTSP-001"
@@ -18,6 +21,9 @@ semantic_steps = ["session_keepalive", "packet_receive", "rtcp_update", "continu
 variable_costs = ["packets", "jitter", "loss", "auth_refresh"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
+proof_owner = "crates/fss-packet"
+proof_reference = "crates/fss-packet/tests/continuity_contract.rs::probation_cannot_publish_continuity_or_decode_admission"
+cost_vector = { latency_ms = 5.0, cpu_millis = 2.0, bytes = 262144, storage_operations = 0, network_bytes = 262144, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 10.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-PARSE-001"
@@ -27,6 +33,9 @@ semantic_steps = ["framing", "parameter_epoch", "syntax_parse", "bounds_validate
 variable_costs = ["bytes", "nal_or_obu_count", "syntax_depth"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
+proof_owner = "crates/fss-packet"
+proof_reference = "crates/fss-packet/tests/h264_contract.rs::single_nal_preserves_byte_spans_without_annex_b_or_keyframe_claims"
+cost_vector = { latency_ms = 1.0, cpu_millis = 0.5, bytes = 32768, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 1.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-DECODE-001"
@@ -36,6 +45,10 @@ semantic_steps = ["reference_resolve", "entropy_decode", "inverse_transform", "p
 variable_costs = ["codec_profile", "bit_depth", "pixels", "reference_count"]
 slo_ids = ["SLO-DETECT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-001"
+proof_reference = "drift:DRIFT-001"
+cost_vector = { latency_ms = 15.0, cpu_millis = 12.0, bytes = 2097152, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 30.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-PROXY-001"
@@ -45,6 +58,10 @@ semantic_steps = ["remux_or_decode", "scale", "encode", "segment", "publish"]
 variable_costs = ["decoded_pixels", "encoded_pixels", "codec_generation", "cpu_or_accelerator_seconds"]
 slo_ids = ["SLO-LIVE-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-002"
+proof_reference = "drift:DRIFT-002"
+cost_vector = { latency_ms = 25.0, cpu_millis = 20.0, bytes = 524288, storage_operations = 1, network_bytes = 524288, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 50.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-QUALITY-001"
@@ -54,6 +71,10 @@ semantic_steps = ["health_features", "blur_exposure_occlusion", "tamper_state", 
 variable_costs = ["pixels", "history_window"]
 slo_ids = ["SLO-DETECT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-003"
+proof_reference = "drift:DRIFT-003"
+cost_vector = { latency_ms = 5.0, cpu_millis = 4.0, bytes = 2097152, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 10.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-DETECT-001"
@@ -63,6 +84,9 @@ semantic_steps = ["preprocess", "model_execute", "postprocess", "publish_result"
 variable_costs = ["pixels", "batch", "model_generation", "kernel_plan"]
 slo_ids = ["SLO-DETECT-001", "SLO-COST-001"]
 status = "model_required"
+proof_owner = "crates/fss-reference"
+proof_reference = "crates/fss-reference/tests/mock_model_contract.rs::test_mock_executor_deterministic_bit_identical_replay"
+cost_vector = { latency_ms = 20.0, cpu_millis = 5.0, bytes = 4194304, storage_operations = 0, network_bytes = 0, model_calls = 1, tokens = 0, accelerator_millis = 15.0, energy_millijoules = 80.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-TRACK-001"
@@ -72,6 +96,10 @@ semantic_steps = ["predict", "gate", "assign", "update", "retire", "publish_delt
 variable_costs = ["active_tracks", "detections", "assignment_edges"]
 slo_ids = ["SLO-DETECT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-004"
+proof_reference = "drift:DRIFT-004"
+cost_vector = { latency_ms = 3.0, cpu_millis = 2.5, bytes = 65536, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 5.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-ASSOC-001"
@@ -81,6 +109,10 @@ semantic_steps = ["transition_candidates", "feature_compare", "temporal_gate", "
 variable_costs = ["tracklets", "candidate_edges", "k", "graph_size"]
 slo_ids = ["SLO-DETECT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-005"
+proof_reference = "drift:DRIFT-005"
+cost_vector = { latency_ms = 8.0, cpu_millis = 6.0, bytes = 131072, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 15.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-ANALYZE-001"
@@ -90,6 +122,10 @@ semantic_steps = ["quality_gate", "motion_gate", "detect", "track", "associate",
 variable_costs = ["frames", "pixels", "active_tracks", "model_invocations", "cpu_or_accelerator_seconds"]
 slo_ids = ["SLO-DETECT-001", "SLO-COST-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-006"
+proof_reference = "drift:DRIFT-006"
+cost_vector = { latency_ms = 50.0, cpu_millis = 25.0, bytes = 8388608, storage_operations = 2, network_bytes = 0, model_calls = 2, tokens = 0, accelerator_millis = 30.0, energy_millijoules = 200.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-GRAPH-001"
@@ -99,6 +135,10 @@ semantic_steps = ["pin_projection", "authorize_projection", "execute_reference_o
 variable_costs = ["n", "m", "algorithm_operations", "output_size"]
 slo_ids = ["SLO-AGENT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-007"
+proof_reference = "drift:DRIFT-007"
+cost_vector = { latency_ms = 10.0, cpu_millis = 8.0, bytes = 524288, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 20.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-SEARCH-001"
@@ -108,6 +148,10 @@ semantic_steps = ["pin_generation", "exact_filter", "lexical_candidates", "graph
 variable_costs = ["documents", "candidate_count", "graph_edges", "model_calls", "tokens"]
 slo_ids = ["SLO-AGENT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-008"
+proof_reference = "drift:DRIFT-008"
+cost_vector = { latency_ms = 15.0, cpu_millis = 10.0, bytes = 262144, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 256, accelerator_millis = 0.0, energy_millijoules = 25.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-EVENT-001"
@@ -117,6 +161,9 @@ semantic_steps = ["collect_witnesses", "revalidate", "policy_evaluate", "reserve
 variable_costs = ["evidence_edges", "negative_domains", "policy_rules"]
 slo_ids = ["SLO-DETECT-001"]
 status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/event_revision_contract.rs::test_event_revision_genesis_roundtrip_binary"
+cost_vector = { latency_ms = 5.0, cpu_millis = 3.0, bytes = 16384, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 8.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-ALERT-001"
@@ -126,6 +173,9 @@ semantic_steps = ["prepare", "idempotency_reserve", "dispatch", "observe_receipt
 variable_costs = ["channels", "payload_bytes", "retry_count"]
 slo_ids = ["SLO-ALERT-001"]
 status = "model_required"
+proof_owner = "crates/fss-reference"
+proof_reference = "crates/fss-reference/tests/effect_plane_contract.rs::test_deterministic_provider_mints_bit_identical_receipts_for_same_id"
+cost_vector = { latency_ms = 50.0, cpu_millis = 5.0, bytes = 8192, storage_operations = 1, network_bytes = 8192, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 15.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-ARCHIVE-001"
@@ -135,6 +185,9 @@ semantic_steps = ["chunk", "encrypt", "repair_encode", "remote_stage", "verify_c
 variable_costs = ["bytes", "objects", "repair_ratio", "put_head_operations", "egress", "retrieval"]
 slo_ids = ["SLO-ARCHIVE-001", "SLO-COST-002"]
 status = "model_required"
+proof_owner = "crates/fss-publication"
+proof_reference = "crates/fss-publication/tests/root_publication_review568.rs::test_publish_rejects_child_root_that_is_only_visible_not_durable"
+cost_vector = { latency_ms = 5000.0, cpu_millis = 2000.0, bytes = 1073741824, storage_operations = 1024, network_bytes = 1073741824, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 50000.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-ATP-001"
@@ -144,6 +197,10 @@ semantic_steps = ["plan", "manifest_verify", "fetch", "repair_if_needed", "objec
 variable_costs = ["bytes", "objects", "paths", "loss", "repair_symbols"]
 slo_ids = ["SLO-ARCHIVE-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-009"
+proof_reference = "drift:DRIFT-009"
+cost_vector = { latency_ms = 4000.0, cpu_millis = 1500.0, bytes = 1073741824, storage_operations = 512, network_bytes = 1073741824, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 40000.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-RETRIEVE-001"
@@ -153,6 +210,10 @@ semantic_steps = ["select_samples", "remote_range_get", "verify", "record", "sch
 variable_costs = ["sample_bytes", "objects", "providers", "latency"]
 slo_ids = ["SLO-ARCHIVE-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-010"
+proof_reference = "drift:DRIFT-010"
+cost_vector = { latency_ms = 100.0, cpu_millis = 10.0, bytes = 1048576, storage_operations = 4, network_bytes = 1048576, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 50.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-DELETE-001"
@@ -162,6 +223,10 @@ semantic_steps = ["authorize", "enumerate_reachability", "delete_children", "ver
 variable_costs = ["reachable_objects", "providers", "indexes", "replicas"]
 slo_ids = ["SLO-DELETE-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-011"
+proof_reference = "drift:DRIFT-011"
+cost_vector = { latency_ms = 200.0, cpu_millis = 50.0, bytes = 65536, storage_operations = 32, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 100.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-CALIBRATE-001"
@@ -171,6 +236,9 @@ semantic_steps = ["ingest", "synchronize", "feature_track", "geometry_infer", "b
 variable_costs = ["frames", "camera_count", "track_count", "optimizer_iterations"]
 slo_ids = ["SLO-CAL-001"]
 status = "model_required"
+proof_owner = "crates/fss-reference"
+proof_reference = "crates/fss-reference/tests/intrinsics_certificate_contract.rs::test_end_to_end_calibration_lifecycle_workflow"
+cost_vector = { latency_ms = 2000.0, cpu_millis = 1800.0, bytes = 16777216, storage_operations = 8, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 35000.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-TWIN-001"
@@ -180,6 +248,10 @@ semantic_steps = ["select_frames", "pose_estimate", "depth_or_gaussian_reconstru
 variable_costs = ["frames", "pixels", "points_or_gaussians", "iterations"]
 slo_ids = ["SLO-CAL-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-012"
+proof_reference = "drift:DRIFT-012"
+cost_vector = { latency_ms = 10000.0, cpu_millis = 8000.0, bytes = 67108864, storage_operations = 64, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 4000.0, energy_millijoules = 150000.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-MODEL-IMPORT-001"
@@ -189,10 +261,11 @@ semantic_steps = ["verify_source", "lower_ir", "canonicalize_tensors", "static_a
 variable_costs = ["operators", "tensor_bytes", "corpus_examples", "oracle_runs"]
 slo_ids = ["SLO-MODEL-001"]
 status = "model_required"
+proof_owner = "crates/fss-object"
+proof_reference = "crates/fss-object/tests/model_package_contract.rs::test_import_from_archive_stages_not_verified_then_verifies"
 baseline_reference = "crates/fss-object/tests/model_package_contract.rs"
 cost_vector = { latency_ms = 1500.0, cpu_millis = 1200.0, bytes = 104857600, storage_operations = 64, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 25000.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 notes = "Analytical model bound under status 'model_required' for reference workload: 100 MiB model package import (source signature verification + IR lowering + tensor canonicalization + static analysis). Latency bound 1500ms reflects tensor parsing and analysis on single core."
-
 
 [[operation]]
 id = "COST-QUERY-001"
@@ -202,6 +275,10 @@ semantic_steps = ["anchor", "structured_filter", "search", "graph_projection", "
 variable_costs = ["rows", "candidates", "graph_operations", "tokens", "model_calls"]
 slo_ids = ["SLO-AGENT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-013"
+proof_reference = "drift:DRIFT-013"
+cost_vector = { latency_ms = 20.0, cpu_millis = 15.0, bytes = 131072, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 512, accelerator_millis = 0.0, energy_millijoules = 30.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-CHECKPOINT-001"
@@ -211,6 +288,9 @@ semantic_steps = ["freeze_anchor", "materialize_state", "seal_replay_tail", "ver
 variable_costs = ["state_bytes", "delta_count", "indexes"]
 slo_ids = ["SLO-RECOVERY-001"]
 status = "model_required"
+proof_owner = "crates/fss-ledger"
+proof_reference = "crates/fss-ledger/tests/ledger_oracle_contract.rs::differential_oracle_matches_durable_journal_batch_by_batch_and_after_restart"
+cost_vector = { latency_ms = 100.0, cpu_millis = 60.0, bytes = 4194304, storage_operations = 8, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 150.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-RELEASE-001"
@@ -220,6 +300,9 @@ semantic_steps = ["clean_snapshot", "resolve_sibling_closure", "run_lanes", "bui
 variable_costs = ["targets", "lanes", "test_time", "artifact_bytes"]
 slo_ids = ["SLO-RELEASE-001"]
 status = "model_required"
+proof_owner = "crates/fss-publication"
+proof_reference = "crates/fss-publication/tests/replay_bundle_contract.rs::test_replay_bundle_roundtrip_bit_identical_state_root"
+cost_vector = { latency_ms = 60000.0, cpu_millis = 45000.0, bytes = 268435456, storage_operations = 256, network_bytes = 134217728, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 500000.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-ORIENT-001"
@@ -229,6 +312,9 @@ semantic_steps = ["pin_anchor", "restore_or_create_workspace", "construct_situat
 variable_costs = ["ledger_rows", "delta_count", "graph_operations", "search_candidates", "tokens", "evidence_handles"]
 slo_ids = ["SLO-AGENT-ORIENT-001", "SLO-AGENT-COMPRESSION-001"]
 status = "model_required"
+proof_owner = "crates/fss-reference"
+proof_reference = "crates/fss-reference/tests/situation_invariants_contract.rs::test_f3_hard_clamps_included_in_context_pack"
+cost_vector = { latency_ms = 150.0, cpu_millis = 80.0, bytes = 524288, storage_operations = 4, network_bytes = 0, model_calls = 1, tokens = 1600, accelerator_millis = 0.0, energy_millijoules = 200.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-FOLLOW-001"
@@ -238,6 +324,9 @@ semantic_steps = ["validate_cursor", "consume_authority_deltas", "classify_decis
 variable_costs = ["delta_count", "subscribers", "classification_work", "output_tokens"]
 slo_ids = ["SLO-AGENT-FOLLOW-001"]
 status = "model_required"
+proof_owner = "crates/fss-reference"
+proof_reference = "crates/fss-reference/tests/meaningful_delta_invariants.rs::test_coalescing_preserves_terminal_and_invalidation_deltas"
+cost_vector = { latency_ms = 20.0, cpu_millis = 10.0, bytes = 32768, storage_operations = 1, network_bytes = 32768, model_calls = 0, tokens = 256, accelerator_millis = 0.0, energy_millijoules = 25.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-CONTEXT-001"
@@ -247,6 +336,9 @@ semantic_steps = ["pin_frame", "apply_capability_privacy_projection", "score_dec
 variable_costs = ["candidate_items", "evidence_edges", "tokens", "hydration_bytes", "graph_operations"]
 slo_ids = ["SLO-AGENT-COMPRESSION-001"]
 status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/context_expansion_binding_contract.rs::exact_slot_bindings_validate_against_descriptor_catalog"
+cost_vector = { latency_ms = 40.0, cpu_millis = 25.0, bytes = 262144, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 2048, accelerator_millis = 0.0, energy_millijoules = 50.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 
 [[operation]]
 id = "COST-INVESTIGATE-001"
@@ -256,6 +348,10 @@ semantic_steps = ["pin_case_and_anchor", "refresh_hypotheses", "attach_support_a
 variable_costs = ["hypotheses", "evidence_edges", "candidate_probes", "model_calls", "graph_operations", "tokens"]
 slo_ids = ["SLO-AGENT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-014"
+proof_reference = "drift:DRIFT-014"
+cost_vector = { latency_ms = 200.0, cpu_millis = 100.0, bytes = 1048576, storage_operations = 4, network_bytes = 0, model_calls = 1, tokens = 2048, accelerator_millis = 0.0, energy_millijoules = 300.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-AFFORDANCE-001"
@@ -265,6 +361,10 @@ semantic_steps = ["enumerate_registered_operations", "filter_authority_privacy_s
 variable_costs = ["candidate_actions", "preconditions", "policy_rules", "counterfactuals"]
 slo_ids = ["SLO-AGENT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-015"
+proof_reference = "drift:DRIFT-015"
+cost_vector = { latency_ms = 30.0, cpu_millis = 20.0, bytes = 65536, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 512, accelerator_millis = 0.0, energy_millijoules = 40.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-AGENT-PLAN-001"
@@ -274,6 +374,10 @@ semantic_steps = ["freeze_objective", "pin_frame_case_generations", "enumerate_s
 variable_costs = ["steps", "dependencies", "witnesses", "effect_families", "counterfactual_branches"]
 slo_ids = ["SLO-AGENT-OBLIGATION-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-016"
+proof_reference = "drift:DRIFT-016"
+cost_vector = { latency_ms = 100.0, cpu_millis = 50.0, bytes = 131072, storage_operations = 2, network_bytes = 0, model_calls = 1, tokens = 1024, accelerator_millis = 0.0, energy_millijoules = 150.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-EXPLAIN-001"
@@ -283,6 +387,10 @@ semantic_steps = ["resolve_decision", "collect_provenance", "compute_minimal_sup
 variable_costs = ["evidence_edges", "decision_nodes", "counterfactuals", "tokens"]
 slo_ids = ["SLO-AGENT-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-017"
+proof_reference = "drift:DRIFT-017"
+cost_vector = { latency_ms = 80.0, cpu_millis = 40.0, bytes = 131072, storage_operations = 1, network_bytes = 0, model_calls = 1, tokens = 1024, accelerator_millis = 0.0, energy_millijoules = 120.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-HANDOFF-001"
@@ -292,6 +400,10 @@ semantic_steps = ["freeze_workspace", "select_minimum_sufficient_state", "apply_
 variable_costs = ["cases", "plans", "obligations", "evidence_handles", "tokens", "object_bytes"]
 slo_ids = ["SLO-AGENT-HANDOFF-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-018"
+proof_reference = "drift:DRIFT-018"
+cost_vector = { latency_ms = 120.0, cpu_millis = 60.0, bytes = 524288, storage_operations = 4, network_bytes = 0, model_calls = 0, tokens = 2048, accelerator_millis = 0.0, energy_millijoules = 180.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-ACCRETE-001"
@@ -301,6 +413,10 @@ semantic_steps = ["freeze_episode_basis", "collect_outcome_attribution", "compar
 variable_costs = ["episodes", "evidence_edges", "counterexamples", "historical_candidates", "fixtures", "validation_runs", "tokens", "model_calls", "operator_review_seconds"]
 slo_ids = ["SLO-AGENT-ACCRETION-001"]
 status = "model_required"
+proof_owner = "drift:DRIFT-019"
+proof_reference = "drift:DRIFT-019"
+cost_vector = { latency_ms = 500.0, cpu_millis = 300.0, bytes = 2097152, storage_operations = 8, network_bytes = 0, model_calls = 2, tokens = 4096, accelerator_millis = 0.0, energy_millijoules = 800.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for unimplemented operation tracked under drift."
 
 [[operation]]
 id = "COST-SPOOL-INGEST-001"
@@ -310,6 +426,8 @@ semantic_steps = ["open_staging_temp", "write_payload", "fsync_temp", "read_back
 variable_costs = ["payload_bytes", "digest_bytes", "fsync_barriers", "directory_syncs"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
+proof_owner = "crates/fss-object"
+proof_reference = "crates/fss-object/tests/staging_spool_contract.rs::stage_round_trips_and_is_staged_not_verified"
 baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
 cost_vector = { latency_ms = 5.0, cpu_millis = 2.0, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 10.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 notes = "Analytical model bound under status 'model_required' for reference workload: 64 KiB segment ingest via HostSpoolIo (write temp + fsync + read-back SHA-256 + atomic rename + parent dir fsync). Latency bound 5ms reflects two storage barriers on reference NVMe."
@@ -322,6 +440,8 @@ semantic_steps = ["read_object_file", "recompute_payload_digest", "compare_objec
 variable_costs = ["object_bytes", "rehash_time", "fsync_barriers", "hold_state_entries"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
+proof_owner = "crates/fss-object"
+proof_reference = "crates/fss-object/tests/staging_spool_contract.rs::catalog_exposes_only_verified_objects"
 baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
 cost_vector = { latency_ms = 2.0, cpu_millis = 1.0, bytes = 65536, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 5.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 notes = "Analytical model bound under status 'model_required' for reference workload: 64 KiB staged segment verification (read + SHA-256 compare + write verified hold + fsync + directory sync). Latency bound 2ms reflects one hold barrier and stream hash."
@@ -334,6 +454,8 @@ semantic_steps = ["check_verification_hold", "unlink_object_file", "fsync_object
 variable_costs = ["hold_index_lookups", "unlink_operations", "fsync_barriers"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
+proof_owner = "crates/fss-object"
+proof_reference = "crates/fss-object/tests/staging_spool_contract.rs::orphan_bytes_are_charged_until_discarded"
 baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
 cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 4096, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 2.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 notes = "Analytical model bound under status 'model_required' for reference workload: single unverified 4 KiB staged segment discard (hold check + unlink + objects dir fsync). Latency bound 1ms reflects single unlink barrier."
@@ -346,6 +468,8 @@ semantic_steps = ["verify_children_durable", "compute_root_digest", "write_manif
 variable_costs = ["children_count", "manifest_bytes", "fsync_barriers"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
+proof_owner = "crates/fss-publication"
+proof_reference = "crates/fss-publication/tests/root_publication_review568.rs::test_publish_rejects_child_root_that_is_only_visible_not_durable"
 baseline_reference = "crates/fss-publication/tests/root_publication_review568.rs"
 cost_vector = { latency_ms = 10.0, cpu_millis = 4.0, bytes = 16384, storage_operations = 4, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 20.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 notes = "Analytical model bound under status 'model_required' for reference workload: 16 KiB root publication manifest with 16 verified child objects (compute digest + write temp + fsync + atomic rename + parent dir fsync). Latency bound 10ms reflects dual barrier."
@@ -358,6 +482,8 @@ semantic_steps = ["verify_anchor", "validate_sequence", "compute_delta_digest", 
 variable_costs = ["delta_count", "batch_bytes", "subscriber_count"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
+proof_owner = "crates/fss-ledger"
+proof_reference = "crates/fss-ledger/tests/ledger_oracle_contract.rs::differential_fault_injected_appends_reconcile_to_oracle_state"
 baseline_reference = "crates/fss-ledger/tests/ledger_oracle_contract.rs"
 cost_vector = { latency_ms = 5.0, cpu_millis = 2.0, bytes = 8192, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 10.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 notes = "Analytical model bound under status 'model_required' for reference workload: 8 KiB delta batch append (anchor verification + sequence check + digest append + tail sync). Latency bound 5ms reflects single append sync barrier."
@@ -370,6 +496,8 @@ semantic_steps = ["read_anchor", "verify_chain", "decode_delta_batch", "apply_tr
 variable_costs = ["batch_count", "total_bytes", "projection_work"]
 slo_ids = ["SLO-RECOVERY-001"]
 status = "model_required"
+proof_owner = "crates/fss-ledger"
+proof_reference = "crates/fss-ledger/tests/ledger_oracle_contract.rs::replay_rebuild_is_bit_identical_and_prefix_consistent"
 baseline_reference = "crates/fss-ledger/tests/ledger_oracle_contract.rs"
 cost_vector = { latency_ms = 50.0, cpu_millis = 40.0, bytes = 1048576, storage_operations = 16, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 100.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 notes = "Analytical model bound under status 'model_required' for reference workload: 1 MiB ledger segment replay (anchor scan + cryptographic chain verification + delta batch decode + projection rebuild). Latency bound 50ms reflects sequential read and batch decode."
@@ -382,6 +510,8 @@ semantic_steps = ["read_header", "verify_magic", "check_version_range", "read_le
 variable_costs = ["frame_bytes", "checksum_placement", "endianness_conversion"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/durable_format_contract.rs::canonical_format_round_trip"
 baseline_reference = "crates/fss-core/tests/durable_format_contract.rs"
 cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 65536, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 2.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 notes = "Analytical model bound under status 'model_required' for reference workload: 64 KiB durable format frame decode (header magic/version check + limit enforcement + checksum validation). Latency bound 1ms reflects in-memory decode and checksum."
@@ -394,7 +524,160 @@ semantic_steps = ["validate_timestamp_ns", "check_validity_window", "match_provi
 variable_costs = ["rate_table_entries", "currency_conversions", "provenance_chain_depth"]
 slo_ids = ["SLO-COST-002"]
 status = "model_required"
+proof_owner = "crates/fss-core"
+proof_reference = "crates/fss-core/tests/pricing_manifest_contract.rs::ac4_exact_r2_cost_calculation_with_free_tier"
 baseline_reference = "crates/fss-core/tests/pricing_manifest_contract.rs"
 cost_vector = { latency_ms = 0.05, cpu_millis = 0.02, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 0.1, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
 notes = "Analytical model bound under status 'model_required' for reference workload: in-memory provider pricing lookup and pico-currency evaluation under ProviderPricingManifest v1 (validity window check + binary search rate tier + currency conversion). Latency bound 0.05ms reflects in-memory lookup."
 
+[[drift]]
+id = "DRIFT-001"
+operation_id = "COST-DECODE-001"
+status = "unimplemented"
+description = "Pure-Rust video frame decoding runtime pending implementation"
+target_lane = "crates/fss-media"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-002"
+operation_id = "COST-PROXY-001"
+status = "unimplemented"
+description = "Low-latency operator proxy generation pending implementation"
+target_lane = "crates/fss-media"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-003"
+operation_id = "COST-QUALITY-001"
+status = "unimplemented"
+description = "Sensor and frame quality evaluation pending implementation"
+target_lane = "crates/fss-media"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-004"
+operation_id = "COST-TRACK-001"
+status = "unimplemented"
+description = "Within-camera track update engine pending implementation"
+target_lane = "crates/fss-cognition"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-005"
+operation_id = "COST-ASSOC-001"
+status = "unimplemented"
+description = "Cross-camera tracklet association engine pending implementation"
+target_lane = "crates/fss-cognition"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-006"
+operation_id = "COST-ANALYZE-001"
+status = "unimplemented"
+description = "Full event cognition cascade orchestrator pending implementation"
+target_lane = "crates/fss-cognition"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-007"
+operation_id = "COST-GRAPH-001"
+status = "unimplemented"
+description = "Registered graph algorithm execution engine pending implementation"
+target_lane = "crates/fss-graph"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-008"
+operation_id = "COST-SEARCH-001"
+status = "unimplemented"
+description = "Progressive evidence search service pending implementation"
+target_lane = "crates/fss-search"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-009"
+operation_id = "COST-ATP-001"
+status = "unimplemented"
+description = "ATP immutable object graph transfer protocol pending implementation"
+target_lane = "crates/fss-transport"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-010"
+operation_id = "COST-RETRIEVE-001"
+status = "unimplemented"
+description = "Retained data retrievability challenge protocol pending implementation"
+target_lane = "crates/fss-archive"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-011"
+operation_id = "COST-DELETE-001"
+status = "unimplemented"
+description = "Deletion closure verification and execution pending implementation"
+target_lane = "crates/fss-archive"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-012"
+operation_id = "COST-TWIN-001"
+status = "unimplemented"
+description = "Digital twin generation and pose reconstruction pending implementation"
+target_lane = "crates/fss-calibration"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-013"
+operation_id = "COST-QUERY-001"
+status = "unimplemented"
+description = "Agent investigation query execution service pending implementation"
+target_lane = "crates/fss-agent"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-014"
+operation_id = "COST-INVESTIGATE-001"
+status = "unimplemented"
+description = "Investigation case advance and hypothesis refinement pending implementation"
+target_lane = "crates/fss-agent"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-015"
+operation_id = "COST-AFFORDANCE-001"
+status = "unimplemented"
+description = "Next-action affordance frontier construction pending implementation"
+target_lane = "crates/fss-agent"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-016"
+operation_id = "COST-AGENT-PLAN-001"
+status = "unimplemented"
+description = "Agent ControlPlan compiler and decision sealer pending implementation"
+target_lane = "crates/fss-agent"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-017"
+operation_id = "COST-EXPLAIN-001"
+status = "unimplemented"
+description = "Decision explanation generator and provenance pruner pending implementation"
+target_lane = "crates/fss-agent"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-018"
+operation_id = "COST-HANDOFF-001"
+status = "unimplemented"
+description = "Agent handoff capsule publisher and projection binder pending implementation"
+target_lane = "crates/fss-agent"
+resolution_bead = "fss-x4a.30.105"
+
+[[drift]]
+id = "DRIFT-019"
+operation_id = "COST-ACCRETE-001"
+status = "unimplemented"
+description = "Learning proposal evaluator and held-out validator pending implementation"
+target_lane = "crates/fss-agent"
+resolution_bead = "fss-x4a.30.105"

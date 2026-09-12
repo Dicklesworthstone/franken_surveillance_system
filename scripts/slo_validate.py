@@ -68,7 +68,7 @@ APPROVED_TARGET_PATTERNS = [
 # Known allowed keys in [[operation]] tables
 KNOWN_OPERATION_KEYS = frozenset({
     "id", "name", "unit", "semantic_steps", "variable_costs", "slo_ids", "status", "notes",
-    "cost_vector", "baseline_reference",
+    "cost_vector", "baseline_reference", "proof_owner", "owner", "proof_reference", "measurement_artifact",
 })
 
 # Diagnostic codes
@@ -88,6 +88,11 @@ CODE_AMBIGUOUS_TARGET_UNIT = "SLO-VAL-013"
 CODE_TOMBSTONE_REFERENCED_AS_ACTIVE = "SLO-VAL-014"
 CODE_HOT_PATH_MISSING_COST_ROW = "SLO-VAL-015"
 CODE_MISSING_COST_VECTOR_OR_BASELINE = "SLO-VAL-016"
+CODE_MISSING_OR_UNKNOWN_OWNER = "SLO-VAL-017"
+CODE_PROOF_REFERENCE_NOT_FOUND = "SLO-VAL-018"
+CODE_OWNER_MIRROR_DISAGREEMENT = "SLO-VAL-019"
+CODE_MEASURED_WITHOUT_ARTIFACT = "SLO-VAL-020"
+CODE_DUPLICATE_OR_RENUMBERED_COST_ID = "SLO-VAL-021"
 
 MANDATORY_HOT_PATHS: dict[str, dict[str, str]] = {
     "COST-SPOOL-INGEST-001": {
@@ -208,8 +213,28 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Add [[operation]] table for the missing hot path with a full cost_vector and reproducible baseline_reference",
     },
     CODE_MISSING_COST_VECTOR_OR_BASELINE: {
-        "trigger": "An operation cost row for a hot or consequential path lacks a complete cost vector or valid baseline reference",
+        "trigger": "An operation cost row lacks a complete cost vector or valid baseline reference",
         "remediation": "Provide an explicit cost_vector table with all 11 dimensions and a valid baseline_reference resolving to an existing test file",
+    },
+    CODE_MISSING_OR_UNKNOWN_OWNER: {
+        "trigger": "Operation cost row lacks a named proof owner (crate/module) or references an undeclared drift row",
+        "remediation": "Provide an existing crate or module proof_owner, or record as an explicit drift row (drift:DRIFT-...) in [[drift]]",
+    },
+    CODE_PROOF_REFERENCE_NOT_FOUND: {
+        "trigger": "Operation cost proof reference file or test function does not exist on disk",
+        "remediation": "Provide the exact path and test function (path/to/test.rs::test_fn) that retains the verification evidence",
+    },
+    CODE_OWNER_MIRROR_DISAGREEMENT: {
+        "trigger": "Operation cost proof owner or proof reference differs between architecture/operation_cost_registry.toml and registries/OPERATION_COSTS.md",
+        "remediation": "Synchronize Proof owner and Proof reference columns in registries/OPERATION_COSTS.md with architecture/operation_cost_registry.toml",
+    },
+    CODE_MEASURED_WITHOUT_ARTIFACT: {
+        "trigger": "Operation cost row has status 'measured' without a retained measurement artifact on disk",
+        "remediation": "Attach an existing measurement_artifact path under qualification-artifacts/ or revert status to 'model_required'",
+    },
+    CODE_DUPLICATE_OR_RENUMBERED_COST_ID: {
+        "trigger": "Operation cost ID is duplicated, case-colliding, malformed, or renumbered",
+        "remediation": "Ensure all operation IDs are unique, match canonical COST-*-NNN naming, and preserve stable IDs without renumbering",
     },
 }
 
@@ -698,8 +723,10 @@ def validate_cost_references(
     slos: dict[str, SloRow],
     root: Path,
     findings: list[SloFinding],
+    target_costs_md_path: Path | None = None,
 ) -> list[dict[str, Any]]:
-    """Validate that every slo_ids entry in operation_cost_registry.toml resolves to a registered SLO."""
+    """Validate that every slo_ids entry in operation_cost_registry.toml resolves to a registered SLO,
+    and enforce complete cost vectors, proof ownership, and drift tracking."""
     path_str = sanitize_path(costs_path, root)
     if not costs_path.is_file():
         findings.append(SloFinding(
@@ -738,6 +765,13 @@ def validate_cost_references(
         ))
         return []
 
+    drifts = cost_data.get("drift", [])
+    declared_drifts: dict[str, dict[str, Any]] = {}
+    if isinstance(drifts, list):
+        for d in drifts:
+            if isinstance(d, dict) and "id" in d and isinstance(d["id"], str):
+                declared_drifts[d["id"].strip()] = d
+
     seen_op_ids: dict[str, str] = {}
     for op in operations:
         if not isinstance(op, dict):
@@ -753,7 +787,6 @@ def validate_cost_references(
 
         cost_id = op.get("id", "UNKNOWN_COST")
 
-        # F6: Duplicate and case-colliding operation IDs are errors
         if not isinstance(cost_id, str) or not cost_id.strip():
             findings.append(SloFinding(
                 severity="error",
@@ -777,20 +810,28 @@ def validate_cost_references(
                 remediation="Ensure operation ID matches uppercase format COST-*-NNN",
                 params={"cost_id": cost_id},
             ))
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
+                path=path_str,
+                message=f"Operation ID '{cost_id}' does not match canonical format COST-*-NNN or has been renumbered",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
+                params={"cost_id": cost_id},
+            ))
 
         if lower_cost_id in seen_op_ids:
             findings.append(SloFinding(
                 severity="error",
-                code=CODE_MALFORMED_TABLE,
+                code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
                 path=path_str,
                 message=f"Duplicate or case-colliding operation ID detected: '{cost_id}' (collides with '{seen_op_ids[lower_cost_id]}')",
-                remediation="Ensure all operation IDs are unique and do not collide under case folding",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
                 params={"cost_id": cost_id, "collides_with": seen_op_ids[lower_cost_id]},
             ))
             continue
         seen_op_ids[lower_cost_id] = cost_id
 
-        # F4: Reject unknown keys in operation row (including singular 'slo_id')
+        # Reject unknown keys in operation row
         unknown_keys = set(op.keys()) - KNOWN_OPERATION_KEYS
         if unknown_keys:
             if "slo_id" in unknown_keys:
@@ -836,7 +877,6 @@ def validate_cost_references(
             continue
 
         for ref_slo_id in referenced_slos:
-            # F7: slo_ids containing an empty or whitespace-only string is a missing linkage (SLO-VAL-009)
             if not isinstance(ref_slo_id, str) or not ref_slo_id.strip():
                 findings.append(SloFinding(
                     severity="error",
@@ -870,7 +910,6 @@ def validate_cost_references(
                 ))
             else:
                 slo_info = slos[ref_slo_id]
-                # F5: An active operation referencing a tombstone directly is an error
                 if slo_info.is_tombstone:
                     canonical_target = slo_info.superseded_by or slo_info.id
                     findings.append(SloFinding(
@@ -891,145 +930,295 @@ def validate_cost_references(
                     "status": slo_info.status,
                 })
 
-        # FSS-198: Hot and consequential path cost vector and baseline reference validation
+        # Cost vector validation: every operation must carry a complete machine-readable cost vector
         is_mandatory_hot_path = (
             cost_id in MANDATORY_HOT_PATHS or lower_cost_id in MANDATORY_HOT_PATHS_LOWER
         )
         has_cost_vector = "cost_vector" in op
         has_baseline = "baseline_reference" in op
 
-        if is_mandatory_hot_path or has_cost_vector or has_baseline:
-            # 1. Cost vector validation
-            if not has_cost_vector:
+        # If it is any operation in the registry, cost_vector is required
+        if not has_cost_vector:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                path=path_str,
+                message=f"Operation '{cost_id}' lacks 'cost_vector' table",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                params={"cost_id": cost_id},
+            ))
+        elif not isinstance(op["cost_vector"], dict):
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                path=path_str,
+                message=f"Operation '{cost_id}' 'cost_vector' must be a table/dictionary",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                params={"cost_id": cost_id},
+            ))
+        else:
+            cv = op["cost_vector"]
+            extra_dims = sorted(set(cv.keys()) - set(REQUIRED_COST_VECTOR_DIMENSIONS))
+            if extra_dims:
                 findings.append(SloFinding(
                     severity="error",
                     code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
                     path=path_str,
-                    message=f"Mandatory hot/consequential path '{cost_id}' lacks 'cost_vector' table",
+                    message=f"Operation '{cost_id}' 'cost_vector' contains extraneous dimension(s): {extra_dims}",
                     remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
-                    params={"cost_id": cost_id},
+                    params={"cost_id": cost_id, "extraneous_dimensions": extra_dims},
                 ))
-            elif not isinstance(op["cost_vector"], dict):
+            missing_dims = sorted(set(REQUIRED_COST_VECTOR_DIMENSIONS) - set(cv.keys()))
+            if missing_dims:
                 findings.append(SloFinding(
                     severity="error",
                     code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
                     path=path_str,
-                    message=f"Operation '{cost_id}' 'cost_vector' must be a table/dictionary",
+                    message=f"Operation '{cost_id}' 'cost_vector' lacks required dimension(s): {missing_dims}",
                     remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
-                    params={"cost_id": cost_id},
+                    params={"cost_id": cost_id, "missing_dimensions": missing_dims},
                 ))
-            else:
-                cv = op["cost_vector"]
-                extra_dims = sorted(set(cv.keys()) - set(REQUIRED_COST_VECTOR_DIMENSIONS))
-                if extra_dims:
-                    findings.append(SloFinding(
-                        severity="error",
-                        code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
-                        path=path_str,
-                        message=f"Operation '{cost_id}' 'cost_vector' contains extraneous dimension(s): {extra_dims}",
-                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
-                        params={"cost_id": cost_id, "extraneous_dimensions": extra_dims},
-                    ))
-                missing_dims = sorted(set(REQUIRED_COST_VECTOR_DIMENSIONS) - set(cv.keys()))
-                if missing_dims:
-                    findings.append(SloFinding(
-                        severity="error",
-                        code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
-                        path=path_str,
-                        message=f"Operation '{cost_id}' 'cost_vector' lacks required dimension(s): {missing_dims}",
-                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
-                        params={"cost_id": cost_id, "missing_dimensions": missing_dims},
-                    ))
-                for dim in REQUIRED_COST_VECTOR_DIMENSIONS:
-                    if dim in cv:
-                        val = cv[dim]
-                        if (
-                            not isinstance(val, (int, float))
-                            or isinstance(val, bool)
-                            or math.isnan(val)
-                            or math.isinf(val)
-                            or val < 0
-                        ):
-                            findings.append(SloFinding(
-                                severity="error",
-                                code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
-                                path=path_str,
-                                message=f"Operation '{cost_id}' dimension '{dim}' must be non-negative finite numeric value, got {val}",
-                                remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
-                                params={"cost_id": cost_id, "dimension": dim, "value": val},
-                            ))
-
-            # 2. Baseline reference validation
-            if not has_baseline:
-                findings.append(SloFinding(
-                    severity="error",
-                    code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
-                    path=path_str,
-                    message=f"Mandatory hot/consequential path '{cost_id}' lacks 'baseline_reference'",
-                    remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
-                    params={"cost_id": cost_id},
-                ))
-            else:
-                base_ref = op["baseline_reference"]
-                if not isinstance(base_ref, str) or not base_ref.strip():
-                    findings.append(SloFinding(
-                        severity="error",
-                        code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
-                        path=path_str,
-                        message=f"Operation '{cost_id}' 'baseline_reference' must be a non-empty string",
-                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
-                        params={"cost_id": cost_id},
-                    ))
-                else:
-                    file_part = base_ref.split(":")[0].strip()
-                    ref_file = root / file_part
-                    if not (
-                        file_part.endswith(".rs")
-                        and (
-                            file_part.startswith("tests/")
-                            or file_part.startswith("benches/")
-                            or file_part.startswith("crates/")
-                        )
+            for dim in REQUIRED_COST_VECTOR_DIMENSIONS:
+                if dim in cv:
+                    val = cv[dim]
+                    if (
+                        not isinstance(val, (int, float))
+                        or isinstance(val, bool)
+                        or math.isnan(val)
+                        or math.isinf(val)
+                        or val < 0
                     ):
                         findings.append(SloFinding(
                             severity="error",
                             code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
                             path=path_str,
-                            message=f"Operation '{cost_id}' baseline reference '{base_ref}' must be a Rust test/benchmark file (.rs) under tests/, benches/, or crates/",
+                            message=f"Operation '{cost_id}' dimension '{dim}' must be non-negative finite numeric value, got {val}",
                             remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
-                            params={"cost_id": cost_id, "baseline_reference": base_ref, "file": file_part},
+                            params={"cost_id": cost_id, "dimension": dim, "value": val},
                         ))
-                    elif not ref_file.is_file():
+
+        # Baseline reference validation (for hot paths or where declared)
+        if is_mandatory_hot_path and not has_baseline:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                path=path_str,
+                message=f"Mandatory hot/consequential path '{cost_id}' lacks 'baseline_reference'",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                params={"cost_id": cost_id},
+            ))
+        elif has_baseline:
+            base_ref = op["baseline_reference"]
+            if not isinstance(base_ref, str) or not base_ref.strip():
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                    path=path_str,
+                    message=f"Operation '{cost_id}' 'baseline_reference' must be a non-empty string",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
+            else:
+                file_part = base_ref.split(":")[0].strip()
+                ref_file = root / file_part
+                if not (
+                    file_part.endswith(".rs")
+                    and (
+                        file_part.startswith("tests/")
+                        or file_part.startswith("benches/")
+                        or file_part.startswith("crates/")
+                    )
+                ):
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' baseline reference '{base_ref}' must be a Rust test/benchmark file (.rs) under tests/, benches/, or crates/",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                        params={"cost_id": cost_id, "baseline_reference": base_ref, "file": file_part},
+                    ))
+                elif not ref_file.is_file():
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' baseline reference '{base_ref}' does not exist on disk as a file",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                        params={"cost_id": cost_id, "baseline_reference": base_ref, "file": file_part},
+                    ))
+                else:
+                    content = ref_file.read_text(encoding="utf-8", errors="replace")
+                    has_test_markers = any(
+                        marker in content
+                        for marker in (
+                            "#[test]",
+                            "#[tokio::test]",
+                            "#[asupersync::test]",
+                            "fn test_",
+                            "assert!",
+                            "assert_eq!",
+                        )
+                    )
+                    if not has_test_markers:
                         findings.append(SloFinding(
                             severity="error",
                             code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
                             path=path_str,
-                            message=f"Operation '{cost_id}' baseline reference '{base_ref}' does not exist on disk as a file",
+                            message=f"Operation '{cost_id}' baseline reference '{base_ref}' contains no test routines or assertions",
                             remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
                             params={"cost_id": cost_id, "baseline_reference": base_ref, "file": file_part},
                         ))
+
+        # Proof owner validation (SLO-VAL-017)
+        raw_owner = op.get("proof_owner") or op.get("owner")
+        is_drift = False
+        if not isinstance(raw_owner, str) or not raw_owner.strip():
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MISSING_OR_UNKNOWN_OWNER,
+                path=path_str,
+                message=f"Operation '{cost_id}' lacks a named 'proof_owner'",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_OR_UNKNOWN_OWNER]["remediation"],
+                params={"cost_id": cost_id},
+            ))
+        else:
+            owner_str = raw_owner.strip()
+            if owner_str.startswith("drift:"):
+                is_drift = True
+                drift_id = owner_str.split(":", 1)[1].strip()
+                if not drift_id or drift_id not in declared_drifts:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MISSING_OR_UNKNOWN_OWNER,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' references undeclared drift owner '{owner_str}' (not in [[drift]])",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_OR_UNKNOWN_OWNER]["remediation"],
+                        params={"cost_id": cost_id, "drift_id": drift_id},
+                    ))
+            elif owner_str == "unknown":
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_MISSING_OR_UNKNOWN_OWNER,
+                    path=path_str,
+                    message=f"Operation '{cost_id}' has unknown proof_owner; genuinely unknown proof owners must be recorded as explicit drift rows (drift:DRIFT-...)",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_OR_UNKNOWN_OWNER]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
+            else:
+                owner_path = root / owner_str
+                if not (owner_path.exists() or (root / f"{owner_str}.rs").is_file()):
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MISSING_OR_UNKNOWN_OWNER,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' proof_owner '{owner_str}' does not resolve to an existing crate or module on disk",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_OR_UNKNOWN_OWNER]["remediation"],
+                        params={"cost_id": cost_id, "proof_owner": owner_str},
+                    ))
+
+        # Proof reference validation (SLO-VAL-018)
+        if is_drift:
+            proof_ref = op.get("proof_reference")
+            if not isinstance(proof_ref, str) or not proof_ref.strip():
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_PROOF_REFERENCE_NOT_FOUND,
+                    path=path_str,
+                    message=f"Operation '{cost_id}' lacks 'proof_reference'",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_REFERENCE_NOT_FOUND]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
+            elif not proof_ref.strip().startswith("drift:"):
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_PROOF_REFERENCE_NOT_FOUND,
+                    path=path_str,
+                    message=f"Operation '{cost_id}' is drift but proof_reference '{proof_ref}' does not start with 'drift:'",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_REFERENCE_NOT_FOUND]["remediation"],
+                    params={"cost_id": cost_id, "proof_reference": proof_ref},
+                ))
+        else:
+            proof_ref = op.get("proof_reference")
+            if not isinstance(proof_ref, str) or not proof_ref.strip():
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_PROOF_REFERENCE_NOT_FOUND,
+                    path=path_str,
+                    message=f"Operation '{cost_id}' lacks 'proof_reference'",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_REFERENCE_NOT_FOUND]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
+            else:
+                proof_ref = proof_ref.strip()
+                if "::" not in proof_ref:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_PROOF_REFERENCE_NOT_FOUND,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' proof_reference '{proof_ref}' must specify file and test fn separated by '::'",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_REFERENCE_NOT_FOUND]["remediation"],
+                        params={"cost_id": cost_id, "proof_reference": proof_ref},
+                    ))
+                else:
+                    ref_file_str, test_fn = proof_ref.split("::", 1)
+                    ref_file_str = ref_file_str.strip()
+                    test_fn = test_fn.strip()
+                    ref_file = root / ref_file_str
+                    if not (ref_file_str.endswith(".rs") and ref_file.is_file()):
+                        findings.append(SloFinding(
+                            severity="error",
+                            code=CODE_PROOF_REFERENCE_NOT_FOUND,
+                            path=path_str,
+                            message=f"Operation '{cost_id}' proof_reference file '{ref_file_str}' does not exist on disk as a Rust source file",
+                            remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_REFERENCE_NOT_FOUND]["remediation"],
+                            params={"cost_id": cost_id, "file": ref_file_str},
+                        ))
+                    elif not test_fn:
+                        findings.append(SloFinding(
+                            severity="error",
+                            code=CODE_PROOF_REFERENCE_NOT_FOUND,
+                            path=path_str,
+                            message=f"Operation '{cost_id}' proof_reference '{proof_ref}' specifies an empty test function name",
+                            remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_REFERENCE_NOT_FOUND]["remediation"],
+                            params={"cost_id": cost_id, "proof_reference": proof_ref},
+                        ))
                     else:
-                        content = ref_file.read_text(encoding="utf-8", errors="replace")
-                        has_test_markers = any(
-                            marker in content
-                            for marker in (
-                                "#[test]",
-                                "#[tokio::test]",
-                                "#[asupersync::test]",
-                                "fn test_",
-                                "assert!",
-                                "assert_eq!",
-                            )
-                        )
-                        if not has_test_markers:
+                        file_content = ref_file.read_text(encoding="utf-8", errors="replace")
+                        fn_pattern = re.compile(r"\b(?:async\s+)?fn\s+" + re.escape(test_fn) + r"\b")
+                        if not fn_pattern.search(file_content):
                             findings.append(SloFinding(
                                 severity="error",
-                                code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                                code=CODE_PROOF_REFERENCE_NOT_FOUND,
                                 path=path_str,
-                                message=f"Operation '{cost_id}' baseline reference '{base_ref}' contains no test routines or assertions",
-                                remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
-                                params={"cost_id": cost_id, "baseline_reference": base_ref, "file": file_part},
+                                message=f"Operation '{cost_id}' proof_reference test fn '{test_fn}' not found in '{ref_file_str}'",
+                                remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_REFERENCE_NOT_FOUND]["remediation"],
+                                params={"cost_id": cost_id, "file": ref_file_str, "test_fn": test_fn},
                             ))
+
+        # Measured status validation (SLO-VAL-020)
+        status_val = op.get("status", "model_required")
+        if status_val == "measured":
+            meas_artifact = op.get("measurement_artifact")
+            if not isinstance(meas_artifact, str) or not meas_artifact.strip():
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                    path=path_str,
+                    message=f"Operation '{cost_id}' has status 'measured' but lacks 'measurement_artifact'",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_MEASURED_WITHOUT_ARTIFACT]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
+            else:
+                meas_path = root / meas_artifact.strip()
+                if not meas_path.is_file():
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' measurement artifact '{meas_artifact}' does not exist on disk",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_MEASURED_WITHOUT_ARTIFACT]["remediation"],
+                        params={"cost_id": cost_id, "measurement_artifact": meas_artifact},
+                    ))
 
     # Check that every mandatory hot/consequential path is present
     seen_exact_ids = set(seen_op_ids.values())
@@ -1043,6 +1232,91 @@ def validate_cost_references(
                 remediation=DIAGNOSTIC_REGISTRY[CODE_HOT_PATH_MISSING_COST_ROW]["remediation"],
                 params={"cost_id": hot_id, "name": hot_info["name"]},
             ))
+
+    # Owner and mirror disagreement validation (SLO-VAL-019)
+    if target_costs_md_path and target_costs_md_path.is_file():
+        md_text = target_costs_md_path.read_text(encoding="utf-8")
+        md_ops: dict[str, dict[str, str]] = {}
+        for line in md_text.splitlines():
+            s = line.strip()
+            if not (s.startswith("|") and s.endswith("|")):
+                continue
+            cells = [c.strip().strip("`") for c in s[1:-1].split("|")]
+            if not cells:
+                continue
+            first = cells[0]
+            if not first.startswith("COST-"):
+                continue
+            if len(cells) >= 6:
+                if first in md_ops:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Duplicate operation ID '{first}' in registries/OPERATION_COSTS.md",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
+                        params={"cost_id": first},
+                    ))
+                md_ops[first] = {
+                    "proof_owner": cells[4],
+                    "proof_reference": cells[5],
+                }
+
+        # Compare TOML operations against Markdown
+        for op in operations:
+            if not isinstance(op, dict):
+                continue
+            cid = op.get("id")
+            if not cid or not isinstance(cid, str):
+                continue
+            cid = cid.strip()
+            if cid not in md_ops:
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                    path=sanitize_path(target_costs_md_path, root),
+                    message=f"Operation '{cid}' in TOML is missing from registries/OPERATION_COSTS.md table",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                    params={"cost_id": cid},
+                ))
+            else:
+                md_entry = md_ops[cid]
+                toml_owner = str(op.get("proof_owner") or op.get("owner") or "").strip()
+                md_owner = md_entry["proof_owner"].strip()
+                if toml_owner != md_owner:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Operation '{cid}' proof owner mismatch: TOML has '{toml_owner}', Markdown has '{md_owner}'",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                        params={"cost_id": cid, "toml_owner": toml_owner, "md_owner": md_owner},
+                    ))
+
+                toml_ref = str(op.get("proof_reference") or "").strip()
+                md_ref = md_entry["proof_reference"].strip()
+                if toml_ref != md_ref:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Operation '{cid}' proof reference mismatch: TOML has '{toml_ref}', Markdown has '{md_ref}'",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                        params={"cost_id": cid, "toml_ref": toml_ref, "md_ref": md_ref},
+                    ))
+
+        # Check for operations in Markdown that are missing from TOML
+        toml_op_ids = {op.get("id") for op in operations if isinstance(op, dict) and "id" in op}
+        for md_cid in md_ops:
+            if md_cid not in toml_op_ids:
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                    path=sanitize_path(target_costs_md_path, root),
+                    message=f"Operation '{md_cid}' in registries/OPERATION_COSTS.md is missing from TOML",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                    params={"cost_id": md_cid},
+                ))
 
     return resolutions
 
@@ -1139,12 +1413,18 @@ def validate_slos(
     slos_path: Path | None = None,
     costs_path: Path | None = None,
     claims_path: Path | None = None,
+    costs_md_path: Path | None = None,
 ) -> tuple[bool, list[SloFinding], dict[str, Any]]:
     """Primary audit entrypoint: validates registries/SLOS.md, cost references, and claim promotions."""
     start_ns = time.time_ns()
     target_slos_path = slos_path or (root / "registries/SLOS.md")
     target_costs_path = costs_path or (root / "architecture/operation_cost_registry.toml")
     target_claims_path = claims_path or (root / "registries/CLAIMS.md")
+    target_costs_md_path = costs_md_path or (root / "registries/OPERATION_COSTS.md")
+    should_check_mirror = (
+        costs_md_path is not None
+        or target_costs_path.resolve() == (root / "architecture/operation_cost_registry.toml").resolve()
+    )
 
     findings: list[SloFinding] = []
 
@@ -1167,7 +1447,13 @@ def validate_slos(
     slos_text = target_slos_path.read_text(encoding="utf-8")
     slos = parse_slos(slos_text, target_slos_path, root, findings)
 
-    resolutions = validate_cost_references(target_costs_path, slos, root, findings)
+    resolutions = validate_cost_references(
+        target_costs_path,
+        slos,
+        root,
+        findings,
+        target_costs_md_path=target_costs_md_path if should_check_mirror else None,
+    )
     validate_claim_promotions(target_claims_path, slos, root, findings)
 
     error_count = sum(1 for f in findings if f.severity == "error")
@@ -1183,6 +1469,7 @@ def validate_slos(
         "slos_path": sanitize_path(target_slos_path, root),
         "costs_path": sanitize_path(target_costs_path, root),
         "claims_path": sanitize_path(target_claims_path, root),
+        "costs_md_path": sanitize_path(target_costs_md_path, root),
         "total_slos": len(slos),
         "target_count": sum(1 for s in slos.values() if s.status == "target"),
         "tombstone_count": sum(1 for s in slos.values() if s.is_tombstone),
@@ -1202,6 +1489,7 @@ def main() -> int:
     parser.add_argument("--root", type=Path, default=ROOT, help="Repository root path")
     parser.add_argument("--slos", type=Path, default=None, help="Path to registries/SLOS.md")
     parser.add_argument("--costs", type=Path, default=None, help="Path to architecture/operation_cost_registry.toml")
+    parser.add_argument("--costs-md", type=Path, default=None, help="Path to registries/OPERATION_COSTS.md")
     parser.add_argument("--claims", type=Path, default=None, help="Path to registries/CLAIMS.md")
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON report")
     parser.add_argument("--quiet", action="store_true", help="Suppress non-error output")
@@ -1212,6 +1500,7 @@ def main() -> int:
         slos_path=args.slos,
         costs_path=args.costs,
         claims_path=args.claims,
+        costs_md_path=args.costs_md,
     )
 
     if args.json:
