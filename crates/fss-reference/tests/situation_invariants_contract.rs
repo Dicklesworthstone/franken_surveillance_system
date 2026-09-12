@@ -12,10 +12,12 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, ContractBasis,
-    ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, IdempotencyKey,
-    KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
-    ResourcePressure, SensorId, SessionId, TimestampNs,
+    ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
+    ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, EffectJournal,
+    EventId, IdempotencyKey, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
+    OperationId, PossibleWorld, PrincipalId, ProbabilityInterval, ProvenanceClass,
+    ResourcePressure, SensorId, SessionId, SituationCapsule, SituationFrame, TimestampNs,
+    WorldEnvelope,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -268,6 +270,71 @@ fn test_request<'a>(
         alert_outcome: None,
         available_capabilities: capabilities,
         created_at: TimestampNs(1_000),
+    })
+}
+
+fn synthetic_situation(
+    custom_worlds: Vec<PossibleWorld>,
+    custom_affordances: Vec<ActionAffordance>,
+    next: Vec<String>,
+) -> Result<ReferenceSituation, Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("site:synthetic-test");
+    let evidence = ContentDigest::sha256(b"synthetic-evidence");
+    let envelope = WorldEnvelope {
+        envelope_id: "world-envelope:synthetic".to_owned(),
+        objective_id: "objective:synthetic".to_owned(),
+        anchor: anchor.clone(),
+        nominal_claim_ids: BTreeSet::from(["claim:presence".to_owned()]),
+        certified_core_claim_ids: BTreeSet::new(),
+        alternatives: custom_worlds,
+        adversarial_residuals: Vec::new(),
+        common_invariants: BTreeSet::from(["invariant:synthetic".to_owned()]),
+        coverage_boundary_handles: BTreeSet::from(["fss://coverage/synthetic".to_owned()]),
+    };
+    let cell = KnowledgeCell {
+        claim_id: "claim:presence".to_owned(),
+        statement: "Synthetic presence claim.".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![evidence],
+        contradictions: Vec::new(),
+        valid_until: None,
+    };
+    let frame = SituationFrame {
+        frame_id: "frame:synthetic".to_owned(),
+        objective_id: "objective:synthetic".to_owned(),
+        anchor: anchor.clone(),
+        world_envelope: envelope,
+        knowledge_cells: vec![cell],
+        now: vec!["Synthetic observation.".to_owned()],
+        changed: Vec::new(),
+        why: vec!["Synthetic rationale.".to_owned()],
+        unknown: Vec::new(),
+        at_risk: Vec::new(),
+        next,
+        evidence_handles: BTreeSet::from([format!("fss://proof/{evidence}")]),
+    };
+    let capsule = SituationCapsule {
+        capsule_id: "situation:synthetic".to_owned(),
+        revision: 1,
+        contract_basis: test_basis(),
+        mission_id: MissionId::parse("mission:synthetic")?,
+        session_id: SessionId::parse("session:synthetic")?,
+        principal_id: PrincipalId::parse("principal:synthetic")?,
+        anchor,
+        previous_anchor: None,
+        frame,
+        obligations: Vec::new(),
+        affordances: custom_affordances,
+        completeness: Completeness::Complete,
+        created_at: TimestampNs(1_000),
+        mission_state: None,
+    };
+    capsule.validate()?;
+    Ok(ReferenceSituation {
+        capsule,
+        proof_roots: BTreeSet::from([evidence]),
     })
 }
 
@@ -757,11 +824,74 @@ fn test_f7_corroborated_envelope_retains_protected_adversarial_residual_and_high
         .find(|i| i.item_id == rejected_item_id);
     assert!(
         rejected_item.is_some(),
-        "Low-severity world present under ample budget"
+        "Rejected event candidate world present in context pack under ample budget"
     );
     let r_item = rejected_item.ok_or(ReferenceError::InvalidSpec("missing_rejected_item"))?;
     assert_eq!(r_item.kind, "possible_world");
     rej_pub.verify()?;
+
+    // Synthetic differential check: low-severity unprotected world presence under ample budget
+    let high_severity_unprotected = PossibleWorld {
+        world_id: "world:high-loss-unprotected".to_owned(),
+        description: "High loss world with protected = false.".to_owned(),
+        claim_ids: BTreeSet::from(["claim:presence".to_owned()]),
+        evidence: vec![ContentDigest::sha256(b"ev1")],
+        consequence_severity: 4,
+        protected: false,
+    };
+    let low_severity_unprotected = PossibleWorld {
+        world_id: "world:low-loss-unprotected".to_owned(),
+        description: "Low loss world with protected = false.".to_owned(),
+        claim_ids: BTreeSet::from(["claim:presence".to_owned()]),
+        evidence: vec![ContentDigest::sha256(b"ev2")],
+        consequence_severity: 3,
+        protected: false,
+    };
+
+    let syn = synthetic_situation(
+        vec![
+            high_severity_unprotected.clone(),
+            low_severity_unprotected.clone(),
+        ],
+        Vec::new(),
+        Vec::new(),
+    )?;
+
+    let required = required_context_item_ids(&syn)?;
+    assert!(
+        required.contains("context:world:world:high-loss-unprotected"),
+        "A world with consequence_severity >= 4 must be required (critical) regardless of protected flag"
+    );
+    assert!(
+        !required.contains("context:world:world:low-loss-unprotected"),
+        "A world with consequence_severity < 4 and protected = false must NOT be required"
+    );
+
+    let syn_pub = project_reference_situation(syn, &test_spec(10_000))?;
+    let high_loss_item = syn_pub
+        .context_pack
+        .items
+        .iter()
+        .find(|i| i.item_id == "context:world:world:high-loss-unprotected");
+    assert!(
+        high_loss_item.is_some(),
+        "High-severity world must be present in context pack"
+    );
+    let item = high_loss_item.ok_or(ReferenceError::InvalidSpec("missing_high_loss_item"))?;
+    assert_eq!(item.kind, "protected_world");
+
+    let low_loss_item = syn_pub
+        .context_pack
+        .items
+        .iter()
+        .find(|i| i.item_id == "context:world:world:low-loss-unprotected");
+    assert!(
+        low_loss_item.is_some(),
+        "Low-severity world present under ample budget"
+    );
+    let low_item = low_loss_item.ok_or(ReferenceError::InvalidSpec("missing_low_loss_item"))?;
+    assert_eq!(low_item.kind, "possible_world");
+    syn_pub.verify()?;
 
     harness.cleanup();
     Ok(())
