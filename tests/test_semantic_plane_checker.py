@@ -941,6 +941,113 @@ pub fn tuple_bridge(input: (ModelOutput, bool)) -> EffectIntent {
             self.assertIn("to_effect", functions_flagged)
             self.assertIn("tuple_bridge", functions_flagged)
 
+    def test_generic_return_with_effect_bounds_fail_closed(self) -> None:
+        """Generic return with effect bound (fn bridge<T: Into<EffectIntent>>(m: ModelOutput) -> T) and where-clause forms must fail closed with ERR_MODEL_OUTPUT_REACHES_EFFECT."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src = tmp_root / "crates/fss-cognition/src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "bridge.rs").write_text("""
+pub struct ModelOutput;
+pub struct EffectIntent;
+
+pub fn bridge_inline<T: Into<EffectIntent>>(m: ModelOutput) -> T {
+    unimplemented!()
+}
+
+pub fn bridge_where<T>(m: ModelOutput) -> T where T: From<ModelOutput> + Into<EffectIntent> {
+    unimplemented!()
+}
+
+pub fn bridge_reverse_where<T>(m: ModelOutput) -> T where EffectIntent: From<T> {
+    unimplemented!()
+}
+
+pub fn bridge_generic_result<T: Into<EffectIntent>>(m: ModelOutput) -> Result<T, String> {
+    unimplemented!()
+}
+""", encoding="utf-8")
+            reg = tmp_root / "architecture"
+            reg.mkdir(parents=True, exist_ok=True)
+            (reg / "semantic_plane_registry.json").write_text(json.dumps({
+                "schema": "fss.semantic_plane_registry.v1",
+                "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                "registered_boundary_modules": [],
+                "module_declarations": {"crates/fss-cognition/src/bridge.rs": "cognition"},
+                "types": {
+                    "ModelOutput": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "cognition"},
+                    "EffectIntent": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "effect"}
+                }
+            }), encoding="utf-8")
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Generic returns with effect bounds must fail closed under NEG-003")
+            model_effect_findings = [f for f in findings if f.code == ERR_MODEL_OUTPUT_REACHES_EFFECT]
+            functions_flagged = {f.params.get("function") for f in model_effect_findings}
+            self.assertIn("bridge_inline", functions_flagged, f"bridge_inline missing from {model_effect_findings}")
+            self.assertIn("bridge_where", functions_flagged, f"bridge_where missing from {model_effect_findings}")
+            self.assertIn("bridge_reverse_where", functions_flagged, f"bridge_reverse_where missing from {model_effect_findings}")
+            self.assertIn("bridge_generic_result", functions_flagged, f"bridge_generic_result missing from {model_effect_findings}")
+
+    def test_type_aliases_to_model_and_effect_types_fail_closed(self) -> None:
+        """Type aliases to ModelOutput and EffectIntent (including pub type, chained, and tuple) must fail closed with ERR_MODEL_OUTPUT_REACHES_EFFECT."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src = tmp_root / "crates/fss-cognition/src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "bridge.rs").write_text("""
+pub struct ModelOutput;
+pub struct EffectIntent;
+
+type AliasOutput = ModelOutput;
+pub type CustomEffect = EffectIntent;
+type ChainedOutput = AliasOutput;
+pub(crate) type AliasTuple = (AliasOutput, bool);
+
+pub fn alias_bridge(m: AliasOutput) -> EffectIntent {
+    EffectIntent
+}
+
+pub fn effect_alias_bridge(m: ModelOutput) -> CustomEffect {
+    CustomEffect
+}
+
+pub fn chain_bridge(m: ChainedOutput) -> CustomEffect {
+    CustomEffect
+}
+
+pub fn tuple_alias_bridge(m: AliasTuple) -> EffectIntent {
+    EffectIntent
+}
+
+impl AliasOutput {
+    pub fn to_effect(&self) -> EffectIntent {
+        EffectIntent
+    }
+}
+""", encoding="utf-8")
+            reg = tmp_root / "architecture"
+            reg.mkdir(parents=True, exist_ok=True)
+            (reg / "semantic_plane_registry.json").write_text(json.dumps({
+                "schema": "fss.semantic_plane_registry.v1",
+                "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                "registered_boundary_modules": [],
+                "module_declarations": {"crates/fss-cognition/src/bridge.rs": "cognition"},
+                "types": {
+                    "ModelOutput": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "cognition"},
+                    "EffectIntent": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "effect"}
+                }
+            }), encoding="utf-8")
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Type aliases must fail closed under NEG-003")
+            model_effect_findings = [f for f in findings if f.code == ERR_MODEL_OUTPUT_REACHES_EFFECT]
+            functions_flagged = {f.params.get("function") for f in model_effect_findings}
+            self.assertIn("alias_bridge", functions_flagged, f"alias_bridge missing from {model_effect_findings}")
+            self.assertIn("effect_alias_bridge", functions_flagged, f"effect_alias_bridge missing from {model_effect_findings}")
+            self.assertIn("chain_bridge", functions_flagged, f"chain_bridge missing from {model_effect_findings}")
+            self.assertIn("tuple_alias_bridge", functions_flagged, f"tuple_alias_bridge missing from {model_effect_findings}")
+            self.assertIn("to_effect", functions_flagged, f"to_effect method on AliasOutput missing from {model_effect_findings}")
+
+
     def test_corrupt_corroboration_policy_json_must_fail_closed(self) -> None:
         """Corrupt JSON in corroboration policy files must fail closed with an error finding."""
         with tempfile.TemporaryDirectory() as td:

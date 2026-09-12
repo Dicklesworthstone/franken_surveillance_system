@@ -625,13 +625,19 @@ EFFECT_TYPES: set[str] = {
 }
 
 
-def is_effect_or_authority_type(ty_str: str, registered_types: dict[str, Any]) -> bool:
+def is_effect_or_authority_type(
+    ty_str: str,
+    registered_types: dict[str, Any],
+    effective_effect_types: set[str] | None = None,
+) -> bool:
     """Checks if a type string refers to an effect or authority plane type."""
+    eff = EFFECT_TYPES if effective_effect_types is None else effective_effect_types
     tokens = re.findall(r"\b[A-Za-z0-9_]+\b", ty_str)
     return any(
-        t in EFFECT_TYPES or registered_types.get(t, {}).get("plane") in ("effect", "authority")
+        t in eff or registered_types.get(t, {}).get("plane") in ("effect", "authority")
         for t in tokens
     )
+
 
 ABSTENTION_TYPES: set[str] = {
     "MockModelOutcome",
@@ -738,20 +744,234 @@ def mask_comments_and_strings(source: str) -> str:
     return "".join(result)
 
 
-def extract_rust_functions(
-    content: str,
-) -> list[tuple[str, str, str, str | None, int, str]]:
-    """Extracts Rust function declarations with balanced parens and enclosing impl target type.
+def split_top_level(text: str, delimiter: str = ",") -> list[str]:
+    """Splits text by delimiter at top level of delimiters (<>, (), [], {})."""
+    parts: list[str] = []
+    current: list[str] = []
+    depth_angle = 0
+    depth_paren = 0
+    depth_bracket = 0
+    depth_brace = 0
+    for ch in text:
+        if ch == "<":
+            depth_angle += 1
+        elif ch == ">":
+            depth_angle = max(0, depth_angle - 1)
+        elif ch == "(":
+            depth_paren += 1
+        elif ch == ")":
+            depth_paren = max(0, depth_paren - 1)
+        elif ch == "[":
+            depth_bracket += 1
+        elif ch == "]":
+            depth_bracket = max(0, depth_bracket - 1)
+        elif ch == "{":
+            depth_brace += 1
+        elif ch == "}":
+            depth_brace = max(0, depth_brace - 1)
+        elif (
+            ch == delimiter
+            and depth_angle == 0
+            and depth_paren == 0
+            and depth_bracket == 0
+            and depth_brace == 0
+        ):
+            part = "".join(current).strip()
+            if part:
+                parts.append(part)
+            current = []
+            continue
+        current.append(ch)
+    if current:
+        part = "".join(current).strip()
+        if part:
+            parts.append(part)
+    return parts
 
-    Returns list of tuples: (fn_name, params, ret_type, impl_type, start_pos, full_sig)
+
+def parse_all_generic_bounds(
+    generics: str, where_clause: str, impl_header: str | None
+) -> dict[str, list[str]]:
+    """Extracts type bounds from generic parameter list, where clause, and impl header."""
+    bounds: dict[str, list[str]] = {}
+
+    def ingest_generic_params(gen_str: str) -> None:
+        g = gen_str.strip()
+        if g.startswith("<") and g.endswith(">"):
+            g = g[1:-1].strip()
+        for item in split_top_level(g, ","):
+            colon_parts = split_top_level(item, ":")
+            if len(colon_parts) >= 2:
+                param = colon_parts[0].strip().split()[0]
+                if param and not param.startswith("'"):
+                    b_list = bounds.setdefault(param, [])
+                    rest = ":".join(colon_parts[1:])
+                    for b in split_top_level(rest, "+"):
+                        if b:
+                            b_list.append(b.strip())
+            else:
+                param = item.strip().split()[0] if item.strip() else ""
+                if param and not param.startswith("'"):
+                    bounds.setdefault(param, [])
+
+    def ingest_where_clause(wh_str: str) -> None:
+        w = wh_str.strip()
+        if w.startswith("where"):
+            w = w[5:].strip()
+        for item in split_top_level(w, ","):
+            colon_parts = split_top_level(item, ":")
+            if len(colon_parts) >= 2:
+                target = colon_parts[0].strip()
+                rest = ":".join(colon_parts[1:])
+                b_items = [b.strip() for b in split_top_level(rest, "+") if b.strip()]
+                if re.fullmatch(r"[A-Za-z0-9_]+", target):
+                    bounds.setdefault(target, []).extend(b_items)
+                for b in b_items:
+                    m_from = re.match(r"(?:Try)?From<([^>]+)>", b)
+                    if m_from:
+                        src = m_from.group(1).strip().split("::")[-1].strip()
+                        if re.fullmatch(r"[A-Za-z0-9_]+", src):
+                            bounds.setdefault(src, []).append(f"Into<{target}>")
+
+    if generics:
+        ingest_generic_params(generics)
+    if where_clause:
+        ingest_where_clause(where_clause)
+
+    if impl_header:
+        m_gen = re.search(r"<[^>]*>", impl_header)
+        if m_gen:
+            ingest_generic_params(m_gen.group(0))
+        if "where" in impl_header:
+            wh_part = impl_header.split("where", 1)[1]
+            ingest_where_clause(wh_part)
+
+    return bounds
+
+
+def extract_type_aliases(content: str) -> dict[str, str]:
+    """Extracts type aliases from Rust source code.
+
+    Returns dict mapping alias name to clean target type string.
     """
     masked = mask_comments_and_strings(content)
     n = len(masked)
-    functions: list[tuple[str, str, str, str | None, int, str]] = []
+    aliases: dict[str, str] = {}
+    i = 0
+    while i < n:
+        idx = masked.find("type", i)
+        if idx == -1:
+            break
+        if (idx > 0 and (masked[idx - 1].isalnum() or masked[idx - 1] == "_")) or (
+            idx + 4 < n and (masked[idx + 4].isalnum() or masked[idx + 4] == "_")
+        ):
+            i = idx + 4
+            continue
+
+        line_start = masked.rfind("\n", 0, idx)
+        line_start = 0 if line_start == -1 else line_start + 1
+        prefix = masked[line_start:idx].strip()
+        if prefix and not re.fullmatch(r"(?:pub(?:\([^\)]*\))?\s*)?", prefix):
+            i = idx + 4
+            continue
+
+        m_name = re.match(r"\s+([A-Za-z0-9_]+)", masked[idx + 4 :])
+        if not m_name:
+            i = idx + 4
+            continue
+
+        alias_name = m_name.group(1)
+        after_name = idx + 4 + m_name.end()
+
+        if after_name < n and masked[after_name] == "<":
+            depth = 1
+            j = after_name + 1
+            while j < n and depth > 0:
+                if masked[j] == "<":
+                    depth += 1
+                elif masked[j] == ">":
+                    depth -= 1
+                j += 1
+            after_name = j
+
+        while after_name < n and masked[after_name].isspace():
+            after_name += 1
+
+        if after_name < n and masked[after_name] == "=":
+            target_start = after_name + 1
+            target_end = masked.find(";", target_start)
+            if target_end != -1:
+                raw_target = content[target_start:target_end].strip()
+                clean_target = re.split(r"\bwhere\b", raw_target)[0].strip()
+                aliases[alias_name] = clean_target
+                i = target_end + 1
+                continue
+
+        i = idx + 4
+
+    return aliases
+
+
+def build_effective_plane_types(
+    alias_map: dict[str, str],
+    registered_types: dict[str, Any],
+) -> tuple[set[str], set[str], set[str], set[str]]:
+    """Resolves type aliases and returns (effective_model_outputs, effective_effects, effective_abstentions, effective_neg_evidence)."""
+    eff_model = set(MODEL_OUTPUT_TYPES)
+    eff_effect = set(EFFECT_TYPES)
+    eff_absten = set(ABSTENTION_TYPES)
+    eff_neg = set(NEGATIVE_EVIDENCE_TYPES)
+
+    for _ in range(10):
+        changed = False
+        for alias, target in alias_map.items():
+            tokens = re.findall(r"\b[A-Za-z0-9_]+\b", target)
+            if alias not in eff_model:
+                if any(
+                    t in eff_model or "model" in t.lower() or "vlm" in t.lower()
+                    for t in tokens
+                ):
+                    eff_model.add(alias)
+                    changed = True
+            if alias not in eff_effect:
+                if any(
+                    t in eff_effect
+                    or registered_types.get(t, {}).get("plane") in ("effect", "authority")
+                    for t in tokens
+                ):
+                    eff_effect.add(alias)
+                    changed = True
+            if alias not in eff_absten:
+                if any(t in eff_absten or "absten" in t.lower() for t in tokens):
+                    eff_absten.add(alias)
+                    changed = True
+            if alias not in eff_neg:
+                if any(t in eff_neg or t == "CoverageWitness" for t in tokens):
+                    eff_neg.add(alias)
+                    changed = True
+        if not changed:
+            break
+
+    return eff_model, eff_effect, eff_absten, eff_neg
+
+
+def extract_rust_functions(
+    content: str,
+) -> list[tuple[str, str, str, str, str, str | None, str | None, int, str]]:
+    """Extracts Rust function declarations with balanced parens, generics, where clauses, and enclosing impl.
+
+    Returns list of tuples:
+    (fn_name, generics, params, ret_type, where_clause, impl_type, impl_header, start_pos, full_sig)
+    """
+    masked = mask_comments_and_strings(content)
+    n = len(masked)
+    functions: list[
+        tuple[str, str, str, str, str, str | None, str | None, int, str]
+    ] = []
 
     brace_depth = 0
-    impl_stack: list[tuple[int, str]] = []
-    pending_impl: str | None = None
+    impl_stack: list[tuple[int, str, str]] = []
+    pending_impl: tuple[str, str] | None = None
     i = 0
     while i < n:
         if (
@@ -762,13 +982,14 @@ def extract_rust_functions(
             open_brace = masked.find("{", i + 4)
             if open_brace != -1:
                 header = masked[i + 4 : open_brace]
+                raw_header = content[i + 4 : open_brace]
                 h_clean = re.sub(r"<[^>]*>", "", header).split("where")[0].strip()
                 m = re.search(
                     r"(?:[A-Za-z0-9_:]+\s+for\s+)?([A-Za-z0-9_:]+)\s*$", h_clean
                 )
                 if m:
                     target = m.group(1).split("::")[-1].strip()
-                    pending_impl = target
+                    pending_impl = (target, raw_header)
             i += 4
             continue
 
@@ -776,7 +997,7 @@ def extract_rust_functions(
         if char == "{":
             brace_depth += 1
             if pending_impl:
-                impl_stack.append((brace_depth, pending_impl))
+                impl_stack.append((brace_depth, pending_impl[0], pending_impl[1]))
                 pending_impl = None
             i += 1
             continue
@@ -811,7 +1032,9 @@ def extract_rust_functions(
             fn_name = name_match.group(1)
             after_name = i + name_match.end()
 
+            generics = ""
             if after_name < n and masked[after_name] == "<":
+                gen_start = after_name
                 gen_depth = 1
                 j = after_name + 1
                 while j < n and gen_depth > 0:
@@ -820,6 +1043,7 @@ def extract_rust_functions(
                     elif masked[j] == ">":
                         gen_depth -= 1
                     j += 1
+                generics = content[gen_start:j].strip()
                 after_name = j
 
             open_paren = masked.find("(", after_name)
@@ -842,6 +1066,7 @@ def extract_rust_functions(
             close_paren = j - 1
             params = content[open_paren + 1 : close_paren].strip()
             ret_type = ""
+            where_clause = ""
             k = close_paren + 1
             while k < n and masked[k].isspace():
                 k += 1
@@ -856,21 +1081,62 @@ def extract_rust_functions(
                         break
                     end_k += 1
                 ret_type = content[ret_start:end_k].strip()
-                full_sig_end = end_k
+
+                where_k = end_k
+                while where_k < n and masked[where_k].isspace():
+                    where_k += 1
+                if where_k + 5 <= n and masked[where_k : where_k + 5] == "where" and (
+                    where_k + 5 == n
+                    or not (masked[where_k + 5].isalnum() or masked[where_k + 5] == "_")
+                ):
+                    clause_start = where_k
+                    clause_end = clause_start + 5
+                    while clause_end < n and masked[clause_end] not in ("{", ";"):
+                        clause_end += 1
+                    where_clause = content[clause_start:clause_end].strip()
+                    full_sig_end = clause_end
+                else:
+                    full_sig_end = end_k
             else:
-                full_sig_end = close_paren + 1
+                where_k = k
+                while where_k < n and masked[where_k].isspace():
+                    where_k += 1
+                if where_k + 5 <= n and masked[where_k : where_k + 5] == "where" and (
+                    where_k + 5 == n
+                    or not (masked[where_k + 5].isalnum() or masked[where_k + 5] == "_")
+                ):
+                    clause_start = where_k
+                    clause_end = clause_start + 5
+                    while clause_end < n and masked[clause_end] not in ("{", ";"):
+                        clause_end += 1
+                    where_clause = content[clause_start:clause_end].strip()
+                    full_sig_end = clause_end
+                else:
+                    full_sig_end = close_paren + 1
 
             current_impl = impl_stack[-1][1] if impl_stack else None
+            current_impl_header = impl_stack[-1][2] if impl_stack else None
             full_sig = content[start_pos:full_sig_end].strip()
             functions.append(
-                (fn_name, params, ret_type, current_impl, start_pos, full_sig)
+                (
+                    fn_name,
+                    generics,
+                    params,
+                    ret_type,
+                    where_clause,
+                    current_impl,
+                    current_impl_header,
+                    start_pos,
+                    full_sig,
+                )
             )
-            i = close_paren + 1
+            i = full_sig_end
             continue
 
         i += 1
 
     return functions
+
 
 
 def check_module_imports(
@@ -891,6 +1157,17 @@ def check_module_imports(
         r"impl(?:<[^>]*>)?\s+(?:Try)?Into<([^>]+)>\s+for\s+([A-Za-z0-9_:]+)",
         re.MULTILINE,
     )
+
+    workspace_alias_map: dict[str, str] = {}
+    for m_decl in module_declarations:
+        m_abs = root / m_decl
+        if m_abs.is_file():
+            try:
+                workspace_alias_map.update(
+                    extract_type_aliases(m_abs.read_text(encoding="utf-8"))
+                )
+            except Exception:
+                pass
 
     for mod_rel, mod_plane in module_declarations.items():
         abs_path = root / mod_rel
@@ -927,21 +1204,34 @@ def check_module_imports(
         if mod_rel in boundary_modules:
             continue
 
+        local_aliases = extract_type_aliases(content)
+        file_alias_map = dict(workspace_alias_map)
+        file_alias_map.update(local_aliases)
+
+        eff_model, eff_effect, eff_absten, eff_neg = build_effective_plane_types(
+            file_alias_map, registered_types
+        )
+
         # Check for functions directly returning EffectAuthority in cognition modules,
         # or bridging model outputs directly to effects, or abstention to negative evidence
         for (
             fn_name,
+            generics,
             params,
             ret_type,
+            where_clause,
             impl_type,
+            impl_header,
             start_pos,
             full_fn,
         ) in extract_rust_functions(content):
+            bounds = parse_all_generic_bounds(generics, where_clause, impl_header)
+
             # NEG-003: Model/VLM output can never reach an effect type directly
             is_model_input = (
                 any(
                     re.search(r"\b" + re.escape(m_ty) + r"\b", params)
-                    for m_ty in MODEL_OUTPUT_TYPES
+                    for m_ty in eff_model
                 )
                 or any(
                     m_ty == impl_type
@@ -949,16 +1239,62 @@ def check_module_imports(
                         impl_type
                         and re.search(r"\b" + re.escape(m_ty) + r"\b", impl_type)
                     )
-                    for m_ty in MODEL_OUTPUT_TYPES
+                    for m_ty in eff_model
                 )
                 or any(
                     re.search(r"\b" + re.escape(m_ty) + r"\b", full_fn)
-                    for m_ty in MODEL_OUTPUT_TYPES
+                    for m_ty in eff_model
                 )
                 or "vlm" in fn_name.lower()
                 or "model" in fn_name.lower()
             )
-            is_effect_ret = is_effect_or_authority_type(ret_type, registered_types)
+            if not is_model_input:
+                param_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", params)
+                for pt in param_tokens:
+                    if pt in bounds:
+                        for b in bounds[pt]:
+                            b_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", b)
+                            if any(bt in eff_model for bt in b_tokens):
+                                is_model_input = True
+                                break
+                    if is_model_input:
+                        break
+
+            is_effect_ret = is_effect_or_authority_type(
+                ret_type, registered_types, eff_effect
+            )
+            if not is_effect_ret:
+                ret_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", ret_type)
+                for t in ret_tokens:
+                    if t in bounds:
+                        for b in bounds[t]:
+                            m_into = re.search(
+                                r"\b(?:Into|TryInto|AsRef|Borrow)<([^>]+)>", b
+                            )
+                            if m_into:
+                                inner_tokens = re.findall(
+                                    r"\b[A-Za-z0-9_]+\b", m_into.group(1)
+                                )
+                                if any(
+                                    it in eff_effect
+                                    or registered_types.get(it, {}).get("plane")
+                                    in ("effect", "authority")
+                                    for it in inner_tokens
+                                ):
+                                    is_effect_ret = True
+                                    break
+                            b_tokens = re.findall(r"\b[A-Za-z0-9_]+\b", b)
+                            if any(
+                                bt in eff_effect
+                                or registered_types.get(bt, {}).get("plane")
+                                in ("effect", "authority")
+                                for bt in b_tokens
+                            ):
+                                is_effect_ret = True
+                                break
+                    if is_effect_ret:
+                        break
+
             if is_model_input and is_effect_ret:
                 line_no = content[:start_pos].count("\n") + 1
                 findings.append(
@@ -972,7 +1308,14 @@ def check_module_imports(
                         params={"module": mod_rel, "function": fn_name, "return_type": ret_type},
                     )
                 )
-            elif mod_plane == "cognition" and re.search(r"\bEffectAuthority\b", ret_type):
+            elif mod_plane == "cognition" and (
+                re.search(r"\bEffectAuthority\b", ret_type)
+                or any(t == "EffectAuthority" for t in re.findall(r"\b[A-Za-z0-9_]+\b", ret_type))
+                or any(
+                    any("EffectAuthority" in b for b in bounds.get(t, []))
+                    for t in re.findall(r"\b[A-Za-z0-9_]+\b", ret_type)
+                )
+            ):
                 line_no = content[:start_pos].count("\n") + 1
                 findings.append(
                     SemanticPlaneFinding(
@@ -990,7 +1333,7 @@ def check_module_imports(
             is_absten_input = (
                 any(
                     re.search(r"\b" + re.escape(a_ty) + r"\b", params)
-                    for a_ty in ABSTENTION_TYPES
+                    for a_ty in eff_absten
                 )
                 or any(
                     m_ty == impl_type
@@ -998,17 +1341,17 @@ def check_module_imports(
                         impl_type
                         and re.search(r"\b" + re.escape(m_ty) + r"\b", impl_type)
                     )
-                    for m_ty in ABSTENTION_TYPES
+                    for m_ty in eff_absten
                 )
                 or any(
                     re.search(r"\b" + re.escape(a_ty) + r"\b", full_fn)
-                    for a_ty in ABSTENTION_TYPES
+                    for a_ty in eff_absten
                 )
                 or "absten" in fn_name.lower()
             )
             is_negative_evidence_ret = any(
                 re.search(r"\b" + re.escape(n_ty) + r"\b", ret_type)
-                for n_ty in NEGATIVE_EVIDENCE_TYPES
+                for n_ty in eff_neg
             )
             if is_absten_input and is_negative_evidence_ret:
                 line_no = content[:start_pos].count("\n") + 1
@@ -1031,10 +1374,16 @@ def check_module_imports(
             from_plane = registered_types.get(from_ty, {}).get("plane")
             to_plane = registered_types.get(to_ty, {}).get("plane")
 
-            is_model_output = from_ty in MODEL_OUTPUT_TYPES or "vlm" in from_ty.lower()
-            is_effect_type = is_effect_or_authority_type(to_ty, registered_types)
-            is_abstention = from_ty in ABSTENTION_TYPES or "absten" in from_ty.lower()
-            is_negative_evidence = to_ty in NEGATIVE_EVIDENCE_TYPES or to_ty == "CoverageWitness"
+            is_model_output = (
+                from_ty in eff_model
+                or "vlm" in from_ty.lower()
+                or "model" in from_ty.lower()
+            )
+            is_effect_type = is_effect_or_authority_type(
+                to_ty, registered_types, eff_effect
+            )
+            is_abstention = from_ty in eff_absten or "absten" in from_ty.lower()
+            is_negative_evidence = to_ty in eff_neg or to_ty == "CoverageWitness"
 
             if is_model_output and is_effect_type:
                 line_no = content[: m.start()].count("\n") + 1
@@ -1088,10 +1437,16 @@ def check_module_imports(
             from_plane = registered_types.get(from_ty, {}).get("plane")
             to_plane = registered_types.get(to_ty, {}).get("plane")
 
-            is_model_output = from_ty in MODEL_OUTPUT_TYPES or "vlm" in from_ty.lower()
-            is_effect_type = is_effect_or_authority_type(to_ty, registered_types)
-            is_abstention = from_ty in ABSTENTION_TYPES or "absten" in from_ty.lower()
-            is_negative_evidence = to_ty in NEGATIVE_EVIDENCE_TYPES or to_ty == "CoverageWitness"
+            is_model_output = (
+                from_ty in eff_model
+                or "vlm" in from_ty.lower()
+                or "model" in from_ty.lower()
+            )
+            is_effect_type = is_effect_or_authority_type(
+                to_ty, registered_types, eff_effect
+            )
+            is_abstention = from_ty in eff_absten or "absten" in from_ty.lower()
+            is_negative_evidence = to_ty in eff_neg or to_ty == "CoverageWitness"
 
             if is_model_output and is_effect_type:
                 line_no = content[: m.start()].count("\n") + 1
@@ -1106,6 +1461,7 @@ def check_module_imports(
                         params={"module": mod_rel, "from_type": from_ty, "to_type": to_ty},
                     )
                 )
+
             elif is_abstention and is_negative_evidence:
                 line_no = content[: m.start()].count("\n") + 1
                 findings.append(
