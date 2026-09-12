@@ -4,7 +4,8 @@
 use std::error::Error;
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use fss_core::{
     BatchId, CaptureInterval, ContentDigest, EvidenceDelta, EvidenceDeltaBatch, ObjectId, Plane,
@@ -22,11 +23,63 @@ use fss_publication::{
 
 type TestResult = Result<(), Box<dyn Error>>;
 
-fn temp_bundle_path(name: &str) -> PathBuf {
-    std::env::temp_dir().join(format!(
-        "fss-replay-bundle-test-{}-{name}.replay",
-        std::process::id()
-    ))
+/// Upper bound on distinct directory names tried by [`RunDir::new`].
+const MAX_RUN_DIR_ATTEMPTS: u32 = 64;
+
+/// Exclusive per-run directory under `CARGO_TARGET_TMPDIR`, removed on drop.
+///
+/// `create_dir` fails when the name exists, so a directory is never shared with another test or
+/// run; the bounded retry only moves on to the next distinct name. No global state is involved.
+struct RunDir {
+    path: PathBuf,
+}
+
+impl RunDir {
+    fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+        let base = Path::new(env!("CARGO_TARGET_TMPDIR"));
+        let pid = std::process::id();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos());
+        for attempt in 0..MAX_RUN_DIR_ATTEMPTS {
+            let path = base.join(format!("fss-replay-bundle-{pid}-{now}-{attempt}-{name}"));
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self { path }),
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Err(format!(
+            "exhausted {MAX_RUN_DIR_ATTEMPTS} attempts creating an exclusive run directory for {name}"
+        )
+        .into())
+    }
+
+    /// A path inside this run's directory; an existing path fails loudly and is never reused.
+    fn fresh(&self, file_name: &str) -> Result<PathBuf, Box<dyn Error>> {
+        let path = self.path.join(file_name);
+        match fs::symlink_metadata(&path) {
+            Ok(_) => Err(format!("refusing to reuse existing path {}", path.display()).into()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(path),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    /// Number of entries in this run's directory.
+    fn entry_count(&self) -> Result<usize, Box<dyn Error>> {
+        let mut count = 0_usize;
+        for entry in fs::read_dir(&self.path)? {
+            entry?;
+            count += 1;
+        }
+        Ok(count)
+    }
+}
+
+impl Drop for RunDir {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.path);
+    }
 }
 
 fn sample_metadata(lineage: &str) -> ReplayMetadata {
@@ -179,7 +232,8 @@ fn test_replay_bundle_roundtrip_bit_identical_state_root() -> TestResult {
     )?;
 
     // 1. Write bundle to disk
-    let path = temp_bundle_path("roundtrip");
+    let run = RunDir::new("roundtrip")?;
+    let path = run.fresh("bundle.replay")?;
     let receipt = ReplayBundleWriter::write_to_path(&path, &bundle)?;
     assert_eq!(receipt.manifest_root, fixture.manifest_root);
     assert_eq!(receipt.batch_count, 2);
@@ -236,8 +290,8 @@ fn test_replay_bundle_spool_objects() -> TestResult {
         fixture.objects.clone(),
     )?;
 
-    let spool_dir = temp_bundle_path("spool-objects-dir");
-    let _ = fs::remove_dir_all(&spool_dir);
+    let run = RunDir::new("spool-objects")?;
+    let spool_dir = run.fresh("spool")?;
     let limits = SpoolLimits::new(16, 1024 * 1024, 1024 * 1024, 64);
     let mut spool = StagingSpool::open(&spool_dir, limits)?;
     let receipts = bundle.spool_objects(&mut spool)?;
@@ -817,8 +871,8 @@ fn test_replay_bundle_writer_skips_existing_temp_and_does_not_clobber() -> TestR
         fixture.objects,
     )?;
 
-    let path = temp_bundle_path("skips-existing");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("skips-existing")?;
+    let path = run.fresh("bundle.replay")?;
 
     // Compute the digest to determine candidate temp paths
     let bundle_digest = bundle.digest()?;
@@ -857,8 +911,8 @@ fn test_replay_bundle_writer_bounded_temp_retry_exhaustion_is_typed() -> TestRes
         fixture.objects,
     )?;
 
-    let path = temp_bundle_path("exhaustion");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("exhaustion")?;
+    let path = run.fresh("bundle.replay")?;
 
     let bundle_digest = bundle.digest()?;
 
@@ -1171,8 +1225,8 @@ fn test_writer_syncs_parent_directory_after_rename() -> TestResult {
         fixture.objects,
     )?;
 
-    let path = temp_bundle_path("dir-sync-proof");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("dir-sync-proof")?;
+    let path = run.fresh("bundle.replay")?;
 
     let receipt = ReplayBundleWriter::write_to_path(&path, &bundle)?;
     assert_eq!(receipt.manifest_root, fixture.manifest_root);
@@ -1467,8 +1521,8 @@ fn sample_bundle(lineage: &str) -> Result<ReplayBundle, Box<dyn Error>> {
 #[test]
 fn test_writer_through_io_syncs_file_renames_then_syncs_parent_dir() -> TestResult {
     let bundle = sample_bundle("site:test:replay:io_happy")?;
-    let path = temp_bundle_path("io-happy");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("io-happy")?;
+    let path = run.fresh("bundle.replay")?;
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new());
 
     let receipt = ReplayBundleWriter::write_to_path_with_io(
@@ -1494,8 +1548,8 @@ fn test_writer_through_io_syncs_file_renames_then_syncs_parent_dir() -> TestResu
 #[test]
 fn test_writer_parent_dir_sync_failure_is_indeterminate_and_removes_visible_bundle() -> TestResult {
     let bundle = sample_bundle("site:test:replay:dir_sync_fault")?;
-    let path = temp_bundle_path("dir-sync-fault");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("dir-sync-fault")?;
+    let path = run.fresh("bundle.replay")?;
     let staged = replay_temp_path_for(&path, bundle.digest()?, 0);
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new().fail(
         SpoolIoCall::SyncDirectory,
@@ -1535,6 +1589,11 @@ fn test_writer_parent_dir_sync_failure_is_indeterminate_and_removes_visible_bund
         "rollback must remove the renamed, non-durable bundle"
     );
     assert!(!staged.exists(), "no staging file may be left behind");
+    assert_eq!(
+        run.entry_count()?,
+        0,
+        "the run directory must hold nothing after rollback"
+    );
     Ok(())
 }
 
@@ -1543,8 +1602,8 @@ fn test_writer_parent_dir_sync_failure_is_indeterminate_and_removes_visible_bund
 #[test]
 fn test_writer_parent_dir_sync_failure_reports_failed_rollback() -> TestResult {
     let bundle = sample_bundle("site:test:replay:dir_sync_rollback_fault")?;
-    let path = temp_bundle_path("dir-sync-rollback-fault");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("dir-sync-rollback-fault")?;
+    let path = run.fresh("bundle.replay")?;
     let io = FaultInjectingSpoolIo::new(
         SpoolFaultPlan::new()
             .fail(SpoolIoCall::SyncDirectory, 1, ErrorKind::Other)
@@ -1589,8 +1648,8 @@ fn test_writer_parent_dir_sync_failure_reports_failed_rollback() -> TestResult {
 #[test]
 fn test_writer_rename_failure_is_typed_error_and_leaves_target_absent() -> TestResult {
     let bundle = sample_bundle("site:test:replay:rename_fault")?;
-    let path = temp_bundle_path("rename-fault");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("rename-fault")?;
+    let path = run.fresh("bundle.replay")?;
     let staged = replay_temp_path_for(&path, bundle.digest()?, 0);
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new().fail(
         SpoolIoCall::Rename,
@@ -1618,6 +1677,11 @@ fn test_writer_rename_failure_is_typed_error_and_leaves_target_absent() -> TestR
         "a failed rename must not make the bundle visible"
     );
     assert!(!staged.exists(), "the staged file must be removed");
+    assert_eq!(
+        run.entry_count()?,
+        0,
+        "a failed rename must leave nothing in the run directory"
+    );
     Ok(())
 }
 
@@ -1627,8 +1691,8 @@ fn test_writer_rename_failure_is_typed_error_and_leaves_target_absent() -> TestR
 fn test_writer_rename_reported_failed_after_applying_is_indeterminate_and_rolled_back() -> TestResult
 {
     let bundle = sample_bundle("site:test:replay:rename_applied_fault")?;
-    let path = temp_bundle_path("rename-applied-fault");
-    let _ = fs::remove_file(&path);
+    let run = RunDir::new("rename-applied-fault")?;
+    let path = run.fresh("bundle.replay")?;
     let staged = replay_temp_path_for(&path, bundle.digest()?, 0);
     let io = FaultInjectingSpoolIo::new(SpoolFaultPlan::new().fail_after_applying(
         SpoolIoCall::Rename,
@@ -1660,6 +1724,11 @@ fn test_writer_rename_reported_failed_after_applying_is_indeterminate_and_rolled
     assert_eq!(io.calls(SpoolIoCall::SyncDirectory), 0);
     assert!(!path.exists(), "rollback must remove the renamed bundle");
     assert!(!staged.exists(), "no staging file may be left behind");
+    assert_eq!(
+        run.entry_count()?,
+        0,
+        "the run directory must hold nothing after rollback"
+    );
     Ok(())
 }
 
@@ -1668,7 +1737,8 @@ fn test_writer_rename_reported_failed_after_applying_is_indeterminate_and_rolled
 #[test]
 fn test_writer_refuses_existing_target_and_leaves_it_untouched() -> TestResult {
     let bundle = sample_bundle("site:test:replay:existing_target")?;
-    let path = temp_bundle_path("existing-target");
+    let run = RunDir::new("existing-target")?;
+    let path = run.fresh("bundle.replay")?;
     let staged = replay_temp_path_for(&path, bundle.digest()?, 0);
     fs::write(&path, b"existing-bundle-bytes")?;
 
@@ -1681,6 +1751,11 @@ fn test_writer_refuses_existing_target_and_leaves_it_untouched() -> TestResult {
     assert!(
         !staged.exists(),
         "nothing may be staged for a refused write"
+    );
+    assert_eq!(
+        run.entry_count()?,
+        1,
+        "only the pre-existing file may remain"
     );
     let _ = fs::remove_file(&path);
     Ok(())
