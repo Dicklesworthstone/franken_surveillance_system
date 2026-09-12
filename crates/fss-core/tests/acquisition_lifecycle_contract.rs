@@ -8,8 +8,8 @@ use fss_core::{
     AcquisitionState, AcquisitionStateKind, AcquisitionTransitionRecord, AdapterAck,
     AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind, AuthReceipt,
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, Completeness,
-    ContentDigest, ContinuityWitness, CoverageContinuity, CoverageStopReason, CoverageWitness,
-    ContractError, CredentialMethod, DecodeState, DegradationEvidence, DeviceCapabilities,
+    ContentDigest, ContinuityWitness, ContractError, CoverageContinuity, CoverageStopReason,
+    CoverageWitness, CredentialMethod, DecodeState, DegradationEvidence, DeviceCapabilities,
     DeviceClass, DeviceGeneration, DeviceId, DeviceIdentity, ExplicitOmission, FailureWitness,
     FirmwareGeneration, FirstFrameWitness, IndeterminateWitness, IsolationMode, LedgerAnchor,
     MediaKind, OmissionReason, QuiescenceReceipt, RetryClass, SourceCustody, SourceId,
@@ -955,4 +955,3 @@ fn test_canonical_encoding_roundtrips() -> Result<(), Box<dyn std::error::Error>
 
     Ok(())
 }
-
