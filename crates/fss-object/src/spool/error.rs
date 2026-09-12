@@ -128,7 +128,7 @@ pub enum SpoolIoOperation {
     ReadObject,
     /// Creating a fresh staging file.
     CreateStaging,
-    /// Writing and fsyncing a staging file.
+    /// Writing a staging file.
     WriteStaging,
     /// Renaming a staging file into the object directory.
     Rename,
@@ -136,6 +136,8 @@ pub enum SpoolIoOperation {
     SyncDirectory,
     /// Removing an orphaned staging file.
     RemoveStaging,
+    /// Fsyncing a written staging file.
+    SyncStaging,
 }
 
 impl fmt::Display for SpoolIoOperation {
@@ -152,6 +154,7 @@ impl fmt::Display for SpoolIoOperation {
             Self::Rename => "rename",
             Self::SyncDirectory => "sync_directory",
             Self::RemoveStaging => "remove_staging",
+            Self::SyncStaging => "sync_staging",
         })
     }
 }
@@ -277,8 +280,9 @@ pub enum SpoolError {
         /// Number of names tried.
         attempts: u32,
     },
-    /// The object was renamed into place but the directory fsync failed. Its durability is
-    /// indeterminate; this instance is poisoned and must be reopened to reconcile.
+    /// The object may be in place but its presence or durability is indeterminate: the directory
+    /// fsync after the rename failed, or the rename reported failure while the object name became
+    /// occupied. This instance is poisoned and must be reopened to reconcile.
     StageIndeterminate {
         /// Object digest.
         digest: ContentDigest,
@@ -286,6 +290,16 @@ pub enum SpoolError {
         operation: SpoolIoOperation,
         /// I/O failure kind.
         kind: io::ErrorKind,
+    },
+    /// A staging write accepted zero bytes before the envelope was complete; nothing was
+    /// published.
+    ShortWrite {
+        /// Staging file being written.
+        path: PathBuf,
+        /// Envelope bytes accepted before the write stalled.
+        written: u64,
+        /// Envelope bytes required.
+        expected: u64,
     },
     /// A fault-injection crash point fired; this instance is poisoned as if the process died.
     InjectedCrash {
@@ -381,6 +395,15 @@ impl fmt::Display for SpoolError {
             } => write!(
                 formatter,
                 "stage of {digest} is indeterminate after {operation} failed: {kind}"
+            ),
+            Self::ShortWrite {
+                path,
+                written,
+                expected,
+            } => write!(
+                formatter,
+                "staging write stalled at {written} of {expected} bytes: {}",
+                path.display()
             ),
             Self::InjectedCrash { phase } => write!(formatter, "injected crash {phase}"),
             Self::Poisoned => {

@@ -28,22 +28,32 @@
 //! [`SpoolObjectState::Corrupt`] and refuse every read. Unrecognized entries are reported as
 //! [`ForeignEntry`] and never read, admitted, or deleted.
 //!
-//! Filesystem access is scoped by the root path passed to [`StagingSpool::open`], matching
-//! `fss-ledger`'s journal. No `Cx` capability is threaded yet.
+//! # I/O authority
+//!
+//! Every filesystem call goes through the explicit [`SpoolIo`] capability the spool was opened
+//! with, scoped by the root path. [`StagingSpool::open`] uses [`HostSpoolIo`];
+//! [`StagingSpool::open_with_io`] accepts any capability, including the deterministic
+//! [`FaultInjectingSpoolIo`]. A failed step before the rename never admits an object: the
+//! staging file is removed or, if removal fails, charged and listed as an orphan. A failed or
+//! ambiguous step at or after the rename is reported as [`SpoolError::StageIndeterminate`]
+//! whenever the object name may be occupied.
 
+mod capability;
 mod error;
 mod format;
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read, Write};
+use std::fs::{self, File, TryLockError};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use fss_core::{ContentDigest, DigestAlgorithm};
 
 use crate::{ObjectError, VerifiedObjectCatalog};
 
+pub use capability::{FaultInjectingSpoolIo, HostSpoolIo, SpoolFaultPlan, SpoolIo, SpoolIoCall};
 pub use error::{CorruptionKind, SpoolError, SpoolIoOperation, SpoolLimitViolation, StagePhase};
 pub use format::{SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC};
 
@@ -245,6 +255,7 @@ enum ReadFailure {
 /// Exclusive owner of one on-disk content-addressed staging spool.
 #[derive(Debug)]
 pub struct StagingSpool {
+    io: Arc<dyn SpoolIo>,
     root: PathBuf,
     objects_dir: PathBuf,
     staging_dir: PathBuf,
@@ -266,24 +277,37 @@ impl StagingSpool {
     /// orphans, and unrecognized entries as foreign; see [`Self::recovery_report`]. Any I/O
     /// failure while classifying fails the open rather than admitting an unverified entry.
     pub fn open(root: impl AsRef<Path>, limits: SpoolLimits) -> Result<Self, SpoolError> {
+        Self::open_with_io(root, limits, Arc::new(HostSpoolIo))
+    }
+
+    /// Opens or creates a spool whose every filesystem call goes through `io`.
+    ///
+    /// Otherwise identical to [`Self::open`], which passes [`HostSpoolIo`].
+    pub fn open_with_io(
+        root: impl AsRef<Path>,
+        limits: SpoolLimits,
+        io: Arc<dyn SpoolIo>,
+    ) -> Result<Self, SpoolError> {
         let limits = limits.validate()?;
         let root = root.as_ref().to_path_buf();
-        fs::create_dir_all(&root)
+        io.create_dir_all(&root)
             .map_err(|error| io_error(SpoolIoOperation::CreateDirectory, &root, &error))?;
-        let root_metadata = fs::metadata(&root)
+        let root_metadata = io
+            .metadata(&root)
             .map_err(|error| io_error(SpoolIoOperation::Inspect, &root, &error))?;
         if !root_metadata.is_dir() {
             return Err(SpoolError::InvalidLayout { path: root });
         }
-        let lock = acquire_lock(&root)?;
+        let lock = acquire_lock(io.as_ref(), &root)?;
         let objects_dir = root.join(SPOOL_OBJECTS_DIR);
         let staging_dir = root.join(SPOOL_STAGING_DIR);
-        ensure_subdirectory(&objects_dir)?;
-        ensure_subdirectory(&staging_dir)?;
-        sync_directory(&root)
+        ensure_subdirectory(io.as_ref(), &objects_dir)?;
+        ensure_subdirectory(io.as_ref(), &staging_dir)?;
+        io.sync_directory(&root)
             .map_err(|error| io_error(SpoolIoOperation::SyncDirectory, &root, &error))?;
 
         let mut spool = Self {
+            io,
             root,
             objects_dir,
             staging_dir,
@@ -319,7 +343,8 @@ impl StagingSpool {
         &self.recovery
     }
 
-    /// Orphaned staging files still held, in name order.
+    /// Orphaned staging files still held, in name order, including staging files a failed ingest
+    /// in this session could not remove.
     pub fn orphaned_staging(&self) -> impl Iterator<Item = &OrphanedStaging> {
         self.orphans.values()
     }
@@ -355,6 +380,11 @@ impl StagingSpool {
     /// and rehashes the stored object, writes nothing, and charges no quota. Restaging under a
     /// digest whose stored bytes are corrupt fails with [`SpoolError::Corrupt`] and never
     /// overwrites them.
+    ///
+    /// A failure before the rename admits nothing; a staging file that cannot be removed is
+    /// charged and listed in [`Self::orphaned_staging`]. A failure at or after the rename that may
+    /// leave the object in place returns [`SpoolError::StageIndeterminate`], charges the bytes
+    /// when the object name is observed occupied, and poisons this instance.
     pub fn stage(
         &mut self,
         declared: ContentDigest,
@@ -403,41 +433,42 @@ impl StagingSpool {
             .ok_or(SpoolError::AccountingOverflow)?;
 
         let target = self.object_path(declared);
-        match fs::symlink_metadata(&target) {
+        match self.io.symlink_metadata(&target) {
             Ok(_) => return Err(SpoolError::UnindexedEntry { path: target }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => return Err(io_error(SpoolIoOperation::Inspect, &target, &error)),
         }
 
         let encoded = format::encode_object(declared, payload);
-        let (staging_path, mut file) = self.create_staging_file(declared)?;
-        let write_result = file.write_all(&encoded).and_then(|()| file.sync_all());
+        let (staging_name, staging_path, mut file) = self.create_staging_file(declared)?;
+        let write_result = self.write_staging(&mut file, &staging_path, &encoded);
         drop(file);
         if let Err(error) = write_result {
-            let _ = fs::remove_file(&staging_path);
-            return Err(io_error(
-                SpoolIoOperation::WriteStaging,
-                &staging_path,
-                &error,
-            ));
+            self.abandon_staging(declared, staging_name, &staging_path);
+            return Err(error);
         }
         self.crash_point(StagePhase::AfterStagingWrite)?;
 
-        match read_object_file(&staging_path, declared, self.limits.max_object_bytes) {
+        match read_object_file(
+            self.io.as_ref(),
+            &staging_path,
+            declared,
+            self.limits.max_object_bytes,
+        ) {
             Ok(read_back) if read_back == payload => {}
             Ok(_) => {
-                let _ = fs::remove_file(&staging_path);
+                self.abandon_staging(declared, staging_name, &staging_path);
                 return Err(SpoolError::DigestCollision(declared));
             }
             Err(ReadFailure::Corrupt { kind, .. }) => {
-                let _ = fs::remove_file(&staging_path);
+                self.abandon_staging(declared, staging_name, &staging_path);
                 return Err(SpoolError::IngestReadback {
                     digest: declared,
                     kind,
                 });
             }
             Err(ReadFailure::Io { operation, kind }) => {
-                let _ = fs::remove_file(&staging_path);
+                self.abandon_staging(declared, staging_name, &staging_path);
                 return Err(SpoolError::Io {
                     operation,
                     path: staging_path,
@@ -446,21 +477,34 @@ impl StagingSpool {
             }
         }
 
-        if let Err(error) = fs::rename(&staging_path, &target) {
-            let _ = fs::remove_file(&staging_path);
-            return Err(io_error(SpoolIoOperation::Rename, &target, &error));
+        if let Err(error) = self.io.rename(&staging_path, &target) {
+            match self.io.symlink_metadata(&target) {
+                Err(probe) if probe.kind() == io::ErrorKind::NotFound => {
+                    self.abandon_staging(declared, staging_name, &staging_path);
+                    return Err(io_error(SpoolIoOperation::Rename, &target, &error));
+                }
+                // The object name is occupied or unobservable after a rename that reported
+                // failure: the rename may have taken effect, so the outcome is indeterminate.
+                observed => {
+                    if observed.is_ok() {
+                        // Charged but not indexed; a reopen admits it with exactly this charge.
+                        self.index_bytes = next_index_bytes;
+                    }
+                    return Err(self.indeterminate(declared, SpoolIoOperation::Rename, &error));
+                }
+            }
         }
         self.crash_point(StagePhase::AfterRename)?;
 
-        if let Err(error) =
-            sync_directory(&self.objects_dir).and_then(|()| sync_directory(&self.staging_dir))
+        if let Err(error) = self
+            .io
+            .sync_directory(&self.objects_dir)
+            .and_then(|()| self.io.sync_directory(&self.staging_dir))
         {
-            self.poisoned = true;
-            return Err(SpoolError::StageIndeterminate {
-                digest: declared,
-                operation: SpoolIoOperation::SyncDirectory,
-                kind: error.kind(),
-            });
+            // The rename completed, so the bytes occupy the object name. Charged but not
+            // indexed; a reopen admits them with exactly this charge.
+            self.index_bytes = next_index_bytes;
+            return Err(self.indeterminate(declared, SpoolIoOperation::SyncDirectory, &error));
         }
 
         self.index.insert(
@@ -516,14 +560,16 @@ impl StagingSpool {
         };
         for name in names {
             let path = self.staging_dir.join(&name);
-            match fs::symlink_metadata(&path) {
-                Ok(metadata) if metadata.file_type().is_file() => match fs::remove_file(&path) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                    Err(error) => {
-                        return Err(io_error(SpoolIoOperation::RemoveStaging, &path, &error));
+            match self.io.symlink_metadata(&path) {
+                Ok(metadata) if metadata.file_type().is_file() => {
+                    match self.io.remove_file(&path) {
+                        Ok(()) => {}
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                        Err(error) => {
+                            return Err(io_error(SpoolIoOperation::RemoveStaging, &path, &error));
+                        }
                     }
-                },
+                }
                 Ok(_) => return Err(SpoolError::InvalidLayout { path }),
                 Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                 Err(error) => return Err(io_error(SpoolIoOperation::Inspect, &path, &error)),
@@ -540,7 +586,7 @@ impl StagingSpool {
                     .ok_or(SpoolError::AccountingOverflow)?;
             }
         }
-        sync_directory(&self.staging_dir).map_err(|error| {
+        self.io.sync_directory(&self.staging_dir).map_err(|error| {
             io_error(SpoolIoOperation::SyncDirectory, &self.staging_dir, &error)
         })?;
         Ok(receipt)
@@ -569,6 +615,86 @@ impl StagingSpool {
             return Err(SpoolError::InjectedCrash { phase });
         }
         Ok(())
+    }
+
+    /// Writes the whole envelope, resuming after partial writes, then fsyncs the file.
+    ///
+    /// A write that accepts zero bytes is a [`SpoolError::ShortWrite`]. The loop is bounded: every
+    /// iteration advances by at least one byte.
+    fn write_staging(
+        &self,
+        file: &mut File,
+        path: &Path,
+        encoded: &[u8],
+    ) -> Result<(), SpoolError> {
+        let mut written = 0_usize;
+        while let Some(rest) = encoded.get(written..).filter(|rest| !rest.is_empty()) {
+            match self.io.write(file, rest) {
+                Ok(0) => {
+                    return Err(SpoolError::ShortWrite {
+                        path: path.to_path_buf(),
+                        written: written as u64,
+                        expected: encoded.len() as u64,
+                    });
+                }
+                // A capability claiming more than it was offered is clamped; read-back
+                // verification still rejects bytes that did not land.
+                Ok(accepted) => written = written.saturating_add(accepted.min(rest.len())),
+                Err(error) => {
+                    return Err(io_error(SpoolIoOperation::WriteStaging, path, &error));
+                }
+            }
+        }
+        self.io
+            .sync_file(file)
+            .map_err(|error| io_error(SpoolIoOperation::SyncStaging, path, &error))
+    }
+
+    /// Removes a staging file whose ingest failed before rename.
+    ///
+    /// A file that cannot be removed stays on disk, so it is charged and listed exactly as a
+    /// reopen would classify it. If even its size cannot be observed, accounting can no longer be
+    /// exact and this instance is poisoned.
+    fn abandon_staging(&mut self, digest: ContentDigest, name: OsString, path: &Path) {
+        match self.io.remove_file(path) {
+            Ok(()) => return,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Err(_) => {}
+        }
+        let bytes = match self.io.symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() => metadata.len(),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return,
+            Ok(_) | Err(_) => {
+                self.poisoned = true;
+                return;
+            }
+        };
+        let Some(orphan_bytes) = self.orphan_bytes.checked_add(bytes) else {
+            self.poisoned = true;
+            return;
+        };
+        self.orphan_bytes = orphan_bytes;
+        let orphan = OrphanedStaging {
+            path: Path::new(SPOOL_STAGING_DIR).join(&name),
+            bytes,
+            claimed_digest: digest,
+        };
+        self.orphans.insert(name, orphan);
+    }
+
+    /// Poisons this instance after an ingest whose outcome cannot be determined.
+    fn indeterminate(
+        &mut self,
+        digest: ContentDigest,
+        operation: SpoolIoOperation,
+        error: &io::Error,
+    ) -> SpoolError {
+        self.poisoned = true;
+        SpoolError::StageIndeterminate {
+            digest,
+            operation,
+            kind: error.kind(),
+        }
     }
 
     fn restage_existing(
@@ -613,29 +739,36 @@ impl StagingSpool {
             return Err(SpoolError::Corrupt { digest, kind });
         }
         let path = self.object_path(digest);
-        read_object_file(&path, digest, self.limits.max_object_bytes).map_err(|failure| {
-            match failure {
-                ReadFailure::Corrupt { kind, .. } => SpoolError::Corrupt { digest, kind },
-                ReadFailure::Io { operation, kind } => SpoolError::Io {
-                    operation,
-                    path,
-                    kind,
-                },
-            }
+        read_object_file(
+            self.io.as_ref(),
+            &path,
+            digest,
+            self.limits.max_object_bytes,
+        )
+        .map_err(|failure| match failure {
+            ReadFailure::Corrupt { kind, .. } => SpoolError::Corrupt { digest, kind },
+            ReadFailure::Io { operation, kind } => SpoolError::Io {
+                operation,
+                path,
+                kind,
+            },
         })
     }
 
-    fn create_staging_file(&self, digest: ContentDigest) -> Result<(PathBuf, File), SpoolError> {
+    fn create_staging_file(
+        &mut self,
+        digest: ContentDigest,
+    ) -> Result<(OsString, PathBuf, File), SpoolError> {
         for attempt in 0..MAX_STAGING_NAME_ATTEMPTS {
-            let candidate = self.staging_dir.join(staging_file_name(digest, attempt));
-            match OpenOptions::new()
-                .create_new(true)
-                .write(true)
-                .open(&candidate)
-            {
-                Ok(file) => return Ok((candidate, file)),
+            let name = OsString::from(staging_file_name(digest, attempt));
+            let candidate = self.staging_dir.join(&name);
+            match self.io.create_new(&candidate) {
+                Ok(file) => return Ok((name, candidate, file)),
                 Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
                 Err(error) => {
+                    // The create may have taken effect before failing; never leave the name
+                    // untracked. Under the exclusive lock nothing else creates staging files.
+                    self.abandon_staging(digest, name, &candidate);
                     return Err(io_error(
                         SpoolIoOperation::CreateStaging,
                         &candidate,
@@ -651,7 +784,7 @@ impl StagingSpool {
     }
 
     fn recover(&mut self) -> Result<(), SpoolError> {
-        for (name, _) in scan_directory(&self.root, ROOT_SCAN_BOUND)? {
+        for (name, _) in scan_directory(self.io.as_ref(), &self.root, ROOT_SCAN_BOUND)? {
             if name == SPOOL_OBJECTS_DIR || name == SPOOL_STAGING_DIR || name == SPOOL_LOCK_FILE {
                 continue;
             }
@@ -661,7 +794,12 @@ impl StagingSpool {
             });
         }
 
-        for (name, file_type) in scan_directory(&self.staging_dir, self.limits.max_scan_entries)? {
+        let staging_entries = scan_directory(
+            self.io.as_ref(),
+            &self.staging_dir,
+            self.limits.max_scan_entries,
+        )?;
+        for (name, file_type) in staging_entries {
             let relative = Path::new(SPOOL_STAGING_DIR).join(&name);
             let Some(claimed_digest) = parse_staging_name(&name) else {
                 self.recovery.foreign.push(ForeignEntry {
@@ -678,7 +816,9 @@ impl StagingSpool {
                 continue;
             }
             let path = self.staging_dir.join(&name);
-            let bytes = fs::symlink_metadata(&path)
+            let bytes = self
+                .io
+                .symlink_metadata(&path)
                 .map_err(|error| io_error(SpoolIoOperation::Inspect, &path, &error))?
                 .len();
             self.orphan_bytes = self
@@ -694,7 +834,12 @@ impl StagingSpool {
             self.orphans.insert(name, orphan);
         }
 
-        for (name, file_type) in scan_directory(&self.objects_dir, self.limits.max_scan_entries)? {
+        let object_entries = scan_directory(
+            self.io.as_ref(),
+            &self.objects_dir,
+            self.limits.max_scan_entries,
+        )?;
+        for (name, file_type) in object_entries {
             let Some(digest) = parse_object_name(&name) else {
                 self.recovery.foreign.push(ForeignEntry {
                     path: Path::new(SPOOL_OBJECTS_DIR).join(&name),
@@ -704,7 +849,12 @@ impl StagingSpool {
             };
             let (state, charged_bytes) = if file_type.is_file() {
                 let path = self.objects_dir.join(&name);
-                match read_object_file(&path, digest, self.limits.max_object_bytes) {
+                match read_object_file(
+                    self.io.as_ref(),
+                    &path,
+                    digest,
+                    self.limits.max_object_bytes,
+                ) {
                     Ok(payload) => {
                         self.recovery.admitted.push(digest);
                         (SpoolObjectState::Staged, payload.len() as u64)
@@ -771,9 +921,9 @@ fn io_error(operation: SpoolIoOperation, path: &Path, error: &io::Error) -> Spoo
     }
 }
 
-fn acquire_lock(root: &Path) -> Result<File, SpoolError> {
+fn acquire_lock(io: &dyn SpoolIo, root: &Path) -> Result<File, SpoolError> {
     let path = root.join(SPOOL_LOCK_FILE);
-    match fs::symlink_metadata(&path) {
+    match io.symlink_metadata(&path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
             return Err(SpoolError::InvalidLayout { path });
         }
@@ -781,27 +931,24 @@ fn acquire_lock(root: &Path) -> Result<File, SpoolError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io_error(SpoolIoOperation::Inspect, &path, &error)),
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
+    let file = io
+        .open_lock(&path)
         .map_err(|error| io_error(SpoolIoOperation::OpenLock, &path, &error))?;
-    match file.try_lock() {
+    match io.try_lock(&file) {
         Ok(()) => Ok(file),
         Err(TryLockError::WouldBlock) => Err(SpoolError::Locked { path }),
         Err(TryLockError::Error(error)) => Err(io_error(SpoolIoOperation::Lock, &path, &error)),
     }
 }
 
-fn ensure_subdirectory(path: &Path) -> Result<(), SpoolError> {
-    match fs::create_dir(path) {
+fn ensure_subdirectory(io: &dyn SpoolIo, path: &Path) -> Result<(), SpoolError> {
+    match io.create_dir(path) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(io_error(SpoolIoOperation::CreateDirectory, path, &error)),
     }
-    let metadata = fs::symlink_metadata(path)
+    let metadata = io
+        .symlink_metadata(path)
         .map_err(|error| io_error(SpoolIoOperation::Inspect, path, &error))?;
     if !metadata.file_type().is_dir() {
         return Err(SpoolError::InvalidLayout {
@@ -811,15 +958,16 @@ fn ensure_subdirectory(path: &Path) -> Result<(), SpoolError> {
     Ok(())
 }
 
-fn sync_directory(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
-}
-
-fn scan_directory(dir: &Path, bound: usize) -> Result<Vec<(OsString, fs::FileType)>, SpoolError> {
-    let entries = fs::read_dir(dir)
+fn scan_directory(
+    io: &dyn SpoolIo,
+    dir: &Path,
+    bound: usize,
+) -> Result<Vec<(OsString, fs::FileType)>, SpoolError> {
+    let mut entries = io
+        .read_dir(dir)
         .map_err(|error| io_error(SpoolIoOperation::ScanDirectory, dir, &error))?;
     let mut found = Vec::new();
-    for entry in entries {
+    while let Some(entry) = io.next_dir_entry(&mut entries) {
         let entry =
             entry.map_err(|error| io_error(SpoolIoOperation::ScanDirectory, dir, &error))?;
         if found.len() >= bound {
@@ -828,8 +976,8 @@ fn scan_directory(dir: &Path, bound: usize) -> Result<Vec<(OsString, fs::FileTyp
                 maximum: bound,
             });
         }
-        let file_type = entry
-            .file_type()
+        let file_type = io
+            .entry_file_type(&entry)
             .map_err(|error| io_error(SpoolIoOperation::Inspect, &entry.path(), &error))?;
         found.push((entry.file_name(), file_type));
     }
@@ -838,11 +986,12 @@ fn scan_directory(dir: &Path, bound: usize) -> Result<Vec<(OsString, fs::FileTyp
 }
 
 fn read_object_file(
+    io: &dyn SpoolIo,
     path: &Path,
     expected: ContentDigest,
     max_payload: usize,
 ) -> Result<Vec<u8>, ReadFailure> {
-    let metadata = match fs::symlink_metadata(path) {
+    let metadata = match io.symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(ReadFailure::Corrupt {
@@ -863,7 +1012,7 @@ fn read_object_file(
             file_len: 0,
         });
     }
-    let file = match File::open(path) {
+    let mut file = match io.open_read(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(ReadFailure::Corrupt {
@@ -880,9 +1029,8 @@ fn read_object_file(
     };
     let file_len = metadata.len();
     let bound = (SPOOL_OBJECT_HEADER_LEN + max_payload) as u64 + 1;
-    let mut raw = Vec::new();
-    file.take(bound)
-        .read_to_end(&mut raw)
+    let mut raw = io
+        .read_bounded(&mut file, bound)
         .map_err(|error| ReadFailure::Io {
             operation: SpoolIoOperation::ReadObject,
             kind: error.kind(),
