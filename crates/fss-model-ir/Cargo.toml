@@ -1,0 +1,16 @@
+[package]
+name = "fss-model-ir"
+description = "Frozen first-party model operator IR v1 for Franken Surveillance System"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license-file.workspace = true
+repository.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+fss-tensor = { path = "../fss-tensor" }

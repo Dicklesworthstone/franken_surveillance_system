@@ -576,7 +576,7 @@ members = ["crates/crate-a"]
         self.assertEqual(report["errorCount"], 0)
         self.assertEqual(report["schema"], "fss.dependency_audit.v4")
         self.assertGreaterEqual(report["targetRootCount"], 20)
-        self.assertEqual(report["workspaceMemberCount"], 8)
+        self.assertEqual(report["workspaceMemberCount"], 9)
 
     def test_finding_1_undeclared_nested_crate_false_green(self) -> None:
         with tempfile.TemporaryDirectory() as td:

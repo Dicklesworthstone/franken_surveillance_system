@@ -44,3 +44,5 @@ Registry of canonical-digest domain tags used for domain separation in determini
 | `SCHEMA-DOMAIN-EVENT-STORE-STATE-001` | `fss.event_store_state.v1` | Event evidence graph and revision store | authority/event | event store state root canonical digest domain; state root and lineage graph preserved |
 | `SCHEMA-DOMAIN-NEGATIVE-EVIDENCE-SCENARIO-LOG-001` | `fss.negative_evidence.scenario_log.v1` | Negative evidence evaluation | authority/negative-evidence | structured scenario log domain tag; binds NEG ID, digests, tuple, outcome, and proof hash |
 | `SCHEMA-DOMAIN-TENSOR-001` | `fss.tensor.v1` | Pure-Rust model tensor | authority/tensor | canonical tensor content digest domain; binds dtype, shape, contiguous elements, and generation |
+| `SCHEMA-DOMAIN-MODEL-IR-001` | `fss.model_ir.v1` | Pure-Rust model operator IR | authority/model-ir | canonical operator IR graph content digest domain; binds version, closed operator set, typed attributes, and topology |
+

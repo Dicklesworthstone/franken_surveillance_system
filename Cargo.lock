@@ -22,6 +22,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fss-model-ir"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+ "fss-tensor",
+]
+
+[[package]]
 name = "fss-object"
 version = "0.0.1"
 dependencies = [
