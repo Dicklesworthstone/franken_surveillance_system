@@ -13,7 +13,7 @@ from typing import Any
 if __name__ not in sys.modules:
     sys.modules[__name__] = types.ModuleType(__name__)
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +22,7 @@ DEFAULT_RESOLUTION = ROOT / "architecture/stable_id_resolution.json"
 
 GRAMMAR_SCHEMA = "fss.stable_id_grammar.v1"
 AUDIT_SCHEMA = "fss.stable_id_audit.v1"
+RESOLUTION_SCHEMA = "fss.stable_id_resolution.v1"
 
 # Stable diagnostic error codes
 ERR_COLLISION = "ERR-STABLE-ID-COLLISION-001"
@@ -36,6 +37,9 @@ ERR_CANONICAL_COLLISION = "ERR-STABLE-ID-CANONICAL-COLLISION-001"
 ERR_CENSUS_DRIFT = "ERR-STABLE-ID-CENSUS-DRIFT-001"
 ERR_SCHEMA_ERROR = "ERR-STABLE-ID-SCHEMA-ERROR-001"
 ERR_TOMBSTONE_REFERENCE = "ERR-STABLE-ID-TOMBSTONE-REFERENCE-001"
+
+# Status/disposition values (compared case-insensitively, whitespace-trimmed) that retire an ID.
+TOMBSTONE_STATES = frozenset({"tombstone", "tombstoned", "superseded"})
 
 
 class OccurrenceKind(str, Enum):
@@ -190,6 +194,15 @@ LIST_DEF_RE = re.compile(
 GOAL_HEADING = re.compile(r"^### `(?P<id>GOAL-\d{3})` — (?P<title>.+?)\s*$")
 NS_HEADING = re.compile(r"^### Scenario (?P<id>NS-\d+) — (?P<title>.+?)\s*$")
 
+# Near-miss shapes: a definition-shaped heading or table row whose ID token is not in the strict
+# grammar (missing delimiter, underscore, lowercase, wrong heading shape). These are never
+# silently dropped: a family-shaped token is pushed through validate_identifier_syntax.
+HEADING_NEAR_MISS_RE = re.compile(
+    r"^#{1,6}\s+(?:(?:\d+\.)*\d+\s+)?(?:Scenario\s+)?`?(?P<id>[A-Za-z][A-Za-z0-9_-]*\d)`?\s+[—–-]\s*\S"
+)
+TABLE_FIRST_CELL_RE = re.compile(r"^\|\s*`?(?P<id>[A-Za-z][A-Za-z0-9_-]*\d)`?\s*\|")
+FAMILY_SHAPED_RE = re.compile(r"^(?P<alpha>[A-Za-z]+)[A-Za-z0-9_-]*\d$")
+
 
 class AuditError(ValueError):
     """Stable audit failure with deterministic error identity."""
@@ -225,6 +238,18 @@ def _load_json(path: Path) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise AuditError(ERR_SCHEMA_ERROR, f"top-level JSON value must be an object: {path}")
     return value
+
+
+def _is_tombstone_marker(value: Any, *, where: str) -> bool:
+    """True when a status/disposition value retires an ID. Non-string markers fail closed."""
+    if value is None:
+        return False
+    if not isinstance(value, str):
+        raise AuditError(
+            ERR_SCHEMA_ERROR,
+            f"status/disposition must be a string at {where}, got {type(value).__name__}: {value!r}",
+        )
+    return value.strip().lower() in TOMBSTONE_STATES
 
 
 def validate_identifier_syntax(token: str) -> tuple[FamilyRule, str]:
@@ -295,6 +320,35 @@ def validate_identifier_syntax(token: str) -> tuple[FamilyRule, str]:
     return rule, numeric_str
 
 
+def _family_alpha(token: str) -> str | None:
+    """Upper-cased leading alphabetic run when it names a normative family, else None."""
+    match = FAMILY_SHAPED_RE.match(token)
+    if match is None:
+        return None
+    alpha = match.group("alpha").upper()
+    return alpha if alpha in NORMATIVE_FAMILIES else None
+
+
+def _validate_if_family_shaped(token: str) -> None:
+    """Near-miss guard: any family-shaped token must satisfy the strict grammar."""
+    if _family_alpha(token) is not None:
+        validate_identifier_syntax(token)
+
+
+def _is_exact_family_token(token: str) -> bool:
+    """True for tokens whose leading segment is exactly (case-sensitively) a normative family."""
+    return token.split("-")[0] in NORMATIVE_FAMILIES
+
+
+def _definition_candidate(match: re.Match[str]) -> str | None:
+    groups = match.groupdict()
+    return groups.get("id_backtick") or groups.get("id") or groups.get("scenario_id")
+
+
+def _definition_title(match: re.Match[str]) -> str:
+    return match.group("title").strip().strip("`").strip()
+
+
 @dataclass
 class ParsedDefinition:
     legacy_id: str
@@ -310,6 +364,36 @@ class ParsedReference:
     raw_id: str
     line: int
     source: str
+
+
+@dataclass
+class MarkdownScan:
+    """Classified stable-ID occurrences of one markdown source.
+
+    ``definitions``/``references`` come from live text. ``examples`` are family tokens inside
+    fenced code blocks, and ``fenced_definitions`` are heading-shaped definitions inside fences.
+    Fenced occurrences never create live definitions, but they are still validated: every example
+    must resolve to a live, non-tombstoned owner, and every fenced definition must repeat the
+    title of a live definition of the same ID.
+    """
+
+    definitions: list[ParsedDefinition] = field(default_factory=list)
+    references: list[ParsedReference] = field(default_factory=list)
+    examples: list[ParsedReference] = field(default_factory=list)
+    fenced_definitions: list[ParsedDefinition] = field(default_factory=list)
+
+
+@dataclass
+class RepositoryIndex:
+    """Stable IDs known from registries, ADRs, and architecture JSON."""
+
+    known: set[str] = field(default_factory=set)
+    tombstoned: set[str] = field(default_factory=set)
+    titles: dict[tuple[str, int] | str, set[str]] = field(default_factory=dict)
+
+
+def _add_title(titles: dict[tuple[str, int] | str, set[str]], identifier: str, title: str) -> None:
+    titles.setdefault(_normalize_key(identifier), set()).add(title)
 
 
 def _extract_plan_definitions(plan_text: str, source_name: str = "plan.md") -> list[ParsedDefinition]:
@@ -339,26 +423,31 @@ def _extract_plan_definitions(plan_text: str, source_name: str = "plan.md") -> l
                     title_digest=_title_digest(legacy_id, title),
                 )
             )
-        else:
-            near_miss = re.match(r"^###\s+`(?P<id>[A-Za-z0-9_-]+)`\s+[—–-]\s*(?P<title>.+?)\s*$", line)
-            if near_miss:
-                cand = near_miss.group("id")
-                validate_identifier_syntax(cand)
-            near_scenario = re.match(r"^###\s+Scenario\s+(?P<id>[A-Za-z0-9_-]+)\s+[—–-]\s*(?P<title>.+?)\s*$", line)
-            if near_scenario:
-                cand = near_scenario.group("id")
-                validate_identifier_syntax(cand)
+            continue
+
+        near_miss = re.match(r"^###\s+`(?P<id>[A-Za-z0-9_-]+)`\s+[—–-]\s*(?P<title>.+?)\s*$", line)
+        if near_miss:
+            validate_identifier_syntax(near_miss.group("id"))
+        near_scenario = re.match(r"^###\s+Scenario\s+(?P<id>[A-Za-z0-9_-]+)\s+[—–-]\s*(?P<title>.+?)\s*$", line)
+        if near_scenario:
+            validate_identifier_syntax(near_scenario.group("id"))
+        near_heading = HEADING_NEAR_MISS_RE.match(line)
+        if near_heading:
+            candidate = near_heading.group("id")
+            _validate_if_family_shaped(candidate)
+            family = _family_alpha(candidate)
+            if family in ("GOAL", "NS"):
+                raise AuditError(
+                    ERR_CENSUS_DRIFT,
+                    f"non-canonical {family} definition heading at {source_name}:{line_number} would be "
+                    f"dropped from the census: {stripped!r}",
+                )
     return definitions
 
 
-def _extract_all_occurrences(
-    text: str, source_name: str
-) -> tuple[list[ParsedDefinition], list[ParsedReference], list[str]]:
-    """Extracts definitions, references, and example occurrences from markdown text."""
-    definitions: list[ParsedDefinition] = []
-    references: list[ParsedReference] = []
-    examples: list[str] = []
-
+def _scan_markdown(text: str, source_name: str) -> MarkdownScan:
+    """Classifies every stable-ID occurrence of a markdown source."""
+    scan = MarkdownScan()
     clean_text = _strip_html_comments(text)
     in_code_fence = False
 
@@ -369,11 +458,24 @@ def _extract_all_occurrences(
             continue
 
         if in_code_fence:
+            heading = HEADING_DEF_RE.match(stripped)
+            if heading:
+                candidate_id = _definition_candidate(heading)
+                if candidate_id and _is_exact_family_token(candidate_id):
+                    title = _definition_title(heading)
+                    scan.fenced_definitions.append(
+                        ParsedDefinition(
+                            legacy_id=candidate_id,
+                            title=title,
+                            line=line_number,
+                            source=source_name,
+                            title_digest=_title_digest(candidate_id, title),
+                        )
+                    )
             for m in ID_TOKEN_RE.finditer(line):
                 token = m.group(1)
-                prefix = token.split("-")[0]
-                if prefix not in EXCLUDED_PROSE_PREFIXES:
-                    examples.append(token)
+                if _is_exact_family_token(token):
+                    scan.examples.append(ParsedReference(raw_id=token, line=line_number, source=source_name))
             continue
 
         def_match = (
@@ -383,21 +485,16 @@ def _extract_all_occurrences(
         )
         defined_id = None
         if def_match:
-            d_groups = def_match.groupdict()
-            candidate_id = (
-                d_groups.get("id_backtick")
-                or d_groups.get("id")
-                or d_groups.get("scenario_id")
-            )
+            candidate_id = _definition_candidate(def_match)
             if (
                 candidate_id
                 and not candidate_id.startswith("ID")
                 and not candidate_id.startswith("---")
             ):
                 validate_identifier_syntax(candidate_id)
-                title = def_match.group("title").strip().strip("`").strip()
+                title = _definition_title(def_match)
                 defined_id = candidate_id
-                definitions.append(
+                scan.definitions.append(
                     ParsedDefinition(
                         legacy_id=defined_id,
                         title=title,
@@ -406,6 +503,13 @@ def _extract_all_occurrences(
                         title_digest=_title_digest(defined_id, title),
                     )
                 )
+        else:
+            near_heading = HEADING_NEAR_MISS_RE.match(line)
+            if near_heading:
+                _validate_if_family_shaped(near_heading.group("id"))
+            near_cell = TABLE_FIRST_CELL_RE.match(line)
+            if near_cell:
+                _validate_if_family_shaped(near_cell.group("id"))
 
         for m in ID_TOKEN_RE.finditer(line):
             token = m.group(1)
@@ -415,7 +519,7 @@ def _extract_all_occurrences(
             if token == defined_id:
                 continue
             validate_identifier_syntax(token)
-            references.append(
+            scan.references.append(
                 ParsedReference(
                     raw_id=token,
                     line=line_number,
@@ -426,19 +530,91 @@ def _extract_all_occurrences(
         for m in UNDERSCORE_REF_RE.finditer(line):
             token = m.group(1)
             base = token.replace("_", "-").split("-")[0]
-            if base in NORMATIVE_FAMILIES:
+            if base.upper() in NORMATIVE_FAMILIES:
                 validate_identifier_syntax(token)
 
-    return definitions, references, examples
+    return scan
 
 
-def _load_repository_definitions(root: Path) -> set[str]:
-    """Loads all known canonical definition IDs from registries, docs, and architecture JSON."""
-    known: set[str] = set()
+def _extract_all_occurrences(
+    text: str, source_name: str
+) -> tuple[list[ParsedDefinition], list[ParsedReference], list[str]]:
+    """Extracts definitions, references, and example occurrences from markdown text."""
+    scan = _scan_markdown(text, source_name)
+    return scan.definitions, scan.references, [example.raw_id for example in scan.examples]
+
+
+def _validate_references(
+    references: list[ParsedReference],
+    *,
+    valid_targets: set[str],
+    tombstoned_ids: set[str],
+    context: str = "",
+) -> None:
+    """Every reference must resolve to a live owner that is not tombstoned anywhere."""
+    where_suffix = f" in {context}" if context else ""
+    for ref in references:
+        if ref.raw_id in tombstoned_ids or _canonical_id(ref.raw_id) in tombstoned_ids:
+            raise AuditError(
+                ERR_TOMBSTONE_REFERENCE,
+                f"reference to tombstoned/superseded identifier '{ref.raw_id}'{where_suffix} at {ref.source}:{ref.line}",
+            )
+        if ref.raw_id not in valid_targets and _canonical_id(ref.raw_id) not in valid_targets:
+            syntax_note = ""
+            try:
+                validate_identifier_syntax(ref.raw_id)
+            except AuditError as exc:
+                syntax_note = f"; the token is also malformed: {exc.message}"
+            raise AuditError(
+                ERR_DANGLING_REFERENCE,
+                f"dangling reference to '{ref.raw_id}'{where_suffix} at {ref.source}:{ref.line} "
+                f"(no active owner or historical mapping found){syntax_note}",
+            )
+
+
+def _validate_fenced_occurrences(
+    scan: MarkdownScan,
+    *,
+    valid_targets: set[str],
+    tombstoned_ids: set[str],
+    live_titles: dict[tuple[str, int] | str, set[str]],
+) -> None:
+    """Fenced examples must resolve; fenced definitions may only restate a live definition."""
+    _validate_references(
+        scan.examples,
+        valid_targets=valid_targets,
+        tombstoned_ids=tombstoned_ids,
+        context="fenced example",
+    )
+    for fenced in scan.fenced_definitions:
+        titles = live_titles.get(_normalize_key(fenced.legacy_id), set())
+        if not titles:
+            raise AuditError(
+                ERR_COLLISION,
+                f"fenced definition {fenced.legacy_id} at {fenced.source}:{fenced.line} ('{fenced.title}') "
+                "cannot be verified: no live definition title is recorded for this ID",
+            )
+        if fenced.title not in titles:
+            raise AuditError(
+                ERR_COLLISION,
+                f"fenced definition {fenced.legacy_id} at {fenced.source}:{fenced.line} ('{fenced.title}') "
+                f"conflicts with live definition title(s) {sorted(titles)}",
+            )
+
+
+def _load_repository_index(root: Path) -> RepositoryIndex:
+    """Loads known, tombstoned, and titled stable IDs from registries, ADRs, and architecture JSON."""
+    index = RepositoryIndex()
+
+    def ingest_definition(candidate: str, title: str) -> None:
+        validate_identifier_syntax(candidate)
+        index.known.add(candidate)
+        index.known.add(_canonical_id(candidate))
+        _add_title(index.titles, candidate, title)
 
     reg_dir = root / "registries"
     if reg_dir.is_dir():
-        for path in reg_dir.glob("*.md"):
+        for path in sorted(reg_dir.glob("*.md")):
             clean = _strip_html_comments(path.read_text(encoding="utf-8-sig", errors="strict"))
             in_code_fence = False
             for line in clean.splitlines():
@@ -450,16 +626,20 @@ def _load_repository_definitions(root: Path) -> set[str]:
                     continue
                 m = TABLE_DEF_RE.match(line) or HEADING_DEF_RE.match(line) or LIST_DEF_RE.match(line)
                 if m:
-                    d_groups = m.groupdict()
-                    cand = d_groups.get("id_backtick") or d_groups.get("id") or d_groups.get("scenario_id")
+                    cand = _definition_candidate(m)
                     if cand and not cand.startswith("ID") and not cand.startswith("---"):
-                        validate_identifier_syntax(cand)
-                        known.add(cand)
-                        known.add(_canonical_id(cand))
+                        ingest_definition(cand, _definition_title(m))
+                    continue
+                near_heading = HEADING_NEAR_MISS_RE.match(line)
+                if near_heading:
+                    _validate_if_family_shaped(near_heading.group("id"))
+                near_cell = TABLE_FIRST_CELL_RE.match(line)
+                if near_cell:
+                    _validate_if_family_shaped(near_cell.group("id"))
 
     adr_dir = root / "docs/adr"
     if adr_dir.is_dir():
-        for path in adr_dir.glob("*.md"):
+        for path in sorted(adr_dir.glob("*.md")):
             clean = _strip_html_comments(path.read_text(encoding="utf-8-sig", errors="strict"))
             in_code_fence = False
             for line in clean.splitlines():
@@ -471,37 +651,47 @@ def _load_repository_definitions(root: Path) -> set[str]:
                     continue
                 m = HEADING_DEF_RE.match(line)
                 if m:
-                    d_groups = m.groupdict()
-                    cand = d_groups.get("id_backtick") or d_groups.get("id") or d_groups.get("scenario_id")
+                    cand = _definition_candidate(m)
                     if cand:
-                        validate_identifier_syntax(cand)
-                        known.add(cand)
-                        known.add(_canonical_id(cand))
+                        ingest_definition(cand, _definition_title(m))
+                    continue
+                near_heading = HEADING_NEAR_MISS_RE.match(line)
+                if near_heading:
+                    _validate_if_family_shaped(near_heading.group("id"))
+
+    def stable_id_shaped(key: str, value: str) -> bool:
+        if key in ("legacyId", "canonicalId"):
+            return True
+        return ("-" in value or "_" in value) and any(c.isdigit() for c in value) and not value.startswith("DEP-CLASS-")
 
     arch_dir = root / "architecture"
     if arch_dir.is_dir():
-        for path in arch_dir.glob("*.json"):
+        for path in sorted(arch_dir.glob("*.json")):
             data = _load_json(path)
+            rel = path.name
 
             def walk(obj: Any) -> None:
                 if isinstance(obj, dict):
-                    status = obj.get("status")
-                    disposition = obj.get("disposition")
-                    if (
-                        status in ("tombstone", "tombstoned", "superseded")
-                        or disposition in ("tombstone", "tombstoned", "superseded")
-                    ):
+                    retired = _is_tombstone_marker(obj.get("status"), where=f"{rel} status") or _is_tombstone_marker(
+                        obj.get("disposition"), where=f"{rel} disposition"
+                    )
+                    if retired:
+                        for key in ("legacyId", "canonicalId", "id", "gate"):
+                            value = obj.get(key)
+                            if isinstance(value, str) and stable_id_shaped(key, value):
+                                validate_identifier_syntax(value)
+                                index.tombstoned.add(value)
+                                index.tombstoned.add(_canonical_id(value))
                         return
                     for k, v in obj.items():
-                        if k in ("legacyId", "canonicalId") and isinstance(v, str):
-                            validate_identifier_syntax(v)
-                            known.add(v)
-                            known.add(_canonical_id(v))
-                        elif k in ("id", "gate") and isinstance(v, str):
-                            if ("-" in v or "_" in v) and any(c.isdigit() for c in v) and not v.startswith("DEP-CLASS-"):
+                        if k in ("legacyId", "canonicalId", "id", "gate") and isinstance(v, str):
+                            if stable_id_shaped(k, v):
                                 validate_identifier_syntax(v)
-                                known.add(v)
-                                known.add(_canonical_id(v))
+                                index.known.add(v)
+                                index.known.add(_canonical_id(v))
+                            elif "-" not in v and "_" not in v:
+                                # Delimiter-less near-miss such as INV001 must not be skipped.
+                                _validate_if_family_shaped(v)
                         walk(v)
                 elif isinstance(obj, list):
                     for item in obj:
@@ -509,8 +699,12 @@ def _load_repository_definitions(root: Path) -> set[str]:
 
             walk(data)
 
-    return known
+    return index
 
+
+def _load_repository_definitions(root: Path) -> set[str]:
+    """Loads all known canonical definition IDs from registries, docs, and architecture JSON."""
+    return _load_repository_index(root).known
 
 
 def audit(
@@ -521,7 +715,7 @@ def audit(
     """Executes the definition-aware, collision-free stable-ID census and audit."""
     plan_text = _strip_html_comments(plan_path.read_text(encoding="utf-8-sig"))
     resolution = _load_json(resolution_path)
-    if resolution.get("schema") != "fss.stable_id_resolution.v1":
+    if resolution.get("schema") != RESOLUTION_SCHEMA:
         raise AuditError(ERR_SCHEMA_ERROR, "unsupported stable-ID resolution schema")
 
     raw_resolutions = resolution.get("resolutions")
@@ -532,6 +726,10 @@ def audit(
     canonical_from_resolution: set[str] = set()
     legacy_from_resolution: set[str] = set()
     tombstoned_ids: set[str] = set()
+    # Every resolution title (live or tombstoned) recorded per ID, for title-drift detection.
+    resolution_titles: dict[tuple[str, int] | str, set[str]] = {}
+    # Titles of live (non-tombstoned) resolution rows, for verifying fenced definitions.
+    live_titles: dict[tuple[str, int] | str, set[str]] = {}
 
     for index, row in enumerate(raw_resolutions):
         if not isinstance(row, dict):
@@ -540,8 +738,6 @@ def audit(
         title = row.get("title")
         canonical_id = row.get("canonicalId")
         digest = row.get("titleDigest")
-        status = row.get("status")
-        disposition = row.get("disposition")
 
         if not all(
             isinstance(value, str) and value
@@ -569,7 +765,11 @@ def audit(
                 f"canonical ID reused in resolution table: {canonical_id}",
             )
 
-        is_tombstone = status in ("tombstone", "tombstoned", "superseded") or disposition in ("tombstone", "tombstoned", "superseded")
+        is_tombstone = _is_tombstone_marker(row.get("status"), where=f"resolution row {index} status") or _is_tombstone_marker(
+            row.get("disposition"), where=f"resolution row {index} disposition"
+        )
+        _add_title(resolution_titles, legacy_id, title)
+        _add_title(resolution_titles, canonical_id, title)
         if is_tombstone:
             tombstoned_ids.add(legacy_id)
             tombstoned_ids.add(_canonical_id(legacy_id))
@@ -580,6 +780,8 @@ def audit(
             canonical_from_resolution.add(_canonical_id(canonical_id))
             legacy_from_resolution.add(legacy_id)
             legacy_from_resolution.add(_canonical_id(legacy_id))
+            _add_title(live_titles, legacy_id, title)
+            _add_title(live_titles, canonical_id, title)
 
         by_occurrence[key] = row
 
@@ -601,6 +803,13 @@ def audit(
             raise AuditError(
                 ERR_COLLISION,
                 f"unresolved collided stable definition {d.legacy_id} at line {d.line}: {d.title}",
+            )
+        recorded_titles = resolution_titles.get(norm_key)
+        if resolution_row is None and recorded_titles:
+            raise AuditError(
+                ERR_FINGERPRINT_MISMATCH,
+                f"plan definition title '{d.title}' for {d.legacy_id} at line {d.line} does not match any "
+                f"fingerprinted resolution title {sorted(recorded_titles)}",
             )
         if resolution_row is not None:
             d.canonical_id = str(resolution_row["canonicalId"])
@@ -663,22 +872,29 @@ def audit(
 
     known_targets = set(canonical_ids) | set(legacy_from_resolution)
     if plan_path == DEFAULT_PLAN or (plan_path.is_file() and plan_path.resolve().is_relative_to(ROOT)):
-        known_targets.update(_load_repository_definitions(ROOT))
-    plan_defs, references, _ = _extract_all_occurrences(plan_text, source_name=plan_path.name)
-    known_targets.update(d.legacy_id for d in plan_defs)
-    known_targets.update(_canonical_id(d.legacy_id) for d in plan_defs)
+        repo_index = _load_repository_index(ROOT)
+        known_targets.update(repo_index.known)
+        tombstoned_ids.update(repo_index.tombstoned)
+        for key, titles in repo_index.titles.items():
+            live_titles.setdefault(key, set()).update(titles)
+    scan = _scan_markdown(plan_text, source_name=plan_path.name)
+    references = scan.references
+    known_targets.update(d.legacy_id for d in scan.definitions)
+    known_targets.update(_canonical_id(d.legacy_id) for d in scan.definitions)
 
-    for ref in references:
-        if ref.raw_id in tombstoned_ids or _canonical_id(ref.raw_id) in tombstoned_ids:
-            raise AuditError(
-                ERR_TOMBSTONE_REFERENCE,
-                f"reference to tombstoned/superseded identifier '{ref.raw_id}' at {ref.source}:{ref.line}",
-            )
-        if ref.raw_id not in known_targets and _canonical_id(ref.raw_id) not in known_targets:
-            raise AuditError(
-                ERR_DANGLING_REFERENCE,
-                f"dangling reference to '{ref.raw_id}' at {ref.source}:{ref.line} (no active owner or historical mapping found)",
-            )
+    _validate_references(references, valid_targets=known_targets, tombstoned_ids=tombstoned_ids)
+
+    for d in definitions:
+        _add_title(live_titles, d.legacy_id, d.title)
+        _add_title(live_titles, d.canonical_id, d.title)
+    for d in scan.definitions:
+        _add_title(live_titles, d.legacy_id, d.title)
+    _validate_fenced_occurrences(
+        scan,
+        valid_targets=known_targets,
+        tombstoned_ids=tombstoned_ids,
+        live_titles=live_titles,
+    )
 
     per_family_counts: dict[str, dict[str, int]] = {}
     for d in definitions:
@@ -709,6 +925,8 @@ def audit(
         "sourceDefinitionCount": len(definitions),
         "canonicalDefinitionCount": len(set(canonical_ids)),
         "referenceCount": len(references),
+        "exampleCount": len(scan.examples),
+        "fencedDefinitionCount": len(scan.fenced_definitions),
         "goalCanonicalCount": len(actual_goals),
         "northStarCanonicalCount": len(actual_ns),
         "legacyCollisions": collisions,
@@ -733,33 +951,43 @@ def census_markdown_sources(
 ) -> dict[str, Any]:
     """Audits multiple markdown documents across the repository. Hook for check-policy.py."""
     resolution = _load_json(resolution_path)
-    raw_resolutions = resolution.get("resolutions", [])
+    if resolution.get("schema") != RESOLUTION_SCHEMA:
+        raise AuditError(ERR_SCHEMA_ERROR, "unsupported stable-ID resolution schema")
+    raw_resolutions = resolution.get("resolutions")
     if not isinstance(raw_resolutions, list):
         raise AuditError(ERR_SCHEMA_ERROR, "resolutions must be an array")
 
     by_occurrence = {}
     res_titles_by_id: dict[str, set[str]] = {}
-    valid_targets = _load_repository_definitions(ROOT)
-    tombstoned_ids: set[str] = set()
+    repo_index = _load_repository_index(ROOT)
+    valid_targets = set(repo_index.known)
+    tombstoned_ids: set[str] = set(repo_index.tombstoned)
+    live_titles: dict[tuple[str, int] | str, set[str]] = {
+        key: set(titles) for key, titles in repo_index.titles.items()
+    }
 
-    for r in raw_resolutions:
+    for index, r in enumerate(raw_resolutions):
         if not isinstance(r, dict):
-            raise AuditError(ERR_SCHEMA_ERROR, "resolution row is not an object")
+            raise AuditError(ERR_SCHEMA_ERROR, f"resolution row {index} is not an object")
         legacy_id = r.get("legacyId")
         title = r.get("title")
         canonical_id = r.get("canonicalId")
         digest = r.get("titleDigest")
-        status = r.get("status")
-        disposition = r.get("disposition")
 
-        if not legacy_id or not title:
-            raise AuditError(ERR_SCHEMA_ERROR, "resolution row missing legacyId or title")
-        if not isinstance(digest, str) or not digest:
-            raise AuditError(ERR_SCHEMA_ERROR, f"resolution row missing titleDigest for {legacy_id}")
+        for field_name, value in (
+            ("legacyId", legacy_id),
+            ("title", title),
+            ("canonicalId", canonical_id),
+            ("titleDigest", digest),
+        ):
+            if not isinstance(value, str) or not value:
+                raise AuditError(
+                    ERR_SCHEMA_ERROR,
+                    f"resolution row {index} field {field_name} must be a non-empty string, got {value!r}",
+                )
 
         validate_identifier_syntax(legacy_id)
-        if canonical_id:
-            validate_identifier_syntax(canonical_id)
+        validate_identifier_syntax(canonical_id)
 
         expected_digest = _title_digest(legacy_id, title)
         if digest != expected_digest:
@@ -770,37 +998,40 @@ def census_markdown_sources(
 
         res_titles_by_id.setdefault(legacy_id, set()).add(title)
         res_titles_by_id.setdefault(_canonical_id(legacy_id), set()).add(title)
-        if canonical_id:
-            res_titles_by_id.setdefault(canonical_id, set()).add(title)
-            res_titles_by_id.setdefault(_canonical_id(canonical_id), set()).add(title)
+        res_titles_by_id.setdefault(canonical_id, set()).add(title)
+        res_titles_by_id.setdefault(_canonical_id(canonical_id), set()).add(title)
 
         by_occurrence[(legacy_id, title)] = r
         by_occurrence[(_canonical_id(legacy_id), title)] = r
 
-        is_tombstone = status in ("tombstone", "tombstoned", "superseded") or disposition in ("tombstone", "tombstoned", "superseded")
+        is_tombstone = _is_tombstone_marker(r.get("status"), where=f"resolution row {index} status") or _is_tombstone_marker(
+            r.get("disposition"), where=f"resolution row {index} disposition"
+        )
         if is_tombstone:
             tombstoned_ids.add(legacy_id)
             tombstoned_ids.add(_canonical_id(legacy_id))
-            if canonical_id:
-                tombstoned_ids.add(canonical_id)
-                tombstoned_ids.add(_canonical_id(canonical_id))
+            tombstoned_ids.add(canonical_id)
+            tombstoned_ids.add(_canonical_id(canonical_id))
         else:
-            if canonical_id:
-                valid_targets.add(canonical_id)
-                valid_targets.add(_canonical_id(canonical_id))
+            valid_targets.add(canonical_id)
+            valid_targets.add(_canonical_id(canonical_id))
             valid_targets.add(legacy_id)
             valid_targets.add(_canonical_id(legacy_id))
+            _add_title(live_titles, legacy_id, title)
+            _add_title(live_titles, canonical_id, title)
 
     all_defs: list[ParsedDefinition] = []
     all_refs: list[ParsedReference] = []
+    scans: list[MarkdownScan] = []
 
     for path in paths:
         if not path.is_file():
             raise AuditError(ERR_SCHEMA_ERROR, f"markdown source path does not exist: {path}")
         text = _strip_html_comments(path.read_text(encoding="utf-8-sig", errors="strict"))
-        defs, refs, _ = _extract_all_occurrences(text, source_name=str(path))
-        all_defs.extend(defs)
-        all_refs.extend(refs)
+        scan = _scan_markdown(text, source_name=str(path))
+        scans.append(scan)
+        all_defs.extend(scan.definitions)
+        all_refs.extend(scan.references)
 
     for d in all_defs:
         expected_titles = res_titles_by_id.get(d.legacy_id) or res_titles_by_id.get(_canonical_id(d.legacy_id))
@@ -825,24 +1056,26 @@ def census_markdown_sources(
                     f"unresolved collided stable definition {d.legacy_id} at {d.source}:{d.line}: {d.title}",
                 )
 
-    for ref in all_refs:
-        if ref.raw_id in tombstoned_ids or _canonical_id(ref.raw_id) in tombstoned_ids:
-            raise AuditError(
-                ERR_TOMBSTONE_REFERENCE,
-                f"reference to tombstoned/superseded identifier '{ref.raw_id}' at {ref.source}:{ref.line}",
-            )
-        target_ids = valid_targets | {d.legacy_id for d in all_defs} | {_canonical_id(d.legacy_id) for d in all_defs}
-        if ref.raw_id not in target_ids and _canonical_id(ref.raw_id) not in target_ids:
-            raise AuditError(
-                ERR_DANGLING_REFERENCE,
-                f"dangling reference to '{ref.raw_id}' at {ref.source}:{ref.line}",
-            )
+    target_ids = valid_targets | {d.legacy_id for d in all_defs} | {_canonical_id(d.legacy_id) for d in all_defs}
+    _validate_references(all_refs, valid_targets=target_ids, tombstoned_ids=tombstoned_ids)
+
+    for d in all_defs:
+        _add_title(live_titles, d.legacy_id, d.title)
+    for scan in scans:
+        _validate_fenced_occurrences(
+            scan,
+            valid_targets=target_ids,
+            tombstoned_ids=tombstoned_ids,
+            live_titles=live_titles,
+        )
 
     return {
         "schema": AUDIT_SCHEMA,
         "grammarVersion": GRAMMAR_SCHEMA,
         "totalDefinitions": len(all_defs),
         "totalReferences": len(all_refs),
+        "totalExamples": sum(len(scan.examples) for scan in scans),
+        "totalFencedDefinitions": sum(len(scan.fenced_definitions) for scan in scans),
         "status": "passed",
     }
 
@@ -876,9 +1109,9 @@ def main() -> int:
     if args.jsonl is not None:
         args.jsonl.parent.mkdir(parents=True, exist_ok=True)
         plan_text = args.plan.read_text(encoding="utf-8-sig")
-        defs, refs, examples = _extract_all_occurrences(plan_text, source_name=args.plan.name)
+        scan = _scan_markdown(plan_text, source_name=args.plan.name)
         records = []
-        for d in defs:
+        for d in scan.definitions:
             records.append({
                 "schema": "fss.stable_id_occurrence.v1",
                 "grammarVersion": GRAMMAR_SCHEMA,
@@ -890,7 +1123,7 @@ def main() -> int:
                 "status": "active",
                 "resolution": d.canonical_id or None,
             })
-        for r in refs:
+        for r in scan.references:
             records.append({
                 "schema": "fss.stable_id_occurrence.v1",
                 "grammarVersion": GRAMMAR_SCHEMA,
@@ -902,16 +1135,28 @@ def main() -> int:
                 "status": "active",
                 "resolution": None,
             })
-        for ex in examples:
+        for ex in scan.examples:
             records.append({
                 "schema": "fss.stable_id_occurrence.v1",
                 "grammarVersion": GRAMMAR_SCHEMA,
-                "sourcePath": args.plan.name,
-                "line": 0,
+                "sourcePath": ex.source,
+                "line": ex.line,
                 "kind": OccurrenceKind.EXAMPLE.value,
-                "id": ex,
-                "semanticFingerprint": hashlib.sha256(ex.encode()).hexdigest()[:16],
+                "id": ex.raw_id,
+                "semanticFingerprint": hashlib.sha256(ex.raw_id.encode()).hexdigest()[:16],
                 "status": "example",
+                "resolution": None,
+            })
+        for fd in scan.fenced_definitions:
+            records.append({
+                "schema": "fss.stable_id_occurrence.v1",
+                "grammarVersion": GRAMMAR_SCHEMA,
+                "sourcePath": fd.source,
+                "line": fd.line,
+                "kind": OccurrenceKind.EXAMPLE.value,
+                "id": fd.legacy_id,
+                "semanticFingerprint": fd.title_digest,
+                "status": "example-definition",
                 "resolution": None,
             })
         with args.jsonl.open("w", encoding="utf-8") as f:
