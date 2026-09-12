@@ -103,8 +103,9 @@ pub use model::{
     MAX_DETECTIONS_PER_OUTPUT, MAX_FAULT_REASON_LEN, MAX_INPUT_PAYLOAD_BYTES,
     MAX_MODEL_GENERATION_BYTES, MockAbstentionReason, MockDetection, MockExecutorOutcome,
     MockModelError, MockModelExecutor, MockModelFaultSchedule, MockModelOutcome, MockModelOutput,
-    MockModelResult, MockModelScript, MockModelSpec, MockSemanticLabel, compare_model_scores,
-    compute_output_digest, encode_coord_to_basis_point, evaluate_corroboration, execute_mock_model,
+    MockModelResult, MockModelScript, MockModelSpec, MockOutputDigestRequest, MockSemanticLabel,
+    compare_model_scores, compute_output_digest, encode_coord_to_basis_point,
+    evaluate_corroboration, execute_mock_model,
 };
 pub use outcome::{
     ALERT_OUTCOME_FAMILY, ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt,

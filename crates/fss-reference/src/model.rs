@@ -714,17 +714,18 @@ impl MockModelExecutor {
             model_generation: self.generation.as_str().to_string(),
         };
 
-        let output_digest = compute_output_digest(
-            &self.generation,
+        let digest_req = MockOutputDigestRequest {
+            generation: &self.generation,
             sensor_id,
-            &input_digest,
+            input_digest: &input_digest,
             capture_interval,
-            KnowledgeState::Estimated,
-            ProvenanceClass::Predicted,
-            &corroboration,
-            &detections,
-            self.nominal_latency_ns,
-        )?;
+            knowledge_state: KnowledgeState::Estimated,
+            provenance_class: ProvenanceClass::Predicted,
+            corroboration: &corroboration,
+            detections: &detections,
+            virtual_latency_ns: self.nominal_latency_ns,
+        };
+        let output_digest = compute_output_digest(&digest_req)?;
 
         let output = MockModelOutput {
             output_digest,
@@ -750,35 +751,66 @@ fn read_u64_le(slice: &[u8]) -> u64 {
     u64::from_le_bytes(buf)
 }
 
+/// Request parameters for computing a deterministic mock model output digest with full provenance.
+#[derive(Clone, Debug)]
+pub struct MockOutputDigestRequest<'a> {
+    /// Immutable model generation identity.
+    pub generation: &'a ModelGeneration,
+    /// Sensor identity from which the input was captured.
+    pub sensor_id: &'a SensorId,
+    /// Exact content digest of the consumed input.
+    pub input_digest: &'a ContentDigest,
+    /// Temporal capture interval of the input.
+    pub capture_interval: &'a CaptureInterval,
+    /// Epistemic knowledge state.
+    pub knowledge_state: KnowledgeState,
+    /// Provenance class.
+    pub provenance_class: ProvenanceClass,
+    /// Explicit corroboration status.
+    pub corroboration: &'a CorroborationStatus,
+    /// Bounded list of deterministic detections.
+    pub detections: &'a [MockDetection],
+    /// Virtual inference latency consumed.
+    pub virtual_latency_ns: u64,
+}
+
+impl<'a> From<&'a MockModelOutput> for MockOutputDigestRequest<'a> {
+    fn from(out: &'a MockModelOutput) -> Self {
+        Self {
+            generation: &out.generation,
+            sensor_id: &out.sensor_id,
+            input_digest: &out.input_digest,
+            capture_interval: &out.capture_interval,
+            knowledge_state: out.knowledge_state,
+            provenance_class: out.provenance_class,
+            corroboration: &out.corroboration,
+            detections: &out.detections,
+            virtual_latency_ns: out.virtual_latency_ns,
+        }
+    }
+}
+
 /// Computes deterministic output digest with full provenance and bound checking.
 pub fn compute_output_digest(
-    generation: &ModelGeneration,
-    sensor_id: &SensorId,
-    input_digest: &ContentDigest,
-    capture_interval: &CaptureInterval,
-    knowledge_state: KnowledgeState,
-    provenance_class: ProvenanceClass,
-    corroboration: &CorroborationStatus,
-    detections: &[MockDetection],
-    virtual_latency_ns: u64,
+    req: &MockOutputDigestRequest<'_>,
 ) -> Result<ContentDigest, MockModelError> {
-    if detections.len() > MAX_DETECTIONS_PER_OUTPUT {
+    if req.detections.len() > MAX_DETECTIONS_PER_OUTPUT {
         return Err(MockModelError::TooManyDetections {
-            actual: detections.len(),
+            actual: req.detections.len(),
             max: MAX_DETECTIONS_PER_OUTPUT,
         });
     }
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.mock_model_output.v1");
-    encoder.text(generation.as_str());
-    sensor_id.encode_canonical(&mut encoder);
-    encoder.digest(*input_digest);
-    capture_interval.encode_canonical(&mut encoder);
-    encoder.text(knowledge_state.as_str());
-    encoder.text(provenance_class_str(provenance_class));
-    encode_corroboration_status(corroboration, &mut encoder);
-    encoder.u64(detections.len() as u64);
-    for det in detections {
+    encoder.text(req.generation.as_str());
+    req.sensor_id.encode_canonical(&mut encoder);
+    encoder.digest(*req.input_digest);
+    req.capture_interval.encode_canonical(&mut encoder);
+    encoder.text(req.knowledge_state.as_str());
+    encoder.text(provenance_class_str(req.provenance_class));
+    encode_corroboration_status(req.corroboration, &mut encoder);
+    encoder.u64(req.detections.len() as u64);
+    for det in req.detections {
         encoder.u8(det.label.tag());
         det.probability.encode_canonical(&mut encoder);
         encoder.u64(encode_coord_to_basis_point(det.bounding_box[0]));
@@ -786,7 +818,7 @@ pub fn compute_output_digest(
         encoder.u64(encode_coord_to_basis_point(det.bounding_box[2]));
         encoder.u64(encode_coord_to_basis_point(det.bounding_box[3]));
     }
-    encoder.u64(virtual_latency_ns);
+    encoder.u64(req.virtual_latency_ns);
     Ok(ContentDigest::sha256(&encoder.finish()))
 }
 
@@ -887,12 +919,12 @@ pub fn evaluate_corroboration(
     let mut fused_upper = 1.0_f64;
 
     for out in outputs {
-        if let Some(det) = out.detections.iter().find(|d| d.label == common_label) {
-            if matching_sensors.insert(out.sensor_id.clone()) {
-                contributing_input_digests.push(out.input_digest);
-                fused_lower = fused_lower.max(det.probability.lower);
-                fused_upper = fused_upper.min(det.probability.upper);
-            }
+        if let Some(det) = out.detections.iter().find(|d| d.label == common_label)
+            && matching_sensors.insert(out.sensor_id.clone())
+        {
+            contributing_input_digests.push(out.input_digest);
+            fused_lower = fused_lower.max(det.probability.lower);
+            fused_upper = fused_upper.min(det.probability.upper);
         }
     }
 

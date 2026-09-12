@@ -14,8 +14,9 @@ use fss_reference::{
     CorroborationStatus, MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT,
     MAX_FAULT_REASON_LEN, MAX_INPUT_PAYLOAD_BYTES, MAX_MODEL_GENERATION_BYTES, MockDetection,
     MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
-    MockModelOutput, MockSemanticLabel, VirtualClock, compare_model_scores, compute_output_digest,
-    encode_coord_to_basis_point, evaluate_corroboration,
+    MockModelOutput, MockOutputDigestRequest, MockSemanticLabel, VirtualClock,
+    compare_model_scores, compute_output_digest, encode_coord_to_basis_point,
+    evaluate_corroboration,
 };
 
 fn sample_capsule(
@@ -711,28 +712,8 @@ fn test_canonical_encode_and_output_digest_must_bind_knowledge_state_provenance_
         "outputs with different corroboration statuses must produce distinct canonical bytes"
     );
 
-    let digest_estimated = compute_output_digest(
-        &out_estimated.generation,
-        &out_estimated.sensor_id,
-        &out_estimated.input_digest,
-        &out_estimated.capture_interval,
-        out_estimated.knowledge_state,
-        out_estimated.provenance_class,
-        &out_estimated.corroboration,
-        &out_estimated.detections,
-        out_estimated.virtual_latency_ns,
-    )?;
-    let digest_conflicted = compute_output_digest(
-        &out_conflicted.generation,
-        &out_conflicted.sensor_id,
-        &out_conflicted.input_digest,
-        &out_conflicted.capture_interval,
-        out_conflicted.knowledge_state,
-        out_conflicted.provenance_class,
-        &out_conflicted.corroboration,
-        &out_conflicted.detections,
-        out_conflicted.virtual_latency_ns,
-    )?;
+    let digest_estimated = compute_output_digest(&MockOutputDigestRequest::from(&out_estimated))?;
+    let digest_conflicted = compute_output_digest(&MockOutputDigestRequest::from(&out_conflicted))?;
     assert_ne!(
         digest_estimated, digest_conflicted,
         "output digests must differ when knowledge state changes"
@@ -848,20 +829,20 @@ fn test_bounds_detections_per_output_at_bound_and_bound_plus_one() -> Result<(),
     // Exactly at bound: 64 detections
     let detections_at_bound = make_detections(MAX_DETECTIONS_PER_OUTPUT)?;
     assert_eq!(detections_at_bound.len(), MAX_DETECTIONS_PER_OUTPUT);
-    let digest_at_bound = compute_output_digest(
-        &generation,
-        &sensor_1,
-        &ContentDigest::sha256(b"in"),
-        &interval,
-        KnowledgeState::Estimated,
-        ProvenanceClass::Predicted,
-        &CorroborationStatus::UncorroboratedSingleSource {
+    let digest_at_bound = compute_output_digest(&MockOutputDigestRequest {
+        generation: &generation,
+        sensor_id: &sensor_1,
+        input_digest: &ContentDigest::sha256(b"in"),
+        capture_interval: &interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        corroboration: &CorroborationStatus::UncorroboratedSingleSource {
             sensor_id: sensor_1.clone(),
             model_generation: generation.as_str().to_string(),
         },
-        &detections_at_bound,
-        10_000_000,
-    );
+        detections: &detections_at_bound,
+        virtual_latency_ns: 10_000_000,
+    });
     assert!(digest_at_bound.is_ok());
 
     let out_1_at_bound = MockModelOutput {
@@ -901,20 +882,20 @@ fn test_bounds_detections_per_output_at_bound_and_bound_plus_one() -> Result<(),
     // Over bound: 65 detections
     let detections_over_bound = make_detections(MAX_DETECTIONS_PER_OUTPUT + 1)?;
     assert_eq!(detections_over_bound.len(), MAX_DETECTIONS_PER_OUTPUT + 1);
-    let digest_over_bound = compute_output_digest(
-        &generation,
-        &sensor_1,
-        &ContentDigest::sha256(b"in"),
-        &interval,
-        KnowledgeState::Estimated,
-        ProvenanceClass::Predicted,
-        &CorroborationStatus::UncorroboratedSingleSource {
+    let digest_over_bound = compute_output_digest(&MockOutputDigestRequest {
+        generation: &generation,
+        sensor_id: &sensor_1,
+        input_digest: &ContentDigest::sha256(b"in"),
+        capture_interval: &interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        corroboration: &CorroborationStatus::UncorroboratedSingleSource {
             sensor_id: sensor_1.clone(),
             model_generation: generation.as_str().to_string(),
         },
-        &detections_over_bound,
-        10_000_000,
-    );
+        detections: &detections_over_bound,
+        virtual_latency_ns: 10_000_000,
+    });
     match digest_over_bound {
         Err(MockModelError::TooManyDetections { actual, max }) => {
             assert_eq!(actual, MAX_DETECTIONS_PER_OUTPUT + 1);
