@@ -627,7 +627,7 @@ subsystem_generation!(
 );
 subsystem_generation!(
     ModelGeneration,
-    "An immutable model package generation identifier.\n\nWithout the `test-support` feature, unvalidated constructors are unavailable in production:\n\n```compile_fail,E0599\nuse fss_core::ModelGeneration;\nlet _gen = ModelGeneration::from_unvalidated_for_test(\"model:detector:latest\");\n```"
+    "An immutable model package generation identifier."
 );
 subsystem_generation!(
     CalibrationGeneration,

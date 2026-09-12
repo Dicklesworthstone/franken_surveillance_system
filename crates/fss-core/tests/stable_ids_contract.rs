@@ -989,3 +989,68 @@ fn test_latest_generation_cannot_be_built_without_test_support_feature() {
         );
     }
 }
+
+#[test]
+fn test_test_support_feature_restricted_to_dev_dependencies_only() {
+    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = manifest_dir
+        .parent()
+        .expect("crates dir")
+        .parent()
+        .expect("repo root");
+
+    // 1. Root Cargo.toml: workspace.dependencies cannot enable test-support
+    let root_cargo =
+        std::fs::read_to_string(root.join("Cargo.toml")).expect("read root Cargo.toml");
+    assert!(
+        !root_cargo.contains(r#"features = ["test-support"]"#)
+            && !root_cargo.contains(r#"features = ['test-support']"#),
+        "root Cargo.toml [workspace.dependencies] must never enable test-support"
+    );
+
+    // 2. fss-core Cargo.toml: test-support must be declared and NOT in default
+    let core_cargo =
+        std::fs::read_to_string(manifest_dir.join("Cargo.toml")).expect("read fss-core Cargo.toml");
+    assert!(
+        core_cargo.contains("test-support = []"),
+        "fss-core Cargo.toml must declare optional 'test-support = []' feature"
+    );
+    assert!(
+        !core_cargo.contains("default = [\"test-support\"]"),
+        "test-support must not be a default feature in fss-core"
+    );
+
+    // 3. All other crate Cargo.toml files: test-support only allowed in [dev-dependencies]
+    let crates_dir = manifest_dir.parent().expect("crates dir");
+    for entry in std::fs::read_dir(crates_dir).expect("read crates dir") {
+        let entry = entry.expect("valid entry");
+        if !entry.file_type().expect("file type").is_dir() {
+            continue;
+        }
+        let crate_cargo_path = entry.path().join("Cargo.toml");
+        if !crate_cargo_path.is_file() || entry.file_name() == "fss-core" {
+            continue;
+        }
+        let content = std::fs::read_to_string(&crate_cargo_path).expect("read crate Cargo.toml");
+        if content.contains("test-support") {
+            let mut current_section = "";
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with('[') && trimmed.ends_with(']') {
+                    current_section = trimmed;
+                }
+                if trimmed.contains("test-support") {
+                    assert!(
+                        current_section == "[dev-dependencies]"
+                            || (current_section.starts_with("[target.")
+                                && current_section.ends_with(".dev-dependencies]")),
+                        "In {}, 'test-support' feature found in non-dev section '{}': {}",
+                        entry.path().display(),
+                        current_section,
+                        trimmed
+                    );
+                }
+            }
+        }
+    }
+}
