@@ -15,60 +15,37 @@ and audited by `scripts/semantic_plane_checker.py`.
 A model score, track confidence, or belief interval is in the cognition plane. It may propose an action,
 but it can never be converted into or grant `EffectAuthority`.
 
-```rust,compile_fail
-// Cognition plane: probabilistic belief interval
-pub struct BeliefInterval {
-    pub lower: u64,
-    pub upper: u64,
-}
-
-// Authority plane: explicit capability lease
-pub struct EffectAuthority {
-    pub capability_lease: String,
-}
+```rust,compile_fail,E0277
+use fss_core::belief::BeliefInterval;
+use fss_core::effect::EffectAuthority;
 
 fn execute_guarded_effect(_auth: EffectAuthority) {}
 
-fn main() {
-    let high_confidence_belief = BeliefInterval {
-        lower: 990_000,
-        upper: 999_000,
-    };
-
+fn forbidden_grant(belief: BeliefInterval) {
     // FORBIDDEN: Cognition output cannot convert to EffectAuthority.
     // Compilation must fail because From/Into is never implemented across planes.
-    let granted_auth: EffectAuthority = high_confidence_belief.into();
+    let granted_auth: EffectAuthority = belief.into();
     execute_guarded_effect(granted_auth);
 }
+
+fn main() {}
 ```
 
 ## Invariant 2: Cognition output cannot directly construct EffectIntent
 
 Cognition representations cannot coerce into effect intents without audited boundary mediation.
 
-```rust,compile_fail
-// Cognition plane: model recommendation
-pub struct ModelRecommendation {
-    pub action: String,
-    pub score: f64,
-}
+```rust,compile_fail,E0277
+use fss_core::belief::BeliefInterval;
+use fss_core::effect::EffectIntent;
 
-// Effect plane: prepared mutation intent
-pub struct EffectIntent {
-    pub operation_id: String,
-    pub action: String,
-}
-
-fn main() {
-    let recommendation = ModelRecommendation {
-        action: "isolate_camera".to_string(),
-        score: 0.98,
-    };
-
-    // FORBIDDEN: Direct cross-plane coercion from cognition recommendation to EffectIntent
-    let intent: EffectIntent = recommendation.into();
+fn forbidden_intent(belief: BeliefInterval) {
+    // FORBIDDEN: Direct cross-plane coercion from cognition representation to EffectIntent
+    let intent: EffectIntent = belief.into();
     let _ = intent;
 }
+
+fn main() {}
 ```
 
 ## Invariant 3: Effect authority cannot convert into cognition belief
@@ -76,61 +53,38 @@ fn main() {
 Authority tokens and receipts are canonical facts. They cannot be coerced into probabilistic
 epistemic belief intervals.
 
-```rust,compile_fail
-// Authority plane: capability lease
-pub struct EffectAuthority {
-    pub capability_token: String,
-}
+```rust,compile_fail,E0277
+use fss_core::belief::BeliefInterval;
+use fss_core::effect::EffectAuthority;
 
-// Cognition plane: belief interval
-pub struct BeliefInterval {
-    pub lower: u64,
-    pub upper: u64,
-}
-
-fn main() {
-    let auth = EffectAuthority {
-        capability_token: "lease-auth-998822".to_string(),
-    };
-
+fn forbidden_belief(auth: EffectAuthority) {
     // FORBIDDEN: Authority cannot be converted into probabilistic cognition belief
     let belief: BeliefInterval = auth.into();
     let _ = belief;
 }
+
+fn main() {}
 ```
 
-## Invariant 4: Direct effect dispatch without authority token fails compilation
+## Invariant 4: Effect dispatch requires prepared effect plan, rejecting cognition types directly
 
-An effect dispatch interface cannot accept cognition hypotheses or recommendations directly; it strictly requires
-an explicit `EffectAuthority` parameter.
+An effect dispatch interface cannot accept cognition hypotheses or belief intervals directly;
+effect execution requires an explicit prepared effect plan (`ReferenceAlertPlan`) encapsulating
+`EffectIntent`, obligation identity, and preconditions. Attempting to pass a cognition representation
+to effect dispatch fails compilation with mismatched types (`E0308`).
 
-```rust,compile_fail
-pub struct ModelHypothesis {
-    pub hypothesis_id: String,
-    pub confidence: f64,
+```rust,compile_fail,E0308
+use fss_core::belief::BeliefInterval;
+use fss_reference::ReferenceAlertPlan;
+
+fn execute_plan(_plan: &ReferenceAlertPlan) {}
+
+fn forbidden_dispatch(belief: &BeliefInterval) {
+    // FORBIDDEN: Attempting to pass a cognition type directly to an effect plan interface fails type checking
+    execute_plan(belief);
 }
 
-pub struct EffectAuthority {
-    pub capability_lease: String,
-}
-
-pub struct EffectExecutor;
-
-impl EffectExecutor {
-    pub fn dispatch(&self, _auth: &EffectAuthority) {}
-}
-
-fn main() {
-    let hypothesis = ModelHypothesis {
-        hypothesis_id: "hypo-101".to_string(),
-        confidence: 0.999,
-    };
-
-    let executor = EffectExecutor;
-
-    // FORBIDDEN: Attempting to dispatch an effect using a cognition hypothesis fails type checking
-    executor.dispatch(&hypothesis);
-}
+fn main() {}
 ```
 
 ## Invariant 5: VLM/model output cannot directly convert to EffectIntent (NEG-003)
@@ -139,27 +93,16 @@ Per NEG-003 and AGENTS.md, a frontier VLM or model output is derived cognition a
 trigger an effect directly. It must route through situation capsule, affordance frontier, and
 witnessed plan before effect preparation.
 
-```rust,compile_fail
-// Cognition plane: VLM model output
-pub struct VlmOutput {
-    pub raw_text: String,
-    pub score: f64,
-}
+```rust,compile_fail,E0277
+use fss_core::effect::EffectIntent;
+use fss_reference::MockModelOutput;
 
-// Effect plane: effect intent
-pub struct EffectIntent {
-    pub action: String,
-}
-
-fn main() {
-    let vlm = VlmOutput {
-        raw_text: "Intruder detected, activate alarm".to_string(),
-        score: 0.99,
-    };
-
-    // FORBIDDEN by NEG-003: VLM output cannot directly convert to EffectIntent.
+fn forbidden_conversion(output: MockModelOutput) {
+    // FORBIDDEN by NEG-003: Model output cannot directly convert to EffectIntent.
     // Compilation must fail because cross-plane From/Into is prohibited.
-    let intent: EffectIntent = vlm.into();
+    let intent: EffectIntent = output.into();
     let _ = intent;
 }
+
+fn main() {}
 ```

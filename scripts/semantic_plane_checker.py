@@ -41,6 +41,7 @@ ERR_MODEL_OUTPUT_REACHES_EFFECT = "ERR-SEMPLANE-MODEL-OUTPUT-REACHES-EFFECT-001"
 ERR_SINGLE_MODEL_CORROBORATION = "ERR-SEMPLANE-SINGLE-MODEL-CORROBORATION-001"
 ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE = "ERR-SEMPLANE-ABSTENTION-AS-NEGATIVE-EVIDENCE-001"
 ERR_MUTABLE_MODEL_GENERATION = "ERR-SEMPLANE-MUTABLE-MODEL-GENERATION-001"
+ERR_CONTRACT_DOC_INVALID = "ERR-SEMPLANE-CONTRACT-DOC-INVALID-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_COGNITION_GRANTS_EFFECT: {
@@ -92,6 +93,11 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "trigger": "A model generation references a mutable alias (e.g. 'latest', 'HEAD') instead of an immutable qualified generation",
         "remediation": "ADR-0004 and NEG-003 require model generations to be pinned, immutable identifiers with content digests",
         "standard_code": "SEMPLANE-010",
+    },
+    ERR_CONTRACT_DOC_INVALID: {
+        "trigger": "Contract document contains dummy types, fictitious structs, or claims unbacked by code enforcement",
+        "remediation": "Import real workspace types from fss_core/fss_reference in doctests and claim only what the code enforces.",
+        "standard_code": "SEMPLANE-011",
     },
 }
 
@@ -251,12 +257,100 @@ def load_semantic_plane_registry(
     return data, findings
 
 
-def verify_compile_fail_doctests(contract_path: Path) -> tuple[bool, int, str]:
+def resolve_workspace_doctest_flags(root: Path) -> list[str]:
+    """Resolves compiler flags (--extern and -L) for workspace crates needed by contract doctests."""
+    target_dirs: list[Path] = []
+    if "CARGO_TARGET_DIR" in os.environ:
+        target_dirs.append(Path(os.environ["CARGO_TARGET_DIR"]))
+    target_dirs.extend([
+        Path("/data/tmp/cargo-target"),
+        Path("/data/tmp/cargo-semantic-plane-doctests"),
+        root / "target",
+    ])
+
+    crates = ["fss_core", "fss_reference", "fss_ledger", "fss_object", "fss_publication"]
+    found_crates: dict[str, Path] = {}
+    dep_dirs: set[str] = set()
+
+    for td in target_dirs:
+        build_dir = td / "debug" / "build"
+        if not build_dir.is_dir():
+            continue
+        for crate in crates:
+            if crate in found_crates:
+                continue
+            crate_kebab = crate.replace("_", "-")
+            pattern = f"{crate_kebab}/*/out/lib{crate}-*.rmeta"
+            matches = sorted(
+                build_dir.glob(pattern),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            if matches:
+                found_crates[crate] = matches[0]
+                dep_dirs.add(str(matches[0].parent))
+
+    missing_crates = [c for c in crates if c not in found_crates]
+    if missing_crates:
+        try:
+            cargo_cmd = ["cargo", "check", "-p", "fss-reference"]
+            env = dict(os.environ)
+            env["RCH_CARGO_WRAPPER_BYPASS"] = "1"
+            subprocess.run(
+                cargo_cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(root),
+                env=env,
+                timeout=60,
+            )
+            for td in target_dirs:
+                build_dir = td / "debug" / "build"
+                if not build_dir.is_dir():
+                    continue
+                for crate in missing_crates:
+                    if crate in found_crates:
+                        continue
+                    crate_kebab = crate.replace("_", "-")
+                    pattern = f"{crate_kebab}/*/out/lib{crate}-*.rmeta"
+                    matches = sorted(
+                        build_dir.glob(pattern),
+                        key=lambda p: p.stat().st_mtime,
+                        reverse=True,
+                    )
+                    if matches:
+                        found_crates[crate] = matches[0]
+                        dep_dirs.add(str(matches[0].parent))
+        except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError):
+            pass
+
+    flags: list[str] = []
+    for crate, path in found_crates.items():
+        flags.extend(["--extern", f"{crate}={path}"])
+    for d in sorted(dep_dirs):
+        flags.extend(["-L", f"dependency={d}"])
+
+    return flags
+
+
+def verify_compile_fail_doctests(
+    contract_path: Path, root: Path | None = None
+) -> tuple[bool, int, str]:
     """Runs rustdoc --test on compile-fail contract and verifies all tests fail compilation as expected."""
     if not contract_path.is_file():
         return False, 0, f"Contract doctest file missing: {contract_path}"
 
     cmd = ["rustdoc", "--test", str(contract_path), "--edition", "2024"]
+    effective_root = root
+    if effective_root is None:
+        for parent in contract_path.parents:
+            if (parent / "Cargo.toml").is_file():
+                effective_root = parent
+                break
+    if effective_root is not None:
+        flags = resolve_workspace_doctest_flags(effective_root)
+        cmd.extend(flags)
+
     try:
         result = subprocess.run(
             cmd,
@@ -265,7 +359,7 @@ def verify_compile_fail_doctests(contract_path: Path) -> tuple[bool, int, str]:
             cwd=str(contract_path.parent),
             timeout=30,
         )
-    except (subprocess.TimeoutExpired, OSError) as exc:
+    except (subprocess.TimeoutExpired, OSError, subprocess.SubprocessError) as exc:
         return False, 0, f"Failed to execute rustdoc: {exc}"
 
     if result.returncode != 0:
@@ -281,6 +375,109 @@ def verify_compile_fail_doctests(contract_path: Path) -> tuple[bool, int, str]:
         return False, 0, "Zero doctests were executed by rustdoc"
 
     return True, test_count, ""
+
+
+def audit_contract_doc_claims(
+    root: Path, contract_path: Path | None = None
+) -> list[SemanticPlaneFinding]:
+    """Audits docs/enforcement/three_semantic_planes_contract.md to ensure claims match code enforcement.
+
+    Enforces:
+    1. Doctests must NOT declare fictitious dummy structs/enums (F1).
+    2. Doctests must import real workspace types from fss_core or fss_reference (F1).
+    3. Contract doc must NOT claim effect dispatch strictly requires EffectAuthority parameter,
+       since dispatch_reference_alert takes &ReferenceAlertPlan (F8).
+    4. Contract doc claims must accurately reflect witnessed plan effect execution (F8).
+    """
+    findings: list[SemanticPlaneFinding] = []
+    if contract_path is None:
+        contract_path = root / "docs/enforcement/three_semantic_planes_contract.md"
+
+    rel_path = sanitize_path(contract_path, root)
+    if not contract_path.is_file():
+        return findings
+
+    try:
+        content = contract_path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        findings.append(
+            SemanticPlaneFinding(
+                code=ERR_CONTRACT_DOC_INVALID,
+                file=rel_path,
+                location="file_system",
+                message=f"Failed to read contract document: {exc}",
+                severity="error",
+                remediation=DIAGNOSTIC_REGISTRY[ERR_CONTRACT_DOC_INVALID]["remediation"],
+            )
+        )
+        return findings
+
+    # Check for unbacked claims regarding EffectAuthority on effect dispatch (Finding 8)
+    dispatch_auth_pattern = re.compile(
+        r"(?:strictly\s+requires|requires\s+an\s+explicit)\s+`?EffectAuthority`?\s+parameter",
+        re.IGNORECASE,
+    )
+    if dispatch_auth_pattern.search(content):
+        findings.append(
+            SemanticPlaneFinding(
+                code=ERR_CONTRACT_DOC_INVALID,
+                file=rel_path,
+                location="Invariant 4",
+                message=(
+                    "Contract doc claims effect dispatch strictly requires an EffectAuthority parameter, "
+                    "but dispatch_reference_alert accepts &ReferenceAlertPlan without EffectAuthority (Finding 8)."
+                ),
+                severity="error",
+                remediation=DIAGNOSTIC_REGISTRY[ERR_CONTRACT_DOC_INVALID]["remediation"],
+            )
+        )
+
+    # Extract rust code blocks
+    code_block_pattern = re.compile(r"```rust(?:,[^\n]*)?\n(.*?)```", re.DOTALL)
+    blocks = code_block_pattern.findall(content)
+
+    dummy_struct_pattern = re.compile(
+        r"^\s*(?:pub\s+)?(?:struct|enum)\s+([A-Za-z0-9_]+)",
+        re.MULTILINE,
+    )
+
+    for idx, block in enumerate(blocks, start=1):
+        # Check for dummy struct definitions (Finding 1)
+        for match in dummy_struct_pattern.finditer(block):
+            struct_name = match.group(1)
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_CONTRACT_DOC_INVALID,
+                    file=rel_path,
+                    location=f"doctest_block_{idx}:{struct_name}",
+                    message=(
+                        f"Doctest block {idx} declares dummy local type '{struct_name}'. "
+                        "Contract doctests must import and verify actual workspace types from fss_core or fss_reference."
+                    ),
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_CONTRACT_DOC_INVALID]["remediation"],
+                    params={"block_index": idx, "type_name": struct_name},
+                )
+            )
+
+        # Check that doctest block imports from real workspace crates (fss_core or fss_reference)
+        if not ("use fss_core::" in block or "use fss_reference::" in block):
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_CONTRACT_DOC_INVALID,
+                    file=rel_path,
+                    location=f"doctest_block_{idx}",
+                    message=(
+                        f"Doctest block {idx} does not import from workspace crates (fss_core or fss_reference). "
+                        "Doctests must verify real workspace types."
+                    ),
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_CONTRACT_DOC_INVALID]["remediation"],
+                    params={"block_index": idx},
+                )
+            )
+
+    return findings
 
 
 def audit_fss_core_type_census(
@@ -958,8 +1155,11 @@ def audit_semantic_planes(
     # NEG-003 Model generation immutability audit (no mutable aliases like 'latest')
     findings.extend(check_model_generation_immutability(root))
 
-    # Compile-fail doctests verification
+    # Contract doc claims audit (F1, F8)
     contract_path = root / "docs/enforcement/three_semantic_planes_contract.md"
+    findings.extend(audit_contract_doc_claims(root, contract_path))
+
+    # Compile-fail doctests verification
     doctests_passed = 0
     if check_doctests:
         if not contract_path.is_file():
@@ -974,7 +1174,7 @@ def audit_semantic_planes(
                 )
             )
         else:
-            success, count, err = verify_compile_fail_doctests(contract_path)
+            success, count, err = verify_compile_fail_doctests(contract_path, root)
             if success:
                 doctests_passed = count
             else:

@@ -295,20 +295,93 @@ class TestPlantedNegativeRegistryIntegrity(unittest.TestCase):
 class TestReviewFindings(unittest.TestCase):
     """Failing tests first corresponding to review-670 findings F1 - F8."""
 
-    def test_finding_1_and_8_contract_doc_typed_effect_authority(self) -> None:
-        """Contract doc Invariant 4 must use typed EffectAuthority, not primitive &str (F1, F8)."""
+    def test_finding_1_contract_doc_must_not_use_dummy_structs(self) -> None:
+        """Contract doc doctests must not use fictitious dummy structs (F1)."""
         contract_path = ROOT / "docs/enforcement/three_semantic_planes_contract.md"
         content = contract_path.read_text(encoding="utf-8")
+        # Prohibit dummy structs in doctests
+        for dummy in [
+            "pub struct BeliefInterval",
+            "pub struct EffectAuthority",
+            "pub struct ModelRecommendation",
+            "pub struct EffectIntent",
+            "pub struct ModelHypothesis",
+            "pub struct EffectExecutor",
+            "pub struct VlmOutput",
+        ]:
+            self.assertNotIn(
+                dummy,
+                content,
+                f"Contract doc must not use dummy struct '{dummy}'; must use real workspace types",
+            )
+        # Must import real workspace types
+        self.assertIn("use fss_core::belief::BeliefInterval;", content)
+        self.assertIn("use fss_core::effect::EffectAuthority;", content)
+        self.assertIn("use fss_core::effect::EffectIntent;", content)
+        self.assertIn("use fss_reference::ReferenceAlertPlan;", content)
+        self.assertIn("use fss_reference::MockModelOutput;", content)
+
+        # Checker audit must fail closed if dummy structs are present
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            doc_dir = tmp_root / "docs" / "enforcement"
+            doc_dir.mkdir(parents=True, exist_ok=True)
+            dummy_doc = doc_dir / "three_semantic_planes_contract.md"
+            dummy_doc.write_text(
+                """# Dummy Contract
+```rust,compile_fail
+pub struct BeliefInterval { pub lower: u64 }
+pub struct EffectAuthority { pub token: String }
+fn main() {}
+```
+""",
+                encoding="utf-8",
+            )
+            from semantic_plane_checker import audit_contract_doc_claims
+            findings = audit_contract_doc_claims(tmp_root, dummy_doc)
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CONTRACT_DOC_INVALID, codes)
+
+    def test_finding_8_contract_doc_claims_match_code_enforcement(self) -> None:
+        """Contract doc claims must match actual code enforcement (F8)."""
+        contract_path = ROOT / "docs/enforcement/three_semantic_planes_contract.md"
+        content = contract_path.read_text(encoding="utf-8")
+        # Invariant 4 must not claim dispatch strictly requires EffectAuthority parameter
         self.assertNotIn(
-            "dispatch(&self, auth: &str)",
+            "strictly requires an explicit `EffectAuthority` parameter",
             content,
-            "Invariant 4 must not use primitive &str while claiming to require EffectAuthority",
+            "Contract doc must not claim dispatch strictly requires EffectAuthority parameter",
+        )
+        self.assertNotIn(
+            "strictly requires an explicit EffectAuthority parameter",
+            content,
         )
         self.assertIn(
-            "EffectAuthority",
+            "ReferenceAlertPlan",
             content,
-            "Invariant 4 must use EffectAuthority token",
+            "Contract doc Invariant 4 must reference ReferenceAlertPlan",
         )
+
+        # Checker audit must fail closed if unbacked EffectAuthority dispatch claim is made
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            doc_dir = tmp_root / "docs" / "enforcement"
+            doc_dir.mkdir(parents=True, exist_ok=True)
+            bad_doc = doc_dir / "three_semantic_planes_contract.md"
+            bad_doc.write_text(
+                """# Contract
+An effect dispatch interface strictly requires an explicit `EffectAuthority` parameter.
+```rust,compile_fail
+use fss_core::belief::BeliefInterval;
+fn main() {}
+```
+""",
+                encoding="utf-8",
+            )
+            from semantic_plane_checker import audit_contract_doc_claims
+            findings = audit_contract_doc_claims(tmp_root, bad_doc)
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_CONTRACT_DOC_INVALID, codes)
 
     def test_finding_2_multiline_cross_plane_import_detected(self) -> None:
         """Multiline grouped imports of authority/effect types must be detected (F2)."""
