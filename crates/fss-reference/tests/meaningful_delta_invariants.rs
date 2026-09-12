@@ -8,11 +8,12 @@ use std::fs;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
-    ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, DeltaPriority,
-    EffectJournal, EventId, HypothesisDisposition, IdempotencyKey, KnowledgeCell, KnowledgeState,
-    LedgerAnchor, MeaningfulDeltaClass, MissionId, MissionLifecycleState, ObligationId,
-    OperationId, PrincipalId, ProbabilityInterval, ProvenanceClass, ResourcePressure, SensorId,
-    SessionId, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, CoverageContinuity,
+    CoverageStopReason, CoverageWitness, DeltaPriority, EffectJournal, EventId,
+    HypothesisDisposition, IdempotencyKey, KnowledgeCell, KnowledgeState, LedgerAnchor,
+    MeaningfulDeltaClass, MissionId, MissionLifecycleState, ObligationId, OperationId, PrincipalId,
+    ProbabilityInterval, ProvenanceClass, ResourcePressure, SensorId, SessionId,
+    SilenceCertificate, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
@@ -48,6 +49,7 @@ struct Variant {
     mission_statement: String,
     mission_state: Option<MissionLifecycleState>,
     custom_cells: Vec<KnowledgeCell>,
+    custom_revision: Option<u64>,
 }
 
 impl Variant {
@@ -72,6 +74,7 @@ impl Variant {
             mission_statement: "The reference mission remains active.".to_owned(),
             mission_state: Some(MissionLifecycleState::Active),
             custom_cells: Vec::new(),
+            custom_revision: None,
         })
     }
 }
@@ -190,6 +193,25 @@ impl TestHarness {
         Ok((decision, receipt))
     }
 
+    fn publish_rejected_decision(
+        &mut self,
+        name: &str,
+    ) -> Result<(ReferencePolicyDecision, ReferenceEventReceipt), Box<dyn Error>> {
+        let obs = self.observation(
+            name,
+            "lane_alpha",
+            50,
+            "power:alpha",
+            MockSemanticLabel::AnimalLike,
+        )?;
+        let decision = evaluate_unknown_presence(
+            EventId::parse(format!("event:meaningful-delta-inv:{name}"))?,
+            vec![obs],
+        )?;
+        let receipt = publish_reference_event(&decision, &mut self.objects, &mut self.authority)?;
+        Ok((decision, receipt))
+    }
+
     fn cleanup(self) {
         let path = self.path.clone();
         drop(self);
@@ -244,6 +266,7 @@ fn test_request<'a>(
         event_receipt,
         alert_plan,
         alert_outcome: None,
+        coverage_witness: None,
         available_capabilities: capabilities,
     })
 }
@@ -352,9 +375,10 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
         next,
         evidence_handles: BTreeSet::from([format!("fss://proof/{evidence}")]),
     };
+    let revision = variant.custom_revision.unwrap_or(variant.sequence);
     let capsule = SituationCapsule {
         capsule_id: format!("situation:meaningful-delta:{}", variant.sequence),
-        revision: variant.sequence,
+        revision,
         contract_basis: test_basis(),
         mission_id: MissionId::parse("mission:meaningful-delta")?,
         session_id: SessionId::parse("session:meaningful-delta")?,
@@ -1282,6 +1306,503 @@ fn test_f4_real_situation_f3_contradictory_evidence_on_estimated_premise_invalid
         "PlanInvalidation must be non-coalescible!"
     );
     delta.validate()?;
+    harness.cleanup();
+    Ok(())
+}
+
+/// INV-056: Silence certificate requires non-empty authorized domain and generation, and is issued
+/// when two nominal publications have identical coverage and no decision-relevant changes.
+#[test]
+fn test_inv056_silence_certificate_issued_for_identical_nominal_publications()
+-> Result<(), Box<dyn Error>> {
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+    v1.completeness = Completeness::Complete;
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.completeness = Completeness::Complete;
+
+    let pub1 = publication(&v1)?;
+    let pub2 = publication(&v2)?;
+    pub1.verify()?;
+    pub2.verify()?;
+
+    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+    assert_eq!(
+        delta.classes,
+        BTreeSet::from([MeaningfulDeltaClass::NoMeaningfulChange]),
+        "Identical nominal publications must emit NoMeaningfulChange!"
+    );
+    let cert = delta
+        .silence_certificate
+        .as_ref()
+        .ok_or(ReferenceError::InvalidSpec("missing_silence_certificate"))?;
+    assert!(
+        !cert.authorized_domain.is_empty(),
+        "Authorized domain must not be empty!"
+    );
+    assert_eq!(
+        cert.authorized_generation, delta.contract_basis.ontology_generation_id,
+        "Authorized generation must match contract basis ontology generation!"
+    );
+    cert.validate()?;
+    delta.validate()?;
+    Ok(())
+}
+
+/// INV-056: Coverage gap between publications (e.g. missing domain in result) refuses silence certificate
+/// and emits CoverageLoss explicitly naming the missing domain identities.
+#[test]
+fn test_inv056_silence_certificate_rejected_on_coverage_gap_names_missing_identity()
+-> Result<(), Box<dyn Error>> {
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+    v1.coverage = BTreeSet::from([
+        "fss://coverage/alpha".to_owned(),
+        "fss://coverage/beta".to_owned(),
+        "fss://coverage/extra-zone".to_owned(),
+    ]);
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.coverage = BTreeSet::from([
+        "fss://coverage/alpha".to_owned(),
+        "fss://coverage/beta".to_owned(),
+    ]);
+
+    let pub1 = publication(&v1)?;
+    let pub2 = publication(&v2)?;
+    pub1.verify()?;
+    pub2.verify()?;
+
+    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+    assert!(
+        delta.silence_certificate.is_none(),
+        "Silence certificate must NOT be issued when coverage domain has a gap!"
+    );
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+        "Coverage gap must emit CoverageLoss!"
+    );
+    assert!(
+        delta
+            .coverage_changes
+            .iter()
+            .any(|change| change.contains("fss://coverage/extra-zone")),
+        "CoverageLoss must explicitly name the missing domain identity! Changes: {:?}",
+        delta.coverage_changes
+    );
+    delta.validate()?;
+    Ok(())
+}
+
+/// INV-056: Stale capsule revision in result refuses silence certificate and emits CoverageLoss naming stale revision.
+#[test]
+fn test_inv056_silence_certificate_rejected_on_stale_capsule_revision() -> Result<(), Box<dyn Error>>
+{
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+    v1.custom_revision = Some(5);
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.custom_revision = Some(2);
+
+    let pub1 = publication(&v1)?;
+    let pub2 = publication(&v2)?;
+    pub1.verify()?;
+    pub2.verify()?;
+
+    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+    assert!(
+        delta.silence_certificate.is_none(),
+        "Silence certificate must NOT be issued when result capsule revision is stale!"
+    );
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+        "Stale revision must emit CoverageLoss!"
+    );
+    assert!(
+        delta
+            .coverage_changes
+            .iter()
+            .any(|change| change.contains("stale capsule revision")),
+        "CoverageLoss must explicitly name the stale revision! Changes: {:?}",
+        delta.coverage_changes
+    );
+    delta.validate()?;
+    Ok(())
+}
+
+/// INV-056: Silence certificate direct validation fails on empty domain or empty generation.
+#[test]
+fn test_inv056_silence_certificate_validation_fails_on_empty_domain_or_generation() {
+    let cert_empty_domain = SilenceCertificate {
+        basis_frame_digest: ContentDigest::sha256(b"basis"),
+        result_frame_digest: ContentDigest::sha256(b"result"),
+        selection_witness: ContentDigest::sha256(b"witness"),
+        authorized_domain: BTreeSet::new(),
+        authorized_generation: "ontology:reference:v1".to_owned(),
+        reason: "no change".to_owned(),
+    };
+    assert_eq!(
+        cert_empty_domain.validate(),
+        Err(ContractError::EvidenceRequired)
+    );
+
+    let cert_empty_gen = SilenceCertificate {
+        authorized_domain: BTreeSet::from(["claim:premise".to_owned()]),
+        authorized_generation: String::new(),
+        ..cert_empty_domain
+    };
+    assert_eq!(
+        cert_empty_gen.validate(),
+        Err(ContractError::EvidenceRequired)
+    );
+}
+
+/// INV-056: Real situation compilation of a rejected event without a coverage witness
+/// CANNOT claim absence: absence cell is Unknown and protected residual world is preserved.
+#[test]
+fn test_inv056_rejected_event_without_coverage_witness_cannot_claim_absence()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("inv056-none")?;
+    let (decision, receipt) = harness.publish_rejected_decision("inv056-none")?;
+    let req = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    let absence = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
+    assert_eq!(
+        absence.knowledge_state,
+        KnowledgeState::Unknown,
+        "Absence without CoverageWitness must remain Unknown!"
+    );
+    assert!(
+        absence
+            .statement
+            .contains("Physical absence is not certified"),
+        "Absence statement must indicate absence is uncertified!"
+    );
+    assert!(
+        situation
+            .capsule
+            .frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|w| w.protected && w.world_id.ends_with(":absence-uncertified")),
+        "Protected absence-uncertified residual world MUST be retained without coverage witness!"
+    );
+    assert!(
+        situation
+            .capsule
+            .frame
+            .unknown
+            .iter()
+            .any(|s| s.contains("physical absence remains unproved")),
+        "Unknowns must state physical absence remains unproved!"
+    );
+
+    situation.verify()?;
+    harness.cleanup();
+    Ok(())
+}
+
+/// INV-056: Real situation compilation with a stale/mismatched generation coverage witness
+/// fails certification: absence cell is Unknown, names the generation conflict, and retains protected residual.
+#[test]
+fn test_inv056_rejected_event_with_stale_generation_coverage_witness_fails_certification()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("inv056-stale-gen")?;
+    let (decision, receipt) = harness.publish_rejected_decision("inv056-stale-gen")?;
+    let req = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+
+    let anchor = harness.authority.current().anchor.clone();
+    let witness = CoverageWitness {
+        anchor,
+        authorized_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        observed_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        excluded_domain: BTreeSet::new(),
+        continuity: CoverageContinuity::Continuous,
+        completeness: Completeness::Complete,
+        negative_predicate: "no_unknown_person_present".to_owned(),
+        stop_reason: CoverageStopReason::Complete,
+        authorized_generation: 999,
+        observed_generation: 1,
+    };
+    assert!(!witness.certifies_absence());
+
+    let mut req = req;
+    req.coverage_witness = Some(&witness);
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    let absence = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
+    assert_eq!(
+        absence.knowledge_state,
+        KnowledgeState::Unknown,
+        "Absence with mismatched generation CoverageWitness must remain Unknown!"
+    );
+    assert!(
+        absence
+            .statement
+            .contains("conflicts with observed generation"),
+        "Absence statement must name generation conflict! Statement: {}",
+        absence.statement
+    );
+    assert!(
+        situation
+            .capsule
+            .frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|w| w.protected && w.world_id.ends_with(":absence-uncertified")),
+        "Protected absence-uncertified residual world MUST be retained on generation mismatch!"
+    );
+
+    situation.verify()?;
+    harness.cleanup();
+    Ok(())
+}
+
+/// INV-056: Real situation compilation with a gapped coverage witness fails certification:
+/// absence cell is Unknown, names continuity gap, and retains protected residual.
+#[test]
+fn test_inv056_rejected_event_with_gapped_coverage_witness_fails_certification()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("inv056-gapped")?;
+    let (decision, receipt) = harness.publish_rejected_decision("inv056-gapped")?;
+    let req = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+
+    let anchor = harness.authority.current().anchor.clone();
+    let current_epoch = anchor.policy_epoch;
+    let witness = CoverageWitness {
+        anchor,
+        authorized_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        observed_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        excluded_domain: BTreeSet::new(),
+        continuity: CoverageContinuity::Gapped,
+        completeness: Completeness::Complete,
+        negative_predicate: "no_unknown_person_present".to_owned(),
+        stop_reason: CoverageStopReason::Complete,
+        authorized_generation: current_epoch,
+        observed_generation: current_epoch,
+    };
+    assert!(!witness.certifies_absence());
+
+    let mut req = req;
+    req.coverage_witness = Some(&witness);
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    let absence = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
+    assert_eq!(
+        absence.knowledge_state,
+        KnowledgeState::Unknown,
+        "Absence with gapped CoverageWitness must remain Unknown!"
+    );
+    assert!(
+        absence.statement.contains("continuity is Gapped"),
+        "Absence statement must name continuity gap! Statement: {}",
+        absence.statement
+    );
+    assert!(
+        situation
+            .capsule
+            .frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|w| w.protected && w.world_id.ends_with(":absence-uncertified")),
+        "Protected absence-uncertified residual world MUST be retained on gapped coverage!"
+    );
+
+    situation.verify()?;
+    harness.cleanup();
+    Ok(())
+}
+
+/// INV-056: Real situation compilation with an out-of-domain coverage witness fails certification:
+/// absence cell is Unknown, names domain mismatch, and retains protected residual.
+#[test]
+fn test_inv056_rejected_event_with_out_of_domain_coverage_witness_fails_certification()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("inv056-domain-mismatch")?;
+    let (decision, receipt) = harness.publish_rejected_decision("inv056-domain-mismatch")?;
+    let req = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+
+    let anchor = harness.authority.current().anchor.clone();
+    let current_epoch = anchor.policy_epoch;
+    let witness = CoverageWitness {
+        anchor,
+        authorized_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        observed_domain: BTreeSet::from(["power:other_zone".to_owned()]),
+        excluded_domain: BTreeSet::new(),
+        continuity: CoverageContinuity::Continuous,
+        completeness: Completeness::Complete,
+        negative_predicate: "no_unknown_person_present".to_owned(),
+        stop_reason: CoverageStopReason::Complete,
+        authorized_generation: current_epoch,
+        observed_generation: current_epoch,
+    };
+    assert!(!witness.certifies_absence());
+
+    let mut req = req;
+    req.coverage_witness = Some(&witness);
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    let absence = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
+    assert_eq!(
+        absence.knowledge_state,
+        KnowledgeState::Unknown,
+        "Absence with out-of-domain CoverageWitness must remain Unknown!"
+    );
+    assert!(
+        absence
+            .statement
+            .contains("does not match authorized domain"),
+        "Absence statement must name domain mismatch! Statement: {}",
+        absence.statement
+    );
+    assert!(
+        situation
+            .capsule
+            .frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|w| w.protected && w.world_id.ends_with(":absence-uncertified")),
+        "Protected absence-uncertified residual world MUST be retained on domain mismatch!"
+    );
+
+    situation.verify()?;
+    harness.cleanup();
+    Ok(())
+}
+
+/// INV-056: Real situation compilation with a fully valid CoverageWitness over the authorized
+/// domain and generation successfully certifies absence: KnowledgeState is Known (Refuted),
+/// witness digest is in proof roots, and uncertified-absence residual world is resolved.
+#[test]
+fn test_inv056_rejected_event_with_valid_coverage_witness_certifies_absence()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("inv056-certified")?;
+    let (decision, receipt) = harness.publish_rejected_decision("inv056-certified")?;
+    let req = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+
+    let anchor = harness.authority.current().anchor.clone();
+    let current_epoch = anchor.policy_epoch;
+    let witness = CoverageWitness {
+        anchor,
+        authorized_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        observed_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        excluded_domain: BTreeSet::new(),
+        continuity: CoverageContinuity::Continuous,
+        completeness: Completeness::Complete,
+        negative_predicate: "no_unknown_person_present".to_owned(),
+        stop_reason: CoverageStopReason::Complete,
+        authorized_generation: current_epoch,
+        observed_generation: current_epoch,
+    };
+    assert!(
+        witness.certifies_absence(),
+        "Valid witness must certify absence!"
+    );
+    assert_eq!(witness.require_certified_absence(), Ok(()));
+
+    let mut req = req;
+    req.coverage_witness = Some(&witness);
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    let absence = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
+    assert_eq!(
+        absence.knowledge_state,
+        KnowledgeState::Known,
+        "Absence with complete continuous CoverageWitness over authorized domain and generation must be Known!"
+    );
+    assert_eq!(
+        absence.hypothesis,
+        Some(HypothesisDisposition::Refuted),
+        "Absence hypothesis disposition must be Refuted!"
+    );
+    assert!(
+        absence
+            .statement
+            .contains("Physical absence is certified across authorized domain"),
+        "Absence statement must indicate certified absence! Statement: {}",
+        absence.statement
+    );
+    assert!(
+        situation.proof_roots.contains(&witness.witness_digest()),
+        "Situation proof roots must include the CoverageWitness digest!"
+    );
+    assert!(
+        !situation
+            .capsule
+            .frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|w| w.world_id.ends_with(":absence-uncertified")),
+        "Protected absence-uncertified residual world MUST NOT be present when absence is certified!"
+    );
+
+    situation.verify()?;
     harness.cleanup();
     Ok(())
 }

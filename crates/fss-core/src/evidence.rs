@@ -512,6 +512,10 @@ pub struct CoverageWitness {
     pub negative_predicate: String,
     /// Evaluation stop reason.
     pub stop_reason: CoverageStopReason,
+    /// Authorized generation requested by the caller.
+    pub authorized_generation: u64,
+    /// Generation actually observed.
+    pub observed_generation: u64,
 }
 
 impl CoverageWitness {
@@ -523,7 +527,10 @@ impl CoverageWitness {
             && self.completeness == Completeness::Complete
             && self.stop_reason == CoverageStopReason::Complete
             && self.excluded_domain.is_empty()
+            && !self.authorized_domain.is_empty()
             && self.authorized_domain == self.observed_domain
+            && self.authorized_generation > 0
+            && self.authorized_generation == self.observed_generation
     }
 
     /// Returns a stable witness digest.
@@ -534,6 +541,13 @@ impl CoverageWitness {
 
     /// Fails closed if the witness cannot certify absence.
     pub fn require_certified_absence(&self) -> Result<(), ContractError> {
+        if self.authorized_generation == 0 || self.authorized_generation != self.observed_generation
+        {
+            return Err(ContractError::GenerationConflict);
+        }
+        if self.authorized_domain.is_empty() || self.authorized_domain != self.observed_domain {
+            return Err(ContractError::CoverageUncertified);
+        }
         if self.certifies_absence() {
             Ok(())
         } else {
@@ -572,6 +586,8 @@ impl CanonicalEncode for CoverageWitness {
             CoverageStopReason::Unsupported => 6,
             CoverageStopReason::Error => 7,
         });
+        encoder.u64(self.authorized_generation);
+        encoder.u64(self.observed_generation);
     }
 }
 
@@ -706,7 +722,54 @@ mod tests {
             completeness: Completeness::Complete,
             negative_predicate: "no_person_present".to_owned(),
             stop_reason: CoverageStopReason::Complete,
+            authorized_generation: 1,
+            observed_generation: 1,
         };
         assert!(witness.certifies_absence());
+        assert_eq!(witness.require_certified_absence(), Ok(()));
+    }
+
+    #[test]
+    fn negative_read_fails_on_generation_mismatch() {
+        let anchor = LedgerAnchor::genesis("site:one");
+        let witness = CoverageWitness {
+            anchor,
+            authorized_domain: BTreeSet::from(["zone:yard".to_owned()]),
+            observed_domain: BTreeSet::from(["zone:yard".to_owned()]),
+            excluded_domain: BTreeSet::new(),
+            continuity: CoverageContinuity::Continuous,
+            completeness: Completeness::Complete,
+            negative_predicate: "no_person_present".to_owned(),
+            stop_reason: CoverageStopReason::Complete,
+            authorized_generation: 2,
+            observed_generation: 1,
+        };
+        assert!(!witness.certifies_absence());
+        assert_eq!(
+            witness.require_certified_absence(),
+            Err(ContractError::GenerationConflict)
+        );
+    }
+
+    #[test]
+    fn negative_read_fails_on_gapped_continuity() {
+        let anchor = LedgerAnchor::genesis("site:one");
+        let witness = CoverageWitness {
+            anchor,
+            authorized_domain: BTreeSet::from(["zone:yard".to_owned()]),
+            observed_domain: BTreeSet::from(["zone:yard".to_owned()]),
+            excluded_domain: BTreeSet::new(),
+            continuity: CoverageContinuity::Gapped,
+            completeness: Completeness::Complete,
+            negative_predicate: "no_person_present".to_owned(),
+            stop_reason: CoverageStopReason::Complete,
+            authorized_generation: 1,
+            observed_generation: 1,
+        };
+        assert!(!witness.certifies_absence());
+        assert_eq!(
+            witness.require_certified_absence(),
+            Err(ContractError::CoverageUncertified)
+        );
     }
 }

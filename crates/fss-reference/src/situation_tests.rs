@@ -158,6 +158,7 @@ fn request<'a>(
         event_receipt,
         alert_plan: None,
         alert_outcome: None,
+        coverage_witness: None,
         available_capabilities: capabilities,
         created_at: TimestampNs(1_000),
     })

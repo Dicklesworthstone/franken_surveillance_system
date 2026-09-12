@@ -4,10 +4,11 @@ use std::collections::BTreeSet;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder,
-    Completeness, ContentDigest, ContractBasis, EffectState, EventState, HandoffCapsule, HandoffId,
-    HandoffPublishParams, HypothesisDisposition, KnowledgeCell, KnowledgeState, LedgerAnchor,
-    MissionId, ObjectId, ObligationId, PossibleWorld, PrincipalId, ProvenanceClass, SessionId,
-    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    Completeness, ContentDigest, ContractBasis, CoverageContinuity, CoverageStopReason,
+    CoverageWitness, EffectState, EventState, HandoffCapsule, HandoffId, HandoffPublishParams,
+    HypothesisDisposition, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObjectId,
+    ObligationId, PossibleWorld, PrincipalId, ProvenanceClass, SessionId, SituationCapsule,
+    SituationFrame, TimestampNs, WorldEnvelope,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -48,6 +49,8 @@ pub struct ReferenceSituationRequest<'a> {
     pub alert_plan: Option<&'a ReferenceAlertPlan>,
     /// Optional canonical effect outcome publication.
     pub alert_outcome: Option<&'a ReferenceAlertOutcomeReceipt>,
+    /// Optional coverage witness for negative reads / absence certification.
+    pub coverage_witness: Option<&'a CoverageWitness>,
     /// Capabilities currently delegated to the principal.
     pub available_capabilities: BTreeSet<String>,
     /// Deterministic caller-supplied creation time.
@@ -57,9 +60,9 @@ pub struct ReferenceSituationRequest<'a> {
 /// A compiled situation plus every proof root needed for a self-contained handoff.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferenceSituation {
-    /// Validated agent-facing situation capsule.
+    /// Canonical handoff capsule after projection.
     pub capsule: SituationCapsule,
-    /// Complete set of evidence, witness, plan, and outcome roots cited by the projection.
+    /// Exact proof roots required to verify the handoff without re-running projection.
     pub proof_roots: BTreeSet<ContentDigest>,
 }
 
@@ -84,7 +87,8 @@ pub fn compile_reference_situation(
     request: ReferenceSituationRequest<'_>,
     authority: &DurableReferenceLedger,
 ) -> Result<ReferenceSituation, ReferenceError> {
-    validate_request(&request, authority)?;
+    let coverage_witness = request.coverage_witness;
+    validate_request(&request, authority, coverage_witness)?;
 
     let current_anchor = authority.current().anchor.clone();
     let event_name = request.decision.event.event_id.as_str();
@@ -173,17 +177,124 @@ pub fn compile_reference_situation(
         contradictions: contradicting.clone(),
         valid_until: None,
     });
-    if request.decision.event.state == EventState::Rejected {
-        knowledge_cells.push(KnowledgeCell {
-            claim_id: absence_claim_id.clone(),
-            statement: "Physical absence is not certified because no complete continuous CoverageWitness is present in this reference projection.".to_owned(),
-            knowledge_state: KnowledgeState::Unknown,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: None,
-            evidence: vec![event_revision_digest],
-            contradictions: Vec::new(),
-            valid_until: None,
-        });
+
+    let mut coverage_proof_root = None;
+    let (absence_certified, absence_non_pass_reason, absence_cell) = if request.decision.event.state
+        == EventState::Rejected
+    {
+        if let Some(witness) = coverage_witness {
+            let matches_anchor = witness.anchor.site_lineage == current_anchor.site_lineage
+                && witness.anchor.ledger_epoch == current_anchor.ledger_epoch;
+            let matches_generation = witness.authorized_generation > 0
+                && witness.authorized_generation == witness.observed_generation
+                && witness.authorized_generation == current_anchor.policy_epoch;
+            let matches_domain = !witness.authorized_domain.is_empty()
+                && witness.authorized_domain == witness.observed_domain;
+
+            if witness.certifies_absence() && matches_anchor && matches_generation && matches_domain
+            {
+                coverage_proof_root = Some(witness.witness_digest());
+                let statement = format!(
+                    "Physical absence is certified across authorized domain {:?} at generation {}.",
+                    witness.authorized_domain, witness.authorized_generation
+                );
+                (
+                    true,
+                    None,
+                    Some(KnowledgeCell {
+                        claim_id: absence_claim_id.clone(),
+                        statement,
+                        knowledge_state: KnowledgeState::Known,
+                        provenance: ProvenanceClass::Derived,
+                        hypothesis: Some(HypothesisDisposition::Refuted),
+                        evidence: vec![event_revision_digest, witness.witness_digest()],
+                        contradictions: Vec::new(),
+                        valid_until: None,
+                    }),
+                )
+            } else {
+                let reason = if !matches_generation {
+                    format!(
+                        "coverage witness generation {} conflicts with observed generation {} (policy epoch {})",
+                        witness.authorized_generation,
+                        witness.observed_generation,
+                        current_anchor.policy_epoch
+                    )
+                } else if !matches_anchor {
+                    format!(
+                        "coverage witness anchor epoch {} conflicts with current anchor epoch {}",
+                        witness.anchor.ledger_epoch, current_anchor.ledger_epoch
+                    )
+                } else if witness.continuity != CoverageContinuity::Continuous {
+                    format!(
+                        "coverage witness continuity is {:?} (expected Continuous) for domain {:?}",
+                        witness.continuity, witness.authorized_domain
+                    )
+                } else if witness.completeness != Completeness::Complete {
+                    format!(
+                        "coverage witness completeness is {:?} (expected Complete) for domain {:?}",
+                        witness.completeness, witness.authorized_domain
+                    )
+                } else if witness.stop_reason != CoverageStopReason::Complete {
+                    format!(
+                        "coverage witness stop reason is {:?} (expected Complete) for domain {:?}",
+                        witness.stop_reason, witness.authorized_domain
+                    )
+                } else if !matches_domain {
+                    format!(
+                        "coverage witness observed domain {:?} does not match authorized domain {:?}",
+                        witness.observed_domain, witness.authorized_domain
+                    )
+                } else {
+                    format!(
+                        "coverage witness does not certify absence for domain {:?}",
+                        witness.authorized_domain
+                    )
+                };
+                let statement = format!("Physical absence is not certified because {reason}.");
+                (
+                    false,
+                    Some(reason),
+                    Some(KnowledgeCell {
+                        claim_id: absence_claim_id.clone(),
+                        statement,
+                        knowledge_state: KnowledgeState::Unknown,
+                        provenance: ProvenanceClass::Derived,
+                        hypothesis: None,
+                        evidence: vec![event_revision_digest],
+                        contradictions: Vec::new(),
+                        valid_until: None,
+                    }),
+                )
+            }
+        } else {
+            let reason =
+                "no complete continuous CoverageWitness is present in this reference projection"
+                    .to_owned();
+            (
+                false,
+                Some(reason),
+                Some(KnowledgeCell {
+                    claim_id: absence_claim_id.clone(),
+                    statement: "Physical absence is not certified because no complete continuous CoverageWitness is present in this reference projection.".to_owned(),
+                    knowledge_state: KnowledgeState::Unknown,
+                    provenance: ProvenanceClass::Derived,
+                    hypothesis: None,
+                    evidence: vec![event_revision_digest],
+                    contradictions: Vec::new(),
+                    valid_until: None,
+                }),
+            )
+        }
+    } else {
+        (false, None, None)
+    };
+
+    if let Some(cell) = absence_cell {
+        knowledge_cells.push(cell);
+    }
+    if let Some(digest) = coverage_proof_root {
+        proof_roots.insert(digest);
     }
 
     if let Some(outcome) = request.alert_outcome {
@@ -218,15 +329,17 @@ pub fn compile_reference_situation(
         });
     }
 
-    let (world_envelope, mut unknown, mut at_risk) = compile_worlds(
-        &current_anchor,
-        &request.objective_id,
-        request.decision,
-        request.event_receipt,
-        &physical_claim_id,
-        &policy_claim_id,
-        &absence_claim_id,
-    );
+    let (world_envelope, mut unknown, mut at_risk) = compile_worlds(WorldCompilationParams {
+        anchor: &current_anchor,
+        objective_id: &request.objective_id,
+        decision: request.decision,
+        event_receipt: request.event_receipt,
+        physical_claim_id: &physical_claim_id,
+        policy_claim_id: &policy_claim_id,
+        absence_claim_id: &absence_claim_id,
+        absence_certified,
+        absence_non_pass_reason: absence_non_pass_reason.as_deref(),
+    });
     let retained_worlds = world_envelope.world_ids();
     let presence_world = format!("world:event:{event_name}:present");
     let alert_supported_worlds = BTreeSet::from([presence_world.clone()]);
@@ -514,6 +627,7 @@ pub fn seal_reference_handoff(
 fn validate_request(
     request: &ReferenceSituationRequest<'_>,
     authority: &DurableReferenceLedger,
+    coverage_witness: Option<&CoverageWitness>,
 ) -> Result<(), ReferenceError> {
     if request.objective_id.is_empty()
         || request.objective_id.len() > MAX_OBJECTIVE_BYTES
@@ -521,6 +635,11 @@ fn validate_request(
         || request.contract_basis.semantic_protocol != "fss/1"
     {
         return Err(ReferenceError::InvalidSpec("situation_request"));
+    }
+    if coverage_witness.is_some() && request.decision.event.state != EventState::Rejected {
+        return Err(ReferenceError::InvalidSpec(
+            "situation_coverage_witness_for_non_rejected_event",
+        ));
     }
     request.decision.event.validate()?;
     let expected_action = if request.decision.event.state == EventState::Corroborated {
@@ -618,43 +737,48 @@ fn validate_request(
     Ok(())
 }
 
-fn compile_worlds(
-    anchor: &LedgerAnchor,
-    objective_id: &str,
-    decision: &ReferencePolicyDecision,
-    event_receipt: &ReferenceEventReceipt,
-    physical_claim_id: &str,
-    policy_claim_id: &str,
-    absence_claim_id: &str,
-) -> (WorldEnvelope, Vec<String>, Vec<String>) {
-    let event_name = decision.event.event_id.as_str();
-    let event_evidence: Vec<_> = decision
+struct WorldCompilationParams<'a> {
+    anchor: &'a LedgerAnchor,
+    objective_id: &'a str,
+    decision: &'a ReferencePolicyDecision,
+    event_receipt: &'a ReferenceEventReceipt,
+    physical_claim_id: &'a str,
+    policy_claim_id: &'a str,
+    absence_claim_id: &'a str,
+    absence_certified: bool,
+    absence_non_pass_reason: Option<&'a str>,
+}
+
+fn compile_worlds(params: WorldCompilationParams<'_>) -> (WorldEnvelope, Vec<String>, Vec<String>) {
+    let event_name = params.decision.event.event_id.as_str();
+    let event_evidence: Vec<_> = params
+        .decision
         .event
         .evidence
         .iter()
         .map(|edge| edge.digest)
         .collect();
     let policy_evidence = vec![
-        event_receipt.event_root,
-        event_receipt.event_revision_digest,
+        params.event_receipt.event_root,
+        params.event_receipt.event_revision_digest,
     ];
     let mut alternatives = Vec::new();
     let mut residuals = Vec::new();
-    let mut nominal_claim_ids = BTreeSet::from([policy_claim_id.to_owned()]);
-    let mut certified_core_claim_ids = BTreeSet::from([policy_claim_id.to_owned()]);
+    let mut nominal_claim_ids = BTreeSet::from([params.policy_claim_id.to_owned()]);
+    let mut certified_core_claim_ids = BTreeSet::from([params.policy_claim_id.to_owned()]);
     let mut unknown = Vec::new();
     let mut at_risk = Vec::new();
 
-    match decision.event.state {
+    match params.decision.event.state {
         EventState::Corroborated => {
-            nominal_claim_ids.insert(physical_claim_id.to_owned());
-            certified_core_claim_ids.insert(physical_claim_id.to_owned());
+            nominal_claim_ids.insert(params.physical_claim_id.to_owned());
+            certified_core_claim_ids.insert(params.physical_claim_id.to_owned());
             alternatives.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:present"),
                 description: "The independently corroborated unknown-presence event is physically present within the retained interval.".to_owned(),
                 claim_ids: BTreeSet::from([
-                    policy_claim_id.to_owned(),
-                    physical_claim_id.to_owned(),
+                    params.policy_claim_id.to_owned(),
+                    params.physical_claim_id.to_owned(),
                 ]),
                 evidence: event_evidence,
                 consequence_severity: 5,
@@ -663,20 +787,20 @@ fn compile_worlds(
             residuals.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:spoofing-or-simultaneous-error"),
                 description: "Independent sensor sources are compromised by common-mode spoofing, simultaneous failure, or shared environmental artifact.".to_owned(),
-                claim_ids: BTreeSet::from([policy_claim_id.to_owned()]),
+                claim_ids: BTreeSet::from([params.policy_claim_id.to_owned()]),
                 evidence: policy_evidence.clone(),
                 consequence_severity: 4,
                 protected: true,
             });
         }
         EventState::Witnessed => {
-            nominal_claim_ids.insert(physical_claim_id.to_owned());
+            nominal_claim_ids.insert(params.physical_claim_id.to_owned());
             alternatives.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:present-single-domain"),
                 description: "The unknown-presence event is real, but current support comes from only one failure domain.".to_owned(),
                 claim_ids: BTreeSet::from([
-                    policy_claim_id.to_owned(),
-                    physical_claim_id.to_owned(),
+                    params.policy_claim_id.to_owned(),
+                    params.physical_claim_id.to_owned(),
                 ]),
                 evidence: event_evidence.clone(),
                 consequence_severity: 5,
@@ -685,7 +809,7 @@ fn compile_worlds(
             residuals.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:benign-or-error"),
                 description: "The single-domain finding is benign, erroneous, or otherwise insufficient for an alert effect.".to_owned(),
-                claim_ids: BTreeSet::from([policy_claim_id.to_owned()]),
+                claim_ids: BTreeSet::from([params.policy_claim_id.to_owned()]),
                 evidence: policy_evidence.clone(),
                 consequence_severity: 4,
                 protected: true,
@@ -697,8 +821,8 @@ fn compile_worlds(
                 world_id: format!("world:event:{event_name}:presence-live"),
                 description: "Unknown-person presence remains physically possible under the retained evidence.".to_owned(),
                 claim_ids: BTreeSet::from([
-                    policy_claim_id.to_owned(),
-                    physical_claim_id.to_owned(),
+                    params.policy_claim_id.to_owned(),
+                    params.physical_claim_id.to_owned(),
                 ]),
                 evidence: event_evidence.clone(),
                 consequence_severity: 5,
@@ -707,7 +831,7 @@ fn compile_worlds(
             alternatives.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:unmitigated-exposure"),
                 description: "Unmitigated consequence exposure remains possible under indeterminate evidence.".to_owned(),
-                claim_ids: BTreeSet::from([policy_claim_id.to_owned()]),
+                claim_ids: BTreeSet::from([params.policy_claim_id.to_owned()]),
                 evidence: policy_evidence.clone(),
                 consequence_severity: 4,
                 protected: false,
@@ -715,7 +839,7 @@ fn compile_worlds(
             residuals.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:non-presence-live"),
                 description: "A benign, contradictory, degraded, or otherwise non-presence explanation remains possible.".to_owned(),
-                claim_ids: BTreeSet::from([policy_claim_id.to_owned()]),
+                claim_ids: BTreeSet::from([params.policy_claim_id.to_owned()]),
                 evidence: policy_evidence.clone(),
                 consequence_severity: 4,
                 protected: true,
@@ -727,29 +851,37 @@ fn compile_worlds(
             alternatives.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:candidate-rejected"),
                 description: "The retained event candidate is rejected by the reference policy within the evaluated evidence.".to_owned(),
-                claim_ids: BTreeSet::from([policy_claim_id.to_owned()]),
+                claim_ids: BTreeSet::from([params.policy_claim_id.to_owned()]),
                 evidence: policy_evidence.clone(),
                 consequence_severity: 1,
                 protected: false,
             });
-            residuals.push(PossibleWorld {
-                world_id: format!("world:event:{event_name}:absence-uncertified"),
-                description: "Physical presence outside the evaluated evidence remains possible because no complete continuous coverage witness certifies absence.".to_owned(),
-                claim_ids: BTreeSet::from([
-                    policy_claim_id.to_owned(),
-                    absence_claim_id.to_owned(),
-                ]),
-                evidence: policy_evidence.clone(),
-                consequence_severity: 5,
-                protected: true,
-            });
-            unknown.push("Policy rejection is not a certified negative read; physical absence remains unproved.".to_owned());
+            if params.absence_certified {
+                nominal_claim_ids.insert(params.absence_claim_id.to_owned());
+                certified_core_claim_ids.insert(params.absence_claim_id.to_owned());
+            } else {
+                residuals.push(PossibleWorld {
+                    world_id: format!("world:event:{event_name}:absence-uncertified"),
+                    description: "Physical presence outside the evaluated evidence remains possible because no complete continuous coverage witness certifies absence.".to_owned(),
+                    claim_ids: BTreeSet::from([
+                        params.policy_claim_id.to_owned(),
+                        params.absence_claim_id.to_owned(),
+                    ]),
+                    evidence: policy_evidence.clone(),
+                    consequence_severity: 5,
+                    protected: true,
+                });
+                let detail = params.absence_non_pass_reason.unwrap_or("no complete continuous CoverageWitness is present in this reference projection");
+                unknown.push(format!(
+                    "Policy rejection is not a certified negative read; physical absence remains unproved without a valid CoverageWitness over the authorized domain and generation ({detail})."
+                ));
+            }
         }
         _ => {
             alternatives.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:policy-state"),
                 description: "The current event state is retained without promoting it to physical certainty.".to_owned(),
-                claim_ids: BTreeSet::from([policy_claim_id.to_owned()]),
+                claim_ids: BTreeSet::from([params.policy_claim_id.to_owned()]),
                 evidence: policy_evidence.clone(),
                 consequence_severity: 3,
                 protected: true,
@@ -761,12 +893,18 @@ fn compile_worlds(
         }
     }
 
-    let identity = world_identity(anchor, objective_id, decision, &alternatives, &residuals);
+    let identity = world_identity(
+        params.anchor,
+        params.objective_id,
+        params.decision,
+        &alternatives,
+        &residuals,
+    );
     (
         WorldEnvelope {
             envelope_id: format!("world-envelope:{identity}"),
-            objective_id: objective_id.to_owned(),
-            anchor: anchor.clone(),
+            objective_id: params.objective_id.to_owned(),
+            anchor: params.anchor.clone(),
             nominal_claim_ids,
             certified_core_claim_ids,
             alternatives,

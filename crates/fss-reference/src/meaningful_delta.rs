@@ -346,20 +346,34 @@ pub fn classify_reference_meaningful_delta(
     sort_dedup(&mut obligation_changes);
     sort_dedup(&mut effect_uncertainty_changes);
 
-    let has_degraded_epistemic_cell = result_frame.knowledge_cells.iter().any(|cell| {
-        matches!(
-            cell.knowledge_state,
-            KnowledgeState::NotObservable
-                | KnowledgeState::Conflicted
-                | KnowledgeState::Stale
-                | KnowledgeState::Indeterminate
-                | KnowledgeState::Unknown
-        )
-    });
+    let missing_coverage: Vec<String> = basis_coverage
+        .difference(result_coverage)
+        .cloned()
+        .collect();
+    let degraded_epistemic_cells: Vec<String> = result_frame
+        .knowledge_cells
+        .iter()
+        .filter(|cell| {
+            matches!(
+                cell.knowledge_state,
+                KnowledgeState::NotObservable
+                    | KnowledgeState::Conflicted
+                    | KnowledgeState::Stale
+                    | KnowledgeState::Indeterminate
+                    | KnowledgeState::Unknown
+            )
+        })
+        .map(|cell| cell.claim_id.clone())
+        .collect();
+    let generation_mismatch = basis_capsule.contract_basis.ontology_generation_id
+        != result_capsule.contract_basis.ontology_generation_id;
+    let stale_revision = result_capsule.revision < basis_capsule.revision;
     let has_active_coverage_gap = result_capsule.completeness != Completeness::Complete
         || result_coverage.is_empty()
-        || !basis_coverage.is_subset(result_coverage)
-        || has_degraded_epistemic_cell;
+        || !missing_coverage.is_empty()
+        || !degraded_epistemic_cells.is_empty()
+        || generation_mismatch
+        || stale_revision;
     let is_silence = classes.is_empty()
         && !has_active_coverage_gap
         && result.resource_state.pressure == ResourcePressure::Nominal
@@ -368,10 +382,40 @@ pub fn classify_reference_meaningful_delta(
         classes.insert(MeaningfulDeltaClass::NoMeaningfulChange);
     } else if classes.is_empty() {
         classes.insert(MeaningfulDeltaClass::CoverageLoss);
-        coverage_changes.push(format!(
-            "situation coverage or epistemic state is degraded: completeness={:?}",
-            result_capsule.completeness
-        ));
+        if result_capsule.completeness != Completeness::Complete {
+            coverage_changes.push(format!(
+                "situation coverage is incomplete: completeness={:?}",
+                result_capsule.completeness
+            ));
+        }
+        if result_coverage.is_empty() {
+            coverage_changes.push("situation coverage domain is empty".to_owned());
+        }
+        if !missing_coverage.is_empty() {
+            coverage_changes.push(format!(
+                "missing coverage for authorized domain identities: {:?}",
+                missing_coverage
+            ));
+        }
+        if !degraded_epistemic_cells.is_empty() {
+            coverage_changes.push(format!(
+                "epistemic cell degraded for claim identities: {:?}",
+                degraded_epistemic_cells
+            ));
+        }
+        if generation_mismatch {
+            coverage_changes.push(format!(
+                "generation mismatch: basis ontology generation '{}' != result ontology generation '{}'",
+                basis_capsule.contract_basis.ontology_generation_id,
+                result_capsule.contract_basis.ontology_generation_id
+            ));
+        }
+        if stale_revision {
+            coverage_changes.push(format!(
+                "stale capsule revision: result revision {} < basis revision {}",
+                result_capsule.revision, basis_capsule.revision
+            ));
+        }
     }
     let selection_witness = comparison_witness(
         basis,
@@ -389,6 +433,8 @@ pub fn classify_reference_meaningful_delta(
             basis_frame_digest: basis_frame.frame_digest(),
             result_frame_digest: result_frame.frame_digest(),
             selection_witness,
+            authorized_domain: result_coverage.clone(),
+            authorized_generation: result_capsule.contract_basis.ontology_generation_id.clone(),
             reason: "the complete typed comparison found no decision-relevant change".to_owned(),
         })
     } else {
@@ -488,7 +534,8 @@ fn authority_generation_changed(
     basis: &fss_core::LedgerAnchor,
     result: &fss_core::LedgerAnchor,
 ) -> bool {
-    basis.adapter_registry_epoch != result.adapter_registry_epoch
+    basis.ledger_epoch != result.ledger_epoch
+        || basis.adapter_registry_epoch != result.adapter_registry_epoch
         || basis.schema_epoch != result.schema_epoch
         || basis.policy_epoch != result.policy_epoch
         || basis.privacy_epoch != result.privacy_epoch

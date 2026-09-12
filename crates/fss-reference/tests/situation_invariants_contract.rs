@@ -268,6 +268,7 @@ fn test_request<'a>(
         event_receipt,
         alert_plan,
         alert_outcome: None,
+        coverage_witness: None,
         available_capabilities: capabilities,
         created_at: TimestampNs(1_000),
     })

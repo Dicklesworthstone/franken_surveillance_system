@@ -131,14 +131,21 @@ pub struct SilenceCertificate {
     pub result_frame_digest: ContentDigest,
     /// Exact comparison/selection witness.
     pub selection_witness: ContentDigest,
+    /// Authorized domain over which absence of change is certified.
+    pub authorized_domain: BTreeSet<String>,
+    /// Authorized generation over which absence of change is certified.
+    pub authorized_generation: String,
     /// Bounded explanation of the silence claim.
     pub reason: String,
 }
 
 impl SilenceCertificate {
-    /// Validates that the certificate contains an explicit comparison basis.
+    /// Validates that the certificate contains an explicit comparison basis and authorized scope.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.reason.is_empty() {
+        if self.reason.is_empty()
+            || self.authorized_domain.is_empty()
+            || self.authorized_generation.is_empty()
+        {
             return Err(ContractError::EvidenceRequired);
         }
         Ok(())
@@ -156,6 +163,11 @@ impl CanonicalEncode for SilenceCertificate {
         encoder.digest(self.basis_frame_digest);
         encoder.digest(self.result_frame_digest);
         encoder.digest(self.selection_witness);
+        encoder.u64(self.authorized_domain.len() as u64);
+        for domain in &self.authorized_domain {
+            encoder.text(domain);
+        }
+        encoder.text(&self.authorized_generation);
         encoder.text(&self.reason);
     }
 }
@@ -251,6 +263,12 @@ impl MeaningfulDelta {
             certificate.validate()?;
             if certificate.selection_witness != self.selection_witness {
                 return Err(ContractError::DigestMismatch);
+            }
+            if certificate.authorized_generation != self.contract_basis.ontology_generation_id {
+                return Err(ContractError::GenerationConflict);
+            }
+            if certificate.authorized_domain.is_empty() {
+                return Err(ContractError::CoverageUncertified);
             }
         } else if self.silence_certificate.is_some() {
             return Err(ContractError::EvidenceRequired);
@@ -582,6 +600,8 @@ mod tests {
                     basis_frame_digest: ContentDigest::sha256(b"frame"),
                     result_frame_digest: ContentDigest::sha256(b"frame"),
                     selection_witness,
+                    authorized_domain: BTreeSet::from(["claim:premise".to_owned()]),
+                    authorized_generation: "ontology:reference:v1".to_owned(),
                     reason: "no decision-relevant change".to_owned(),
                 })
             } else {
@@ -660,5 +680,37 @@ mod tests {
             .selection_witness = ContentDigest::sha256(b"different");
         assert_eq!(delta.validate(), Err(ContractError::DigestMismatch));
         Ok(())
+    }
+
+    #[test]
+    fn silence_generation_must_match_contract_basis() -> Result<(), ContractError> {
+        let mut delta = delta(MeaningfulDeltaClass::NoMeaningfulChange, 1)?;
+        delta
+            .silence_certificate
+            .as_mut()
+            .ok_or(ContractError::EvidenceRequired)?
+            .authorized_generation = "ontology:wrong:v2".to_owned();
+        assert_eq!(delta.validate(), Err(ContractError::GenerationConflict));
+        Ok(())
+    }
+
+    #[test]
+    fn silence_certificate_must_not_have_empty_domain_or_generation() {
+        let cert = SilenceCertificate {
+            basis_frame_digest: ContentDigest::sha256(b"basis"),
+            result_frame_digest: ContentDigest::sha256(b"result"),
+            selection_witness: ContentDigest::sha256(b"witness"),
+            authorized_domain: BTreeSet::new(),
+            authorized_generation: "ontology:reference:v1".to_owned(),
+            reason: "no change".to_owned(),
+        };
+        assert_eq!(cert.validate(), Err(ContractError::EvidenceRequired));
+
+        let cert2 = SilenceCertificate {
+            authorized_domain: BTreeSet::from(["zone:yard".to_owned()]),
+            authorized_generation: String::new(),
+            ..cert
+        };
+        assert_eq!(cert2.validate(), Err(ContractError::EvidenceRequired));
     }
 }

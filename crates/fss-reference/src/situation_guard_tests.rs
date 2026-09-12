@@ -135,6 +135,7 @@ fn request<'a>(
         event_receipt: receipt,
         alert_plan: None,
         alert_outcome: None,
+        coverage_witness: None,
         available_capabilities: capabilities
             .iter()
             .map(|value| (*value).to_owned())
