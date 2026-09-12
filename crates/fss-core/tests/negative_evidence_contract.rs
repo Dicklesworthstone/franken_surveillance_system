@@ -18,16 +18,16 @@ use std::error::Error;
 
 use fss_core::acquisition::{CaptureDeviceTuple, CaptureRouteKind, Neg001ScenarioLog};
 use fss_core::contract::{Completeness, HypothesisDisposition, KnowledgeState, ProvenanceClass};
-use fss_core::digest::ContentDigest;
-use fss_core::evidence::{
-    CoverageContinuity, CoverageStopReason, CoverageWitness, LedgerAnchor,
-};
-use fss_core::ids::TombstoneReason;
+use fss_core::digest::DigestAlgorithm;
 use fss_core::negative_evidence::{
     MAX_FAILURE_DOMAINS, MAX_NEG_TEXT_LEN, NEGATIVE_EVIDENCE_FORMAT_VERSION,
     NEGATIVE_EVIDENCE_LEDGER_MAGIC, NegativeDecision, NegativeEvidenceEntry,
     NegativeEvidenceError, NegativeEvidenceLedger, NegativeEvidenceSetup,
     initial_negative_evidence_ledger, provenance_class_as_str,
+};
+use fss_core::{
+    ContentDigest, CoverageContinuity, CoverageStopReason, CoverageWitness, LedgerAnchor,
+    Sha256Hasher, TombstoneReason,
 };
 
 fn make_valid_witness(neg_id: &str) -> CoverageWitness {
@@ -91,7 +91,7 @@ fn test_missing_coverage_witness_is_refused() -> Result<(), Box<dyn Error>> {
         .ok_or("expected uncertified coverage error")?;
 
     match err {
-        NegativeEvidenceError::UncertifiedCoverage { detail } => {
+        NegativeEvidenceError::UncertifiedCoverage { ref detail } => {
             assert!(
                 detail.contains("does not certify absence"),
                 "detail should indicate absence not certified: {detail}"
@@ -164,7 +164,7 @@ fn test_unknown_version_is_refused() -> Result<(), Box<dyn Error>> {
     // Recompute the trailing checksum for the modified payload to isolate the version check
     let payload_len = bytes.len() - 32;
     let (payload, _) = bytes.split_at(payload_len);
-    let mut hasher = fss_core::digest::Sha256Hasher::new();
+    let mut hasher = Sha256Hasher::new();
     hasher.update(fss_core::negative_evidence::SCHEMA_NEGATIVE_EVIDENCE_LEDGER.as_bytes());
     hasher.update(payload);
     let new_checksum = hasher.finalize()?;
@@ -230,7 +230,7 @@ fn test_corrupt_magic_is_refused() -> Result<(), Box<dyn Error>> {
     // Recompute trailer checksum so it reaches magic check
     let payload_len = bytes.len() - 32;
     let (payload, _) = bytes.split_at(payload_len);
-    let mut hasher = fss_core::digest::Sha256Hasher::new();
+    let mut hasher = Sha256Hasher::new();
     hasher.update(fss_core::negative_evidence::SCHEMA_NEGATIVE_EVIDENCE_LEDGER.as_bytes());
     hasher.update(payload);
     let new_checksum = hasher.finalize()?;
@@ -263,7 +263,7 @@ fn test_duplicate_entry_id_is_refused() -> Result<(), Box<dyn Error>> {
         .ok_or("expected duplicate entry id error")?;
 
     match err {
-        NegativeEvidenceError::DuplicateEntryId { neg_id } => {
+        NegativeEvidenceError::DuplicateEntryId { ref neg_id } => {
             assert_eq!(neg_id, "NEG-001");
             assert_eq!(err.error_id(), "ERR-NEG-DUPLICATE-ID-001");
         }
@@ -286,7 +286,10 @@ fn test_non_canonical_order_is_refused() -> Result<(), Box<dyn Error>> {
         .ok_or("expected non-canonical order error")?;
 
     match err {
-        NegativeEvidenceError::NonCanonicalOrder { prior, current } => {
+        NegativeEvidenceError::NonCanonicalOrder {
+            ref prior,
+            ref current,
+        } => {
             assert_eq!(prior, "NEG-002");
             assert_eq!(current, "NEG-001");
             assert_eq!(err.error_id(), "ERR-NEG-NON-CANONICAL-ORDER-001");
@@ -309,7 +312,7 @@ fn test_oversized_input_is_refused() -> Result<(), Box<dyn Error>> {
         .ok_or("expected input oversized error")?;
 
     match err {
-        NegativeEvidenceError::InputOversized { detail } => {
+        NegativeEvidenceError::InputOversized { ref detail } => {
             assert!(
                 detail.contains("hypothesis exceeds"),
                 "detail should name hypothesis: {detail}"
@@ -373,7 +376,10 @@ fn test_tombstone_preservation_and_rules() -> Result<(), Box<dyn Error>> {
         .ok_or("expected revival condition unmet error")?;
 
     match err3 {
-        NegativeEvidenceError::RevivalConditionUnmet { neg_id, condition } => {
+        NegativeEvidenceError::RevivalConditionUnmet {
+            ref neg_id,
+            ref condition,
+        } => {
             assert_eq!(neg_id, "NEG-001");
             assert!(
                 condition.contains("official compatible SDK"),
@@ -432,14 +438,16 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
 
     // Golden fixture: compute and assert sha256 digest of binary representation
     let digest = ContentDigest::sha256(&binary_bytes);
-    assert_eq!(
-        digest.algorithm(),
-        fss_core::digest::DigestAlgorithm::Sha256
-    );
+    assert_eq!(digest.algorithm(), DigestAlgorithm::Sha256);
 
     // Verify format version in binary
     assert_eq!(
-        u32::from_be_bytes([binary_bytes[8], binary_bytes[9], binary_bytes[10], binary_bytes[11]]),
+        u32::from_be_bytes([
+            binary_bytes[8],
+            binary_bytes[9],
+            binary_bytes[10],
+            binary_bytes[11]
+        ]),
         NEGATIVE_EVIDENCE_FORMAT_VERSION
     );
 
@@ -529,7 +537,8 @@ fn test_neg001_scenario_log_bridge() -> Result<(), Box<dyn Error>> {
         is_streaming: false,
         revival_condition_met: false,
         proof_hash: ContentDigest::sha256(b"proof-hash"),
-        reproduction_command: "cargo test -p fss-core --test dji_flip_capture_route_contract".to_string(),
+        reproduction_command: "cargo test -p fss-core --test dji_flip_capture_route_contract"
+            .to_string(),
     };
 
     let entry = NegativeEvidenceEntry::from_neg001_scenario_log(&log, witness)?;
