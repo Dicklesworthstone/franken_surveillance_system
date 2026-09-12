@@ -460,15 +460,13 @@ impl SourceTimeEvidence {
         self.plausible_capture_interval.uncertainty_ns()
     }
 
-    /// Returns the effective clock basis for this timing record.
+    /// Returns the effective clock basis for this timing record, if known.
     #[must_use]
-    pub fn effective_clock_basis(&self) -> ClockBasis {
+    pub fn effective_clock_basis(&self) -> Option<ClockBasis> {
         match &self.sync_state {
-            ClockSyncState::Synchronised { basis, .. } => *basis,
-            ClockSyncState::Unsynchronised { basis, .. } => *basis,
-            ClockSyncState::Unknown { .. } => {
-                self.device_clock_basis.unwrap_or(ClockBasis::HostMonotonic)
-            }
+            ClockSyncState::Synchronised { basis, .. } => Some(*basis),
+            ClockSyncState::Unsynchronised { basis, .. } => Some(*basis),
+            ClockSyncState::Unknown { .. } => self.device_clock_basis,
         }
     }
 }
@@ -478,7 +476,14 @@ impl TryFrom<SourceTimeEvidenceParams> for SourceTimeEvidence {
 
     fn try_from(params: SourceTimeEvidenceParams) -> Result<Self, Self::Error> {
         let total_sources = params.uncertainty_sources.total_uncertainty_ns()?;
-        let clock_uncertainty = params.sync_state.clock_uncertainty_ns().unwrap_or(0) as u128;
+        let clock_uncertainty = match &params.sync_state {
+            ClockSyncState::Synchronised {
+                residual_uncertainty_ns,
+                ..
+            } => *residual_uncertainty_ns as u128,
+            ClockSyncState::Unsynchronised { drift_bound_ns, .. } => *drift_bound_ns as u128,
+            ClockSyncState::Unknown { .. } => u64::MAX as u128,
+        };
         let min_required_uncertainty = total_sources
             .checked_add(clock_uncertainty)
             .ok_or(TimeToleranceError::ArithmeticOverflow)?;
@@ -610,7 +615,11 @@ impl SourceTimeEvidenceBuilder {
                     .checked_add(*drift_bound_ns as u128)
                     .ok_or(TimeToleranceError::ArithmeticOverflow)?;
             }
-            ClockSyncState::Unknown { .. } => {}
+            ClockSyncState::Unknown { .. } => {
+                total_uncertainty = total_uncertainty
+                    .checked_add(u64::MAX as u128)
+                    .ok_or(TimeToleranceError::ArithmeticOverflow)?;
+            }
         }
 
         if total_uncertainty > (i128::MAX as u128) {
@@ -1165,8 +1174,21 @@ pub fn evaluate_cross_camera_association(
         });
     }
 
-    let basis_a = obs_a.effective_clock_basis();
-    let basis_b = obs_b.effective_clock_basis();
+    let (basis_a, basis_b) = match (obs_a.effective_clock_basis(), obs_b.effective_clock_basis()) {
+        (Some(a), Some(b)) => (a, b),
+        (None, _) => {
+            return Ok(AssociationDecision::Abstained {
+                reason: "camera A has unknown clock basis; cross-camera association refused"
+                    .to_string(),
+            });
+        }
+        (_, None) => {
+            return Ok(AssociationDecision::Abstained {
+                reason: "camera B has unknown clock basis; cross-camera association refused"
+                    .to_string(),
+            });
+        }
+    };
     if basis_a != basis_b {
         return Err(TimeToleranceError::ClockBasisMismatch {
             expected: basis_a,

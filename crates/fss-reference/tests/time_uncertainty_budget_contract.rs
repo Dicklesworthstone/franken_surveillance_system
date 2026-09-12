@@ -235,7 +235,9 @@ fn test_unknown_clock_state_fails_closed_with_typed_error() -> Result<(), Box<dy
         reason: "PTP daemon offline, reference clock unavailable".to_string(),
     };
 
-    let evidence = sample_evidence(10, 1_000_000_000, 1_000_000, unknown_state)?;
+    let evidence = SourceTimeEvidenceBuilder::new(10, TimestampNs(1_000_000_000))
+        .sync_state(unknown_state)
+        .build()?;
 
     let res = budget.enforce(op, &evidence);
     let Err(err) = res else {
@@ -248,6 +250,55 @@ fn test_unknown_clock_state_fails_closed_with_typed_error() -> Result<(), Box<dy
             assert!(reason.contains("PTP daemon offline"));
         }
         other => return Err(format!("expected ClockStateUnknown, got: {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_unknown_clock_state_with_narrow_interval_fails_closed() -> Result<(), Box<dyn Error>> {
+    let unknown_state = ClockSyncState::Unknown {
+        reason: "unverified NTP upstream".to_string(),
+    };
+
+    let host_ts = TimestampNs(1_000_000_000);
+    // Narrow interval: +/- 1 ms around host time (2 ms total width)
+    let earliest = host_ts.checked_sub_ns(1_000_000)?;
+    let latest = host_ts.checked_add_ns(1_000_000)?;
+    let narrow_interval = CaptureInterval::new(earliest, latest)?;
+
+    let res = SourceTimeEvidence::new(SourceTimeEvidenceParams {
+        sequence: 1,
+        has_discontinuity: false,
+        device_timestamp: None,
+        device_clock_basis: None,
+        host_receive_time: host_ts,
+        sync_state: unknown_state,
+        uncertainty_sources: UncertaintySources::zero(),
+        plausible_capture_interval: narrow_interval,
+    });
+
+    let Err(err) = res else {
+        return Err(
+            "SourceTimeEvidence with unknown clock state and narrow interval must fail closed"
+                .into(),
+        );
+    };
+
+    match err {
+        TimeToleranceError::NonMonotoneNarrowingAttempted {
+            previous_uncertainty_ns,
+            attempted_uncertainty_ns,
+        } => {
+            assert!(
+                previous_uncertainty_ns >= u64::MAX as u128,
+                "unknown clock state must require at least u64::MAX uncertainty, got: {previous_uncertainty_ns}"
+            );
+            assert_eq!(attempted_uncertainty_ns, 2_000_000);
+        }
+        other => {
+            return Err(format!("expected NonMonotoneNarrowingAttempted, got: {other:?}").into());
+        }
     }
 
     Ok(())
@@ -591,6 +642,54 @@ fn test_inverted_transit_interval_rejected() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn test_unknown_clock_basis_causes_association_abstention() -> Result<(), Box<dyn Error>> {
+    let budget = TimeUncertaintyBudget::default();
+
+    // Observation A has synchronised clock
+    let obs_a = sample_evidence(1, 1_000_000_000, 1_000_000, sync_clock(1, 50))?;
+    assert_eq!(
+        obs_a.effective_clock_basis(),
+        Some(ClockBasis::HostMonotonic)
+    );
+
+    // Observation B has unknown clock sync and no device basis reported
+    let obs_b_unknown = SourceTimeEvidenceBuilder::new(2, TimestampNs(7_000_000_000))
+        .sync_state(ClockSyncState::Unknown {
+            reason: "no sync source configured".to_string(),
+        })
+        .build()?;
+    assert_eq!(
+        obs_b_unknown.effective_clock_basis(),
+        None,
+        "unknown sync without device basis must have None effective clock basis"
+    );
+
+    // Cross-camera association must abstain, not fabricate HostMonotonic
+    let decision = evaluate_cross_camera_association(
+        &budget,
+        &obs_a,
+        &obs_b_unknown,
+        5_000_000_000,
+        7_000_000_000,
+    )?;
+
+    match decision {
+        fss_reference::AssociationDecision::Abstained { reason } => {
+            assert!(
+                reason.contains("unknown clock basis")
+                    || reason.contains("camera B timing rejected"),
+                "expected abstention reason regarding clock basis or timing rejection, got: {reason}"
+            );
+        }
+        other => {
+            return Err(format!("expected Abstained decision, got: {other:?}").into());
+        }
+    }
+
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // 10. Review-627 Findings Test Coverage (F1 - F9)
 // ---------------------------------------------------------------------------
@@ -732,13 +831,16 @@ fn test_bounded_monotonic_drift_rejects_excessive_drift() -> Result<(), Box<dyn 
     };
     let evidence = sample_evidence(1, 1_000_000_000, 400_000_000, unsync)?;
     let res = budget.enforce(op, &evidence);
-    let is_rejected = match res {
-        Err(_) => true,
-        Ok(outcome) => !outcome.is_accepted(),
-    };
     assert!(
-        is_rejected,
-        "drift bound of 800 ms must not satisfy 200 ms tolerance"
+        matches!(
+            res,
+            Err(TimeToleranceError::ClockUnsynchronised {
+                operation: TimeSensitiveOperation::TransitFeasibilityCheck,
+                basis: ClockBasis::HostMonotonic,
+                drift_bound_ns: 800_000_000,
+            })
+        ),
+        "TransitFeasibilityCheck has FailClosed consequence and must return Err(ClockUnsynchronised) on drift exceedance, got {res:?}"
     );
     Ok(())
 }
