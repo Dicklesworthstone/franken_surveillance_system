@@ -703,3 +703,112 @@ fn test_not_observable_knowledge_cell_protected_possibility_and_hard_gate()
 
     Ok(())
 }
+
+#[test]
+fn test_redacted_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Redacted;
+
+    // 1. Exact normative stable ID
+    assert_eq!(state.id(), "KSTATE-007");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(state.as_str(), "redacted");
+    assert_eq!(format!("{state}"), "redacted");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        state.meaning(),
+        "The proposition or its evidence exists but is intentionally withheld by the current privacy/capability projection."
+    );
+
+    // 4. May support planning: yes, only through non-leaking abstract constraints
+    assert!(state.may_support_planning());
+    assert_eq!(
+        state.planning_support_description(),
+        "yes, only through non-leaking abstract constraints"
+    );
+
+    // 5. May authorize irreversible effect: no (hard constitutional gate)
+    assert!(!state.may_authorize_irreversible_effect());
+    assert_eq!(state.irreversible_effect_description(), "no");
+
+    // 6. Explicit assumptions required: yes
+    assert!(state.explicit_assumptions_required());
+
+    Ok(())
+}
+
+#[test]
+fn test_redacted_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = KnowledgeState::from_id("KSTATE-007")?;
+    assert_eq!(from_id, KnowledgeState::Redacted);
+
+    // Parse from schema name
+    let from_name = KnowledgeState::from_name("redacted")?;
+    assert_eq!(from_name, KnowledgeState::Redacted);
+
+    // Parse via FromStr
+    let from_str_name = KnowledgeState::from_str("redacted")?;
+    assert_eq!(from_str_name, KnowledgeState::Redacted);
+
+    let from_str_id = KnowledgeState::from_str("KSTATE-007")?;
+    assert_eq!(from_str_id, KnowledgeState::Redacted);
+
+    Ok(())
+}
+
+#[test]
+fn test_redacted_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Redacted;
+
+    let mut encoder = CanonicalEncoder::new();
+    state.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = KnowledgeState::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, state);
+    assert_eq!(decoded.id(), "KSTATE-007");
+    assert_eq!(decoded.as_str(), "redacted");
+
+    Ok(())
+}
+
+#[test]
+fn test_redacted_knowledge_cell_abstract_constraints_and_hard_gate() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let redacted_witness = ContentDigest::sha256(b"redacted_evidence_mask");
+
+    // Construct a cell with KnowledgeState::Redacted
+    let cell = KnowledgeCell {
+        claim_id: "claim:resident:identity:001".to_string(),
+        statement: "[REDACTED under privacy tier T2]".to_string(),
+        knowledge_state: KnowledgeState::Redacted,
+        provenance: ProvenanceClass::Policy,
+        hypothesis: None,
+        evidence: vec![redacted_witness],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+    };
+
+    // Properties on KnowledgeCell
+    assert!(cell.is_redacted());
+    assert!(!cell.is_not_observable());
+    assert!(!cell.is_stale());
+    assert!(!cell.is_conflicted());
+    assert!(!cell.is_unknown());
+    assert!(!cell.is_estimated());
+    assert!(cell.requires_explicit_assumptions());
+    assert!(cell.may_support_planning());
+
+    // Constitutional Hard Gate: Redacted CANNOT be used as an irreversible-effect premise,
+    // even if evidence handle is present.
+    assert!(
+        !cell.is_irreversible_effect_premise(now),
+        "Redacted knowledge state must NEVER authorize irreversible effects"
+    );
+
+    Ok(())
+}

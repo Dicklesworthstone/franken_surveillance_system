@@ -209,6 +209,12 @@ impl KnowledgeCell {
         self.knowledge_state == KnowledgeState::NotObservable
     }
 
+    /// Returns whether this knowledge cell is a redacted proposition.
+    #[must_use]
+    pub fn is_redacted(&self) -> bool {
+        self.knowledge_state == KnowledgeState::Redacted
+    }
+
     /// Returns whether this cell requires explicit assumptions to be used in planning.
     #[must_use]
     pub fn requires_explicit_assumptions(&self) -> bool {
