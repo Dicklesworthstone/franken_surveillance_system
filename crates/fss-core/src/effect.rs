@@ -211,6 +211,25 @@ impl CanonicalDecode for EffectState {
 }
 
 /// Immutable effect intent prepared before crossing an external boundary.
+///
+/// # Plane boundary (ADR-0001)
+///
+/// An `EffectIntent` is an effect-plane value. It is built only through
+/// [`EffectIntent::new`] (or canonical decoding) from explicit operation, idempotency,
+/// request, and precondition identities. No cognition value converts into it.
+///
+/// Invariant 2: a cognition output cannot directly construct an `EffectIntent`.
+///
+/// ```compile_fail,E0277
+/// use fss_core::belief::BeliefInterval;
+/// use fss_core::effect::EffectIntent;
+///
+/// fn forbidden_intent(belief: BeliefInterval) {
+///     // adr-0001/inv-2: no `From<BeliefInterval>` exists for `EffectIntent`.
+///     let intent: EffectIntent = belief.into();
+///     let _ = intent;
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectIntent {
     /// Operation identity.
@@ -1454,6 +1473,42 @@ impl CanonicalDecode for EffectReconciliationRecord {
 }
 
 /// Explicit authority granting permission to prepare and execute effects.
+///
+/// # Plane boundary (ADR-0001)
+///
+/// `EffectAuthority` belongs to the authority plane. It is created only by
+/// [`EffectAuthority::new`] (or [`EffectAuthority::system_default`]) from an explicit
+/// principal and capability, and it has no conversion to or from any cognition type.
+///
+/// Invariant 1: a cognition output (belief interval, model score, recommendation) can never
+/// convert into, or otherwise grant, `EffectAuthority`.
+///
+/// ```compile_fail,E0277
+/// use fss_core::belief::BeliefInterval;
+/// use fss_core::effect::EffectAuthority;
+///
+/// fn execute_guarded_effect(_authority: EffectAuthority) {}
+///
+/// fn forbidden_grant(belief: BeliefInterval) {
+///     // adr-0001/inv-1: no `From<BeliefInterval>` exists for `EffectAuthority`.
+///     let granted: EffectAuthority = belief.into();
+///     execute_guarded_effect(granted);
+/// }
+/// ```
+///
+/// Invariant 3: effect authority cannot convert into a cognition belief. Authority is a
+/// canonical fact, never a probabilistic epistemic estimate.
+///
+/// ```compile_fail,E0277
+/// use fss_core::belief::BeliefInterval;
+/// use fss_core::effect::EffectAuthority;
+///
+/// fn forbidden_belief(authority: EffectAuthority) {
+///     // adr-0001/inv-3: no `From<EffectAuthority>` exists for `BeliefInterval`.
+///     let belief: BeliefInterval = authority.into();
+///     let _ = belief;
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectAuthority {
     /// Identity of the authorizing principal.
@@ -2143,6 +2198,69 @@ impl EffectJournal {
     }
 
     /// Prepares an effect from a validated `PreparedEffect` with explicit authority.
+    ///
+    /// # Plane boundary (ADR-0001)
+    ///
+    /// This is the legal path from cognition to an authorized effect: cognition may inform
+    /// the plan only through content digests bound into the effect-plane `EffectIntent`
+    /// preconditions, the effect plane builds its own `PreparedEffect`, and authority arrives
+    /// separately as an explicit `EffectAuthority`.
+    ///
+    /// ```
+    /// use fss_core::TimestampNs;
+    /// use fss_core::belief::BeliefInterval;
+    /// use fss_core::effect::{EffectAuthority, EffectIntent, EffectState, PreparedEffect};
+    /// use fss_core::{ContentDigest, EffectJournal, IdempotencyKey, ObligationId, OperationId};
+    ///
+    /// fn main() -> Result<(), Box<dyn std::error::Error>> {
+    ///     // adr-0001/legal-path
+    ///     // Cognition: a derived belief about the situation. It grants nothing by itself.
+    ///     let belief = BeliefInterval::new(850_000, 950_000)?;
+    ///
+    ///     // Recommendation -> prepared plan: the effect plane constructs its own intent and
+    ///     // binds only the digest of the supporting belief as a precondition.
+    ///     let intent = EffectIntent::new(
+    ///         OperationId::parse("op-alert-0001")?,
+    ///         IdempotencyKey::parse("idem-alert-0001")?,
+    ///         "alert.notify",
+    ///         ContentDigest::sha256(b"alert request body"),
+    ///         belief.interval_digest(),
+    ///     )?;
+    ///     let prepared = PreparedEffect::new(
+    ///         intent,
+    ///         ObligationId::parse("obl-alert-0001")?,
+    ///         "provider_delivery_observed",
+    ///         TimestampNs(1_000),
+    ///     )?;
+    ///
+    ///     // Authority check: authority comes from the authority plane, explicitly.
+    ///     let authority = EffectAuthority::new("principal:owner", "effect:alert.notify", Some(7))?;
+    ///     let mut journal = EffectJournal::new();
+    ///     let receipt = journal.prepare_effect(prepared, authority.clone())?;
+    ///
+    ///     assert_eq!(receipt.state, EffectState::Prepared);
+    ///     assert_eq!(receipt.authority, authority);
+    ///     assert_eq!(receipt.intent.precondition_digest, belief.interval_digest());
+    ///     Ok(())
+    /// }
+    /// ```
+    ///
+    /// Invariant 4: effect preparation requires a prepared effect plan and rejects a cognition
+    /// value passed in its place.
+    ///
+    /// ```compile_fail,E0308
+    /// use fss_core::belief::BeliefInterval;
+    /// use fss_core::effect::{EffectAuthority, EffectJournal};
+    ///
+    /// fn forbidden_prepare(
+    ///     journal: &mut EffectJournal,
+    ///     belief: BeliefInterval,
+    ///     authority: EffectAuthority,
+    /// ) {
+    ///     // adr-0001/inv-4: `prepare_effect` takes a `PreparedEffect`, not a belief.
+    ///     let _ = journal.prepare_effect(belief, authority);
+    /// }
+    /// ```
     pub fn prepare_effect(
         &mut self,
         prepared: PreparedEffect,

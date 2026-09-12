@@ -100,6 +100,110 @@ print(tomllib.loads(pathlib.Path("rust-toolchain.toml").read_text())["toolchain"
 PY
 }
 
+semantic_plane_doctest_map() {
+  python3 - docs/enforcement/three_semantic_planes_contract.md <<'PY'
+"""Verifies the ADR-0001 contract doc maps every invariant to a real fss doctest or test."""
+import pathlib
+import re
+import sys
+
+doc_path = pathlib.Path(sys.argv[1])
+doc = doc_path.read_text(encoding="utf-8")
+errors = []
+
+for line_no, line in enumerate(doc.splitlines(), start=1):
+    stripped = line.strip()
+    if stripped.startswith("```") or stripped.startswith("~~~"):
+        info = stripped[3:].strip()
+        if info != "text":
+            errors.append(f"{doc_path}:{line_no}: code fence {stripped!r} would be an untested rustdoc block")
+
+invariants = set(re.findall(r"^## Invariant (\d+):", doc, re.MULTILINE))
+if not invariants:
+    errors.append(f"{doc_path}: no '## Invariant N:' sections found")
+
+row_re = re.compile(
+    r"^\|\s*(?P<inv>[^|`]+?)\s*\|\s*`(?P<kind>[^`]+)`\s*\|\s*`(?P<path>[^`]+)`\s*\|"
+    r"\s*`(?P<item>[^`]+)`\s*\|\s*`(?P<marker>[^`]+)`\s*\|\s*$",
+    re.MULTILINE,
+)
+rows = [m.groupdict() for m in row_re.finditer(doc)]
+mapped = {row["inv"] for row in rows}
+for inv in sorted(invariants - mapped):
+    errors.append(f"{doc_path}: Invariant {inv} has no enforcement row")
+for inv in sorted(mapped - invariants - {"legal-path"}):
+    errors.append(f"{doc_path}: enforcement row names unknown invariant {inv!r}")
+if not any(row["inv"] == "legal-path" and row["kind"] == "doctest" for row in rows):
+    errors.append(f"{doc_path}: no compiling legal-path doctest row")
+
+
+def attached_doc_blocks(lines, item):
+    decl = re.compile(r"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:struct|enum|fn|type|trait|mod)\s+" + re.escape(item) + r"\b")
+    for index, line in enumerate(lines):
+        if not decl.match(line):
+            continue
+        start = index
+        while start > 0 and lines[start - 1].lstrip().startswith(("///", "#[")):
+            start -= 1
+        docs = [l.lstrip()[3:] for l in lines[start:index] if l.lstrip().startswith("///")]
+        docs = [d[1:] if d.startswith(" ") else d for d in docs]
+        blocks, info, body = [], None, []
+        for text in docs:
+            if text.strip().startswith("```"):
+                if info is None:
+                    info, body = text.strip()[3:].strip(), []
+                else:
+                    blocks.append((info, "\n".join(body)))
+                    info = None
+            elif info is not None:
+                body.append(text)
+        yield blocks
+
+
+markers_seen = set()
+for row in rows:
+    path = pathlib.Path(row["path"])
+    label = f"Invariant {row['inv']} ({row['marker']})"
+    if row["marker"] in markers_seen:
+        errors.append(f"{label}: marker listed twice")
+    markers_seen.add(row["marker"])
+    if not path.is_file():
+        errors.append(f"{label}: {path} does not exist")
+        continue
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if row["kind"] == "test":
+        if not re.search(r"#\[test\]\s*\n\s*fn\s+" + re.escape(row["item"]) + r"\s*\(", "\n".join(lines)):
+            errors.append(f"{label}: no #[test] fn {row['item']} in {path}")
+        continue
+    if row["kind"] == "doctest":
+        ok_kind = lambda info: info in ("", "rust")
+    elif re.fullmatch(r"compile_fail,E\d{4}", row["kind"]):
+        ok_kind = lambda info, kind=row["kind"]: info == kind
+    else:
+        errors.append(f"{label}: unsupported kind {row['kind']!r}")
+        continue
+    found = False
+    any_item = False
+    for blocks in attached_doc_blocks(lines, row["item"]):
+        any_item = True
+        for info, body in blocks:
+            if ok_kind(info) and re.search(r"//\s*" + re.escape(row["marker"]) + r"\b", body):
+                if "fss_core::" not in body and "fss_reference::" not in body:
+                    errors.append(f"{label}: doctest does not exercise real fss types")
+                found = True
+    if not any_item:
+        errors.append(f"{label}: item {row['item']} not declared in {path}")
+    elif not found:
+        errors.append(f"{label}: no `{row['kind']}` doctest carrying the marker is attached to {row['item']} in {path}")
+
+if errors:
+    for error in errors:
+        print(f"[FAIL] {error}")
+    sys.exit(1)
+print(f"[PASS] ADR-0001 contract maps {len(invariants)} invariants to {len(rows)} real doctest/test rows")
+PY
+}
+
 policy_lane() {
   run policy python3 scripts/check-policy.py --skip-manifest
   run schema-validate python3 scripts/schema_validate.py
@@ -124,7 +228,7 @@ policy_lane() {
   run dependency-closure-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_dependency_closure_scanner.py
   run semantic-plane-checker python3 scripts/semantic_plane_checker.py
   run semantic-plane-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_semantic_plane_checker.py
-  run semantic-plane-doctests rustdoc --test docs/enforcement/three_semantic_planes_contract.md --edition 2024
+  run semantic-plane-doctests semantic_plane_doctest_map
   run standards-first-adapter-checker python3 scripts/standards_first_adapter_checker.py
   run standards-first-adapter-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_standards_first_adapter_checker.py
   run release-artifact-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_artifacts.py
