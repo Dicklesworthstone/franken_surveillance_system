@@ -29,6 +29,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "fss-packet"
+version = "0.0.1"
+
+[[package]]
 name = "fss-publication"
 version = "0.0.1"
 dependencies = [
