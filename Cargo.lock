@@ -53,3 +53,10 @@ dependencies = [
  "fss-object",
  "fss-publication",
 ]
+
+[[package]]
+name = "fss-tensor"
+version = "0.0.1"
+dependencies = [
+ "fss-core",
+]
