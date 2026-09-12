@@ -414,3 +414,80 @@ fn every_withheld_or_unestablished_state_is_reported_as_degraded() -> Result<(),
     }
     Ok(())
 }
+
+fn known_premise_delta(state: KnowledgeState) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    let mut result_variant = Variant::baseline()?;
+    result_variant.sequence = 2;
+    result_variant.premise_state = state;
+    if state == KnowledgeState::Conflicted {
+        result_variant.premise_contradictions = vec![ContentDigest::sha256(b"contradiction")];
+    }
+    let result = publication(&result_variant)?;
+    Ok(classify_reference_meaningful_delta(&basis, &result)?)
+}
+
+fn premise_invalidated(delta: &fss_core::MeaningfulDelta, state: KnowledgeState) -> bool {
+    let expected = format!("known premise claim:premise became {}", state.as_str());
+    delta
+        .classes
+        .contains(&MeaningfulDeltaClass::PlanInvalidation)
+        && delta.invalidated_assumptions.contains(&expected)
+}
+
+#[test]
+fn known_premise_becoming_redacted_is_an_invalidated_assumption() -> Result<(), Box<dyn Error>> {
+    let delta = known_premise_delta(KnowledgeState::Redacted)?;
+
+    assert!(
+        premise_invalidated(&delta, KnowledgeState::Redacted),
+        "Known->Redacted premise must be invalidated: {:?}",
+        delta.invalidated_assumptions
+    );
+    // The separate degraded-cell path (fss-mfea7) still reports the withheld cell.
+    assert!(delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss));
+    assert_eq!(delta.priority, DeltaPriority::Critical);
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn known_premise_becoming_not_applicable_is_an_invalidated_assumption() -> Result<(), Box<dyn Error>>
+{
+    let delta = known_premise_delta(KnowledgeState::NotApplicable)?;
+
+    assert!(
+        premise_invalidated(&delta, KnowledgeState::NotApplicable),
+        "Known->NotApplicable premise must be invalidated: {:?}",
+        delta.invalidated_assumptions
+    );
+    assert_eq!(delta.priority, DeltaPriority::Critical);
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn every_state_that_cannot_authorize_an_irreversible_effect_invalidates_a_known_premise()
+-> Result<(), Box<dyn Error>> {
+    for state in [
+        KnowledgeState::Estimated,
+        KnowledgeState::Unknown,
+        KnowledgeState::Conflicted,
+        KnowledgeState::Stale,
+        KnowledgeState::NotObservable,
+        KnowledgeState::Indeterminate,
+        KnowledgeState::Redacted,
+        KnowledgeState::NotApplicable,
+    ] {
+        assert!(!state.may_authorize_irreversible_effect());
+        let delta = known_premise_delta(state)?;
+        assert!(
+            premise_invalidated(&delta, state),
+            "Known->{} premise must be invalidated: {:?}",
+            state.as_str(),
+            delta.invalidated_assumptions
+        );
+        delta.validate()?;
+    }
+    Ok(())
+}

@@ -11,6 +11,41 @@ use fss_core::{
 
 use crate::{ReferenceError, ReferenceSituationPublication};
 
+/// Returns whether a premise that a plan relied on at `prior` is invalidated by its `current`
+/// knowledge state (registries/AGENT_CONTRACTS.md, "Knowledge states").
+///
+/// Only `KSTATE-001` `known` may authorize an irreversible effect, so every transition from `Known`
+/// to any other state leaves the premise unable to carry the decision it supported. The match is
+/// exhaustive so a new state must be classified here rather than silently passing.
+const fn premise_state_invalidated(prior: KnowledgeState, current: KnowledgeState) -> bool {
+    match current {
+        // KSTATE-001: still established for the anchor; only new contradictions (checked by the
+        // caller) can invalidate it.
+        KnowledgeState::Known => false,
+        // KSTATE-002: may plan but may not authorize an irreversible effect and needs explicit
+        // assumptions, so Known->Estimated is a downgrade; Estimated->Estimated is unchanged.
+        KnowledgeState::Estimated => matches!(prior, KnowledgeState::Known),
+        // KSTATE-003: the evidence no longer establishes the proposition; open branch only.
+        KnowledgeState::Unknown
+        // KSTATE-004: incompatible admissible evidence; competing branches only.
+        | KnowledgeState::Conflicted
+        // KSTATE-005: valid only at an older anchor; revalidation candidate only.
+        | KnowledgeState::Stale
+        // KSTATE-006: the domain could not have established it; protected residual only.
+        | KnowledgeState::NotObservable
+        // KSTATE-008: a consequential outcome is unproved; reconciliation branches only.
+        | KnowledgeState::Indeterminate
+        // KSTATE-007: withheld by the current privacy/capability projection; the plan may use it
+        // only through non-leaking abstract constraints and it can never authorize an
+        // irreversible effect, so a premise that became redacted is invalidated (fss-2kntt).
+        | KnowledgeState::Redacted
+        // KSTATE-009: the proposition has no meaning for the object, scope, or lifecycle state;
+        // it may not even support planning, so the premise is invalidated a fortiori. It is not
+        // a coverage gap, which is why the degraded-cell list below excludes it.
+        | KnowledgeState::NotApplicable => true,
+    }
+}
+
 /// Classifies every decision-relevant change between two exact reference publications.
 ///
 /// Terminal transitions, coverage loss, contradictions, plan invalidation, obligation changes,
@@ -145,15 +180,7 @@ pub fn classify_reference_meaningful_delta(
             .find(|candidate| candidate.claim_id == prior.claim_id)
         {
             Some(current)
-                if matches!(
-                    current.knowledge_state,
-                    KnowledgeState::Unknown
-                        | KnowledgeState::Conflicted
-                        | KnowledgeState::Stale
-                        | KnowledgeState::NotObservable
-                        | KnowledgeState::Indeterminate
-                ) || (prior.knowledge_state == KnowledgeState::Known
-                    && current.knowledge_state == KnowledgeState::Estimated)
+                if premise_state_invalidated(prior.knowledge_state, current.knowledge_state)
                     || (prior.contradictions != current.contradictions
                         && !current.contradictions.is_empty()) =>
             {
