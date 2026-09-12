@@ -81,6 +81,8 @@ fn sample_request() -> Result<AcquisitionRequest, Box<dyn std::error::Error>> {
 
 fn sample_auth(req: &AcquisitionRequest) -> AuthReceipt {
     AuthReceipt {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         method: CredentialMethod::None,
         principal_digest: ContentDigest::sha256(b"principal:owner-operator"),
         authorized_capabilities: req.requested_capabilities,
@@ -101,6 +103,8 @@ fn sample_ack(req: &AcquisitionRequest) -> AdapterAck {
 
 fn sample_first_frame(req: &AcquisitionRequest) -> FirstFrameWitness {
     FirstFrameWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         sequence_number: 1,
         pts_ns: TimestampNs(1_033_000_000),
@@ -146,6 +150,8 @@ fn sample_coverage_witness(certifies: bool) -> CoverageWitness {
 
 fn sample_continuity(req: &AcquisitionRequest, certifies: bool) -> ContinuityWitness {
     ContinuityWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         window_start_seq: 1,
         window_end_seq: 60,
@@ -283,7 +289,11 @@ fn test_planted_negative_continuity_across_gap() -> Result<(), Box<dyn std::erro
     // 1. Packet loss > 0
     let mut witness_packet_loss = sample_continuity(&req, true);
     witness_packet_loss.packet_loss = 1;
-    let err_loss = witness_packet_loss.verify(&req.source_identity.source_id);
+    let err_loss = witness_packet_loss.verify(
+        &req.source_identity.source_id,
+        &req.device_identity.device_id,
+        &req.adapter_identity.adapter_id,
+    );
     assert!(matches!(
         err_loss,
         Err(AcquisitionError::ContinuityGapDetected { .. })
@@ -292,7 +302,11 @@ fn test_planted_negative_continuity_across_gap() -> Result<(), Box<dyn std::erro
     // 2. Discontinuity count > 0
     let mut witness_discontinuity = sample_continuity(&req, true);
     witness_discontinuity.discontinuities = 1;
-    let err_disc = witness_discontinuity.verify(&req.source_identity.source_id);
+    let err_disc = witness_discontinuity.verify(
+        &req.source_identity.source_id,
+        &req.device_identity.device_id,
+        &req.adapter_identity.adapter_id,
+    );
     assert!(matches!(
         err_disc,
         Err(AcquisitionError::ContinuityGapDetected { .. })
@@ -302,7 +316,11 @@ fn test_planted_negative_continuity_across_gap() -> Result<(), Box<dyn std::erro
     let mut witness_jitter = sample_continuity(&req, true);
     witness_jitter.observed_jitter_ns = 5_000_000;
     witness_jitter.max_jitter_threshold_ns = 2_000_000;
-    let err_jitter = witness_jitter.verify(&req.source_identity.source_id);
+    let err_jitter = witness_jitter.verify(
+        &req.source_identity.source_id,
+        &req.device_identity.device_id,
+        &req.adapter_identity.adapter_id,
+    );
     assert!(matches!(
         err_jitter,
         Err(AcquisitionError::ContinuityGapDetected { .. })
@@ -313,7 +331,11 @@ fn test_planted_negative_continuity_across_gap() -> Result<(), Box<dyn std::erro
     witness_seq_gap.window_start_seq = 1;
     witness_seq_gap.window_end_seq = 60;
     witness_seq_gap.frames_observed = 59; // 1 frame dropped in sequence
-    let err_gap = witness_seq_gap.verify(&req.source_identity.source_id);
+    let err_gap = witness_seq_gap.verify(
+        &req.source_identity.source_id,
+        &req.device_identity.device_id,
+        &req.adapter_identity.adapter_id,
+    );
     assert!(matches!(
         err_gap,
         Err(AcquisitionError::ContinuityGapDetected { .. })
@@ -323,7 +345,11 @@ fn test_planted_negative_continuity_across_gap() -> Result<(), Box<dyn std::erro
     let mut witness_inverted = sample_continuity(&req, true);
     witness_inverted.window_start_seq = 100;
     witness_inverted.window_end_seq = 50;
-    let err_inv = witness_inverted.verify(&req.source_identity.source_id);
+    let err_inv = witness_inverted.verify(
+        &req.source_identity.source_id,
+        &req.device_identity.device_id,
+        &req.adapter_identity.adapter_id,
+    );
     assert!(matches!(
         err_inv,
         Err(AcquisitionError::ContinuityGapDetected { .. })
@@ -332,7 +358,11 @@ fn test_planted_negative_continuity_across_gap() -> Result<(), Box<dyn std::erro
     // 6. Coverage continuity not continuous
     let mut witness_gapped_coverage = sample_continuity(&req, false);
     witness_gapped_coverage.coverage_witness.continuity = CoverageContinuity::Gapped;
-    let err_cov = witness_gapped_coverage.verify(&req.source_identity.source_id);
+    let err_cov = witness_gapped_coverage.verify(
+        &req.source_identity.source_id,
+        &req.device_identity.device_id,
+        &req.adapter_identity.adapter_id,
+    );
     assert!(matches!(
         err_cov,
         Err(AcquisitionError::InvalidCoverageWitness { .. })
@@ -420,6 +450,8 @@ fn test_degradation_and_recovery_lifecycle() -> Result<(), Box<dyn std::error::E
 
     // Enter degradation
     let degradation = DegradationEvidence {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         degraded_at_ns: TimestampNs(2_050_000_000),
         lost_dimensions: vec!["packet_loss".to_string(), "timing_jitter".to_string()],
@@ -473,6 +505,7 @@ fn test_clean_cancellation_requires_quiescence() -> Result<(), Box<dyn std::erro
     // Cancellation with active tasks fails
     let dirty_receipt1 = QuiescenceReceipt {
         adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         cancelled_at_ns: TimestampNs(1_010_000_000),
         active_tasks: 1, // dirty!
@@ -488,6 +521,7 @@ fn test_clean_cancellation_requires_quiescence() -> Result<(), Box<dyn std::erro
     // Cancellation with un-drained buffers fails
     let dirty_receipt2 = QuiescenceReceipt {
         adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         cancelled_at_ns: TimestampNs(1_010_000_000),
         active_tasks: 0,
@@ -503,6 +537,7 @@ fn test_clean_cancellation_requires_quiescence() -> Result<(), Box<dyn std::erro
     // Clean cancellation succeeds
     let clean_receipt = QuiescenceReceipt {
         adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         cancelled_at_ns: TimestampNs(1_010_000_000),
         active_tasks: 0,
@@ -525,6 +560,8 @@ fn test_indeterminate_state_and_reconciliation() -> Result<(), Box<dyn std::erro
     session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
 
     let indeterminate_witness = IndeterminateWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         indeterminate_at_ns: TimestampNs(1_020_000_000),
         reason: "driver unresponsive during resolution probe".to_string(),
@@ -555,6 +592,8 @@ fn test_indeterminate_state_and_reconciliation() -> Result<(), Box<dyn std::erro
 
     // Clean reconciliation to terminal Failed
     let failure = FailureWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         failed_at_ns: TimestampNs(1_030_000_000),
         error_code: "driver_hang_unrecoverable".to_string(),
@@ -656,6 +695,8 @@ fn test_canonical_id_prefix_enforcement() -> Result<(), Box<dyn std::error::Erro
     // 1. FirstFrameWitness with alias prefix "source:" instead of "src:"
     let mut enc = CanonicalEncoder::new();
     enc.text(FirstFrameWitness::SCHEMA);
+    enc.text("adapter:uvc-insta360-link");
+    enc.text("device:insta360-link-main");
     enc.text("source:camera-main-video");
     enc.u64(0);
     TimestampNs(1_200_000_000).encode_canonical(&mut enc);
@@ -690,6 +731,8 @@ fn test_canonical_id_prefix_enforcement() -> Result<(), Box<dyn std::error::Erro
     // 3. FailureWitness with alias prefix "source:"
     let mut enc = CanonicalEncoder::new();
     enc.text(FailureWitness::SCHEMA);
+    enc.text("adapter:uvc-insta360-link");
+    enc.text("device:insta360-link-main");
     enc.text("source:camera-main-video");
     TimestampNs(2_100_000_000).encode_canonical(&mut enc);
     enc.text("timeout");
@@ -704,6 +747,7 @@ fn test_canonical_id_prefix_enforcement() -> Result<(), Box<dyn std::error::Erro
     let mut enc = CanonicalEncoder::new();
     enc.text(QuiescenceReceipt::SCHEMA);
     enc.text("adp:uvc-insta360-link");
+    req.device_identity.device_id.encode_canonical(&mut enc);
     req.source_identity.source_id.encode_canonical(&mut enc);
     TimestampNs(2_200_000_000).encode_canonical(&mut enc);
     enc.u32(0);
@@ -717,6 +761,8 @@ fn test_canonical_id_prefix_enforcement() -> Result<(), Box<dyn std::error::Erro
     // 5. IndeterminateWitness with alias prefix "source:"
     let mut enc = CanonicalEncoder::new();
     enc.text(IndeterminateWitness::SCHEMA);
+    enc.text("adapter:uvc-insta360-link");
+    enc.text("device:insta360-link-main");
     enc.text("source:camera-main-video");
     TimestampNs(2_300_000_000).encode_canonical(&mut enc);
     enc.text("unknown");
@@ -874,6 +920,8 @@ fn test_canonical_encoding_roundtrips() -> Result<(), Box<dyn std::error::Error>
 
     // 8. DegradationEvidence
     let deg = DegradationEvidence {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         degraded_at_ns: TimestampNs(2_000_000_000),
         lost_dimensions: vec!["packet_loss".to_string()],
@@ -891,6 +939,8 @@ fn test_canonical_encoding_roundtrips() -> Result<(), Box<dyn std::error::Error>
 
     // 9. FailureWitness
     let fail = FailureWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         failed_at_ns: TimestampNs(2_100_000_000),
         error_code: "timeout".to_string(),
@@ -908,6 +958,7 @@ fn test_canonical_encoding_roundtrips() -> Result<(), Box<dyn std::error::Error>
     // 10. QuiescenceReceipt
     let quiesc = QuiescenceReceipt {
         adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         cancelled_at_ns: TimestampNs(2_200_000_000),
         active_tasks: 0,
@@ -924,6 +975,8 @@ fn test_canonical_encoding_roundtrips() -> Result<(), Box<dyn std::error::Error>
 
     // 11. IndeterminateWitness
     let indet = IndeterminateWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         source_id: req.source_identity.source_id.clone(),
         indeterminate_at_ns: TimestampNs(2_300_000_000),
         reason: "unknown state".to_string(),
@@ -939,6 +992,8 @@ fn test_canonical_encoding_roundtrips() -> Result<(), Box<dyn std::error::Error>
 
     // 12. AcquisitionTransitionRecord
     let record = AcquisitionTransitionRecord {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
         from: AcquisitionStateKind::Requested,
         to: AcquisitionStateKind::Authenticated,
         timestamp_ns: TimestampNs(1_000_000_000),
@@ -952,6 +1007,446 @@ fn test_canonical_encoding_roundtrips() -> Result<(), Box<dyn std::error::Error>
     let record_decoded = AcquisitionTransitionRecord::decode_canonical(&mut dec_rec)?;
     dec_rec.ensure_finished()?;
     assert_eq!(record, record_decoded);
+
+    Ok(())
+}
+
+#[test]
+fn test_check_accept_silence_negative_deadline_wrapping() -> Result<(), Box<dyn std::error::Error>>
+{
+    let req = sample_request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    session.authenticate(sample_auth(&req), TimestampNs(1_001_000_000))?;
+    session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
+
+    let res = session.check_accept_silence(TimestampNs(-1), TimestampNs(1_000_000_000));
+    match res {
+        Err(AcquisitionError::AcceptSilenceTimeout { deadline_ns, .. }) => {
+            assert_ne!(
+                deadline_ns,
+                u64::MAX,
+                "Negative deadline_ns (-1) silently wrapped to u64::MAX via unchecked `as u64`"
+            );
+        }
+        other => return Err(format!("Expected timeout error, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_check_accept_silence_elapsed_overflow_truncation() -> Result<(), Box<dyn std::error::Error>>
+{
+    let req = sample_request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    session.authenticate(sample_auth(&req), TimestampNs(1_001_000_000))?;
+    session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
+
+    let deadline = TimestampNs(0);
+    let now = TimestampNs((1i128 << 65) + 42);
+
+    let res = session.check_accept_silence(deadline, now);
+    match res {
+        Err(AcquisitionError::AcceptSilenceTimeout { elapsed_ns, .. }) => {
+            assert!(
+                elapsed_ns >= u64::MAX,
+                "Elapsed ns truncated high bits to {elapsed_ns} instead of saturating or erroring"
+            );
+        }
+        other => return Err(format!("Expected timeout error, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_illegal_transition_mark_indeterminate_from_requested()
+-> Result<(), Box<dyn std::error::Error>> {
+    let req = sample_request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    assert_eq!(session.state_kind(), AcquisitionStateKind::Requested);
+
+    let witness = IndeterminateWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        indeterminate_at_ns: TimestampNs(1_001_000_000),
+        reason: "driver unresponsive".to_string(),
+        unresolved_obligations: vec!["reset hardware".to_string()],
+    };
+
+    assert!(!is_allowed_transition(
+        AcquisitionStateKind::Requested,
+        AcquisitionStateKind::Indeterminate
+    ));
+
+    let res = session.mark_indeterminate(witness, TimestampNs(1_001_000_000));
+    assert!(
+        matches!(res, Err(AcquisitionError::IllegalTransition { .. })),
+        "mark_indeterminate must reject unpermitted transition from Requested, but succeeded"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_reconcile_accepts_illegal_destination_transition() -> Result<(), Box<dyn std::error::Error>>
+{
+    let req = sample_request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    session.authenticate(sample_auth(&req), TimestampNs(1_001_000_000))?;
+    session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
+
+    let witness = IndeterminateWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        indeterminate_at_ns: TimestampNs(1_010_000_000),
+        reason: "temporary bus hang".to_string(),
+        unresolved_obligations: vec!["retry connect".to_string()],
+    };
+    session.mark_indeterminate(witness, TimestampNs(1_010_000_000))?;
+    assert_eq!(session.state_kind(), AcquisitionStateKind::Indeterminate);
+
+    assert!(!is_allowed_transition(
+        AcquisitionStateKind::Indeterminate,
+        AcquisitionStateKind::Requested
+    ));
+
+    let illegal_resolved_state = AcquisitionState::Requested(Box::new(req.clone()));
+    let res = session.reconcile(
+        illegal_resolved_state,
+        "illegal reconciliation back to Requested",
+        TimestampNs(1_015_000_000),
+    );
+
+    assert!(
+        matches!(res, Err(AcquisitionError::IllegalTransition { .. })),
+        "reconcile must reject illegal target transition Indeterminate -> Requested"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_degrade_rejects_allowed_transition_from_indeterminate()
+-> Result<(), Box<dyn std::error::Error>> {
+    let req = sample_request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    session.authenticate(sample_auth(&req), TimestampNs(1_001_000_000))?;
+    session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
+
+    let indet = IndeterminateWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        indeterminate_at_ns: TimestampNs(1_010_000_000),
+        reason: "jitter spike".to_string(),
+        unresolved_obligations: vec!["check network".to_string()],
+    };
+    session.mark_indeterminate(indet, TimestampNs(1_010_000_000))?;
+    assert_eq!(session.state_kind(), AcquisitionStateKind::Indeterminate);
+
+    assert!(is_allowed_transition(
+        AcquisitionStateKind::Indeterminate,
+        AcquisitionStateKind::Degraded
+    ));
+
+    let deg_evidence = DegradationEvidence {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        degraded_at_ns: TimestampNs(1_015_000_000),
+        lost_dimensions: vec!["resolution".to_string()],
+        invalidated_negative_claims: vec!["motion_absence".to_string()],
+        observed_packet_loss: 5,
+        observed_jitter_ns: 20_000_000,
+    };
+
+    let res = session.degrade(deg_evidence, TimestampNs(1_015_000_000));
+    assert!(
+        res.is_ok(),
+        "degrade() must allow registered transition from Indeterminate to Degraded per ACQUISITION_TRANSITION_TABLE, but returned {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_continuity_accepts_non_contiguous_sequence_jump() -> Result<(), Box<dyn std::error::Error>>
+{
+    let req = sample_request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    session.authenticate(sample_auth(&req), TimestampNs(1_001_000_000))?;
+    session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
+
+    let ff = FirstFrameWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        sequence_number: 1,
+        pts_ns: TimestampNs(1_010_000_000),
+        frame_bytes: 1024,
+        decode_state: DecodeState::Verified,
+        source_custody: SourceCustody::Retained {
+            source_digest: ContentDigest::sha256(b"frame-1"),
+            source_bytes: 1024,
+            storage_handle: "mem://frame-1".to_string(),
+        },
+        explicit_omission: ExplicitOmission::None,
+    };
+    session.observe_first_frame(ff, TimestampNs(1_010_000_000))?;
+
+    let cov = sample_coverage_witness(true);
+    let jumped_continuity = ContinuityWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        window_start_seq: 100, // Discontiguous jump from seq 1!
+        window_end_seq: 109,
+        window_start_pts_ns: TimestampNs(1_010_000_000),
+        window_end_pts_ns: TimestampNs(1_050_000_000),
+        frames_observed: 10,
+        discontinuities: 0,
+        packet_loss: 0,
+        observed_jitter_ns: 100_000,
+        max_jitter_threshold_ns: 1_000_000,
+        coverage_witness: cov,
+    };
+
+    let res = session.verify_continuity(jumped_continuity, TimestampNs(1_050_000_000));
+    assert!(
+        matches!(res, Err(AcquisitionError::ContinuityGapDetected { .. })),
+        "verify_continuity must reject window_start_seq (100) that does not connect to first_frame sequence (1)"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_single_frame_cannot_certify_continuity() -> Result<(), Box<dyn std::error::Error>> {
+    let req = sample_request()?;
+    let cov = sample_coverage_witness(true);
+    let single_frame_witness = ContinuityWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        window_start_seq: 1,
+        window_end_seq: 1,
+        window_start_pts_ns: TimestampNs(1_010_000_000),
+        window_end_pts_ns: TimestampNs(1_010_000_000),
+        frames_observed: 1,
+        discontinuities: 0,
+        packet_loss: 0,
+        observed_jitter_ns: 0,
+        max_jitter_threshold_ns: 1_000_000,
+        coverage_witness: cov,
+    };
+
+    let res = single_frame_witness.verify(
+        &req.source_identity.source_id,
+        &req.device_identity.device_id,
+        &req.adapter_identity.adapter_id,
+    );
+    assert!(
+        res.is_err(),
+        "ContinuityWitness must require a multi-frame continuous window (>= 2 frames), but accepted a single frame"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_record_transition_utf8_boundary_panic() -> Result<(), Box<dyn std::error::Error>> {
+    let req = sample_request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    session.authenticate(sample_auth(&req), TimestampNs(1_001_000_000))?;
+    session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
+
+    let witness = IndeterminateWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        indeterminate_at_ns: TimestampNs(1_010_000_000),
+        reason: "temp hang".to_string(),
+        unresolved_obligations: vec!["retry".to_string()],
+    };
+    session.mark_indeterminate(witness, TimestampNs(1_010_000_000))?;
+
+    let failure = FailureWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        failed_at_ns: TimestampNs(1_015_000_000),
+        error_code: "driver_failure".to_string(),
+        error_message: "unrecoverable".to_string(),
+        retryable: false,
+    };
+    let resolved_state = AcquisitionState::Failed {
+        request: Box::new(req.clone()),
+        failure,
+        prior_state: AcquisitionStateKind::Indeterminate,
+    };
+
+    // 255 ASCII bytes + 2-byte UTF-8 character ('é' = [0xC3, 0xA9]). Index 256 is not a char boundary!
+    let mut note = "a".repeat(255);
+    note.push('é');
+
+    let res = session.reconcile(resolved_state, &note, TimestampNs(1_015_000_000));
+    assert!(
+        res.is_ok(),
+        "reconcile failed or panicked on multi-byte char boundary note: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_acquisition_request_bypasses_identity_verify() -> Result<(), Box<dyn std::error::Error>> {
+    let mut req = sample_request()?;
+    req.device_identity.manufacturer = "x".repeat(1000); // Exceeds MAX_STR_LEN in 6.5 DeviceIdentity
+
+    assert!(req.device_identity.verify().is_err());
+
+    let res = req.verify();
+    assert!(
+        res.is_err(),
+        "AcquisitionRequest::verify() must delegate to device_identity.verify() and reject invalid device identity"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_check_accept_silence_propagates_transition_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    let req = sample_request()?;
+    let mut session = AcquisitionSession::new(req.clone())?;
+    session.authenticate(sample_auth(&req), TimestampNs(1_001_000_000))?;
+    session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
+
+    let res = session.check_accept_silence(TimestampNs(1_010_000_000), TimestampNs(1_020_000_000));
+    assert!(res.is_err());
+
+    assert_eq!(
+        session.state_kind(),
+        AcquisitionStateKind::Failed,
+        "Session must transition to Failed after timeout, but remained in {:?}",
+        session.state_kind()
+    );
+    Ok(())
+}
+
+#[test]
+fn test_identity_mismatch_rejection_for_adapter_and_device()
+-> Result<(), Box<dyn std::error::Error>> {
+    let req = sample_request()?;
+    let other_adapter = AdapterId::parse("adapter:other-camera-adapter")?;
+    let other_device = DeviceId::parse("device:other-camera-hardware")?;
+
+    // 1. AuthReceipt mismatch
+    let mut bad_auth = sample_auth(&req);
+    bad_auth.adapter_id = other_adapter.clone();
+    assert!(matches!(
+        bad_auth.verify(
+            &req.adapter_identity.adapter_id,
+            &req.device_identity.device_id,
+            req.requested_capabilities,
+            TimestampNs(1_000_000_000)
+        ),
+        Err(AcquisitionError::WitnessMismatch { .. })
+    ));
+
+    // 2. FirstFrameWitness mismatch
+    let mut bad_ff = sample_first_frame(&req);
+    bad_ff.device_id = other_device.clone();
+    assert!(matches!(
+        bad_ff.verify(
+            &req.source_identity.source_id,
+            &req.device_identity.device_id,
+            &req.adapter_identity.adapter_id
+        ),
+        Err(AcquisitionError::WitnessMismatch { .. })
+    ));
+
+    // 3. ContinuityWitness mismatch
+    let mut bad_cont = sample_continuity(&req, true);
+    bad_cont.adapter_id = other_adapter.clone();
+    assert!(matches!(
+        bad_cont.verify(
+            &req.source_identity.source_id,
+            &req.device_identity.device_id,
+            &req.adapter_identity.adapter_id
+        ),
+        Err(AcquisitionError::WitnessMismatch { .. })
+    ));
+
+    // 4. DegradationEvidence mismatch
+    let bad_deg = DegradationEvidence {
+        adapter_id: other_adapter.clone(),
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        degraded_at_ns: TimestampNs(2_000_000_000),
+        lost_dimensions: vec!["packet_loss".to_string()],
+        invalidated_negative_claims: vec![],
+        observed_packet_loss: 2,
+        observed_jitter_ns: 100_000,
+    };
+    assert!(matches!(
+        bad_deg.verify(
+            &req.source_identity.source_id,
+            &req.device_identity.device_id,
+            &req.adapter_identity.adapter_id
+        ),
+        Err(AcquisitionError::WitnessMismatch { .. })
+    ));
+
+    // 5. FailureWitness mismatch
+    let bad_fail = FailureWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: other_device.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        failed_at_ns: TimestampNs(2_000_000_000),
+        error_code: "test_err".to_string(),
+        error_message: "failed".to_string(),
+        retryable: false,
+    };
+    assert!(matches!(
+        bad_fail.verify(
+            &req.source_identity.source_id,
+            &req.device_identity.device_id,
+            &req.adapter_identity.adapter_id
+        ),
+        Err(AcquisitionError::WitnessMismatch { .. })
+    ));
+
+    // 6. QuiescenceReceipt mismatch
+    let bad_quiesc = QuiescenceReceipt {
+        adapter_id: other_adapter,
+        device_id: req.device_identity.device_id.clone(),
+        source_id: req.source_identity.source_id.clone(),
+        cancelled_at_ns: TimestampNs(2_000_000_000),
+        active_tasks: 0,
+        open_descriptors: 0,
+        buffers_drained: true,
+    };
+    assert!(matches!(
+        bad_quiesc.verify(
+            &req.adapter_identity.adapter_id,
+            &req.device_identity.device_id,
+            &req.source_identity.source_id
+        ),
+        Err(AcquisitionError::WitnessMismatch { .. })
+    ));
+
+    // 7. IndeterminateWitness mismatch
+    let bad_indet = IndeterminateWitness {
+        adapter_id: req.adapter_identity.adapter_id.clone(),
+        device_id: other_device,
+        source_id: req.source_identity.source_id.clone(),
+        indeterminate_at_ns: TimestampNs(2_000_000_000),
+        reason: "probe hang".to_string(),
+        unresolved_obligations: vec![],
+    };
+    assert!(matches!(
+        bad_indet.verify(
+            &req.source_identity.source_id,
+            &req.device_identity.device_id,
+            &req.adapter_identity.adapter_id
+        ),
+        Err(AcquisitionError::WitnessMismatch { .. })
+    ));
 
     Ok(())
 }

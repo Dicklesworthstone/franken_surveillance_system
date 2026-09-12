@@ -877,6 +877,10 @@ impl CanonicalDecode for AcquisitionRequest {
 /// Secret-free receipt proving authentication of caller and adapter capability scope.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AuthReceipt {
+    /// Adapter ID authorized.
+    pub adapter_id: AdapterId,
+    /// Device ID authorized.
+    pub device_id: DeviceId,
     /// Credential method used for authentication.
     pub method: CredentialMethod,
     /// Digest of the principal or certificate (strictly secret-free).
@@ -902,9 +906,45 @@ impl AuthReceipt {
     /// Verifies that this receipt satisfies the requested capabilities and is valid at `at_ns`.
     pub fn verify(
         &self,
+        expected_adapter_id: &AdapterId,
+        expected_device_id: &DeviceId,
         requested_caps: AdapterCapabilities,
         at_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
+        if !self.adapter_id.as_str().starts_with(AdapterId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "auth receipt adapter_id '{}' does not use canonical prefix '{}'",
+                    self.adapter_id,
+                    AdapterId::PREFIX
+                ),
+            });
+        }
+        if !self.device_id.as_str().starts_with(DeviceId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "auth receipt device_id '{}' does not use canonical prefix '{}'",
+                    self.device_id,
+                    DeviceId::PREFIX
+                ),
+            });
+        }
+        if self.adapter_id != *expected_adapter_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "auth receipt adapter_id '{}' != expected '{}'",
+                    self.adapter_id, expected_adapter_id
+                ),
+            });
+        }
+        if self.device_id != *expected_device_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "auth receipt device_id '{}' != expected '{}'",
+                    self.device_id, expected_device_id
+                ),
+            });
+        }
         if self.expires_at_ns < self.authorized_at_ns {
             return Err(AcquisitionError::WitnessMismatch {
                 detail: "auth expiry timestamp precedes authorization timestamp".to_string(),
@@ -933,6 +973,8 @@ impl AuthReceipt {
 impl CanonicalEncode for AuthReceipt {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(Self::SCHEMA);
+        self.adapter_id.encode_canonical(encoder);
+        self.device_id.encode_canonical(encoder);
         self.method.encode_canonical(encoder);
         encoder.digest(self.principal_digest);
         self.authorized_capabilities.encode_canonical(encoder);
@@ -947,12 +989,16 @@ impl CanonicalDecode for AuthReceipt {
         if schema != Self::SCHEMA {
             return Err(ContractError::InvalidIdentifier);
         }
+        let adapter_id = decode_canonical_adapter_id(decoder)?;
+        let device_id = decode_canonical_device_id(decoder)?;
         let method = CredentialMethod::decode_canonical(decoder)?;
         let principal_digest = decoder.digest()?;
         let authorized_capabilities = AdapterCapabilities::decode_canonical(decoder)?;
         let authorized_at_ns = TimestampNs::decode_canonical(decoder)?;
         let expires_at_ns = TimestampNs::decode_canonical(decoder)?;
         Ok(Self {
+            adapter_id,
+            device_id,
             method,
             principal_digest,
             authorized_capabilities,
@@ -1064,6 +1110,10 @@ impl CanonicalDecode for AdapterAck {
 /// Witness proving observation of the first decodable frame in the session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FirstFrameWitness {
+    /// Adapter ID.
+    pub adapter_id: AdapterId,
+    /// Device ID.
+    pub device_id: DeviceId,
     /// Evidence source ID.
     pub source_id: SourceId,
     /// Sequence number of first observed frame.
@@ -1091,13 +1141,52 @@ impl FirstFrameWitness {
     }
 
     /// Verifies first frame witness requirements.
-    pub fn verify(&self, expected_source_id: &SourceId) -> Result<(), AcquisitionError> {
+    pub fn verify(
+        &self,
+        expected_source_id: &SourceId,
+        expected_device_id: &DeviceId,
+        expected_adapter_id: &AdapterId,
+    ) -> Result<(), AcquisitionError> {
+        if !self.adapter_id.as_str().starts_with(AdapterId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "first frame adapter_id '{}' does not use canonical prefix '{}'",
+                    self.adapter_id,
+                    AdapterId::PREFIX
+                ),
+            });
+        }
+        if !self.device_id.as_str().starts_with(DeviceId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "first frame device_id '{}' does not use canonical prefix '{}'",
+                    self.device_id,
+                    DeviceId::PREFIX
+                ),
+            });
+        }
         if !self.source_id.as_str().starts_with(SourceId::PREFIX) {
             return Err(AcquisitionError::NonCanonicalEncoding {
                 detail: format!(
                     "first frame source_id '{}' does not use canonical prefix '{}'",
                     self.source_id,
                     SourceId::PREFIX
+                ),
+            });
+        }
+        if self.adapter_id != *expected_adapter_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "first frame adapter_id '{}' != expected '{}'",
+                    self.adapter_id, expected_adapter_id
+                ),
+            });
+        }
+        if self.device_id != *expected_device_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "first frame device_id '{}' != expected '{}'",
+                    self.device_id, expected_device_id
                 ),
             });
         }
@@ -1157,6 +1246,8 @@ impl FirstFrameWitness {
 impl CanonicalEncode for FirstFrameWitness {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(Self::SCHEMA);
+        self.adapter_id.encode_canonical(encoder);
+        self.device_id.encode_canonical(encoder);
         self.source_id.encode_canonical(encoder);
         encoder.u64(self.sequence_number);
         self.pts_ns.encode_canonical(encoder);
@@ -1173,6 +1264,8 @@ impl CanonicalDecode for FirstFrameWitness {
         if schema != Self::SCHEMA {
             return Err(ContractError::InvalidIdentifier);
         }
+        let adapter_id = decode_canonical_adapter_id(decoder)?;
+        let device_id = decode_canonical_device_id(decoder)?;
         let source_id = decode_canonical_source_id(decoder)?;
         let sequence_number = decoder.u64()?;
         let pts_ns = TimestampNs::decode_canonical(decoder)?;
@@ -1187,6 +1280,8 @@ impl CanonicalDecode for FirstFrameWitness {
         let source_custody = decode_source_custody(decoder)?;
         let explicit_omission = decode_explicit_omission(decoder)?;
         Ok(Self {
+            adapter_id,
+            device_id,
             source_id,
             sequence_number,
             pts_ns,
@@ -1201,6 +1296,10 @@ impl CanonicalDecode for FirstFrameWitness {
 /// Witness proving continuous unbroken frame and packet reception across a sequence window.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ContinuityWitness {
+    /// Adapter ID.
+    pub adapter_id: AdapterId,
+    /// Device ID.
+    pub device_id: DeviceId,
     /// Evidence source ID.
     pub source_id: SourceId,
     /// Sequence number at start of continuity window.
@@ -1236,13 +1335,52 @@ impl ContinuityWitness {
     }
 
     /// Verifies continuity criteria.
-    pub fn verify(&self, expected_source_id: &SourceId) -> Result<(), AcquisitionError> {
+    pub fn verify(
+        &self,
+        expected_source_id: &SourceId,
+        expected_device_id: &DeviceId,
+        expected_adapter_id: &AdapterId,
+    ) -> Result<(), AcquisitionError> {
+        if !self.adapter_id.as_str().starts_with(AdapterId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "continuity witness adapter_id '{}' does not use canonical prefix '{}'",
+                    self.adapter_id,
+                    AdapterId::PREFIX
+                ),
+            });
+        }
+        if !self.device_id.as_str().starts_with(DeviceId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "continuity witness device_id '{}' does not use canonical prefix '{}'",
+                    self.device_id,
+                    DeviceId::PREFIX
+                ),
+            });
+        }
         if !self.source_id.as_str().starts_with(SourceId::PREFIX) {
             return Err(AcquisitionError::NonCanonicalEncoding {
                 detail: format!(
                     "continuity witness source_id '{}' does not use canonical prefix '{}'",
                     self.source_id,
                     SourceId::PREFIX
+                ),
+            });
+        }
+        if self.adapter_id != *expected_adapter_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "continuity witness adapter_id '{}' != expected '{}'",
+                    self.adapter_id, expected_adapter_id
+                ),
+            });
+        }
+        if self.device_id != *expected_device_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "continuity witness device_id '{}' != expected '{}'",
+                    self.device_id, expected_device_id
                 ),
             });
         }
@@ -1270,6 +1408,14 @@ impl ContinuityWitness {
             return Err(AcquisitionError::ContinuityGapDetected {
                 detail: format!(
                     "frame count mismatch: expected {expected_frames}, got {}",
+                    self.frames_observed
+                ),
+            });
+        }
+        if self.frames_observed < 2 {
+            return Err(AcquisitionError::ContinuityGapDetected {
+                detail: format!(
+                    "continuity requires multi-frame window (frames_observed >= 2), got {}",
                     self.frames_observed
                 ),
             });
@@ -1305,6 +1451,38 @@ impl ContinuityWitness {
                 ),
             });
         }
+        if !self
+            .coverage_witness
+            .authorized_domain
+            .contains(self.source_id.as_str())
+        {
+            return Err(AcquisitionError::InvalidCoverageWitness {
+                detail: format!(
+                    "coverage witness authorized_domain does not contain source_id '{}'",
+                    self.source_id
+                ),
+            });
+        }
+        if !self
+            .coverage_witness
+            .observed_domain
+            .contains(self.source_id.as_str())
+        {
+            return Err(AcquisitionError::InvalidCoverageWitness {
+                detail: format!(
+                    "coverage witness observed_domain does not contain source_id '{}'",
+                    self.source_id
+                ),
+            });
+        }
+        if self.coverage_witness.completeness != Completeness::Complete {
+            return Err(AcquisitionError::InvalidCoverageWitness {
+                detail: format!(
+                    "coverage witness completeness is '{:?}', must be Complete",
+                    self.coverage_witness.completeness
+                ),
+            });
+        }
         Ok(())
     }
 }
@@ -1312,6 +1490,8 @@ impl ContinuityWitness {
 impl CanonicalEncode for ContinuityWitness {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(Self::SCHEMA);
+        self.adapter_id.encode_canonical(encoder);
+        self.device_id.encode_canonical(encoder);
         self.source_id.encode_canonical(encoder);
         encoder.u64(self.window_start_seq);
         encoder.u64(self.window_end_seq);
@@ -1332,6 +1512,8 @@ impl CanonicalDecode for ContinuityWitness {
         if schema != Self::SCHEMA {
             return Err(ContractError::InvalidIdentifier);
         }
+        let adapter_id = decode_canonical_adapter_id(decoder)?;
+        let device_id = decode_canonical_device_id(decoder)?;
         let source_id = decode_canonical_source_id(decoder)?;
         let window_start_seq = decoder.u64()?;
         let window_end_seq = decoder.u64()?;
@@ -1344,6 +1526,8 @@ impl CanonicalDecode for ContinuityWitness {
         let max_jitter_threshold_ns = decoder.u64()?;
         let coverage_witness = decode_coverage_witness(decoder)?;
         Ok(Self {
+            adapter_id,
+            device_id,
             source_id,
             window_start_seq,
             window_end_seq,
@@ -1362,6 +1546,10 @@ impl CanonicalDecode for ContinuityWitness {
 /// Evidence documenting stream degradation, naming lost dimensions and invalidated claims.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DegradationEvidence {
+    /// Adapter ID.
+    pub adapter_id: AdapterId,
+    /// Device ID.
+    pub device_id: DeviceId,
     /// Evidence source ID.
     pub source_id: SourceId,
     /// Timestamp when degradation was observed.
@@ -1387,13 +1575,52 @@ impl DegradationEvidence {
     }
 
     /// Verifies degradation evidence invariants.
-    pub fn verify(&self, expected_source_id: &SourceId) -> Result<(), AcquisitionError> {
+    pub fn verify(
+        &self,
+        expected_source_id: &SourceId,
+        expected_device_id: &DeviceId,
+        expected_adapter_id: &AdapterId,
+    ) -> Result<(), AcquisitionError> {
+        if !self.adapter_id.as_str().starts_with(AdapterId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "degradation adapter_id '{}' does not use canonical prefix '{}'",
+                    self.adapter_id,
+                    AdapterId::PREFIX
+                ),
+            });
+        }
+        if !self.device_id.as_str().starts_with(DeviceId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "degradation device_id '{}' does not use canonical prefix '{}'",
+                    self.device_id,
+                    DeviceId::PREFIX
+                ),
+            });
+        }
         if !self.source_id.as_str().starts_with(SourceId::PREFIX) {
             return Err(AcquisitionError::NonCanonicalEncoding {
                 detail: format!(
                     "degradation source_id '{}' does not use canonical prefix '{}'",
                     self.source_id,
                     SourceId::PREFIX
+                ),
+            });
+        }
+        if self.adapter_id != *expected_adapter_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "degradation adapter_id '{}' != expected '{}'",
+                    self.adapter_id, expected_adapter_id
+                ),
+            });
+        }
+        if self.device_id != *expected_device_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "degradation device_id '{}' != expected '{}'",
+                    self.device_id, expected_device_id
                 ),
             });
         }
@@ -1450,6 +1677,8 @@ impl DegradationEvidence {
 impl CanonicalEncode for DegradationEvidence {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(Self::SCHEMA);
+        self.adapter_id.encode_canonical(encoder);
+        self.device_id.encode_canonical(encoder);
         self.source_id.encode_canonical(encoder);
         self.degraded_at_ns.encode_canonical(encoder);
         encoder.u32(self.lost_dimensions.len() as u32);
@@ -1471,6 +1700,8 @@ impl CanonicalDecode for DegradationEvidence {
         if schema != Self::SCHEMA {
             return Err(ContractError::InvalidIdentifier);
         }
+        let adapter_id = decode_canonical_adapter_id(decoder)?;
+        let device_id = decode_canonical_device_id(decoder)?;
         let source_id = decode_canonical_source_id(decoder)?;
         let degraded_at_ns = TimestampNs::decode_canonical(decoder)?;
         let dim_count = decoder.u32()? as usize;
@@ -1492,6 +1723,8 @@ impl CanonicalDecode for DegradationEvidence {
         let observed_packet_loss = decoder.u32()?;
         let observed_jitter_ns = decoder.u64()?;
         Ok(Self {
+            adapter_id,
+            device_id,
             source_id,
             degraded_at_ns,
             lost_dimensions,
@@ -1505,6 +1738,10 @@ impl CanonicalDecode for DegradationEvidence {
 /// Witness proving terminal failure of the acquisition session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FailureWitness {
+    /// Adapter ID.
+    pub adapter_id: AdapterId,
+    /// Device ID.
+    pub device_id: DeviceId,
     /// Evidence source ID.
     pub source_id: SourceId,
     /// Timestamp of failure.
@@ -1528,13 +1765,52 @@ impl FailureWitness {
     }
 
     /// Verifies failure witness invariants.
-    pub fn verify(&self, expected_source_id: &SourceId) -> Result<(), AcquisitionError> {
+    pub fn verify(
+        &self,
+        expected_source_id: &SourceId,
+        expected_device_id: &DeviceId,
+        expected_adapter_id: &AdapterId,
+    ) -> Result<(), AcquisitionError> {
+        if !self.adapter_id.as_str().starts_with(AdapterId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "failure witness adapter_id '{}' does not use canonical prefix '{}'",
+                    self.adapter_id,
+                    AdapterId::PREFIX
+                ),
+            });
+        }
+        if !self.device_id.as_str().starts_with(DeviceId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "failure witness device_id '{}' does not use canonical prefix '{}'",
+                    self.device_id,
+                    DeviceId::PREFIX
+                ),
+            });
+        }
         if !self.source_id.as_str().starts_with(SourceId::PREFIX) {
             return Err(AcquisitionError::NonCanonicalEncoding {
                 detail: format!(
                     "failure witness source_id '{}' does not use canonical prefix '{}'",
                     self.source_id,
                     SourceId::PREFIX
+                ),
+            });
+        }
+        if self.adapter_id != *expected_adapter_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "failure witness adapter_id '{}' != expected '{}'",
+                    self.adapter_id, expected_adapter_id
+                ),
+            });
+        }
+        if self.device_id != *expected_device_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "failure witness device_id '{}' != expected '{}'",
+                    self.device_id, expected_device_id
                 ),
             });
         }
@@ -1567,6 +1843,8 @@ impl FailureWitness {
 impl CanonicalEncode for FailureWitness {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(Self::SCHEMA);
+        self.adapter_id.encode_canonical(encoder);
+        self.device_id.encode_canonical(encoder);
         self.source_id.encode_canonical(encoder);
         self.failed_at_ns.encode_canonical(encoder);
         encoder.text(&self.error_code);
@@ -1581,12 +1859,16 @@ impl CanonicalDecode for FailureWitness {
         if schema != Self::SCHEMA {
             return Err(ContractError::InvalidIdentifier);
         }
+        let adapter_id = decode_canonical_adapter_id(decoder)?;
+        let device_id = decode_canonical_device_id(decoder)?;
         let source_id = decode_canonical_source_id(decoder)?;
         let failed_at_ns = TimestampNs::decode_canonical(decoder)?;
         let error_code = decoder.text()?.to_string();
         let error_message = decoder.text()?.to_string();
         let retryable = decoder.bool()?;
         Ok(Self {
+            adapter_id,
+            device_id,
             source_id,
             failed_at_ns,
             error_code,
@@ -1601,6 +1883,8 @@ impl CanonicalDecode for FailureWitness {
 pub struct QuiescenceReceipt {
     /// Adapter performing clean cancellation.
     pub adapter_id: AdapterId,
+    /// Device being cancelled.
+    pub device_id: DeviceId,
     /// Source being cancelled.
     pub source_id: SourceId,
     /// Timestamp when quiescence was verified.
@@ -1627,6 +1911,7 @@ impl QuiescenceReceipt {
     pub fn verify(
         &self,
         expected_adapter_id: &AdapterId,
+        expected_device_id: &DeviceId,
         expected_source_id: &SourceId,
     ) -> Result<(), AcquisitionError> {
         if !self.adapter_id.as_str().starts_with(AdapterId::PREFIX) {
@@ -1635,6 +1920,15 @@ impl QuiescenceReceipt {
                     "quiescence receipt adapter_id '{}' does not use canonical prefix '{}'",
                     self.adapter_id,
                     AdapterId::PREFIX
+                ),
+            });
+        }
+        if !self.device_id.as_str().starts_with(DeviceId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "quiescence receipt device_id '{}' does not use canonical prefix '{}'",
+                    self.device_id,
+                    DeviceId::PREFIX
                 ),
             });
         }
@@ -1652,6 +1946,14 @@ impl QuiescenceReceipt {
                 detail: format!(
                     "quiescence receipt adapter_id '{}' != expected '{}'",
                     self.adapter_id, expected_adapter_id
+                ),
+            });
+        }
+        if self.device_id != *expected_device_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "quiescence receipt device_id '{}' != expected '{}'",
+                    self.device_id, expected_device_id
                 ),
             });
         }
@@ -1677,6 +1979,7 @@ impl CanonicalEncode for QuiescenceReceipt {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(Self::SCHEMA);
         self.adapter_id.encode_canonical(encoder);
+        self.device_id.encode_canonical(encoder);
         self.source_id.encode_canonical(encoder);
         self.cancelled_at_ns.encode_canonical(encoder);
         encoder.u32(self.active_tasks);
@@ -1692,6 +1995,7 @@ impl CanonicalDecode for QuiescenceReceipt {
             return Err(ContractError::InvalidIdentifier);
         }
         let adapter_id = decode_canonical_adapter_id(decoder)?;
+        let device_id = decode_canonical_device_id(decoder)?;
         let source_id = decode_canonical_source_id(decoder)?;
         let cancelled_at_ns = TimestampNs::decode_canonical(decoder)?;
         let active_tasks = decoder.u32()?;
@@ -1699,6 +2003,7 @@ impl CanonicalDecode for QuiescenceReceipt {
         let buffers_drained = decoder.bool()?;
         Ok(Self {
             adapter_id,
+            device_id,
             source_id,
             cancelled_at_ns,
             active_tasks,
@@ -1711,6 +2016,10 @@ impl CanonicalDecode for QuiescenceReceipt {
 /// Witness recording entry into indeterminate state requiring explicit reconciliation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct IndeterminateWitness {
+    /// Adapter ID.
+    pub adapter_id: AdapterId,
+    /// Device ID.
+    pub device_id: DeviceId,
     /// Evidence source ID.
     pub source_id: SourceId,
     /// Timestamp when state became indeterminate.
@@ -1732,13 +2041,52 @@ impl IndeterminateWitness {
     }
 
     /// Verifies indeterminate witness invariants.
-    pub fn verify(&self, expected_source_id: &SourceId) -> Result<(), AcquisitionError> {
+    pub fn verify(
+        &self,
+        expected_source_id: &SourceId,
+        expected_device_id: &DeviceId,
+        expected_adapter_id: &AdapterId,
+    ) -> Result<(), AcquisitionError> {
+        if !self.adapter_id.as_str().starts_with(AdapterId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "indeterminate witness adapter_id '{}' does not use canonical prefix '{}'",
+                    self.adapter_id,
+                    AdapterId::PREFIX
+                ),
+            });
+        }
+        if !self.device_id.as_str().starts_with(DeviceId::PREFIX) {
+            return Err(AcquisitionError::NonCanonicalEncoding {
+                detail: format!(
+                    "indeterminate witness device_id '{}' does not use canonical prefix '{}'",
+                    self.device_id,
+                    DeviceId::PREFIX
+                ),
+            });
+        }
         if !self.source_id.as_str().starts_with(SourceId::PREFIX) {
             return Err(AcquisitionError::NonCanonicalEncoding {
                 detail: format!(
                     "indeterminate witness source_id '{}' does not use canonical prefix '{}'",
                     self.source_id,
                     SourceId::PREFIX
+                ),
+            });
+        }
+        if self.adapter_id != *expected_adapter_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "indeterminate witness adapter_id '{}' != expected '{}'",
+                    self.adapter_id, expected_adapter_id
+                ),
+            });
+        }
+        if self.device_id != *expected_device_id {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: format!(
+                    "indeterminate witness device_id '{}' != expected '{}'",
+                    self.device_id, expected_device_id
                 ),
             });
         }
@@ -1780,6 +2128,8 @@ impl IndeterminateWitness {
 impl CanonicalEncode for IndeterminateWitness {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(Self::SCHEMA);
+        self.adapter_id.encode_canonical(encoder);
+        self.device_id.encode_canonical(encoder);
         self.source_id.encode_canonical(encoder);
         self.indeterminate_at_ns.encode_canonical(encoder);
         encoder.text(&self.reason);
@@ -1796,6 +2146,8 @@ impl CanonicalDecode for IndeterminateWitness {
         if schema != Self::SCHEMA {
             return Err(ContractError::InvalidIdentifier);
         }
+        let adapter_id = decode_canonical_adapter_id(decoder)?;
+        let device_id = decode_canonical_device_id(decoder)?;
         let source_id = decode_canonical_source_id(decoder)?;
         let indeterminate_at_ns = TimestampNs::decode_canonical(decoder)?;
         let reason = decoder.text()?.to_string();
@@ -1808,6 +2160,8 @@ impl CanonicalDecode for IndeterminateWitness {
             unresolved_obligations.push(decoder.text()?.to_string());
         }
         Ok(Self {
+            adapter_id,
+            device_id,
             source_id,
             indeterminate_at_ns,
             reason,
@@ -1819,6 +2173,10 @@ impl CanonicalDecode for IndeterminateWitness {
 /// Audit record of an executed lifecycle state transition.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AcquisitionTransitionRecord {
+    /// Adapter ID.
+    pub adapter_id: AdapterId,
+    /// Device ID.
+    pub device_id: DeviceId,
     /// Origin state.
     pub from: AcquisitionStateKind,
     /// Destination state.
@@ -1834,6 +2192,8 @@ pub struct AcquisitionTransitionRecord {
 impl CanonicalEncode for AcquisitionTransitionRecord {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(SCHEMA_TRANSITION_RECORD);
+        self.adapter_id.encode_canonical(encoder);
+        self.device_id.encode_canonical(encoder);
         self.from.encode_canonical(encoder);
         self.to.encode_canonical(encoder);
         self.timestamp_ns.encode_canonical(encoder);
@@ -1848,12 +2208,16 @@ impl CanonicalDecode for AcquisitionTransitionRecord {
         if schema != SCHEMA_TRANSITION_RECORD {
             return Err(ContractError::InvalidIdentifier);
         }
+        let adapter_id = decode_canonical_adapter_id(decoder)?;
+        let device_id = decode_canonical_device_id(decoder)?;
         let from = AcquisitionStateKind::decode_canonical(decoder)?;
         let to = AcquisitionStateKind::decode_canonical(decoder)?;
         let timestamp_ns = TimestampNs::decode_canonical(decoder)?;
         let witness_digest = decoder.digest()?;
         let note = decoder.text()?.to_string();
         Ok(Self {
+            adapter_id,
+            device_id,
             from,
             to,
             timestamp_ns,
@@ -1918,6 +2282,8 @@ pub enum AcquisitionState {
         ack: AdapterAck,
         /// First frame witness if observed prior to degradation.
         first_frame: Option<Box<FirstFrameWitness>>,
+        /// Last continuity witness if observed prior to degradation.
+        last_continuity: Option<Box<ContinuityWitness>>,
         /// Degradation evidence.
         degradation: Box<DegradationEvidence>,
     },
@@ -1945,8 +2311,8 @@ pub enum AcquisitionState {
         request: Box<AcquisitionRequest>,
         /// Indeterminate witness.
         witness: Box<IndeterminateWitness>,
-        /// Prior state kind before becoming indeterminate.
-        prior_state: AcquisitionStateKind,
+        /// Prior state before becoming indeterminate.
+        prior_state: Box<AcquisitionState>,
     },
 }
 
@@ -2016,6 +2382,8 @@ impl AcquisitionSession {
     pub fn new(request: AcquisitionRequest) -> Result<Self, AcquisitionError> {
         request.verify()?;
         let initial_record = AcquisitionTransitionRecord {
+            adapter_id: request.adapter_identity.adapter_id.clone(),
+            device_id: request.device_identity.device_id.clone(),
             from: AcquisitionStateKind::Requested,
             to: AcquisitionStateKind::Requested,
             timestamp_ns: request.requested_at_ns,
@@ -2100,12 +2468,16 @@ impl AcquisitionSession {
         if self.history.len() >= MAX_HISTORY_LEN {
             self.history.remove(0);
         }
-        let bounded_note = if note.len() > MAX_NOTE_LEN {
-            note[..MAX_NOTE_LEN].to_string()
-        } else {
-            note.to_string()
-        };
+        let mut end = note.len().min(MAX_NOTE_LEN);
+        while end > 0 && !note.is_char_boundary(end) {
+            end -= 1;
+        }
+        let bounded_note = note[..end].to_string();
+        let adapter_id = self.request().adapter_identity.adapter_id.clone();
+        let device_id = self.request().device_identity.device_id.clone();
         self.history.push(AcquisitionTransitionRecord {
+            adapter_id,
+            device_id,
             from,
             to,
             timestamp_ns,
@@ -2120,16 +2492,22 @@ impl AcquisitionSession {
         auth: AuthReceipt,
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
-        if self.state_kind() != AcquisitionStateKind::Requested {
+        let from_kind = self.state_kind();
+        if !is_allowed_transition(from_kind, AcquisitionStateKind::Authenticated) {
             return Err(AcquisitionError::IllegalTransition {
-                from: self.state_kind(),
+                from: from_kind,
                 to: AcquisitionStateKind::Authenticated,
             });
         }
         let req = self.request().clone();
-        auth.verify(req.requested_capabilities, now_ns)?;
+        auth.verify(
+            &req.adapter_identity.adapter_id,
+            &req.device_identity.device_id,
+            req.requested_capabilities,
+            now_ns,
+        )?;
         self.record_transition(
-            AcquisitionStateKind::Requested,
+            from_kind,
             AcquisitionStateKind::Authenticated,
             now_ns,
             auth.receipt_digest(),
@@ -2144,9 +2522,10 @@ impl AcquisitionSession {
 
     /// Transitions from [`AcquisitionStateKind::Authenticated`] to [`AcquisitionStateKind::AdapterAccepted`].
     pub fn accept(&mut self, ack: AdapterAck, now_ns: TimestampNs) -> Result<(), AcquisitionError> {
-        if self.state_kind() != AcquisitionStateKind::Authenticated {
+        let from_kind = self.state_kind();
+        if !is_allowed_transition(from_kind, AcquisitionStateKind::AdapterAccepted) {
             return Err(AcquisitionError::IllegalTransition {
-                from: self.state_kind(),
+                from: from_kind,
                 to: AcquisitionStateKind::AdapterAccepted,
             });
         }
@@ -2154,7 +2533,7 @@ impl AcquisitionSession {
             AcquisitionState::Authenticated { request, auth } => (request.clone(), auth.clone()),
             _ => {
                 return Err(AcquisitionError::IllegalTransition {
-                    from: self.state_kind(),
+                    from: from_kind,
                     to: AcquisitionStateKind::AdapterAccepted,
                 });
             }
@@ -2164,7 +2543,7 @@ impl AcquisitionSession {
             &request.adapter_identity.adapter_id,
         )?;
         self.record_transition(
-            AcquisitionStateKind::Authenticated,
+            from_kind,
             AcquisitionStateKind::AdapterAccepted,
             now_ns,
             ack.ack_digest(),
@@ -2180,9 +2559,10 @@ impl AcquisitionSession {
         witness: FirstFrameWitness,
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
-        if self.state_kind() != AcquisitionStateKind::AdapterAccepted {
+        let from_kind = self.state_kind();
+        if !is_allowed_transition(from_kind, AcquisitionStateKind::FirstFrameObserved) {
             return Err(AcquisitionError::IllegalTransition {
-                from: self.state_kind(),
+                from: from_kind,
                 to: AcquisitionStateKind::FirstFrameObserved,
             });
         }
@@ -2192,14 +2572,18 @@ impl AcquisitionSession {
             }
             _ => {
                 return Err(AcquisitionError::IllegalTransition {
-                    from: self.state_kind(),
+                    from: from_kind,
                     to: AcquisitionStateKind::FirstFrameObserved,
                 });
             }
         };
-        witness.verify(&request.source_identity.source_id)?;
+        witness.verify(
+            &request.source_identity.source_id,
+            &request.device_identity.device_id,
+            &request.adapter_identity.adapter_id,
+        )?;
         self.record_transition(
-            AcquisitionStateKind::AdapterAccepted,
+            from_kind,
             AcquisitionStateKind::FirstFrameObserved,
             now_ns,
             witness.witness_digest(),
@@ -2221,7 +2605,13 @@ impl AcquisitionSession {
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
         let from_kind = self.state_kind();
-        let (request, auth, ack, first_frame) = match &self.state {
+        if !is_allowed_transition(from_kind, AcquisitionStateKind::ContinuityVerified) {
+            return Err(AcquisitionError::IllegalTransition {
+                from: from_kind,
+                to: AcquisitionStateKind::ContinuityVerified,
+            });
+        }
+        let (request, auth, ack, first_frame, prior_continuity) = match &self.state {
             AcquisitionState::FirstFrameObserved {
                 request,
                 auth,
@@ -2232,26 +2622,35 @@ impl AcquisitionSession {
                 auth.clone(),
                 ack.clone(),
                 first_frame.clone(),
+                None,
             ),
             AcquisitionState::ContinuityVerified {
                 request,
                 auth,
                 ack,
                 first_frame,
-                ..
+                continuity,
             } => (
                 request.clone(),
                 auth.clone(),
                 ack.clone(),
                 first_frame.clone(),
+                Some(continuity.clone()),
             ),
             AcquisitionState::Degraded {
                 request,
                 auth,
                 ack,
                 first_frame: Some(ff),
+                last_continuity,
                 ..
-            } => (request.clone(), auth.clone(), ack.clone(), ff.clone()),
+            } => (
+                request.clone(),
+                auth.clone(),
+                ack.clone(),
+                ff.clone(),
+                last_continuity.clone(),
+            ),
             AcquisitionState::Degraded {
                 first_frame: None, ..
             } => {
@@ -2260,6 +2659,56 @@ impl AcquisitionSession {
                     witness_type: "FirstFrameWitness required before continuity",
                 });
             }
+            AcquisitionState::Indeterminate {
+                request,
+                prior_state,
+                ..
+            } => match prior_state.as_ref() {
+                AcquisitionState::FirstFrameObserved {
+                    auth,
+                    ack,
+                    first_frame,
+                    ..
+                } => (
+                    request.clone(),
+                    auth.clone(),
+                    ack.clone(),
+                    first_frame.clone(),
+                    None,
+                ),
+                AcquisitionState::ContinuityVerified {
+                    auth,
+                    ack,
+                    first_frame,
+                    continuity,
+                    ..
+                } => (
+                    request.clone(),
+                    auth.clone(),
+                    ack.clone(),
+                    first_frame.clone(),
+                    Some(continuity.clone()),
+                ),
+                AcquisitionState::Degraded {
+                    auth,
+                    ack,
+                    first_frame: Some(ff),
+                    last_continuity,
+                    ..
+                } => (
+                    request.clone(),
+                    auth.clone(),
+                    ack.clone(),
+                    ff.clone(),
+                    last_continuity.clone(),
+                ),
+                _ => {
+                    return Err(AcquisitionError::MissingWitness {
+                        state: AcquisitionStateKind::ContinuityVerified,
+                        witness_type: "FirstFrameWitness required before continuity",
+                    });
+                }
+            },
             _ => {
                 return Err(AcquisitionError::IllegalTransition {
                     from: from_kind,
@@ -2267,7 +2716,36 @@ impl AcquisitionSession {
                 });
             }
         };
-        witness.verify(&request.source_identity.source_id)?;
+
+        if let Some(prior) = &prior_continuity {
+            let expected_next = prior.window_end_seq.saturating_add(1);
+            if witness.window_start_seq != expected_next {
+                return Err(AcquisitionError::ContinuityGapDetected {
+                    detail: format!(
+                        "sequence gap detected: prior window ended at {}, next window started at {}",
+                        prior.window_end_seq, witness.window_start_seq
+                    ),
+                });
+            }
+        } else {
+            let ff_seq = first_frame.sequence_number;
+            if witness.window_start_seq != ff_seq
+                && witness.window_start_seq != ff_seq.saturating_add(1)
+            {
+                return Err(AcquisitionError::ContinuityGapDetected {
+                    detail: format!(
+                        "sequence jump detected: first frame seq {}, continuity start seq {}",
+                        ff_seq, witness.window_start_seq
+                    ),
+                });
+            }
+        }
+
+        witness.verify(
+            &request.source_identity.source_id,
+            &request.device_identity.device_id,
+            &request.adapter_identity.adapter_id,
+        )?;
         self.record_transition(
             from_kind,
             AcquisitionStateKind::ContinuityVerified,
@@ -2292,9 +2770,15 @@ impl AcquisitionSession {
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
         let from_kind = self.state_kind();
-        let (request, auth, ack, first_frame) = match &self.state {
+        if !is_allowed_transition(from_kind, AcquisitionStateKind::Degraded) {
+            return Err(AcquisitionError::IllegalTransition {
+                from: from_kind,
+                to: AcquisitionStateKind::Degraded,
+            });
+        }
+        let (request, auth, ack, first_frame, last_continuity) = match &self.state {
             AcquisitionState::AdapterAccepted { request, auth, ack } => {
-                (request.clone(), auth.clone(), ack.clone(), None)
+                (request.clone(), auth.clone(), ack.clone(), None, None)
             }
             AcquisitionState::FirstFrameObserved {
                 request,
@@ -2306,31 +2790,88 @@ impl AcquisitionSession {
                 auth.clone(),
                 ack.clone(),
                 Some(first_frame.clone()),
+                None,
             ),
             AcquisitionState::ContinuityVerified {
                 request,
                 auth,
                 ack,
                 first_frame,
-                ..
+                continuity,
             } => (
                 request.clone(),
                 auth.clone(),
                 ack.clone(),
                 Some(first_frame.clone()),
+                Some(continuity.clone()),
             ),
             AcquisitionState::Degraded {
                 request,
                 auth,
                 ack,
                 first_frame,
+                last_continuity,
                 ..
             } => (
                 request.clone(),
                 auth.clone(),
                 ack.clone(),
                 first_frame.clone(),
+                last_continuity.clone(),
             ),
+            AcquisitionState::Indeterminate {
+                request,
+                prior_state,
+                ..
+            } => match prior_state.as_ref() {
+                AcquisitionState::AdapterAccepted { auth, ack, .. } => {
+                    (request.clone(), auth.clone(), ack.clone(), None, None)
+                }
+                AcquisitionState::FirstFrameObserved {
+                    auth,
+                    ack,
+                    first_frame,
+                    ..
+                } => (
+                    request.clone(),
+                    auth.clone(),
+                    ack.clone(),
+                    Some(first_frame.clone()),
+                    None,
+                ),
+                AcquisitionState::ContinuityVerified {
+                    auth,
+                    ack,
+                    first_frame,
+                    continuity,
+                    ..
+                } => (
+                    request.clone(),
+                    auth.clone(),
+                    ack.clone(),
+                    Some(first_frame.clone()),
+                    Some(continuity.clone()),
+                ),
+                AcquisitionState::Degraded {
+                    auth,
+                    ack,
+                    first_frame,
+                    last_continuity,
+                    ..
+                } => (
+                    request.clone(),
+                    auth.clone(),
+                    ack.clone(),
+                    first_frame.clone(),
+                    last_continuity.clone(),
+                ),
+                _ => {
+                    return Err(AcquisitionError::IllegalTransition {
+                        from: from_kind,
+                        to: AcquisitionStateKind::Degraded,
+                    });
+                }
+            },
             _ => {
                 return Err(AcquisitionError::IllegalTransition {
                     from: from_kind,
@@ -2338,7 +2879,11 @@ impl AcquisitionSession {
                 });
             }
         };
-        evidence.verify(&request.source_identity.source_id)?;
+        evidence.verify(
+            &request.source_identity.source_id,
+            &request.device_identity.device_id,
+            &request.adapter_identity.adapter_id,
+        )?;
         self.record_transition(
             from_kind,
             AcquisitionStateKind::Degraded,
@@ -2351,6 +2896,7 @@ impl AcquisitionSession {
             auth,
             ack,
             first_frame,
+            last_continuity,
             degradation: Box::new(evidence),
         };
         Ok(())
@@ -2363,14 +2909,18 @@ impl AcquisitionSession {
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
         let from_kind = self.state_kind();
-        if from_kind.is_terminal() {
+        if !is_allowed_transition(from_kind, AcquisitionStateKind::Failed) {
             return Err(AcquisitionError::IllegalTransition {
                 from: from_kind,
                 to: AcquisitionStateKind::Failed,
             });
         }
         let request = self.request().clone();
-        failure.verify(&request.source_identity.source_id)?;
+        failure.verify(
+            &request.source_identity.source_id,
+            &request.device_identity.device_id,
+            &request.adapter_identity.adapter_id,
+        )?;
         self.record_transition(
             from_kind,
             AcquisitionStateKind::Failed,
@@ -2393,7 +2943,7 @@ impl AcquisitionSession {
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
         let from_kind = self.state_kind();
-        if from_kind.is_terminal() {
+        if !is_allowed_transition(from_kind, AcquisitionStateKind::Cancelled) {
             return Err(AcquisitionError::IllegalTransition {
                 from: from_kind,
                 to: AcquisitionStateKind::Cancelled,
@@ -2402,6 +2952,7 @@ impl AcquisitionSession {
         let request = self.request().clone();
         quiescence.verify(
             &request.adapter_identity.adapter_id,
+            &request.device_identity.device_id,
             &request.source_identity.source_id,
         )?;
         self.record_transition(
@@ -2426,14 +2977,18 @@ impl AcquisitionSession {
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
         let from_kind = self.state_kind();
-        if from_kind.is_terminal() {
+        if !is_allowed_transition(from_kind, AcquisitionStateKind::Indeterminate) {
             return Err(AcquisitionError::IllegalTransition {
                 from: from_kind,
                 to: AcquisitionStateKind::Indeterminate,
             });
         }
         let request = self.request().clone();
-        witness.verify(&request.source_identity.source_id)?;
+        witness.verify(
+            &request.source_identity.source_id,
+            &request.device_identity.device_id,
+            &request.adapter_identity.adapter_id,
+        )?;
         self.record_transition(
             from_kind,
             AcquisitionStateKind::Indeterminate,
@@ -2441,10 +2996,11 @@ impl AcquisitionSession {
             witness.witness_digest(),
             "acquisition state became indeterminate",
         );
+        let prior_state = Box::new(self.state.clone());
         self.state = AcquisitionState::Indeterminate {
             request: Box::new(request),
             witness: Box::new(witness),
-            prior_state: from_kind,
+            prior_state,
         };
         Ok(())
     }
@@ -2468,14 +3024,85 @@ impl AcquisitionSession {
                 detail: "cannot reconcile indeterminate state back into indeterminate".to_string(),
             });
         }
-        if resolved_state.request().source_identity.source_id
-            != self.request().source_identity.source_id
-        {
-            return Err(AcquisitionError::WitnessMismatch {
-                detail: "reconciled state source_id mismatch".to_string(),
+        if !is_allowed_transition(AcquisitionStateKind::Indeterminate, target_kind) {
+            return Err(AcquisitionError::IllegalTransition {
+                from: AcquisitionStateKind::Indeterminate,
+                to: target_kind,
             });
         }
-        let witness_digest = resolved_state.request().request_digest();
+        if resolved_state.request().source_identity.source_id
+            != self.request().source_identity.source_id
+            || resolved_state.request().device_identity.device_id
+                != self.request().device_identity.device_id
+            || resolved_state.request().adapter_identity.adapter_id
+                != self.request().adapter_identity.adapter_id
+        {
+            return Err(AcquisitionError::WitnessMismatch {
+                detail: "reconciled state identity mismatch".to_string(),
+            });
+        }
+
+        let witness_digest = match &resolved_state {
+            AcquisitionState::ContinuityVerified { continuity, .. } => {
+                continuity.verify(
+                    &self.request().source_identity.source_id,
+                    &self.request().device_identity.device_id,
+                    &self.request().adapter_identity.adapter_id,
+                )?;
+                continuity.witness_digest()
+            }
+            AcquisitionState::Degraded { degradation, .. } => {
+                degradation.verify(
+                    &self.request().source_identity.source_id,
+                    &self.request().device_identity.device_id,
+                    &self.request().adapter_identity.adapter_id,
+                )?;
+                degradation.evidence_digest()
+            }
+            AcquisitionState::Failed {
+                failure,
+                prior_state,
+                ..
+            } => {
+                if *prior_state != AcquisitionStateKind::Indeterminate {
+                    return Err(AcquisitionError::WitnessMismatch {
+                        detail: "reconciled Failed state must have prior_state Indeterminate"
+                            .to_string(),
+                    });
+                }
+                failure.verify(
+                    &self.request().source_identity.source_id,
+                    &self.request().device_identity.device_id,
+                    &self.request().adapter_identity.adapter_id,
+                )?;
+                failure.witness_digest()
+            }
+            AcquisitionState::Cancelled {
+                quiescence,
+                prior_state,
+                ..
+            } => {
+                if *prior_state != AcquisitionStateKind::Indeterminate {
+                    return Err(AcquisitionError::WitnessMismatch {
+                        detail: "reconciled Cancelled state must have prior_state Indeterminate"
+                            .to_string(),
+                    });
+                }
+                quiescence.verify(
+                    &self.request().adapter_identity.adapter_id,
+                    &self.request().device_identity.device_id,
+                    &self.request().source_identity.source_id,
+                )?;
+                quiescence.receipt_digest()
+            }
+            _ => {
+                return Err(AcquisitionError::IllegalTransition {
+                    from: AcquisitionStateKind::Indeterminate,
+                    to: target_kind,
+                });
+            }
+        };
+
         self.record_transition(
             AcquisitionStateKind::Indeterminate,
             target_kind,
@@ -2498,8 +3125,13 @@ impl AcquisitionSession {
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
         if self.state_kind() == AcquisitionStateKind::AdapterAccepted && now_ns > deadline_ns {
-            let elapsed_ns = now_ns.0.saturating_sub(deadline_ns.0) as u64;
+            let deadline_u64 = u64::try_from(deadline_ns.0).unwrap_or(0);
+            let elapsed_i128 = now_ns.0.saturating_sub(deadline_ns.0);
+            let elapsed_ns = u64::try_from(elapsed_i128).unwrap_or(u64::MAX);
+
             let failure = FailureWitness {
+                adapter_id: self.request().adapter_identity.adapter_id.clone(),
+                device_id: self.request().device_identity.device_id.clone(),
                 source_id: self.request().source_identity.source_id.clone(),
                 failed_at_ns: now_ns,
                 error_code: "accept_silence_timeout".to_string(),
@@ -2508,9 +3140,9 @@ impl AcquisitionSession {
                 ),
                 retryable: true,
             };
-            let _ = self.fail(failure, now_ns);
+            self.fail(failure, now_ns)?;
             return Err(AcquisitionError::AcceptSilenceTimeout {
-                deadline_ns: deadline_ns.0 as u64,
+                deadline_ns: deadline_u64,
                 elapsed_ns,
             });
         }
@@ -2742,4 +3374,14 @@ fn decode_canonical_adapter_id(
         return Err(ContractError::NonCanonicalOrdering);
     }
     AdapterId::parse(raw)
+}
+
+fn decode_canonical_device_id(
+    decoder: &mut CanonicalDecoder<'_>,
+) -> Result<DeviceId, ContractError> {
+    let raw = decoder.text()?;
+    if !raw.starts_with(DeviceId::PREFIX) {
+        return Err(ContractError::NonCanonicalOrdering);
+    }
+    DeviceId::parse(raw)
 }
