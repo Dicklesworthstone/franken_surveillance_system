@@ -1429,6 +1429,7 @@ cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operat
         """Operation with status 'measured' and empty (0-byte) measurement artifact must fail closed with SLO-VAL-020."""
         with tempfile.TemporaryDirectory() as td:
             empty_art = ROOT / "qualification-artifacts" / "test_empty_receipt.json"
+            empty_art.parent.mkdir(parents=True, exist_ok=True)
             try:
                 empty_art.write_text("", encoding="utf-8")
                 planted_costs = Path(td) / "operation_cost_registry.toml"
