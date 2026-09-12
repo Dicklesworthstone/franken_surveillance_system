@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from qualification_receipt import atomic_write_bytes, write_json_atomic
+
 ROOT = Path(__file__).resolve().parents[1]
 FIXED_ZIP_DATE = (1980, 1, 1, 0, 0, 0)
 
@@ -63,19 +65,22 @@ def normalized_files(root: Path) -> list[Path]:
     return files
 
 
+# Receipts (verification.json, STAGE_/ARTIFACT_SHA256SUMS.txt) and the JSON/checksum release
+# assets are written through the one atomic writer in qualification_receipt.py: a later step
+# (package, DSR) reads them back, so a crash must leave the previous complete file, never a
+# partial one.
 def write_json(path: Path, value: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    write_json_atomic(path, value, sort_keys=True)
 
 
 def write_checksum_file(paths: Iterable[Path], output: Path, relative_to: Path) -> None:
     rows = [f"{sha256(path)}  {path.relative_to(relative_to).as_posix()}" for path in sorted(paths)]
-    output.write_text("\n".join(rows) + "\n", encoding="utf-8")
+    atomic_write_bytes(output, ("\n".join(rows) + "\n").encode("utf-8"))
 
 
 def write_single_checksum(path: Path) -> Path:
     output = Path(f"{path}.sha256")
-    output.write_text(f"{sha256(path)}  {path.name}\n", encoding="utf-8")
+    atomic_write_bytes(output, f"{sha256(path)}  {path.name}\n".encode("utf-8"))
     return output
 
 
@@ -304,7 +309,7 @@ def slsa_provenance(
 def copy_receipt(source: Path, destination: Path) -> Path:
     if not source.is_file():
         raise ValueError(f"required receipt missing: {source}")
-    destination.write_bytes(source.read_bytes())
+    atomic_write_bytes(destination, source.read_bytes())
     return destination
 
 

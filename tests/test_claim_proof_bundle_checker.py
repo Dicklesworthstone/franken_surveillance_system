@@ -1991,6 +1991,82 @@ class TestSharedAtomicWriter(unittest.TestCase):
             self.assertFalse((Path(tmpdir) / "none.txt").exists())
             self.assertEqual(sorted(p.name for p in out.parent.iterdir()), ["capabilities.json"], "no temp files may remain")
 
+    def test_descriptor_is_closed_when_fchmod_fails(self) -> None:
+        """fss-xhxwh: a failing fchmod must not leak the temp-file descriptor (or the temp file)."""
+        import errno
+        import qualification_receipt as qr
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "qualification-receipt.json"
+            target.write_bytes(b"previous\n")
+            opened: list[int] = []
+            real_mkstemp = tempfile.mkstemp
+
+            def recording_mkstemp(*args, **kwargs):
+                descriptor, name = real_mkstemp(*args, **kwargs)
+                opened.append(descriptor)
+                return descriptor, name
+
+            with mock.patch("tempfile.mkstemp", side_effect=recording_mkstemp), \
+                    mock.patch("os.fchmod", side_effect=PermissionError(errno.EPERM, "fchmod refused")):
+                with self.assertRaises(PermissionError):
+                    qr.atomic_write_bytes(target, b"new\n")
+            self.assertEqual(len(opened), 1)
+            try:
+                os.fstat(opened[0])
+            except OSError as exc:
+                self.assertEqual(exc.errno, errno.EBADF)
+            else:
+                os.close(opened[0])
+                self.fail("the temp-file descriptor leaked after fchmod failed")
+            self.assertEqual(target.read_bytes(), b"previous\n")
+            self.assertEqual(sorted(p.name for p in Path(tmpdir).iterdir()), ["qualification-receipt.json"])
+
+    def test_temp_unlink_failure_does_not_mask_the_original_error(self) -> None:
+        """fss-xhxwh: when the write fails and removing the temp file also fails, the caller sees
+        the original error; the secondary failure is attached to it and logged, not substituted."""
+        import contextlib
+        import errno
+        import io
+        import qualification_receipt as qr
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            target = Path(tmpdir) / "qualification-receipt.json"
+            target.write_bytes(b"previous\n")
+            original = OSError(errno.EIO, "replace failed")
+            stderr = io.StringIO()
+            with mock.patch("os.replace", side_effect=original), \
+                    mock.patch("os.unlink", side_effect=PermissionError(errno.EACCES, "unlink refused")), \
+                    contextlib.redirect_stderr(stderr):
+                with self.assertRaises(OSError) as raised:
+                    qr.atomic_write_bytes(target, b"new\n")
+            self.assertIs(raised.exception, original, f"got {raised.exception!r} instead of the original error")
+            notes = "\n".join(getattr(raised.exception, "__notes__", []))
+            self.assertIn("unlink refused", notes)
+            self.assertIn(RECEIPT_TEMP_PREFIX, notes)
+            self.assertIn("unlink refused", stderr.getvalue())
+            self.assertEqual(target.read_bytes(), b"previous\n")
+
+    def test_prepare_exact_run_dir_that_is_a_regular_file_is_named_precisely(self) -> None:
+        """fss-xhxwh: an explicit --exact path that is a regular file (itself or an ancestor) is
+        reported as not a directory, not as a directory that already holds a run's log."""
+        script = str(ROOT / "scripts/qualification_receipt.py")
+        with tempfile.TemporaryDirectory() as tmpdir:
+            regular = Path(tmpdir) / "receipt-dir"
+            regular.write_bytes(b"not a directory\n")
+            for exact in (regular, regular / "nested"):
+                with self.subTest(exact=exact.name):
+                    result = subprocess.run(
+                        [sys.executable, script, "prepare-run-dir", "--exact", str(exact)],
+                        capture_output=True, text=True, timeout=60,
+                    )
+                    self.assertEqual(result.returncode, 4, result.stderr)
+                    self.assertNotIn("already holds", result.stderr)
+                    self.assertIn("is not a directory", result.stderr)
+                    self.assertIn(str(regular), result.stderr)
+                    self.assertEqual(result.stdout, "")
+                    self.assertEqual(regular.read_bytes(), b"not a directory\n")
+
     def test_load_command_records_classifies_every_malformed_line(self) -> None:
         import qualification_receipt as qr
 
