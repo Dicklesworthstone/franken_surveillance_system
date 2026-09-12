@@ -733,7 +733,15 @@ impl From<ContractError> for EventTransitionError {
 
 impl From<EventDecodeError> for EventTransitionError {
     fn from(err: EventDecodeError) -> Self {
-        Self::Decode(err)
+        match err {
+            EventDecodeError::Contract(ContractError::CorroborationRequired) => {
+                Self::CorroborationRequired {
+                    observed_domains: 1,
+                }
+            }
+            EventDecodeError::Contract(ContractError::EvidenceRequired) => Self::EvidenceRequired,
+            other => Self::Decode(other),
+        }
     }
 }
 
@@ -1695,6 +1703,25 @@ impl EventHypothesis {
     ///
     /// The successor has `revision = self.revision + 1` and `supersedes = Some(self.revision_digest())`.
     pub fn supersede(&self, params: EventSupersedeParams) -> Result<Self, EventDecodeError> {
+        if self.state.is_terminal() {
+            return Err(EventDecodeError::Contradiction {
+                field: "state",
+                detail: format!("cannot supersede terminal state {:?}", self.state),
+            });
+        }
+        let urgent = params
+            .uncertainty_reason
+            .as_deref()
+            .is_some_and(|r| r.contains(SINGLE_DOMAIN_UNCONFIRMED_LABEL));
+        if !is_allowed_event_transition(self.state, params.state, urgent) {
+            return Err(EventDecodeError::Contradiction {
+                field: "state",
+                detail: format!(
+                    "transition from {:?} to {:?} not permitted by state machine",
+                    self.state, params.state
+                ),
+            });
+        }
         let rev = Self {
             schema: Self::SCHEMA.to_string(),
             event_id: self.event_id.clone(),
@@ -1733,6 +1760,7 @@ impl EventHypothesis {
         }
         let event_id = &chain[0].event_id;
         let mut prior_digest: Option<ContentDigest> = None;
+        let mut prior_rev: Option<&EventHypothesis> = None;
         for (i, rev) in chain.iter().enumerate() {
             rev.verify()?;
             if &rev.event_id != event_id {
@@ -1777,8 +1805,30 @@ impl EventHypothesis {
                         ),
                     });
                 }
+                if let Some(prev) = prior_rev {
+                    if prev.state.is_terminal() {
+                        return Err(EventDecodeError::Contradiction {
+                            field: "chain.state",
+                            detail: format!(
+                                "chain continues after terminal state {:?}",
+                                prev.state
+                            ),
+                        });
+                    }
+                    let urgent = rev.is_single_domain_unconfirmed();
+                    if !is_allowed_event_transition(prev.state, rev.state, urgent) {
+                        return Err(EventDecodeError::Contradiction {
+                            field: "chain.state",
+                            detail: format!(
+                                "illegal transition in chain from {:?} to {:?}",
+                                prev.state, rev.state
+                            ),
+                        });
+                    }
+                }
             }
             prior_digest = Some(rev.revision_digest());
+            prior_rev = Some(rev);
         }
         Ok(())
     }
@@ -2640,6 +2690,9 @@ pub struct AlertEffectRecord {
 }
 
 impl AlertEffectRecord {
+    /// Canonical schema identifier.
+    pub const SCHEMA: &'static str = "fss.alert_effect_record.v1";
+
     /// Validates bounds and invariants on the alert effect record.
     pub fn verify(&self) -> Result<(), EventTransitionError> {
         if self.event_revision == 0 {
@@ -2667,17 +2720,62 @@ impl AlertEffectRecord {
         Ok(())
     }
 
-    /// Serializes this alert record into canonical binary bytes.
+    /// Serializes this alert record into canonical binary bytes prefixed with the root domain tag.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.alert_effect_record.v1");
-        self.operation_id.encode_canonical(&mut encoder);
-        self.obligation_id.encode_canonical(&mut encoder);
+        encoder.text("fss.canonical.v1");
+        self.encode_canonical(&mut encoder);
+        encoder.finish()
+    }
+
+    /// Computes the canonical content digest of this alert record.
+    #[must_use]
+    pub fn record_digest(&self) -> ContentDigest {
+        ContentDigest::sha256(&self.canonical_bytes())
+    }
+
+    /// Deserializes an alert effect record from canonical bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, EventTransitionError> {
+        let mut decoder = CanonicalDecoder::new(bytes);
+        let root = decoder.text().map_err(|_| {
+            EventTransitionError::Decode(EventDecodeError::NonCanonicalEncoding {
+                detail: "missing root canonical tag".to_string(),
+            })
+        })?;
+        if root != "fss.canonical.v1" {
+            return Err(EventTransitionError::Decode(
+                EventDecodeError::SchemaMismatch {
+                    expected: "fss.canonical.v1",
+                    found: root.to_string(),
+                },
+            ));
+        }
+        let record = Self::decode_canonical(&mut decoder).map_err(|e| {
+            EventTransitionError::Decode(EventDecodeError::NonCanonicalEncoding {
+                detail: format!("failed to decode alert effect record: {e:?}"),
+            })
+        })?;
+        if !decoder.is_empty() {
+            return Err(EventTransitionError::Decode(
+                EventDecodeError::TrailingBytes {
+                    count: decoder.remaining(),
+                },
+            ));
+        }
+        Ok(record)
+    }
+}
+
+impl CanonicalEncode for AlertEffectRecord {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(Self::SCHEMA);
+        self.operation_id.encode_canonical(encoder);
+        self.obligation_id.encode_canonical(encoder);
         encoder.u64(self.event_revision);
         encoder.digest(self.event_revision_digest);
-        self.effect_state.encode_canonical(&mut encoder);
-        self.timestamp_ns.encode_canonical(&mut encoder);
+        self.effect_state.encode_canonical(encoder);
+        self.timestamp_ns.encode_canonical(encoder);
         encoder.text(&self.channel);
         match &self.observation_receipt {
             Some(digest) => {
@@ -2697,13 +2795,49 @@ impl AlertEffectRecord {
                 encoder.bool(false);
             }
         }
-        encoder.finish()
     }
+}
 
-    /// Computes the canonical content digest of this alert record.
-    #[must_use]
-    pub fn record_digest(&self) -> ContentDigest {
-        ContentDigest::sha256(&self.canonical_bytes())
+impl CanonicalDecode for AlertEffectRecord {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let schema = decoder.text()?;
+        if schema != Self::SCHEMA {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let operation_id = OperationId::decode_canonical(decoder)?;
+        let obligation_id = ObligationId::decode_canonical(decoder)?;
+        let event_revision = decoder.u64()?;
+        let event_revision_digest = decoder.digest()?;
+        let effect_state = EffectState::decode_canonical(decoder)?;
+        let timestamp_ns = TimestampNs::decode_canonical(decoder)?;
+        let channel = decoder.text()?.to_string();
+        let has_receipt = decoder.bool()?;
+        let observation_receipt = if has_receipt {
+            Some(decoder.digest()?)
+        } else {
+            None
+        };
+        let has_failure = decoder.bool()?;
+        let failure_reason = if has_failure {
+            Some(decoder.text()?.to_string())
+        } else {
+            None
+        };
+        let record = Self {
+            operation_id,
+            obligation_id,
+            event_revision,
+            event_revision_digest,
+            effect_state,
+            timestamp_ns,
+            channel,
+            observation_receipt,
+            failure_reason,
+        };
+        record
+            .verify()
+            .map_err(|_| ContractError::InvalidIdentifier)?;
+        Ok(record)
     }
 }
 
@@ -2903,6 +3037,40 @@ impl EventLineage {
             }
         }
 
+        // Transitions to Adjudicated require prior corroboration OR >= 2 supporting failure domains,
+        // unless an urgent single-sensor policy exception is explicitly claimed and labeled.
+        if params.target_state == EventState::Adjudicated {
+            let previously_corroborated = self
+                .chain
+                .iter()
+                .any(|r| r.state == EventState::Corroborated);
+            let failure_domains: BTreeSet<_> = params
+                .evidence
+                .iter()
+                .filter(|edge| edge.supports)
+                .map(|edge| edge.failure_domain.as_str())
+                .collect();
+            let is_corroborated = previously_corroborated || failure_domains.len() >= 2;
+
+            if !is_corroborated {
+                if !params.urgent_single_sensor {
+                    return Err(EventTransitionError::UrgentExceptionRequired);
+                }
+                if !params
+                    .uncertainty_reason
+                    .as_deref()
+                    .is_some_and(|r| r.contains(SINGLE_DOMAIN_UNCONFIRMED_LABEL))
+                {
+                    return Err(EventTransitionError::Contradiction {
+                        field: "uncertainty_reason",
+                        detail: format!(
+                            "urgent single-sensor transition requires uncertainty_reason to contain '{SINGLE_DOMAIN_UNCONFIRMED_LABEL}'"
+                        ),
+                    });
+                }
+            }
+        }
+
         // Monotonicity check from Indeterminate
         if current.state == EventState::Indeterminate
             && let Some(target_rank) = params.target_state.canonical_rank()
@@ -3026,6 +3194,45 @@ impl EventLineage {
         &mut self,
         rev: EventHypothesis,
     ) -> Result<(), EventTransitionError> {
+        if self.chain.len() >= MAX_LINEAGE_DEPTH {
+            return Err(EventTransitionError::OverLimitLength {
+                field: "lineage.chain",
+                limit: MAX_LINEAGE_DEPTH,
+                actual: self.chain.len() + 1,
+            });
+        }
+        if rev.state != EventState::Hypothesized && rev.evidence.is_empty() {
+            return Err(EventTransitionError::EvidenceRequired);
+        }
+        if rev.state == EventState::Corroborated {
+            let failure_domains: BTreeSet<_> = rev
+                .evidence
+                .iter()
+                .filter(|edge| edge.supports)
+                .map(|edge| edge.failure_domain.as_str())
+                .collect();
+            if failure_domains.len() < 2 {
+                return Err(EventTransitionError::CorroborationRequired {
+                    observed_domains: failure_domains.len(),
+                });
+            }
+        }
+        if rev.state == EventState::Adjudicated {
+            let previously_corroborated = self
+                .chain
+                .iter()
+                .any(|r| r.state == EventState::Corroborated);
+            let failure_domains: BTreeSet<_> = rev
+                .evidence
+                .iter()
+                .filter(|edge| edge.supports)
+                .map(|edge| edge.failure_domain.as_str())
+                .collect();
+            let is_corroborated = previously_corroborated || failure_domains.len() >= 2;
+            if !is_corroborated && !rev.is_single_domain_unconfirmed() {
+                return Err(EventTransitionError::UrgentExceptionRequired);
+            }
+        }
         rev.verify()?;
         let current = self.current();
         if rev.event_id != current.event_id {
@@ -3182,6 +3389,37 @@ impl EventLineage {
         for (i, pair) in self.chain.windows(2).enumerate() {
             let prev = &pair[0];
             let curr = &pair[1];
+            if curr.state != EventState::Hypothesized && curr.evidence.is_empty() {
+                return Err(EventTransitionError::EvidenceRequired);
+            }
+            if curr.state == EventState::Corroborated {
+                let failure_domains: BTreeSet<_> = curr
+                    .evidence
+                    .iter()
+                    .filter(|edge| edge.supports)
+                    .map(|edge| edge.failure_domain.as_str())
+                    .collect();
+                if failure_domains.len() < 2 {
+                    return Err(EventTransitionError::CorroborationRequired {
+                        observed_domains: failure_domains.len(),
+                    });
+                }
+            }
+            if curr.state == EventState::Adjudicated {
+                let previously_corroborated = self.chain[..=i]
+                    .iter()
+                    .any(|r| r.state == EventState::Corroborated);
+                let failure_domains: BTreeSet<_> = curr
+                    .evidence
+                    .iter()
+                    .filter(|edge| edge.supports)
+                    .map(|edge| edge.failure_domain.as_str())
+                    .collect();
+                let is_corroborated = previously_corroborated || failure_domains.len() >= 2;
+                if !is_corroborated && !curr.is_single_domain_unconfirmed() {
+                    return Err(EventTransitionError::UrgentExceptionRequired);
+                }
+            }
             curr.verify()?;
             if curr.event_id != prev.event_id {
                 return Err(EventTransitionError::EventIdMismatch {

@@ -17,15 +17,26 @@ use std::error::Error;
 
 use fss_core::event::{
     AlertEffectRecord, DecisionPath, EVENT_HYPOTHESIS_SCHEMA, EVENT_TRANSITION_TABLE,
-    EventEvidence, EventHypothesis, EventKind, EventLineage, EventState, EventTransitionError,
-    EventTransitionParams, EvidenceEdgeRelation, MAX_ALERT_ATTEMPTS_COUNT, MAX_ALERT_CHANNEL_LEN,
-    MAX_ALERT_FAILURE_REASON_LEN, MAX_EVIDENCE_COUNT, MAX_LINEAGE_DEPTH, ProbabilityInterval,
-    SINGLE_DOMAIN_UNCONFIRMED_LABEL, get_event_transition_rule, is_allowed_event_transition,
+    EventDecodeError, EventEvidence, EventHypothesis, EventKind, EventLineage, EventState,
+    EventSupersedeParams, EventTransitionError, EventTransitionParams, EvidenceEdgeRelation,
+    MAX_ALERT_ATTEMPTS_COUNT, MAX_ALERT_CHANNEL_LEN, MAX_ALERT_FAILURE_REASON_LEN,
+    MAX_EVIDENCE_COUNT, MAX_LINEAGE_DEPTH, ProbabilityInterval, SINGLE_DOMAIN_UNCONFIRMED_LABEL,
+    get_event_transition_rule, is_allowed_event_transition,
 };
 use fss_core::{
-    CaptureInterval, ContentDigest, EffectState, EventId, EvidenceClass, EvidenceDelta, ObjectId,
-    ObligationId, OperationId, Plane, TimestampNs,
+    CanonicalDecode, CanonicalDecoder, CanonicalEncoder, CaptureInterval, ContentDigest,
+    EffectState, EventId, EvidenceClass, EvidenceDelta, ObjectId, ObligationId, OperationId, Plane,
+    TimestampNs,
 };
+
+// Helper: build certain probability interval
+fn certain_probability() -> ProbabilityInterval {
+    ProbabilityInterval {
+        lower: 1.0,
+        upper: 1.0,
+        calibration_generation: None,
+    }
+}
 
 // Helper: build sample capture interval
 fn sample_interval() -> CaptureInterval {
@@ -1458,5 +1469,339 @@ fn test_transition_table_completeness_and_invariants() -> Result<(), Box<dyn Err
         return Err("urgent rule exists".into());
     };
     assert!(urgent_rule.requires_urgent_exception);
+    Ok(())
+}
+
+// Helper: sample alert effect record for Finding 4 tests
+fn sample_alert_effect_record() -> Result<AlertEffectRecord, Box<dyn Error>> {
+    let operation_id = OperationId::parse("op:alert-test-001")?;
+    let obligation_id = ObligationId::parse("ob:alert-test-001")?;
+    Ok(AlertEffectRecord {
+        operation_id,
+        obligation_id,
+        event_revision: 2,
+        event_revision_digest: ContentDigest::sha256(b"revision:2:digest"),
+        effect_state: EffectState::Prepared,
+        timestamp_ns: TimestampNs(1_700_000_002_000_000_000),
+        channel: "webhook:ops-channel".to_string(),
+        observation_receipt: Some(ContentDigest::sha256(b"receipt:webhook:ack")),
+        failure_reason: None,
+    })
+}
+
+#[test]
+fn test_finding_1_indeterminate_reconciliation_cannot_bypass_corroboration_or_urgent_exception()
+-> Result<(), Box<dyn Error>> {
+    let genesis = sample_genesis_hypothesis("bypass-001")?;
+    let mut lineage = EventLineage::new(genesis)?;
+    let ev1 = sample_evidence("camera:cam1", true, "motion");
+
+    lineage.transition(transition_params(
+        EventState::Witnessed,
+        vec![ev1.clone()],
+        None,
+        false,
+    ))?;
+
+    lineage.transition(transition_params(
+        EventState::Indeterminate,
+        vec![ev1.clone()],
+        None,
+        false,
+    ))?;
+
+    // Negative case 1: Reconciling Indeterminate -> Adjudicated with only 1 failure domain and urgent_single_sensor = false fails
+    let Err(err1) = lineage.transition(transition_params(
+        EventState::Adjudicated,
+        vec![ev1.clone()],
+        None,
+        false,
+    )) else {
+        return Err("reconciling Indeterminate -> Adjudicated without corroboration or urgent exception must fail".into());
+    };
+    assert_eq!(err1, EventTransitionError::UrgentExceptionRequired);
+
+    // Negative case 2: urgent_single_sensor = true, but missing required SINGLE_DOMAIN_UNCONFIRMED_LABEL in uncertainty_reason
+    let Err(err2) = lineage.transition(transition_params(
+        EventState::Adjudicated,
+        vec![ev1.clone()],
+        Some("unlabeled urgency".to_string()),
+        true,
+    )) else {
+        return Err("urgent reconciliation without explicit label must fail".into());
+    };
+    assert!(matches!(
+        err2,
+        EventTransitionError::Contradiction {
+            field: "uncertainty_reason",
+            ..
+        }
+    ));
+
+    // Positive case A: Reconciling with urgent_single_sensor = true AND explicit label succeeds
+    let mut lineage_urgent = lineage.clone();
+    lineage_urgent.transition(transition_params(
+        EventState::Adjudicated,
+        vec![ev1.clone()],
+        Some(format!(
+            "{SINGLE_DOMAIN_UNCONFIRMED_LABEL}: single camera urgent breach confirmation"
+        )),
+        true,
+    ))?;
+    assert_eq!(lineage_urgent.current().state, EventState::Adjudicated);
+
+    // Positive case B: Reconciling with >= 2 independent failure domains (corroboration) succeeds without urgent exception
+    let ev2 = sample_evidence("radar:rad1", true, "doppler");
+    lineage.transition(transition_params(
+        EventState::Adjudicated,
+        vec![ev1, ev2],
+        None,
+        false,
+    ))?;
+    assert_eq!(lineage.current().state, EventState::Adjudicated);
+    Ok(())
+}
+
+#[test]
+fn test_finding_2_from_revisions_enforces_corroboration_and_evidence_invariants()
+-> Result<(), Box<dyn Error>> {
+    let genesis = sample_genesis_hypothesis("from-rev-001")?;
+    let ev_single = sample_evidence("camera:cam1", true, "motion");
+
+    let rev2 = genesis.supersede(EventSupersedeParams {
+        state: EventState::Witnessed,
+        kind: EventKind::PerimeterBreach,
+        interval: sample_interval(),
+        uncertainty_reason: None,
+        zone_ids: vec!["zone:perimeter-north".into()],
+        track_ids: vec!["track:tr-001".into()],
+        probability: certain_probability(),
+        evidence: vec![ev_single.clone()],
+        model_receipts: vec![],
+        decision_path: sample_decision_path("rev2"),
+    })?;
+
+    // Revision claiming Corroborated with only 1 failure domain must be rejected by from_revisions
+    let rev3_single_domain = EventHypothesis {
+        schema: EVENT_HYPOTHESIS_SCHEMA.to_string(),
+        event_id: genesis.event_id.clone(),
+        revision: 3,
+        supersedes: Some(rev2.revision_digest()),
+        state: EventState::Corroborated,
+        kind: EventKind::PerimeterBreach,
+        interval: sample_interval(),
+        uncertainty_reason: None,
+        zone_ids: vec!["zone:perimeter-north".into()],
+        track_ids: vec!["track:tr-001".into()],
+        probability: certain_probability(),
+        evidence: vec![ev_single.clone()],
+        model_receipts: vec![],
+        decision_path: sample_decision_path("rev3-corroborated-single"),
+    };
+
+    let Err(err_corr) =
+        EventLineage::from_revisions(vec![genesis.clone(), rev2.clone(), rev3_single_domain])
+    else {
+        return Err(
+            "from_revisions must reject Corroborated revision with < 2 failure domains".into(),
+        );
+    };
+    assert!(
+        matches!(err_corr, EventTransitionError::CorroborationRequired { .. }),
+        "from_revisions must return CorroborationRequired, got: {err_corr:?}"
+    );
+
+    // Revision with empty evidence in post-hypothesis state must be rejected by from_revisions
+    let rev3_empty = EventHypothesis {
+        schema: EVENT_HYPOTHESIS_SCHEMA.to_string(),
+        event_id: genesis.event_id.clone(),
+        revision: 3,
+        supersedes: Some(rev2.revision_digest()),
+        state: EventState::Witnessed,
+        kind: EventKind::PerimeterBreach,
+        interval: sample_interval(),
+        uncertainty_reason: None,
+        zone_ids: vec!["zone:perimeter-north".into()],
+        track_ids: vec!["track:tr-001".into()],
+        probability: certain_probability(),
+        evidence: vec![],
+        model_receipts: vec![],
+        decision_path: sample_decision_path("rev3-empty"),
+    };
+
+    let Err(err_empty) = EventLineage::from_revisions(vec![genesis.clone(), rev2, rev3_empty])
+    else {
+        return Err(
+            "from_revisions must reject post-hypothesis revision with empty evidence".into(),
+        );
+    };
+    assert_eq!(err_empty, EventTransitionError::EvidenceRequired);
+
+    // Lineage depth bound check in from_revisions / append_verified_revision
+    let mut deep_chain = Vec::with_capacity(MAX_LINEAGE_DEPTH + 1);
+    let mut prev = sample_genesis_hypothesis("deep-lineage-001")?;
+    deep_chain.push(prev.clone());
+    for rev_num in 2..=(MAX_LINEAGE_DEPTH as u64 + 1) {
+        let tag = format!("w-{rev_num}");
+        let ev = vec![sample_evidence("camera:cam1", true, &tag)];
+        let curr = EventHypothesis {
+            schema: EVENT_HYPOTHESIS_SCHEMA.to_string(),
+            event_id: prev.event_id.clone(),
+            revision: rev_num,
+            supersedes: Some(prev.revision_digest()),
+            state: EventState::Indeterminate,
+            kind: EventKind::PerimeterBreach,
+            interval: sample_interval(),
+            uncertainty_reason: Some("ongoing tracking".to_string()),
+            zone_ids: vec!["zone:perimeter-north".into()],
+            track_ids: vec!["track:tr-001".into()],
+            probability: certain_probability(),
+            evidence: ev,
+            model_receipts: vec![],
+            decision_path: sample_decision_path("deep"),
+        };
+        prev = curr.clone();
+        deep_chain.push(curr);
+    }
+    assert_eq!(deep_chain.len(), MAX_LINEAGE_DEPTH + 1);
+    let Err(err_depth) = EventLineage::from_revisions(deep_chain) else {
+        return Err("from_revisions must reject chain exceeding MAX_LINEAGE_DEPTH".into());
+    };
+    assert!(
+        matches!(
+            err_depth,
+            EventTransitionError::OverLimitLength {
+                limit: 256,
+                actual: 257,
+                ..
+            }
+        ),
+        "expected OverLimitLength for depth, got: {err_depth:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_3_event_hypothesis_supersede_and_chain_reject_terminal_and_illegal_transitions()
+-> Result<(), Box<dyn Error>> {
+    let genesis = sample_genesis_hypothesis("term-001")?;
+    let ev1 = sample_evidence("camera:cam1", true, "motion");
+
+    let rejected = genesis.supersede(EventSupersedeParams {
+        state: EventState::Rejected,
+        kind: EventKind::PerimeterBreach,
+        interval: sample_interval(),
+        uncertainty_reason: Some("false alarm confirmed".into()),
+        zone_ids: vec!["zone:perimeter-north".into()],
+        track_ids: vec!["track:tr-001".into()],
+        probability: certain_probability(),
+        evidence: vec![ev1.clone()],
+        model_receipts: vec![],
+        decision_path: sample_decision_path("reject"),
+    })?;
+
+    // Attempting to supersede a terminal event (Rejected) back to Witnessed must fail closed
+    let Err(err_resurrect) = rejected.supersede(EventSupersedeParams {
+        state: EventState::Witnessed,
+        kind: EventKind::PerimeterBreach,
+        interval: sample_interval(),
+        uncertainty_reason: None,
+        zone_ids: vec!["zone:perimeter-north".into()],
+        track_ids: vec!["track:tr-001".into()],
+        probability: certain_probability(),
+        evidence: vec![ev1.clone()],
+        model_receipts: vec![],
+        decision_path: sample_decision_path("resurrect"),
+    }) else {
+        return Err("superseding a terminal event must fail closed".into());
+    };
+    assert!(matches!(
+        err_resurrect,
+        EventDecodeError::Contradiction { field: "state", .. }
+    ));
+
+    // Attempting an illegal transition directly from Hypothesized to Resolved via supersede must fail
+    let Err(err_illegal) = genesis.supersede(EventSupersedeParams {
+        state: EventState::Resolved,
+        kind: EventKind::PerimeterBreach,
+        interval: sample_interval(),
+        uncertainty_reason: None,
+        zone_ids: vec!["zone:perimeter-north".into()],
+        track_ids: vec!["track:tr-001".into()],
+        probability: certain_probability(),
+        evidence: vec![ev1.clone()],
+        model_receipts: vec![],
+        decision_path: sample_decision_path("illegal-jump"),
+    }) else {
+        return Err("illegal transition via supersede must fail".into());
+    };
+    assert!(matches!(
+        err_illegal,
+        EventDecodeError::Contradiction { field: "state", .. }
+    ));
+
+    // verify_chain must also reject a chain containing a resurrection after a terminal state
+    let resurrected_rev = EventHypothesis {
+        schema: EVENT_HYPOTHESIS_SCHEMA.to_string(),
+        event_id: genesis.event_id.clone(),
+        revision: 3,
+        supersedes: Some(rejected.revision_digest()),
+        state: EventState::Witnessed,
+        kind: EventKind::PerimeterBreach,
+        interval: sample_interval(),
+        uncertainty_reason: None,
+        zone_ids: vec!["zone:perimeter-north".into()],
+        track_ids: vec!["track:tr-001".into()],
+        probability: certain_probability(),
+        evidence: vec![ev1],
+        model_receipts: vec![],
+        decision_path: sample_decision_path("chain-resurrect"),
+    };
+
+    let chain = vec![genesis, rejected, resurrected_rev];
+    let Err(err_chain) = EventHypothesis::verify_chain(&chain) else {
+        return Err("verify_chain must reject chain resurrecting terminal state".into());
+    };
+    assert!(matches!(
+        err_chain,
+        EventDecodeError::Contradiction {
+            field: "chain.state",
+            ..
+        }
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_4_alert_effect_record_canonical_domain_prefix_and_codec()
+-> Result<(), Box<dyn Error>> {
+    let record = sample_alert_effect_record()?;
+    let bytes = record.canonical_bytes();
+
+    let mut expected_prefix = CanonicalEncoder::new();
+    expected_prefix.text("fss.canonical.v1");
+    expected_prefix.text("fss.alert_effect_record.v1");
+    let prefix_bytes = expected_prefix.finish();
+
+    assert!(
+        bytes.starts_with(&prefix_bytes),
+        "AlertEffectRecord::canonical_bytes must be prefixed with root 'fss.canonical.v1' domain tag"
+    );
+
+    // Symmetric round-trip test via from_canonical_bytes
+    let decoded = AlertEffectRecord::from_canonical_bytes(&bytes)?;
+    assert_eq!(decoded, record);
+
+    // CanonicalDecode trait test over payload without the root canonical tag
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let root_tag = decoder.text().map_err(|e| format!("{e:?}"))?;
+    assert_eq!(root_tag, "fss.canonical.v1");
+    let decoded_trait =
+        AlertEffectRecord::decode_canonical(&mut decoder).map_err(|e| format!("{e:?}"))?;
+    assert_eq!(decoded_trait, record);
+    assert!(decoder.is_empty());
+
     Ok(())
 }
