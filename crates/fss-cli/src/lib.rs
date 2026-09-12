@@ -15,9 +15,10 @@ pub mod redact;
 pub mod token;
 
 pub use crosswalk::{
-    CrosswalkValidationError, OperationCrosswalkEntry, REGISTERED_OPERATION_CROSSWALK,
-    lookup_by_cli_command, lookup_by_library_entry_point, lookup_by_mcp_tool_name,
-    lookup_by_operation_id, lookup_by_operation_name, validate_crosswalk_entries,
+    CrosswalkValidationError, OperationCrosswalkEntry, REGISTERED_EXIT_IDENTITIES,
+    REGISTERED_OPERATION_CROSSWALK, lookup_by_cli_command, lookup_by_library_entry_point,
+    lookup_by_mcp_tool_name, lookup_by_operation_id, lookup_by_operation_name,
+    validate_crosswalk_entries,
 };
 
 pub use diagnostic::{emit_diagnostic, escape_json_str, render_diagnostic};
