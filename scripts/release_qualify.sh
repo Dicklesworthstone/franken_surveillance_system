@@ -178,7 +178,7 @@ verify_release() {
 package_release() {
   release_context
   [ -f "$RECEIPT_DIR/cargo-metadata.json" ] || {
-    printf 'cargo-metadata receipt missing: %s\n' "$RECEIPT_DIR/cargo-metadata.json" >&2
+    printf 'cargo metadata receipt missing: %s\n' "$RECEIPT_DIR/cargo-metadata.json" >&2
     exit 7
   }
   python3 scripts/release_artifacts.py package \
