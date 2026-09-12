@@ -1,12 +1,14 @@
 //! Self-describing on-disk envelope for one spooled object.
 //!
 //! Layout (little-endian): `magic[8] | version:u16 | algorithm:u16 | payload_len:u64 |
-//! digest[32] | payload[payload_len]`. The object identity is the SHA-256 of the payload alone,
+//! digest[32] | payload[payload_len]`. Built on top of the shared canonical durable-format
+//! framework [`DurableFormat`]. The object identity is the SHA-256 of the payload alone,
 //! so a spooled object has the same `ContentDigest` the in-memory oracle assigns it. The header
 //! lets a reader distinguish truncation, trailing bytes, a foreign file, a misnamed file, and a
 //! payload digest mismatch as separate typed failures.
 
-use fss_core::{ContentDigest, DigestAlgorithm};
+use fss_core::ContentDigest;
+use fss_core::durable::{DurableError, DurableFormat};
 
 use super::CorruptionKind;
 
@@ -17,22 +19,22 @@ pub const SPOOL_OBJECT_FORMAT_VERSION: u16 = 1;
 /// Fixed envelope header length in bytes.
 pub const SPOOL_OBJECT_HEADER_LEN: usize = 8 + 2 + 2 + 8 + 32;
 
-const ALGORITHM_TAG_SHA256: u16 = 1;
-const VERSION_OFFSET: usize = 8;
-const ALGORITHM_OFFSET: usize = 10;
-const LENGTH_OFFSET: usize = 12;
-const DIGEST_OFFSET: usize = 20;
+/// Returns the shared [`DurableFormat`] specification for spool objects.
+#[must_use]
+pub fn spool_durable_format(max_payload: usize) -> DurableFormat {
+    DurableFormat::spool_object(
+        &SPOOL_OBJECT_MAGIC,
+        SPOOL_OBJECT_FORMAT_VERSION,
+        max_payload,
+    )
+}
 
 /// Encodes one payload under its already-verified SHA-256 identity.
 pub(crate) fn encode_object(digest: ContentDigest, payload: &[u8]) -> Vec<u8> {
-    let mut encoded = Vec::with_capacity(SPOOL_OBJECT_HEADER_LEN + payload.len());
-    encoded.extend_from_slice(&SPOOL_OBJECT_MAGIC);
-    encoded.extend_from_slice(&SPOOL_OBJECT_FORMAT_VERSION.to_le_bytes());
-    encoded.extend_from_slice(&ALGORITHM_TAG_SHA256.to_le_bytes());
-    encoded.extend_from_slice(&(payload.len() as u64).to_le_bytes());
-    encoded.extend_from_slice(&digest.bytes());
-    encoded.extend_from_slice(payload);
-    encoded
+    let format = spool_durable_format(payload.len());
+    format
+        .encode_with_checksum(payload, digest)
+        .unwrap_or_default()
 }
 
 /// Verifies one complete envelope against the digest its file name claims.
@@ -45,69 +47,88 @@ pub(crate) fn verify_object_bytes(
     raw: &[u8],
     max_payload: usize,
 ) -> Result<(), CorruptionKind> {
-    let observed = raw.len() as u64;
-    let Some((header, payload)) = raw.split_at_checked(SPOOL_OBJECT_HEADER_LEN) else {
-        let prefix = raw.len().min(SPOOL_OBJECT_MAGIC.len());
-        if raw.get(..prefix) == SPOOL_OBJECT_MAGIC.get(..prefix) {
+    let format = spool_durable_format(max_payload);
+
+    // Decode and validate the fixed header first to inspect recorded identity and limits
+    let header = match format.decode_header(raw) {
+        Ok(h) => h,
+        Err(DurableError::BadMagic { .. }) => return Err(CorruptionKind::ForeignFile),
+        Err(DurableError::UnknownVersion { actual, .. }) => {
+            return Err(CorruptionKind::UnsupportedFormatVersion(actual as u16));
+        }
+        Err(DurableError::UnsupportedTag { actual, .. }) => {
+            return Err(CorruptionKind::UnsupportedAlgorithmTag(actual));
+        }
+        Err(DurableError::Truncated {
+            expected_len,
+            actual_len,
+        }) => {
             return Err(CorruptionKind::Truncated {
-                expected_len: SPOOL_OBJECT_HEADER_LEN as u64,
-                actual_len: observed,
+                expected_len: expected_len as u64,
+                actual_len: actual_len as u64,
             });
         }
-        return Err(CorruptionKind::ForeignFile);
+        Err(DurableError::OverLimitLength { limit, actual }) => {
+            return Err(CorruptionKind::DeclaredLengthExceedsLimit {
+                declared: actual as u64,
+                maximum: limit as u64,
+            });
+        }
+        Err(DurableError::TrailingBytes {
+            expected_len,
+            actual_len,
+        }) => {
+            return Err(CorruptionKind::TrailingBytes {
+                expected_len: expected_len as u64,
+                actual_len: actual_len as u64,
+            });
+        }
+        Err(DurableError::ChecksumMismatch {
+            actual: computed, ..
+        }) => {
+            return Err(CorruptionKind::ContentDigestMismatch { computed });
+        }
     };
-    if header.get(..VERSION_OFFSET) != Some(&SPOOL_OBJECT_MAGIC[..]) {
-        return Err(CorruptionKind::ForeignFile);
-    }
-    let version = read_u16(header, VERSION_OFFSET).ok_or(CorruptionKind::ForeignFile)?;
-    if version != SPOOL_OBJECT_FORMAT_VERSION {
-        return Err(CorruptionKind::UnsupportedFormatVersion(version));
-    }
-    let algorithm = read_u16(header, ALGORITHM_OFFSET).ok_or(CorruptionKind::ForeignFile)?;
-    if algorithm != ALGORITHM_TAG_SHA256 {
-        return Err(CorruptionKind::UnsupportedAlgorithmTag(algorithm));
-    }
-    let declared = read_u64(header, LENGTH_OFFSET).ok_or(CorruptionKind::ForeignFile)?;
-    let recorded_bytes = header
-        .get(DIGEST_OFFSET..SPOOL_OBJECT_HEADER_LEN)
-        .and_then(|slice| <[u8; 32]>::try_from(slice).ok())
-        .ok_or(CorruptionKind::ForeignFile)?;
-    let recorded = ContentDigest::new(DigestAlgorithm::Sha256, recorded_bytes);
-    if recorded != expected {
+
+    // NameDigestMismatch check: envelope records a different digest than the file name claims
+    if let Some(recorded) = header.recorded_checksum()
+        && recorded != expected
+    {
         return Err(CorruptionKind::NameDigestMismatch { recorded });
     }
-    let maximum = max_payload as u64;
-    if declared > maximum {
-        return Err(CorruptionKind::DeclaredLengthExceedsLimit { declared, maximum });
-    }
-    let expected_len = SPOOL_OBJECT_HEADER_LEN as u64 + declared;
-    if observed < expected_len {
-        return Err(CorruptionKind::Truncated {
-            expected_len,
-            actual_len: observed,
-        });
-    }
-    if observed > expected_len {
-        return Err(CorruptionKind::TrailingBytes {
-            expected_len,
-            actual_len: observed,
-        });
-    }
-    let computed = ContentDigest::sha256(payload);
-    if computed != expected {
-        return Err(CorruptionKind::ContentDigestMismatch { computed });
-    }
-    Ok(())
-}
 
-fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
-    let end = offset.checked_add(2)?;
-    let chunk = <[u8; 2]>::try_from(bytes.get(offset..end)?).ok()?;
-    Some(u16::from_le_bytes(chunk))
-}
-
-fn read_u64(bytes: &[u8], offset: usize) -> Option<u64> {
-    let end = offset.checked_add(8)?;
-    let chunk = <[u8; 8]>::try_from(bytes.get(offset..end)?).ok()?;
-    Some(u64::from_le_bytes(chunk))
+    // Now verify the entire envelope: payload length, trailing bytes, and payload checksum
+    match format.decode(raw) {
+        Ok(_) => Ok(()),
+        Err(DurableError::BadMagic { .. }) => Err(CorruptionKind::ForeignFile),
+        Err(DurableError::UnknownVersion { actual, .. }) => {
+            Err(CorruptionKind::UnsupportedFormatVersion(actual as u16))
+        }
+        Err(DurableError::UnsupportedTag { actual, .. }) => {
+            Err(CorruptionKind::UnsupportedAlgorithmTag(actual))
+        }
+        Err(DurableError::Truncated {
+            expected_len,
+            actual_len,
+        }) => Err(CorruptionKind::Truncated {
+            expected_len: expected_len as u64,
+            actual_len: actual_len as u64,
+        }),
+        Err(DurableError::TrailingBytes {
+            expected_len,
+            actual_len,
+        }) => Err(CorruptionKind::TrailingBytes {
+            expected_len: expected_len as u64,
+            actual_len: actual_len as u64,
+        }),
+        Err(DurableError::OverLimitLength { limit, actual }) => {
+            Err(CorruptionKind::DeclaredLengthExceedsLimit {
+                declared: actual as u64,
+                maximum: limit as u64,
+            })
+        }
+        Err(DurableError::ChecksumMismatch {
+            actual: computed, ..
+        }) => Err(CorruptionKind::ContentDigestMismatch { computed }),
+    }
 }

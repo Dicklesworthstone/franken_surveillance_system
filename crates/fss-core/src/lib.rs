@@ -17,6 +17,7 @@ mod continuation;
 mod contract;
 mod delta;
 mod digest;
+pub mod durable;
 pub mod effect;
 pub mod event;
 mod evidence;
@@ -60,6 +61,11 @@ pub use contract::{
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};
+pub use durable::{
+    CANONICAL_DURABLE_MAGIC, CANONICAL_DURABLE_VERSION_1, ChecksumPlacement, ChecksumScope,
+    DEFAULT_MAX_PAYLOAD_LEN, DurableError, DurableFormat, DurableFormatBuilder, DurableFrame,
+    DurableHeader, Endianness, LengthWidth, VersionWidth,
+};
 pub use effect::{
     EFFECT_INTENT_SCHEMA, EFFECT_RECONCILIATION_SCHEMA, EffectIntent, EffectJournal,
     EffectJournalTransition, EffectReconciliationRecord, EffectSchemaError, EffectState,
