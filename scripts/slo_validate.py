@@ -869,7 +869,7 @@ def validate_cost_references(
             params={"path": path_str},
         ))
         return []
-    
+
     try:
         cost_text = costs_path.read_text(encoding="utf-8")
         cost_data = tomllib.loads(cost_text)
@@ -883,7 +883,70 @@ def validate_cost_references(
             params={"error": str(exc)},
         ))
         return []
-    
+
+    # Generation and Freeze Digest validation (SLO-VAL-022)
+    declared_gen = str(cost_data.get("generation", "")).strip()
+    declared_digest = str(cost_data.get("registry_digest", "")).strip()
+    is_default_registry = (costs_path.resolve() == (root / "architecture/operation_cost_registry.toml").resolve())
+
+    if not declared_gen:
+        findings.append(SloFinding(
+            severity="error",
+            code=CODE_FREEZE_DIGEST_MISMATCH,
+            path=path_str,
+            message="Operation cost registry missing or empty 'generation'",
+            remediation=DIAGNOSTIC_REGISTRY[CODE_FREEZE_DIGEST_MISMATCH]["remediation"],
+        ))
+    elif is_default_registry and declared_gen != BASELINE_OPERATION_COST_GENERATION:
+        findings.append(SloFinding(
+            severity="error",
+            code=CODE_FREEZE_DIGEST_MISMATCH,
+            path=path_str,
+            message=f"Operation cost registry generation mismatch: declared '{declared_gen}', expected '{BASELINE_OPERATION_COST_GENERATION}'",
+            remediation=DIAGNOSTIC_REGISTRY[CODE_FREEZE_DIGEST_MISMATCH]["remediation"],
+            params={"declared_generation": declared_gen, "expected_generation": BASELINE_OPERATION_COST_GENERATION},
+        ))
+
+    if not declared_digest:
+        findings.append(SloFinding(
+            severity="error",
+            code=CODE_FREEZE_DIGEST_MISMATCH,
+            path=path_str,
+            message="Operation cost registry missing or empty 'registry_digest'",
+            remediation=DIAGNOSTIC_REGISTRY[CODE_FREEZE_DIGEST_MISMATCH]["remediation"],
+        ))
+    else:
+        computed_digest = compute_canonical_cost_registry_digest(cost_data)
+        if declared_digest != computed_digest:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_FREEZE_DIGEST_MISMATCH,
+                path=path_str,
+                message=f"Operation cost registry digest mismatch: declared '{declared_digest}', computed '{computed_digest}'",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_FREEZE_DIGEST_MISMATCH]["remediation"],
+                params={"declared_digest": declared_digest, "computed_digest": computed_digest},
+            ))
+
+        expected_pinned = EXPECTED_OPERATION_COST_FREEZE_DIGESTS.get(declared_gen)
+        if expected_pinned is None:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_FREEZE_DIGEST_MISMATCH,
+                path=path_str,
+                message=f"No pinned freeze digest for generation '{declared_gen}'",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_FREEZE_DIGEST_MISMATCH]["remediation"],
+                params={"generation": declared_gen},
+            ))
+        elif declared_digest != expected_pinned:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_FREEZE_DIGEST_MISMATCH,
+                path=path_str,
+                message=f"Operation cost registry freeze digest diverged from pinned baseline: declared '{declared_digest}', pinned '{expected_pinned}'",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_FREEZE_DIGEST_MISMATCH]["remediation"],
+                params={"declared_digest": declared_digest, "pinned_digest": expected_pinned},
+            ))
+
     resolutions: list[dict[str, Any]] = []
     operations = cost_data.get("operation", [])
     if not isinstance(operations, list):
@@ -904,6 +967,8 @@ def validate_cost_references(
                 declared_drifts[d["id"].strip()] = d
 
     seen_op_ids: dict[str, str] = {}
+    tombstones = load_tombstone_set(root)
+
     for op in operations:
         if not isinstance(op, dict):
             findings.append(SloFinding(
@@ -949,6 +1014,25 @@ def validate_cost_references(
                 remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
                 params={"cost_id": cost_id},
             ))
+        elif cost_id not in CANONICAL_COST_OPERATIONS:
+            if cost_id in tombstones:
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
+                    path=path_str,
+                    message=f"Tombstoned operation ID '{cost_id}' cannot be resurrected or used as active",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
+            else:
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
+                    path=path_str,
+                    message=f"Unknown, unregistered, or renumbered operation ID detected: '{cost_id}'. Stable IDs must never be renumbered or altered without formal registration.",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
 
         if lower_cost_id in seen_op_ids:
             findings.append(SloFinding(
@@ -983,6 +1067,18 @@ def validate_cost_references(
                     remediation="Remove unknown keys from operation table",
                     params={"cost_id": cost_id, "unknown_keys": sorted(unknown_keys)},
                 ))
+
+        # Unit validation: every operation must specify a non-empty unit
+        unit_val = op.get("unit")
+        if not isinstance(unit_val, str) or not unit_val.strip():
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MALFORMED_TABLE,
+                path=path_str,
+                message=f"Operation '{cost_id}' missing or empty 'unit'; every operation cost row must specify its measurement unit",
+                remediation="Provide a non-empty string 'unit' for the operation",
+                params={"cost_id": cost_id},
+            ))
 
         if "slo_ids" not in op:
             findings.append(SloFinding(
@@ -1235,14 +1331,25 @@ def validate_cost_references(
                     remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_OR_UNKNOWN_OWNER]["remediation"],
                     params={"cost_id": cost_id},
                 ))
+            elif not owner_str.startswith("crates/"):
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_MISSING_OR_UNKNOWN_OWNER,
+                    path=path_str,
+                    message=f"Operation '{cost_id}' proof_owner '{owner_str}' must resolve to a crate directory under 'crates/' or a Rust module within 'crates/'",
+                    remediation="Set proof_owner to a crate under crates/ (e.g. 'crates/fss-core') or an explicit drift entry",
+                    params={"cost_id": cost_id, "proof_owner": owner_str},
+                ))
             else:
                 owner_path = root / owner_str
-                if not (owner_path.exists() or (root / f"{owner_str}.rs").is_file()):
+                is_crate = owner_path.is_dir() and (owner_path / "Cargo.toml").is_file()
+                is_mod = (owner_path.is_file() and owner_str.endswith(".rs")) or (root / f"{owner_str}.rs").is_file()
+                if not (is_crate or is_mod):
                     findings.append(SloFinding(
                         severity="error",
                         code=CODE_MISSING_OR_UNKNOWN_OWNER,
                         path=path_str,
-                        message=f"Operation '{cost_id}' proof_owner '{owner_str}' does not resolve to an existing crate or module on disk",
+                        message=f"Operation '{cost_id}' proof_owner '{owner_str}' does not resolve to an existing crate or Rust module on disk under 'crates/'",
                         remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_OR_UNKNOWN_OWNER]["remediation"],
                         params={"cost_id": cost_id, "proof_owner": owner_str},
                     ))
@@ -1315,13 +1422,14 @@ def validate_cost_references(
                         ))
                     else:
                         file_content = ref_file.read_text(encoding="utf-8", errors="replace")
+                        cleaned_content = strip_rust_comments_and_strings(file_content)
                         fn_pattern = re.compile(r"\b(?:async\s+)?fn\s+" + re.escape(test_fn) + r"\b")
-                        if not fn_pattern.search(file_content):
+                        if not fn_pattern.search(cleaned_content):
                             findings.append(SloFinding(
                                 severity="error",
                                 code=CODE_PROOF_REFERENCE_NOT_FOUND,
                                 path=path_str,
-                                message=f"Operation '{cost_id}' proof_reference test fn '{test_fn}' not found in '{ref_file_str}'",
+                                message=f"Operation '{cost_id}' proof_reference test fn '{test_fn}' not found in '{ref_file_str}' (excluding comments/docstrings)",
                                 remediation=DIAGNOSTIC_REGISTRY[CODE_PROOF_REFERENCE_NOT_FOUND]["remediation"],
                                 params={"cost_id": cost_id, "file": ref_file_str, "test_fn": test_fn},
                             ))
@@ -1340,19 +1448,173 @@ def validate_cost_references(
                     params={"cost_id": cost_id},
                 ))
             else:
-                meas_path = root / meas_artifact.strip()
-                if not meas_path.is_file():
+                raw_art = meas_artifact.strip()
+                meas_path = Path(raw_art)
+                if meas_path.is_absolute():
                     findings.append(SloFinding(
                         severity="error",
                         code=CODE_MEASURED_WITHOUT_ARTIFACT,
                         path=path_str,
-                        message=f"Operation '{cost_id}' measurement artifact '{meas_artifact}' does not exist on disk",
-                        remediation=DIAGNOSTIC_REGISTRY[CODE_MEASURED_WITHOUT_ARTIFACT]["remediation"],
-                        params={"cost_id": cost_id, "measurement_artifact": meas_artifact},
+                        message=f"Operation '{cost_id}' measurement artifact cannot be an absolute path: '{raw_art}'",
+                        remediation="Measurement artifact must be a relative path strictly within qualification-artifacts/",
+                        params={"cost_id": cost_id, "measurement_artifact": raw_art},
                     ))
+                elif ".." in meas_path.parts:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' measurement artifact '{raw_art}' contains forbidden traversal components ('..')",
+                        remediation="Measurement artifact must not contain '..' components",
+                        params={"cost_id": cost_id, "measurement_artifact": raw_art},
+                    ))
+                elif not (meas_path.parts and meas_path.parts[0] == "qualification-artifacts" and len(meas_path.parts) >= 2):
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' measurement artifact '{raw_art}' must be located strictly under qualification-artifacts/",
+                        remediation="Measurement artifact must point to a file under qualification-artifacts/",
+                        params={"cost_id": cost_id, "measurement_artifact": raw_art},
+                    ))
+                else:
+                    curr = root / "qualification-artifacts"
+                    has_symlink = False
+                    for part in meas_path.parts[1:]:
+                        curr = curr / part
+                        try:
+                            if os.path.islink(curr):
+                                has_symlink = True
+                                break
+                        except OSError:
+                            pass
 
-    # Check that every mandatory hot/consequential path is present
+                    if has_symlink:
+                        findings.append(SloFinding(
+                            severity="error",
+                            code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                            path=path_str,
+                            message=f"Operation '{cost_id}' measurement artifact '{raw_art}' contains a symlink at '{curr}'; symlinks are strictly forbidden",
+                            remediation="Use regular files without symlinks for measurement artifacts",
+                            params={"cost_id": cost_id, "measurement_artifact": raw_art, "symlink": str(curr)},
+                        ))
+                    elif not curr.is_file():
+                        findings.append(SloFinding(
+                            severity="error",
+                            code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                            path=path_str,
+                            message=f"Operation '{cost_id}' measurement artifact '{raw_art}' does not exist as a regular file on disk",
+                            remediation=DIAGNOSTIC_REGISTRY[CODE_MEASURED_WITHOUT_ARTIFACT]["remediation"],
+                            params={"cost_id": cost_id, "measurement_artifact": raw_art},
+                        ))
+                    elif curr.name.startswith(".") or ".tmp." in curr.name or curr.name.endswith(".tmp"):
+                        findings.append(SloFinding(
+                            severity="error",
+                            code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                            path=path_str,
+                            message=f"Operation '{cost_id}' measurement artifact '{raw_art}' is a temporary or hidden file; transient artifacts cannot serve as proof",
+                            remediation="Measurement artifact must reference an official published receipt or measurement",
+                            params={"cost_id": cost_id, "measurement_artifact": raw_art},
+                        ))
+                    elif curr.stat().st_size == 0:
+                        findings.append(SloFinding(
+                            severity="error",
+                            code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                            path=path_str,
+                            message=f"Operation '{cost_id}' measurement artifact '{raw_art}' is empty (0 bytes); existence is not proof",
+                            remediation="Measurement artifact must be a valid, non-empty JSON file",
+                            params={"cost_id": cost_id, "measurement_artifact": raw_art},
+                        ))
+                    else:
+                        art_json: Any = None
+                        try:
+                            art_json = json.loads(curr.read_text(encoding="utf-8"))
+                        except Exception as exc:
+                            findings.append(SloFinding(
+                                severity="error",
+                                code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                                path=path_str,
+                                message=f"Operation '{cost_id}' measurement artifact '{raw_art}' is not valid JSON: {exc}",
+                                remediation="Ensure measurement artifact contains valid JSON",
+                                params={"cost_id": cost_id, "measurement_artifact": raw_art, "error": str(exc)},
+                            ))
+
+                        if isinstance(art_json, dict):
+                            art_schema = art_json.get("schema")
+                            if art_schema == "fss.release_qualification_receipt.v1":
+                                req_keys = ["receiptId", "laneId", "sourceCommit", "toolchain", "hostIdentity", "target", "status"]
+                                missing = [k for k in req_keys if k not in art_json]
+                                if missing:
+                                    findings.append(SloFinding(
+                                        severity="error",
+                                        code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                                        path=path_str,
+                                        message=f"Operation '{cost_id}' measurement receipt '{raw_art}' missing required fields: {missing}",
+                                        remediation="Receipt must satisfy fss.release_qualification_receipt.v1 schema",
+                                        params={"cost_id": cost_id, "missing": missing},
+                                    ))
+                                elif art_json.get("status") != "passed":
+                                    findings.append(SloFinding(
+                                        severity="error",
+                                        code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                                        path=path_str,
+                                        message=f"Operation '{cost_id}' measurement receipt '{raw_art}' status is '{art_json.get('status')}'; must be 'passed'",
+                                        remediation="Measured status requires a passed qualification receipt",
+                                        params={"cost_id": cost_id, "status": str(art_json.get("status"))},
+                                    ))
+                            elif art_schema == "fss.operation_cost_measurement.v1":
+                                req_keys = ["operation_id", "generation", "environment", "status"]
+                                missing = [k for k in req_keys if k not in art_json]
+                                if missing:
+                                    findings.append(SloFinding(
+                                        severity="error",
+                                        code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                                        path=path_str,
+                                        message=f"Operation '{cost_id}' measurement artifact '{raw_art}' missing required fields: {missing}",
+                                        remediation="Measurement artifact must satisfy fss.operation_cost_measurement.v1 schema",
+                                        params={"cost_id": cost_id, "missing": missing},
+                                    ))
+                                elif art_json.get("operation_id") != cost_id:
+                                    findings.append(SloFinding(
+                                        severity="error",
+                                        code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                                        path=path_str,
+                                        message=f"Operation '{cost_id}' measurement artifact '{raw_art}' operation_id is '{art_json.get('operation_id')}'; expected '{cost_id}'",
+                                        remediation="Measurement artifact must anchor the exact operation ID",
+                                        params={"cost_id": cost_id, "artifact_operation_id": str(art_json.get("operation_id"))},
+                                    ))
+                                elif art_json.get("status") not in ("passed", "measured"):
+                                    findings.append(SloFinding(
+                                        severity="error",
+                                        code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                                        path=path_str,
+                                        message=f"Operation '{cost_id}' measurement artifact '{raw_art}' status is '{art_json.get('status')}'; must be 'passed' or 'measured'",
+                                        remediation="Measurement artifact must indicate passed or measured status",
+                                        params={"cost_id": cost_id, "status": str(art_json.get("status"))},
+                                    ))
+                            else:
+                                findings.append(SloFinding(
+                                    severity="error",
+                                    code=CODE_MEASURED_WITHOUT_ARTIFACT,
+                                    path=path_str,
+                                    message=f"Operation '{cost_id}' measurement artifact '{raw_art}' has invalid or missing schema '{art_schema}'; expected 'fss.release_qualification_receipt.v1' or 'fss.operation_cost_measurement.v1'",
+                                    remediation="Measurement artifact must declare valid receipt schema",
+                                    params={"cost_id": cost_id, "schema": str(art_schema)},
+                                ))
+
+    # Check that every mandatory canonical and hot/consequential path is present
     seen_exact_ids = set(seen_op_ids.values())
+    missing_canonical = sorted(CANONICAL_COST_OPERATIONS - seen_exact_ids)
+    if missing_canonical:
+        findings.append(SloFinding(
+            severity="error",
+            code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
+            path=path_str,
+            message=f"Canonical operation ID(s) missing from registry (possible renumbering or deletion): {missing_canonical}",
+            remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
+            params={"missing_canonical": missing_canonical},
+        ))
+
     for hot_id, hot_info in MANDATORY_HOT_PATHS.items():
         if hot_id not in seen_exact_ids:
             findings.append(SloFinding(
@@ -1364,34 +1626,129 @@ def validate_cost_references(
                 params={"cost_id": hot_id, "name": hot_info["name"]},
             ))
 
+    # Validate [[drift]] rows in TOML
+    seen_drift_ids: set[str] = set()
+    for d in drifts:
+        if not isinstance(d, dict):
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MALFORMED_TABLE,
+                path=path_str,
+                message=f"Drift entry is not a table: {d!r}",
+                remediation="Ensure [[drift]] entries are tables",
+            ))
+            continue
+        did = str(d.get("id", "")).strip()
+        if not did or not re.match(r"^DRIFT-[0-9]{3}$", did):
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MALFORMED_TABLE,
+                path=path_str,
+                message=f"Drift ID '{did}' does not match format DRIFT-NNN",
+                remediation="Ensure drift ID matches DRIFT-NNN",
+                params={"drift_id": did},
+            ))
+            continue
+        if did in seen_drift_ids:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
+                path=path_str,
+                message=f"Duplicate drift ID '{did}' in {path_str}",
+                remediation="Ensure drift IDs are unique",
+                params={"drift_id": did},
+            ))
+            continue
+        seen_drift_ids.add(did)
+
+        d_op = str(d.get("operation_id", "")).strip()
+        if not d_op or d_op not in CANONICAL_COST_OPERATIONS:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MALFORMED_TABLE,
+                path=path_str,
+                message=f"Drift '{did}' references unregistered operation_id '{d_op}'",
+                remediation="Ensure drift references a canonical operation ID",
+                params={"drift_id": did, "operation_id": d_op},
+            ))
+
+        d_lane = str(d.get("target_lane", "")).strip()
+        if not d_lane or not d_lane.startswith("crates/"):
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MISSING_OR_UNKNOWN_OWNER,
+                path=path_str,
+                message=f"Drift '{did}' target_lane '{d_lane}' must start with 'crates/'",
+                remediation="Specify a valid crate path under crates/ for target_lane",
+                params={"drift_id": did, "target_lane": d_lane},
+            ))
+
+    missing_drifts = sorted(CANONICAL_DRIFT_IDS - seen_drift_ids)
+    if missing_drifts:
+        findings.append(SloFinding(
+            severity="error",
+            code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
+            path=path_str,
+            message=f"Canonical drift ID(s) missing from registry: {missing_drifts}",
+            remediation="Ensure all canonical drift IDs are tracked in [[drift]]",
+            params={"missing_drifts": missing_drifts},
+        ))
+
     # Owner and mirror disagreement validation (SLO-VAL-019)
     if target_costs_md_path and target_costs_md_path.is_file():
         md_text = target_costs_md_path.read_text(encoding="utf-8")
-        md_ops: dict[str, dict[str, str]] = {}
+        md_ops: dict[str, dict[str, Any]] = {}
+        md_drifts: dict[str, dict[str, str]] = {}
+        in_drift_section = False
+
         for line in md_text.splitlines():
             s = line.strip()
+            if "## Operation cost drift registry" in s:
+                in_drift_section = True
+                continue
             if not (s.startswith("|") and s.endswith("|")):
                 continue
             cells = [c.strip().strip("`") for c in s[1:-1].split("|")]
             if not cells:
                 continue
             first = cells[0]
-            if not first.startswith("COST-"):
-                continue
-            if len(cells) >= 6:
-                if first in md_ops:
-                    findings.append(SloFinding(
-                        severity="error",
-                        code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
-                        path=sanitize_path(target_costs_md_path, root),
-                        message=f"Duplicate operation ID '{first}' in registries/OPERATION_COSTS.md",
-                        remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
-                        params={"cost_id": first},
-                    ))
-                md_ops[first] = {
-                    "proof_owner": cells[4],
-                    "proof_reference": cells[5],
-                }
+            if in_drift_section:
+                if first.startswith("DRIFT-"):
+                    if len(cells) >= 5:
+                        if first in md_drifts:
+                            findings.append(SloFinding(
+                                severity="error",
+                                code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
+                                path=sanitize_path(target_costs_md_path, root),
+                                message=f"Duplicate drift ID '{first}' in registries/OPERATION_COSTS.md",
+                                remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
+                                params={"drift_id": first},
+                            ))
+                        md_drifts[first] = {
+                            "operation_id": cells[1],
+                            "status": cells[2],
+                            "description": cells[3],
+                            "target_lane": cells[4],
+                        }
+            else:
+                if first.startswith("COST-"):
+                    if len(cells) >= 6:
+                        if first in md_ops:
+                            findings.append(SloFinding(
+                                severity="error",
+                                code=CODE_DUPLICATE_OR_RENUMBERED_COST_ID,
+                                path=sanitize_path(target_costs_md_path, root),
+                                message=f"Duplicate operation ID '{first}' in registries/OPERATION_COSTS.md",
+                                remediation=DIAGNOSTIC_REGISTRY[CODE_DUPLICATE_OR_RENUMBERED_COST_ID]["remediation"],
+                                params={"cost_id": first},
+                            ))
+                        md_ops[first] = {
+                            "unit": cells[1],
+                            "semantic_steps": [w.strip() for w in cells[2].split(",") if w.strip()],
+                            "variable_costs": [w.strip() for w in cells[3].split(",") if w.strip()],
+                            "proof_owner": cells[4],
+                            "proof_reference": cells[5],
+                        }
 
         # Compare TOML operations against Markdown
         for op in operations:
@@ -1412,6 +1769,44 @@ def validate_cost_references(
                 ))
             else:
                 md_entry = md_ops[cid]
+                # Check unit
+                toml_unit = str(op.get("unit") or "").strip()
+                md_unit = md_entry["unit"].strip()
+                if toml_unit != md_unit:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Operation '{cid}' unit mismatch: TOML has '{toml_unit}', Markdown has '{md_unit}'",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                        params={"cost_id": cid, "toml_unit": toml_unit, "md_unit": md_unit},
+                    ))
+
+                # Check semantic_steps
+                toml_steps = [s.replace("_", " ").strip() for s in op.get("semantic_steps", []) if isinstance(s, str)]
+                if toml_steps != md_entry["semantic_steps"]:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Operation '{cid}' semantic_steps mismatch: TOML has {toml_steps}, Markdown has {md_entry['semantic_steps']}",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                        params={"cost_id": cid, "toml_steps": toml_steps, "md_steps": md_entry["semantic_steps"]},
+                    ))
+
+                # Check variable_costs
+                toml_vars = [s.replace("_", " ").strip() for s in op.get("variable_costs", []) if isinstance(s, str)]
+                if toml_vars != md_entry["variable_costs"]:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Operation '{cid}' variable_costs mismatch: TOML has {toml_vars}, Markdown has {md_entry['variable_costs']}",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                        params={"cost_id": cid, "toml_vars": toml_vars, "md_vars": md_entry["variable_costs"]},
+                    ))
+
+                # Check proof_owner
                 toml_owner = str(op.get("proof_owner") or op.get("owner") or "").strip()
                 md_owner = md_entry["proof_owner"].strip()
                 if toml_owner != md_owner:
@@ -1424,6 +1819,7 @@ def validate_cost_references(
                         params={"cost_id": cid, "toml_owner": toml_owner, "md_owner": md_owner},
                     ))
 
+                # Check proof_reference
                 toml_ref = str(op.get("proof_reference") or "").strip()
                 md_ref = md_entry["proof_reference"].strip()
                 if toml_ref != md_ref:
@@ -1447,6 +1843,78 @@ def validate_cost_references(
                     message=f"Operation '{md_cid}' in registries/OPERATION_COSTS.md is missing from TOML",
                     remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
                     params={"cost_id": md_cid},
+                ))
+
+        # Compare TOML drift table against Markdown drift table
+        for d in drifts:
+            if not isinstance(d, dict):
+                continue
+            did = d.get("id")
+            if not did or not isinstance(did, str):
+                continue
+            did = did.strip()
+            if did not in md_drifts:
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                    path=sanitize_path(target_costs_md_path, root),
+                    message=f"Drift '{did}' in TOML is missing from registries/OPERATION_COSTS.md drift table",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                    params={"drift_id": did},
+                ))
+            else:
+                mdd = md_drifts[did]
+                d_op = str(d.get("operation_id", "")).strip()
+                if d_op != mdd["operation_id"]:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Drift '{did}' operation_id mismatch: TOML has '{d_op}', Markdown has '{mdd['operation_id']}'",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                        params={"drift_id": did, "toml_op": d_op, "md_op": mdd["operation_id"]},
+                    ))
+                d_status = str(d.get("status", "")).strip()
+                if d_status != mdd["status"]:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Drift '{did}' status mismatch: TOML has '{d_status}', Markdown has '{mdd['status']}'",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                        params={"drift_id": did, "toml_status": d_status, "md_status": mdd["status"]},
+                    ))
+                d_desc = str(d.get("description", "")).strip()
+                if d_desc != mdd["description"]:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Drift '{did}' description mismatch: TOML has '{d_desc}', Markdown has '{mdd['description']}'",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                        params={"drift_id": did, "toml_desc": d_desc, "md_desc": mdd["description"]},
+                    ))
+                d_lane = str(d.get("target_lane", "")).strip()
+                if d_lane != mdd["target_lane"]:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                        path=sanitize_path(target_costs_md_path, root),
+                        message=f"Drift '{did}' target_lane mismatch: TOML has '{d_lane}', Markdown has '{mdd['target_lane']}'",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                        params={"drift_id": did, "toml_lane": d_lane, "md_lane": mdd["target_lane"]},
+                    ))
+
+        toml_drift_ids = {d.get("id") for d in drifts if isinstance(d, dict) and "id" in d}
+        for md_did in md_drifts:
+            if md_did not in toml_drift_ids:
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_OWNER_MIRROR_DISAGREEMENT,
+                    path=sanitize_path(target_costs_md_path, root),
+                    message=f"Drift '{md_did}' in registries/OPERATION_COSTS.md is missing from TOML",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_OWNER_MIRROR_DISAGREEMENT]["remediation"],
+                    params={"drift_id": md_did},
                 ))
 
     return resolutions
@@ -1552,10 +2020,7 @@ def validate_slos(
     target_costs_path = costs_path or (root / "architecture/operation_cost_registry.toml")
     target_claims_path = claims_path or (root / "registries/CLAIMS.md")
     target_costs_md_path = costs_md_path or (root / "registries/OPERATION_COSTS.md")
-    should_check_mirror = (
-        costs_md_path is not None
-        or target_costs_path.resolve() == (root / "architecture/operation_cost_registry.toml").resolve()
-    )
+    should_check_mirror = target_costs_md_path.is_file()
 
     findings: list[SloFinding] = []
 
