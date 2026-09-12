@@ -294,5 +294,46 @@ jobs:
             slo_validate.validate_slos = orig_validate
 
 
+class CheckPolicyFixtureCase(unittest.TestCase):
+    """Temp-root fixture shared by the enforcement tests below (no inherited test methods)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly-2026-08-31"\n', encoding="utf-8")
+        (self.root / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+        self.old_root = check_policy.ROOT
+        self.old_errors = list(check_policy.errors)
+        check_policy.ROOT = self.root
+        check_policy.errors = []
+
+    def tearDown(self) -> None:
+        check_policy.ROOT = self.old_root
+        check_policy.errors = self.old_errors
+        self.tmp.cleanup()
+
+
+class CheckPolicySerdeDurableBytesTests(CheckPolicyFixtureCase):
+    """fss-x4a.9.17: check-policy's cargo_policy enforces DEP-AUD-023, not just the policy boolean."""
+
+    def _workspace(self, lib_body: str) -> None:
+        (self.root / "Cargo.toml").write_text(
+            '[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n\n[workspace.lints.rust]\nunsafe_code = "forbid"\n',
+            encoding="utf-8",
+        )
+        make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
+        (self.root / "crates" / "crate-a" / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\n" + lib_body, encoding="utf-8")
+
+    def test_cargo_policy_serde_derive_fails(self) -> None:
+        self._workspace("#[derive(serde::Serialize)]\npub struct Durable;\n")
+        check_policy.cargo_policy(make_clean_policy_dict())
+        self.assertTrue(any(err.startswith("DEP-AUD-023") and "src/lib.rs:2" in err for err in check_policy.errors), check_policy.errors)
+
+    def test_cargo_policy_commented_serde_derive_passes(self) -> None:
+        self._workspace("// #[derive(serde::Serialize)]\npub struct Durable;\n")
+        check_policy.cargo_policy(make_clean_policy_dict())
+        self.assertEqual(check_policy.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

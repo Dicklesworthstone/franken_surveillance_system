@@ -4,10 +4,16 @@
 Enumerates the full Cargo workspace semantic surface, all target roots,
 workspace globs/excludes, target cfg dependency tables, and verifies
 unconditional #![forbid(unsafe_code)] enforcement across all targets.
+
+DEP-AUD-023 (fss-x4a.9.17, FSS-110) refuses Serde-family codec crates in any FSS manifest
+dependency table or Cargo.lock, and Serde derives/paths/attributes in FSS Rust source. Source is
+scanned after masking comments and string/char literals (``mask_rust_source``); this is a
+lexer-level deny-list, not a Rust parser, so macro-generated or ``include!``-spliced code is not seen.
 """
 from __future__ import annotations
 
 import argparse
+import bisect
 import fnmatch
 import hashlib
 import json
@@ -219,6 +225,13 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
         owner="architecture-constitution",
         trigger="FSS Rust source contains a forbidden production construct",
         remediation="remove unsafe, native/dynamic/foreign runtime, second executor, or prohibited construct",
+    ),
+    "DEP-AUD-023": DiagnosticDef(
+        code="DEP-AUD-023",
+        severity="error",
+        owner="architecture-constitution",
+        trigger="a serde-family codec crate or Serde derive/path/attribute is present in FSS manifests, Cargo.lock, or Rust source",
+        remediation="remove it and encode durable bytes with the first-party canonical codec; no non-durable serde admission path exists (FSS-110)",
     ),
     "DEP-AUD-024": DiagnosticDef(
         code="DEP-AUD-024",
@@ -880,6 +893,306 @@ def direct_dependency_rows(findings: list[Finding], policy: dict[str, Any], root
     return enumerate_dependencies(root, manifests, member_names, member_map, policy, findings)
 
 
+@dataclass(frozen=True)
+class RustLiteral:
+    """One string-like Rust literal found by ``mask_rust_source``."""
+
+    start: int  # offset of the literal's first character, prefix (b/c/r/#) included
+    end: int  # offset one past the closing delimiter
+    line: int  # 1-based line of ``start``
+    content: str  # raw text between the delimiters; escapes are not decoded
+
+
+_RUST_IDENT_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_")
+_RUST_RAW_STRING_START = re.compile(r'[bc]?r(#*)"')
+_RUST_PREFIXED_STRING_START = re.compile(r'[bc]"')
+_RUST_MAX_CHAR_LITERAL = 12  # len("'\\u{10FFFF}'")
+
+
+def mask_rust_source(text: str) -> tuple[str, list[RustLiteral]]:
+    """Mask comments and literals in Rust source text.
+
+    Returns ``(masked, literals)``. ``masked`` has exactly the length and newline positions of
+    ``text``; every line/block/nested-block/doc comment and every string, byte-string, C-string,
+    raw-string, char, and byte-char literal is overwritten with spaces, except that the first
+    character of each string-like literal becomes ``"`` so callers can see that a literal argument
+    sits there. ``literals`` lists the string-like literals (not char literals) with raw contents.
+
+    This is a lexer-level approximation, not a Rust parser: it does not expand macros, follow
+    ``include!``/``include_str!``, or evaluate ``concat!``/``stringify!``. An unterminated comment
+    or literal masks to end of file (so it can hide, but never invent, code).
+    """
+    n = len(text)
+    out = list(text)
+    literals: list[RustLiteral] = []
+    newlines = [index for index, char in enumerate(text) if char == "\n"]
+
+    def line_of(offset: int) -> int:
+        return bisect.bisect_left(newlines, offset) + 1
+
+    def blank(start: int, end: int) -> None:
+        for k in range(start, min(end, n)):
+            if out[k] != "\n":
+                out[k] = " "
+
+    def record(start: int, body_start: int, body_end: int, end: int) -> None:
+        literals.append(RustLiteral(start=start, end=end, line=line_of(start), content=text[body_start:body_end]))
+        blank(start, end)
+        out[start] = '"'
+
+    def char_literal_end(quote: int) -> int | None:
+        nxt = text[quote + 1] if quote + 1 < n else ""
+        if nxt == "\\":
+            close = text.find("'", quote + 3)
+            if close < 0 or close - quote >= _RUST_MAX_CHAR_LITERAL or "\n" in text[quote:close]:
+                return None
+            return close + 1
+        if quote + 2 < n and text[quote + 2] == "'" and nxt not in ("\n", "'", ""):
+            return quote + 3
+        return None  # lifetime or loop label
+
+    def string_end(quote: int) -> tuple[int, int]:
+        j = quote + 1
+        while j < n:
+            if text[j] == "\\":
+                j += 2
+            elif text[j] == '"':
+                return j, j + 1
+            else:
+                j += 1
+        return n, n
+
+    i = 0
+    while i < n:
+        char = text[i]
+        nxt = text[i + 1] if i + 1 < n else ""
+        if char == "/" and nxt == "/":
+            end = text.find("\n", i)
+            end = n if end < 0 else end
+            blank(i, end)
+            i = end
+            continue
+        if char == "/" and nxt == "*":
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            blank(i, j)
+            i = j
+            continue
+        if char in _RUST_IDENT_CHARS and (i == 0 or text[i - 1] not in _RUST_IDENT_CHARS):
+            raw = _RUST_RAW_STRING_START.match(text, i)
+            if raw:
+                terminator = '"' + raw.group(1)
+                close = text.find(terminator, raw.end())
+                body_end, end = (n, n) if close < 0 else (close, close + len(terminator))
+                record(i, raw.end(), body_end, end)
+                i = end
+                continue
+            if _RUST_PREFIXED_STRING_START.match(text, i):
+                body_end, end = string_end(i + 1)
+                record(i, i + 2, body_end, end)
+                i = end
+                continue
+            if char == "b" and nxt == "'":
+                end = char_literal_end(i + 1)
+                if end is not None:
+                    blank(i, end)
+                    i = end
+                    continue
+            j = i
+            while j < n and text[j] in _RUST_IDENT_CHARS:
+                j += 1
+            i = j
+            continue
+        if char == '"':
+            body_end, end = string_end(i)
+            record(i, i + 1, body_end, end)
+            i = end
+            continue
+        if char == "'":
+            end = char_literal_end(i)
+            if end is not None:
+                blank(i, end)
+                i = end
+                continue
+        i += 1
+    return "".join(out), literals
+
+
+def source_line(text: str, offset: int) -> int:
+    return text.count("\n", 0, offset) + 1
+
+
+def display_path(path: Path, root: Path) -> str:
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return sanitize_path(path, root)
+
+
+# Serde-family and serde-ecosystem binary codec crates (fss-x4a.9.17 / FSS-110). Names are compared
+# after lower-casing and mapping ``_`` to ``-`` (Cargo treats them as the same crate name).
+SERDE_CODEC_CRATE_PATTERNS = ("serde*", "bincode", "postcard", "ciborium", "rmp-serde")
+_SERDE_CODEC_IDENT = r"(?:serde\w*|bincode|postcard|ciborium|rmp_serde)"
+SERDE_SOURCE_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("serde-family crate path", re.compile(rf"\b{_SERDE_CODEC_IDENT}\s*::")),
+    ("serde attribute", re.compile(r"\bserde\s*\(")),
+    ("extern crate of a serde-family codec", re.compile(rf"\bextern\s+crate\s+{_SERDE_CODEC_IDENT}\b")),
+    ("use of a serde-family codec", re.compile(rf"\buse\s+(?:::\s*)?{_SERDE_CODEC_IDENT}\b")),
+)
+_DERIVE_OPEN = re.compile(r"\bderive\s*\(")
+_SERDE_DERIVE_TRAIT = re.compile(r"\b(?:Serialize|Deserialize)\b")
+
+
+def is_serde_codec_crate(name: str) -> bool:
+    normalized = name.strip().lower().replace("_", "-")
+    return any(fnmatch.fnmatchcase(normalized, pattern) for pattern in SERDE_CODEC_CRATE_PATTERNS)
+
+
+def scan_serde_source(text: str) -> list[tuple[int, str]]:
+    """Return sorted, de-duplicated ``(line, label)`` Serde hits in comment/literal-masked source.
+
+    Conservative on purpose: a derive list naming *any* ``Serialize``/``Deserialize`` (even a
+    first-party derive macro of that name) and any call to a function named ``serde(`` are refused.
+    """
+    masked, _ = mask_rust_source(text)
+    hits: set[tuple[int, str]] = set()
+    for match in _DERIVE_OPEN.finditer(masked):
+        depth, j = 1, match.end()
+        while j < len(masked) and depth:
+            if masked[j] == "(":
+                depth += 1
+            elif masked[j] == ")":
+                depth -= 1
+            j += 1
+        if _SERDE_DERIVE_TRAIT.search(masked, match.end(), j):
+            hits.add((source_line(masked, match.start()), "derive(Serialize/Deserialize)"))
+    for label, pattern in SERDE_SOURCE_PATTERNS:
+        for match in pattern.finditer(masked):
+            hits.add((source_line(masked, match.start()), label))
+    return sorted(hits)
+
+
+def fss_rust_source_files(root: Path, manifests: list[Path]) -> list[Path]:
+    """Every ``*.rs`` under ``crates/`` and under each workspace member directory (``target`` skipped)."""
+    directories = [root / "crates"] + [manifest.parent for manifest in manifests if manifest != root / "Cargo.toml"]
+    seen: dict[Path, Path] = {}
+    for directory in directories:
+        if not directory.is_dir():
+            continue
+        for candidate in directory.rglob("*.rs"):
+            if "target" in candidate.relative_to(directory).parts or not candidate.is_file():
+                continue
+            seen.setdefault(candidate.resolve(), candidate)
+    return sorted(seen.values(), key=lambda p: display_path(p, root))
+
+
+def _toml_key_line(text: str, key: str) -> int | None:
+    quoted = re.escape(key)
+    assignment = re.compile(rf"""^\s*(?:{quoted}|"{quoted}"|'{quoted}')\s*=""")
+    header = re.compile(rf"""^\s*\[[^\]]*\.(?:{quoted}|"{quoted}"|'{quoted}')\s*\]\s*$""")
+    for number, line in enumerate(text.splitlines(), 1):
+        if assignment.match(line) or header.match(line):
+            return number
+    return None
+
+
+def serde_durable_bytes_audit(
+    findings: list[Finding],
+    root: Path = ROOT,
+    direct_rows: list[dict[str, Any]] | None = None,
+    manifests: list[Path] | None = None,
+    resolved_names: list[str] | None = None,
+) -> int:
+    """Fail closed on Serde-defined durable bytes (DEP-AUD-023, fss-x4a.9.17 / FSS-110).
+
+    Refused, each with ``file:line`` in the message and ``line`` in params:
+    (a) a Serde-family codec crate (``SERDE_CODEC_CRATE_PATTERNS``) named, by package identity or
+        local key, in any FSS ``[dependencies]``/``[dev-dependencies]``/``[build-dependencies]``/
+        ``[target.*.*]``/``[workspace.dependencies]`` table, in Cargo.lock, or in resolved metadata.
+        No allowlist entry type admits a "non-durable" Serde use, so every occurrence is refused;
+        ``[fundamental].allowed_subject_to_audit`` does not override this check;
+    (b) ``derive(...Serialize|Deserialize...)``, Serde-family crate paths, ``serde(`` attributes,
+        ``extern crate``/``use`` of a Serde-family codec in any FSS Rust source file, after
+        comments and literals are masked.
+    Returns the number of Rust source files scanned.
+    """
+    manifest_text: dict[str, str] = {}
+    for row in direct_rows or []:
+        package = str(row.get("name", ""))
+        local_name = str(row.get("localName", package))
+        offending = package if is_serde_codec_crate(package) else local_name if is_serde_codec_crate(local_name) else None
+        if offending is None:
+            continue
+        manifest_rel = str(row.get("manifest", ""))
+        if manifest_rel not in manifest_text:
+            try:
+                manifest_text[manifest_rel] = (root / manifest_rel).read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                manifest_text[manifest_rel] = ""
+        line = _toml_key_line(manifest_text[manifest_rel], local_name)
+        location = f"{manifest_rel}:{line}" if line is not None else manifest_rel
+        add(
+            findings,
+            "error",
+            "DEP-AUD-023",
+            root / manifest_rel,
+            f"{location}: serde-family codec crate '{offending}' declared in [{row.get('section')}]; durable bytes must come from the first-party canonical codec",
+            root=root,
+            params={"package": offending, "section": str(row.get("section")), "path": manifest_rel, "line": line},
+        )
+
+    lock_path = root / "Cargo.lock"
+    if lock_path.is_file():
+        try:
+            lock_text = lock_path.read_text(encoding="utf-8")
+            lock_data = tomllib.loads(lock_text)
+        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+            add(findings, "error", "DEP-AUD-011", lock_path, f"cannot parse Cargo.lock; serde-family absence is unproven: {exc}", root=root, params={"manifest": "Cargo.lock", "error": str(exc)})
+        else:
+            lock_packages = lock_data.get("package", [])
+            for package in lock_packages if isinstance(lock_packages, list) else []:
+                name = package.get("name") if isinstance(package, dict) else None
+                if isinstance(name, str) and is_serde_codec_crate(name):
+                    line = None
+                    name_line = re.compile(rf"""^\s*name\s*=\s*"{re.escape(name)}"\s*$""")
+                    for number, text_line in enumerate(lock_text.splitlines(), 1):
+                        if name_line.match(text_line):
+                            line = number
+                            break
+                    location = f"Cargo.lock:{line}" if line is not None else "Cargo.lock"
+                    add(findings, "error", "DEP-AUD-023", lock_path, f"{location}: serde-family codec package '{name}' is in the locked closure", root=root, params={"package": name, "path": "Cargo.lock", "line": line})
+
+    for name in resolved_names or []:
+        if is_serde_codec_crate(name):
+            add(findings, "error", "DEP-AUD-023", lock_path, f"Cargo.lock: serde-family codec package '{name}' is resolved by cargo metadata", root=root, params={"package": name, "path": "Cargo.lock", "line": None})
+
+    files = fss_rust_source_files(root, manifests or [])
+    for source in files:
+        rel = display_path(source, root)
+        try:
+            source_text = source.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            add(findings, "error", "DEP-AUD-023", source, f"{rel}: unreadable Rust source; Serde absence is unproven: {exc}", root=root, params={"path": rel, "line": None})
+            continue
+        for line, label in scan_serde_source(source_text):
+            add(
+                findings,
+                "error",
+                "DEP-AUD-023",
+                source,
+                f"{rel}:{line}: {label} in FSS Rust source; Serde may not define durable bytes",
+                root=root,
+                params={"path": rel, "line": line, "label": label},
+            )
+    return len(files)
+
+
 def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: list[Path] | None = None) -> dict[str, Any]:
     if manifests is None:
         root_manifest = load_toml(root / "Cargo.toml")
@@ -1110,12 +1423,14 @@ def audit_workspace(
 
     direct = enumerate_dependencies(root, manifests, member_names, member_map, policy, findings)
     source_census = rust_source_audit(findings, root=root, manifests=manifests)
+    serde_durable_bytes_audit(findings, root=root, direct_rows=direct, manifests=manifests)
 
     ref_targets: list[TargetRoot] = []
     for tr_dict in source_census.get("targetRoots", []):
         ref_targets.append(TargetRoot(**tr_dict))
 
     metadata_available, metadata_error, resolved = metadata_audit(findings, policy, root=root, reference_targets=ref_targets)
+    serde_durable_bytes_audit(findings, root=root, resolved_names=[str(row.get("name", "")) for row in resolved])
     if not metadata_available:
         lock_file = root / "Cargo.lock"
         if lock_file.is_file():

@@ -231,6 +231,7 @@ def cargo_policy(dependency_policy: dict[str, Any]) -> None:
     manifests, member_names, member_map = dependency_audit.expand_workspace_members(ROOT, root_cargo, findings)
     rows = dependency_audit.enumerate_dependencies(ROOT, manifests, member_names, member_map, dependency_policy, findings)
     source_census = dependency_audit.rust_source_audit(findings, root=ROOT, manifests=manifests)
+    dependency_audit.serde_durable_bytes_audit(findings, root=ROOT, direct_rows=rows, manifests=manifests)
 
     forbidden = set(dependency_policy.get("forbidden", {}).get("crates", []))
     lock_path = ROOT / "Cargo.lock"
