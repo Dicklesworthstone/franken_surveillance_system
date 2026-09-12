@@ -110,7 +110,7 @@ use fss_publication::{
     BrokenRootReason, LOCAL_ROOTS_DIR, LOCAL_SPOOL_DIR, LedgeredRootPublisher,
     LocalPublicationError, LocalPublicationLimits, LocalPublicationState, LocalRootPublisher,
     ROOT_RECORD_SUFFIX, ROOT_TEMP_SUFFIX, RootLedgerError, RootLedgerOutcome, RootLedgerState,
-    SlotName, UnbackedLedgerClaim, root_reachability_batch_id,
+    SlotName, UnbackedLedgerClaim, root_reachability_batch_id, root_record_bytes,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -629,6 +629,7 @@ struct Expected {
     admitted: BTreeSet<ContentDigest>,
     root_temp_created: bool,
     root_renamed: bool,
+    root_directory_synced: bool,
     body_written: bool,
     commit_written: bool,
 }
@@ -639,6 +640,7 @@ impl Expected {
         let objects = format!("{PUBLICATION_DIR}/{LOCAL_SPOOL_DIR}/objects/");
         let root_temp = format!("{PUBLICATION_DIR}/{LOCAL_ROOTS_DIR}/{}", root_temp_name());
         let root_record = format!("{PUBLICATION_DIR}/{LOCAL_ROOTS_DIR}/{}", root_record_name());
+        let roots_dir = format!("{PUBLICATION_DIR}/{LOCAL_ROOTS_DIR}");
         let mut expected = Self::default();
         for op in performed {
             match op.call.as_str() {
@@ -666,6 +668,11 @@ impl Expected {
                         expected.root_renamed = true;
                     }
                 }
+                "sync_directory" => {
+                    if expected.root_renamed && op.path == roots_dir {
+                        expected.root_directory_synced = true;
+                    }
+                }
                 "journal_body_write" => expected.body_written = true,
                 "journal_commit_write" => expected.commit_written = true,
                 _ => {}
@@ -680,6 +687,14 @@ impl Expected {
 
     const fn incomplete_tail(&self) -> bool {
         self.body_written && !self.commit_written
+    }
+
+    const fn is_pre_fsync_root_rename(&self) -> bool {
+        self.root_renamed && !self.root_directory_synced
+    }
+
+    const fn is_post_fsync_root_durable(&self) -> bool {
+        self.root_renamed && self.root_directory_synced
     }
 }
 
@@ -920,6 +935,7 @@ fn count_run(sweep: &Path, cwd: &Path) -> Result<Reference, Box<dyn Error>> {
 struct StepOutcome {
     phase: String,
     classes: BTreeSet<&'static str>,
+    outcome: TestOutcome,
     post_crash: Snapshot,
     final_state: Snapshot,
 }
@@ -934,6 +950,8 @@ const CLASS_INCOMPLETE_TAIL: &str = "d_incomplete_ledger_tail_refused";
 const CLASS_ORPHANED_ROOT_TEMP: &str = "d_orphaned_root_temp_refused_then_discarded";
 const CLASS_UNREFERENCED: &str = "unreferenced_objects_reported";
 const CLASS_CONVERGED: &str = "e_converged_single_batch_already_ledgered";
+const CLASS_PRE_FSYNC_ROOT_RENAME: &str = "pre_fsync_root_rename_visible_not_durable";
+const CLASS_POST_FSYNC_ROOT_DURABLE: &str = "post_fsync_root_durable";
 
 fn crash_and_recover(
     sweep: &Path,
@@ -1017,6 +1035,29 @@ fn crash_and_recover(
             post_crash.contains_key(&root_key),
             "step {step}: ledger names a root with no record"
         );
+    }
+
+    // Direct on-disk inspection before LocalRootPublisher::open recovery sync can mask pre-fsync vs post-fsync state.
+    if expected.root_renamed {
+        let root_entry = post_crash
+            .get(&root_key)
+            .ok_or_else(|| format!("step {step}: root record missing from raw disk"))?;
+        let bytes = match root_entry {
+            Entry::File(bytes) => bytes,
+            _ => return Err(format!("step {step}: root record is not a regular file").into()),
+        };
+        let child_count = manifest_of(&reference.digests)?.children().len();
+        let expected_bytes = root_record_bytes(&slot, reference.root, child_count)?;
+        assert_eq!(
+            bytes, &expected_bytes,
+            "step {step}: raw root record bytes mismatch on disk"
+        );
+
+        if expected.is_pre_fsync_root_rename() {
+            classes.insert(CLASS_PRE_FSYNC_ROOT_RENAME);
+        } else if expected.is_post_fsync_root_durable() {
+            classes.insert(CLASS_POST_FSYNC_ROOT_DURABLE);
+        }
     }
 
     // First reopen in the parent: classification and invariants (a) to (d).
@@ -1316,9 +1357,18 @@ fn crash_and_recover(
         classes.insert(CLASS_UNBACKED_ON_DAMAGE);
     }
 
+    let step_outcome = if expected.incomplete_tail() {
+        TestOutcome::Indeterminate
+    } else if step == total {
+        TestOutcome::Passed
+    } else {
+        TestOutcome::Crashed
+    };
+
     Ok(StepOutcome {
         phase,
         classes,
+        outcome: step_outcome,
         post_crash,
         final_state,
     })
@@ -1350,6 +1400,20 @@ fn run_sweep(sweep: &Path, cwd: &Path) -> Result<Sweep, Box<dyn Error>> {
     for (seq, &step) in steps.iter().enumerate() {
         let outcome = crash_and_recover(sweep, cwd, step, &reference)?;
 
+        let performed = reference
+            .trace
+            .get(..usize::try_from(step)?)
+            .ok_or("step beyond the trace")?;
+        let expected = Expected::from_prefix(performed)?;
+
+        let expected_outcome = if expected.incomplete_tail() {
+            TestOutcome::Indeterminate
+        } else if step == reference.trace.len() as u64 {
+            TestOutcome::Passed
+        } else {
+            TestOutcome::Crashed
+        };
+
         let target_op = reference
             .trace
             .get(usize::try_from(step)?)
@@ -1357,15 +1421,26 @@ fn run_sweep(sweep: &Path, cwd: &Path) -> Result<Sweep, Box<dyn Error>> {
             .unwrap_or_else(|| "none".to_string());
 
         let input_repr = format!("step:{step}:target_op:{target_op}");
-        let state_repr = format!(
-            "phase:{}:classes:{:?}:post_crash_keys:{}:final_keys:{}",
-            outcome.phase,
-            outcome.classes,
-            outcome.post_crash.len(),
-            outcome.final_state.len()
+        let expected_repr = format!(
+            "target:{target_op}:orphans:{}:root_renamed:{}:root_synced:{}:incomplete_tail:{}:commit_written:{}:outcome:{}",
+            expected.orphans.len(),
+            expected.root_renamed,
+            expected.root_directory_synced,
+            expected.incomplete_tail(),
+            expected.commit_written,
+            expected_outcome.as_str(),
         );
-        let expected_repr = state_repr.clone();
-        let actual_repr = state_repr;
+
+        let root_key = format!("{PUBLICATION_DIR}/{LOCAL_ROOTS_DIR}/{}", root_record_name());
+        let actual_root_renamed = outcome.post_crash.contains_key(&root_key);
+        let actual_staging_orphans = staging_names(&outcome.post_crash).len();
+        let actual_root_synced = outcome.classes.contains(CLASS_POST_FSYNC_ROOT_DURABLE);
+        let actual_incomplete_tail = outcome.classes.contains(CLASS_INCOMPLETE_TAIL);
+        let actual_commit_written = outcome.classes.contains(CLASS_CLAIM_BACKED);
+        let actual_repr = format!(
+            "target:{target_op}:orphans:{actual_staging_orphans}:root_renamed:{actual_root_renamed}:root_synced:{actual_root_synced}:incomplete_tail:{actual_incomplete_tail}:commit_written:{actual_commit_written}:outcome:{}",
+            outcome.outcome.as_str(),
+        );
 
         let event = TestEventRecord {
             schema: TEST_EVENT_SCHEMA,
@@ -1380,7 +1455,7 @@ fn run_sweep(sweep: &Path, cwd: &Path) -> Result<Sweep, Box<dyn Error>> {
             input_digest: ContentDigest::sha256(input_repr.as_bytes()),
             expected_digest: ContentDigest::sha256(expected_repr.as_bytes()),
             actual_digest: ContentDigest::sha256(actual_repr.as_bytes()),
-            outcome: TestOutcome::Passed,
+            outcome: outcome.outcome,
             duration_ns: 0,
             phase: Some(outcome.phase.clone()),
             tags: outcome.classes.iter().map(|s| s.to_string()).collect(),
@@ -1464,6 +1539,8 @@ fn process_death_sweep_over_spool_publisher_and_ledger() -> TestResult {
         CLASS_ORPHANED_STAGING,
         CLASS_ORPHANED_ROOT_TEMP,
         CLASS_UNREFERENCED,
+        CLASS_PRE_FSYNC_ROOT_RENAME,
+        CLASS_POST_FSYNC_ROOT_DURABLE,
     ] {
         assert!(
             by_class.get(class).copied().unwrap_or_default() > 0,
@@ -1480,8 +1557,8 @@ fn process_death_sweep_over_spool_publisher_and_ledger() -> TestResult {
     assert_eq!(second.events.len(), swept);
     assert!(!first.events.is_empty());
     for (event_a, event_b) in first.events.iter().zip(second.events.iter()) {
-        assert_eq!(event_a.outcome, TestOutcome::Passed);
-        assert_eq!(event_b.outcome, TestOutcome::Passed);
+        assert_eq!(event_a.outcome, event_b.outcome);
+        assert_ne!(event_a.outcome, TestOutcome::Failed);
         assert_eq!(event_a.step_id, event_b.step_id);
         assert_eq!(event_a.sequence, event_b.sequence);
         assert_eq!(event_a.expected_digest, event_b.expected_digest);
@@ -1492,6 +1569,30 @@ fn process_death_sweep_over_spool_publisher_and_ledger() -> TestResult {
             ContentDigest::sha256(include_bytes!("process_death_crash_harness.rs"))
         );
     }
+
+    let mut outcome_counts: BTreeMap<TestOutcome, usize> = BTreeMap::new();
+    for event in &first.events {
+        *outcome_counts.entry(event.outcome).or_default() += 1;
+    }
+    assert_eq!(
+        outcome_counts.get(&TestOutcome::Passed).copied(),
+        Some(1),
+        "expected exactly 1 complete workload step marked Passed"
+    );
+    assert_eq!(
+        outcome_counts.get(&TestOutcome::Indeterminate).copied(),
+        Some(2),
+        "expected exactly 2 torn-tail steps marked Indeterminate"
+    );
+    assert!(
+        outcome_counts.get(&TestOutcome::Crashed).copied().unwrap_or_default() > 0,
+        "expected crashed steps marked Crashed"
+    );
+    assert_eq!(
+        outcome_counts.values().sum::<usize>(),
+        swept,
+        "all swept steps must have a recorded real outcome"
+    );
 
     let elapsed_ns = u64::try_from(started.elapsed().as_nanos())?;
     let summary_repr =
