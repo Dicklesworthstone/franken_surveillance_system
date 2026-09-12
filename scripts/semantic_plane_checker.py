@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -656,6 +657,222 @@ MUTABLE_GENERATION_TOKENS: set[str] = {
 }
 
 
+def mask_comments_and_strings(source: str) -> str:
+    """Masks comments and strings with spaces, preserving character offsets and newlines."""
+    result = list(source)
+    n = len(source)
+    i = 0
+    while i < n:
+        if i + 1 < n and source[i : i + 2] == "//":
+            j = i
+            while j < n and source[j] != "\n":
+                if result[j] != "\n":
+                    result[j] = " "
+                j += 1
+            i = j
+        elif i + 1 < n and source[i : i + 2] == "/*":
+            j = i + 2
+            depth = 1
+            while j < n and depth > 0:
+                if j + 1 < n and source[j : j + 2] == "/*":
+                    depth += 1
+                    j += 2
+                elif j + 1 < n and source[j : j + 2] == "*/":
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            for k in range(i, min(j, n)):
+                if result[k] != "\n":
+                    result[k] = " "
+            i = j
+        elif source[i] == "r" and (i + 1 < n and source[i + 1] in ('"', "#")):
+            j = i + 1
+            hashes = 0
+            while j < n and source[j] == "#":
+                hashes += 1
+                j += 1
+            if j < n and source[j] == '"':
+                j += 1
+                end_marker = '"' + "#" * hashes
+                found = source.find(end_marker, j)
+                if found != -1:
+                    j = found + len(end_marker)
+                else:
+                    j = n
+                for k in range(i, min(j, n)):
+                    if result[k] != "\n":
+                        result[k] = " "
+                i = j
+            else:
+                i += 1
+        elif source[i] == '"':
+            j = i + 1
+            while j < n:
+                if source[j] == "\\":
+                    j += 2
+                elif source[j] == '"':
+                    j += 1
+                    break
+                else:
+                    j += 1
+            for k in range(i, min(j, n)):
+                if result[k] != "\n":
+                    result[k] = " "
+            i = j
+        elif source[i] == "'":
+            if i + 1 < n and source[i + 1] != "\\" and i + 2 < n and source[i + 2] == "'":
+                for k in range(i, i + 3):
+                    if result[k] != "\n":
+                        result[k] = " "
+                i += 3
+            elif i + 1 < n and source[i + 1] == "\\" and i + 3 < n and source[i + 3] == "'":
+                for k in range(i, i + 4):
+                    if result[k] != "\n":
+                        result[k] = " "
+                i += 4
+            else:
+                i += 1
+        else:
+            i += 1
+    return "".join(result)
+
+
+def extract_rust_functions(
+    content: str,
+) -> list[tuple[str, str, str, str | None, int, str]]:
+    """Extracts Rust function declarations with balanced parens and enclosing impl target type.
+
+    Returns list of tuples: (fn_name, params, ret_type, impl_type, start_pos, full_sig)
+    """
+    masked = mask_comments_and_strings(content)
+    n = len(masked)
+    functions: list[tuple[str, str, str, str | None, int, str]] = []
+
+    brace_depth = 0
+    impl_stack: list[tuple[int, str]] = []
+    pending_impl: str | None = None
+    i = 0
+    while i < n:
+        if (
+            (i == 0 or not (masked[i - 1].isalnum() or masked[i - 1] == "_"))
+            and masked[i : i + 4] == "impl"
+            and (i + 4 == n or not (masked[i + 4].isalnum() or masked[i + 4] == "_"))
+        ):
+            open_brace = masked.find("{", i + 4)
+            if open_brace != -1:
+                header = masked[i + 4 : open_brace]
+                h_clean = re.sub(r"<[^>]*>", "", header).split("where")[0].strip()
+                m = re.search(
+                    r"(?:[A-Za-z0-9_:]+\s+for\s+)?([A-Za-z0-9_:]+)\s*$", h_clean
+                )
+                if m:
+                    target = m.group(1).split("::")[-1].strip()
+                    pending_impl = target
+            i += 4
+            continue
+
+        char = masked[i]
+        if char == "{":
+            brace_depth += 1
+            if pending_impl:
+                impl_stack.append((brace_depth, pending_impl))
+                pending_impl = None
+            i += 1
+            continue
+        elif char == "}":
+            if impl_stack and brace_depth <= impl_stack[-1][0]:
+                impl_stack.pop()
+            brace_depth = max(0, brace_depth - 1)
+            i += 1
+            continue
+
+        if (
+            (i == 0 or not (masked[i - 1].isalnum() or masked[i - 1] == "_"))
+            and masked[i : i + 2] == "fn"
+            and (i + 2 == n or not (masked[i + 2].isalnum() or masked[i + 2] == "_"))
+        ):
+            start_pos = i
+            line_start = masked.rfind("\n", 0, i)
+            line_start = 0 if line_start == -1 else line_start + 1
+            prefix = masked[line_start:i].strip()
+            if prefix and re.fullmatch(
+                r"(?:pub(?:\([^\)]*\))?\s+)?(?:async\s+)?(?:const\s+)?(?:unsafe\s+)?",
+                prefix + " ",
+            ):
+                start_pos = line_start + (
+                    len(masked[line_start:i]) - len(masked[line_start:i].lstrip())
+                )
+
+            name_match = re.match(r"fn\s+([A-Za-z0-9_]+)", masked[i:])
+            if not name_match:
+                i += 2
+                continue
+            fn_name = name_match.group(1)
+            after_name = i + name_match.end()
+
+            if after_name < n and masked[after_name] == "<":
+                gen_depth = 1
+                j = after_name + 1
+                while j < n and gen_depth > 0:
+                    if masked[j] == "<":
+                        gen_depth += 1
+                    elif masked[j] == ">":
+                        gen_depth -= 1
+                    j += 1
+                after_name = j
+
+            open_paren = masked.find("(", after_name)
+            if open_paren == -1:
+                i += 2
+                continue
+
+            paren_depth = 1
+            j = open_paren + 1
+            while j < n and paren_depth > 0:
+                if masked[j] == "(":
+                    paren_depth += 1
+                elif masked[j] == ")":
+                    paren_depth -= 1
+                j += 1
+            if paren_depth != 0:
+                i += 2
+                continue
+
+            close_paren = j - 1
+            params = content[open_paren + 1 : close_paren].strip()
+            ret_type = ""
+            k = close_paren + 1
+            while k < n and masked[k].isspace():
+                k += 1
+            if k + 1 < n and masked[k : k + 2] == "->":
+                ret_start = k + 2
+                end_k = ret_start
+                while end_k < n and masked[end_k] not in ("{", ";"):
+                    if masked[end_k : end_k + 5] == "where" and (
+                        end_k + 5 == n
+                        or not (masked[end_k + 5].isalnum() or masked[end_k + 5] == "_")
+                    ):
+                        break
+                    end_k += 1
+                ret_type = content[ret_start:end_k].strip()
+                full_sig_end = end_k
+            else:
+                full_sig_end = close_paren + 1
+
+            current_impl = impl_stack[-1][1] if impl_stack else None
+            full_sig = content[start_pos:full_sig_end].strip()
+            functions.append(
+                (fn_name, params, ret_type, current_impl, start_pos, full_sig)
+            )
+            i = close_paren + 1
+            continue
+
+        i += 1
+
+    return functions
+
+
 def check_module_imports(
     root: Path, registry: dict[str, Any]
 ) -> list[SemanticPlaneFinding]:
@@ -666,10 +883,6 @@ def check_module_imports(
     module_declarations = registry.get("module_declarations", {})
 
     use_pattern = re.compile(r"\buse\s+([^;]+);", re.MULTILINE)
-    fn_sig_pattern = re.compile(
-        r"(?:pub(?:\([^\)]*\))?\s+)?fn\s+([A-Za-z0-9_]+)(?:<[^>]*>)?\s*\([^)]*\)\s*->\s*([^;{]+)",
-        re.DOTALL,
-    )
     from_pattern = re.compile(
         r"impl(?:<[^>]*>)?\s+(?:Try)?From<([^>]+)>\s+for\s+([A-Za-z0-9_:]+)",
         re.MULTILINE,
@@ -716,19 +929,38 @@ def check_module_imports(
 
         # Check for functions directly returning EffectAuthority in cognition modules,
         # or bridging model outputs directly to effects, or abstention to negative evidence
-        for match in fn_sig_pattern.finditer(content):
-            fn_name = match.group(1)
-            ret_type = match.group(2).strip()
-            full_fn = match.group(0)
-
+        for (
+            fn_name,
+            params,
+            ret_type,
+            impl_type,
+            start_pos,
+            full_fn,
+        ) in extract_rust_functions(content):
             # NEG-003: Model/VLM output can never reach an effect type directly
-            is_model_input = any(
-                re.search(r"\b" + re.escape(m_ty) + r"\b", full_fn)
-                for m_ty in MODEL_OUTPUT_TYPES
-            ) or "vlm" in fn_name.lower() or "model" in fn_name.lower()
+            is_model_input = (
+                any(
+                    re.search(r"\b" + re.escape(m_ty) + r"\b", params)
+                    for m_ty in MODEL_OUTPUT_TYPES
+                )
+                or any(
+                    m_ty == impl_type
+                    or (
+                        impl_type
+                        and re.search(r"\b" + re.escape(m_ty) + r"\b", impl_type)
+                    )
+                    for m_ty in MODEL_OUTPUT_TYPES
+                )
+                or any(
+                    re.search(r"\b" + re.escape(m_ty) + r"\b", full_fn)
+                    for m_ty in MODEL_OUTPUT_TYPES
+                )
+                or "vlm" in fn_name.lower()
+                or "model" in fn_name.lower()
+            )
             is_effect_ret = is_effect_or_authority_type(ret_type, registered_types)
             if is_model_input and is_effect_ret:
-                line_no = content[: match.start()].count("\n") + 1
+                line_no = content[:start_pos].count("\n") + 1
                 findings.append(
                     SemanticPlaneFinding(
                         code=ERR_MODEL_OUTPUT_REACHES_EFFECT,
@@ -741,7 +973,7 @@ def check_module_imports(
                     )
                 )
             elif mod_plane == "cognition" and re.search(r"\bEffectAuthority\b", ret_type):
-                line_no = content[: match.start()].count("\n") + 1
+                line_no = content[:start_pos].count("\n") + 1
                 findings.append(
                     SemanticPlaneFinding(
                         code=ERR_COGNITION_GRANTS_EFFECT,
@@ -754,28 +986,43 @@ def check_module_imports(
                     )
                 )
 
-                # NEG-003: Abstention/failure is never negative evidence
-                is_absten_input = any(
+            # NEG-003: Abstention/failure is never negative evidence
+            is_absten_input = (
+                any(
+                    re.search(r"\b" + re.escape(a_ty) + r"\b", params)
+                    for a_ty in ABSTENTION_TYPES
+                )
+                or any(
+                    m_ty == impl_type
+                    or (
+                        impl_type
+                        and re.search(r"\b" + re.escape(m_ty) + r"\b", impl_type)
+                    )
+                    for m_ty in ABSTENTION_TYPES
+                )
+                or any(
                     re.search(r"\b" + re.escape(a_ty) + r"\b", full_fn)
                     for a_ty in ABSTENTION_TYPES
-                ) or "absten" in fn_name.lower()
-                is_negative_evidence_ret = any(
-                    re.search(r"\b" + re.escape(n_ty) + r"\b", ret_type)
-                    for n_ty in NEGATIVE_EVIDENCE_TYPES
                 )
-                if is_absten_input and is_negative_evidence_ret:
-                    line_no = content[: match.start()].count("\n") + 1
-                    findings.append(
-                        SemanticPlaneFinding(
-                            code=ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE,
-                            file=mod_rel,
-                            location=f"line {line_no}",
-                            message=f"Prohibited model abstention as negative evidence (NEG-003): function '{fn_name}' returns '{ret_type}' from model abstention",
-                            severity="error",
-                            remediation=DIAGNOSTIC_REGISTRY[ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE]["remediation"],
-                            params={"module": mod_rel, "function": fn_name, "return_type": ret_type},
-                        )
+                or "absten" in fn_name.lower()
+            )
+            is_negative_evidence_ret = any(
+                re.search(r"\b" + re.escape(n_ty) + r"\b", ret_type)
+                for n_ty in NEGATIVE_EVIDENCE_TYPES
+            )
+            if is_absten_input and is_negative_evidence_ret:
+                line_no = content[:start_pos].count("\n") + 1
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE,
+                        file=mod_rel,
+                        location=f"line {line_no}",
+                        message=f"Prohibited model abstention as negative evidence (NEG-003): function '{fn_name}' returns '{ret_type}' from model abstention",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_ABSTENTION_AS_NEGATIVE_EVIDENCE]["remediation"],
+                        params={"module": mod_rel, "function": fn_name, "return_type": ret_type},
                     )
+                )
 
         # Check From/Into cross-plane implementations
         for m in from_pattern.finditer(content):
@@ -1149,6 +1396,160 @@ def check_model_generation_immutability(root: Path) -> list[SemanticPlaneFinding
     return findings
 
 
+def audit_subsystem_generation_constructors(root: Path) -> list[SemanticPlaneFinding]:
+    """Audits subsystem generation constructors to ensure unvalidated test helpers are strictly feature-gated (review-749 #6)."""
+    findings: list[SemanticPlaneFinding] = []
+
+    # 1. Check crates/fss-core/src/ids.rs for ungated from_unvalidated_for_test
+    core_ids = root / "crates" / "fss-core" / "src" / "ids.rs"
+    if core_ids.is_file():
+        rel_path = sanitize_path(core_ids, root)
+        try:
+            content = core_ids.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_MUTABLE_MODEL_GENERATION,
+                    file=rel_path,
+                    location="file_system",
+                    message=f"Failed to read '{rel_path}': {exc}",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_MUTABLE_MODEL_GENERATION]["remediation"],
+                )
+            )
+            content = ""
+
+        if "from_unvalidated_for_test" in content:
+            lines = content.splitlines()
+            for idx, line in enumerate(lines):
+                if "fn from_unvalidated_for_test" in line:
+                    window = lines[max(0, idx - 6) : idx]
+                    has_cfg = any(
+                        re.search(r'#\[cfg\(feature\s*=\s*"test-support"\)\]', prev)
+                        for prev in window
+                    )
+                    if not has_cfg:
+                        findings.append(
+                            SemanticPlaneFinding(
+                                code=ERR_MUTABLE_MODEL_GENERATION,
+                                file=rel_path,
+                                location=f"line {idx + 1}",
+                                message=(
+                                    "Unrestricted public constructor 'from_unvalidated_for_test' bypasses validation "
+                                    "in production (review-749 #6); must be gated with #[cfg(feature = \"test-support\")]"
+                                ),
+                                severity="error",
+                                remediation="Gate from_unvalidated_for_test behind #[cfg(feature = \"test-support\")]",
+                                params={"file": rel_path, "line": idx + 1},
+                            )
+                        )
+
+    # 2. Check that no production code in crates/*/src/ calls from_unvalidated_for_test
+    crates_dir = root / "crates"
+    if crates_dir.is_dir():
+        for crate_dir in sorted(crates_dir.iterdir()):
+            if not crate_dir.is_dir():
+                continue
+            src_dir = crate_dir / "src"
+            if src_dir.is_dir():
+                for rs_file in sorted(src_dir.rglob("*.rs")):
+                    if core_ids.is_file() and rs_file.resolve() == core_ids.resolve():
+                        continue
+                    rel_rs = sanitize_path(rs_file, root)
+                    try:
+                        rs_content = rs_file.read_text(encoding="utf-8")
+                    except (OSError, UnicodeDecodeError):
+                        continue
+                    if "from_unvalidated_for_test" in rs_content:
+                        for l_idx, l_str in enumerate(rs_content.splitlines()):
+                            if "from_unvalidated_for_test" in l_str and not l_str.strip().startswith("//"):
+                                findings.append(
+                                    SemanticPlaneFinding(
+                                        code=ERR_MUTABLE_MODEL_GENERATION,
+                                        file=rel_rs,
+                                        location=f"line {l_idx + 1}",
+                                        message=(
+                                            f"Production code in '{rel_rs}' calls test-only constructor "
+                                            f"'from_unvalidated_for_test'; production code must use validated parse/try_from"
+                                        ),
+                                        severity="error",
+                                        remediation="Remove call to from_unvalidated_for_test in production code; use parse",
+                                        params={"file": rel_rs, "line": l_idx + 1},
+                                    )
+                                )
+
+    # 3. Check crates/fss-core/Cargo.toml has test-support declared under [features] and NOT in default
+    core_cargo = root / "crates" / "fss-core" / "Cargo.toml"
+    if core_cargo.is_file():
+        rel_cargo = sanitize_path(core_cargo, root)
+        try:
+            cargo_content = core_cargo.read_text(encoding="utf-8")
+            parsed = tomllib.loads(cargo_content)
+            features = parsed.get("features", {})
+            if "test-support" not in features:
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_MUTABLE_MODEL_GENERATION,
+                        file=rel_cargo,
+                        location="[features]",
+                        message="crates/fss-core/Cargo.toml must declare 'test-support' feature under [features]",
+                        severity="error",
+                        remediation="Add 'test-support = []' under [features] in crates/fss-core/Cargo.toml",
+                    )
+                )
+            if "test-support" in features.get("default", []):
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_MUTABLE_MODEL_GENERATION,
+                        file=rel_cargo,
+                        location="[features].default",
+                        message="crates/fss-core/Cargo.toml default features must NOT include 'test-support'",
+                        severity="error",
+                        remediation="Remove 'test-support' from default features in crates/fss-core/Cargo.toml",
+                    )
+                )
+        except Exception as exc:
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_MUTABLE_MODEL_GENERATION,
+                    file=rel_cargo,
+                    location="Cargo.toml",
+                    message=f"Failed to parse '{rel_cargo}': {exc}",
+                    severity="error",
+                    remediation="Ensure crates/fss-core/Cargo.toml is valid TOML",
+                )
+            )
+
+    # 4. Check all crate Cargo.tomls: non-dev [dependencies] cannot enable test-support on fss-core
+    if crates_dir.is_dir():
+        for crate_dir in sorted(crates_dir.iterdir()):
+            cargo_file = crate_dir / "Cargo.toml"
+            if cargo_file.is_file():
+                rel_cf = sanitize_path(cargo_file, root)
+                try:
+                    c_data = tomllib.loads(cargo_file.read_text(encoding="utf-8"))
+                    prod_deps = c_data.get("dependencies", {})
+                    fss_core_dep = prod_deps.get("fss-core")
+                    if isinstance(fss_core_dep, dict):
+                        f_list = fss_core_dep.get("features", [])
+                        if "test-support" in f_list:
+                            findings.append(
+                                SemanticPlaneFinding(
+                                    code=ERR_MUTABLE_MODEL_GENERATION,
+                                    file=rel_cf,
+                                    location="[dependencies].fss-core",
+                                    message=f"Production dependency in '{rel_cf}' enables 'test-support' feature on fss-core",
+                                    severity="error",
+                                    remediation="Move 'test-support' feature to [dev-dependencies] only",
+                                )
+                            )
+                except Exception:
+                    pass
+
+    return findings
+
+
+
 def audit_semantic_planes(
     root: Path,
     registry_path: Path | None = None,
@@ -1213,6 +1614,9 @@ def audit_semantic_planes(
 
     # NEG-003 Model generation immutability audit (no mutable aliases like 'latest')
     findings.extend(check_model_generation_immutability(root))
+
+    # NEG-003 Subsystem generation constructor audit (review-749 #6)
+    findings.extend(audit_subsystem_generation_constructors(root))
 
     # Contract doc claims audit (F1, F8)
     contract_path = root / "docs/enforcement/three_semantic_planes_contract.md"

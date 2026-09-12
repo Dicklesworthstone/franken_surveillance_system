@@ -901,6 +901,46 @@ pub fn model_to_obligation(m: ModelOutput) -> Obligation { Obligation }
             codes = [f.code for f in findings]
             self.assertIn(ERR_MODEL_OUTPUT_REACHES_EFFECT, codes)
 
+    def test_method_bridge_and_tuple_args_fail_closed(self) -> None:
+        """Method on ModelOutput (impl ModelOutput { fn to_effect(&self) -> EffectIntent }) and tuple args (fn tuple_bridge(input: (ModelOutput, bool)) -> EffectIntent) must fail closed with ERR_MODEL_OUTPUT_REACHES_EFFECT."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src = tmp_root / "crates/fss-cognition/src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "bridge.rs").write_text("""
+pub struct ModelOutput;
+pub struct EffectIntent;
+
+impl ModelOutput {
+    pub fn to_effect(&self) -> EffectIntent {
+        EffectIntent
+    }
+}
+
+pub fn tuple_bridge(input: (ModelOutput, bool)) -> EffectIntent {
+    EffectIntent
+}
+""", encoding="utf-8")
+            reg = tmp_root / "architecture"
+            reg.mkdir(parents=True, exist_ok=True)
+            (reg / "semantic_plane_registry.json").write_text(json.dumps({
+                "schema": "fss.semantic_plane_registry.v1",
+                "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                "registered_boundary_modules": [],
+                "module_declarations": {"crates/fss-cognition/src/bridge.rs": "cognition"},
+                "types": {
+                    "ModelOutput": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "cognition"},
+                    "EffectIntent": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "effect"}
+                }
+            }), encoding="utf-8")
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Method bridge and tuple arg bridge must fail closed under NEG-003")
+            model_effect_findings = [f for f in findings if f.code == ERR_MODEL_OUTPUT_REACHES_EFFECT]
+            self.assertGreaterEqual(len(model_effect_findings), 2, f"Expected at least 2 findings for ERR_MODEL_OUTPUT_REACHES_EFFECT, got {model_effect_findings}")
+            functions_flagged = {f.params.get("function") for f in model_effect_findings}
+            self.assertIn("to_effect", functions_flagged)
+            self.assertIn("tuple_bridge", functions_flagged)
+
     def test_corrupt_corroboration_policy_json_must_fail_closed(self) -> None:
         """Corrupt JSON in corroboration policy files must fail closed with an error finding."""
         with tempfile.TemporaryDirectory() as td:
@@ -950,7 +990,63 @@ pub fn model_to_obligation(m: ModelOutput) -> Obligation { Obligation }
                 "Missing mandatory core file must emit an error finding",
             )
 
+    def test_ungated_unvalidated_constructor_fails_closed(self) -> None:
+        """Ungated from_unvalidated_for_test in subsystem_generation macro must fail closed (review-749 #6)."""
+        from semantic_plane_checker import audit_subsystem_generation_constructors, ERR_MUTABLE_MODEL_GENERATION
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            core_ids = tmp_root / "crates" / "fss-core" / "src" / "ids.rs"
+            core_ids.parent.mkdir(parents=True, exist_ok=True)
+            core_ids.write_text(
+                """macro_rules! subsystem_generation {
+    ($name:ident) => {
+        pub struct $name(String);
+        impl $name {
+            #[doc(hidden)]
+            pub fn from_unvalidated_for_test(value: impl Into<String>) -> Self {
+                Self(value.into())
+            }
+        }
+    };
+}
+""",
+                encoding="utf-8",
+            )
+            findings = audit_subsystem_generation_constructors(tmp_root)
+            self.assertTrue(
+                any(f.code == ERR_MUTABLE_MODEL_GENERATION for f in findings),
+                "Ungated from_unvalidated_for_test constructor must emit ERR_MUTABLE_MODEL_GENERATION",
+            )
+
+    def test_production_call_to_unvalidated_constructor_fails_closed(self) -> None:
+        """Call to from_unvalidated_for_test in any crate src/ must fail closed."""
+        from semantic_plane_checker import audit_subsystem_generation_constructors, ERR_MUTABLE_MODEL_GENERATION
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            prod_src = tmp_root / "crates" / "fss-reference" / "src" / "lib.rs"
+            prod_src.parent.mkdir(parents=True, exist_ok=True)
+            prod_src.write_text(
+                """pub fn leak() {
+    let _ = fss_core::ids::ModelGeneration::from_unvalidated_for_test("model:detector:latest");
+}
+""",
+                encoding="utf-8",
+            )
+            findings = audit_subsystem_generation_constructors(tmp_root)
+            self.assertTrue(
+                any(f.code == ERR_MUTABLE_MODEL_GENERATION for f in findings),
+                "Production call to from_unvalidated_for_test must emit ERR_MUTABLE_MODEL_GENERATION",
+            )
+
+    def test_current_repo_unvalidated_constructor_strictly_feature_gated(self) -> None:
+        """Real repo must feature-gate from_unvalidated_for_test and have zero production callers."""
+        from semantic_plane_checker import audit_subsystem_generation_constructors
+        findings = audit_subsystem_generation_constructors(ROOT)
+        errors = [f for f in findings if f.severity == "error"]
+        self.assertEqual(errors, [], f"Subsystem generation constructor audit failed on repo: {errors}")
+
 
 if __name__ == "__main__":
     unittest.main()
+
 
