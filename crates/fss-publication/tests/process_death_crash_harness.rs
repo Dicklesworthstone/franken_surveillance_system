@@ -96,8 +96,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Instant;
 
 use fss_core::{
-    CaptureInterval, ContentDigest, TestEventCollector, TestEventRecord, TestOutcome, TimestampNs,
-    TEST_EVENT_SCHEMA, TEST_EVENT_VERSION_1,
+    CaptureInterval, ContentDigest, TEST_EVENT_SCHEMA, TEST_EVENT_VERSION_1, TestEventCollector,
+    TestEventRecord, TestOutcome, TimestampNs,
 };
 use fss_ledger::{
     AppendPhase, DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, JournalError,

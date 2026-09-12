@@ -199,11 +199,17 @@ impl fmt::Display for TestEventError {
         match self {
             Self::UnsupportedVersion(v) => write!(f, "unsupported test event version {v}"),
             Self::SchemaMismatch { expected, actual } => {
-                write!(f, "schema mismatch: expected '{expected}', found '{actual}'")
+                write!(
+                    f,
+                    "schema mismatch: expected '{expected}', found '{actual}'"
+                )
             }
             Self::EmptyIdentifier(field) => write!(f, "identifier for '{field}' is empty"),
             Self::InvalidIdentifier { field, value } => {
-                write!(f, "identifier '{value}' for '{field}' contains invalid characters")
+                write!(
+                    f,
+                    "identifier '{value}' for '{field}' contains invalid characters"
+                )
             }
             Self::RunIdTooLong { max, actual } => {
                 write!(f, "run_id length {actual} exceeds maximum of {max}")
@@ -237,10 +243,15 @@ impl fmt::Display for TestEventError {
                 "monotone sequence regression: expected at least {expected_at_least}, found {actual}"
             ),
             Self::SecretDetected { field } => {
-                write!(f, "sensitive credential or secret keyword detected in '{field}'")
+                write!(
+                    f,
+                    "sensitive credential or secret keyword detected in '{field}'"
+                )
             }
             Self::InvalidOutcome(s) => write!(f, "invalid test outcome '{s}'"),
-            Self::MissingField(field) => write!(f, "missing required field '{field}' in test event"),
+            Self::MissingField(field) => {
+                write!(f, "missing required field '{field}' in test event")
+            }
             Self::MalformedJson(msg) => write!(f, "malformed test event JSON: {msg}"),
         }
     }
@@ -547,8 +558,9 @@ impl TestEventRecord {
             .get("contract_digest")
             .or_else(|| entries.get("contractDigest"))
             .ok_or(TestEventError::MissingField("contract_digest"))?;
-        let contract_digest = ContentDigest::parse(contract_str)
-            .map_err(|e| TestEventError::MalformedJson(format!("invalid contract_digest: {e:?}")))?;
+        let contract_digest = ContentDigest::parse(contract_str).map_err(|e| {
+            TestEventError::MalformedJson(format!("invalid contract_digest: {e:?}"))
+        })?;
 
         let input_str = entries
             .get("input_digest")
@@ -561,8 +573,9 @@ impl TestEventRecord {
             .get("expected_digest")
             .or_else(|| entries.get("expectedDigest"))
             .ok_or(TestEventError::MissingField("expected_digest"))?;
-        let expected_digest = ContentDigest::parse(expected_str)
-            .map_err(|e| TestEventError::MalformedJson(format!("invalid expected_digest: {e:?}")))?;
+        let expected_digest = ContentDigest::parse(expected_str).map_err(|e| {
+            TestEventError::MalformedJson(format!("invalid expected_digest: {e:?}"))
+        })?;
 
         let actual_str = entries
             .get("actual_digest")
@@ -581,7 +594,9 @@ impl TestEventRecord {
             .or_else(|| entries.get("durationNs"))
             .ok_or(TestEventError::MissingField("duration_ns"))?
             .parse::<u64>()
-            .map_err(|e| TestEventError::MalformedJson(format!("invalid duration_ns integer: {e}")))?;
+            .map_err(|e| {
+                TestEventError::MalformedJson(format!("invalid duration_ns integer: {e}"))
+            })?;
 
         let phase = entries.get("phase").cloned();
         let detail = entries.get("detail").cloned();
@@ -665,7 +680,9 @@ fn parse_json_key_values(
             }
         }
         if pos >= len {
-            return Err(TestEventError::MalformedJson("unterminated key string".to_string()));
+            return Err(TestEventError::MalformedJson(
+                "unterminated key string".to_string(),
+            ));
         }
         let key = unescape_json_slice(&bytes[key_start..pos])?;
         pos += 1;
@@ -728,7 +745,11 @@ fn parse_json_key_values(
             map.insert(key, val);
         } else {
             let val_start = pos;
-            while pos < len && bytes[pos] != b',' && bytes[pos] != b'}' && !bytes[pos].is_ascii_whitespace() {
+            while pos < len
+                && bytes[pos] != b','
+                && bytes[pos] != b'}'
+                && !bytes[pos].is_ascii_whitespace()
+            {
                 pos += 1;
             }
             let val = std::str::from_utf8(&bytes[val_start..pos])
@@ -761,7 +782,9 @@ fn unescape_json_slice(bytes: &[u8]) -> Result<String, TestEventError> {
                         TestEventError::MalformedJson("invalid hex in unicode escape".to_string())
                     })?;
                     let ch = char::from_u32(code).ok_or_else(|| {
-                        TestEventError::MalformedJson("invalid code point in unicode escape".to_string())
+                        TestEventError::MalformedJson(
+                            "invalid code point in unicode escape".to_string(),
+                        )
                     })?;
                     out.push(ch);
                     idx += 4;

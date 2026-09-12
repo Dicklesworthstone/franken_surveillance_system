@@ -25,7 +25,9 @@ use std::path::PathBuf;
 
 use fss_core::{
     BatchId, CaptureInterval, ContentDigest, ContractError, EvidenceDelta, EvidenceDeltaBatch,
-    LedgerSnapshot, ObjectId, Plane, ReferenceLedger, TimestampNs,
+    LedgerSnapshot, ObjectId, Plane, ReferenceLedger, TestEventCollector, TestEventRecord,
+    TestOutcome, TimestampNs, MAX_TEST_TAGS_COUNT, MAX_TEST_TAG_LEN, TEST_EVENT_SCHEMA,
+    TEST_EVENT_VERSION_1,
 };
 use fss_ledger::{
     AnchorField, AppendPhase, BatchCodecError, DurableAppendReconciliation, DurableLedgerError,
@@ -85,35 +87,40 @@ impl ScenarioLog {
     fn emit(&self, oracle: &LedgerOracle, outcome: &str) {
         let fingerprint = oracle.fingerprint();
         let anchor = &fingerprint.head_anchor;
-        let transitions = self
-            .transitions
-            .iter()
-            .map(|transition| format!("\"{transition}\""))
-            .collect::<Vec<_>>()
-            .join(",");
-        println!(
-            "{{\"contract\":\"FSS-016\",\"scenario\":\"{scenario}\",\"seed\":{seed},\
-\"fixture_root\":\"in-memory:crates/fss-ledger/tests/ledger_oracle_contract.rs\",\
-\"site_lineage\":\"{site}\",\"ledger_epoch\":{ledger_epoch},\"schema_epoch\":{schema_epoch},\
-\"policy_epoch\":{policy_epoch},\"privacy_epoch\":{privacy_epoch},\
-\"authority_scope\":\"single-owner-oracle\",\"transitions\":[{transitions}],\
-\"outcome\":\"{outcome}\",\"head_sequence\":{head},\"batch_count\":{batches},\
-\"object_count\":{objects},\"state_root\":\"{state_root}\",\"history_root\":\"{history_root}\",\
-\"repro\":\"cargo +nightly-2026-08-31 test -p fss-ledger --test ledger_oracle_contract -- \
-{scenario} --exact --nocapture\"}}",
-            scenario = self.scenario,
-            seed = self.seed,
-            site = anchor.site_lineage,
-            ledger_epoch = anchor.ledger_epoch,
-            schema_epoch = anchor.schema_epoch,
-            policy_epoch = anchor.policy_epoch,
-            privacy_epoch = anchor.privacy_epoch,
-            head = anchor.commit_sequence,
-            batches = fingerprint.batch_count,
-            objects = fingerprint.object_count,
-            state_root = anchor.state_root,
-            history_root = fingerprint.history_root,
-        );
+        let event = TestEventRecord {
+            schema: TEST_EVENT_SCHEMA,
+            version: TEST_EVENT_VERSION_1,
+            run_id: "run:ledger_oracle_contract".to_string(),
+            case_id: format!("scenario:{}", self.scenario),
+            step_id: format!("commit:{}", anchor.commit_sequence),
+            sequence: anchor.commit_sequence,
+            seed: self.seed,
+            source_digest: ContentDigest::sha256(
+                b"crates/fss-ledger/tests/ledger_oracle_contract.rs",
+            ),
+            contract_digest: ContentDigest::sha256(b"contract:FSS-016:canonical_ledger_oracle"),
+            input_digest: ContentDigest::sha256(
+                format!("site:{}:epoch:{}", anchor.site_lineage, anchor.ledger_epoch).as_bytes(),
+            ),
+            expected_digest: ContentDigest::sha256(outcome.as_bytes()),
+            actual_digest: anchor.state_root,
+            outcome: TestOutcome::Passed,
+            duration_ns: 0,
+            phase: Some("scenario_complete".to_string()),
+            tags: self
+                .transitions
+                .iter()
+                .take(MAX_TEST_TAGS_COUNT)
+                .map(|t| t.chars().take(MAX_TEST_TAG_LEN).collect())
+                .collect(),
+            detail: Some(format!(
+                "batches:{} objects:{} history_root:{}",
+                fingerprint.batch_count, fingerprint.object_count, fingerprint.history_root
+            )),
+        };
+        if let Ok(line) = event.to_jsonl() {
+            print!("{line}");
+        }
     }
 }
 
@@ -1214,6 +1221,7 @@ fn differential_oracle_matches_durable_journal_batch_by_batch_and_after_restart(
     assert_same_state(&oracle, &durable)?;
 
     let fixture = canonical_fixture()?;
+    let mut diff_collector = TestEventCollector::new();
     for batch in &fixture {
         let receipt = oracle.append(batch.clone())?;
         let durable_anchor = durable.append(batch.clone())?.anchor.clone();
@@ -1223,6 +1231,39 @@ fn differential_oracle_matches_durable_journal_batch_by_batch_and_after_restart(
             "both commit {} at {}",
             batch.batch_id, receipt.sequence
         ))?;
+        diff_collector.push(TestEventRecord {
+            schema: TEST_EVENT_SCHEMA,
+            version: TEST_EVENT_VERSION_1,
+            run_id: "run:ledger_oracle_contract".to_string(),
+            case_id: "case:differential_oracle_matches_durable_journal".to_string(),
+            step_id: format!("step:{}", batch.batch_id),
+            sequence: receipt.sequence,
+            seed: 0,
+            source_digest: ContentDigest::sha256(
+                b"crates/fss-ledger/tests/ledger_oracle_contract.rs",
+            ),
+            contract_digest: ContentDigest::sha256(b"contract:FSS-016:differential_oracle"),
+            input_digest: batch.computed_digest(),
+            expected_digest: receipt.anchor.state_root,
+            actual_digest: durable_anchor.state_root,
+            outcome: TestOutcome::Passed,
+            duration_ns: 0,
+            phase: Some("batch_commit".to_string()),
+            tags: vec![
+                format!("batch_id:{}", batch.batch_id),
+                format!("seq:{}", receipt.sequence),
+            ],
+            detail: Some(format!(
+                "oracle and durable match at sequence {}",
+                receipt.sequence
+            )),
+        })?;
+    }
+    assert_eq!(diff_collector.records().len(), fixture.len());
+    for record in diff_collector.records() {
+        let line = record.to_jsonl()?;
+        let roundtrip = TestEventRecord::from_json_str(&line)?;
+        assert_eq!(record, &roundtrip);
     }
 
     // Negative cases offered to both at head 3. Classification map (oracle -> durable).

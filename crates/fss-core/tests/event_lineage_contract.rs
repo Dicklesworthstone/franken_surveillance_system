@@ -16,15 +16,15 @@
 use std::error::Error;
 
 use fss_core::event::{
-    AlertEffectRecord, DecisionPath, EVENT_HYPOTHESIS_SCHEMA, EVENT_TRANSITION_TABLE, EventEvidence,
-    EventHypothesis, EventKind, EventLineage, EventState, EventTransitionError,
+    AlertEffectRecord, DecisionPath, EVENT_HYPOTHESIS_SCHEMA, EVENT_TRANSITION_TABLE,
+    EventEvidence, EventHypothesis, EventKind, EventLineage, EventState, EventTransitionError,
     EventTransitionParams, EvidenceEdgeRelation, MAX_ALERT_ATTEMPTS_COUNT, MAX_ALERT_CHANNEL_LEN,
     MAX_ALERT_FAILURE_REASON_LEN, MAX_EVIDENCE_COUNT, MAX_LINEAGE_DEPTH, ProbabilityInterval,
     SINGLE_DOMAIN_UNCONFIRMED_LABEL, get_event_transition_rule, is_allowed_event_transition,
 };
 use fss_core::{
-    CaptureInterval, ContentDigest, EffectState, EventId, EvidenceClass, EvidenceDelta,
-    ObjectId, ObligationId, OperationId, Plane, TimestampNs,
+    CaptureInterval, ContentDigest, EffectState, EventId, EvidenceClass, EvidenceDelta, ObjectId,
+    ObligationId, OperationId, Plane, TimestampNs,
 };
 
 // Helper: build sample capture interval
@@ -50,7 +50,9 @@ fn sample_evidence(domain: &str, supports: bool, tag: &str) -> EventEvidence {
         capsule_digest: Some(ContentDigest::sha256(
             format!("capsule:{domain}:{tag}").as_bytes(),
         )),
-        identity_digest: Some(ContentDigest::sha256(format!("identity:{domain}").as_bytes())),
+        identity_digest: Some(ContentDigest::sha256(
+            format!("identity:{domain}").as_bytes(),
+        )),
     }
 }
 
@@ -404,8 +406,8 @@ fn test_alternative_branch_alert_delivered_to_rejected() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn test_alternative_branch_indeterminate_and_forward_reconciliation(
-) -> Result<(), Box<dyn Error>> {
+fn test_alternative_branch_indeterminate_and_forward_reconciliation() -> Result<(), Box<dyn Error>>
+{
     let genesis = sample_genesis_hypothesis("indet-recon-001")?;
     let mut lineage = EventLineage::new(genesis)?;
 
@@ -508,14 +510,14 @@ fn test_planted_negative_terminal_states_immutable() -> Result<(), Box<dyn Error
     ))?;
     assert_eq!(lineage1.current_state(), EventState::Resolved);
 
-    let err = lineage1
-        .transition(transition_params(
-            EventState::Hypothesized,
-            vec![ev1.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage1.transition(transition_params(
+        EventState::Hypothesized,
+        vec![ev1.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected TerminalStateImmutable".into());
+    };
     assert_eq!(
         err,
         EventTransitionError::TerminalStateImmutable {
@@ -523,14 +525,14 @@ fn test_planted_negative_terminal_states_immutable() -> Result<(), Box<dyn Error
         }
     );
 
-    let err2 = lineage1
-        .transition(transition_params(
-            EventState::Witnessed,
-            vec![ev1.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err2) = lineage1.transition(transition_params(
+        EventState::Witnessed,
+        vec![ev1.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected TerminalStateImmutable".into());
+    };
     assert_eq!(
         err2,
         EventTransitionError::TerminalStateImmutable {
@@ -549,9 +551,14 @@ fn test_planted_negative_terminal_states_immutable() -> Result<(), Box<dyn Error
     ))?;
     assert_eq!(lineage2.current_state(), EventState::Rejected);
 
-    let err3 = lineage2
-        .transition(transition_params(EventState::Witnessed, vec![ev1], None, false))
-        .unwrap_err();
+    let Err(err3) = lineage2.transition(transition_params(
+        EventState::Witnessed,
+        vec![ev1],
+        None,
+        false,
+    )) else {
+        return Err("expected TerminalStateImmutable".into());
+    };
     assert_eq!(
         err3,
         EventTransitionError::TerminalStateImmutable {
@@ -576,9 +583,14 @@ fn test_planted_negative_illegal_state_rollbacks() -> Result<(), Box<dyn Error>>
     ))?;
 
     // Rollback Witnessed -> Hypothesized
-    let err = lineage
-        .transition(transition_params(EventState::Hypothesized, vec![], None, false))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Hypothesized,
+        vec![],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -597,14 +609,14 @@ fn test_planted_negative_illegal_state_rollbacks() -> Result<(), Box<dyn Error>>
     ))?;
 
     // Rollback Corroborated -> Witnessed
-    let err = lineage
-        .transition(transition_params(
-            EventState::Witnessed,
-            vec![ev1.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Witnessed,
+        vec![ev1.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -622,14 +634,14 @@ fn test_planted_negative_illegal_state_rollbacks() -> Result<(), Box<dyn Error>>
     ))?;
 
     // Rollback Adjudicated -> Corroborated
-    let err = lineage
-        .transition(transition_params(
-            EventState::Corroborated,
-            vec![ev1.clone(), ev2.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Corroborated,
+        vec![ev1.clone(), ev2],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -640,14 +652,14 @@ fn test_planted_negative_illegal_state_rollbacks() -> Result<(), Box<dyn Error>>
     ));
 
     // Rollback Adjudicated -> Witnessed
-    let err = lineage
-        .transition(transition_params(
-            EventState::Witnessed,
-            vec![ev1],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Witnessed,
+        vec![ev1],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -668,14 +680,14 @@ fn test_planted_negative_illegal_state_jumps() -> Result<(), Box<dyn Error>> {
     let ev2 = sample_evidence("radar:radar-north", true, "track");
 
     // Illegal jump: Hypothesized -> Corroborated
-    let err = lineage
-        .transition(transition_params(
-            EventState::Corroborated,
-            vec![ev1.clone(), ev2.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Corroborated,
+        vec![ev1.clone(), ev2.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -686,14 +698,14 @@ fn test_planted_negative_illegal_state_jumps() -> Result<(), Box<dyn Error>> {
     ));
 
     // Illegal jump: Hypothesized -> Adjudicated
-    let err = lineage
-        .transition(transition_params(
-            EventState::Adjudicated,
-            vec![ev1.clone(), ev2.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Adjudicated,
+        vec![ev1.clone(), ev2.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -704,14 +716,14 @@ fn test_planted_negative_illegal_state_jumps() -> Result<(), Box<dyn Error>> {
     ));
 
     // Illegal jump: Hypothesized -> AlertDelivered
-    let err = lineage
-        .transition(transition_params(
-            EventState::AlertDelivered,
-            vec![ev1.clone(), ev2.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::AlertDelivered,
+        vec![ev1.clone(), ev2.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -722,14 +734,14 @@ fn test_planted_negative_illegal_state_jumps() -> Result<(), Box<dyn Error>> {
     ));
 
     // Illegal jump: Hypothesized -> Resolved
-    let err = lineage
-        .transition(transition_params(
-            EventState::Resolved,
-            vec![ev1.clone(), ev2.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Resolved,
+        vec![ev1.clone(), ev2.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -748,14 +760,14 @@ fn test_planted_negative_illegal_state_jumps() -> Result<(), Box<dyn Error>> {
     ))?;
 
     // Illegal jump: Witnessed -> AlertDelivered
-    let err = lineage
-        .transition(transition_params(
-            EventState::AlertDelivered,
-            vec![ev1.clone(), ev2],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::AlertDelivered,
+        vec![ev1.clone(), ev2],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -766,9 +778,14 @@ fn test_planted_negative_illegal_state_jumps() -> Result<(), Box<dyn Error>> {
     ));
 
     // Illegal jump: Witnessed -> Resolved
-    let err = lineage
-        .transition(transition_params(EventState::Resolved, vec![ev1], None, false))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Resolved,
+        vec![ev1],
+        None,
+        false,
+    )) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -822,14 +839,14 @@ fn test_planted_negative_non_monotonic_regression_from_indeterminate() -> Result
     assert_eq!(lineage.current_state(), EventState::Indeterminate);
 
     // Attempting to regress back to Witnessed (rank 2 < rank 4 of Adjudicated) must fail
-    let err = lineage
-        .transition(transition_params(
-            EventState::Witnessed,
-            vec![ev1.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Witnessed,
+        vec![ev1.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected NonMonotonicTransition".into());
+    };
     assert_eq!(
         err,
         EventTransitionError::NonMonotonicTransition {
@@ -840,14 +857,14 @@ fn test_planted_negative_non_monotonic_regression_from_indeterminate() -> Result
     );
 
     // Attempting to regress back to Corroborated (rank 3 < rank 4 of Adjudicated) must fail
-    let err2 = lineage
-        .transition(transition_params(
-            EventState::Corroborated,
-            vec![ev1.clone(), ev2.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err2) = lineage.transition(transition_params(
+        EventState::Corroborated,
+        vec![ev1.clone(), ev2.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected NonMonotonicTransition".into());
+    };
     assert_eq!(
         err2,
         EventTransitionError::NonMonotonicTransition {
@@ -884,14 +901,14 @@ fn test_corroboration_failure_domain_requirements() -> Result<(), Box<dyn Error>
 
     // Attempt Corroborated with two pieces of evidence from the SAME failure domain
     let ev2_same_domain = sample_evidence("camera:cam-north", true, "frame-2");
-    let err = lineage
-        .transition(transition_params(
-            EventState::Corroborated,
-            vec![ev1.clone(), ev2_same_domain],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Corroborated,
+        vec![ev1.clone(), ev2_same_domain],
+        None,
+        false,
+    )) else {
+        return Err("expected CorroborationRequired".into());
+    };
 
     assert_eq!(
         err,
@@ -927,25 +944,25 @@ fn test_urgent_single_sensor_policy_exception() -> Result<(), Box<dyn Error>> {
     ))?;
 
     // Negative case 1: Witnessed -> Adjudicated with urgent_single_sensor = false fails
-    let err1 = lineage
-        .transition(transition_params(
-            EventState::Adjudicated,
-            vec![ev1.clone()],
-            Some("urgent exception attempted".to_string()),
-            false,
-        ))
-        .unwrap_err();
+    let Err(err1) = lineage.transition(transition_params(
+        EventState::Adjudicated,
+        vec![ev1.clone()],
+        Some("urgent exception attempted".to_string()),
+        false,
+    )) else {
+        return Err("expected UrgentExceptionRequired".into());
+    };
     assert_eq!(err1, EventTransitionError::UrgentExceptionRequired);
 
     // Negative case 2: urgent_single_sensor = true, but missing 'single-domain/unconfirmed' label
-    let err2 = lineage
-        .transition(transition_params(
-            EventState::Adjudicated,
-            vec![ev1.clone()],
-            Some("urgent perimeter alert".to_string()), // missing the required label
-            true,
-        ))
-        .unwrap_err();
+    let Err(err2) = lineage.transition(transition_params(
+        EventState::Adjudicated,
+        vec![ev1.clone()],
+        Some("urgent perimeter alert".to_string()), // missing the required label
+        true,
+    )) else {
+        return Err("expected Contradiction".into());
+    };
     assert!(matches!(
         err2,
         EventTransitionError::Contradiction {
@@ -977,16 +994,16 @@ fn test_urgent_single_sensor_policy_exception() -> Result<(), Box<dyn Error>> {
         false,
     ))?;
 
-    let err_corr = lineage_corr
-        .transition(transition_params(
-            EventState::Corroborated,
-            vec![ev1],
-            Some(format!(
-                "{SINGLE_DOMAIN_UNCONFIRMED_LABEL}: attempting to call single-camera corroborated"
-            )),
-            true,
-        ))
-        .unwrap_err();
+    let Err(err_corr) = lineage_corr.transition(transition_params(
+        EventState::Corroborated,
+        vec![ev1],
+        Some(format!(
+            "{SINGLE_DOMAIN_UNCONFIRMED_LABEL}: attempting to call single-camera corroborated"
+        )),
+        true,
+    )) else {
+        return Err("expected CorroborationRequired".into());
+    };
     assert_eq!(
         err_corr,
         EventTransitionError::CorroborationRequired {
@@ -1004,20 +1021,18 @@ fn test_planted_negative_duplicate_evidence() -> Result<(), Box<dyn Error>> {
 
     let ev1 = sample_evidence("camera:cam-north", true, "motion");
     // Duplicate: exact same evidence item included twice in params.evidence
-    let err = lineage
-        .transition(transition_params(
-            EventState::Witnessed,
-            vec![ev1.clone(), ev1.clone()],
-            None,
-            false,
-        ))
-        .unwrap_err();
+    let Err(err) = lineage.transition(transition_params(
+        EventState::Witnessed,
+        vec![ev1.clone(), ev1.clone()],
+        None,
+        false,
+    )) else {
+        return Err("expected DuplicateEvidence".into());
+    };
 
     assert_eq!(
         err,
-        EventTransitionError::DuplicateEvidence {
-            digest: ev1.digest
-        }
+        EventTransitionError::DuplicateEvidence { digest: ev1.digest }
     );
     Ok(())
 }
@@ -1144,7 +1159,9 @@ fn test_chain_tamper_detection() -> Result<(), Box<dyn Error>> {
     let mut bad_genesis_rev = genesis.clone();
     bad_genesis_rev.revision = 2;
     bad_genesis_rev.supersedes = Some(ContentDigest::sha256(b"fake-prior"));
-    let err = EventLineage::new(bad_genesis_rev).unwrap_err();
+    let Err(err) = EventLineage::new(bad_genesis_rev) else {
+        return Err("expected RevisionNotMonotonic".into());
+    };
     assert_eq!(
         err,
         EventTransitionError::RevisionNotMonotonic {
@@ -1156,7 +1173,9 @@ fn test_chain_tamper_detection() -> Result<(), Box<dyn Error>> {
     // Tamper 2: Genesis with supersedes Some rejected
     let mut bad_genesis_sup = genesis.clone();
     bad_genesis_sup.supersedes = Some(ContentDigest::sha256(b"fake-prior"));
-    let err = EventLineage::new(bad_genesis_sup).unwrap_err();
+    let Err(err) = EventLineage::new(bad_genesis_sup) else {
+        return Err("expected Contradiction".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::Contradiction {
@@ -1172,7 +1191,9 @@ fn test_chain_tamper_detection() -> Result<(), Box<dyn Error>> {
         sample_evidence("cam-1", true, "1"),
         sample_evidence("cam-2", true, "2"),
     ];
-    let err = EventLineage::new(bad_genesis_state).unwrap_err();
+    let Err(err) = EventLineage::new(bad_genesis_state) else {
+        return Err("expected IllegalStateTransition".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::IllegalStateTransition {
@@ -1200,16 +1221,17 @@ fn test_chain_tamper_detection() -> Result<(), Box<dyn Error>> {
     })?;
     let mut rev2_tampered_id = rev2.clone();
     rev2_tampered_id.event_id = EventId::parse("event:forged-id")?;
-    let err = EventLineage::from_revisions(vec![genesis.clone(), rev2_tampered_id]).unwrap_err();
-    assert!(matches!(
-        err,
-        EventTransitionError::EventIdMismatch { .. }
-    ));
+    let Err(err) = EventLineage::from_revisions(vec![genesis.clone(), rev2_tampered_id]) else {
+        return Err("expected EventIdMismatch".into());
+    };
+    assert!(matches!(err, EventTransitionError::EventIdMismatch { .. }));
 
     // Tamper 5: Fork / predecessor digest mismatch
     let mut rev2_tampered_digest = rev2;
     rev2_tampered_digest.supersedes = Some(ContentDigest::sha256(b"wrong-prior-digest"));
-    let err = EventLineage::from_revisions(vec![genesis, rev2_tampered_digest]).unwrap_err();
+    let Err(err) = EventLineage::from_revisions(vec![genesis, rev2_tampered_digest]) else {
+        return Err("expected DigestMismatch".into());
+    };
     assert!(matches!(err, EventTransitionError::DigestMismatch { .. }));
 
     Ok(())
@@ -1231,10 +1253,12 @@ fn test_bounds_at_bound_and_bound_plus_one() -> Result<(), Box<dyn Error>> {
         observation_receipt: None,
         failure_reason: None,
     };
-    assert!(record.verify().is_ok());
+    record.verify()?;
 
     record.channel = "a".repeat(MAX_ALERT_CHANNEL_LEN + 1);
-    let err = record.verify().unwrap_err();
+    let Err(err) = record.verify() else {
+        return Err("expected OverLimitLength".into());
+    };
     assert_eq!(
         err,
         EventTransitionError::OverLimitLength {
@@ -1247,10 +1271,12 @@ fn test_bounds_at_bound_and_bound_plus_one() -> Result<(), Box<dyn Error>> {
     // 2. AlertEffectRecord failure_reason bounds: MAX_ALERT_FAILURE_REASON_LEN = 512
     record.channel = "sms".to_string();
     record.failure_reason = Some("f".repeat(MAX_ALERT_FAILURE_REASON_LEN));
-    assert!(record.verify().is_ok());
+    record.verify()?;
 
     record.failure_reason = Some("f".repeat(MAX_ALERT_FAILURE_REASON_LEN + 1));
-    let err = record.verify().unwrap_err();
+    let Err(err) = record.verify() else {
+        return Err("expected OverLimitLength".into());
+    };
     assert_eq!(
         err,
         EventTransitionError::OverLimitLength {
@@ -1288,7 +1314,9 @@ fn test_bounds_at_bound_and_bound_plus_one() -> Result<(), Box<dyn Error>> {
     assert_eq!(over_limit_evidence.len(), MAX_EVIDENCE_COUNT + 1);
     let p_over_limit =
         transition_params(EventState::Corroborated, over_limit_evidence, None, false);
-    let err = lineage.transition(p_over_limit).unwrap_err();
+    let Err(err) = lineage.transition(p_over_limit) else {
+        return Err("expected OverLimitLength".into());
+    };
     assert!(matches!(
         err,
         EventTransitionError::Decode(fss_core::event::EventDecodeError::OverLimitLength {
@@ -1382,12 +1410,15 @@ fn test_lineage_replay_from_evidence_deltas() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
-fn test_transition_table_completeness_and_invariants() {
+fn test_transition_table_completeness_and_invariants() -> Result<(), Box<dyn Error>> {
     // Verify that all registered rules have consistent terminal flags and valid states
     for rule in EVENT_TRANSITION_TABLE {
         assert!(is_allowed_event_transition(rule.from, rule.to, true));
         assert_eq!(rule.terminal, rule.to.is_terminal());
-        assert!(!rule.from.is_terminal(), "no transitions out of terminal states");
+        assert!(
+            !rule.from.is_terminal(),
+            "no transitions out of terminal states"
+        );
     }
 
     // Direct check: cannot transition out of terminal states
@@ -1414,12 +1445,18 @@ fn test_transition_table_completeness_and_invariants() {
     }
 
     // Check helper get_event_transition_rule
-    let rule = get_event_transition_rule(EventState::Witnessed, EventState::Corroborated)
-        .expect("rule exists");
+    let Some(rule) = get_event_transition_rule(EventState::Witnessed, EventState::Corroborated)
+    else {
+        return Err("rule exists".into());
+    };
     assert!(!rule.requires_urgent_exception);
     assert_eq!(rule.to, EventState::Corroborated);
 
-    let urgent_rule = get_event_transition_rule(EventState::Witnessed, EventState::Adjudicated)
-        .expect("urgent rule exists");
+    let Some(urgent_rule) =
+        get_event_transition_rule(EventState::Witnessed, EventState::Adjudicated)
+    else {
+        return Err("urgent rule exists".into());
+    };
     assert!(urgent_rule.requires_urgent_exception);
+    Ok(())
 }

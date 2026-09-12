@@ -13,10 +13,10 @@
 use std::error::Error;
 
 use fss_core::{
-    ContentDigest, TestEventCollector, TestEventError, TestEventRecord, TestOutcome,
-    MAX_TEST_CASE_ID_LEN, MAX_TEST_DETAIL_LEN, MAX_TEST_EVENT_JSON_BYTES, MAX_TEST_PHASE_LEN,
-    MAX_TEST_RUN_ID_LEN, MAX_TEST_STEP_ID_LEN, MAX_TEST_TAGS_COUNT, MAX_TEST_TAG_LEN,
-    TEST_EVENT_SCHEMA, TEST_EVENT_VERSION_1,
+    ContentDigest, MAX_TEST_CASE_ID_LEN, MAX_TEST_DETAIL_LEN, MAX_TEST_EVENT_JSON_BYTES,
+    MAX_TEST_PHASE_LEN, MAX_TEST_RUN_ID_LEN, MAX_TEST_STEP_ID_LEN, MAX_TEST_TAG_LEN,
+    MAX_TEST_TAGS_COUNT, TEST_EVENT_SCHEMA, TEST_EVENT_VERSION_1, TestEventCollector,
+    TestEventError, TestEventRecord, TestOutcome,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -38,7 +38,10 @@ fn sample_record() -> TestEventRecord {
         outcome: TestOutcome::Passed,
         duration_ns: 12_500_000,
         phase: Some("ledger_commit".to_string()),
-        tags: vec!["class:converged".to_string(), "phase:journal_sync".to_string()],
+        tags: vec![
+            "class:converged".to_string(),
+            "phase:journal_sync".to_string(),
+        ],
         detail: Some("clean recovery after abort at step 42".to_string()),
     }
 }
@@ -50,7 +53,10 @@ fn test_round_trip_serialization() -> TestResult {
     assert!(jsonl.ends_with('\n'), "JSONL must terminate with a newline");
 
     let parsed = TestEventRecord::from_json_str(&jsonl)?;
-    assert_eq!(original, parsed, "deserialized record must match original exactly");
+    assert_eq!(
+        original, parsed,
+        "deserialized record must match original exactly"
+    );
     Ok(())
 }
 
@@ -237,11 +243,15 @@ fn test_tag_and_tags_count_bounds() -> TestResult {
     }
 
     // Tags count at bound
-    rec.tags = (0..MAX_TEST_TAGS_COUNT).map(|i| format!("tag_{i}")).collect();
+    rec.tags = (0..MAX_TEST_TAGS_COUNT)
+        .map(|i| format!("tag_{i}"))
+        .collect();
     assert!(rec.validate().is_ok());
 
     // Tags count at bound + 1
-    rec.tags = (0..MAX_TEST_TAGS_COUNT + 1).map(|i| format!("tag_{i}")).collect();
+    rec.tags = (0..MAX_TEST_TAGS_COUNT + 1)
+        .map(|i| format!("tag_{i}"))
+        .collect();
     match rec.validate() {
         Err(TestEventError::TagsCountExceeded { max, actual }) => {
             assert_eq!(max, MAX_TEST_TAGS_COUNT);
@@ -341,7 +351,10 @@ fn test_json_size_bound() -> TestResult {
     assert!(jsonl.len() < MAX_TEST_EVENT_JSON_BYTES);
 
     // Test from_json_str with oversized string
-    let huge_input = format!("{{\"schema\":\"test_event.v1\", \"padding\":\"{}\"}}", "x".repeat(MAX_TEST_EVENT_JSON_BYTES + 1));
+    let huge_input = format!(
+        "{{\"schema\":\"test_event.v1\", \"padding\":\"{}\"}}",
+        "x".repeat(MAX_TEST_EVENT_JSON_BYTES + 1)
+    );
     match TestEventRecord::from_json_str(&huge_input) {
         Err(TestEventError::JsonSizeExceeded { max, actual }) => {
             assert_eq!(max, MAX_TEST_EVENT_JSON_BYTES);
