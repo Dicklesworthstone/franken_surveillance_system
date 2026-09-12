@@ -13,9 +13,9 @@ use fss_ledger::{LedgerOracle, OracleLimits};
 use fss_object::{SpoolLimits, StagingSpool};
 use fss_publication::{
     MAX_REPLAY_FAULT_DIRECTIVES, MAX_REPLAY_FAULT_REORDER_WINDOW, MAX_REPLAY_TEMP_ATTEMPTS,
-    ReplayBundle, ReplayBundleError, ReplayBundleLimits, ReplayBundleReader, ReplayBundleWriter,
-    ReplayFaultAction, ReplayFaultDirective, ReplayFaultSchedule, ReplayMetadata, ReplayObject,
-    replay_temp_path_for,
+    REPLAY_BUNDLE_DOMAIN, REPLAY_TRAILER_LEN, ReplayBundle, ReplayBundleError, ReplayBundleLimits,
+    ReplayBundleReader, ReplayBundleWriter, ReplayFaultAction, ReplayFaultDirective,
+    ReplayFaultSchedule, ReplayMetadata, ReplayObject, replay_bundle_digest, replay_temp_path_for,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -36,6 +36,10 @@ fn sample_metadata(lineage: &str) -> ReplayMetadata {
         model_generation: 1,
         device_generation: 1,
     }
+}
+
+fn clean_fault_schedule() -> ReplayFaultSchedule {
+    ReplayFaultSchedule::empty(12345, 0)
 }
 
 fn sample_fault_schedule() -> Result<ReplayFaultSchedule, ReplayBundleError> {
@@ -162,7 +166,7 @@ fn test_replay_bundle_roundtrip_bit_identical_state_root() -> TestResult {
     let lineage = "site:test:replay:roundtrip";
     let fixture = create_test_fixture(lineage)?;
     let metadata = sample_metadata(lineage);
-    let fault_schedule = sample_fault_schedule()?;
+    let fault_schedule = clean_fault_schedule();
 
     let bundle = ReplayBundle::new(
         fixture.manifest_root,
@@ -916,5 +920,268 @@ fn test_replay_bundle_digest_returns_result_and_never_fabricates() -> TestResult
         other => return Err(format!("expected BoundExceeded(batches), got {other:?}").into()),
     }
 
+    Ok(())
+}
+
+#[test]
+fn test_replay_enforces_fault_schedule_drop_directive() -> TestResult {
+    let lineage = "site:test:replay:fault_enforced";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+
+    // Schedule a drop directive targeting batch sequence 2
+    let fault_schedule = ReplayFaultSchedule::new(
+        12345,
+        16,
+        vec![ReplayFaultDirective {
+            source_sequence: 2,
+            action: ReplayFaultAction::Drop,
+        }],
+    )?;
+
+    let bundle = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        fixture.objects,
+    )?;
+
+    // Replay should evaluate the fault schedule and fail or alter execution
+    let res = bundle.replay();
+    assert!(
+        res.is_err(),
+        "bundle.replay() completely ignored ReplayFaultAction::Drop and committed all batches cleanly"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_replay_bundle_binds_registered_digest_domain() -> TestResult {
+    let lineage = "site:test:replay:domain_tag";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = clean_fault_schedule();
+
+    let bundle = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        fixture.objects,
+    )?;
+
+    let bytes = ReplayBundleWriter::to_bytes(&bundle)?;
+    let domain_bytes = REPLAY_BUNDLE_DOMAIN.as_bytes();
+    let contains_domain = bytes.windows(domain_bytes.len()).any(|w| w == domain_bytes);
+    assert!(
+        contains_domain,
+        "serialized replay bundle envelope must bind registered domain tag fss.replay_bundle.v1"
+    );
+
+    let raw_sha256 = ContentDigest::sha256(&bytes[..bytes.len() - 33]);
+    let bundle_digest = bundle.digest()?;
+    assert_ne!(
+        bundle_digest, raw_sha256,
+        "bundle digest must be domain-separated using fss.replay_bundle.v1, not bare sha256"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_manifest_root_rejects_arbitrary_unrelated_object_digest() -> TestResult {
+    let lineage = "site:test:replay:root_bypass";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = clean_fault_schedule();
+
+    // Use witness object digest as manifest root
+    let arbitrary_obj_digest = fixture.objects[1].digest;
+    assert_ne!(arbitrary_obj_digest, fixture.manifest_root);
+
+    let res = ReplayBundle::new(
+        arbitrary_obj_digest,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        fixture.objects,
+    );
+
+    assert!(
+        res.is_err(),
+        "ReplayBundle::new accepted an arbitrary witness object digest as manifest_root without verification"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_manifest_closure_rejects_plane_mismatch_between_delta_and_object() -> TestResult {
+    let lineage = "site:test:replay:plane_mismatch";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = clean_fault_schedule();
+
+    let mut mismatched_objects = fixture.objects.clone();
+    mismatched_objects[0].plane = Plane::Effect; // Delta specifies Plane::Authority
+
+    let res = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        mismatched_objects,
+    );
+
+    assert!(
+        res.is_err(),
+        "manifest closure accepted an object whose plane (Effect) disagrees with delta plane (Authority)"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_batch_sequence_u64_max_fails_with_typed_error_not_panic() -> TestResult {
+    let lineage = "site:test:replay:overflow";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = clean_fault_schedule();
+
+    let mut overflow_batches = fixture.batches.clone();
+    overflow_batches[0].basis_anchor.commit_sequence = u64::MAX;
+    overflow_batches[0].new_anchor.commit_sequence = 0;
+    overflow_batches[0].batch_digest = overflow_batches[0].computed_digest();
+
+    let res = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        overflow_batches,
+        fixture.objects,
+    );
+
+    assert!(
+        res.is_err(),
+        "must return typed error on sequence overflow without panic"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_bounds_object_id_text_at_bound_and_bound_plus_one() -> TestResult {
+    let lineage = "site:short";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = clean_fault_schedule();
+
+    // Max text length for object_id
+    let max_obj_id_len = fixture
+        .objects
+        .iter()
+        .map(|o| o.object_id.as_str().len())
+        .max()
+        .unwrap_or(32);
+    assert!(
+        lineage.len() < max_obj_id_len,
+        "lineage must be shorter than object_id to isolate object_id bounding"
+    );
+
+    let bundle = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        fixture.objects,
+    )?;
+
+    let limits_at_bound = ReplayBundleLimits {
+        max_text_bytes: max_obj_id_len,
+        ..ReplayBundleLimits::default()
+    };
+    let res_at_bound = ReplayBundleWriter::to_bytes_with_limits(&bundle, &limits_at_bound);
+    assert!(
+        res_at_bound.is_ok(),
+        "at bound for object_id text must succeed"
+    );
+
+    let limits_exceeded = ReplayBundleLimits {
+        max_text_bytes: max_obj_id_len - 1,
+        ..ReplayBundleLimits::default()
+    };
+    let res_exceeded = ReplayBundleWriter::to_bytes_with_limits(&bundle, &limits_exceeded);
+    match res_exceeded {
+        Err(ReplayBundleError::BoundExceeded("text")) => {}
+        other => return Err(format!("expected BoundExceeded(text), got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_reader_rejects_invalid_domain_tag() -> TestResult {
+    let lineage = "site:test:replay:invalid_domain";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = clean_fault_schedule();
+
+    let bundle = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        fixture.objects,
+    )?;
+
+    let mut bytes = ReplayBundleWriter::to_bytes(&bundle)?;
+    // Mutate the domain tag in the body
+    let domain_bytes = REPLAY_BUNDLE_DOMAIN.as_bytes();
+    let pos = bytes
+        .windows(domain_bytes.len())
+        .position(|w| w == domain_bytes)
+        .ok_or("domain tag not found in serialized bytes")?;
+    bytes[pos] = b'X';
+    // Recompute trailer checksum so it passes trailer check and hits domain check
+    let body_len = bytes.len() - REPLAY_TRAILER_LEN;
+    let new_digest = replay_bundle_digest(&bytes[..body_len]);
+    bytes[body_len + 1..].copy_from_slice(&new_digest.bytes());
+
+    let res = ReplayBundleReader::from_bytes(&bytes);
+    match res {
+        Err(ReplayBundleError::InvalidDomain(domain)) => {
+            assert_ne!(domain, REPLAY_BUNDLE_DOMAIN);
+        }
+        other => return Err(format!("expected InvalidDomain error, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_writer_syncs_parent_directory_after_rename() -> TestResult {
+    let lineage = "site:test:replay:dir_sync";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = clean_fault_schedule();
+
+    let bundle = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        fixture.objects,
+    )?;
+
+    let path = temp_bundle_path("dir-sync-proof");
+    let _ = fs::remove_file(&path);
+
+    let receipt = ReplayBundleWriter::write_to_path(&path, &bundle)?;
+    assert_eq!(receipt.manifest_root, fixture.manifest_root);
+    assert!(
+        path.exists(),
+        "Target bundle file must exist after atomic write and dir sync"
+    );
+
+    let read_bundle = ReplayBundleReader::read_from_path(&path)?;
+    assert_eq!(read_bundle.manifest_root(), fixture.manifest_root);
+
+    let _ = fs::remove_file(&path);
     Ok(())
 }

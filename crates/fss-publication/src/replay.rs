@@ -76,6 +76,16 @@ pub const MAX_REPLAY_FAULT_REORDER_WINDOW: usize = 256;
 /// Length of the trailer checksum record: 1 byte algorithm tag + 32 bytes SHA-256.
 pub const REPLAY_TRAILER_LEN: usize = 33;
 
+/// Computes the canonical domain-separated digest for a replay bundle body.
+#[must_use]
+pub fn replay_bundle_digest(body: &[u8]) -> ContentDigest {
+    let mut input = Vec::with_capacity(REPLAY_BUNDLE_DOMAIN.len() + 1 + body.len());
+    input.extend_from_slice(REPLAY_BUNDLE_DOMAIN.as_bytes());
+    input.push(0);
+    input.extend_from_slice(body);
+    ContentDigest::sha256(&input)
+}
+
 /// Upper bound on distinct staging names tried when writing a replay bundle.
 ///
 /// Each write owns its own attempt sequence `0..MAX_REPLAY_TEMP_ATTEMPTS`; no
@@ -454,6 +464,26 @@ pub enum ReplayBundleError {
         /// Number of distinct staging names tried.
         attempts: u32,
     },
+    /// Invalid domain tag in envelope header.
+    InvalidDomain(String),
+    /// Declared manifest root is not a valid state root or manifest object.
+    InvalidManifestRoot(ContentDigest),
+    /// Replayed state root does not match declared manifest root.
+    ManifestRootMismatch {
+        /// Expected manifest root.
+        expected: ContentDigest,
+        /// Actual replayed state root.
+        actual: ContentDigest,
+    },
+    /// Object plane does not match referenced delta plane.
+    ObjectPlaneMismatch {
+        /// Object digest.
+        digest: ContentDigest,
+        /// Expected plane.
+        expected: Plane,
+        /// Actual plane found.
+        actual: Plane,
+    },
 }
 
 impl fmt::Display for ReplayBundleError {
@@ -556,6 +586,31 @@ impl fmt::Display for ReplayBundleError {
                 "could not stage replay bundle in {}: all {attempts} bounded staging names already exist; inspect stale *.tmp.* files from interrupted writes",
                 directory.display()
             ),
+            Self::InvalidDomain(domain) => {
+                write!(formatter, "replay bundle invalid domain tag: {domain}")
+            }
+            Self::InvalidManifestRoot(root) => {
+                write!(
+                    formatter,
+                    "declared manifest root is not a valid state root or manifest object: {root}"
+                )
+            }
+            Self::ManifestRootMismatch { expected, actual } => {
+                write!(
+                    formatter,
+                    "replayed state root does not match declared manifest root: expected {expected}, got {actual}"
+                )
+            }
+            Self::ObjectPlaneMismatch {
+                digest,
+                expected,
+                actual,
+            } => {
+                write!(
+                    formatter,
+                    "object {digest} plane mismatch: expected {expected:?}, got {actual:?}"
+                )
+            }
         }
     }
 }
@@ -682,7 +737,12 @@ impl ReplayBundle {
                     actual: batch.new_anchor.site_lineage.clone(),
                 });
             }
-            let expected_seq = batch.basis_anchor.commit_sequence + 1;
+            let expected_seq = batch.basis_anchor.commit_sequence.checked_add(1).ok_or(
+                ReplayBundleError::BatchSequenceInvalid {
+                    expected: u64::MAX,
+                    actual: batch.new_anchor.commit_sequence,
+                },
+            )?;
             if batch.new_anchor.commit_sequence != expected_seq {
                 return Err(ReplayBundleError::BatchSequenceInvalid {
                     expected: expected_seq,
@@ -720,40 +780,73 @@ impl ReplayBundle {
             }
         }
 
-        // Verify Manifest Closure: every digest referenced in batches must exist in objects
+        // Verify Manifest Closure: every digest referenced in batches must exist in objects with matching plane
         for batch in &batches {
             for delta in &batch.deltas {
-                if !objects_by_digest.contains_key(&delta.payload_digest) {
-                    return Err(ReplayBundleError::BrokenManifestClosure {
+                let payload_idx = objects_by_digest.get(&delta.payload_digest).ok_or(
+                    ReplayBundleError::BrokenManifestClosure {
                         missing_digest: delta.payload_digest,
+                    },
+                )?;
+                let payload_obj = &objects[*payload_idx];
+                if payload_obj.plane != delta.plane {
+                    return Err(ReplayBundleError::ObjectPlaneMismatch {
+                        digest: delta.payload_digest,
+                        expected: delta.plane,
+                        actual: payload_obj.plane,
                     });
                 }
-                if let Some(witness) = delta.witness_digest
-                    && !objects_by_digest.contains_key(&witness)
-                {
-                    return Err(ReplayBundleError::BrokenManifestClosure {
-                        missing_digest: witness,
-                    });
+
+                if let Some(witness) = delta.witness_digest {
+                    let witness_idx = objects_by_digest.get(&witness).ok_or(
+                        ReplayBundleError::BrokenManifestClosure {
+                            missing_digest: witness,
+                        },
+                    )?;
+                    let witness_obj = &objects[*witness_idx];
+                    if witness_obj.plane != delta.plane {
+                        return Err(ReplayBundleError::ObjectPlaneMismatch {
+                            digest: witness,
+                            expected: delta.plane,
+                            actual: witness_obj.plane,
+                        });
+                    }
                 }
             }
             for child in &batch.children {
-                if !objects_by_digest.contains_key(child) {
-                    return Err(ReplayBundleError::BrokenManifestClosure {
+                let child_idx = objects_by_digest.get(child).ok_or(
+                    ReplayBundleError::BrokenManifestClosure {
                         missing_digest: *child,
+                    },
+                )?;
+                let child_obj = &objects[*child_idx];
+                if child_obj.plane != Plane::Authority {
+                    return Err(ReplayBundleError::ObjectPlaneMismatch {
+                        digest: *child,
+                        expected: Plane::Authority,
+                        actual: child_obj.plane,
                     });
                 }
             }
         }
 
-        // Verify manifest root: must exist in objects or match state root of final batch
+        // Verify manifest root: must match state root of final batch, or be an Authority manifest object
         let final_state_root = batches
             .last()
             .map(|b| b.new_anchor.state_root)
             .ok_or(ReplayBundleError::EmptyBundle)?;
-        if manifest_root != final_state_root && !objects_by_digest.contains_key(&manifest_root) {
-            return Err(ReplayBundleError::BrokenManifestClosure {
-                missing_digest: manifest_root,
-            });
+        if manifest_root != final_state_root {
+            let root_idx = objects_by_digest.get(&manifest_root).ok_or(
+                ReplayBundleError::BrokenManifestClosure {
+                    missing_digest: manifest_root,
+                },
+            )?;
+            let root_obj = &objects[*root_idx];
+            if root_obj.plane != Plane::Authority
+                || !root_obj.object_id.as_str().contains("manifest")
+            {
+                return Err(ReplayBundleError::InvalidManifestRoot(manifest_root));
+            }
         }
 
         Ok(Self {
@@ -809,29 +902,94 @@ impl ReplayBundle {
         self.objects.get(*idx)
     }
 
-    /// SHA-256 digest over the canonical serialized body (excluding trailer).
+    /// Evaluates the fault schedule directives against the canonical batch sequence,
+    /// returning the perturbed batch sequence for replay execution.
+    #[must_use]
+    pub fn scheduled_batches(&self) -> Vec<EvidenceDeltaBatch> {
+        if self.fault_schedule.directives.is_empty() {
+            return self.batches.clone();
+        }
+
+        let mut directives_by_seq: BTreeMap<u64, &ReplayFaultDirective> = BTreeMap::new();
+        for dir in &self.fault_schedule.directives {
+            directives_by_seq.insert(dir.source_sequence, dir);
+        }
+
+        let mut result = Vec::new();
+        let mut delayed: Vec<(usize, EvidenceDeltaBatch)> = Vec::new();
+
+        for batch in &self.batches {
+            let seq = batch.new_anchor.commit_sequence;
+
+            let mut i = 0;
+            while i < delayed.len() {
+                if delayed[i].0 <= result.len() {
+                    let (_, delayed_batch) = delayed.remove(i);
+                    result.push(delayed_batch);
+                } else {
+                    i += 1;
+                }
+            }
+
+            match directives_by_seq.get(&seq).map(|d| d.action) {
+                Some(ReplayFaultAction::Drop) => {
+                    // Omit batch from replay
+                }
+                Some(ReplayFaultAction::Duplicate { copies }) => {
+                    result.push(batch.clone());
+                    for _ in 0..copies {
+                        result.push(batch.clone());
+                    }
+                }
+                Some(ReplayFaultAction::Corrupt { mutation_tag }) => {
+                    let mut corrupted = batch.clone();
+                    corrupted.batch_digest = ContentDigest::sha256(&[mutation_tag]);
+                    result.push(corrupted);
+                }
+                Some(ReplayFaultAction::Delay { ticks }) => {
+                    let max_shift = self.fault_schedule.reorder_window.max(1);
+                    let shift = (ticks as usize).clamp(1, max_shift);
+                    let release_at = result.len() + shift;
+                    delayed.push((release_at, batch.clone()));
+                }
+                Some(ReplayFaultAction::Pass) | None => {
+                    result.push(batch.clone());
+                }
+            }
+        }
+
+        delayed.sort_by_key(|(rel, _)| *rel);
+        for (_, delayed_batch) in delayed {
+            result.push(delayed_batch);
+        }
+
+        result
+    }
+
+    /// Canonical domain-separated digest over the canonical serialized body (excluding trailer).
     pub fn digest(&self) -> Result<ContentDigest, ReplayBundleError> {
         self.digest_with_limits(&ReplayBundleLimits::default())
     }
 
-    /// SHA-256 digest over the canonical serialized body with explicit limits (excluding trailer).
+    /// Canonical domain-separated digest over the canonical serialized body with explicit limits (excluding trailer).
     pub fn digest_with_limits(
         &self,
         limits: &ReplayBundleLimits,
     ) -> Result<ContentDigest, ReplayBundleError> {
         let body = ReplayBundleWriter::to_body_bytes(self, limits)?;
-        Ok(ContentDigest::sha256(&body))
+        Ok(replay_bundle_digest(&body))
     }
 
-    /// Replays the ordered batch history through a [`LedgerOracle`].
+    /// Replays the scheduled batch history through a [`LedgerOracle`].
     ///
-    /// The oracle's head anchor must match the basis anchor of the first batch in the bundle.
+    /// The oracle's head anchor must match the basis anchor of the first scheduled batch.
     /// Returns the receipt for the final committed batch.
     pub fn replay_through_oracle(
         &self,
         oracle: &mut LedgerOracle,
     ) -> Result<CommitReceipt, ReplayBundleError> {
-        let first_batch = self.batches.first().ok_or(ReplayBundleError::EmptyBundle)?;
+        let scheduled = self.scheduled_batches();
+        let first_batch = scheduled.first().ok_or(ReplayBundleError::EmptyBundle)?;
         if oracle.head_anchor() != &first_batch.basis_anchor {
             return Err(ReplayBundleError::BatchDiscontinuousAnchor {
                 sequence: first_batch.basis_anchor.commit_sequence,
@@ -841,36 +999,40 @@ impl ReplayBundle {
         }
 
         let mut last_receipt = None;
-        for batch in &self.batches {
-            let staged = oracle.stage(batch.clone())?;
+        for batch in scheduled {
+            let staged = oracle.stage(batch)?;
             let receipt = oracle.commit(staged)?;
             last_receipt = Some(receipt);
         }
 
-        last_receipt.ok_or(ReplayBundleError::EmptyBundle)
-    }
+        let receipt = last_receipt.ok_or(ReplayBundleError::EmptyBundle)?;
 
-    /// Creates a fresh [`LedgerOracle`] at the basis anchor of the first batch,
-    /// replays every batch in sequence, and returns the oracle.
-    pub fn replay(&self) -> Result<LedgerOracle, ReplayBundleError> {
-        let first_batch = self.batches.first().ok_or(ReplayBundleError::EmptyBundle)?;
-        let limits = OracleLimits::new(MAX_REPLAY_BATCHES + 1, MAX_REPLAY_OBJECTS + 1)?;
-        let mut oracle = LedgerOracle::new(&self.metadata.site_lineage, limits)?;
-
-        // If the bundle doesn't start at genesis, we use rebuild or stage
-        if first_batch.basis_anchor != *oracle.head_anchor() {
-            return Err(ReplayBundleError::BatchDiscontinuousAnchor {
-                sequence: first_batch.basis_anchor.commit_sequence,
-                expected: Box::new(oracle.head_anchor().clone()),
-                actual: Box::new(first_batch.basis_anchor.clone()),
+        let final_state_root = self
+            .batches
+            .last()
+            .map(|b| b.new_anchor.state_root)
+            .ok_or(ReplayBundleError::EmptyBundle)?;
+        if self.manifest_root == final_state_root && receipt.anchor.state_root != self.manifest_root
+        {
+            return Err(ReplayBundleError::ManifestRootMismatch {
+                expected: self.manifest_root,
+                actual: receipt.anchor.state_root,
             });
         }
 
-        for batch in &self.batches {
-            let staged = oracle.stage(batch.clone())?;
-            oracle.commit(staged)?;
-        }
+        Ok(receipt)
+    }
 
+    /// Creates a fresh [`LedgerOracle`] at genesis, replays the scheduled batch history
+    /// through [`Self::replay_through_oracle`], and returns the resulting oracle.
+    ///
+    /// The first batch must start at genesis (`commit_sequence == 0`). For historical
+    /// windows starting at sequence N > 0, use [`Self::replay_through_oracle`] with an
+    /// oracle already advanced to the bundle's basis anchor.
+    pub fn replay(&self) -> Result<LedgerOracle, ReplayBundleError> {
+        let limits = OracleLimits::new(MAX_REPLAY_BATCHES + 1, MAX_REPLAY_OBJECTS + 1)?;
+        let mut oracle = LedgerOracle::new(&self.metadata.site_lineage, limits)?;
+        self.replay_through_oracle(&mut oracle)?;
         Ok(oracle)
     }
 
@@ -904,7 +1066,7 @@ impl ReplayBundleWriter {
         limits: &ReplayBundleLimits,
     ) -> Result<Vec<u8>, ReplayBundleError> {
         let body = Self::to_body_bytes(bundle, limits)?;
-        let body_digest = ContentDigest::sha256(&body);
+        let body_digest = replay_bundle_digest(&body);
 
         let mut out = body;
         // Trailer: algorithm tag 1 (SHA-256) + 32 bytes digest
@@ -938,10 +1100,11 @@ impl ReplayBundleWriter {
     ) -> Result<ReplayBundleReceipt, ReplayBundleError> {
         let bytes = Self::to_bytes_with_limits(bundle, limits)?;
         let body_len = bytes.len() - REPLAY_TRAILER_LEN;
-        let bundle_digest = ContentDigest::sha256(&bytes[..body_len]);
+        let bundle_digest = replay_bundle_digest(&bytes[..body_len]);
 
         let (temp_path, mut file) = create_replay_temp(path, bundle_digest)?;
 
+        let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let write_res = (|| -> Result<(), ReplayBundleError> {
             file.write_all(&bytes).map_err(|e| ReplayBundleError::Io {
                 operation: "write_temp_file",
@@ -954,6 +1117,14 @@ impl ReplayBundleWriter {
             drop(file);
             fs::rename(&temp_path, path).map_err(|e| ReplayBundleError::Io {
                 operation: "rename_temp_file",
+                kind: e.kind(),
+            })?;
+            let parent_dir = File::open(parent).map_err(|e| ReplayBundleError::Io {
+                operation: "open_parent_dir",
+                kind: e.kind(),
+            })?;
+            parent_dir.sync_all().map_err(|e| ReplayBundleError::Io {
+                operation: "sync_parent_dir",
                 kind: e.kind(),
             })?;
             Ok(())
@@ -998,6 +1169,9 @@ impl ReplayBundleWriter {
         // Magic and version
         out.extend_from_slice(&REPLAY_BUNDLE_MAGIC);
         out.extend_from_slice(&REPLAY_BUNDLE_FORMAT_VERSION.to_be_bytes());
+
+        // Domain tag
+        encode_text(&mut out, REPLAY_BUNDLE_DOMAIN, limits)?;
 
         // Manifest root digest (1 byte algorithm tag 1 for SHA-256 + 32 bytes)
         out.push(1);
@@ -1082,7 +1256,7 @@ impl ReplayBundleReader {
         if bytes.len() > limits.max_total_bytes {
             return Err(ReplayBundleError::BoundExceeded("total_bytes"));
         }
-        if bytes.len() < REPLAY_TRAILER_LEN + 8 + 2 + 33 {
+        if bytes.len() < REPLAY_TRAILER_LEN + 8 + 2 + 4 + REPLAY_BUNDLE_DOMAIN.len() + 33 {
             return Err(ReplayBundleError::UnexpectedEof);
         }
 
@@ -1101,7 +1275,7 @@ impl ReplayBundleReader {
         let mut expected_bytes = [0_u8; 32];
         expected_bytes.copy_from_slice(&trailer[1..33]);
         let expected_digest = ContentDigest::new(DigestAlgorithm::Sha256, expected_bytes);
-        let computed_digest = ContentDigest::sha256(body);
+        let computed_digest = replay_bundle_digest(body);
 
         if computed_digest != expected_digest {
             return Err(ReplayBundleError::ChecksumMismatch {
@@ -1122,6 +1296,12 @@ impl ReplayBundleReader {
         let version = read_u16(body, &mut cursor)?;
         if version != REPLAY_BUNDLE_FORMAT_VERSION {
             return Err(ReplayBundleError::UnsupportedVersion(version));
+        }
+
+        // Domain tag
+        let domain = read_text(body, &mut cursor, limits)?;
+        if domain != REPLAY_BUNDLE_DOMAIN {
+            return Err(ReplayBundleError::InvalidDomain(domain));
         }
 
         // Manifest root digest
@@ -1290,10 +1470,12 @@ impl ReplayBundleReader {
             operation: "file_metadata",
             kind: e.kind(),
         })?;
-        if metadata.len() as usize > limits.max_total_bytes {
+        if metadata.len() > limits.max_total_bytes as u64 {
             return Err(ReplayBundleError::BoundExceeded("total_bytes"));
         }
-        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        let file_len = usize::try_from(metadata.len())
+            .map_err(|_| ReplayBundleError::BoundExceeded("total_bytes"))?;
+        let mut bytes = Vec::with_capacity(file_len);
         file.read_to_end(&mut bytes)
             .map_err(|e| ReplayBundleError::Io {
                 operation: "read_file",
