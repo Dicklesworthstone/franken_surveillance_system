@@ -16,14 +16,14 @@ use std::fmt::Debug;
 
 use fss_core::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
-    Completeness, ContentDigest, Contradiction, ContradictionParams, CoverageContinuity,
-    CoverageStopReason, CoverageWitness, DecisionPath, EventEvidence, EventHypothesis, EventId,
-    EventKind, EventReadResult, EventRevisionStore, EventState, EventStoreCommit, EventStoreEntry,
-    EventStoreError, EventTransitionParams, EvidenceClass, EvidenceEdgeRelation, EvidenceGraph,
-    EvidenceNode, EvidenceNodeKind, GraphReadResult, HypothesisDisposition, KnowledgeState,
-    LedgerAnchor, LineageReadResult, MAX_CONTRADICTIONS_PER_EVENT, MAX_GRAPHS_PER_REVISION,
-    MAX_STORE_LINEAGE_DEPTH, NotObservableReason, ProbabilityInterval, ProvenanceClass,
-    RuntimeOutcome, TimestampNs,
+    Completeness, ContentDigest, ContractError, Contradiction, ContradictionParams,
+    CoverageContinuity, CoverageStopReason, CoverageWitness, DecisionPath, EventEvidence,
+    EventHypothesis, EventId, EventKind, EventReadResult, EventRevisionStore, EventState,
+    EventStoreCommit, EventStoreEntry, EventStoreError, EventTransitionParams, EvidenceClass,
+    EvidenceEdgeRelation, EvidenceGraph, EvidenceNode, EvidenceNodeKind, GraphReadResult,
+    HypothesisDisposition, KnowledgeState, LedgerAnchor, LineageReadResult,
+    MAX_CONTRADICTIONS_PER_EVENT, MAX_GRAPHS_PER_REVISION, MAX_STORE_LINEAGE_DEPTH,
+    NotObservableReason, ProbabilityInterval, ProvenanceClass, RuntimeOutcome, TimestampNs,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -1288,5 +1288,157 @@ fn test_commit_and_entry_must_support_canonical_decode() -> TestResult {
     assert!(decoder.is_empty());
     assert_eq!(decoded_commit, commit);
 
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------------------------
+// fss-8yptk N3: decode error identity, unknown-domain guard normalization, full tag round trip
+// ---------------------------------------------------------------------------------------------
+
+#[test]
+fn test_unknown_entry_tag_returns_dedicated_error() -> TestResult {
+    for tag in [0_u8, 6, 7, 255] {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.u8(tag);
+        encoder.text("trailing-payload");
+        let bytes = encoder.finish();
+        let err = match EventStoreEntry::from_canonical_bytes(&bytes) {
+            Ok(entry) => {
+                return Err(format!("tag {tag} must not decode, got {entry:?}").into());
+            }
+            Err(err) => err,
+        };
+        assert_ne!(
+            err,
+            ContractError::InvalidIdentifier,
+            "tag {tag}: an unknown entry tag is not an identifier failure"
+        );
+        assert_eq!(err.code(), "unknown_entry_tag", "tag {tag}: got {err:?}");
+        assert_eq!(err, ContractError::UnknownEntryTag(tag));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unknown_domain_guard_is_case_and_whitespace_insensitive() -> TestResult {
+    for domain in ["Unknown", "UNKNOWN", " unknown", "unknown\t", " UnKnOwN \n"] {
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-unknown-variants"));
+        // A witness that observes the spelled-out domain and would otherwise certify absence.
+        let witness = sample_coverage_witness(domain, true, true, false)?;
+        assert!(witness.certifies_absence());
+        store.register_coverage_witness(
+            store.current_anchor().clone(),
+            witness,
+            TimestampNs(1_000),
+        )?;
+        let absent_id = EventId::parse("evt_unknown_variant_absent")?;
+
+        match store.read_event_in_domain(&absent_id, domain, None)? {
+            EventReadResult::NotObservable {
+                domain: reported,
+                reason,
+            } => {
+                assert_eq!(reported, domain);
+                assert_eq!(reason, NotObservableReason::UnknownDomain, "{domain:?}");
+            }
+            other => {
+                return Err(format!(
+                    "read_event_in_domain({domain:?}) must be NotObservable(UnknownDomain), got {other:?}"
+                )
+                .into());
+            }
+        }
+
+        match store.read_lineage_in_domain(&absent_id, domain)? {
+            LineageReadResult::NotObservable {
+                domain: reported,
+                reason,
+            } => {
+                assert_eq!(reported, domain);
+                assert_eq!(reason, NotObservableReason::UnknownDomain, "{domain:?}");
+            }
+            other => {
+                return Err(format!(
+                    "read_lineage_in_domain({domain:?}) must be NotObservable(UnknownDomain), got {other:?}"
+                )
+                .into());
+            }
+        }
+
+        match store.read_evidence_graph("graph_unknown_variant_absent", domain)? {
+            GraphReadResult::NotObservable {
+                domain: reported,
+                reason,
+            } => {
+                assert_eq!(reported, domain);
+                assert_eq!(reason, NotObservableReason::UnknownDomain, "{domain:?}");
+            }
+            other => {
+                return Err(format!(
+                    "read_evidence_graph(_, {domain:?}) must be NotObservable(UnknownDomain), got {other:?}"
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_every_entry_tag_round_trips_through_canonical_decode() -> TestResult {
+    let genesis = sample_genesis("evt_decode_all_tags")?;
+    let mut superseding = genesis.clone();
+    superseding.revision = 2;
+    superseding.supersedes = Some(ContentDigest::sha256(b"prior-revision-digest"));
+    let entries = [
+        (
+            1_u8,
+            EventStoreEntry::GenesisRevision {
+                revision: genesis,
+                coverage_domain: "domain.test".to_string(),
+            },
+        ),
+        (
+            2,
+            EventStoreEntry::SupersedeRevision {
+                revision: superseding,
+            },
+        ),
+        (
+            3,
+            EventStoreEntry::AttachEvidenceGraph {
+                graph: sample_graph("evt_decode_all_tags", "graph_decode_all_tags", 1)?,
+            },
+        ),
+        (
+            4,
+            EventStoreEntry::RecordContradiction {
+                event_id: EventId::parse("evt_decode_all_tags")?,
+                contradiction: sample_contradiction(
+                    "contradiction_decode_all_tags",
+                    "claim_decode_all_tags",
+                    &["world_a", "world_b"],
+                )?,
+            },
+        ),
+        (
+            5,
+            EventStoreEntry::RegisterCoverageWitness {
+                witness: sample_coverage_witness("domain.test", true, true, false)?,
+            },
+        ),
+    ];
+    for (tag, entry) in entries {
+        let bytes = entry.canonical_bytes();
+        assert_eq!(bytes.first(), Some(&tag), "entry tag for {entry:?}");
+        let decoded = EventStoreEntry::from_canonical_bytes(&bytes)
+            .map_err(|e| format!("tag {tag} failed to decode: {e:?}"))?;
+        assert_eq!(decoded, entry, "tag {tag} decoded to a different entry");
+        assert_eq!(
+            decoded.canonical_bytes(),
+            bytes,
+            "tag {tag} re-encoding must reproduce the input bytes"
+        );
+    }
     Ok(())
 }

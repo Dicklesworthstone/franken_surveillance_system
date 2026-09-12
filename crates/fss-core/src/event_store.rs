@@ -366,6 +366,16 @@ impl fmt::Display for EventStoreError {
 
 impl std::error::Error for EventStoreError {}
 
+/// Reserved coverage-domain sentinel for an event whose domain was never declared.
+const UNKNOWN_DOMAIN: &str = "unknown";
+
+/// Returns `true` when `domain` cannot certify coverage: blank, or any spelling of the reserved
+/// `unknown` sentinel regardless of ASCII case or surrounding whitespace.
+fn is_unknown_domain(domain: &str) -> bool {
+    let trimmed = domain.trim();
+    trimmed.is_empty() || trimmed.eq_ignore_ascii_case(UNKNOWN_DOMAIN)
+}
+
 /// One typed mutation entry appended to the store's canonical log.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EventStoreEntry {
@@ -467,7 +477,7 @@ impl CanonicalDecode for EventStoreEntry {
                 let witness = CoverageWitness::decode_canonical(decoder)?;
                 Ok(Self::RegisterCoverageWitness { witness })
             }
-            _ => Err(ContractError::InvalidIdentifier),
+            other => Err(ContractError::UnknownEntryTag(other)),
         }
     }
 }
@@ -1141,7 +1151,7 @@ impl EventRevisionStore {
                             .event_domains
                             .get(event_id)
                             .cloned()
-                            .unwrap_or_else(|| "unknown".to_string());
+                            .unwrap_or_else(|| UNKNOWN_DOMAIN.to_string());
                         Ok(EventReadResult::NotObservable {
                             domain,
                             reason: NotObservableReason::RevisionNotFound {
@@ -1152,7 +1162,7 @@ impl EventRevisionStore {
                 }
             }
         } else if let Some(domain) = self.event_domains.get(event_id) {
-            if domain.trim().is_empty() || domain == "unknown" {
+            if is_unknown_domain(domain) {
                 Ok(EventReadResult::NotObservable {
                     domain: domain.clone(),
                     reason: NotObservableReason::UnknownDomain,
@@ -1162,7 +1172,7 @@ impl EventRevisionStore {
             }
         } else {
             Ok(EventReadResult::NotObservable {
-                domain: "unknown".to_string(),
+                domain: UNKNOWN_DOMAIN.to_string(),
                 reason: NotObservableReason::UnknownDomain,
             })
         }
@@ -1204,7 +1214,7 @@ impl EventRevisionStore {
         if let Some(lineage) = self.lineages.get(event_id) {
             Ok(LineageReadResult::Found(lineage))
         } else if let Some(domain) = self.event_domains.get(event_id) {
-            if domain.trim().is_empty() || domain == "unknown" {
+            if is_unknown_domain(domain) {
                 Ok(LineageReadResult::NotObservable {
                     domain: domain.clone(),
                     reason: NotObservableReason::UnknownDomain,
@@ -1225,7 +1235,7 @@ impl EventRevisionStore {
             }
         } else {
             Ok(LineageReadResult::NotObservable {
-                domain: "unknown".to_string(),
+                domain: UNKNOWN_DOMAIN.to_string(),
                 reason: NotObservableReason::UnknownDomain,
             })
         }
@@ -1330,51 +1340,44 @@ impl EventRevisionStore {
                 });
             }
 
-            match &commit.entry {
+            // Each replay call returns the digest of the commit it just appended, so the
+            // rebuilt digest is always available without re-reading the history tail.
+            let rebuilt_digest = match &commit.entry {
                 EventStoreEntry::GenesisRevision {
                     revision,
                     coverage_domain,
-                } => {
-                    store.append_genesis(
-                        commit.basis_anchor.clone(),
-                        revision.clone(),
-                        coverage_domain.clone(),
-                        commit.commit_time,
-                    )?;
-                }
-                EventStoreEntry::SupersedeRevision { revision } => {
-                    store.append_revision(
-                        commit.basis_anchor.clone(),
-                        revision.clone(),
-                        commit.commit_time,
-                    )?;
-                }
-                EventStoreEntry::AttachEvidenceGraph { graph } => {
-                    store.attach_evidence_graph(
-                        commit.basis_anchor.clone(),
-                        graph.clone(),
-                        commit.commit_time,
-                    )?;
-                }
+                } => store.append_genesis(
+                    commit.basis_anchor.clone(),
+                    revision.clone(),
+                    coverage_domain.clone(),
+                    commit.commit_time,
+                )?,
+                EventStoreEntry::SupersedeRevision { revision } => store.append_revision(
+                    commit.basis_anchor.clone(),
+                    revision.clone(),
+                    commit.commit_time,
+                )?,
+                EventStoreEntry::AttachEvidenceGraph { graph } => store.attach_evidence_graph(
+                    commit.basis_anchor.clone(),
+                    graph.clone(),
+                    commit.commit_time,
+                )?,
                 EventStoreEntry::RecordContradiction {
                     event_id,
                     contradiction,
-                } => {
-                    store.record_contradiction(
-                        commit.basis_anchor.clone(),
-                        event_id.clone(),
-                        contradiction.clone(),
-                        commit.commit_time,
-                    )?;
-                }
-                EventStoreEntry::RegisterCoverageWitness { witness } => {
-                    store.register_coverage_witness(
+                } => store.record_contradiction(
+                    commit.basis_anchor.clone(),
+                    event_id.clone(),
+                    contradiction.clone(),
+                    commit.commit_time,
+                )?,
+                EventStoreEntry::RegisterCoverageWitness { witness } => store
+                    .register_coverage_witness(
                         commit.basis_anchor.clone(),
                         witness.clone(),
                         commit.commit_time,
-                    )?;
-                }
-            }
+                    )?,
+            };
 
             // Verify the rebuilt state anchor matches the recorded new_anchor
             if store.current_anchor != commit.new_anchor {
@@ -1386,16 +1389,10 @@ impl EventRevisionStore {
             }
 
             // Verify the commit digest matches the rebuilt commit
-            let Some(rebuilt_commit) = store.history.last() else {
-                return Err(EventStoreError::StoreCommitCapacityExceeded {
-                    limit: 0,
-                    actual: 0,
-                });
-            };
-            if commit.commit_digest != rebuilt_commit.commit_digest {
+            if commit.commit_digest != rebuilt_digest {
                 return Err(EventStoreError::CommitDigestMismatch {
                     sequence: commit.sequence,
-                    expected: rebuilt_commit.commit_digest,
+                    expected: rebuilt_digest,
                     actual: commit.commit_digest,
                 });
             }
@@ -1451,7 +1448,7 @@ impl EventRevisionStore {
     }
 
     fn evaluate_coverage_for_absent(&self, domain: &str) -> EventReadResult<'_> {
-        if domain.trim().is_empty() || domain == "unknown" {
+        if is_unknown_domain(domain) {
             return EventReadResult::NotObservable {
                 domain: domain.to_string(),
                 reason: NotObservableReason::UnknownDomain,

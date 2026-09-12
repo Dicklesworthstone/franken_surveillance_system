@@ -687,7 +687,16 @@ fn decode_set(decoder: &mut CanonicalDecoder<'_>) -> Result<BTreeSet<String>, Co
     let len = usize::try_from(len).map_err(|_| ContractError::InvalidIdentifier)?;
     let mut set = BTreeSet::new();
     for _ in 0..len {
-        set.insert(decoder.text()?.to_string());
+        let value = decoder.text()?.to_string();
+        // Canonical sets are encoded strictly increasing. Accepting a duplicate or out-of-order
+        // entry would let several byte strings decode to the same witness.
+        if set
+            .last()
+            .is_some_and(|previous: &String| previous >= &value)
+        {
+            return Err(ContractError::NonCanonicalOrdering);
+        }
+        set.insert(value);
     }
     Ok(set)
 }
