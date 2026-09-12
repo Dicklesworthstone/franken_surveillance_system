@@ -197,7 +197,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
             self.assertEqual(summary["error_count"], 0)
             self.assertEqual(summary["promoted_claim_rows"], 1)
-            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (2, 2))
+            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (1, 1))
             result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
@@ -226,12 +226,14 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             root = build_fixture_root(Path(tmpdir))
             write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
             append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
-            ok, findings, summary = audit_claim_proof_bundles(root, now=FIXED_NOW)
+            ok, findings, summary = audit_with(root, CLAIM_ROW_CLASSES)
             self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
-            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (2, 2))
+            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (1, 1))
             self.assertEqual(summary.get("unpromoted_bundles_count", 0), 0)
+            # No repository registry binds FORMAL-002 (review item A): the registry-only CLI refuses it.
             result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("ERR-CLAIM-CLASS-UNRESOLVED-001", result.stdout)
 
 
 class TestPlantedNegativeProofBundleNotFound(unittest.TestCase):
@@ -484,6 +486,7 @@ class TestPlantedNegativeClaimLevelExceeded(unittest.TestCase):
             is_valid, findings, _ = verify_proof_bundle(
                 bundle_path=bundle_file,
                 root=tmp_root,
+                expected_claim_id="SLO-DETECT-001",  # a claim id a registry binds (review item A)
                 claim_class="slo",  # the citing claim row's class; a bundle never picks its own
                 known_classes=known_classes,
             )
@@ -3071,6 +3074,7 @@ def verify_class_bundle(
         tombstoned_ids=set(),
         prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS),
         **extra,
+        **_bindings_kw(verify_proof_bundle, CLAIM_ROW_CLASSES),
     )
 
 
@@ -3534,6 +3538,7 @@ def scan_with_stats(root: Path, text: str, name: str = "table.md") -> tuple[list
     findings = scan_markdown_claim_tables(
         md_file, root, _known_classes(), set(),
         prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS), stats=stats, now=FIXED_NOW,
+        **_bindings_kw(scan_markdown_claim_tables, CLAIM_ROW_CLASSES),
     )
     return findings, stats
 
@@ -3607,7 +3612,7 @@ class TestCrossClassReviewFailOpens(unittest.TestCase):
             root = build_fixture_root(Path(tmpdir))
             write_json(root / PROOF_BUNDLE_REL, seal(relabelled_proof(root, "statistical")))
             append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
-            ok, findings, summary = audit_claim_proof_bundles(root, now=FIXED_NOW)
+            ok, findings, summary = audit_with(root, CLAIM_ROW_CLASSES)
             self.assertFalse(ok, "relabelled proof bundle passed the repository audit")
             self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED])
             self.assertEqual(summary["verified_bundles_count"], 0)
@@ -3891,22 +3896,179 @@ class TestProofReviewFindings(unittest.TestCase):
             self.assertEqual(error_code_set(findings), [_code("ERR_CLAIM_GENERATION_UNBOUND")], [f"{f.code}: {f.message}" for f in findings])
             self.assertEqual(stats["bundles_passed"], 0)
 
-    def test_6_retention_walk_inherits_the_row_generation(self) -> None:
+    def test_6_audit_refuses_a_stale_row_generation_once(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             root = build_fixture_root(Path(tmpdir))
             write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root)))
             row = f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | gen:fss1:formal-publication-v0 |"
             append_readme_table(root, class_table(row))
-            ok, findings, summary = audit_claim_proof_bundles(root, now=FIXED_NOW)
+            ok, findings, summary = audit_with(root, CLAIM_ROW_CLASSES)
             self.assertFalse(ok)
             self.assertEqual(error_code_set(findings), [ERR_STALE_GENERATION], [f"{f.code}: {f.message}" for f in findings])
             stale = [f for f in findings if f.code == ERR_STALE_GENERATION]
-            self.assertEqual(len(stale), 2, "both the citing row scan and the retention walk must refuse it")
+            self.assertEqual(len(stale), 1, "the citing row refuses it once; the retention walk never re-verifies a cited bundle")
             self.assertEqual(summary["verified_bundles_count"], 0)
 
 
 def ERR_PROOF_FORMAL_ARTIFACT_MISSING_CODE() -> str:
     return _code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")
+
+
+# ---------------------------------------------------------------------------
+# Cross-class review of 5a79f2c, items A-D (fss-x4a.30.87.2)
+# ---------------------------------------------------------------------------
+
+INV_CLAIM_ID = "INV-001"  # architecture/invariants.json binds it to class 'invariant'
+INV_BUNDLE_REL = "qualification-artifacts/inv/inv-001.bundle.json"
+STAT_CLAIM_ID = "STAT-001"  # no repository registry binds it
+
+
+def _bindings_kw(fn, bindings: dict) -> dict:
+    """Passes explicit claim-class bindings only to a checker that accepts them, so a checker
+    without registry-bound class resolution fails these tests by accepting, never by TypeError."""
+    return {"class_bindings": dict(bindings)} if "class_bindings" in inspect.signature(fn).parameters else {}
+
+
+def audit_with(root: Path, bindings: dict | None = None, now: datetime = FIXED_NOW):
+    return audit_claim_proof_bundles(root, now=now, **(_bindings_kw(audit_claim_proof_bundles, bindings) if bindings else {}))
+
+
+def scan_plain(root: Path, text: str, name: str = "table.md") -> tuple[list, dict]:
+    """Scans a claim table with no class bindings beyond what the checker itself knows."""
+    md_file = root / name
+    md_file.write_text(text, encoding="utf-8")
+    stats: dict[str, int] = {}
+    findings = scan_markdown_claim_tables(
+        md_file, root, _known_classes(), set(),
+        prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS), stats=stats, now=FIXED_NOW,
+    )
+    return findings, stats
+
+
+def bare_class_bundle(claim_id: str, claim_class: str, level: str = "verified") -> dict:
+    """A bundle carrying only the required-evidence names of an unrealized class."""
+    return seal({
+        "schema": "fss.proof_bundle.v1",
+        "claim_id": claim_id,
+        "claim_class": claim_class,
+        "supported_level": level,
+        "generation": "gen-active-01",
+        "status": "passed",
+        "retained_evidence": list(_known_classes()[claim_class]),
+    })
+
+
+class TestClassReviewItemsAtoD(unittest.TestCase):
+    """Each fail-open found in the review of 5a79f2c fails closed with an exact finding-id set."""
+
+    UNRESOLVED = _code("ERR_CLAIM_CLASS_UNRESOLVED")
+
+    def assert_codes(self, findings: list, expected: list[str]) -> None:
+        self.assertEqual(error_code_set(findings), sorted(set(expected)), [f"{f.code}: {f.message}" for f in findings])
+
+    def test_stale_generation_id_is_registered(self) -> None:
+        errors_md = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8")
+        self.assertEqual(ERR_STALE_GENERATION, "ERR-CLAIM-PROOF-STALE-GENERATION-001")
+        self.assertEqual(errors_md.count(f"| `{ERR_STALE_GENERATION}` |"), 1)
+
+    # A. A class comes from a registry that binds the claim id ------------------
+
+    def test_A_unbound_id_is_unresolved_whatever_the_class_column_says(self) -> None:
+        for relabel in ("statistical", "invariant", "benchmark"):
+            with self.subTest(row_class=relabel), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                write_json(root / PROOF_BUNDLE_REL, bare_class_bundle(PROOF_CLAIM_ID, relabel))
+                findings, stats = scan_plain(root, class_table(f"| `{PROOF_CLAIM_ID}` | {relabel} | verified | `{PROOF_BUNDLE_REL}` |"))
+                self.assert_codes(findings, [self.UNRESOLVED])
+                self.assertEqual(stats["bundles_passed"], 0)
+
+    def test_A_unbound_id_is_unresolved_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / PROOF_BUNDLE_REL, bare_class_bundle(PROOF_CLAIM_ID, "statistical"))
+            append_readme_table(root, class_table(f"| `{PROOF_CLAIM_ID}` | statistical | verified | `{PROOF_BUNDLE_REL}` |"))
+            ok, findings, summary = audit_with(root)
+            self.assertFalse(ok)
+            self.assert_codes(findings, [self.UNRESOLVED])
+            self.assertEqual(summary["verified_bundles_count"], 0)
+            result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_A_invariant_registry_binding_beats_the_row_class(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / INV_BUNDLE_REL, bare_class_bundle(INV_CLAIM_ID, "statistical"))
+            append_readme_table(root, class_table(f"| `{INV_CLAIM_ID}` | statistical | verified | `{INV_BUNDLE_REL}` |"))
+            ok, findings, summary = audit_with(root)
+            self.assertFalse(ok, "a row relabelled an invariant claim as statistical")
+            self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED])
+            self.assertEqual(summary["verified_bundles_count"], 0)
+
+    def test_A_explicit_binding_cannot_override_the_invariant_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / INV_BUNDLE_REL, bare_class_bundle(INV_CLAIM_ID, "statistical"))
+            append_readme_table(root, class_table(f"| `{INV_CLAIM_ID}` | statistical | verified | `{INV_BUNDLE_REL}` |"))
+            ok, findings, _ = audit_with(root, {INV_CLAIM_ID: "statistical"})
+            self.assertFalse(ok)
+            self.assert_codes(findings, [ERR_CLAIM_BINDING_MISMATCH, ERR_CLAIM_LEVEL_EXCEEDED])
+
+    # B. Verified only when the citing row's status is promoted ------------------
+
+    def test_B_specified_row_citing_an_achieved_bundle_is_not_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_json(root / PROOF_BUNDLE_REL, seal(build_proof_fixture(root, bundle={"supported_level": "achieved"})))
+            findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | specified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
+            self.assertEqual(findings, [], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual(
+                (stats["promoted"], stats["bundles_checked"], stats["bundles_passed"], stats["bundles_unpromoted"]),
+                (0, 1, 0, 1),
+            )
+
+    def test_B_specified_row_is_not_verified_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / INV_BUNDLE_REL, bare_class_bundle(INV_CLAIM_ID, "invariant", level="achieved"))
+            append_readme_table(root, class_table(f"| `{INV_CLAIM_ID}` | invariant | specified | `{INV_BUNDLE_REL}` |"))
+            ok, findings, summary = audit_with(root)
+            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual(
+                (summary["bundles_checked"], summary["verified_bundles_count"], summary["unpromoted_bundles_count"]),
+                (1, 0, 1),
+            )
+
+    # C + D. One bundle, one count; invariant and statistical positive paths ---
+
+    def test_C_D_invariant_claim_bound_by_its_registry_passes_once_end_to_end(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / INV_BUNDLE_REL, bare_class_bundle(INV_CLAIM_ID, "invariant"))
+            append_readme_table(root, class_table(f"| `{INV_CLAIM_ID}` | invariant | verified | `{INV_BUNDLE_REL}` |"))
+            ok, findings, summary = audit_with(root)
+            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual(findings, [])
+            self.assertEqual(
+                (summary["bundles_checked"], summary["verified_bundles_count"], summary["unpromoted_bundles_count"]),
+                (1, 1, 0),
+                "a bundle cited by a row and retained under qualification-artifacts is one bundle",
+            )
+            result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("1/1 proof bundles verified", result.stdout)
+
+    def test_D_statistical_claim_with_an_explicit_registry_binding_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            path = write_json(root / "proof_bundles/stat1.bundle.json", bare_class_bundle(STAT_CLAIM_ID, "statistical", level="achieved"))
+            ok, findings, _ = verify_proof_bundle(
+                bundle_path=path, root=root, expected_claim_id=STAT_CLAIM_ID, claim_level="achieved",
+                claim_class="statistical", known_classes=_known_classes(), tombstoned_ids=set(),
+                prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS), now=FIXED_NOW,
+                **_bindings_kw(verify_proof_bundle, {STAT_CLAIM_ID: "statistical"}),
+            )
+            self.assertTrue(ok, [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual(findings, [])
 
 if __name__ == "__main__":
     unittest.main()
