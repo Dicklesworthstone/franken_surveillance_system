@@ -175,15 +175,16 @@ STABLE_ID_GRAMMAR = {
 }
 
 ID_TOKEN_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*-\d+)\b")
+UNDERSCORE_REF_RE = re.compile(r"\b([A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*_\d+)\b")
 
 HEADING_DEF_RE = re.compile(
-    r"^#{1,6}\s+(?:(?:\d+\.)*\d+\s+)?(?:`?(?P<id>[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*-\d+)`?|Scenario\s+(?P<scenario_id>[A-Za-z0-9-]+))\s+[—–-]\s*(?P<title>.+?)\s*$"
+    r"^#{1,6}\s+(?:(?:\d+\.)*\d+\s+)?(?:`(?P<id_backtick>[A-Za-z0-9_-]+)`|`?(?P<id>[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*[-_]\d+)`?|Scenario\s+(?P<scenario_id>[A-Za-z0-9-_]+))\s+[—–-]\s*(?P<title>.+?)\s*$"
 )
 TABLE_DEF_RE = re.compile(
-    r"^\|\s*`?(?P<id>[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*-\d+)`?\s*\|\s*(?P<title>[^|]+?)\s*\|"
+    r"^\|\s*`?(?P<id>[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*[-_]\d+)`?\s*\|\s*(?P<title>[^|]+?)\s*\|"
 )
 LIST_DEF_RE = re.compile(
-    r"^(?:\d+\.|\*|-)\s+`?(?P<id>[A-Za-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*-\d+)`?[:—–-]?\s+(?P<title>.+?)\s*$"
+    r"^(?:\d+\.|\*|-)\s+`?(?P<id>[A-Za-z][A-Za-z0-9]*(?:[-_][A-Za-z0-9]+)*[-_]\d+)`?[:—–-]?\s+(?P<title>.+?)\s*$"
 )
 
 GOAL_HEADING = re.compile(r"^### `(?P<id>GOAL-\d{3})` — (?P<title>.+?)\s*$")
@@ -342,8 +343,7 @@ def _extract_plan_definitions(plan_text: str, source_name: str = "plan.md") -> l
             near_miss = re.match(r"^###\s+`(?P<id>[A-Za-z0-9_-]+)`\s+[—–-]\s*(?P<title>.+?)\s*$", line)
             if near_miss:
                 cand = near_miss.group("id")
-                if cand.startswith("G") or "-" in cand or "_" in cand:
-                    validate_identifier_syntax(cand)
+                validate_identifier_syntax(cand)
             near_scenario = re.match(r"^###\s+Scenario\s+(?P<id>[A-Za-z0-9_-]+)\s+[—–-]\s*(?P<title>.+?)\s*$", line)
             if near_scenario:
                 cand = near_scenario.group("id")
@@ -369,29 +369,6 @@ def _extract_all_occurrences(
             continue
 
         if in_code_fence:
-            def_match = (
-                HEADING_DEF_RE.match(line)
-                or TABLE_DEF_RE.match(line)
-                or LIST_DEF_RE.match(line)
-            )
-            if def_match:
-                candidate_id = def_match.group("id") or def_match.group("scenario_id")
-                if (
-                    candidate_id
-                    and not candidate_id.startswith("ID")
-                    and not candidate_id.startswith("---")
-                ):
-                    validate_identifier_syntax(candidate_id)
-                    title = def_match.group("title").strip().strip("`").strip()
-                    definitions.append(
-                        ParsedDefinition(
-                            legacy_id=candidate_id,
-                            title=title,
-                            line=line_number,
-                            source=source_name,
-                            title_digest=_title_digest(candidate_id, title),
-                        )
-                    )
             for m in ID_TOKEN_RE.finditer(line):
                 token = m.group(1)
                 prefix = token.split("-")[0]
@@ -406,7 +383,12 @@ def _extract_all_occurrences(
         )
         defined_id = None
         if def_match:
-            candidate_id = def_match.group("id") or def_match.group("scenario_id")
+            d_groups = def_match.groupdict()
+            candidate_id = (
+                d_groups.get("id_backtick")
+                or d_groups.get("id")
+                or d_groups.get("scenario_id")
+            )
             if (
                 candidate_id
                 and not candidate_id.startswith("ID")
@@ -441,6 +423,12 @@ def _extract_all_occurrences(
                 )
             )
 
+        for m in UNDERSCORE_REF_RE.finditer(line):
+            token = m.group(1)
+            base = token.replace("_", "-").split("-")[0]
+            if base in NORMATIVE_FAMILIES:
+                validate_identifier_syntax(token)
+
     return definitions, references, examples
 
 
@@ -452,10 +440,18 @@ def _load_repository_definitions(root: Path) -> set[str]:
     if reg_dir.is_dir():
         for path in reg_dir.glob("*.md"):
             clean = _strip_html_comments(path.read_text(encoding="utf-8-sig", errors="strict"))
+            in_code_fence = False
             for line in clean.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    in_code_fence = not in_code_fence
+                    continue
+                if in_code_fence:
+                    continue
                 m = TABLE_DEF_RE.match(line) or HEADING_DEF_RE.match(line) or LIST_DEF_RE.match(line)
                 if m:
-                    cand = m.group("id") or m.group("scenario_id")
+                    d_groups = m.groupdict()
+                    cand = d_groups.get("id_backtick") or d_groups.get("id") or d_groups.get("scenario_id")
                     if cand and not cand.startswith("ID") and not cand.startswith("---"):
                         validate_identifier_syntax(cand)
                         known.add(cand)
@@ -465,10 +461,18 @@ def _load_repository_definitions(root: Path) -> set[str]:
     if adr_dir.is_dir():
         for path in adr_dir.glob("*.md"):
             clean = _strip_html_comments(path.read_text(encoding="utf-8-sig", errors="strict"))
+            in_code_fence = False
             for line in clean.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("```"):
+                    in_code_fence = not in_code_fence
+                    continue
+                if in_code_fence:
+                    continue
                 m = HEADING_DEF_RE.match(line)
                 if m:
-                    cand = m.group("id") or m.group("scenario_id")
+                    d_groups = m.groupdict()
+                    cand = d_groups.get("id_backtick") or d_groups.get("id") or d_groups.get("scenario_id")
                     if cand:
                         validate_identifier_syntax(cand)
                         known.add(cand)
@@ -482,7 +486,11 @@ def _load_repository_definitions(root: Path) -> set[str]:
             def walk(obj: Any) -> None:
                 if isinstance(obj, dict):
                     status = obj.get("status")
-                    if status in ("tombstone", "tombstoned", "superseded"):
+                    disposition = obj.get("disposition")
+                    if (
+                        status in ("tombstone", "tombstoned", "superseded")
+                        or disposition in ("tombstone", "tombstoned", "superseded")
+                    ):
                         return
                     for k, v in obj.items():
                         if k in ("legacyId", "canonicalId") and isinstance(v, str):
@@ -730,6 +738,7 @@ def census_markdown_sources(
         raise AuditError(ERR_SCHEMA_ERROR, "resolutions must be an array")
 
     by_occurrence = {}
+    res_titles_by_id: dict[str, set[str]] = {}
     valid_targets = _load_repository_definitions(ROOT)
     tombstoned_ids: set[str] = set()
 
@@ -745,17 +754,25 @@ def census_markdown_sources(
 
         if not legacy_id or not title:
             raise AuditError(ERR_SCHEMA_ERROR, "resolution row missing legacyId or title")
+        if not isinstance(digest, str) or not digest:
+            raise AuditError(ERR_SCHEMA_ERROR, f"resolution row missing titleDigest for {legacy_id}")
 
         validate_identifier_syntax(legacy_id)
         if canonical_id:
             validate_identifier_syntax(canonical_id)
 
         expected_digest = _title_digest(legacy_id, title)
-        if digest is not None and digest != expected_digest:
+        if digest != expected_digest:
             raise AuditError(
                 ERR_FINGERPRINT_MISMATCH,
                 f"title fingerprint mismatch for {legacy_id} / '{title}': expected {expected_digest}, got {digest}",
             )
+
+        res_titles_by_id.setdefault(legacy_id, set()).add(title)
+        res_titles_by_id.setdefault(_canonical_id(legacy_id), set()).add(title)
+        if canonical_id:
+            res_titles_by_id.setdefault(canonical_id, set()).add(title)
+            res_titles_by_id.setdefault(_canonical_id(canonical_id), set()).add(title)
 
         by_occurrence[(legacy_id, title)] = r
         by_occurrence[(_canonical_id(legacy_id), title)] = r
@@ -779,11 +796,19 @@ def census_markdown_sources(
 
     for path in paths:
         if not path.is_file():
-            continue
+            raise AuditError(ERR_SCHEMA_ERROR, f"markdown source path does not exist: {path}")
         text = _strip_html_comments(path.read_text(encoding="utf-8-sig", errors="strict"))
         defs, refs, _ = _extract_all_occurrences(text, source_name=str(path))
         all_defs.extend(defs)
         all_refs.extend(refs)
+
+    for d in all_defs:
+        expected_titles = res_titles_by_id.get(d.legacy_id) or res_titles_by_id.get(_canonical_id(d.legacy_id))
+        if expected_titles is not None and d.title not in expected_titles:
+            raise AuditError(
+                ERR_FINGERPRINT_MISMATCH,
+                f"markdown definition title '{d.title}' for {d.legacy_id} at {d.source}:{d.line} does not match resolution table",
+            )
 
     def_counts: dict[tuple[str, int] | str, int] = {}
     for d in all_defs:

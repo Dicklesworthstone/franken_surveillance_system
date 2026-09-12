@@ -473,21 +473,21 @@ def test_loophole_1_fenced_code_block_collision_and_extractor_consistency() -> N
     defs = module._extract_plan_definitions(plan_text)
     assert len(defs) == 1, f"Expected 1 definition, got {len(defs)}: code fences must not be parsed as definitions"
 
-    # 2. Conflicting definition in code block must not be laundered
+    # 2. Definitions in code block must not be treated as live definitions or cause false collisions
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         doc1 = root / "doc1.md"
         doc2 = root / "doc2.md"
         doc1.write_text("### `INV-001` — First Meaning\n", encoding="utf-8")
-        doc2.write_text("```markdown\n### `INV-001` — Conflicting Laundered Meaning\n```\n", encoding="utf-8")
+        doc2.write_text("```markdown\n### `INV-001` — Example in Code Fence\n```\n", encoding="utf-8")
         res_file = root / "resolution.json"
         res_file.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": []}), encoding="utf-8")
-        try:
-            module.census_markdown_sources([doc1, doc2], res_file)
-        except module.AuditError as exc:
-            assert exc.error_id == module.ERR_COLLISION
-        else:
-            raise AssertionError("conflicting definition in code fence should be flagged as collision")
+        report = module.census_markdown_sources([doc1, doc2], res_file)
+        assert report["status"] == "passed"
+        assert report["totalDefinitions"] == 1
+        defs2, _, examples2 = module._extract_all_occurrences(doc2.read_text(encoding="utf-8"), "doc2.md")
+        assert len(defs2) == 0
+        assert "INV-001" in examples2
 
 
 def test_loophole_2_html_comments_multiline_and_single_line() -> None:
@@ -644,6 +644,116 @@ def test_loophole_8_corrupt_architecture_json_fails_closed() -> None:
             raise AssertionError("corrupt architecture JSON must fail closed with ERR_SCHEMA_ERROR")
 
 
+def test_extractor_inconsistency_between_plan_defs_and_all_occurrences() -> None:
+    """Proves that _extract_plan_definitions and _extract_all_occurrences contradict each other.
+
+    _extract_plan_definitions skips code blocks (returns 0 defs), but _extract_all_occurrences
+    extracts definitions inside code blocks (returns 1 def).
+    """
+    text = """```markdown
+### `INV-001` — Example definition in code fence
+```
+"""
+    plan_defs = module._extract_plan_definitions(text)
+    all_defs, _, _ = module._extract_all_occurrences(text, "test.md")
+    assert len(plan_defs) == len(all_defs), (
+        f"Inconsistent extractors: _extract_plan_definitions returned {len(plan_defs)} definitions, "
+        f"while _extract_all_occurrences returned {len(all_defs)} definitions from the same fenced block!"
+    )
+
+
+def test_near_miss_delimiter_bypass_special_cased_to_goal() -> None:
+    """Proves line 345 'if cand.startswith("G") or "-" in cand or "_" in cand:' special-cases GOAL.
+
+    INV001, ADR001, CAP001 lack '-' and '_' and do not start with 'G', so they are silently dropped
+    without syntax validation instead of raising ERR_MALFORMED_WIDTH or ERR_UNKNOWN_FAMILY.
+    """
+    plan_text = "### `INV001` — Missing hyphen in INV\n"
+    try:
+        module._extract_plan_definitions(plan_text)
+    except module.AuditError as exc:
+        assert exc.error_id in (module.ERR_MALFORMED_WIDTH, module.ERR_UNKNOWN_FAMILY)
+    else:
+        raise AssertionError("INV001 without hyphen must raise ERR_MALFORMED_WIDTH or ERR_UNKNOWN_FAMILY")
+
+
+def test_underscore_near_miss_completely_invisible_in_census_markdown() -> None:
+    """Proves that underscore near-misses in markdown documents are invisible to census_markdown_sources."""
+    with tempfile.TemporaryDirectory() as tmp:
+        p = Path(tmp)
+        doc = p / "doc.md"
+        doc.write_text("### `GOAL_001` — Underscore typo\n", encoding="utf-8")
+        res = p / "res.json"
+        res.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": []}), encoding="utf-8")
+
+        try:
+            module.census_markdown_sources([doc], res)
+        except module.AuditError as exc:
+            assert exc.error_id in (module.ERR_MALFORMED_WIDTH, module.ERR_UNKNOWN_FAMILY)
+        else:
+            raise AssertionError("GOAL_001 with underscore must raise ERR_MALFORMED_WIDTH or ERR_UNKNOWN_FAMILY")
+
+
+def test_tombstone_disposition_leak_in_architecture_json() -> None:
+    """Proves _load_repository_definitions only checks 'status', ignoring 'disposition: tombstone'."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        arch = root / "architecture"
+        arch.mkdir()
+        (arch / "goals.json").write_text(
+            json.dumps({"id": "GOAL-099", "disposition": "tombstone"}),
+            encoding="utf-8",
+        )
+        known = module._load_repository_definitions(root)
+        assert "GOAL-099" not in known, (
+            "Tombstoned ID with 'disposition: tombstone' was leaked into known_targets!"
+        )
+
+
+def test_markdown_title_drift_silently_passed_in_census_sources() -> None:
+    """Proves census_markdown_sources does not detect title drift between markdown and resolution table."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        doc = root / "doc.md"
+        doc.write_text("### `GOAL-001` — New Title in Markdown\n", encoding="utf-8")
+        res = root / "res.json"
+        res.write_text(
+            json.dumps({
+                "schema": "fss.stable_id_resolution.v1",
+                "resolutions": [
+                    {
+                        "legacyId": "GOAL-001",
+                        "title": "Old Stale Title in Resolution",
+                        "canonicalId": "GOAL-001",
+                        "titleDigest": module._title_digest("GOAL-001", "Old Stale Title in Resolution"),
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        try:
+            module.census_markdown_sources([doc], res)
+        except module.AuditError as exc:
+            assert exc.error_id == module.ERR_FINGERPRINT_MISMATCH
+        else:
+            raise AssertionError("markdown title drift must raise ERR_FINGERPRINT_MISMATCH")
+
+
+def test_census_markdown_sources_silently_skips_missing_files() -> None:
+    """Proves census_markdown_sources silently skips missing file paths instead of failing closed."""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        missing_doc = root / "nonexistent_doc.md"
+        res = root / "res.json"
+        res.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": []}), encoding="utf-8")
+        try:
+            module.census_markdown_sources([missing_doc], res)
+        except (module.AuditError, FileNotFoundError):
+            pass
+        else:
+            raise AssertionError("missing file in census_markdown_sources must fail closed")
+
+
 def main() -> None:
     test_baseline_duplicate_collision_and_resolution()
     test_unresolved_collision_rejected()
@@ -668,6 +778,12 @@ def main() -> None:
     test_loophole_6_tombstoned_id_reference_rejected()
     test_loophole_7_stale_fingerprint_in_census_markdown_sources()
     test_loophole_8_corrupt_architecture_json_fails_closed()
+    test_extractor_inconsistency_between_plan_defs_and_all_occurrences()
+    test_near_miss_delimiter_bypass_special_cased_to_goal()
+    test_underscore_near_miss_completely_invisible_in_census_markdown()
+    test_tombstone_disposition_leak_in_architecture_json()
+    test_markdown_title_drift_silently_passed_in_census_sources()
+    test_census_markdown_sources_silently_skips_missing_files()
     print("all stable-ID audit tests passed")
 
 
