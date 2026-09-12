@@ -382,7 +382,7 @@ fn test_fault_mode_crash_typed_outcome_never_defaults_to_no_detection() -> Resul
     }
 
     assert!(!outcome.is_success());
-    assert!(outcome.output().is_none());
+    assert!(outcome.output().is_err());
 
     Ok(())
 }
@@ -1176,7 +1176,9 @@ fn test_anti_latest_generation_prohibitions() -> Result<(), Box<dyn Error>> {
     assert!(!is_latest_generation("mock:model:person:v1"));
 
     // 2. MockModelExecutor rejects "latest" generation
-    let gen_latest_prefix = ModelGeneration::parse("latest:model:v1")?;
+    assert!(ModelGeneration::parse("latest:model:v1").is_err());
+    assert!(ModelGeneration::parse("model:v1:latest").is_err());
+    let gen_latest_prefix = ModelGeneration::from_unvalidated_for_test("latest:model:v1");
     let res_exec = MockModelExecutor::new(gen_latest_prefix, 42);
     assert_eq!(
         res_exec,
@@ -1185,7 +1187,7 @@ fn test_anti_latest_generation_prohibitions() -> Result<(), Box<dyn Error>> {
         })
     );
 
-    let gen_latest_suffix = ModelGeneration::parse("model:v1:latest")?;
+    let gen_latest_suffix = ModelGeneration::from_unvalidated_for_test("model:v1:latest");
     let res_exec_suffix = MockModelExecutor::new(gen_latest_suffix, 42);
     assert_eq!(
         res_exec_suffix,
@@ -1225,7 +1227,7 @@ fn test_anti_latest_generation_prohibitions() -> Result<(), Box<dyn Error>> {
     ));
 
     // 4. MockEmbedding rejects "latest" generation
-    let gen_latest = ModelGeneration::parse("model:v1:latest")?;
+    let gen_latest = ModelGeneration::from_unvalidated_for_test("model:v1:latest");
     assert_eq!(
         MockEmbedding::new(gen_latest, vec![1.0, 0.0]),
         Err(MockModelError::LatestGenerationProhibited {
@@ -1607,7 +1609,8 @@ fn test_adr_0004_normative_facets_and_atomic_activation_rollback() -> Result<(),
     assert_eq!(executor.prior_generation(), Some(&gen_v1));
 
     // Activation rejects "latest"
-    let gen_latest = ModelGeneration::parse("model:latest:v3")?;
+    assert!(ModelGeneration::parse("model:latest:v3").is_err());
+    let gen_latest = ModelGeneration::from_unvalidated_for_test("model:latest:v3");
     assert!(matches!(
         executor.activate_generation(gen_latest),
         Err(MockModelError::LatestGenerationProhibited { .. })
@@ -1906,4 +1909,67 @@ fn test_model_abstention_and_failure_never_negative_evidence() -> Result<(), Box
     ));
 
     Ok(())
+}
+
+#[test]
+fn test_single_sensor_corroborated_status_must_fail_validation() -> Result<(), Box<dyn Error>> {
+    let sensor_id = SensorId::parse("sensor:cam01")?;
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+
+    // 1. Single sensor claiming Corroborated fails validation
+    let single_sensor_corroborated = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"dummy"),
+        generation: generation.clone(),
+        sensor_id: sensor_id.clone(),
+        input_digest: ContentDigest::sha256(b"in"),
+        capture_interval: CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![],
+        corroboration: CorroborationStatus::Corroborated {
+            contributing_sensors: vec![sensor_id.clone()],
+            contributing_generations: vec![generation.as_str().to_string()],
+        },
+        virtual_latency_ns: 1_000,
+    };
+    assert!(
+        single_sensor_corroborated.validate().is_err(),
+        "MockModelOutput::validate must reject Corroborated status when contributing_sensors < 2"
+    );
+
+    // 2. Duplicate sensor IDs claiming Corroborated fails validation
+    let duplicate_sensor_corroborated = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"dummy"),
+        generation: generation.clone(),
+        sensor_id: sensor_id.clone(),
+        input_digest: ContentDigest::sha256(b"in"),
+        capture_interval: CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![],
+        corroboration: CorroborationStatus::Corroborated {
+            contributing_sensors: vec![sensor_id.clone(), sensor_id],
+            contributing_generations: vec![generation.as_str().to_string()],
+        },
+        virtual_latency_ns: 1_000,
+    };
+    assert!(
+        duplicate_sensor_corroborated.validate().is_err(),
+        "MockModelOutput::validate must reject duplicate sensors in Corroborated status"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_crashed_executor_outcome_cannot_silently_yield_none_as_no_detection() {
+    let crashed = MockExecutorOutcome::Crashed {
+        reason: "segfault".to_string(),
+    };
+    // MockExecutorOutcome::output() must return Result<&MockModelOutput, MockModelError>
+    // so faults cannot be silently converted to Option::None ("no detection")
+    assert!(
+        crashed.output().is_err(),
+        "Crashed outcome.output() must return Err, not None or Ok"
+    );
 }

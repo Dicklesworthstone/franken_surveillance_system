@@ -291,11 +291,9 @@ impl MockModelOutcome {
     /// evidence of absence (which strictly requires a verified `CoverageWitness`).
     pub fn assert_not_negative_evidence(&self) -> Result<(), MockModelError> {
         match self {
-            Self::Abstained { reason } => {
-                Err(MockModelError::AbstentionCannotBeNegativeEvidence {
-                    outcome: format!("MockModelOutcome::Abstained({reason:?})"),
-                })
-            }
+            Self::Abstained { reason } => Err(MockModelError::AbstentionCannotBeNegativeEvidence {
+                outcome: format!("MockModelOutcome::Abstained({reason:?})"),
+            }),
             Self::Finding { .. } => Ok(()),
         }
     }
@@ -518,6 +516,57 @@ pub enum CorroborationStatus {
     },
 }
 
+impl CorroborationStatus {
+    /// Validates internal bounds and invariants for corroboration status (NEG-003 / INV-055).
+    pub fn validate(&self) -> Result<(), MockModelError> {
+        match self {
+            Self::UncorroboratedSingleSource { .. } => Ok(()),
+            Self::Corroborated {
+                contributing_sensors,
+                contributing_generations,
+            } => {
+                if contributing_sensors.len() < 2 {
+                    return Err(MockModelError::InsufficientSourcesForCorroboration {
+                        count: contributing_sensors.len(),
+                        min_required: 2,
+                    });
+                }
+                if contributing_sensors.len() > MAX_CORROBORATION_SOURCES {
+                    return Err(MockModelError::TooManyCorroborationSources {
+                        actual: contributing_sensors.len(),
+                        max: MAX_CORROBORATION_SOURCES,
+                    });
+                }
+                let mut seen = std::collections::BTreeSet::new();
+                for s in contributing_sensors {
+                    if !seen.insert(s) {
+                        return Err(MockModelError::UncorroboratedSingleSensor {
+                            sensor_id: s.clone(),
+                        });
+                    }
+                }
+                if contributing_generations.is_empty() {
+                    return Err(MockModelError::EmptyGenerationId);
+                }
+                if contributing_generations.len() > MAX_CORROBORATION_SOURCES {
+                    return Err(MockModelError::TooManyCorroborationSources {
+                        actual: contributing_generations.len(),
+                        max: MAX_CORROBORATION_SOURCES,
+                    });
+                }
+                for generation_id in contributing_generations {
+                    if is_latest_generation(generation_id) {
+                        return Err(MockModelError::LatestGenerationProhibited {
+                            generation: generation_id.clone(),
+                        });
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
 /// Deterministic model output carrying explicit provenance, uncertainty, and epistemic state.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MockModelOutput {
@@ -580,6 +629,7 @@ impl MockModelOutput {
 
     /// Validates internal bounds and invariants.
     pub fn validate(&self) -> Result<(), MockModelError> {
+        self.corroboration.validate()?;
         if self.detections.len() > MAX_DETECTIONS_PER_OUTPUT {
             return Err(MockModelError::TooManyDetections {
                 actual: self.detections.len(),
@@ -672,12 +722,28 @@ impl MockExecutorOutcome {
         matches!(self, Self::Success(_))
     }
 
-    /// Returns the output if successful, or None if a fault occurred.
-    #[must_use]
-    pub fn output(&self) -> Option<&MockModelOutput> {
+    /// Returns the output if successful, or a typed fault error.
+    ///
+    /// Execution faults never default to `None` or "no detection" (NEG-003 / INV-056).
+    pub fn output(&self) -> Result<&MockModelOutput, MockModelError> {
         match self {
-            Self::Success(out) => Some(out.as_ref()),
-            _ => None,
+            Self::Success(out) => Ok(out.as_ref()),
+            Self::Crashed { reason } => Err(MockModelError::AbstentionCannotBeNegativeEvidence {
+                outcome: format!("MockExecutorOutcome::Crashed({reason})"),
+            }),
+            Self::TimedOut {
+                virtual_timeout_ns,
+                virtual_elapsed_ns,
+            } => Err(MockModelError::AbstentionCannotBeNegativeEvidence {
+                outcome: format!(
+                    "MockExecutorOutcome::TimedOut({virtual_elapsed_ns}/{virtual_timeout_ns}ns)"
+                ),
+            }),
+            Self::MalformedOutput { detail } => {
+                Err(MockModelError::AbstentionCannotBeNegativeEvidence {
+                    outcome: format!("MockExecutorOutcome::MalformedOutput({detail})"),
+                })
+            }
         }
     }
 
