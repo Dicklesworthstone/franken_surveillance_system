@@ -11,12 +11,13 @@ use fss_core::{
     SourceCustody, TimestampNs,
 };
 use fss_reference::{
-    CorroborationStatus, MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT,
+    CorroborationStatus, MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT, MAX_EMBEDDING_DIM,
     MAX_FAULT_REASON_LEN, MAX_INPUT_PAYLOAD_BYTES, MAX_MODEL_GENERATION_BYTES, MockDetection,
-    MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
-    MockModelOutput, MockOutputDigestRequest, MockSemanticLabel, VirtualClock,
-    compare_model_scores, compute_output_digest, encode_coord_to_basis_point,
-    evaluate_corroboration,
+    MockEmbedding, MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
+    MockModelOutput, MockModelScript, MockModelSpec, MockOutputDigestRequest, MockSemanticLabel,
+    ReferenceError, VirtualClock, compare_model_embeddings, compare_model_scores,
+    compute_output_digest, encode_coord_to_basis_point, evaluate_corroboration,
+    fuse_model_embeddings, fuse_model_scores, is_latest_generation,
 };
 
 fn sample_capsule(
@@ -969,5 +970,264 @@ fn test_corroboration_rejects_empty_detections_without_fabricating_unknown()
 
     let res = evaluate_corroboration(&[out_empty_1, out_empty_2]);
     assert_eq!(res, Err(MockModelError::NoDetectionsToCorroborate));
+    Ok(())
+}
+
+#[test]
+fn test_corroboration_rejects_cross_generation_mixing() -> Result<(), Box<dyn Error>> {
+    let gen_v1 = ModelGeneration::parse("model:detector:v1")?;
+    let gen_v2 = ModelGeneration::parse("model:detector:v2")?;
+    let sensor_1 = SensorId::parse("sensor:cam-1")?;
+    let sensor_2 = SensorId::parse("sensor:cam-2")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let detection = MockDetection {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.85, 0.95)?,
+        bounding_box: [0.1, 0.1, 0.5, 0.5],
+    };
+
+    let out_v1 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out1"),
+        generation: gen_v1.clone(),
+        sensor_id: sensor_1.clone(),
+        input_digest: ContentDigest::sha256(b"in1"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![detection.clone()],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1,
+            model_generation: gen_v1.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let out_v2 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out2"),
+        generation: gen_v2.clone(),
+        sensor_id: sensor_2.clone(),
+        input_digest: ContentDigest::sha256(b"in2"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![detection],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_2,
+            model_generation: gen_v2.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let res = evaluate_corroboration(&[out_v1, out_v2]);
+    assert_eq!(
+        res,
+        Err(MockModelError::CrossGenerationScoreMixing {
+            expected: gen_v1,
+            actual: gen_v2,
+        })
+    );
+    Ok(())
+}
+
+#[test]
+fn test_score_fusion_boundary_enforces_generation_identity() -> Result<(), Box<dyn Error>> {
+    let gen_v1 = ModelGeneration::parse("model:detector:v1")?;
+    let gen_v2 = ModelGeneration::parse("model:detector:v2")?;
+
+    let det1 = MockDetection {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.60, 0.90)?,
+        bounding_box: [0.1, 0.1, 0.5, 0.5],
+    };
+    let det2 = MockDetection {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.70, 0.85)?,
+        bounding_box: [0.15, 0.15, 0.45, 0.45],
+    };
+
+    // Planted negative: mixing scores across different model generations must fail with typed error
+    let err = fuse_model_scores(&det1, &gen_v1, &det2, &gen_v2);
+    assert_eq!(
+        err,
+        Err(MockModelError::CrossGenerationScoreMixing {
+            expected: gen_v1.clone(),
+            actual: gen_v2,
+        })
+    );
+
+    // Positive case: fusing scores from same model generation succeeds
+    let fused = fuse_model_scores(&det1, &gen_v1, &det2, &gen_v1)?;
+    assert!((fused.lower - 0.70).abs() < 1e-6);
+    assert!((fused.upper - 0.85).abs() < 1e-6);
+
+    // Contradictory disjoint intervals from same generation fail closed
+    let det_disjoint = MockDetection {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.10, 0.20)?,
+        bounding_box: [0.1, 0.1, 0.5, 0.5],
+    };
+    let contra = fuse_model_scores(&det1, &gen_v1, &det_disjoint, &gen_v1);
+    assert!(matches!(
+        contra,
+        Err(MockModelError::ContradictoryProbabilityIntervals { .. })
+    ));
+
+    Ok(())
+}
+
+#[test]
+fn test_embedding_comparison_and_fusion_boundaries() -> Result<(), Box<dyn Error>> {
+    let gen_v1 = ModelGeneration::parse("model:embed:v1")?;
+    let gen_v2 = ModelGeneration::parse("model:embed:v2")?;
+
+    let emb1 = MockEmbedding::new(gen_v1.clone(), vec![1.0, 0.0, 0.0])?;
+    let emb2 = MockEmbedding::new(gen_v2.clone(), vec![1.0, 0.0, 0.0])?;
+    let emb3 = MockEmbedding::new(gen_v1.clone(), vec![0.0, 1.0, 0.0])?;
+
+    // Planted negative 1: compare across different generations rejected
+    let cmp_err = compare_model_embeddings(&emb1, &emb2);
+    assert_eq!(
+        cmp_err,
+        Err(MockModelError::CrossGenerationEmbeddingMixing {
+            expected: gen_v1.clone(),
+            actual: gen_v2.clone(),
+        })
+    );
+
+    // Planted negative 2: fuse across different generations rejected
+    let fuse_err = fuse_model_embeddings(&emb1, &emb2);
+    assert_eq!(
+        fuse_err,
+        Err(MockModelError::CrossGenerationEmbeddingMixing {
+            expected: gen_v1.clone(),
+            actual: gen_v2,
+        })
+    );
+
+    // Positive comparison: orthogonal vectors have 0.0 cosine similarity
+    let sim = compare_model_embeddings(&emb1, &emb3)?;
+    assert!(sim.abs() < 1e-6);
+
+    // Positive comparison: identical vectors have 1.0 cosine similarity
+    let sim_ident = compare_model_embeddings(&emb1, &emb1)?;
+    assert!((sim_ident - 1.0).abs() < 1e-6);
+
+    // Positive fusion: equal weights normalized
+    let fused = fuse_model_embeddings(&emb1, &emb3)?;
+    assert_eq!(fused.generation, gen_v1);
+    assert_eq!(fused.dim(), 3);
+    let expected_val = (0.5_f64).sqrt();
+    assert!((fused.vector[0] - expected_val).abs() < 1e-6);
+    assert!((fused.vector[1] - expected_val).abs() < 1e-6);
+    assert!(fused.vector[2].abs() < 1e-6);
+
+    // Dimension mismatch rejected
+    let emb_dim2 = MockEmbedding::new(gen_v1.clone(), vec![1.0, 0.0])?;
+    assert_eq!(
+        compare_model_embeddings(&emb1, &emb_dim2),
+        Err(MockModelError::EmbeddingDimensionMismatch {
+            expected: 3,
+            actual: 2,
+        })
+    );
+    assert_eq!(
+        fuse_model_embeddings(&emb1, &emb_dim2),
+        Err(MockModelError::EmbeddingDimensionMismatch {
+            expected: 3,
+            actual: 2,
+        })
+    );
+
+    // Bounds on MockEmbedding
+    assert_eq!(
+        MockEmbedding::new(gen_v1.clone(), vec![]),
+        Err(MockModelError::EmptyEmbeddingVector)
+    );
+    let oversized = vec![0.1; MAX_EMBEDDING_DIM + 1];
+    assert_eq!(
+        MockEmbedding::new(gen_v1.clone(), oversized),
+        Err(MockModelError::EmbeddingDimensionTooLarge {
+            actual: MAX_EMBEDDING_DIM + 1,
+            max: MAX_EMBEDDING_DIM,
+        })
+    );
+    assert_eq!(
+        MockEmbedding::new(gen_v1.clone(), vec![f64::NAN, 1.0]),
+        Err(MockModelError::InvalidEmbeddingNorm)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_anti_latest_generation_prohibitions() -> Result<(), Box<dyn Error>> {
+    // 1. is_latest_generation classifier
+    assert!(is_latest_generation("latest"));
+    assert!(is_latest_generation("LATEST"));
+    assert!(is_latest_generation("latest:v1"));
+    assert!(is_latest_generation("model:latest"));
+    assert!(is_latest_generation("latest.weights"));
+    assert!(!is_latest_generation("model:yolo26:fp16:v1"));
+    assert!(!is_latest_generation("mock:model:person:v1"));
+
+    // 2. MockModelExecutor rejects "latest" generation
+    let gen_latest_prefix = ModelGeneration::parse("latest:model:v1")?;
+    let res_exec = MockModelExecutor::new(gen_latest_prefix, 42);
+    assert_eq!(
+        res_exec,
+        Err(MockModelError::LatestGenerationProhibited {
+            generation: "latest:model:v1".to_string(),
+        })
+    );
+
+    let gen_latest_suffix = ModelGeneration::parse("model:v1:latest")?;
+    let res_exec_suffix = MockModelExecutor::new(gen_latest_suffix, 42);
+    assert_eq!(
+        res_exec_suffix,
+        Err(MockModelError::LatestGenerationProhibited {
+            generation: "model:v1:latest".to_string(),
+        })
+    );
+
+    // 3. MockModelSpec rejects "latest" generation
+    let script = MockModelScript::Fixed {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.8, 0.9)?,
+    };
+    assert!(matches!(
+        MockModelSpec::new("latest", script.clone()),
+        Err(ReferenceError::InvalidSpec(
+            "model_generation_latest_prohibited"
+        ))
+    ));
+    assert!(matches!(
+        MockModelSpec::new("latest:v1", script.clone()),
+        Err(ReferenceError::InvalidSpec(
+            "model_generation_latest_prohibited"
+        ))
+    ));
+    assert!(matches!(
+        MockModelSpec::new("model:latest", script.clone()),
+        Err(ReferenceError::InvalidSpec(
+            "model_generation_latest_prohibited"
+        ))
+    ));
+    assert!(matches!(
+        MockModelSpec::new("latest.weights", script),
+        Err(ReferenceError::InvalidSpec(
+            "model_generation_latest_prohibited"
+        ))
+    ));
+
+    // 4. MockEmbedding rejects "latest" generation
+    let gen_latest = ModelGeneration::parse("model:v1:latest")?;
+    assert_eq!(
+        MockEmbedding::new(gen_latest, vec![1.0, 0.0]),
+        Err(MockModelError::LatestGenerationProhibited {
+            generation: "model:v1:latest".to_string(),
+        })
+    );
+
     Ok(())
 }

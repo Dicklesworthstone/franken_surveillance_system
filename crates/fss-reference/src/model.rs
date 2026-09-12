@@ -114,7 +114,9 @@ impl MockModelSpec {
             return Err(ReferenceError::InvalidSpec("model_generation_id"));
         }
         if is_latest_generation(&generation_id) {
-            return Err(ReferenceError::InvalidSpec("model_generation_latest_prohibited"));
+            return Err(ReferenceError::InvalidSpec(
+                "model_generation_latest_prohibited",
+            ));
         }
         Ok(Self {
             generation_id,
@@ -1216,6 +1218,36 @@ pub enum MockModelError {
     ClockError(String),
     /// Reference error.
     Reference(String),
+    /// Attempt to use a mutable "latest" generation alias, strictly forbidden by ADR-0004 and AGENTS.md.
+    LatestGenerationProhibited {
+        /// The rejected generation identifier.
+        generation: String,
+    },
+    /// Prohibited attempt to mix or compare embeddings across different model generations (INV-013).
+    CrossGenerationEmbeddingMixing {
+        /// Expected model generation.
+        expected: ModelGeneration,
+        /// Actual incompatible model generation.
+        actual: ModelGeneration,
+    },
+    /// Embedding vector dimension mismatch between compared or fused embeddings.
+    EmbeddingDimensionMismatch {
+        /// Expected dimension.
+        expected: usize,
+        /// Actual observed dimension.
+        actual: usize,
+    },
+    /// Embedding vector is empty.
+    EmptyEmbeddingVector,
+    /// Embedding vector dimension exceeds declared maximum bound.
+    EmbeddingDimensionTooLarge {
+        /// Actual dimension observed.
+        actual: usize,
+        /// Maximum allowed dimension.
+        max: usize,
+    },
+    /// Embedding vector has invalid norm (zero or non-finite).
+    InvalidEmbeddingNorm,
 }
 
 impl fmt::Display for MockModelError {
@@ -1274,6 +1306,34 @@ impl fmt::Display for MockModelError {
             Self::InvalidProbabilityScore => write!(f, "invalid probability score"),
             Self::ClockError(reason) => write!(f, "clock error: {reason}"),
             Self::Reference(reason) => write!(f, "reference error: {reason}"),
+            Self::LatestGenerationProhibited { generation } => {
+                write!(
+                    f,
+                    "mutable 'latest' model generation alias is strictly prohibited by ADR-0004: '{generation}'"
+                )
+            }
+            Self::CrossGenerationEmbeddingMixing { expected, actual } => {
+                write!(
+                    f,
+                    "prohibited cross-generation embedding mixing: expected {expected}, got {actual}"
+                )
+            }
+            Self::EmbeddingDimensionMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "embedding dimension mismatch: expected {expected}, got {actual}"
+                )
+            }
+            Self::EmptyEmbeddingVector => write!(f, "embedding vector cannot be empty"),
+            Self::EmbeddingDimensionTooLarge { actual, max } => {
+                write!(
+                    f,
+                    "embedding dimension {actual} exceeds maximum bound {max}"
+                )
+            }
+            Self::InvalidEmbeddingNorm => {
+                write!(f, "embedding vector has zero or non-finite norm")
+            }
         }
     }
 }
