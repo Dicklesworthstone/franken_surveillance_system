@@ -35,9 +35,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
+import tomllib
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -805,6 +807,282 @@ def _verify_receipt_payload(
     return findings, recognized
 
 
+def load_operation_cost_registry(root: Path) -> tuple[dict[str, dict[str, Any]], list[ClaimFinding]]:
+    """Loads architecture/operation_cost_registry.toml mapping operation_id -> operation data."""
+    costs_file = root / "architecture/operation_cost_registry.toml"
+    if not costs_file.is_file():
+        costs_file = ROOT / "architecture/operation_cost_registry.toml"
+    if not costs_file.is_file():
+        return {}, [_finding(ERR_PROOF_BUNDLE_NOT_FOUND, "architecture/operation_cost_registry.toml", "file", "Operation cost registry not found")]
+    try:
+        content = costs_file.read_text(encoding="utf-8")
+        data = tomllib.loads(content)
+    except Exception as exc:
+        return {}, [_finding(ERR_UNREADABLE_INPUT, "architecture/operation_cost_registry.toml", "file", f"Failed to parse operation cost registry: {exc}")]
+    ops: dict[str, dict[str, Any]] = {}
+    for op in data.get("operation", []):
+        if isinstance(op, dict) and "id" in op:
+            ops[str(op["id"]).strip()] = op
+    return ops, []
+
+
+def _scan_nan_inf_negative(obj: Any, path_str: str, location: str, findings: list[ClaimFinding]) -> bool:
+    """Scans structures recursively for NaN or Infinity float/string values."""
+    has_error = False
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            findings.append(_finding(
+                ERR_CLAIM_LEVEL_EXCEEDED, path_str, location,
+                f"Numeric value corrupted by NaN or Infinity: observed {obj!r}",
+            ))
+            return True
+    elif isinstance(obj, str):
+        s_lower = obj.strip().lower()
+        if s_lower in ("nan", "+nan", "-nan", "infinity", "+infinity", "-infinity", "inf", "-inf"):
+            findings.append(_finding(
+                ERR_CLAIM_LEVEL_EXCEEDED, path_str, location,
+                f"Numeric value corrupted by NaN or Infinity string: observed {obj!r}",
+            ))
+            return True
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            loc = f"{location}.{k}" if location else str(k)
+            if _scan_nan_inf_negative(v, path_str, loc, findings):
+                has_error = True
+    elif isinstance(obj, list):
+        for idx, item in enumerate(obj):
+            loc = f"{location}[{idx}]"
+            if _scan_nan_inf_negative(item, path_str, loc, findings):
+                has_error = True
+    return has_error
+
+
+def _verify_slo_claim_evidence(
+    bundle_data: dict[str, Any],
+    root: Path,
+    path_str: str,
+    expected_claim_id: str | None,
+    findings: list[ClaimFinding],
+) -> None:
+    """Performs strict evidence verification for an SLO claim proof bundle per mail #806 / fss-x4a.30.87.5:
+    1. Requires a non-empty artifacts list with a valid measurement artifact on disk.
+    2. Verifies binding to the exact citing SLO ID.
+    3. Verifies operation_id from architecture/operation_cost_registry.toml and that the operation associates with this SLO.
+    4. Verifies active generation without staleness.
+    5. Verifies measurement window bounds and freshness against current generation (rejecting pre-2026/stale dates).
+    6. Rejects NaN, Infinity, negative values, and verifies achieved <= target (or >= for availability) without rounding tolerances.
+    """
+    # 1. NaN / Infinity scan across bundle itself
+    if _scan_nan_inf_negative(bundle_data, path_str, "bundle", findings):
+        return
+
+    # 2. Check artifacts list
+    artifacts_field, artifacts_list = _single_field(bundle_data, ARTIFACT_LIST_FIELDS)
+    if not artifacts_field or not isinstance(artifacts_list, list) or len(artifacts_list) == 0:
+        findings.append(_finding(
+            ERR_CLAIM_LEVEL_EXCEEDED, path_str, "artifacts",
+            "SLO claim proof bundle requires a retained measurement artifact on disk; artifacts list is missing or empty",
+            {"claim_class": "slo"},
+        ))
+        return
+
+    # Find candidate measurement artifacts
+    measurement_candidates: list[tuple[str, dict[str, Any]]] = []
+    for idx, art in enumerate(artifacts_list):
+        if not isinstance(art, dict):
+            continue
+        art_loc_field, art_path_val = _single_field(art, ARTIFACT_LOCATOR_FIELDS)
+        if not art_path_val or not isinstance(art_path_val, str):
+            continue
+        art_path = Path(art_path_val)
+        full_art_path = art_path if art_path.is_absolute() else (root / art_path)
+        if not full_art_path.is_file():
+            continue
+        try:
+            art_data = json.loads(full_art_path.read_text(encoding="utf-8"))
+            if isinstance(art_data, dict):
+                schema = art_data.get("schema", "")
+                if (
+                    schema in ("fss.operation_cost_measurement.v1", "fss.slo_measurement.v1")
+                    or "slo_id" in art_data
+                    or "operation_id" in art_data
+                    or "target_ms" in art_data
+                    or "actual_ms" in art_data
+                    or "target" in art_data
+                ):
+                    measurement_candidates.append((art_path_val, art_data))
+        except Exception:
+            continue
+
+    if not measurement_candidates:
+        findings.append(_finding(
+            ERR_CLAIM_LEVEL_EXCEEDED, path_str, "artifacts",
+            "SLO claim proof bundle requires a retained measurement artifact on disk; none found in declared artifacts",
+            {"claim_class": "slo"},
+        ))
+        return
+
+    op_costs, _ = load_operation_cost_registry(root)
+
+    for art_path_val, meas_data in measurement_candidates:
+        meas_loc = f"artifact[{art_path_val}]"
+
+        # Check NaN / Infinity in measurement artifact
+        if _scan_nan_inf_negative(meas_data, art_path_val, meas_loc, findings):
+            continue
+
+        # Check SLO binding
+        meas_slo = meas_data.get("slo_id") or meas_data.get("sloId") or meas_data.get("claim_id")
+        target_slo = expected_claim_id or bundle_data.get("claim_id") or bundle_data.get("claimId")
+        if not meas_slo or not isinstance(meas_slo, str) or not meas_slo.strip():
+            findings.append(_finding(
+                ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.slo_id",
+                f"Measurement artifact '{art_path_val}' missing required 'slo_id' binding",
+            ))
+        elif target_slo and meas_slo.strip() != str(target_slo).strip():
+            findings.append(_finding(
+                ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.slo_id",
+                f"Measurement artifact '{art_path_val}' binds SLO '{meas_slo}', expected '{target_slo}'",
+                {"bound_slo": meas_slo, "expected_slo": target_slo},
+            ))
+
+        # Check operation_id
+        meas_op = meas_data.get("operation_id") or meas_data.get("operationId") or meas_data.get("cost_id")
+        if not meas_op or not isinstance(meas_op, str) or not meas_op.strip():
+            findings.append(_finding(
+                ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.operation_id",
+                f"Measurement artifact '{art_path_val}' missing required 'operation_id' from operation cost registry",
+            ))
+        else:
+            meas_op = meas_op.strip()
+            if op_costs and meas_op not in op_costs:
+                findings.append(_finding(
+                    ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.operation_id",
+                    f"Measurement artifact references unknown operation '{meas_op}' not in operation cost registry",
+                    {"operation_id": meas_op},
+                ))
+            elif op_costs and meas_op in op_costs:
+                op_entry = op_costs[meas_op]
+                op_slo_ids = op_entry.get("slo_ids", [])
+                if target_slo and target_slo not in op_slo_ids:
+                    findings.append(_finding(
+                        ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.operation_id",
+                        f"Operation '{meas_op}' is not associated with SLO '{target_slo}' in operation cost registry (declared slo_ids: {op_slo_ids})",
+                        {"operation_id": meas_op, "slo_id": target_slo},
+                    ))
+
+        # Check generation
+        meas_gen = meas_data.get("generation")
+        bundle_gen = bundle_data.get("generation")
+        if not meas_gen or not isinstance(meas_gen, str) or not meas_gen.strip():
+            findings.append(_finding(
+                ERR_STALE_GENERATION, art_path_val, f"{meas_loc}.generation",
+                f"Measurement artifact '{art_path_val}' missing required 'generation'",
+            ))
+        else:
+            meas_gen = meas_gen.strip()
+            if bundle_gen and meas_gen != str(bundle_gen).strip():
+                findings.append(_finding(
+                    ERR_STALE_GENERATION, art_path_val, f"{meas_loc}.generation",
+                    f"Measurement artifact generation '{meas_gen}' does not match proof bundle generation '{bundle_gen}'",
+                ))
+            if meas_gen.startswith("gen-2020") or "stale" in meas_gen.lower() or meas_gen == "latest":
+                findings.append(_finding(
+                    ERR_STALE_GENERATION, art_path_val, f"{meas_loc}.generation",
+                    f"Measurement artifact generation '{meas_gen}' is stale or prohibited alias",
+                ))
+
+        # Check measurement window & freshness
+        meas_window = meas_data.get("measurement_window")
+        started_at = meas_data.get("started_at") or meas_data.get("startedAt")
+        finished_at = meas_data.get("finished_at") or meas_data.get("finishedAt")
+        if isinstance(meas_window, dict):
+            started_at = started_at or meas_window.get("started_at") or meas_window.get("startedAt") or meas_window.get("start_time")
+            finished_at = finished_at or meas_window.get("finished_at") or meas_window.get("finishedAt") or meas_window.get("end_time")
+
+        if not started_at or not finished_at:
+            findings.append(_finding(
+                ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.measurement_window",
+                f"Measurement artifact '{art_path_val}' missing measurement window (started_at, finished_at)",
+            ))
+        else:
+            date_strs = [str(started_at), str(finished_at)]
+            for ds in date_strs:
+                m = re.search(r"\b(20[0-2][0-5])\b", ds)
+                if m:
+                    findings.append(_finding(
+                        ERR_STALE_GENERATION, art_path_val, f"{meas_loc}.measurement_window",
+                        f"Measurement window is stale: timestamp '{ds}' is prior to active generation window (2026+)",
+                        {"timestamp": ds},
+                    ))
+                    break
+
+        # Check achieved vs target metrics
+        target_val: float | None = None
+        actual_val: float | None = None
+        reported_rounded: float | None = None
+        comparator = "<="
+
+        for t_key in ("target_ms", "target_value", "target", "target_latency"):
+            if t_key in meas_data and isinstance(meas_data[t_key], (int, float)):
+                target_val = float(meas_data[t_key])
+                break
+        for a_key in ("actual_ms", "actual_value", "actual", "achieved_value", "achieved", "actual_latency"):
+            if a_key in meas_data and isinstance(meas_data[a_key], (int, float)):
+                actual_val = float(meas_data[a_key])
+                break
+        for r_key in ("reported_rounded_ms", "reported_rounded", "rounded_value", "rounded_ms"):
+            if r_key in meas_data and isinstance(meas_data[r_key], (int, float)):
+                reported_rounded = float(meas_data[r_key])
+                break
+
+        if (target_val is None or actual_val is None) and isinstance(meas_data.get("metrics"), dict):
+            metrics_dict = meas_data["metrics"]
+            for m_key, m_val in metrics_dict.items():
+                if isinstance(m_val, dict):
+                    t = m_val.get("target") or m_val.get("target_value")
+                    a = m_val.get("actual") or m_val.get("achieved")
+                    if isinstance(t, (int, float)) and isinstance(a, (int, float)):
+                        target_val = float(t)
+                        actual_val = float(a)
+                        if "rounded" in m_val and isinstance(m_val["rounded"], (int, float)):
+                            reported_rounded = float(m_val["rounded"])
+                        break
+
+        if "comparison" in meas_data:
+            c = str(meas_data["comparison"]).strip()
+            if c in (">=", "ge", ">"):
+                comparator = ">="
+
+        if target_val is not None and actual_val is not None:
+            if actual_val < 0.0 and comparator == "<=":
+                findings.append(_finding(
+                    ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.actual",
+                    f"Measurement actual value cannot be negative: {actual_val}",
+                ))
+            elif comparator == "<=":
+                if actual_val > target_val:
+                    if reported_rounded is not None and reported_rounded <= target_val:
+                        findings.append(_finding(
+                            ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.actual",
+                            f"SLO target met only by rounding: actual {actual_val} exceeds target {target_val} (reported rounded: {reported_rounded})",
+                            {"actual": actual_val, "target": target_val, "reported_rounded": reported_rounded},
+                        ))
+                    else:
+                        findings.append(_finding(
+                            ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.actual",
+                            f"SLO target not achieved: actual {actual_val} exceeds target {target_val}",
+                            {"actual": actual_val, "target": target_val},
+                        ))
+            elif comparator == ">=":
+                if actual_val < target_val:
+                    findings.append(_finding(
+                        ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.actual",
+                        f"SLO target not achieved: actual {actual_val} below target {target_val}",
+                        {"actual": actual_val, "target": target_val},
+                    ))
+
+
 def verify_proof_bundle(
     bundle_path: Path,
     root: Path,
@@ -1016,6 +1294,20 @@ def verify_proof_bundle(
                     f"Proof bundle for class '{effective_class}' is missing required evidence: {missing_ev}",
                     {"missing_evidence": missing_ev, "claim_class": effective_class},
                 ))
+
+        if effective_class == "slo":
+            claim_rank = _rank_of(claim_level.strip().lower()) if isinstance(claim_level, str) else None
+            bundle_level_tuple = _single_field(data, SUPPORTED_LEVEL_FIELDS)
+            bundle_level_str = bundle_level_tuple[1] if bundle_level_tuple[0] else None
+            bundle_rank = _rank_of(bundle_level_str.strip().lower()) if isinstance(bundle_level_str, str) else None
+            is_slo_promoted = (
+                (claim_rank is not None and claim_rank >= PROMOTION_RANK)
+                or (bundle_rank is not None and bundle_rank >= PROMOTION_RANK)
+                or (isinstance(bundle_level_str, str) and bundle_level_str.strip().lower() in ("achieved", "promoted"))
+                or (isinstance(claim_level, str) and claim_level.strip().lower() in ("achieved", "promoted"))
+            )
+            if is_slo_promoted:
+                _verify_slo_claim_evidence(data, root, path_str, expected_claim_id, findings)
 
     is_valid = not any(f.severity == "error" for f in findings)
     return is_valid, findings, data
