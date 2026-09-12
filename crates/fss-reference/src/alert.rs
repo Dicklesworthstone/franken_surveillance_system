@@ -15,6 +15,22 @@ use crate::{
 const MAX_ALERT_CHANNEL_BYTES: usize = 256;
 
 /// Immutable prepared alert plan. Preparation grants no external dispatch by itself.
+///
+/// # Plane boundary (ADR-0001, NEG-003)
+///
+/// The plan carries an effect-plane `EffectIntent` created by the effect plane. Invariant 5:
+/// a model or VLM output such as [`crate::MockModelOutput`] can never convert into that intent.
+///
+/// ```compile_fail,E0277
+/// use fss_core::effect::EffectIntent;
+/// use fss_reference::MockModelOutput;
+///
+/// fn forbidden_model_effect(output: MockModelOutput) {
+///     // adr-0001/inv-5-reference: no `From<MockModelOutput>` exists for `EffectIntent`.
+///     let intent: EffectIntent = output.into();
+///     let _ = intent;
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReferenceAlertPlan {
     /// Exact effect intent registered in the effect journal.
@@ -487,6 +503,37 @@ pub fn prepare_reference_alert(
 ///
 /// A second call after `Indeterminate` fails in the effect journal before the provider is touched.
 /// This models the required no-blind-retry rule for ambiguous external effects.
+///
+/// # Plane boundary (ADR-0001)
+///
+/// Invariant 4: dispatch accepts only a prepared [`ReferenceAlertPlan`]; a cognition value
+/// passed in its place is rejected by the type checker.
+///
+/// ```compile_fail,E0308
+/// use fss_core::belief::BeliefInterval;
+/// use fss_core::{EffectJournal, TimestampNs};
+/// use fss_reference::ReferenceAlertPlan;
+/// use fss_reference::{ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
+///
+/// fn legal_dispatch(
+///     plan: &ReferenceAlertPlan,
+///     journal: &mut EffectJournal,
+///     provider: &mut ReferenceAlertProvider,
+/// ) {
+///     let behavior = ReferenceProviderBehavior::Deliver;
+///     let _ = dispatch_reference_alert(plan, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+/// }
+///
+/// fn forbidden_dispatch(
+///     belief: &BeliefInterval,
+///     journal: &mut EffectJournal,
+///     provider: &mut ReferenceAlertProvider,
+/// ) {
+///     // adr-0001/inv-4-reference: a belief is not a prepared alert plan.
+///     let behavior = ReferenceProviderBehavior::Deliver;
+///     let _ = dispatch_reference_alert(belief, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+/// }
+/// ```
 pub fn dispatch_reference_alert(
     plan: &ReferenceAlertPlan,
     behavior: ReferenceProviderBehavior,

@@ -1025,6 +1025,23 @@ pub fn evidence_class_from_u8(v: u8) -> Result<EvidenceClass, EventDecodeError> 
 }
 
 /// A probability interval rather than an unqualified point score.
+///
+/// # Plane boundary (ADR-0001, NEG-003)
+///
+/// A `ProbabilityInterval` is the model-score form of cognition output carried by event
+/// hypotheses. Invariant 5: model output can never directly become an `EffectIntent`; it must
+/// route through situation, affordance, and a witnessed plan before effect preparation.
+///
+/// ```compile_fail,E0277
+/// use fss_core::ProbabilityInterval;
+/// use fss_core::effect::EffectIntent;
+///
+/// fn forbidden_model_effect(score: ProbabilityInterval) {
+///     // adr-0001/inv-5: no `From<ProbabilityInterval>` exists for `EffectIntent`.
+///     let intent: EffectIntent = score.into();
+///     let _ = intent;
+/// }
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ProbabilityInterval {
     /// Conservative lower bound.
