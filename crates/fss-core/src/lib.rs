@@ -25,6 +25,7 @@ pub mod hydration;
 pub mod identity;
 mod ids;
 mod outcome;
+pub mod pricing;
 mod projection;
 pub mod region;
 pub mod sensor_capsule;
@@ -142,5 +143,6 @@ pub use sensor_capsule::{
 };
 
 pub use acquisition::*;
+pub use pricing::*;
 pub use region::*;
 pub use test_event::*;
