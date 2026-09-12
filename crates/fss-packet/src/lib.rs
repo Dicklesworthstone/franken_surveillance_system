@@ -7,6 +7,7 @@
 
 mod continuity;
 mod error;
+mod h264;
 mod rtcp;
 mod rtp;
 mod timing;
@@ -22,3 +23,8 @@ pub use continuity::{
     ContinuityError, SequenceClass, SequenceObservation, SequenceStats, SequenceTracker, StreamKey,
 };
 pub use timing::{JitterEstimator, SenderReportClock, SenderTimeEstimate, arrival_ticks};
+
+pub use h264::{
+    FragmentDiscard, H264Depacketizer, H264Error, H264Failure, H264Limits, H264Mode,
+    H264Output, H264Status, NalSourceSpan, NalUnit,
+};

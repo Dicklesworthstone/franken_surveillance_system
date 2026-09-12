@@ -9,3 +9,6 @@ description = "Bounded pure-Rust packet parsing and media continuity for FSS"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+fss-core = { path = "../fss-core" }
