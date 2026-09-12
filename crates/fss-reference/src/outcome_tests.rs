@@ -72,7 +72,7 @@ impl OutcomeHarness {
             },
             &mut journal,
         )?;
-        let mut provider = ReferenceAlertProvider::new();
+        let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:outcome");
         let _ = dispatch_reference_alert(
             &plan,
             behavior,

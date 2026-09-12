@@ -138,7 +138,7 @@ fn delivered_alert_closes_verified_obligation() -> Result<(), Box<dyn Error>> {
         EffectState::Prepared
     );
 
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:alert");
     let receipt = dispatch_reference_alert(
         &plan,
         ReferenceProviderBehavior::Deliver,
@@ -190,7 +190,7 @@ fn lost_ack_blocks_resend_until_provider_reconciliation() -> Result<(), Box<dyn 
     let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
     let mut journal = EffectJournal::new();
     let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:lost_ack");
 
     let first = dispatch_reference_alert(
         &plan,
@@ -237,7 +237,7 @@ fn known_pre_delivery_failure_never_creates_provider_message() -> Result<(), Box
     let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
     let mut journal = EffectJournal::new();
     let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:known_failure");
 
     let receipt = dispatch_reference_alert(
         &plan,

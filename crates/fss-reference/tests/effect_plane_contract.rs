@@ -191,7 +191,7 @@ fn test_f2_idempotency_key_shared_by_different_intents_is_typed_conflict()
         &mut journal_b,
     )?;
 
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:idempotency");
 
     // 3. First dispatch of plan_a through dispatch_reference_alert succeeds:
     let dispatch_a = dispatch_reference_alert(
@@ -362,7 +362,7 @@ fn test_f4_adapter_acceptance_does_not_promote_to_verified_without_observation()
     let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
     let mut journal = EffectJournal::new();
     let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:adapter_accepted");
 
     // 1. Adapter delivery transitions to AdapterAccepted only, not Observed or Verified
     let receipt = dispatch_reference_alert(
@@ -647,7 +647,7 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
     let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
     let mut alert_journal = EffectJournal::new();
     let plan = prepare_alert(&decision, &event_receipt, &authority, &mut alert_journal)?;
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:outcome_preserves");
 
     // Dispatch with LoseAckAfterDelivery
     let dispatched = dispatch_reference_alert(
@@ -813,7 +813,7 @@ fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn E
         &mut journal,
     )?;
 
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding1");
 
     // Dispatch plan1 and plan2 which both lose ACK and become Indeterminate:
     let _ = dispatch_reference_alert(
@@ -835,7 +835,8 @@ fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn E
 
     // External provider records failures for op1 and op2:
     // But op1 failure receipt cannot be replayed for op2!
-    let mut failure_provider = ReferenceAlertProvider::new();
+    let mut failure_provider =
+        ReferenceAlertProvider::with_provider_id("provider:test:finding1_fail");
     let op1_receipt = failure_provider.record_failure(&plan1.intent, "timeout")?;
     let op2_receipt = failure_provider.record_failure(&plan2.intent, "timeout")?;
 
@@ -907,7 +908,7 @@ fn test_finding_2_trivial_receipt_forgery_without_provider() -> Result<(), Box<d
         None,
     )?;
     // An offline synthesized proof cannot be verified with a provider that never saw it:
-    let provider = ReferenceAlertProvider::new();
+    let provider = ReferenceAlertProvider::with_provider_id("provider:test:finding2");
     assert!(provider.lookup(&intent)?.is_none());
     Ok(())
 }
@@ -1009,7 +1010,7 @@ fn test_finding_5_delivered_effect_marked_failed() -> Result<(), Box<dyn Error>>
     let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
     let mut journal = EffectJournal::new();
     let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding5");
 
     let t1 = TimestampNs(101);
     let t2 = TimestampNs(102);
@@ -1057,7 +1058,7 @@ fn test_finding_6_reconciliation_not_idempotent() -> Result<(), Box<dyn Error>> 
     let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
     let mut journal = EffectJournal::new();
     let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding6");
 
     let t1 = TimestampNs(101);
     let t2 = TimestampNs(102);
@@ -1101,7 +1102,7 @@ fn test_f1_uncalled_provider_refuses_failure_reconciliation() -> Result<(), Box<
     let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
     let mut journal = EffectJournal::new();
     let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
-    let provider = ReferenceAlertProvider::new();
+    let provider = ReferenceAlertProvider::with_provider_id("provider:test:f1");
 
     journal.transition(
         &plan.intent.operation_id,
@@ -1138,8 +1139,8 @@ fn test_f1_uncalled_provider_refuses_failure_reconciliation() -> Result<(), Box<
 
 #[test]
 fn test_f2_independent_providers_mint_distinct_nonces() -> Result<(), Box<dyn Error>> {
-    let mut provider_a = ReferenceAlertProvider::new();
-    let mut provider_b = ReferenceAlertProvider::new();
+    let mut provider_a = ReferenceAlertProvider::with_provider_id("provider:test:f2:alpha");
+    let mut provider_b = ReferenceAlertProvider::with_provider_id("provider:test:f2:beta");
 
     let intent_a = EffectIntent {
         operation_id: OperationId::parse("op:alert:nonce:a")?,
@@ -1170,6 +1171,32 @@ fn test_f2_independent_providers_mint_distinct_nonces() -> Result<(), Box<dyn Er
 }
 
 #[test]
+fn test_deterministic_provider_mints_bit_identical_receipts_for_same_id()
+-> Result<(), Box<dyn Error>> {
+    let mut provider_1 = ReferenceAlertProvider::with_provider_id("provider:test:deterministic");
+    let mut provider_2 = ReferenceAlertProvider::with_provider_id("provider:test:deterministic");
+
+    let intent = EffectIntent {
+        operation_id: OperationId::parse("op:alert:nonce:det")?,
+        idempotency_key: IdempotencyKey::parse("idempotency:alert:nonce:det")?,
+        effect_class: "alert.dispatch".to_string(),
+        request_digest: ContentDigest::sha256(b"req_det"),
+        precondition_digest: ContentDigest::sha256(b"pre_det"),
+    };
+
+    let _ = provider_1.dispatch(&intent, ReferenceProviderBehavior::Deliver);
+    let _ = provider_2.dispatch(&intent, ReferenceProviderBehavior::Deliver);
+
+    let receipt_1 = provider_1.lookup(&intent)?.ok_or("missing receipt 1")?;
+    let receipt_2 = provider_2.lookup(&intent)?.ok_or("missing receipt 2")?;
+
+    assert_eq!(receipt_1.provider_nonce, receipt_2.provider_nonce);
+    assert_eq!(receipt_1.canonical_bytes(), receipt_2.canonical_bytes());
+    assert_eq!(receipt_1.receipt_digest(), receipt_2.receipt_digest());
+    Ok(())
+}
+
+#[test]
 fn test_f3_unissued_observation_receipt_rejected() -> Result<(), Box<dyn Error>> {
     let path = temp_journal("f3-unissued");
     let _ = fs::remove_file(&path);
@@ -1179,7 +1206,7 @@ fn test_f3_unissued_observation_receipt_rejected() -> Result<(), Box<dyn Error>>
     let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
     let mut journal = EffectJournal::new();
     let plan = prepare_alert(&decision, &event_receipt, &authority, &mut journal)?;
-    let provider = ReferenceAlertProvider::new();
+    let provider = ReferenceAlertProvider::with_provider_id("provider:test:f3");
 
     journal.transition(
         &plan.intent.operation_id,

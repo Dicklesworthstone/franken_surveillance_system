@@ -298,7 +298,7 @@ fn lost_ack_projects_only_reconciliation_and_seals_root_closed_handoff()
         },
         &mut journal,
     )?;
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:situation:lost_ack");
     let _ = dispatch_reference_alert(
         &plan,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
@@ -390,7 +390,7 @@ fn canonical_effect_outcome_cannot_be_omitted_from_projection() -> Result<(), Bo
         },
         &mut journal,
     )?;
-    let mut provider = ReferenceAlertProvider::new();
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:situation:omission");
     let _ = dispatch_reference_alert(
         &plan,
         ReferenceProviderBehavior::Deliver,

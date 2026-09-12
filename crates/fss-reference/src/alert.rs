@@ -1,9 +1,6 @@
 //! Deterministic alert-effect oracle with lost-ACK reconciliation.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
-
-static NEXT_PROVIDER_INSTANCE: AtomicU64 = AtomicU64::new(1);
 
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, EffectIntent, EffectJournal, EffectState,
@@ -164,18 +161,11 @@ pub struct ReferenceAlertProvider {
     failures: BTreeMap<IdempotencyKey, ProviderFailureMessage>,
 }
 
-impl Default for ReferenceAlertProvider {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl ReferenceAlertProvider {
-    /// Creates an empty deterministic provider with unique instance identity.
+    /// Creates an empty deterministic provider with explicit provider instance identity.
     #[must_use]
-    pub fn new() -> Self {
-        let instance = NEXT_PROVIDER_INSTANCE.fetch_add(1, Ordering::Relaxed);
-        Self::with_provider_id(format!("provider:reference:{instance}"))
+    pub fn new(provider_id: impl Into<String>) -> Self {
+        Self::with_provider_id(provider_id)
     }
 
     /// Creates an empty deterministic provider with explicit provider instance identity.
@@ -238,47 +228,49 @@ impl ReferenceAlertProvider {
         nonce_enc.u64(self.nonce_counter);
         let provider_nonce = ContentDigest::sha256(&nonce_enc.finish());
 
-        if behavior == ReferenceProviderBehavior::FailBeforeDelivery {
-            let receipt = ProviderFailureReceipt {
-                provider_nonce,
-                message_digest: intent.canonical_digest("fss.effect_proof.v1"),
-                error_code: REFERENCE_ALERT_FAILURE_REASON.to_owned(),
-            };
-            let receipt_digest = receipt.receipt_digest();
-            self.failures.insert(
-                intent.idempotency_key.clone(),
-                ProviderFailureMessage {
-                    operation_id: intent.operation_id.clone(),
-                    effect_class: intent.effect_class.clone(),
-                    request_digest: intent.request_digest,
-                    precondition_digest: intent.precondition_digest,
-                    receipt,
-                },
-            );
-            return ProviderDispatch::KnownFailure(receipt_digest);
-        }
-
-        let receipt = ProviderObservationReceipt {
-            provider_nonce,
-            message_digest: intent.canonical_digest("fss.effect_proof.v1"),
-        };
-        let receipt_digest = receipt.receipt_digest();
-
-        self.messages.insert(
-            intent.idempotency_key.clone(),
-            ProviderMessage {
-                operation_id: intent.operation_id.clone(),
-                effect_class: intent.effect_class.clone(),
-                request_digest: intent.request_digest,
-                precondition_digest: intent.precondition_digest,
-                receipt,
-            },
-        );
         match behavior {
-            ReferenceProviderBehavior::Deliver => ProviderDispatch::Delivered(receipt_digest),
-            ReferenceProviderBehavior::LoseAckAfterDelivery => ProviderDispatch::LostAck,
             ReferenceProviderBehavior::FailBeforeDelivery => {
-                unreachable!("handled above")
+                let receipt = ProviderFailureReceipt {
+                    provider_nonce,
+                    message_digest: intent.canonical_digest("fss.effect_proof.v1"),
+                    error_code: REFERENCE_ALERT_FAILURE_REASON.to_owned(),
+                };
+                let receipt_digest = receipt.receipt_digest();
+                self.failures.insert(
+                    intent.idempotency_key.clone(),
+                    ProviderFailureMessage {
+                        operation_id: intent.operation_id.clone(),
+                        effect_class: intent.effect_class.clone(),
+                        request_digest: intent.request_digest,
+                        precondition_digest: intent.precondition_digest,
+                        receipt,
+                    },
+                );
+                ProviderDispatch::KnownFailure(receipt_digest)
+            }
+            ReferenceProviderBehavior::Deliver
+            | ReferenceProviderBehavior::LoseAckAfterDelivery => {
+                let receipt = ProviderObservationReceipt {
+                    provider_nonce,
+                    message_digest: intent.canonical_digest("fss.effect_proof.v1"),
+                };
+                let receipt_digest = receipt.receipt_digest();
+
+                self.messages.insert(
+                    intent.idempotency_key.clone(),
+                    ProviderMessage {
+                        operation_id: intent.operation_id.clone(),
+                        effect_class: intent.effect_class.clone(),
+                        request_digest: intent.request_digest,
+                        precondition_digest: intent.precondition_digest,
+                        receipt,
+                    },
+                );
+                if behavior == ReferenceProviderBehavior::Deliver {
+                    ProviderDispatch::Delivered(receipt_digest)
+                } else {
+                    ProviderDispatch::LostAck
+                }
             }
         }
     }
