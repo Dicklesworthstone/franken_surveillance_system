@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, ContentDigest, EffectState,
-    KnowledgeCell, KnowledgeState, OperationReceipt, ProvenanceClass,
+    ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, ContentDigest, ContractError,
+    EffectState, KnowledgeCell, KnowledgeState, OperationReceipt, ProvenanceClass,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -251,7 +251,7 @@ fn replace_commit_with_status(
         },
         unsafe_worlds: BTreeSet::new(),
         required_capabilities: BTreeSet::from([CAPABILITY_EFFECT_RECONCILE.to_owned()]),
-        cost: status_cost(),
+        cost: status_cost()?,
         reversible: true,
         branch_predicate: None,
     });
@@ -324,7 +324,7 @@ fn operation_state_rationale(state: EffectState) -> &'static str {
     }
 }
 
-fn status_cost() -> BudgetVector {
+fn status_cost() -> Result<BudgetVector, ReferenceError> {
     BudgetVector::builder()
         .latency_ms(2_000)
         .bytes(2_048)
@@ -332,5 +332,5 @@ fn status_cost() -> BudgetVector {
         .storage_operations(2)
         .operator_attention_seconds(1.0)
         .build()
-        .unwrap_or(BudgetVector::ZERO)
+        .map_err(|e| ReferenceError::Contract(ContractError::InvalidBudget(e)))
 }

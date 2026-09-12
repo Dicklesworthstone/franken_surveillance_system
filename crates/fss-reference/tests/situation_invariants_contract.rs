@@ -1,6 +1,8 @@
 #![forbid(unsafe_code)]
 //! Integration contract tests verifying reference situation invariants:
+//! - F1: `KnowledgeState::Unknown` claims are preserved in context pack as epistemic boundary critical items.
 //! - F2: `required_context_item_ids` and `ReferenceSituationPublication::verify` propagate errors.
+//! - F2b: Hard clamps to `Unavailable` preserve `unsafe_worlds` and `branch_predicate`.
 //! - F3: Hard clamps (`Unavailable` / `Blocked` affordances) are included in the context pack as critical items.
 //! - F6: Alert `prepare` and `commit` affordances are `Conditional`, not `Robust`, and name the presence world.
 //! - F7: `Corroborated` state retains a protected adversarial residual world, and consequence severity >= 4 is critical.
@@ -10,12 +12,10 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
-    ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, EffectJournal,
-    EventId, IdempotencyKey, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
-    OperationId, PossibleWorld, PrincipalId, ProbabilityInterval, ProvenanceClass,
-    ResourcePressure, SensorId, SessionId, SituationCapsule, SituationFrame, TimestampNs,
-    WorldEnvelope,
+    AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, ContractBasis,
+    ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, IdempotencyKey,
+    KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
+    ResourcePressure, SensorId, SessionId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -132,6 +132,70 @@ impl TestHarness {
         Ok((decision, receipt))
     }
 
+    fn publish_witnessed_decision(
+        &mut self,
+        name: &str,
+    ) -> Result<(ReferencePolicyDecision, ReferenceEventReceipt), Box<dyn Error>> {
+        let obs = self.observation(
+            name,
+            "lane_alpha",
+            60,
+            "power:alpha",
+            MockSemanticLabel::PersonLike,
+        )?;
+        let decision = evaluate_unknown_presence(
+            EventId::parse(format!("event:situation-inv:{name}"))?,
+            vec![obs],
+        )?;
+        let receipt = publish_reference_event(&decision, &mut self.objects, &mut self.authority)?;
+        Ok((decision, receipt))
+    }
+
+    fn publish_rejected_decision(
+        &mut self,
+        name: &str,
+    ) -> Result<(ReferencePolicyDecision, ReferenceEventReceipt), Box<dyn Error>> {
+        let obs = self.observation(
+            name,
+            "lane_alpha",
+            70,
+            "power:alpha",
+            MockSemanticLabel::AnimalLike,
+        )?;
+        let decision = evaluate_unknown_presence(
+            EventId::parse(format!("event:situation-inv:{name}"))?,
+            vec![obs],
+        )?;
+        let receipt = publish_reference_event(&decision, &mut self.objects, &mut self.authority)?;
+        Ok((decision, receipt))
+    }
+
+    fn publish_indeterminate_decision(
+        &mut self,
+        name: &str,
+    ) -> Result<(ReferencePolicyDecision, ReferenceEventReceipt), Box<dyn Error>> {
+        let obs_a = self.observation(
+            name,
+            "lane_alpha",
+            80,
+            "power:alpha",
+            MockSemanticLabel::PersonLike,
+        )?;
+        let obs_b = self.observation(
+            name,
+            "lane_beta",
+            81,
+            "power:beta",
+            MockSemanticLabel::Unknown,
+        )?;
+        let decision = evaluate_unknown_presence(
+            EventId::parse(format!("event:situation-inv:{name}"))?,
+            vec![obs_a, obs_b],
+        )?;
+        let receipt = publish_reference_event(&decision, &mut self.objects, &mut self.authority)?;
+        Ok((decision, receipt))
+    }
+
     fn cleanup(self) {
         let path = self.path.clone();
         drop(self);
@@ -204,71 +268,6 @@ fn test_request<'a>(
         alert_outcome: None,
         available_capabilities: capabilities,
         created_at: TimestampNs(1_000),
-    })
-}
-
-fn synthetic_situation(
-    custom_worlds: Vec<PossibleWorld>,
-    custom_affordances: Vec<ActionAffordance>,
-    next: Vec<String>,
-) -> Result<ReferenceSituation, Box<dyn Error>> {
-    let anchor = LedgerAnchor::genesis("site:synthetic-test");
-    let evidence = ContentDigest::sha256(b"synthetic-evidence");
-    let envelope = WorldEnvelope {
-        envelope_id: "world-envelope:synthetic".to_owned(),
-        objective_id: "objective:synthetic".to_owned(),
-        anchor: anchor.clone(),
-        nominal_claim_ids: BTreeSet::from(["claim:presence".to_owned()]),
-        certified_core_claim_ids: BTreeSet::new(),
-        alternatives: custom_worlds,
-        adversarial_residuals: Vec::new(),
-        common_invariants: BTreeSet::from(["invariant:synthetic".to_owned()]),
-        coverage_boundary_handles: BTreeSet::from(["fss://coverage/synthetic".to_owned()]),
-    };
-    let cell = KnowledgeCell {
-        claim_id: "claim:presence".to_owned(),
-        statement: "Synthetic presence claim.".to_owned(),
-        knowledge_state: KnowledgeState::Known,
-        provenance: ProvenanceClass::Derived,
-        hypothesis: None,
-        evidence: vec![evidence],
-        contradictions: Vec::new(),
-        valid_until: None,
-    };
-    let frame = SituationFrame {
-        frame_id: "frame:synthetic".to_owned(),
-        objective_id: "objective:synthetic".to_owned(),
-        anchor: anchor.clone(),
-        world_envelope: envelope,
-        knowledge_cells: vec![cell],
-        now: vec!["Synthetic observation.".to_owned()],
-        changed: Vec::new(),
-        why: vec!["Synthetic rationale.".to_owned()],
-        unknown: Vec::new(),
-        at_risk: Vec::new(),
-        next,
-        evidence_handles: BTreeSet::from([format!("fss://proof/{evidence}")]),
-    };
-    let capsule = SituationCapsule {
-        capsule_id: "situation:synthetic".to_owned(),
-        revision: 1,
-        contract_basis: test_basis(),
-        mission_id: MissionId::parse("mission:synthetic")?,
-        session_id: SessionId::parse("session:synthetic")?,
-        principal_id: PrincipalId::parse("principal:synthetic")?,
-        anchor,
-        previous_anchor: None,
-        frame,
-        obligations: Vec::new(),
-        affordances: custom_affordances,
-        completeness: Completeness::Complete,
-        created_at: TimestampNs(1_000),
-        mission_state: None,
-    };
-    capsule.validate()?;
-    Ok(ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence]),
     })
 }
 
@@ -420,42 +419,57 @@ fn test_f3_hard_clamps_included_in_context_pack() -> Result<(), Box<dyn Error>> 
     // Invariant F3-4: Publication must pass verification
     pub_res.verify()?;
 
-    // Also test an explicitly Blocked affordance
-    let blocked_affordance = ActionAffordance {
-        affordance_id: "affordance:policy:restricted".to_owned(),
-        operation: "dispatch".to_owned(),
-        target: "fss://policy/restricted".to_owned(),
-        rationale: "Action blocked by safety policy constraint.".to_owned(),
-        class: AffordanceClass::Blocked,
-        supported_worlds: BTreeSet::new(),
-        unsafe_worlds: BTreeSet::new(),
-        required_capabilities: BTreeSet::from(["capability:admin".to_owned()]),
-        cost: BudgetVector::ZERO,
-        reversible: false,
-        branch_predicate: None,
-    };
-    let synthetic = synthetic_situation(
-        vec![PossibleWorld {
-            world_id: "world:base".to_owned(),
-            description: "Base world.".to_owned(),
-            claim_ids: BTreeSet::from(["claim:presence".to_owned()]),
-            evidence: vec![ContentDigest::sha256(b"ev")],
-            consequence_severity: 2,
-            protected: false,
-        }],
-        vec![blocked_affordance],
-        Vec::new(),
+    // Real pipeline test for an explicitly Blocked affordance:
+    // Under ReferencePolicyAction::Hold (e.g. from single-domain Witnessed state),
+    // alert preparation is blocked by policy preconditions and classified as Blocked.
+    let (w_decision, w_receipt) = harness.publish_witnessed_decision("f3-blocked")?;
+    let w_req = test_request(
+        &w_decision,
+        &w_receipt,
+        None,
+        BTreeSet::from(["capability:alert.prepare".to_owned()]),
     )?;
-    let synthetic_pub = project_reference_situation(synthetic, &test_spec(10_000))?;
+    let w_situation = compile_reference_situation(w_req, &harness.authority)?;
+    let blocked_prepare = w_situation
+        .capsule
+        .affordances
+        .iter()
+        .find(|a| a.affordance_id == "affordance:alert:prepare")
+        .ok_or(ReferenceError::InvalidSpec("missing_blocked_prepare"))?;
+    assert_eq!(blocked_prepare.class, AffordanceClass::Blocked);
     assert!(
-        synthetic_pub
-            .context_pack
-            .items
-            .iter()
-            .any(|i| i.item_id == "context:hard_clamp:affordance:policy:restricted"),
-        "Blocked affordance must also appear as hard_clamp in context pack"
+        !w_situation
+            .capsule
+            .frame
+            .next
+            .contains(&"affordance:alert:prepare".to_owned())
     );
-    synthetic_pub.verify()?;
+
+    let w_pub = project_reference_situation(w_situation.clone(), &test_spec(10_000))?;
+    let blocked_clamp_item = w_pub
+        .context_pack
+        .items
+        .iter()
+        .find(|i| i.item_id == "context:hard_clamp:affordance:alert:prepare");
+    assert!(
+        blocked_clamp_item.is_some(),
+        "Blocked affordance must appear as hard_clamp in context pack"
+    );
+    let blocked_item =
+        blocked_clamp_item.ok_or(ReferenceError::InvalidSpec("missing_blocked_item"))?;
+    assert_eq!(blocked_item.kind, "hard_clamp");
+    assert!(
+        blocked_item.content.contains("blocked"),
+        "Hard clamp item content must explain the Blocked state: {}",
+        blocked_item.content
+    );
+
+    let w_required = required_context_item_ids(&w_situation)?;
+    assert!(
+        w_required.contains("context:hard_clamp:affordance:alert:prepare"),
+        "required_context_item_ids must include blocked hard clamp candidate"
+    );
+    w_pub.verify()?;
 
     harness.cleanup();
     Ok(())
@@ -672,71 +686,205 @@ fn test_f7_corroborated_envelope_retains_protected_adversarial_residual_and_high
         "Residual world must be marked protected"
     );
 
-    // Invariant F7-2: High-loss world with consequence_severity >= 4 is critical REGARDLESS of protected flag
-    let high_severity_unprotected = PossibleWorld {
-        world_id: "world:high-loss-unprotected".to_owned(),
-        description: "High loss world with protected = false.".to_owned(),
-        claim_ids: BTreeSet::from(["claim:presence".to_owned()]),
-        evidence: vec![ContentDigest::sha256(b"ev1")],
-        consequence_severity: 4,
-        protected: false, // NOT PROTECTED, but severity >= 4!
-    };
-    let low_severity_unprotected = PossibleWorld {
-        world_id: "world:low-loss-unprotected".to_owned(),
-        description: "Low loss world with protected = false.".to_owned(),
-        claim_ids: BTreeSet::from(["claim:presence".to_owned()]),
-        evidence: vec![ContentDigest::sha256(b"ev2")],
-        consequence_severity: 3,
-        protected: false, // NOT PROTECTED, severity < 4
-    };
+    // Invariant F7-2: High-loss world with consequence_severity >= 4 is critical REGARDLESS of protected flag.
+    // In an Indeterminate event, compile_reference_situation emits an unmitigated-exposure world
+    // with consequence_severity = 4 and protected = false.
+    let (indet_decision, indet_receipt) = harness.publish_indeterminate_decision("f7-indet")?;
+    let indet_req = test_request(&indet_decision, &indet_receipt, None, BTreeSet::new())?;
+    let indet_situation = compile_reference_situation(indet_req, &harness.authority)?;
+    let indet_envelope = &indet_situation.capsule.frame.world_envelope;
 
-    let syn = synthetic_situation(
-        vec![
-            high_severity_unprotected.clone(),
-            low_severity_unprotected.clone(),
-        ],
-        Vec::new(),
-        Vec::new(),
-    )?;
-
-    // required_context_item_ids must include the high-severity world because severity >= 4 makes it critical
-    let required = required_context_item_ids(&syn)?;
+    let unmitigated_world = indet_envelope
+        .alternatives
+        .iter()
+        .find(|w| w.world_id.contains("unmitigated-exposure"))
+        .ok_or(ReferenceError::InvalidSpec("missing_unmitigated_world"))?;
+    assert_eq!(unmitigated_world.consequence_severity, 4);
     assert!(
-        required.contains("context:world:world:high-loss-unprotected"),
+        !unmitigated_world.protected,
+        "unmitigated-exposure world must have protected = false"
+    );
+
+    // required_context_item_ids must include this world because consequence_severity >= 4 makes it critical
+    let indet_required = required_context_item_ids(&indet_situation)?;
+    let unmitigated_item_id = format!("context:world:{}", unmitigated_world.world_id);
+    assert!(
+        indet_required.contains(&unmitigated_item_id),
         "A world with consequence_severity >= 4 must be required (critical) regardless of protected flag"
     );
+
+    let indet_pub = project_reference_situation(indet_situation, &test_spec(10_000))?;
+    let unmitigated_item = indet_pub
+        .context_pack
+        .items
+        .iter()
+        .find(|i| i.item_id == unmitigated_item_id);
     assert!(
-        !required.contains("context:world:world:low-loss-unprotected"),
+        unmitigated_item.is_some(),
+        "High-severity unprotected world must be present in context pack"
+    );
+    let item = unmitigated_item.ok_or(ReferenceError::InvalidSpec("missing_unmitigated_item"))?;
+    assert_eq!(item.kind, "protected_world");
+    indet_pub.verify()?;
+
+    // Contrast with a low-loss unprotected world (consequence_severity < 4 and protected = false):
+    // In a Rejected event, compile_reference_situation emits candidate-rejected with severity 1, protected false.
+    let (rej_decision, rej_receipt) = harness.publish_rejected_decision("f7-rej")?;
+    let rej_req = test_request(&rej_decision, &rej_receipt, None, BTreeSet::new())?;
+    let rej_situation = compile_reference_situation(rej_req, &harness.authority)?;
+    let rej_envelope = &rej_situation.capsule.frame.world_envelope;
+
+    let rejected_world = rej_envelope
+        .alternatives
+        .iter()
+        .find(|w| w.world_id.contains("candidate-rejected"))
+        .ok_or(ReferenceError::InvalidSpec("missing_rejected_world"))?;
+    assert_eq!(rejected_world.consequence_severity, 1);
+    assert!(!rejected_world.protected);
+
+    let rej_required = required_context_item_ids(&rej_situation)?;
+    let rejected_item_id = format!("context:world:{}", rejected_world.world_id);
+    assert!(
+        !rej_required.contains(&rejected_item_id),
         "A world with consequence_severity < 4 and protected = false must NOT be required"
     );
 
-    // Context pack from projection must contain high-severity world as protected_world kind
-    let syn_pub = project_reference_situation(syn, &test_spec(10_000))?;
-    let high_loss_item = syn_pub
+    let rej_pub = project_reference_situation(rej_situation, &test_spec(10_000))?;
+    let rejected_item = rej_pub
         .context_pack
         .items
         .iter()
-        .find(|i| i.item_id == "context:world:world:high-loss-unprotected");
+        .find(|i| i.item_id == rejected_item_id);
     assert!(
-        high_loss_item.is_some(),
-        "High-severity world must be present in context pack"
-    );
-    let item = high_loss_item.ok_or(ReferenceError::InvalidSpec("missing_high_loss_item"))?;
-    assert_eq!(item.kind, "protected_world");
-
-    let low_loss_item = syn_pub
-        .context_pack
-        .items
-        .iter()
-        .find(|i| i.item_id == "context:world:world:low-loss-unprotected");
-    assert!(
-        low_loss_item.is_some(),
+        rejected_item.is_some(),
         "Low-severity world present under ample budget"
     );
-    let low_item = low_loss_item.ok_or(ReferenceError::InvalidSpec("missing_low_loss_item"))?;
-    assert_eq!(low_item.kind, "possible_world");
+    let r_item = rejected_item.ok_or(ReferenceError::InvalidSpec("missing_rejected_item"))?;
+    assert_eq!(r_item.kind, "possible_world");
+    rej_pub.verify()?;
 
-    syn_pub.verify()?;
+    harness.cleanup();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review-391 Finding 1: Unknown knowledge cells preserved in context pack
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_f1_unknown_knowledge_cell_is_preserved_in_context_pack() -> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("f1-unknown")?;
+    // A rejected policy decision produces an uncertified absence claim with KnowledgeState::Unknown
+    let (decision, receipt) = harness.publish_rejected_decision("f1-unknown")?;
+    let req = test_request(&decision, &receipt, None, BTreeSet::new())?;
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    // Verify pre-condition: the situation contains the uncertified absence claim with KnowledgeState::Unknown
+    let absence_cell = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|c| c.claim_id.contains("absence"))
+        .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
+    assert_eq!(
+        absence_cell.knowledge_state,
+        KnowledgeState::Unknown,
+        "Absence claim must have KnowledgeState::Unknown"
+    );
+
+    let absence_context_id = format!("context:epistemic:{}", absence_cell.claim_id);
+
+    // Invariant: required_context_item_ids must include the Unknown cell as a critical epistemic boundary
+    let required = required_context_item_ids(&situation)?;
+    assert!(
+        required.contains(&absence_context_id),
+        "required_context_item_ids must include Unknown knowledge cell"
+    );
+
+    // Project situation to publication
+    let pub_res = project_reference_situation(situation, &test_spec(10_000))?;
+
+    // Invariant: context pack must contain the Unknown cell as epistemic_boundary
+    let unknown_item = pub_res
+        .context_pack
+        .items
+        .iter()
+        .find(|i| i.item_id == absence_context_id);
+    assert!(
+        unknown_item.is_some(),
+        "Unknown knowledge cell must be preserved in context pack as epistemic_boundary!"
+    );
+    let item = unknown_item.ok_or(ReferenceError::InvalidSpec("missing_unknown_item"))?;
+    assert_eq!(item.kind, "epistemic_boundary");
+    assert_eq!(item.epistemic_state, KnowledgeState::Unknown);
+
+    // Invariant: zero critical items omitted
+    assert_eq!(
+        pub_res
+            .compression_receipt
+            .critical_preservation
+            .omitted_critical_items,
+        0
+    );
+    pub_res.verify()?;
+
+    harness.cleanup();
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review-391 Finding 2: Unavailable hard clamp preserves unsafe_worlds & branch predicate
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_f2_unavailable_hard_clamp_preserves_unsafe_worlds_and_branch_predicate()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("f2-clamp")?;
+    let (decision, receipt) = harness.publish_corroborated_decision("f2-clamp")?;
+
+    // Missing capability:alert.prepare -> prepare affordance is clamped to Unavailable
+    let req = test_request(&decision, &receipt, None, BTreeSet::new())?;
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    let prepare = situation
+        .capsule
+        .affordances
+        .iter()
+        .find(|a| a.affordance_id == "affordance:alert:prepare")
+        .ok_or(ReferenceError::InvalidSpec("missing_prepare"))?;
+
+    assert_eq!(prepare.class, AffordanceClass::Unavailable);
+
+    // Invariant: Clamping to Unavailable must NOT erase unsafe_worlds or branch_predicate
+    assert!(
+        !prepare.unsafe_worlds.is_empty(),
+        "unsafe_worlds must NOT be erased by project_affordance when clamped to Unavailable!"
+    );
+    assert!(
+        prepare.branch_predicate.is_some(),
+        "branch_predicate must NOT be erased by project_affordance when clamped to Unavailable!"
+    );
+
+    let presence_world = format!("world:event:{}:present", decision.event.event_id.as_str());
+    assert_eq!(
+        prepare.branch_predicate,
+        Some(presence_world),
+        "branch_predicate must preserve the target presence world"
+    );
+
+    // supported_worlds must be empty since capability is missing
+    assert!(
+        prepare.supported_worlds.is_empty(),
+        "supported_worlds must be empty when required capability is missing"
+    );
+
+    // Affordance must validate against the world envelope
+    prepare.validate_against(&situation.capsule.frame.world_envelope)?;
+
+    let pub_res = project_reference_situation(situation, &test_spec(10_000))?;
+    pub_res.verify()?;
+
     harness.cleanup();
     Ok(())
 }

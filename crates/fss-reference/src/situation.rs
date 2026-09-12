@@ -369,7 +369,7 @@ pub fn compile_reference_situation(
                 &format!("fss://event/{event_name}"),
                 "Wait for a meaningful event or coverage delta while preserving every protected world.",
                 AffordanceClass::Wait,
-                retained_worlds,
+                retained_worlds.clone(),
                 BTreeSet::new(),
                 None,
                 CAPABILITY_SESSION_WAIT,
@@ -377,6 +377,19 @@ pub fn compile_reference_situation(
                 true,
                 &request.available_capabilities,
             ));
+            affordances.push(ActionAffordance {
+                affordance_id: "affordance:alert:prepare".to_owned(),
+                operation: "plan".to_owned(),
+                target: format!("fss://event/{event_name}/alert"),
+                rationale: "Alert preparation is blocked by Hold policy decision; uncorroborated evidence cannot trigger side-effects.".to_owned(),
+                class: AffordanceClass::Blocked,
+                supported_worlds: BTreeSet::new(),
+                unsafe_worlds: retained_worlds,
+                required_capabilities: BTreeSet::from([CAPABILITY_ALERT_PREPARE.to_owned()]),
+                cost: alert_prepare_cost()?,
+                reversible: true,
+                branch_predicate: None,
+            });
         }
         _ => return Err(ReferenceError::InvalidSpec("situation_effect_basis")),
     }
@@ -386,7 +399,10 @@ pub fn compile_reference_situation(
     obligations.dedup();
     let next: Vec<_> = affordances
         .iter()
-        .filter(|affordance| affordance.class != AffordanceClass::Unavailable)
+        .filter(|affordance| {
+            affordance.class != AffordanceClass::Unavailable
+                && affordance.class != AffordanceClass::Blocked
+        })
         .map(|affordance| affordance.affordance_id.clone())
         .collect();
 
@@ -426,10 +442,10 @@ pub fn compile_reference_situation(
         && request.alert_outcome.is_none_or(|outcome| {
             outcome.outcome.operation_receipt.state != EffectState::Indeterminate
         })
-        && affordances
-            .iter()
-            .all(|affordance| affordance.class != AffordanceClass::Unavailable)
-    {
+        && affordances.iter().all(|affordance| {
+            affordance.class != AffordanceClass::Unavailable
+                && affordance.class != AffordanceClass::Blocked
+        }) {
         Completeness::Bounded
     } else {
         Completeness::Partial
@@ -688,6 +704,14 @@ fn compile_worlds(
                 consequence_severity: 5,
                 protected: true,
             });
+            alternatives.push(PossibleWorld {
+                world_id: format!("world:event:{event_name}:unmitigated-exposure"),
+                description: "Unmitigated consequence exposure remains possible under indeterminate evidence.".to_owned(),
+                claim_ids: BTreeSet::from([policy_claim_id.to_owned()]),
+                evidence: policy_evidence.clone(),
+                consequence_severity: 4,
+                protected: false,
+            });
             residuals.push(PossibleWorld {
                 world_id: format!("world:event:{event_name}:non-presence-live"),
                 description: "A benign, contradictory, degraded, or otherwise non-presence explanation remains possible.".to_owned(),
@@ -795,15 +819,11 @@ fn project_affordance(
         } else {
             BTreeSet::new()
         },
-        unsafe_worlds: if available {
-            unsafe_worlds
-        } else {
-            BTreeSet::new()
-        },
+        unsafe_worlds,
         required_capabilities: BTreeSet::from([required_capability.to_owned()]),
         cost,
         reversible,
-        branch_predicate: if available { branch_predicate } else { None },
+        branch_predicate,
     }
 }
 

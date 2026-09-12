@@ -406,12 +406,11 @@ fn context_candidates(
     let capsule = &situation.capsule;
     let frame = &capsule.frame;
     let mut candidates: BTreeMap<String, ContextCandidate> = BTreeMap::new();
-    let summary = frame.now.first().cloned().unwrap_or_else(|| {
-        format!(
-            "Situation at authority commit {}.",
-            capsule.anchor.commit_sequence
-        )
-    });
+    let summary = frame
+        .now
+        .first()
+        .cloned()
+        .ok_or(ReferenceError::InvalidSpec("frame.now must not be empty"))?;
     insert_candidate(
         &mut candidates,
         ContextCandidate {
@@ -589,7 +588,8 @@ fn context_candidates(
         }
         if matches!(
             cell.knowledge_state,
-            KnowledgeState::Conflicted
+            KnowledgeState::Unknown
+                | KnowledgeState::Conflicted
                 | KnowledgeState::Stale
                 | KnowledgeState::NotObservable
                 | KnowledgeState::Redacted
