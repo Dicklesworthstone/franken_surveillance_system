@@ -7,6 +7,7 @@
 //! 3. Zero name collisions across any presentation or interface surface.
 //! 4. Every mapping carries stable error identities and exit identities.
 //! 5. Validation fails closed on collisions, missing surfaces, unregistered error codes, and empty registries.
+//! 6. Planted negative tests adhere to clippy::unwrap_used and clippy::collapsible_if rules.
 
 use std::collections::HashSet;
 use std::error::Error;
