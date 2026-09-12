@@ -7,8 +7,9 @@
 //! tests then drive identical batches through `LedgerOracle` and the durable
 //! `DurableReferenceLedger` journal (including injected indeterminate appends and restart) and
 //! compare state, history, and rejection classification. Known classification differences are
-//! asserted as an explicit mapping; the one state divergence found is retained as negative
-//! evidence in `divergence_batch_id_reuse_is_rejected_by_oracle_but_accepted_by_durable_journal`.
+//! asserted as an explicit mapping; the one state divergence found (batch-ID reuse) is fixed in
+//! the durable ledger and pinned as agreement in
+//! `batch_id_reuse_is_rejected_by_oracle_and_durable_journal`.
 //!
 //! Every scenario emits one bounded, secret-free JSON line on stdout with scenario, seed, fixture
 //! root, anchor epochs, transitions, outcome, digests, and a reproduction command.
@@ -28,10 +29,11 @@ use fss_core::{
 };
 use fss_ledger::{
     AnchorField, AppendPhase, BatchCodecError, DurableAppendReconciliation, DurableLedgerError,
-    DurableReferenceLedger, IncompleteTailPolicy, JournalError, LedgerOracle, MAX_ORACLE_BATCHES,
-    MAX_ORACLE_CHILDREN_PER_BATCH, MAX_ORACLE_DELTAS_PER_BATCH, MAX_ORACLE_OBJECTS,
-    MAX_ORACLE_TEXT_BYTES, ObjectRead, OracleBoundField, OracleConfigField, OracleError,
-    OracleGuidance, OracleLimits, OracleReadError, OracleReplayError,
+    DurableReferenceLedger, ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001, IncompleteTailPolicy,
+    JournalError, LedgerOracle, MAX_ORACLE_BATCHES, MAX_ORACLE_CHILDREN_PER_BATCH,
+    MAX_ORACLE_DELTAS_PER_BATCH, MAX_ORACLE_OBJECTS, MAX_ORACLE_TEXT_BYTES, ObjectRead,
+    OracleBoundField, OracleConfigField, OracleError, OracleGuidance, OracleLimits,
+    OracleReadError, OracleReplayError,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -1638,20 +1640,21 @@ fn durable_replay_of_same_batches_is_byte_identical_and_matches_oracle() -> Test
     Ok(())
 }
 
-/// Retained negative evidence (divergence D-FSS016-001).
+/// Agreement record for former divergence D-FSS016-001 (durable half fixed by fss-ceszm).
 ///
-/// `fss_core::ReferenceLedger`, and therefore `DurableReferenceLedger`, does not index batch
-/// identities: a new successor that reuses a committed `BatchId` with different content is
-/// accepted, so two canonical batches share one stable ID. The oracle refuses it with
-/// `ERR-LEDGER-ORACLE-BATCH-ID-CONFLICT-001`. This test pins the current durable behavior so a
-/// fix to the durable ledger must update this record deliberately rather than silently.
+/// A new successor that reuses a committed `BatchId` with different content is refused by the
+/// oracle with `ERR-LEDGER-ORACLE-BATCH-ID-CONFLICT-001` and by `DurableReferenceLedger` with
+/// `ERR-LEDGER-DURABLE-BATCH-ID-CONFLICT-001`, naming the same identity, committed sequence, and
+/// digests. Neither history changes and the journal is byte-identical. The core
+/// `fss_core::ReferenceLedger` still accepts the reuse on its own; that half is tracked
+/// separately.
 #[test]
-fn divergence_batch_id_reuse_is_rejected_by_oracle_but_accepted_by_durable_journal() -> TestResult {
+fn batch_id_reuse_is_rejected_by_oracle_and_durable_journal() -> TestResult {
     let mut log = ScenarioLog::new(
-        "divergence_batch_id_reuse_is_rejected_by_oracle_but_accepted_by_durable_journal",
+        "batch_id_reuse_is_rejected_by_oracle_and_durable_journal",
         0,
     );
-    let path = journal_path("divergence_batch_id_reuse")?;
+    let path = journal_path("batch_id_reuse_agreement")?;
     let mut durable = DurableReferenceLedger::open(&path, SITE, IncompleteTailPolicy::Reject)?;
     let mut oracle = oracle()?;
     let first = oracle.prepare_batch(batch_id("1")?, vec![create("a", "a")?], [])?;
@@ -1662,18 +1665,70 @@ fn divergence_batch_id_reuse_is_rejected_by_oracle_but_accepted_by_durable_journ
     let reuse = oracle.prepare_batch(first.batch_id.clone(), vec![create("b", "b")?], [])?;
     let error = expect_err(oracle.append(reuse.clone()))?;
     assert_eq!(error.code(), "ERR-LEDGER-ORACLE-BATCH-ID-CONFLICT-001");
-    durable.append(reuse.clone())?;
+    assert_eq!(error.guidance(), OracleGuidance::RejectInput);
+
+    let journal_before = durable.journal_root();
+    let bytes_before = fs::read(&path)?;
+    let durable_error = match durable.append(reuse.clone()) {
+        Err(durable_error) => durable_error,
+        Ok(snapshot) => {
+            return Err(format!(
+                "DIVERGENCE durable accepted batch id reuse at {:?}",
+                snapshot.anchor
+            )
+            .into());
+        }
+    };
+    assert_eq!(
+        durable_error.stable_id(),
+        Some(ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001)
+    );
+    match (&error, &durable_error) {
+        (
+            OracleError::BatchIdConflict {
+                batch_id: oracle_id,
+                committed_sequence: oracle_sequence,
+                committed_digest: oracle_committed,
+                offered_digest: oracle_offered,
+            },
+            DurableLedgerError::BatchIdConflict {
+                batch_id: durable_id,
+                committed_sequence: durable_sequence,
+                committed_digest: durable_committed,
+                offered_digest: durable_offered,
+            },
+        ) => {
+            assert_eq!(oracle_id, durable_id);
+            assert_eq!(oracle_sequence, durable_sequence);
+            assert_eq!(oracle_committed, durable_committed);
+            assert_eq!(oracle_offered, durable_offered);
+            assert_eq!(*durable_id, reuse.batch_id);
+            assert_eq!(*durable_sequence, 1);
+            assert_eq!(*durable_committed, first.batch_digest);
+            assert_eq!(*durable_offered, reuse.batch_digest);
+        }
+        _ => {
+            return Err(format!(
+                "DIVERGENCE classification: oracle {error:?} vs durable {durable_error:?}"
+            )
+            .into());
+        }
+    }
+
     let sharing = durable
         .batches()
         .iter()
         .filter(|batch| batch.batch_id == reuse.batch_id)
         .count();
-    assert_eq!(sharing, 2);
-    assert!(assert_same_state(&oracle, &durable).is_err());
-    log.record("oracle rejects batch id reuse; durable accepts it (retained divergence)")?;
-    log.emit(
-        &oracle,
-        "divergence_retained_durable_accepts_batch_id_reuse",
-    );
+    assert_eq!(sharing, 1);
+    assert_eq!(durable.journal_root(), journal_before);
+    assert_eq!(fs::read(&path)?, bytes_before);
+    assert_same_state(&oracle, &durable)?;
+    log.record(format!(
+        "oracle {} and durable {} both reject batch id reuse with matching identity, sequence, and digests",
+        error.code(),
+        ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001
+    ))?;
+    log.emit(&oracle, "agree_batch_id_reuse_rejected");
     Ok(())
 }

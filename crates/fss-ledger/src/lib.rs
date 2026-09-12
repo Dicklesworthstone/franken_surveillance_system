@@ -24,7 +24,10 @@ mod open_preflight_tests;
 mod tests;
 
 pub use batch_codec::{BatchCodecError, decode_batch, encode_batch};
-pub use durable::{DurableAppendReconciliation, DurableLedgerError, DurableReferenceLedger};
+pub use durable::{
+    DurableAppendReconciliation, DurableLedgerError, DurableReferenceLedger,
+    ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001,
+};
 pub use error::{
     AppendPhase, CorruptionKind, ERR_LEDGER_LENGTH_OVERFLOW_001, ExternalMutationKind, JournalError,
 };

@@ -1,5 +1,6 @@
 //! Crash-safe evidence-history wrapper proving restart equivalence.
 
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt;
 use std::path::Path;
@@ -15,6 +16,10 @@ use crate::{
 };
 
 const EVIDENCE_BATCH_RECORD_KIND: u16 = 1;
+
+/// Registered stable error ID for a committed durable batch identity reused with different content.
+pub const ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001: &str =
+    "ERR-LEDGER-DURABLE-BATCH-ID-CONFLICT-001";
 
 /// Errors raised by the durable reference ledger.
 #[derive(Debug)]
@@ -32,6 +37,32 @@ pub enum DurableLedgerError {
         /// Unsupported record kind.
         kind: u16,
     },
+    /// A committed batch already uses this stable identity with different content.
+    ///
+    /// Stable batch IDs are never reused. An identical resubmission is not this error; it keeps
+    /// its idempotent-duplicate classification.
+    BatchIdConflict {
+        /// Reused batch identity.
+        batch_id: BatchId,
+        /// Commit sequence of the canonical batch that owns this identity.
+        committed_sequence: u64,
+        /// Content digest of the canonical batch.
+        committed_digest: ContentDigest,
+        /// Content digest of the offered batch.
+        offered_digest: ContentDigest,
+    },
+}
+
+impl DurableLedgerError {
+    /// Stable registered error identity if defined.
+    #[must_use]
+    pub const fn stable_id(&self) -> Option<&'static str> {
+        match self {
+            Self::Journal(error) => error.stable_id(),
+            Self::BatchIdConflict { .. } => Some(ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001),
+            Self::Codec(_) | Self::Contract(_) | Self::UnexpectedRecordKind { .. } => None,
+        }
+    }
 }
 
 impl fmt::Display for DurableLedgerError {
@@ -44,6 +75,15 @@ impl fmt::Display for DurableLedgerError {
                 formatter,
                 "durable ledger record {sequence} has unsupported kind {kind}"
             ),
+            Self::BatchIdConflict {
+                batch_id,
+                committed_sequence,
+                committed_digest,
+                offered_digest,
+            } => write!(
+                formatter,
+                "durable ledger batch id {batch_id} committed at sequence {committed_sequence} as {committed_digest}, offered as {offered_digest} ({ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001})"
+            ),
         }
     }
 }
@@ -54,7 +94,7 @@ impl Error for DurableLedgerError {
             Self::Journal(error) => Some(error),
             Self::Codec(error) => Some(error),
             Self::Contract(error) => Some(error),
-            Self::UnexpectedRecordKind { .. } => None,
+            Self::UnexpectedRecordKind { .. } | Self::BatchIdConflict { .. } => None,
         }
     }
 }
@@ -94,22 +134,78 @@ pub enum DurableAppendReconciliation {
     },
 }
 
+/// Stable identity of one committed batch: its commit sequence and content digest.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CommittedIdentity {
+    commit_sequence: u64,
+    batch_digest: ContentDigest,
+}
+
+impl CommittedIdentity {
+    const fn of(batch: &EvidenceDeltaBatch) -> Self {
+        Self {
+            commit_sequence: batch.new_anchor.commit_sequence,
+            batch_digest: batch.batch_digest,
+        }
+    }
+}
+
+/// Index of every committed stable batch identity.
+///
+/// It holds exactly one entry per batch in the durable committed prefix, so it is bounded by the
+/// history the wrapped `ReferenceLedger` already retains. It is rebuilt from the journal by
+/// `replay_report` on open and on `verify_storage`; it is never the sole record of an identity.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct BatchIdentityIndex {
+    committed: BTreeMap<BatchId, CommittedIdentity>,
+}
+
+impl BatchIdentityIndex {
+    /// Refuses `batch` when a committed batch owns its identity with different content.
+    ///
+    /// Content identity is the recomputed canonical batch digest. An identical resubmission passes
+    /// this check unchanged, so it keeps the existing duplicate classification from the core
+    /// ledger (`ContractError::StaleAnchor`) and never becomes a conflict.
+    fn check_not_reused(&self, batch: &EvidenceDeltaBatch) -> Result<(), DurableLedgerError> {
+        let Some(committed) = self.committed.get(&batch.batch_id) else {
+            return Ok(());
+        };
+        let offered_digest = batch.computed_digest();
+        if offered_digest == committed.batch_digest {
+            return Ok(());
+        }
+        Err(DurableLedgerError::BatchIdConflict {
+            batch_id: batch.batch_id.clone(),
+            committed_sequence: committed.commit_sequence,
+            committed_digest: committed.batch_digest,
+            offered_digest,
+        })
+    }
+
+    /// Records one batch that has just become canonical.
+    fn insert(&mut self, batch_id: BatchId, identity: CommittedIdentity) {
+        self.committed.insert(batch_id, identity);
+    }
+}
+
 #[derive(Clone, Debug)]
 struct PendingLedgerAppend {
     candidate: ReferenceLedger,
     sequence: u64,
     batch_id: BatchId,
+    identity: CommittedIdentity,
 }
 
 /// Durable wrapper around the deterministic in-memory reference ledger.
 ///
 /// On open, every committed journal record is decoded and replayed through the same
-/// `ReferenceLedger::append` checks used by live publication. This makes restart state a
-/// deterministic function of the durable committed prefix.
+/// batch-identity check and `ReferenceLedger::append` checks used by live publication. This makes
+/// restart state a deterministic function of the durable committed prefix.
 #[derive(Debug)]
 pub struct DurableReferenceLedger {
     journal: Journal,
     ledger: ReferenceLedger,
+    identities: BatchIdentityIndex,
     pending: Option<PendingLedgerAppend>,
 }
 
@@ -118,8 +214,9 @@ impl DurableReferenceLedger {
     ///
     /// When tail truncation is requested, the complete committed prefix is semantically replayed
     /// before any repair mutation is allowed. A malformed batch, unsupported record kind, stale
-    /// site lineage, or other semantic failure therefore leaves an incomplete suffix untouched for
-    /// diagnosis. `Journal::open` revalidates the structural prefix before the repair itself.
+    /// site lineage, reused batch identity, or other semantic failure therefore leaves an
+    /// incomplete suffix untouched for diagnosis. `Journal::open` revalidates the structural
+    /// prefix before the repair itself.
     pub fn open(
         path: impl AsRef<Path>,
         site_lineage: impl Into<String>,
@@ -156,10 +253,11 @@ impl DurableReferenceLedger {
             .into());
         }
 
-        let ledger = replay_report(&report, &site_lineage)?;
+        let (ledger, identities) = replay_report(&report, &site_lineage)?;
         Ok(Self {
             journal,
             ledger,
+            identities,
             pending: None,
         })
     }
@@ -200,7 +298,9 @@ impl DurableReferenceLedger {
 
     /// Validates, durably commits, then exposes one evidence batch.
     ///
-    /// The exact successor ledger and durable bytes are prepared before journal I/O. If the
+    /// A batch whose stable identity is already committed with different content is refused with
+    /// `DurableLedgerError::BatchIdConflict` before any other check and before journal I/O. The
+    /// exact successor ledger and durable bytes are then prepared before journal I/O. If the
     /// journal returns `AppendIndeterminate`, the candidate remains private and this ledger blocks
     /// further mutation until `reconcile_pending` proves whether that exact batch committed.
     pub fn append(
@@ -214,13 +314,16 @@ impl DurableReferenceLedger {
             .into());
         }
 
+        self.identities.check_not_reused(&batch)?;
         let mut candidate = self.ledger.clone();
         candidate.append(batch.clone())?;
         let encoded = encode_batch(&batch)?;
         let batch_id = batch.batch_id.clone();
+        let identity = CommittedIdentity::of(&batch);
         match self.journal.append(EVIDENCE_BATCH_RECORD_KIND, &encoded) {
             Ok(_record) => {
                 self.ledger = candidate;
+                self.identities.insert(batch_id, identity);
                 Ok(self.ledger.current())
             }
             Err(error) => {
@@ -229,6 +332,7 @@ impl DurableReferenceLedger {
                         candidate,
                         sequence: *sequence,
                         batch_id,
+                        identity,
                     });
                 }
                 Err(error.into())
@@ -249,6 +353,8 @@ impl DurableReferenceLedger {
         match self.journal.reconcile_pending(tail_policy) {
             Ok(AppendReconciliation::Committed(_record)) => {
                 self.ledger = pending.candidate;
+                self.identities
+                    .insert(pending.batch_id.clone(), pending.identity);
                 Ok(DurableAppendReconciliation::Committed {
                     sequence: pending.sequence,
                     batch_id: pending.batch_id,
@@ -267,9 +373,11 @@ impl DurableReferenceLedger {
     /// Re-verifies the reconciled durable prefix and journal root with full semantic batch validation.
     pub fn verify_storage(&mut self) -> Result<ContentDigest, DurableLedgerError> {
         let report = self.journal.verify()?;
-        let replayed = replay_report(&report, &self.ledger.current().anchor.site_lineage)?;
+        let (replayed, identities) =
+            replay_report(&report, &self.ledger.current().anchor.site_lineage)?;
         if report.last_root() != self.journal.last_root()
             || replayed.current() != self.ledger.current()
+            || identities != self.identities
         {
             return Err(DurableLedgerError::Journal(
                 JournalError::ExternalMutation {
@@ -289,11 +397,13 @@ impl DurableReferenceLedger {
     }
 }
 
+/// Replays the committed prefix through the live identity and core-ledger checks.
 fn replay_report(
     report: &RecoveryReport,
     site_lineage: &str,
-) -> Result<ReferenceLedger, DurableLedgerError> {
+) -> Result<(ReferenceLedger, BatchIdentityIndex), DurableLedgerError> {
     let mut ledger = ReferenceLedger::new(site_lineage);
+    let mut identities = BatchIdentityIndex::default();
     for record in report.records() {
         if record.kind() != EVIDENCE_BATCH_RECORD_KIND {
             return Err(DurableLedgerError::UnexpectedRecordKind {
@@ -302,7 +412,11 @@ fn replay_report(
             });
         }
         let batch = decode_batch(record.payload())?;
+        identities.check_not_reused(&batch)?;
+        let batch_id = batch.batch_id.clone();
+        let identity = CommittedIdentity::of(&batch);
         ledger.append(batch)?;
+        identities.insert(batch_id, identity);
     }
-    Ok(ledger)
+    Ok((ledger, identities))
 }
