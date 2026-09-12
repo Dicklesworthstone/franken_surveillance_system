@@ -371,6 +371,24 @@ class CheckPolicyOfflineBuildTests(CheckPolicyFixtureCase):
         check_policy.cargo_policy(make_clean_policy_dict())
         self.assertTrue(any(err.startswith("DEP-AUD-026") and "build.rs:2" in err for err in check_policy.errors), check_policy.errors)
 
+    def test_cargo_policy_build_script_network_wrapped_command_fails(self) -> None:
+        cases = [
+            '#![forbid(unsafe_code)]\nfn main() { let _ = std::process::Command::new(&"curl"); }\n',
+            '#![forbid(unsafe_code)]\nfn main() { let _ = std::process::Command::new(("git")); }\n',
+        ]
+        for body in cases:
+            with self.subTest(body=body):
+                check_policy.errors.clear()
+                (self.root / "Cargo.toml").write_text(
+                    '[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n\n[workspace.lints.rust]\nunsafe_code = "forbid"\n',
+                    encoding="utf-8",
+                )
+                make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
+                (self.root / "crates" / "crate-a" / "build.rs").write_text(body, encoding="utf-8")
+                check_policy.cargo_policy(make_clean_policy_dict())
+                self.assertTrue(any(err.startswith("DEP-AUD-026") and "build.rs:2" in err for err in check_policy.errors), check_policy.errors)
+
+
     def test_qualify_offline_policy_missing_offline_fails(self) -> None:
         script = self.root / "scripts" / "qualify.sh"
         script.parent.mkdir(parents=True)

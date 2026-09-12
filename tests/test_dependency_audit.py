@@ -936,6 +936,22 @@ class BuildScriptNetworkTests(unittest.TestCase):
                     (label, hits),
                 )
 
+    def test_scan_build_script_network_skips_wrappers_and_resolves_bindings(self) -> None:
+        """fss-x4a.26.3: scan_build_script_network must skip & and ( wrappers before the literal
+        and resolve local const/let bindings to string literals."""
+        cases = {
+            "ref wrapper": 'fn main() { let _ = Command::new(&"curl"); }',
+            "parentheses wrapper": 'fn main() { let _ = Command::new(("git")); }',
+            "const binding": 'const TOOL: &str = "curl"; fn main() { let _ = Command::new(TOOL); }',
+            "let binding": 'fn main() { let cmd = &"wget"; let _ = Command::new(cmd); }',
+            "let binding with parens": 'fn main() { let cmd = ("ssh"); let _ = Command::new((cmd)); }',
+        }
+        for label, snippet in cases.items():
+            with self.subTest(label=label):
+                hits = dependency_audit.scan_build_script_network(snippet)
+                self.assertTrue(bool(hits), f"{label} returned [] for {snippet!r}")
+
+
     def test_commented_or_quoted_network_tokens_do_not_fail(self) -> None:
         body = (
             "// TcpStream::connect and std::net are only mentioned here\n"

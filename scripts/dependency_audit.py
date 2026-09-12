@@ -1250,21 +1250,42 @@ BUILD_SCRIPT_NETWORK_COMMANDS = frozenset(
 )
 _COMMAND_NEW_CALL = re.compile(r"\bCommand\s*::\s*new\s*\(\s*")
 _URL_SCHEME = re.compile(r"\b(?:https?|ftp|sftp|ssh|git|wss?)://", re.IGNORECASE)
+_BINDING = re.compile(r"\b(?:pub(?:\s*\([^)]*\))?\s+)?(?:const|let(?:\s+mut)?)\s+([A-Za-z0-9_]+)\s*(?::\s*[^=]+)?=\s*", re.DOTALL)
 
 
 def scan_build_script_network(text: str) -> list[tuple[int, str]]:
     """Return sorted ``(line, label)`` deny-list hits in one build script's source text."""
     masked, literals = mask_rust_source(text)
     by_start = {literal.start: literal for literal in literals}
+    bindings: dict[str, str] = {}
+    for m in _BINDING.finditer(masked):
+        name = m.group(1)
+        idx = m.end()
+        while idx < len(masked) and masked[idx] in " \t\r\n&(":
+            idx += 1
+        lit = by_start.get(idx)
+        if lit is not None:
+            bindings[name] = lit.content
+
     hits: set[tuple[int, str]] = set()
     for label, pattern in BUILD_SCRIPT_NETWORK_PATTERNS:
         for match in pattern.finditer(masked):
             hits.add((source_line(masked, match.start()), label))
     for match in _COMMAND_NEW_CALL.finditer(masked):
-        literal = by_start.get(match.end())
-        if literal is None:
+        idx = match.end()
+        while idx < len(masked) and masked[idx] in " \t\r\n&(":
+            idx += 1
+        raw_cmd: str | None = None
+        literal = by_start.get(idx)
+        if literal is not None:
+            raw_cmd = literal.content
+        else:
+            ident_match = re.match(r"[A-Za-z0-9_]+", masked[idx:])
+            if ident_match and ident_match.group(0) in bindings:
+                raw_cmd = bindings[ident_match.group(0)]
+        if raw_cmd is None:
             continue  # non-literal program (e.g. env!("RUSTC")) is not resolved: see docstring
-        program = re.split(r"[\\/]", literal.content.strip())[-1].lower()
+        program = re.split(r"[\\/]", raw_cmd.strip())[-1].lower()
         if program.endswith(".exe"):
             program = program[: -len(".exe")]
         if program in BUILD_SCRIPT_NETWORK_COMMANDS:
