@@ -122,7 +122,7 @@ resolver = "3"
 members = ["crates/crate-a", "crates/crate-b"]
 
 [workspace.dependencies]
-serde = { version = "1.0", default-features = false }
+asupersync = { version = "1.0", default-features = false }
 """
         (self.root / "Cargo.toml").write_text(root_cargo, encoding="utf-8")
         make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
@@ -130,7 +130,7 @@ serde = { version = "1.0", default-features = false }
 crate-a = { path = "../crate-a" }
 
 [dev-dependencies]
-serde = { workspace = true }
+asupersync = { workspace = true }
 """
         make_valid_crate(self.root / "crates" / "crate-b", "crate-b", extra_manifest=b_extra)
 
@@ -148,10 +148,10 @@ members = ["crates/crate-a"]
 """
         (self.root / "Cargo.toml").write_text(root_cargo, encoding="utf-8")
         a_extra = """[target.'cfg(windows)'.dependencies]
-serde = { version = "1.0", default-features = false }
+asupersync = { version = "1.0", default-features = false }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
-serde_json = { version = "1.0", default-features = false }
+frankensqlite = { version = "1.0", default-features = false }
 """
         make_valid_crate(self.root / "crates" / "crate-a", "crate-a", extra_manifest=a_extra)
 
@@ -641,6 +641,197 @@ members = ["crates/crate-a"]
             codes = [f["code"] for f in report["findings"]]
             self.assertIn("DEP-AUD-030", codes, "Audit must detect forbidden package in Cargo.lock even in policy_only mode")
             self.assertNotEqual(rc, 0, "Audit must fail when Cargo.lock contains a forbidden crate")
+
+
+SERDE_CODE = "DEP-AUD-023"
+
+
+class SerdeDurableBytesTests(unittest.TestCase):
+    """fss-x4a.9.17 (FSS-110): Serde (or a serde-adjacent codec) may not define durable bytes.
+
+    The scanner masks Rust comments and string/char literals before matching, so commented-out or
+    quoted derives do not fail, while code hidden behind a literal that merely contains a comment
+    opener still fails.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.policy_path = make_clean_policy(self.root)
+        (self.root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly-2026-08-31"\n', encoding="utf-8")
+        (self.root / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+        (self.root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n', encoding="utf-8")
+        self.crate = self.root / "crates" / "crate-a"
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def audit(self, extra_manifest: str = "", lib_body: str | None = None) -> tuple[dict, int]:
+        make_valid_crate(self.crate, "crate-a", extra_manifest=extra_manifest)
+        if lib_body is not None:
+            (self.crate / "src" / "lib.rs").write_text("#![forbid(unsafe_code)]\n" + lib_body, encoding="utf-8")
+        return dependency_audit.audit_workspace(self.root, self.policy_path)
+
+    @staticmethod
+    def serde_findings(report: dict) -> list[dict]:
+        return [f for f in report["findings"] if f["code"] == SERDE_CODE]
+
+    def test_positive_control_first_party_canonical_codec_passes(self) -> None:
+        body = (
+            "/// Serializes to canonical bytes; Deserialize is spelled out only in this comment.\n"
+            "pub trait CanonicalSerialize { fn canonical_bytes(&self) -> Vec<u8>; }\n"
+            "pub struct Deserializer;\n"
+            "#[derive(Debug, Clone, PartialEq, Eq)]\n"
+            "pub struct Frame { pub id: u64 }\n"
+            "pub fn serialize_canonical(v: u8) -> [u8; 1] { [v] }\n"
+        )
+        report, rc = self.audit(lib_body=body)
+        self.assertEqual(self.serde_findings(report), [])
+        self.assertEqual(rc, 0, report["findings"])
+
+    def test_manifest_codec_crates_refused_in_every_dependency_section(self) -> None:
+        crates = ["serde", "serde_json", "serde_derive", "serde-cbor", "bincode", "postcard", "ciborium", "rmp-serde", "rmp_serde"]
+        sections = ["dependencies", "dev-dependencies", "build-dependencies", "target.'cfg(unix)'.dependencies"]
+        for crate in crates:
+            for section in sections:
+                with self.subTest(crate=crate, section=section):
+                    extra = f'[{section}]\n{crate} = {{ version = "1", default-features = false }}\n'
+                    report, rc = self.audit(extra_manifest=extra)
+                    self.assertEqual(rc, 1)
+                    hits = self.serde_findings(report)
+                    self.assertTrue(any(f["params"].get("package") == crate for f in hits), hits)
+                    self.assertTrue(any("crates/crate-a/Cargo.toml:" in f["message"] for f in hits), hits)
+
+    def test_renamed_codec_dependency_refused_by_package_identity(self) -> None:
+        extra = '[dependencies]\ncanon = { package = "bincode", version = "1", default-features = false }\n'
+        report, rc = self.audit(extra_manifest=extra)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any(f["params"].get("package") == "bincode" for f in self.serde_findings(report)))
+
+    def test_workspace_dependencies_codec_refused(self) -> None:
+        (self.root / "Cargo.toml").write_text(
+            '[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n\n[workspace.dependencies]\npostcard = { version = "1", default-features = false }\n',
+            encoding="utf-8",
+        )
+        report, rc = self.audit()
+        self.assertEqual(rc, 1)
+        hits = self.serde_findings(report)
+        self.assertTrue(any(f["params"].get("package") == "postcard" and "Cargo.toml:6" in f["message"] for f in hits), hits)
+
+    def test_cargo_lock_codec_package_refused(self) -> None:
+        (self.root / "Cargo.lock").write_text(
+            'version = 4\n\n[[package]]\nname = "ciborium"\nversion = "0.2.2"\n', encoding="utf-8"
+        )
+        report, rc = self.audit()
+        self.assertEqual(rc, 1)
+        hits = self.serde_findings(report)
+        self.assertTrue(any(f["path"] == "Cargo.lock" and "Cargo.lock:4" in f["message"] for f in hits), hits)
+
+    def test_unparseable_cargo_lock_fails_closed(self) -> None:
+        (self.root / "Cargo.lock").write_text("version = [unterminated\n", encoding="utf-8")
+        report, rc = self.audit()
+        self.assertEqual(rc, 1)
+        self.assertTrue(any(f["code"] == "DEP-AUD-011" and f["path"] == "Cargo.lock" for f in report["findings"]), report["findings"])
+
+    def test_source_serde_forms_refused_with_file_and_line(self) -> None:
+        cases = {
+            "derive": ("#[derive(Debug, Serialize)]\npub struct A;\n", 2),
+            "multiline derive with path": ("#[derive(\n    Clone,\n    serde::Deserialize,\n)]\npub struct A;\n", 2),
+            "cfg_attr derive": ('#[cfg_attr(feature = "x", derive(Serialize))]\npub struct A;\n', 2),
+            "serde attribute": ('#[serde(rename_all = "camelCase")]\npub struct A;\n', 2),
+            "serde_json path": ("pub fn f() -> Vec<u8> { serde_json::to_vec(&1).unwrap() }\n", 2),
+            "extern crate bincode": ("extern crate bincode;\n", 2),
+            "use postcard": ("use postcard::to_slice;\n", 2),
+            "absolute serde path": ("pub fn g() {}\nimpl ::serde::Serialize for X {}\n", 3),
+            "use serde bare": ("use serde;\n", 2),
+            "rmp_serde path": ("pub fn h() { let _ = rmp_serde::to_vec(&1); }\n", 2),
+            "ciborium path": ("pub fn k() { let _ = ciborium::into_writer; }\n", 2),
+        }
+        for label, (body, line) in cases.items():
+            with self.subTest(label=label):
+                report, rc = self.audit(lib_body=body)
+                self.assertEqual(rc, 1, label)
+                hits = self.serde_findings(report)
+                self.assertTrue(
+                    any(f"crates/crate-a/src/lib.rs:{line}" in f["message"] and f["params"].get("line") == line for f in hits),
+                    (label, hits),
+                )
+
+    def test_non_root_module_and_integration_test_are_scanned(self) -> None:
+        make_valid_crate(self.crate, "crate-a")
+        (self.crate / "src" / "codec.rs").write_text("pub fn f() {}\n#[derive(Deserialize)]\npub struct Wire;\n", encoding="utf-8")
+        (self.crate / "tests").mkdir()
+        (self.crate / "tests" / "roundtrip.rs").write_text("#![forbid(unsafe_code)]\nuse serde_json as j;\n", encoding="utf-8")
+        report, rc = dependency_audit.audit_workspace(self.root, self.policy_path)
+        self.assertEqual(rc, 1)
+        messages = " ".join(f["message"] for f in self.serde_findings(report))
+        self.assertIn("crates/crate-a/src/codec.rs:2", messages)
+        self.assertIn("crates/crate-a/tests/roundtrip.rs:2", messages)
+
+    def test_commented_out_or_quoted_serde_does_not_fail(self) -> None:
+        body = (
+            "//! inner doc: serde_json::to_vec is not used here\n"
+            "// #[derive(Serialize)]\n"
+            "/// ```\n"
+            "/// #[derive(Deserialize)] struct Doc;\n"
+            "/// ```\n"
+            "/* #[derive(Serialize)]\n"
+            "   /* nested serde::Value */ still a comment #[serde(skip)] extern crate bincode; */\n"
+            'pub const A: &str = "#[derive(Serialize)] serde::x use serde;";\n'
+            'pub const B: &str = r#"#[serde(rename = "x")] bincode::"#;\n'
+            'pub const C: &[u8] = b"serde::";\n'
+            'pub const C2: &[u8] = br##"postcard:: "# still raw"##;\n'
+            "pub const D: char = '\"';\n"
+            "pub const E: char = '\\'';\n"
+            "pub const F: u8 = b'\"';\n"
+            "pub fn f<'a>(x: &'a str) -> &'a str { x }\n"
+        )
+        report, rc = self.audit(lib_body=body)
+        self.assertEqual(self.serde_findings(report), [])
+        self.assertEqual(rc, 0, report["findings"])
+
+    def test_literal_containing_comment_opener_does_not_hide_code(self) -> None:
+        cases = {
+            "block opener in string": ('pub const U: &str = "http://example.invalid/*";\n#[derive(Serialize)]\npub struct A;\n', 3),
+            "line comment in string": ('pub const U: &str = "a // b";\n#[derive(Serialize)]\npub struct A;\n', 3),
+            "quote inside raw string": ('pub const R: &str = r#"a "quoted" // not comment"#;\n#[derive(Serialize)]\npub struct A;\n', 3),
+            "lifetime then derive": ("pub fn f<'a>(x: &'a str) -> &'a str { x } #[derive(Deserialize)] pub struct B;\n", 2),
+            "char quote then derive": ("pub const Q: char = '\"'; #[derive(Serialize)] pub struct C;\n", 2),
+        }
+        for label, (body, line) in cases.items():
+            with self.subTest(label=label):
+                report, rc = self.audit(lib_body=body)
+                self.assertEqual(rc, 1, label)
+                hits = self.serde_findings(report)
+                self.assertTrue(any(f"src/lib.rs:{line}" in f["message"] for f in hits), (label, hits))
+
+    def test_live_repository_has_no_serde_durable_bytes(self) -> None:
+        report, _ = dependency_audit.audit_workspace(ROOT, ROOT / "architecture/dependency_allowlist.toml")
+        self.assertEqual(self.serde_findings(report), [])
+
+
+class RustLexerTests(unittest.TestCase):
+    """Pins the comment/literal masking the durable-bytes and build-script scanners rely on."""
+
+    def test_mask_preserves_length_and_newlines(self) -> None:
+        text = 'a /* x\ny */ "s\nt" // c\nb\n'
+        masked, literals = dependency_audit.mask_rust_source(text)
+        self.assertEqual(len(masked), len(text))
+        self.assertEqual([i for i, ch in enumerate(masked) if ch == "\n"], [i for i, ch in enumerate(text) if ch == "\n"])
+        self.assertNotIn("x", masked)
+        self.assertNotIn("c", masked.replace("\n", ""))
+        self.assertEqual([lit.content for lit in literals], ["s\nt"])
+        self.assertEqual(literals[0].line, 2)
+
+    def test_raw_and_byte_literals_recorded(self) -> None:
+        text = 'let a = r##"x"#y"##; let b = b"z"; let c = cr"w";'
+        masked, literals = dependency_audit.mask_rust_source(text)
+        self.assertEqual([lit.content for lit in literals], ['x"#y', "z", "w"])
+        self.assertNotIn("y", masked.replace("let", ""))
+
+    def test_unterminated_block_comment_masks_to_eof(self) -> None:
+        masked, _ = dependency_audit.mask_rust_source("a /* serde::x\n#[derive(Serialize)]")
+        self.assertNotIn("serde", masked)
 
 
 if __name__ == "__main__":
