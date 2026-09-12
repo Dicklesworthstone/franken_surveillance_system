@@ -134,6 +134,12 @@ operation states rather than generic errors.
 | `ERR-PUBLICATION-LEDGER-RECONCILIATION-REQUIRED-001` | an indeterminate ledger append must be reconciled before root-ledger work | reconcile the pending ledger append |
 | `ERR-PUBLICATION-LEDGER-RECONCILE-001` | reconciling an indeterminate ledger append failed | repair ledger storage, then reconcile again |
 | `ERR-PUBLICATION-LEDGER-INJECTED-CRASH-001` | a root-ledger fault-injection cut point fired after the root became durable | reopen both owners to reconcile |
+| `ERR-FROZEN-REGISTRY-DRIFT-001` | public operation or resource was added, removed, renamed, or renumbered without a new registry generation | bump the registry generation and update the frozen public registry |
+| `ERR-FROZEN-STABLE-ID-REUSED-001` | stable operation or resource identifier was reused for a different entity | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-FROZEN-TOMBSTONE-RESURRECTED-001` | tombstoned operation or resource was resurrected into active registry | allocate a new identifier; tombstoned entries remain permanently retired |
+| `ERR-FROZEN-DIGEST-MISMATCH-001` | frozen public registry digest does not match canonical encoding of sorted rows | recompute canonical freeze digest over sorted rows |
+| `ERR-FROZEN-UNREGISTERED-OP-001` | crosswalk or presentation surface references an unregistered operation | register operation in frozen registry or correct surface reference |
+
 
 ## Subordinate dependency audit diagnostic registry (DEP-AUD)
 

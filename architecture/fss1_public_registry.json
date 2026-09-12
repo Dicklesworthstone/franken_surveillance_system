@@ -1,0 +1,466 @@
+{
+  "schema": "fss.public_registry.v1",
+  "asOf": "2026-09-12",
+  "semanticProtocol": "fss/1",
+  "registryGeneration": "gen:fss1:public-v1",
+  "freezeDigest": "sha256:5b83279c75873c5894007fa7e20827365912d38a3657f3daefc7d8abe0f6ab29",
+  "operations": [
+    {
+      "id": "AOP-001",
+      "kind": "operation",
+      "name": "session.open",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-agent-session",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_mission.v1",
+      "responsePayloadSchemas": [
+        "fss.situation_capsule.v1"
+      ],
+      "defaultView": "AVIEW-002",
+      "cliCommand": "fss session open",
+      "mcpToolName": "session_open",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-002",
+      "kind": "operation",
+      "name": "session.resume",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-agent-session",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_handoff_capsule.v1",
+      "responsePayloadSchemas": [
+        "fss.situation_capsule.v1"
+      ],
+      "defaultView": "AVIEW-006",
+      "cliCommand": "fss session resume",
+      "mcpToolName": "session_resume",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-003",
+      "kind": "operation",
+      "name": "session.orient",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-situation",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.situation_capsule.v1"
+      ],
+      "defaultView": "AVIEW-002",
+      "cliCommand": "fss session orient",
+      "mcpToolName": "session_orient",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-004",
+      "kind": "operation",
+      "name": "session.follow",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-context-pack",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_meaningful_delta.v1",
+        "fss.situation_capsule.v1"
+      ],
+      "defaultView": "AVIEW-001",
+      "cliCommand": "fss session follow",
+      "mcpToolName": "session_follow",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-005",
+      "kind": "operation",
+      "name": "query",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-query-plan",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "defaultView": "AVIEW-003",
+      "cliCommand": "fss query",
+      "mcpToolName": "query",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-006",
+      "kind": "operation",
+      "name": "investigate",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-investigation",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.investigation_state.v1",
+      "responsePayloadSchemas": [
+        "fss.investigation_state.v1",
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "defaultView": "AVIEW-003",
+      "cliCommand": "fss investigate",
+      "mcpToolName": "investigate",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-007",
+      "kind": "operation",
+      "name": "plan",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-agent-plan",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_objective_contract.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_control_plan.v1"
+      ],
+      "defaultView": "AVIEW-007",
+      "cliCommand": "fss plan",
+      "mcpToolName": "plan",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-008",
+      "kind": "operation",
+      "name": "commit",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-effect",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_control_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.operation_receipt.v1",
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "defaultView": "AVIEW-005",
+      "cliCommand": "fss commit",
+      "mcpToolName": "commit",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-009",
+      "kind": "operation",
+      "name": "wait",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-obligation",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1",
+        "fss.operation_receipt.v1"
+      ],
+      "defaultView": "AVIEW-005",
+      "cliCommand": "fss wait",
+      "mcpToolName": "wait",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-010",
+      "kind": "operation",
+      "name": "cancel",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-obligation",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.operation_receipt.v1",
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "defaultView": "AVIEW-005",
+      "cliCommand": "fss cancel",
+      "mcpToolName": "cancel",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-011",
+      "kind": "operation",
+      "name": "explain",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-explain",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "defaultView": "AVIEW-007",
+      "cliCommand": "fss explain",
+      "mcpToolName": "explain",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-012",
+      "kind": "operation",
+      "name": "handoff",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-handoff",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_session_capsule.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_handoff_capsule.v1"
+      ],
+      "defaultView": "AVIEW-006",
+      "cliCommand": "fss handoff",
+      "mcpToolName": "handoff",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-013",
+      "kind": "operation",
+      "name": "feedback",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-learning",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_feedback_proposal.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_feedback_proposal.v1",
+        "fss.experience_capsule.v1"
+      ],
+      "defaultView": "AVIEW-007",
+      "cliCommand": "fss feedback",
+      "mcpToolName": "feedback",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "AOP-014",
+      "kind": "operation",
+      "name": "doctor",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-doctor",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1",
+        "fss.evidence_bundle.v1"
+      ],
+      "defaultView": "AVIEW-004",
+      "cliCommand": "fss doctor",
+      "mcpToolName": "doctor",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    }
+  ],
+  "resources": [
+    {
+      "id": "ARES-001",
+      "kind": "resource",
+      "name": "deployment.anchor",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-anchor",
+      "uriTemplate": "fss://deployment/{deployment}/anchor/{anchor}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.evidence_anchor.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-002",
+      "kind": "resource",
+      "name": "deployment.situation",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-situation",
+      "uriTemplate": "fss://deployment/{deployment}/situation/{capsule}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.situation_capsule.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-003",
+      "kind": "resource",
+      "name": "deployment.sensor",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-sensor",
+      "uriTemplate": "fss://deployment/{deployment}/sensor/{sensor}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.sensor_capsule.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-004",
+      "kind": "resource",
+      "name": "deployment.zone",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-zone",
+      "uriTemplate": "fss://deployment/{deployment}/zone/{zone}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.agent_situation_frame.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-005",
+      "kind": "resource",
+      "name": "deployment.event_revision",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-event",
+      "uriTemplate": "fss://deployment/{deployment}/event/{event}/revision/{revision}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.event_hypothesis.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-006",
+      "kind": "resource",
+      "name": "deployment.case_revision",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-investigation",
+      "uriTemplate": "fss://deployment/{deployment}/case/{case}/revision/{revision}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.investigation_state.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-007",
+      "kind": "resource",
+      "name": "deployment.hypothesis",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-investigation",
+      "uriTemplate": "fss://deployment/{deployment}/hypothesis/{hypothesis}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.agent_hypothesis_workspace.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-008",
+      "kind": "resource",
+      "name": "deployment.evidence",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-evidence",
+      "uriTemplate": "fss://deployment/{deployment}/evidence/{digest}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.evidence_bundle.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-009",
+      "kind": "resource",
+      "name": "deployment.plan",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-agent-plan",
+      "uriTemplate": "fss://deployment/{deployment}/plan/{plan}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.agent_control_plan.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-010",
+      "kind": "resource",
+      "name": "deployment.obligation",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-obligation",
+      "uriTemplate": "fss://deployment/{deployment}/obligation/{obligation}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.prepared_effect.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-011",
+      "kind": "resource",
+      "name": "mission.revision",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-mission",
+      "uriTemplate": "fss://mission/{mission}/revision/{revision}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.agent_mission.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-012",
+      "kind": "resource",
+      "name": "session.workspace",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-agent-session",
+      "uriTemplate": "fss://session/{session}/workspace/{workspace}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.agent_session_capsule.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-013",
+      "kind": "resource",
+      "name": "session.handoff",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-handoff",
+      "uriTemplate": "fss://session/{session}/handoff/{root}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.agent_handoff_capsule.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-014",
+      "kind": "resource",
+      "name": "experience",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-learning",
+      "uriTemplate": "fss://experience/{capsule}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.experience_capsule.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    },
+    {
+      "id": "ARES-015",
+      "kind": "resource",
+      "name": "doctor",
+      "generation": "gen:fss1:public-v1",
+      "owner": "fss-doctor",
+      "uriTemplate": "fss://doctor/{bundle}",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "payloadSchema": "fss.doctor.v1",
+      "compatibilityClass": "backward_compatible",
+      "status": "specified"
+    }
+  ],
+  "tombstones": []
+}

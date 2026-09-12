@@ -14,7 +14,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import dependency_audit
+import frozen_registry_checker
 import slo_validate
+
 
 MANIFEST_FILES = {Path("MANIFEST.sha256"), Path("MANIFEST.delta.sha256")}
 EXCLUDED_TOP_LEVEL = {
@@ -812,6 +814,12 @@ def main() -> int:
         for capability in row.get("requiredCapabilities", []):
             if capability not in capability_ids:
                 fail(f"agent operation {identifier} references unregistered capability: {capability}")
+
+    frozen_registry_result = frozen_registry_checker.validate_frozen_registry(ROOT)
+    if not frozen_registry_result.passed:
+        for err in frozen_registry_result.errors:
+            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
+
 
     agent_views = unique_rows(load_json("architecture/agent_views.json").get("views"), "id", "architecture/agent_views.json")
     agent_view_md = markdown_table_rows(

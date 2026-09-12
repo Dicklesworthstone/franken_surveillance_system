@@ -377,3 +377,60 @@ fn test_parity_against_json_crosswalk() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn test_compiled_operation_table_equals_frozen_registry() -> TestResult {
+    let frozen_str = include_str!("../../../architecture/fss1_public_registry.json");
+    assert!(
+        frozen_str.contains("\"semanticProtocol\": \"fss/1\""),
+        "Frozen registry must specify semanticProtocol fss/1"
+    );
+    assert!(
+        frozen_str.contains("\"schema\": \"fss.public_registry.v1\""),
+        "Frozen registry must specify schema fss.public_registry.v1"
+    );
+    assert!(
+        frozen_str.contains("\"freezeDigest\": \"sha256:"),
+        "Frozen registry must specify canonical freeze digest"
+    );
+
+    // Verify all 14 compiled operations are present with identical coordinates
+    for entry in REGISTERED_OPERATION_CROSSWALK {
+        assert!(
+            frozen_str.contains(entry.operation_id),
+            "Frozen registry missing compiled operation_id: {}",
+            entry.operation_id
+        );
+        assert!(
+            frozen_str.contains(entry.operation_name),
+            "Frozen registry missing compiled operation_name: {}",
+            entry.operation_name
+        );
+        assert!(
+            frozen_str.contains(entry.owner),
+            "Frozen registry missing compiled owner: {}",
+            entry.owner
+        );
+        assert!(
+            frozen_str.contains(entry.status),
+            "Frozen registry missing compiled status: {}",
+            entry.status
+        );
+    }
+
+    // Verify all 15 resources are present in the frozen registry
+    let expected_resource_ids = [
+        "ARES-001", "ARES-002", "ARES-003", "ARES-004", "ARES-005", "ARES-006", "ARES-007",
+        "ARES-008", "ARES-009", "ARES-010", "ARES-011", "ARES-012", "ARES-013", "ARES-014",
+        "ARES-015",
+    ];
+    for res_id in expected_resource_ids {
+        assert!(
+            frozen_str.contains(res_id),
+            "Frozen registry missing expected resource_id: {}",
+            res_id
+        );
+    }
+
+    Ok(())
+}

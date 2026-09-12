@@ -117,6 +117,7 @@ NORMATIVE_FAMILIES: dict[str, FamilyRule] = {
     "GRAPH": FamilyRule("GRAPH", (3,), hierarchical=False),
     "AGT": FamilyRule("AGT", (3,), hierarchical=True),
     "AOP": FamilyRule("AOP", (3,), hierarchical=False),
+    "ARES": FamilyRule("ARES", (3,), hierarchical=False),
     "AVIEW": FamilyRule("AVIEW", (3,), hierarchical=False),
     "KSTATE": FamilyRule("KSTATE", (3,), hierarchical=False),
     "PROV": FamilyRule("PROV", (3,), hierarchical=False),
