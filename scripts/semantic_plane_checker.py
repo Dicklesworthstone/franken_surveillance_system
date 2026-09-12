@@ -194,6 +194,34 @@ def load_semantic_plane_registry(
         )
         return None, findings
 
+    module_decls = data.get("module_declarations")
+    if module_decls is None or not isinstance(module_decls, dict):
+        findings.append(
+            SemanticPlaneFinding(
+                code=ERR_REGISTRY_INVALID,
+                file=rel_path,
+                location="module_declarations",
+                message="Semantic plane registry must declare a 'module_declarations' map",
+                severity="error",
+                remediation=DIAGNOSTIC_REGISTRY[ERR_REGISTRY_INVALID]["remediation"],
+            )
+        )
+        return None, findings
+
+    boundary_mods = data.get("registered_boundary_modules")
+    if boundary_mods is not None and not isinstance(boundary_mods, list):
+        findings.append(
+            SemanticPlaneFinding(
+                code=ERR_REGISTRY_INVALID,
+                file=rel_path,
+                location="registered_boundary_modules",
+                message="Semantic plane registry 'registered_boundary_modules' must be a list",
+                severity="error",
+                remediation=DIAGNOSTIC_REGISTRY[ERR_REGISTRY_INVALID]["remediation"],
+            )
+        )
+        return None, findings
+
     return data, findings
 
 
@@ -253,7 +281,17 @@ def audit_fss_core_type_census(
 
         try:
             content = abs_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_UNMAPPED_CORE_TYPE,
+                    file=rel_path,
+                    location="file_system",
+                    message=f"Failed to read core file '{rel_path}': {exc}",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_UNMAPPED_CORE_TYPE]["remediation"],
+                )
+            )
             continue
 
         for line_no, line in enumerate(content.splitlines(), start=1):
@@ -276,76 +314,238 @@ def audit_fss_core_type_census(
     return findings
 
 
+def audit_workspace_module_census(
+    root: Path, registry: dict[str, Any]
+) -> list[SemanticPlaneFinding]:
+    """Audits workspace Rust source files to ensure every module in audited crates is declared in module_declarations."""
+    findings: list[SemanticPlaneFinding] = []
+    module_declarations = registry.get("module_declarations", {})
+
+    audited_crates = ["crates/fss-core", "crates/fss-reference"]
+    for mod in module_declarations:
+        parts = mod.replace("\\", "/").split("/")
+        if len(parts) >= 2 and parts[0] == "crates":
+            crate_path = f"crates/{parts[1]}"
+            if crate_path not in audited_crates:
+                audited_crates.append(crate_path)
+
+    for crate_rel in audited_crates:
+        crate_src = root / crate_rel / "src"
+        if not crate_src.is_dir():
+            continue
+        for rs_file in sorted(crate_src.rglob("*.rs")):
+            rel_path = sanitize_path(rs_file, root)
+            if rel_path not in module_declarations:
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_REGISTRY_INVALID,
+                        file=rel_path,
+                        location="module_declarations",
+                        message=f"Source module '{rel_path}' is present on disk but omitted from 'module_declarations' in semantic plane registry",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_REGISTRY_INVALID]["remediation"],
+                        params={"file": rel_path},
+                    )
+                )
+
+    return findings
+
+
 def check_module_imports(
     root: Path, registry: dict[str, Any]
 ) -> list[SemanticPlaneFinding]:
-    """Checks that modules declared for a plane do not import foreign plane types outside boundary modules."""
+    """Checks that modules declared for a plane do not import foreign plane types or grant effect authority outside boundary modules."""
     findings: list[SemanticPlaneFinding] = []
     registered_types = registry.get("types", {})
     boundary_modules = set(registry.get("registered_boundary_modules", []))
     module_declarations = registry.get("module_declarations", {})
 
-    use_pattern = re.compile(r"use\s+([^;]+);", re.MULTILINE)
-    grant_fn_pattern = re.compile(
-        r"pub\s+fn\s+[A-Za-z0-9_]+\s*\([^)]*\)\s*->\s*([A-Za-z0-9_:]*EffectAuthority)\b"
+    use_pattern = re.compile(r"\buse\s+([^;]+);", re.MULTILINE)
+    fn_sig_pattern = re.compile(
+        r"(?:pub(?:\([^\)]*\))?\s+)?fn\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*->\s*([^;{]+)",
+        re.DOTALL,
+    )
+    from_pattern = re.compile(
+        r"impl(?:<[^>]*>)?\s+From<([^>]+)>\s+for\s+([A-Za-z0-9_:]+)",
+        re.MULTILINE,
+    )
+    into_pattern = re.compile(
+        r"impl(?:<[^>]*>)?\s+Into<([^>]+)>\s+for\s+([A-Za-z0-9_:]+)",
+        re.MULTILINE,
     )
 
     for mod_rel, mod_plane in module_declarations.items():
-        if mod_rel in boundary_modules:
-            continue
-
         abs_path = root / mod_rel
         if not abs_path.is_file():
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_REGISTRY_INVALID,
+                    file=mod_rel,
+                    location="file_system",
+                    message=f"Declared module '{mod_rel}' does not exist on disk",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_REGISTRY_INVALID]["remediation"],
+                    params={"module": mod_rel},
+                )
+            )
             continue
 
         try:
             content = abs_path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
+        except (OSError, UnicodeDecodeError) as exc:
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_REGISTRY_INVALID,
+                    file=mod_rel,
+                    location="file_system",
+                    message=f"Failed to read declared module '{mod_rel}': {exc}",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_REGISTRY_INVALID]["remediation"],
+                    params={"module": mod_rel},
+                )
+            )
+            continue
+
+        if mod_rel in boundary_modules or mod_plane in ("support", "ambiguous"):
             continue
 
         # Check for functions directly returning EffectAuthority in cognition modules
         if mod_plane == "cognition":
-            for line_no, line in enumerate(content.splitlines(), start=1):
-                if grant_fn_pattern.search(line):
+            for match in fn_sig_pattern.finditer(content):
+                fn_name = match.group(1)
+                ret_type = match.group(2).strip()
+                if re.search(r"\bEffectAuthority\b", ret_type):
+                    line_no = content[: match.start()].count("\n") + 1
                     findings.append(
                         SemanticPlaneFinding(
                             code=ERR_COGNITION_GRANTS_EFFECT,
                             file=mod_rel,
                             location=f"line {line_no}",
-                            message=f"Prohibited cognition-to-effect bridge: module '{mod_rel}' has function granting EffectAuthority",
+                            message=f"Prohibited cognition-to-effect bridge: module '{mod_rel}' has function '{fn_name}' returning EffectAuthority ({ret_type})",
                             severity="error",
                             remediation=DIAGNOSTIC_REGISTRY[ERR_COGNITION_GRANTS_EFFECT]["remediation"],
-                            params={"module": mod_rel, "type_name": "EffectAuthority"},
+                            params={"module": mod_rel, "type_name": "EffectAuthority", "function": fn_name},
+                        )
+                    )
+
+        # Check From/Into cross-plane implementations
+        for m in from_pattern.finditer(content):
+            from_ty = m.group(1).split("::")[-1].strip().lstrip("&").strip()
+            to_ty = m.group(2).split("::")[-1].strip().lstrip("&").strip()
+            from_plane = registered_types.get(from_ty, {}).get("plane")
+            to_plane = registered_types.get(to_ty, {}).get("plane")
+            if from_plane and to_plane and from_plane != to_plane:
+                if from_plane not in ("support", "ambiguous") and to_plane not in ("support", "ambiguous"):
+                    line_no = content[: m.start()].count("\n") + 1
+                    code = (
+                        ERR_COGNITION_GRANTS_EFFECT
+                        if (from_plane == "cognition" and to_plane in ("authority", "effect"))
+                        else ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT
+                    )
+                    findings.append(
+                        SemanticPlaneFinding(
+                            code=code,
+                            file=mod_rel,
+                            location=f"line {line_no}",
+                            message=f"Forbidden cross-plane conversion: From<{from_ty}> ({from_plane}) for {to_ty} ({to_plane}) in non-boundary module '{mod_rel}'",
+                            severity="error",
+                            remediation=DIAGNOSTIC_REGISTRY[code]["remediation"],
+                            params={"module": mod_rel, "from_type": from_ty, "to_type": to_ty},
+                        )
+                    )
+
+        for m in into_pattern.finditer(content):
+            to_ty = m.group(1).split("::")[-1].strip().lstrip("&").strip()
+            from_ty = m.group(2).split("::")[-1].strip().lstrip("&").strip()
+            from_plane = registered_types.get(from_ty, {}).get("plane")
+            to_plane = registered_types.get(to_ty, {}).get("plane")
+            if from_plane and to_plane and from_plane != to_plane:
+                if from_plane not in ("support", "ambiguous") and to_plane not in ("support", "ambiguous"):
+                    line_no = content[: m.start()].count("\n") + 1
+                    code = (
+                        ERR_COGNITION_GRANTS_EFFECT
+                        if (from_plane == "cognition" and to_plane in ("authority", "effect"))
+                        else ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT
+                    )
+                    findings.append(
+                        SemanticPlaneFinding(
+                            code=code,
+                            file=mod_rel,
+                            location=f"line {line_no}",
+                            message=f"Forbidden cross-plane conversion: Into<{to_ty}> ({to_plane}) for {from_ty} ({from_plane}) in non-boundary module '{mod_rel}'",
+                            severity="error",
+                            remediation=DIAGNOSTIC_REGISTRY[code]["remediation"],
+                            params={"module": mod_rel, "from_type": from_ty, "to_type": to_ty},
                         )
                     )
 
         # Check use statements for unauthorized cross-plane imports
-        for line_no, line in enumerate(content.splitlines(), start=1):
-            if not line.strip().startswith("use "):
-                continue
+        for match in use_pattern.finditer(content):
+            stmt = match.group(0)
+            line_no = content[: match.start()].count("\n") + 1
 
             for type_name, type_info in registered_types.items():
                 type_plane = type_info.get("plane")
                 if type_plane in (mod_plane, "support", "ambiguous"):
                     continue
 
-                # Cross-plane restriction applies to authority and effect types
-                if type_plane in ("authority", "effect"):
-                    # Check if type_name is an imported symbol
-                    if re.search(r"\b" + re.escape(type_name) + r"\b", line):
+                is_cross = False
+                if mod_plane == "cognition" and type_plane in ("authority", "effect"):
+                    is_cross = True
+                elif mod_plane == "effect" and type_plane in ("cognition",):
+                    is_cross = True
+                elif mod_plane == "authority" and type_plane in ("cognition", "effect"):
+                    is_cross = True
+
+                if is_cross and re.search(r"\b" + re.escape(type_name) + r"\b", stmt):
+                    findings.append(
+                        SemanticPlaneFinding(
+                            code=ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT,
+                            file=mod_rel,
+                            location=f"line {line_no}",
+                            message=f"Unauthorized cross-plane import: module '{mod_rel}' declared for '{mod_plane}' imports {type_plane}-plane type '{type_name}' outside registered boundary modules",
+                            severity="error",
+                            remediation=DIAGNOSTIC_REGISTRY[ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT]["remediation"],
+                            params={
+                                "module": mod_rel,
+                                "declared_plane": mod_plane,
+                                "imported_type": type_name,
+                                "type_plane": type_plane,
+                            },
+                        )
+                    )
+
+            # Wildcard import check (e.g. use fss_core::effect::* or use crate::effect::*)
+            if "::*" in stmt:
+                for other_mod_rel, other_plane in module_declarations.items():
+                    if other_plane in (mod_plane, "support", "ambiguous"):
+                        continue
+                    mod_stem = Path(other_mod_rel).stem
+                    if mod_stem in ("lib", "mod"):
+                        continue
+
+                    is_cross = False
+                    if mod_plane == "cognition" and other_plane in ("authority", "effect"):
+                        is_cross = True
+                    elif mod_plane == "effect" and other_plane in ("cognition",):
+                        is_cross = True
+                    elif mod_plane == "authority" and other_plane in ("cognition", "effect"):
+                        is_cross = True
+
+                    if is_cross and re.search(r"\b" + re.escape(mod_stem) + r"::\*", stmt):
                         findings.append(
                             SemanticPlaneFinding(
                                 code=ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT,
                                 file=mod_rel,
                                 location=f"line {line_no}",
-                                message=f"Unauthorized cross-plane import: module '{mod_rel}' declared for '{mod_plane}' imports {type_plane}-plane type '{type_name}' outside registered boundary modules",
+                                message=f"Unauthorized cross-plane wildcard import: module '{mod_rel}' declared for '{mod_plane}' imports all symbols from {other_plane}-plane module '{mod_stem}' outside registered boundary modules",
                                 severity="error",
                                 remediation=DIAGNOSTIC_REGISTRY[ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT]["remediation"],
                                 params={
                                     "module": mod_rel,
                                     "declared_plane": mod_plane,
-                                    "imported_type": type_name,
-                                    "type_plane": type_plane,
+                                    "imported_module": mod_stem,
+                                    "type_plane": other_plane,
                                 },
                             )
                         )
@@ -403,6 +603,9 @@ def audit_semantic_planes(
                 )
             )
 
+    # Workspace module census audit
+    findings.extend(audit_workspace_module_census(root, registry))
+
     # Core type census audit
     findings.extend(audit_fss_core_type_census(root, registry))
 
@@ -412,21 +615,33 @@ def audit_semantic_planes(
     # Compile-fail doctests verification
     contract_path = root / "docs/enforcement/three_semantic_planes_contract.md"
     doctests_passed = 0
-    if check_doctests and contract_path.is_file():
-        success, count, err = verify_compile_fail_doctests(contract_path)
-        if success:
-            doctests_passed = count
-        else:
+    if check_doctests:
+        if not contract_path.is_file():
             findings.append(
                 SemanticPlaneFinding(
                     code=ERR_DOCTEST_FAILED,
                     file=sanitize_path(contract_path, root),
-                    location="rustdoc",
-                    message=f"Compile-fail doctest verification failed: {err}",
+                    location="file_system",
+                    message=f"Contract doctest file missing: '{sanitize_path(contract_path, root)}'",
                     severity="error",
                     remediation=DIAGNOSTIC_REGISTRY[ERR_DOCTEST_FAILED]["remediation"],
                 )
             )
+        else:
+            success, count, err = verify_compile_fail_doctests(contract_path)
+            if success:
+                doctests_passed = count
+            else:
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_DOCTEST_FAILED,
+                        file=sanitize_path(contract_path, root),
+                        location="rustdoc",
+                        message=f"Compile-fail doctest verification failed: {err}",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_DOCTEST_FAILED]["remediation"],
+                    )
+                )
 
     types_dict = registry.get("types", {})
     authority_count = sum(1 for v in types_dict.values() if v.get("plane") == "authority")

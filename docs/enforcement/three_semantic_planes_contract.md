@@ -101,8 +101,8 @@ fn main() {
 
 ## Invariant 4: Direct effect dispatch without authority token fails compilation
 
-An effect executor cannot accept cognition hypotheses or recommendations directly; it strictly requires
-an explicit `EffectAuthority` token.
+An effect dispatch interface cannot accept cognition hypotheses or recommendations directly; it strictly requires
+an explicit `EffectAuthority` parameter.
 
 ```rust,compile_fail
 pub struct ModelHypothesis {
@@ -110,12 +110,14 @@ pub struct ModelHypothesis {
     pub confidence: f64,
 }
 
+pub struct EffectAuthority {
+    pub capability_lease: String,
+}
+
 pub struct EffectExecutor;
 
 impl EffectExecutor {
-    pub fn dispatch(&self, auth: &str) {
-        let _ = auth;
-    }
+    pub fn dispatch(&self, _auth: &EffectAuthority) {}
 }
 
 fn main() {

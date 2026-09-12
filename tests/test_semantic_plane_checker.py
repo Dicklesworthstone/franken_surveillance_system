@@ -292,5 +292,286 @@ class TestPlantedNegativeRegistryIntegrity(unittest.TestCase):
             self.assertIn(ERR_REGISTRY_INVALID, [f.code for f in findings])
 
 
+class TestReviewFindings(unittest.TestCase):
+    """Failing tests first corresponding to review-670 findings F1 - F8."""
+
+    def test_finding_1_and_8_contract_doc_typed_effect_authority(self) -> None:
+        """Contract doc Invariant 4 must use typed EffectAuthority, not primitive &str (F1, F8)."""
+        contract_path = ROOT / "docs/enforcement/three_semantic_planes_contract.md"
+        content = contract_path.read_text(encoding="utf-8")
+        self.assertNotIn(
+            "dispatch(&self, auth: &str)",
+            content,
+            "Invariant 4 must not use primitive &str while claiming to require EffectAuthority",
+        )
+        self.assertIn(
+            "EffectAuthority",
+            content,
+            "Invariant 4 must use EffectAuthority token",
+        )
+
+    def test_finding_2_multiline_cross_plane_import_detected(self) -> None:
+        """Multiline grouped imports of authority/effect types must be detected (F2)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src_dir = tmp_root / "crates" / "fss-cognition" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "multiline_planner.rs").write_text(
+                """use fss_core::effect::{
+    EffectAuthority,
+};
+pub fn bad(auth: EffectAuthority) {}
+""",
+                encoding="utf-8",
+            )
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {
+                        "crates/fss-cognition/src/multiline_planner.rs": "cognition"
+                    },
+                    "types": {
+                        "EffectAuthority": {"file": "crates/fss-core/src/effect.rs", "plane": "authority"}
+                    },
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Multiline cross-plane import was not caught!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT, codes)
+
+    def test_finding_2_wildcard_cross_plane_import_detected(self) -> None:
+        """Wildcard imports of authority/effect modules from cognition must be detected (F2)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src_dir = tmp_root / "crates" / "fss-cognition" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "wildcard_planner.rs").write_text(
+                """use fss_core::effect::*;
+pub fn bad() {}
+""",
+                encoding="utf-8",
+            )
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {
+                        "crates/fss-cognition/src/wildcard_planner.rs": "cognition",
+                        "crates/fss-core/src/effect.rs": "effect",
+                    },
+                    "types": {
+                        "EffectAuthority": {"file": "crates/fss-core/src/effect.rs", "plane": "authority"}
+                    },
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Wildcard cross-plane import was not caught!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT, codes)
+
+    def test_finding_2_cross_plane_from_into_impl_detected(self) -> None:
+        """Cross-plane From/Into implementations outside boundary modules must be detected (F2)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src_dir = tmp_root / "crates" / "fss-cognition" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "bad_conversion.rs").write_text(
+                """pub struct Belief;
+pub struct EffectAuthority;
+impl From<Belief> for EffectAuthority {
+    fn from(_: Belief) -> Self { EffectAuthority }
+}
+""",
+                encoding="utf-8",
+            )
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {
+                        "crates/fss-cognition/src/bad_conversion.rs": "cognition"
+                    },
+                    "types": {
+                        "Belief": {"file": "crates/fss-cognition/src/bad_conversion.rs", "plane": "cognition"},
+                        "EffectAuthority": {"file": "crates/fss-core/src/effect.rs", "plane": "authority"}
+                    },
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Cross-plane From impl was not caught!")
+            codes = [f.code for f in findings]
+            self.assertTrue(
+                ERR_COGNITION_GRANTS_EFFECT in codes or ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT in codes,
+                f"Expected cross-plane error, got {codes}",
+            )
+
+    def test_finding_3_cognition_grants_effect_multiline_and_result(self) -> None:
+        """Functions returning Result<EffectAuthority, E> and multiline signatures must be caught (F3)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src_dir = tmp_root / "crates" / "fss-cognition" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "sneaky_grant.rs").write_text(
+                """pub fn grant_result(
+    score: f64,
+) -> Result<EffectAuthority, String> {
+    Ok(EffectAuthority::new())
+}
+""",
+                encoding="utf-8",
+            )
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {
+                        "crates/fss-cognition/src/sneaky_grant.rs": "cognition"
+                    },
+                    "types": {
+                        "EffectAuthority": {"file": "crates/fss-core/src/effect.rs", "plane": "authority"}
+                    },
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Multiline Result<EffectAuthority> grant was not caught!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_COGNITION_GRANTS_EFFECT, codes)
+
+    def test_finding_4_all_workspace_modules_must_be_declared(self) -> None:
+        """All source modules in audited crates must be declared in module_declarations (F4)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src_dir = tmp_root / "crates" / "fss-core" / "src"
+            src_dir.mkdir(parents=True, exist_ok=True)
+            (src_dir / "unmapped_mod.rs").write_text("pub struct Ghost;", encoding="utf-8")
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {},
+                    "types": {"Ghost": {"file": "crates/fss-core/src/unmapped_mod.rs", "plane": "support"}},
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Unmapped module in audited crate was not caught!")
+            codes = [f.code for f in findings]
+            self.assertTrue(
+                ERR_REGISTRY_INVALID in codes or ERR_UNMAPPED_CORE_TYPE in codes,
+                f"Expected registry invalid or unmapped error, got {codes}",
+            )
+
+    def test_finding_5_missing_contract_file_fails_closed(self) -> None:
+        """Missing three_semantic_planes_contract.md must fail closed with ERR_DOCTEST_FAILED (F5)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {},
+                    "types": {"A": {"file": "crates/fss-core/src/effect.rs", "plane": "support"}},
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=True)
+            self.assertFalse(is_valid, "Missing contract file must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_DOCTEST_FAILED, codes)
+
+    def test_finding_5_missing_declared_module_fails_closed(self) -> None:
+        """Declared module that does not exist on disk must fail closed (F5)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                    "registered_boundary_modules": [],
+                    "module_declarations": {
+                        "crates/fss-core/src/nonexistent_file.rs": "cognition"
+                    },
+                    "types": {"A": {"file": "crates/fss-core/src/effect.rs", "plane": "support"}},
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Nonexistent declared module must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertTrue(
+                ERR_REGISTRY_INVALID in codes or ERR_UNAUTHORIZED_CROSS_PLANE_IMPORT in codes,
+                f"Expected error for missing declared module, got {codes}",
+            )
+
+    def test_finding_6_composite_multiplane_types_are_ambiguous(self) -> None:
+        """EventLineage and EventHypothesis must be declared ambiguous in registry (F6)."""
+        registry_path = ROOT / "architecture/semantic_plane_registry.json"
+        data = json.loads(registry_path.read_text(encoding="utf-8"))
+        types = data.get("types", {})
+        self.assertEqual(
+            types["EventLineage"]["plane"],
+            "ambiguous",
+            "EventLineage aggregates cognition and ambiguous types; cannot be pure authority",
+        )
+        self.assertTrue(len(types["EventLineage"].get("ambiguity_reason", "")) > 10)
+        self.assertEqual(
+            types["EventHypothesis"]["plane"],
+            "ambiguous",
+            "EventHypothesis embeds authority evidence and kind; cannot be pure cognition",
+        )
+        self.assertTrue(len(types["EventHypothesis"].get("ambiguity_reason", "")) > 10)
+        self.assertEqual(
+            types["EventRevision"]["plane"],
+            "ambiguous",
+            "EventRevision is type alias for EventHypothesis; cannot be pure cognition",
+        )
+        self.assertTrue(len(types["EventRevision"].get("ambiguity_reason", "")) > 10)
+
+    def test_finding_7_registry_missing_sections_fails_closed(self) -> None:
+        """Registry missing module_declarations or planes must fail closed (F7)."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            reg_dir = tmp_root / "architecture"
+            reg_dir.mkdir(parents=True, exist_ok=True)
+            # Missing module_declarations
+            (reg_dir / "semantic_plane_registry.json").write_text(
+                json.dumps({
+                    "schema": "fss.semantic_plane_registry.v1",
+                    "types": {"A": {"file": "crates/fss-core/src/effect.rs", "plane": "support"}},
+                }),
+                encoding="utf-8",
+            )
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Registry missing module_declarations must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_REGISTRY_INVALID, codes)
+
+
 if __name__ == "__main__":
     unittest.main()
