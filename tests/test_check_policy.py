@@ -371,5 +371,30 @@ class CheckPolicyOfflineBuildTests(CheckPolicyFixtureCase):
         self.assertEqual(check_policy.errors, [])
 
 
+class CheckPolicyDoctestStepTests(CheckPolicyFixtureCase):
+    """fss-tgwit: check-policy mirrors DEP-AUD-028, the recorded `cargo test --workspace --doc` step
+    that scripts/qualify.sh's rust lane needs because `--all-targets` never runs doctests."""
+
+    def test_qualify_doctest_policy_missing_step_fails(self) -> None:
+        script = self.root / "scripts" / "qualify.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text(
+            '#!/usr/bin/env bash\nexport CARGO_NET_OFFLINE=true\nrust_lane() {\n'
+            '  run test rustup run "$tc" cargo test --locked --offline --workspace --all-targets\n}\n',
+            encoding="utf-8",
+        )
+        check_policy.qualify_doctest_policy()
+        self.assertTrue(any(err.startswith("DEP-AUD-028") and "scripts/qualify.sh:3" in err for err in check_policy.errors), check_policy.errors)
+
+    def test_qualify_doctest_policy_missing_script_fails(self) -> None:
+        check_policy.qualify_doctest_policy()
+        self.assertTrue(any(err.startswith("DEP-AUD-028") for err in check_policy.errors), check_policy.errors)
+
+    def test_live_qualify_doctest_policy_passes(self) -> None:
+        check_policy.ROOT = ROOT
+        check_policy.qualify_doctest_policy()
+        self.assertEqual(check_policy.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1096,5 +1096,103 @@ class QualifyOfflineTests(unittest.TestCase):
         self.assertEqual(rc, 0)
 
 
+DOCTEST_CODE = "DEP-AUD-028"
+DOCTEST_QUALIFY = (
+    "#!/usr/bin/env bash\n"
+    "export CARGO_NET_OFFLINE=true\n"
+    "rust_lane() {\n"
+    '  run test rustup run "$tc" cargo test --locked --offline --workspace --all-targets\n'
+    '  run doctest rustup run "$tc" cargo test --locked --offline --workspace --doc\n'
+    "}\n"
+    'case "$LANE" in\n'
+    "  rust) rust_lane ;;\n"
+    "esac\n"
+)
+DOCTEST_LINE = '  run doctest rustup run "$tc" cargo test --locked --offline --workspace --doc\n'
+
+
+class QualifyDoctestTests(unittest.TestCase):
+    """fss-tgwit: `cargo test --all-targets` never runs doctests, so the rust lane of
+    scripts/qualify.sh must carry a separately recorded `cargo test --workspace --doc` step."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.script = self.root / "scripts" / "qualify.sh"
+        self.script.parent.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def audit(self, text: str | None) -> list:
+        if text is not None:
+            self.script.write_text(text, encoding="utf-8")
+        findings: list = []
+        dependency_audit.qualify_doctest_audit(findings, self.script, root=self.root)
+        return [f for f in findings if f.code == DOCTEST_CODE]
+
+    def test_positive_control_recorded_doctest_step_passes(self) -> None:
+        self.assertEqual(self.audit(DOCTEST_QUALIFY), [])
+
+    def test_continued_line_doctest_step_passes(self) -> None:
+        continued = DOCTEST_QUALIFY.replace(DOCTEST_LINE, '  run doctest rustup run "$tc" cargo test --locked \\\n    --offline --workspace --doc\n')
+        self.assertEqual(self.audit(continued), [])
+
+    def test_missing_doctest_step_fails_at_rust_lane(self) -> None:
+        hits = self.audit(DOCTEST_QUALIFY.replace(DOCTEST_LINE, ""))
+        self.assertEqual(len(hits), 1, hits)
+        self.assertIn("scripts/qualify.sh:3", hits[0].message)
+        self.assertEqual(hits[0].params.get("line"), 3)
+
+    def test_all_targets_test_step_alone_does_not_count(self) -> None:
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace(DOCTEST_LINE, "")))
+
+    def test_commented_doctest_step_does_not_count(self) -> None:
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace(DOCTEST_LINE, "  # " + DOCTEST_LINE.lstrip())))
+
+    def test_unrecorded_doctest_command_does_not_count(self) -> None:
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace(DOCTEST_LINE, '  rustup run "$tc" cargo test --locked --offline --workspace --doc\n')))
+
+    def test_doctest_step_outside_rust_lane_does_not_count(self) -> None:
+        moved = DOCTEST_QUALIFY.replace(DOCTEST_LINE, "").replace("rust_lane() {\n", "policy_lane() {\n" + DOCTEST_LINE + "}\nrust_lane() {\n")
+        self.assertTrue(self.audit(moved))
+
+    def test_doc_flag_passed_to_test_binary_does_not_count(self) -> None:
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace("--workspace --doc\n", "--workspace -- --doc\n")))
+
+    def test_doc_flag_in_a_later_command_does_not_count(self) -> None:
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace("--workspace --doc\n", "--workspace && echo --doc\n")))
+
+    def test_single_package_doctest_step_does_not_count(self) -> None:
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace("--workspace --doc\n", "-p fss-core --doc\n")))
+
+    def test_no_run_doctest_step_does_not_count(self) -> None:
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace("--workspace --doc\n", "--workspace --doc --no-run\n")))
+
+    def test_missing_rust_lane_fails(self) -> None:
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace("rust_lane() {\n", "other_lane() {\n")))
+
+    def test_missing_script_fails_closed(self) -> None:
+        hits = self.audit(None)
+        self.assertEqual(len(hits), 1)
+        self.assertIn("missing", hits[0].message)
+
+    def test_audit_workspace_wires_doctest_check(self) -> None:
+        make_clean_policy(self.root)
+        (self.root / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+        (self.root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n', encoding="utf-8")
+        make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
+        self.script.write_text(DOCTEST_QUALIFY.replace(DOCTEST_LINE, ""), encoding="utf-8")
+        policy = self.root / "architecture" / "dependency_allowlist.toml"
+        report, rc = dependency_audit.audit_workspace(self.root, policy, qualify_script=self.script)
+        self.assertEqual(rc, 1)
+        self.assertTrue(any(f["code"] == DOCTEST_CODE and "scripts/qualify.sh:3" in f["message"] for f in report["findings"]), report["findings"])
+
+    def test_live_qualify_script_runs_doctests(self) -> None:
+        findings: list = []
+        dependency_audit.qualify_doctest_audit(findings, ROOT / "scripts" / "qualify.sh", root=ROOT)
+        self.assertEqual(findings, [])
+
+
 if __name__ == "__main__":
     unittest.main()

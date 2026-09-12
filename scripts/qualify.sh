@@ -275,6 +275,7 @@ rust_lane() {
   run check rustup run "$toolchain" cargo check --locked --offline --workspace --all-targets
   run clippy rustup run "$toolchain" cargo clippy --locked --offline --workspace --all-targets -- -D warnings
   run test rustup run "$toolchain" cargo test --locked --offline --workspace --all-targets
+  run doctest rustup run "$toolchain" cargo test --locked --offline --workspace --doc
 }
 
 claim_lane() {

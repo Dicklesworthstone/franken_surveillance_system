@@ -15,6 +15,8 @@ DEP-AUD-026 (fss-x4a.26.3, FSS-183) scans every build script (implicit ``build.r
 metadata) for network-capable constructs. It is a STATIC DENY-LIST, NOT A PROOF OF ABSENCE.
 DEP-AUD-027 requires ``scripts/qualify.sh`` to export ``CARGO_NET_OFFLINE=true`` at top level and to pass
 ``--offline`` to every cargo invocation. That seals Cargo resolution; it is not OS-level network isolation.
+DEP-AUD-028 (fss-tgwit) requires the ``rust_lane`` of ``scripts/qualify.sh`` to record a
+``cargo test --workspace --doc`` step, because ``cargo test --all-targets`` never runs doctests.
 """
 from __future__ import annotations
 
@@ -266,6 +268,13 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
         owner="security-policy",
         trigger="the qualification entrypoint does not seal Cargo offline (missing top-level CARGO_NET_OFFLINE=true export, an override, or a cargo invocation without --offline)",
         remediation="export CARGO_NET_OFFLINE=true at top level and pass --offline to every cargo invocation in scripts/qualify.sh; this is Cargo sealing, not OS network isolation",
+    ),
+    "DEP-AUD-028": DiagnosticDef(
+        code="DEP-AUD-028",
+        severity="error",
+        owner="security-policy",
+        trigger="the rust lane of the qualification entrypoint has no recorded cargo test --workspace --doc step, so doctests (never run by --all-targets) are unqualified",
+        remediation='add `run doctest rustup run "$toolchain" cargo test --locked --offline --workspace --doc` inside rust_lane() in scripts/qualify.sh',
     ),
     "DEP-AUD-030": DiagnosticDef(
         code="DEP-AUD-030",
@@ -1334,6 +1343,26 @@ _SHELL_OFFLINE_FLAG = re.compile(r"(?<![\w-])--offline(?![\w-])")
 _SHELL_COMMAND_BREAK = re.compile(r"&&|\|\||;|\|")
 _SEALED_OFFLINE_EXPORT = re.compile(r"""^export\s+CARGO_NET_OFFLINE=(?:true|"true"|'true')\s*$""")
 _CARGO_NET_OFFLINE_WORD = re.compile(r"\bCARGO_NET_OFFLINE\b")
+_RUST_LANE_OPEN = re.compile(r"^rust_lane\s*\(\s*\)\s*\{\s*$")
+
+
+def _shell_logical_lines(script_text: str) -> list[tuple[int, str]]:
+    """Join ``\\``-continued lines; each entry is (first physical line number, joined text)."""
+    logical: list[tuple[int, str]] = []
+    pending: list[str] = []
+    start = 1
+    for number, raw_line in enumerate(script_text.splitlines(), 1):
+        if not pending:
+            start = number
+        if raw_line.endswith("\\"):
+            pending.append(raw_line[:-1])
+            continue
+        pending.append(raw_line)
+        logical.append((start, " ".join(pending)))
+        pending = []
+    if pending:
+        logical.append((start, " ".join(pending)))
+    return logical
 
 
 def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = ROOT) -> int:
@@ -1362,20 +1391,7 @@ def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = RO
         add(findings, "error", "DEP-AUD-027", script, f"{rel}: unreadable qualification script: {exc}", root=root, params={"path": rel, "line": None})
         return 0
 
-    logical: list[tuple[int, str]] = []
-    pending: list[str] = []
-    start = 1
-    for number, raw_line in enumerate(script_text.splitlines(), 1):
-        if not pending:
-            start = number
-        if raw_line.endswith("\\"):
-            pending.append(raw_line[:-1])
-            continue
-        pending.append(raw_line)
-        logical.append((start, " ".join(pending)))
-        pending = []
-    if pending:
-        logical.append((start, " ".join(pending)))
+    logical = _shell_logical_lines(script_text)
 
     export_line: int | None = None
     first_cargo_line: int | None = None
@@ -1399,6 +1415,67 @@ def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = RO
     if export_line is None or (first_cargo_line is not None and export_line > first_cargo_line):
         add(findings, "error", "DEP-AUD-027", script, f"{rel}: no unindented top-level `export CARGO_NET_OFFLINE=true` precedes the first cargo invocation", root=root, params={"path": rel, "line": export_line})
     return invocations
+
+
+def _recorded_workspace_doctest_step(line: str) -> bool:
+    """True for ``run <step> ... cargo ... test ... --workspace ... --doc`` within one command segment.
+
+    ``--doc`` must precede any ``--`` (after it the flag goes to the test binary, not Cargo), and
+    ``--no-run`` disqualifies the step because it would build without running the doctests.
+    """
+    words = line.split()
+    if len(words) < 3 or words[0] != "run":
+        return False
+    match = _SHELL_CARGO_WORD.search(line)
+    if match is None:
+        return False
+    segment = _SHELL_COMMAND_BREAK.split(line[match.end():], maxsplit=1)[0].split()
+    if "--" in segment:
+        segment = segment[: segment.index("--")]
+    if "test" not in segment:
+        return False
+    after = segment[segment.index("test") + 1 :]
+    return "--doc" in after and "--workspace" in after and "--no-run" not in after
+
+
+def qualify_doctest_audit(findings: list[Finding], script: Path, root: Path = ROOT) -> bool:
+    """Require a recorded workspace doctest step in the rust lane (DEP-AUD-028, fss-tgwit).
+
+    ``cargo test --all-targets`` runs lib/bin/test/bench/example targets but never doctests, so a
+    broken doctest, or a ``compile_fail`` doctest failing for the wrong reason, passes that step.
+    Refused, with ``file:line`` where one exists: a missing/unreadable script; no unindented
+    ``rust_lane() {`` function; or a ``rust_lane`` body (up to its unindented closing ``}``) with no
+    non-comment ``run <step> ... cargo test ... --workspace ... --doc`` line (see
+    ``_recorded_workspace_doctest_step``). This proves the step is declared and recorded in the
+    lane; it does not prove the doctests pass, which only running the lane does. Returns True when
+    the step is present.
+    """
+    rel = display_path(script, root)
+    if not script.is_file():
+        add(findings, "error", "DEP-AUD-028", script, f"{rel}: qualification script is missing; the rust-lane doctest step is unproven", root=root, params={"path": rel, "line": None})
+        return False
+    try:
+        script_text = script.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        add(findings, "error", "DEP-AUD-028", script, f"{rel}: unreadable qualification script: {exc}", root=root, params={"path": rel, "line": None})
+        return False
+
+    lane_line: int | None = None
+    for number, line in _shell_logical_lines(script_text):
+        if lane_line is None:
+            if _RUST_LANE_OPEN.match(line):
+                lane_line = number
+            continue
+        if line.rstrip() == "}":
+            break
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and _recorded_workspace_doctest_step(stripped):
+            return True
+    if lane_line is None:
+        add(findings, "error", "DEP-AUD-028", script, f"{rel}: no unindented `rust_lane() {{` function; the rust-lane doctest step is unproven", root=root, params={"path": rel, "line": None})
+    else:
+        add(findings, "error", "DEP-AUD-028", script, f"{rel}:{lane_line}: rust_lane has no recorded `run <step> ... cargo test --workspace --doc` step; --all-targets never runs doctests", root=root, params={"path": rel, "line": lane_line})
+    return False
 
 
 def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: list[Path] | None = None) -> dict[str, Any]:
@@ -1651,6 +1728,7 @@ def audit_workspace(
     build_script_network_audit(findings, root=root, manifests=manifests + undeclared_manifests, extra_paths=resolved_build_scripts)
     if qualify_script is not None:
         qualify_offline_audit(findings, qualify_script, root=root)
+        qualify_doctest_audit(findings, qualify_script, root=root)
     if not metadata_available:
         lock_file = root / "Cargo.lock"
         if lock_file.is_file():

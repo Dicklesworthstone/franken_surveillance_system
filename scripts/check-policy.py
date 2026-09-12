@@ -266,6 +266,16 @@ def qualify_offline_policy() -> None:
         fail(f"{finding.code}: {finding.message} ({finding.path})")
 
 
+def qualify_doctest_policy() -> None:
+    """DEP-AUD-028 (fss-tgwit): the rust lane of scripts/qualify.sh must record a
+    `cargo test --workspace --doc` step, because `cargo test --all-targets` never runs doctests.
+    A missing script fails closed."""
+    findings: list[dependency_audit.Finding] = []
+    dependency_audit.qualify_doctest_audit(findings, ROOT / "scripts/qualify.sh", root=ROOT)
+    for finding in findings:
+        fail(f"{finding.code}: {finding.message} ({finding.path})")
+
+
 def diagnostic_policy() -> None:
     errors_path = ROOT / "registries/ERRORS.md"
     if not errors_path.is_file():
@@ -1217,6 +1227,7 @@ def main() -> int:
     resolve_markdown_links()
     workflow_policy()
     qualify_offline_policy()
+    qualify_doctest_policy()
     diagnostic_policy()
 
     manifest_entries = 0 if args.skip_manifest else validate_manifest()
