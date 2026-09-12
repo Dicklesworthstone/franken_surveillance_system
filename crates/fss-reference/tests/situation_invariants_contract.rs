@@ -37,7 +37,33 @@ fn required_context_item_ids(
     ReferenceSituationPublication::required_context_item_ids(situation)
 }
 
+fn create_exclusive_run_dir(
+    prefix: &str,
+    name: &str,
+) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::option_env!("CARGO_TARGET_TMPDIR").map(std::path::PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+    let pid = std::process::id();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for attempt in 0..64 {
+        let dir_name = format!("{prefix}-{pid}-{now}-{attempt}-{name}");
+        let dir = base.join(dir_name);
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Err(format!("exhausted 64 attempts creating exclusive run directory for {name}").into())
+}
+
 struct TestHarness {
+    run_dir: std::path::PathBuf,
     path: std::path::PathBuf,
     objects: InMemoryObjectStore,
     authority: DurableReferenceLedger,
@@ -45,17 +71,28 @@ struct TestHarness {
 
 impl TestHarness {
     fn new(name: &str) -> Result<Self, Box<dyn Error>> {
-        let path = std::env::temp_dir().join(format!(
-            "fss-ref-situation-inv-{}-{name}.journal",
-            std::process::id()
-        ));
-        let _ = fs::remove_file(&path);
+        let run_dir = create_exclusive_run_dir("fss-ref-situation-inv", name)?;
+        let path = run_dir.join(format!("{name}.journal"));
+        if path.exists() {
+            return Err(format!(
+                "TestHarness refused to silently reuse or overwrite existing journal at {path:?}"
+            )
+            .into());
+        }
+        let authority = DurableReferenceLedger::open(
+            &path,
+            format!("site:situation-inv:{name}"),
+            IncompleteTailPolicy::Reject,
+        )?;
+        if !authority.batches().is_empty() {
+            return Err(format!(
+                "TestHarness journal path {path:?} unexpectedly reused non-empty journal state"
+            )
+            .into());
+        }
         Ok(Self {
-            authority: DurableReferenceLedger::open(
-                &path,
-                format!("site:situation-inv:{name}"),
-                IncompleteTailPolicy::Reject,
-            )?,
+            run_dir,
+            authority,
             objects: InMemoryObjectStore::new(ObjectLimits::new(2048, 32 * 1024 * 1024)),
             path,
         })
@@ -200,8 +237,17 @@ impl TestHarness {
 
     fn cleanup(self) {
         let path = self.path.clone();
+        let run_dir = self.run_dir.clone();
         drop(self);
         let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(run_dir);
+    }
+}
+
+impl Drop for TestHarness {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_dir_all(&self.run_dir);
     }
 }
 
@@ -221,11 +267,12 @@ fn test_basis() -> ContractBasis {
 }
 
 fn test_spec(target_tokens: u64) -> ReferenceProjectionSpec {
+    let available_tokens = target_tokens.saturating_add(10_000).max(20_000);
     ReferenceProjectionSpec {
         view_id: "AVIEW-001".to_owned(),
         available_resources: BudgetVector::builder()
             .latency_ms(10_000)
-            .tokens(20_000)
+            .tokens(available_tokens)
             .bytes(1_000_000)
             .model_calls(10)
             .cpu_millis(10_000)

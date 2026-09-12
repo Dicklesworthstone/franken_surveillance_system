@@ -14,9 +14,24 @@ use fss_reference::{
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "fss-ref-clock-source-{}-{name}.journal",
-        std::process::id()
+    let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::option_env!("CARGO_TARGET_TMPDIR").map(std::path::PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+    let pid = std::process::id();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for attempt in 0..64 {
+        let dir_name = format!("fss-ref-clock-source-{pid}-{now}-{attempt}-{name}");
+        let dir = base.join(dir_name);
+        if fs::create_dir(&dir).is_ok() {
+            return dir.join(format!("{name}.journal"));
+        }
+    }
+    base.join(format!(
+        "fss-ref-clock-source-{pid}-{now}-fallback-{name}.journal"
     ))
 }
 

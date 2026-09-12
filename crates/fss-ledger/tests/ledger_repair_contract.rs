@@ -539,7 +539,11 @@ fn setup_journal_with_foreign_tail(
 
 /// Creates a fresh, test-owned scratch directory without shared process-global counters.
 fn fresh_dir(label: &str) -> Result<PathBuf, Box<dyn Error>> {
-    let dir = std::env::temp_dir().join(format!("fss-ledger-vddm8-{}-{label}", std::process::id()));
+    let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map(PathBuf::from)
+        .or_else(|| std::option_env!("CARGO_TARGET_TMPDIR").map(PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join(format!("fss-ledger-vddm8-{}-{label}", std::process::id()));
     match fs::remove_dir_all(&dir) {
         Ok(()) => {}
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}

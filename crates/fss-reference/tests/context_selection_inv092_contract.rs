@@ -43,9 +43,10 @@ fn test_basis() -> ContractBasis {
 }
 
 fn test_spec(target_tokens: u64) -> Result<ReferenceProjectionSpec, Box<dyn Error>> {
+    let available_tokens = target_tokens.saturating_add(10_000).max(20_000);
     let available = BudgetVector::builder()
         .latency_ms(10_000)
-        .tokens(20_000)
+        .tokens(available_tokens)
         .bytes(1_000_000)
         .model_calls(10)
         .cpu_millis(10_000)
@@ -1056,7 +1057,33 @@ fn test_spec_validation_rejects_reserved_token_incursion() -> Result<(), Box<dyn
     Ok(())
 }
 
+fn create_exclusive_run_dir(
+    prefix: &str,
+    name: &str,
+) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::option_env!("CARGO_TARGET_TMPDIR").map(std::path::PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+    let pid = std::process::id();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for attempt in 0..64 {
+        let dir_name = format!("{prefix}-{pid}-{now}-{attempt}-{name}");
+        let dir = base.join(dir_name);
+        match std::fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Err(format!("exhausted 64 attempts creating exclusive run directory for {name}").into())
+}
+
 struct TestHarness {
+    run_dir: std::path::PathBuf,
     path: std::path::PathBuf,
     objects: InMemoryObjectStore,
     authority: DurableReferenceLedger,
@@ -1064,17 +1091,28 @@ struct TestHarness {
 
 impl TestHarness {
     fn new(name: &str) -> Result<Self, Box<dyn Error>> {
-        let path = std::env::temp_dir().join(format!(
-            "fss-ref-inv092-pipe-{}-{name}.journal",
-            std::process::id()
-        ));
-        let _ = std::fs::remove_file(&path);
+        let run_dir = create_exclusive_run_dir("fss-ref-inv092-pipe", name)?;
+        let path = run_dir.join(format!("{name}.journal"));
+        if path.exists() {
+            return Err(format!(
+                "TestHarness refused to silently reuse or overwrite existing journal at {path:?}"
+            )
+            .into());
+        }
+        let authority = DurableReferenceLedger::open(
+            &path,
+            format!("site:inv092:{name}"),
+            IncompleteTailPolicy::Reject,
+        )?;
+        if !authority.batches().is_empty() {
+            return Err(format!(
+                "TestHarness journal path {path:?} unexpectedly reused non-empty journal state"
+            )
+            .into());
+        }
         Ok(Self {
-            authority: DurableReferenceLedger::open(
-                &path,
-                format!("site:inv092:{name}"),
-                IncompleteTailPolicy::Reject,
-            )?,
+            run_dir,
+            authority,
             objects: InMemoryObjectStore::new(ObjectLimits::new(2048, 32 * 1024 * 1024)),
             path,
         })
@@ -1157,6 +1195,7 @@ impl TestHarness {
 impl Drop for TestHarness {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+        let _ = std::fs::remove_dir_all(&self.run_dir);
     }
 }
 

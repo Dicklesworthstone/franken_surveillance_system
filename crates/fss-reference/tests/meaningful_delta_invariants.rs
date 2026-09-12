@@ -96,7 +96,33 @@ fn test_basis() -> ContractBasis {
     )
 }
 
+fn create_exclusive_run_dir(
+    prefix: &str,
+    name: &str,
+) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::option_env!("CARGO_TARGET_TMPDIR").map(std::path::PathBuf::from))
+        .unwrap_or_else(std::env::temp_dir);
+    let pid = std::process::id();
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    for attempt in 0..64 {
+        let dir_name = format!("{prefix}-{pid}-{now}-{attempt}-{name}");
+        let dir = base.join(dir_name);
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(err.into()),
+        }
+    }
+    Err(format!("exhausted 64 attempts creating exclusive run directory for {name}").into())
+}
+
 struct TestHarness {
+    run_dir: std::path::PathBuf,
     path: std::path::PathBuf,
     objects: InMemoryObjectStore,
     authority: DurableReferenceLedger,
@@ -104,19 +130,38 @@ struct TestHarness {
 
 impl TestHarness {
     fn new(name: &str) -> Result<Self, Box<dyn Error>> {
-        let path = std::env::temp_dir().join(format!(
-            "fss-ref-meaningful-delta-inv-{}-{name}.journal",
-            std::process::id()
-        ));
-        let _ = fs::remove_file(&path);
+        let run_dir = create_exclusive_run_dir("fss-ref-meaningful-delta", name)?;
+        let path = run_dir.join(format!("{name}.journal"));
+        Self::open_at_path(run_dir, path, name)
+    }
+
+    fn open_at_path(
+        run_dir: std::path::PathBuf,
+        path: std::path::PathBuf,
+        name: &str,
+    ) -> Result<Self, Box<dyn Error>> {
+        if path.exists() {
+            return Err(format!(
+                "TestHarness refused to silently reuse or overwrite existing journal at {path:?}"
+            )
+            .into());
+        }
+        let authority = DurableReferenceLedger::open(
+            &path,
+            format!("site:meaningful-delta-inv:{name}"),
+            IncompleteTailPolicy::Reject,
+        )?;
+        if !authority.batches().is_empty() {
+            return Err(format!(
+                "TestHarness journal path {path:?} unexpectedly reused non-empty journal state"
+            )
+            .into());
+        }
         Ok(Self {
-            authority: DurableReferenceLedger::open(
-                &path,
-                format!("site:meaningful-delta-inv:{name}"),
-                IncompleteTailPolicy::Reject,
-            )?,
-            objects: InMemoryObjectStore::new(ObjectLimits::new(2048, 32 * 1024 * 1024)),
+            run_dir,
             path,
+            objects: InMemoryObjectStore::new(ObjectLimits::new(2048, 32 * 1024 * 1024)),
+            authority,
         })
     }
 
@@ -216,17 +261,27 @@ impl TestHarness {
 
     fn cleanup(self) {
         let path = self.path.clone();
+        let run_dir = self.run_dir.clone();
         drop(self);
         let _ = fs::remove_file(path);
+        let _ = fs::remove_dir_all(run_dir);
+    }
+}
+
+impl Drop for TestHarness {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_dir_all(&self.run_dir);
     }
 }
 
 fn test_spec(target_tokens: u64) -> Result<ReferenceProjectionSpec, Box<dyn Error>> {
+    let available_tokens = target_tokens.saturating_add(10_000).max(20_000);
     Ok(ReferenceProjectionSpec {
         view_id: "AVIEW-001".to_owned(),
         available_resources: BudgetVector::builder()
             .latency_ms(10_000)
-            .tokens(20_000)
+            .tokens(available_tokens)
             .bytes(1_000_000)
             .model_calls(10)
             .cpu_millis(10_000)
@@ -2107,7 +2162,21 @@ fn test_inv056_failing_producer_driven_planted_negative_meaningful_delta()
 
     // Situation 1: without coverage witness -> uncertified absence
     let sit1 = compile_reference_situation(req1, &harness.authority)?;
-    let pub1 = project_reference_situation(sit1, &test_spec(20_000)?)?;
+    let spec1 = test_spec(10_000)?;
+    let unreserved1 = spec1
+        .available_resources
+        .tokens
+        .saturating_sub(spec1.reserved_resources.tokens);
+    let pub1 = project_reference_situation(sit1, &spec1).map_err(|err| {
+        format!(
+            "pub1 project failed with target_tokens={}, available_tokens={}, reserved_tokens={}, unreserved_tokens={}, available_bytes={}: {err:?}",
+            spec1.target_tokens,
+            spec1.available_resources.tokens,
+            spec1.reserved_resources.tokens,
+            unreserved1,
+            spec1.available_resources.bytes,
+        )
+    })?;
 
     // Situation 2: with valid coverage witness -> certified absence
     let anchor = harness.authority.current().anchor.clone();
@@ -2133,7 +2202,21 @@ fn test_inv056_failing_producer_driven_planted_negative_meaningful_delta()
     req2.revision = 2;
     req2.coverage_witness = Some(&witness);
     let sit2 = compile_reference_situation(req2, &harness.authority)?;
-    let pub2 = project_reference_situation(sit2, &test_spec(20_000)?)?;
+    let spec2 = test_spec(10_000)?;
+    let unreserved2 = spec2
+        .available_resources
+        .tokens
+        .saturating_sub(spec2.reserved_resources.tokens);
+    let pub2 = project_reference_situation(sit2, &spec2).map_err(|err| {
+        format!(
+            "pub2 project failed with target_tokens={}, available_tokens={}, reserved_tokens={}, unreserved_tokens={}, available_bytes={}: {err:?}",
+            spec2.target_tokens,
+            spec2.available_resources.tokens,
+            spec2.reserved_resources.tokens,
+            unreserved2,
+            spec2.available_resources.bytes,
+        )
+    })?;
 
     let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
     // Transition from uncertified to certified absence changes knowledge cell from Unknown to Known
@@ -2144,5 +2227,84 @@ fn test_inv056_failing_producer_driven_planted_negative_meaningful_delta()
     );
 
     harness.cleanup();
+    Ok(())
+}
+
+/// Proves that TestHarness refuses to silently reuse or overwrite a pre-existing journal:
+/// when a path already exists, TestHarness fails loudly instead of silently appending or clobbering.
+#[test]
+fn test_harness_proves_no_silent_append_to_stale_journal() -> Result<(), Box<dyn Error>> {
+    let test_name = "stale-isolation-proof";
+    let run_dir = create_exclusive_run_dir("fss-ref-stale-isolation", test_name)?;
+    let path = run_dir.join(format!("{test_name}.journal"));
+
+    // 1. Pre-create a stale journal file at the target path.
+    fs::write(&path, b"stale-journal-pre-existing-content")?;
+    assert!(path.exists(), "Pre-created stale journal file must exist");
+    assert!(
+        fs::metadata(&path)?.len() > 0,
+        "Stale journal must have non-zero length"
+    );
+
+    // 2. Prove that TestHarness refuses to silently overwrite or append to an existing journal:
+    // It fails loudly with an error rather than silently reusing or deleting the file.
+    let err = TestHarness::open_at_path(run_dir.clone(), path.clone(), test_name);
+    assert!(
+        err.is_err(),
+        "TestHarness::open_at_path must fail loudly if journal path already exists!"
+    );
+    let err_msg = match err {
+        Err(e) => e.to_string(),
+        Ok(_) => String::new(),
+    };
+    assert!(
+        err_msg.contains("refused to silently reuse or overwrite"),
+        "Error message must clearly report refusal to reuse existing path: {err_msg}"
+    );
+
+    // Clean up the stale file and dir
+    let _ = fs::remove_file(&path);
+    let _ = fs::remove_dir_all(&run_dir);
+
+    // 3. Normal TestHarness::new allocates an exclusive run directory and creates fresh journal cleanly:
+    let mut harness = TestHarness::new(test_name)?;
+    assert_eq!(
+        harness.authority.batches().len(),
+        0,
+        "Fresh harness must have zero batches"
+    );
+    assert_eq!(
+        harness.authority.current().anchor.commit_sequence,
+        0,
+        "Fresh harness must have commit sequence 0"
+    );
+
+    let (_decision, receipt) = harness.publish_rejected_decision(test_name)?;
+    assert_eq!(
+        harness.authority.batches().len(),
+        2,
+        "Harness must commit 2 batches"
+    );
+    assert_eq!(
+        harness.authority.current().anchor.commit_sequence,
+        2,
+        "Commit sequence must be 2"
+    );
+    assert_eq!(
+        receipt.authority_anchor.commit_sequence, 2,
+        "Receipt anchor sequence must be 2"
+    );
+
+    let journal_path = harness.path.clone();
+    let harness_dir = harness.run_dir.clone();
+    harness.cleanup();
+    assert!(
+        !journal_path.exists(),
+        "Harness cleanup must remove journal file"
+    );
+    assert!(
+        !harness_dir.exists(),
+        "Harness cleanup must remove run directory"
+    );
     Ok(())
 }
