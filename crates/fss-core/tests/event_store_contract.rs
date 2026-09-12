@@ -1523,3 +1523,69 @@ fn has_contradiction_counts_only_active_contradictions() -> TestResult {
     }
     Ok(())
 }
+
+#[test]
+fn has_contradiction_agrees_with_unresolved_worlds_for_every_disposition() -> TestResult {
+    let dispositions = [
+        HypothesisDisposition::Live,
+        HypothesisDisposition::Supported,
+        HypothesisDisposition::Disfavored,
+        HypothesisDisposition::Refuted,
+        HypothesisDisposition::Resolved,
+        HypothesisDisposition::Superseded,
+    ];
+    for (index, disposition) in dispositions.into_iter().enumerate() {
+        // Exhaustive on purpose: a new disposition must choose whether it is active.
+        let expected_active = match disposition {
+            HypothesisDisposition::Live
+            | HypothesisDisposition::Supported
+            | HypothesisDisposition::Disfavored => true,
+            HypothesisDisposition::Refuted
+            | HypothesisDisposition::Resolved
+            | HypothesisDisposition::Superseded => false,
+        };
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-contradiction-agree"));
+        let ev_id = EventId::parse("evt_contra_agree")?;
+        store.append_genesis(
+            store.current_anchor().clone(),
+            sample_genesis("evt_contra_agree")?,
+            "domain.gamma",
+            TimestampNs(1_000),
+        )?;
+        let world = format!("world.agree_{index}");
+        let contradiction = sample_contradiction_with_disposition(
+            &format!("contra_agree_{index}"),
+            "evt_contra_agree",
+            &[world.as_str()],
+            disposition,
+        )?;
+        store.record_contradiction(
+            store.current_anchor().clone(),
+            ev_id.clone(),
+            contradiction,
+            TimestampNs(2_000),
+        )?;
+
+        assert_eq!(
+            store.contradictions_for_event(&ev_id).len(),
+            1,
+            "a {disposition:?} contradiction must still be retained"
+        );
+        assert_eq!(
+            store.has_contradiction(&ev_id),
+            expected_active,
+            "has_contradiction for a {disposition:?} contradiction"
+        );
+        assert_eq!(
+            store.is_world_unresolved(&world),
+            store.has_contradiction(&ev_id),
+            "is_world_unresolved must agree with has_contradiction for {disposition:?}"
+        );
+        assert_eq!(
+            store.unresolved_worlds().is_empty(),
+            !expected_active,
+            "unresolved worlds for a {disposition:?} contradiction"
+        );
+    }
+    Ok(())
+}

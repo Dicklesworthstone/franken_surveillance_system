@@ -731,7 +731,10 @@ impl EventRevisionStore {
         self.lineages.len()
     }
 
-    /// Returns the set of all active unresolved worlds kept alive by contradictions.
+    /// Returns the set of unresolved worlds kept alive by active contradictions.
+    ///
+    /// Agrees with [`Self::has_contradiction`]: a contradiction recorded with a terminal
+    /// disposition contributes no world here.
     #[must_use]
     pub const fn unresolved_worlds(&self) -> &BTreeSet<String> {
         &self.unresolved_worlds
@@ -751,8 +754,11 @@ impl EventRevisionStore {
 
     /// Returns true if any contradictions are active for the specified event.
     ///
-    /// A contradiction retired by a terminal disposition (refuted, resolved, superseded) stays in
-    /// [`Self::contradictions_for_event`] but no longer counts here; see [`Contradiction::is_active`].
+    /// Contradictions are append-only and keep the disposition they were recorded with; nothing
+    /// here changes that disposition later. One recorded with a terminal disposition (refuted,
+    /// resolved, superseded) is listed by [`Self::contradictions_for_event`] but never counts
+    /// here, and one recorded active counts for as long as it is retained. See
+    /// [`Contradiction::is_active`].
     #[must_use]
     pub fn has_contradiction(&self, event_id: &EventId) -> bool {
         self.contradictions
@@ -1055,6 +1061,9 @@ impl EventRevisionStore {
     }
 
     /// Records a first-class physical contradiction against an event.
+    ///
+    /// Every valid contradiction is retained, but only an active one keeps its unresolved worlds
+    /// alive, so [`Self::is_world_unresolved`] agrees with [`Self::has_contradiction`].
     pub fn record_contradiction(
         &mut self,
         basis_anchor: LedgerAnchor,
@@ -1086,8 +1095,10 @@ impl EventRevisionStore {
             });
         }
 
-        for world in contradiction.unresolved_worlds() {
-            self.unresolved_worlds.insert(world.clone());
+        if contradiction.is_active() {
+            for world in contradiction.unresolved_worlds() {
+                self.unresolved_worlds.insert(world.clone());
+            }
         }
 
         let entry = EventStoreEntry::RecordContradiction {
