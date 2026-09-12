@@ -322,7 +322,10 @@ fn test_security_boundary_violation_in_rust_fails_closed() -> Result<(), Box<dyn
         request_timeout_ns: 5_000_000_000,
     };
     let res = adapter.verify_standards_compliance();
-    let err_str = format!("{res:?}");
-    assert!(err_str.contains("SecurityBoundaryViolation"));
+    assert!(matches!(
+        res,
+        Err(StandardsComplianceError::SecurityBoundaryViolation { ref detail })
+            if detail.contains("broad scanning") || detail.contains("auth bypass")
+    ));
     Ok(())
 }
