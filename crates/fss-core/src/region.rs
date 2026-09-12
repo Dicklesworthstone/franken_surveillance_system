@@ -52,7 +52,7 @@
 //!      never silently continued or dropped.
 
 use core::fmt;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::{BudgetVector, ContractError, RecoveryClass};
@@ -714,8 +714,8 @@ pub struct RegionNode {
     pub drain_requested_at: Option<TimestampNs>,
     /// Timestamp when region finalized/closed.
     pub closed_at: Option<TimestampNs>,
-    /// Active tasks running in this region.
-    pub active_tasks: BTreeSet<TaskId>,
+    /// Active tasks running in this region and their registration timestamps.
+    pub active_tasks: BTreeMap<TaskId, TimestampNs>,
     /// Completed task receipts.
     pub completed_tasks: BTreeMap<TaskId, TaskReceipt>,
     /// Obligations tracked by this region.
@@ -746,7 +746,7 @@ impl RegionNode {
             created_at,
             drain_requested_at: None,
             closed_at: None,
-            active_tasks: BTreeSet::new(),
+            active_tasks: BTreeMap::new(),
             completed_tasks: BTreeMap::new(),
             obligations: BTreeMap::new(),
             reconciliation_obligations: BTreeMap::new(),
@@ -922,7 +922,7 @@ impl RegionTree {
             });
         }
 
-        if node.active_tasks.contains(&task_id) || node.completed_tasks.contains_key(&task_id) {
+        if node.active_tasks.contains_key(&task_id) || node.completed_tasks.contains_key(&task_id) {
             return Err(RegionError::DuplicateTask(task_id));
         }
 
@@ -930,8 +930,7 @@ impl RegionTree {
             return Err(RegionError::CapacityExceeded("tasks"));
         }
 
-        node.active_tasks.insert(task_id);
-        let _ = now;
+        node.active_tasks.insert(task_id, now);
         Ok(())
     }
 
@@ -954,14 +953,15 @@ impl RegionTree {
             });
         }
 
-        if !node.active_tasks.remove(task_id) {
-            return Err(RegionError::TaskNotFound(task_id.clone()));
-        }
+        let registered_at = node
+            .active_tasks
+            .remove(task_id)
+            .ok_or_else(|| RegionError::TaskNotFound(task_id.clone()))?;
 
         let receipt = TaskReceipt {
             task_id: task_id.clone(),
             region_id: region_id.clone(),
-            registered_at: node.created_at,
+            registered_at,
             completed_at: now,
             outcome,
         };
@@ -978,7 +978,6 @@ impl RegionTree {
         &mut self,
         region_id: &RegionId,
         obligation: Obligation,
-        now: TimestampNs,
     ) -> Result<(), RegionError> {
         let node = self
             .nodes
@@ -1002,7 +1001,6 @@ impl RegionTree {
 
         node.obligations
             .insert(obligation.obligation_id.clone(), obligation);
-        let _ = now;
         Ok(())
     }
 
@@ -1017,7 +1015,6 @@ impl RegionTree {
         state: ObligationState,
         proof_digest: Option<ContentDigest>,
         reconciliation_note: Option<&str>,
-        now: TimestampNs,
     ) -> Result<(), RegionError> {
         let node = self
             .nodes
@@ -1045,7 +1042,6 @@ impl RegionTree {
 
         obligation.state = state;
         obligation.proof_digest = proof_digest;
-        let _ = now;
         Ok(())
     }
 

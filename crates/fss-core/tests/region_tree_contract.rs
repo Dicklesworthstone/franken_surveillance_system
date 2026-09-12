@@ -414,7 +414,10 @@ fn test_closure_protocol_request_drain_finalize_success() -> Result<(), Box<dyn 
 
     let task_id = TaskId::new("task-decode-frame-01")?;
     tree.register_task(&media_id, task_id.clone(), now)?;
-    tree.complete_task(&media_id, &task_id, TaskOutcome::Success, TimestampNs(120))?;
+    let receipt =
+        tree.complete_task(&media_id, &task_id, TaskOutcome::Success, TimestampNs(120))?;
+    assert_eq!(receipt.registered_at, now);
+    assert_eq!(receipt.completed_at, TimestampNs(120));
 
     tree.request_drain(&root_id, Some("normal shutdown"), TimestampNs(200))?;
 
@@ -521,7 +524,7 @@ fn test_planted_negative_formal001_closure_blocked_by_pending_obligation()
     )?;
 
     let ob = test_obligation("ob-alert-01", ObligationState::Pending)?;
-    tree.register_obligation(&ops_id, ob, now)?;
+    tree.register_obligation(&ops_id, ob)?;
 
     tree.request_drain(&ops_id, Some("drain"), now)?;
 
@@ -541,7 +544,6 @@ fn test_planted_negative_formal001_closure_blocked_by_pending_obligation()
         ObligationState::Verified,
         Some(ContentDigest::sha256(b"proof")),
         None,
-        TimestampNs(210),
     )?;
 
     let proof = tree.finalize(&ops_id, TimestampNs(220))?;
@@ -584,16 +586,9 @@ fn test_inv006_indeterminate_obligation_requires_durable_reconciliation()
         state: ObligationState::Pending,
         proof_digest: None,
     };
-    tree.register_obligation(&ops_id, ob, now)?;
+    tree.register_obligation(&ops_id, ob)?;
 
-    let res = tree.resolve_obligation(
-        &ops_id,
-        &ob_id,
-        ObligationState::Indeterminate,
-        None,
-        None,
-        TimestampNs(150),
-    );
+    let res = tree.resolve_obligation(&ops_id, &ob_id, ObligationState::Indeterminate, None, None);
     assert_eq!(
         res,
         Err(RegionError::MissingReconciliationObligation(ob_id.clone()))
@@ -605,7 +600,6 @@ fn test_inv006_indeterminate_obligation_requires_durable_reconciliation()
         ObligationState::Indeterminate,
         None,
         Some("Durable reconciliation required on gateway restart: check external provider webhook log"),
-        TimestampNs(160),
     )?;
 
     tree.request_drain(&ops_id, Some("drain"), TimestampNs(170))?;
@@ -718,7 +712,7 @@ fn test_planted_negative_orphan_work_detection() -> Result<(), Box<dyn Error>> {
     );
 
     let ob = test_obligation("ob-orphan-01", ObligationState::Pending)?;
-    let res = tree.register_obligation(&ops_id, ob, TimestampNs(130));
+    let res = tree.register_obligation(&ops_id, ob);
     assert_eq!(
         res,
         Err(RegionError::OrphanWork {
@@ -955,11 +949,11 @@ fn test_bounds_obligations_per_region() -> Result<(), Box<dyn Error>> {
 
     for i in 0..MAX_OBLIGATIONS_PER_REGION {
         let ob = test_obligation(&format!("ob-{:03}", i), ObligationState::Pending)?;
-        tree.register_obligation(&root_id, ob, now)?;
+        tree.register_obligation(&root_id, ob)?;
     }
 
     let ob_overflow = test_obligation("ob-overflow", ObligationState::Pending)?;
-    let res = tree.register_obligation(&root_id, ob_overflow, now);
+    let res = tree.register_obligation(&root_id, ob_overflow);
     assert_eq!(res, Err(RegionError::CapacityExceeded("obligations")));
     Ok(())
 }
@@ -1032,7 +1026,7 @@ fn test_e2e_controlled_cutpoint_shutdown_with_structured_log() -> Result<(), Box
         state: ObligationState::Pending,
         proof_digest: None,
     };
-    tree.register_obligation(&alert_id, alert_ob, start_time)?;
+    tree.register_obligation(&alert_id, alert_ob)?;
 
     let event_id = RegionId::new("property.site_01.event_00")?;
     tree.request_drain(
@@ -1056,7 +1050,6 @@ fn test_e2e_controlled_cutpoint_shutdown_with_structured_log() -> Result<(), Box
         ObligationState::Cancelled,
         Some(ContentDigest::sha256(b"cancelled-proof")),
         None,
-        TimestampNs(1_170_000),
     )?;
     let alert_proof = tree.finalize(&alert_id, TimestampNs(1_180_000))?;
     assert_eq!(alert_proof.total_obligations, 1);
