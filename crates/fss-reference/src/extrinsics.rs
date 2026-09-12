@@ -1496,6 +1496,12 @@ pub fn solve_extrinsics(
             max_allowed_upx: request.max_reprojection_tolerance_upx,
         });
     }
+    if max_err_upx > request.max_reprojection_tolerance_upx {
+        return Err(ExtrinsicsError::ResidualExceedsTolerance {
+            actual_rmse_upx: max_err_upx,
+            max_allowed_upx: request.max_reprojection_tolerance_upx,
+        });
+    }
 
     // 13. Estimate parameter covariance
     let res_var_upx2 = sum_err_sq_upx / (n.max(7.0) - 6.0);

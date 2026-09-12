@@ -835,6 +835,12 @@ fn test_extrinsics_lifecycle_invalidation_on_contradiction() -> Result<(), Box<d
     })?;
 
     let mut lifecycle = ExtrinsicsLifecycle::new();
+    assert_eq!(
+        lifecycle.state(),
+        &ExtrinsicsLifecycleState::Uncalibrated,
+        "A freshly created ExtrinsicsLifecycle must start in Uncalibrated state"
+    );
+    assert!(!lifecycle.is_active());
     lifecycle.activate_certificate(cert, &target_cert, TimestampNs(1_700_005_000_000_000_000))?;
     assert!(lifecycle.is_active());
 
@@ -1450,4 +1456,125 @@ fn test_extrinsics_lifecycle_rejects_expired_or_mismatched_target_intrinsics()
     }
 
     Ok(())
+}
+
+#[test]
+fn test_extrinsics_lifecycle_initial_state_is_uncalibrated() {
+    let lifecycle = ExtrinsicsLifecycle::new();
+    assert_eq!(
+        lifecycle.state(),
+        &ExtrinsicsLifecycleState::Uncalibrated,
+        "A freshly created ExtrinsicsLifecycle must start in Uncalibrated state"
+    );
+    assert!(!lifecycle.is_active());
+}
+
+#[test]
+fn test_extrinsics_lifecycle_invalidation_on_3d_landmark_contradiction()
+-> Result<(), Box<dyn Error>> {
+    let source_cert = build_test_intrinsics("cam-1", "001")?;
+    let target_cert = build_test_intrinsics("cam-2", "001")?;
+    let transform = sample_test_transform()?;
+    let correspondences = generate_synthetic_correspondences(
+        16,
+        &transform,
+        &source_cert.intrinsics,
+        &target_cert.intrinsics,
+        1_700_000_000_000_000_000,
+    )?;
+    let validity = CaptureInterval::new(
+        TimestampNs(1_700_000_000_000_000_000),
+        TimestampNs(1_700_010_000_000_000_000),
+    )?;
+
+    let cert = solve_extrinsics(&ExtrinsicsSolveRequest {
+        certificate_id: "ext:cert:3d-contradiction".to_string(),
+        source_certificate: &source_cert,
+        target_certificate: &target_cert,
+        correspondences: correspondences.clone(),
+        validity,
+        calibration_generation: CalibrationGeneration::parse("cal:extrinsics:001")?,
+        max_reprojection_tolerance_upx: 1_000_000,
+    })?;
+
+    let mut lifecycle = ExtrinsicsLifecycle::new();
+    lifecycle.activate_certificate(cert, &target_cert, TimestampNs(1_700_005_000_000_000_000))?;
+
+    // Create 3D landmark contradiction: target_point_mm shifted by 500 mm in 3D
+    let bad_3d_obs = ExtrinsicsCorrespondence::new(
+        888,
+        4444,
+        correspondences[0].source_point_mm,
+        [
+            correspondences[0].target_point_mm[0] + 500,
+            correspondences[0].target_point_mm[1],
+            correspondences[0].target_point_mm[2],
+        ],
+        correspondences[0].source_pixel_upx,
+        correspondences[0].target_pixel_upx,
+        TimestampNs(1_700_005_000_000_000_000),
+    )?;
+
+    match lifecycle.verify_observation(&bad_3d_obs, 500_000) {
+        Err(ExtrinsicsError::ContradictedExtrinsics { .. }) => {}
+        other => {
+            return Err(
+                format!("Expected ContradictedExtrinsics on 3D shift, got: {other:?}").into(),
+            );
+        }
+    }
+    assert!(!lifecycle.is_active());
+    Ok(())
+}
+
+#[test]
+fn test_adversarial_catastrophic_outlier_correspondence_rejected_in_solve()
+-> Result<(), Box<dyn Error>> {
+    let source_cert = build_test_intrinsics("cam-1", "001")?;
+    let target_cert = build_test_intrinsics("cam-2", "001")?;
+    let transform = sample_test_transform()?;
+
+    // 16 correspondences: 15 with near-zero error, 1 corrupted by 1.5 pixels (1,500,000 upx)
+    let mut correspondences = generate_synthetic_correspondences(
+        16,
+        &transform,
+        &source_cert.intrinsics,
+        &target_cert.intrinsics,
+        1_700_000_000_000_000_000,
+    )?;
+
+    correspondences[0] = ExtrinsicsCorrespondence::new(
+        correspondences[0].correspondence_id,
+        correspondences[0].feature_id,
+        correspondences[0].source_point_mm,
+        correspondences[0].target_point_mm,
+        correspondences[0].source_pixel_upx,
+        (
+            correspondences[0].target_pixel_upx.0 + 1_500_000,
+            correspondences[0].target_pixel_upx.1,
+        ),
+        correspondences[0].capture_time,
+    )?;
+
+    // With 15 errors ~0 and 1 error = 1.5e6 upx, aggregate RMSE is sqrt(1.5e6^2 / 16) = 375,000 upx.
+    // With tolerance 500,000 upx, RMSE (375,000) < tolerance (500,000).
+    // solve_extrinsics must reject this because max_err_upx exceeds tolerance!
+    let req = ExtrinsicsSolveRequest {
+        certificate_id: "ext:cert:outlier-check".to_string(),
+        source_certificate: &source_cert,
+        target_certificate: &target_cert,
+        correspondences,
+        validity: CaptureInterval::new(
+            TimestampNs(1_700_000_000_000_000_000),
+            TimestampNs(1_700_010_000_000_000_000),
+        )?,
+        calibration_generation: CalibrationGeneration::parse("cal:extrinsics:001")?,
+        max_reprojection_tolerance_upx: 500_000,
+    };
+
+    match solve_extrinsics(&req) {
+        Err(ExtrinsicsError::ResidualExceedsTolerance { .. }) => Ok(()),
+        Ok(_) => Err("Vulnerability: solve_extrinsics accepted an outlier correspondence exceeding tolerance bound".into()),
+        other => Err(format!("Unexpected result: {other:?}").into()),
+    }
 }
