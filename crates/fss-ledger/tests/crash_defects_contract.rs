@@ -8,8 +8,7 @@
 use std::error::Error;
 use std::fs::{self, OpenOptions};
 use std::io::{Seek, SeekFrom, Write};
-use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
 
 use fss_ledger::{
     AppendPhase, AppendReconciliation, CorruptionKind, DurableReferenceLedger,
@@ -17,14 +16,12 @@ use fss_ledger::{
     JournalError, recover_bytes,
 };
 
-static COUNTER: AtomicU64 = AtomicU64::new(1);
-
-fn temp_journal(name: &str) -> PathBuf {
-    let id = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "fss-crash-defects-{}-{name}-{id}.journal",
-        std::process::id()
-    ))
+/// Returns the journal path owned by exactly one test, named after that test's label.
+///
+/// The path lives under `CARGO_TARGET_TMPDIR` and is a pure function of the label, so no shared
+/// counter or ambient state participates in naming. Every label must be unique in this file.
+fn temp_journal(label: &str) -> PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("crash_defects_contract-{label}.journal"))
 }
 
 /// F1: Same-length in-place overwrite must be detected as ExternalMutation with ContentDivergence.

@@ -482,15 +482,19 @@ fn escape_json(value: &str) -> String {
 mod tests {
     use std::fs::OpenOptions;
     use std::io::Write;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::{EvidenceJournal, JournalError, OpenMode};
 
-    static NEXT_PATH: AtomicU64 = AtomicU64::new(1);
-
-    fn temporary_path(name: &str) -> std::path::PathBuf {
-        let id = NEXT_PATH.fetch_add(1, Ordering::Relaxed);
-        std::env::temp_dir().join(format!("fss-lab-{name}-{}-{id}.journal", std::process::id()))
+    /// Returns the journal path owned by exactly one test, named after that test's label.
+    ///
+    /// Binary unit tests have no `CARGO_TARGET_TMPDIR`, so the path lives in the system temp
+    /// directory; the process id keeps concurrent cargo runs from sharing a file. Every label
+    /// must be unique in this module.
+    fn temporary_path(label: &'static str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "fss-lab-journal-{label}-{}.journal",
+            std::process::id()
+        ))
     }
 
     #[test]
