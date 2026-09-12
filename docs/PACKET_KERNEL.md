@@ -33,6 +33,25 @@ Limits bound datagram bytes, extension bytes, and compound packet count. Parsing
 allocates nothing. Debug views omit packet payloads, extensions, and SDES text.
 Malformed suffixes cannot publish a valid prefix as a successful compound.
 
+## Sequence and timing
+
+`SequenceTracker` validates the owner epoch, negotiated SSRC, and payload type
+before mutation. Two sequential packets establish the baseline. A fixed 128-bit
+window suppresses duplicates and recovers reordered positions across sequence
+wrap; missing positions and received/unique counts remain separate. Two
+consecutive discontinuous packets latch `RestartRequired`: reopening requires a
+strictly newer owner epoch, rather than silently resetting prior coverage.
+This is sequence admission, not authentication or a live coverage certificate.
+
+`JitterEstimator` implements the RFC 3550 integer recurrence in arrival order,
+including accepted duplicates/reordered timestamps. Supplied monotonic arrival
+clock reversals and ambiguous half-cycle deltas fail without mutating the state.
+`arrival_ticks` uses bounded integer arithmetic. `SenderReportClock` preserves the
+NTP-era ambiguity, binds the stream epoch, bounds extrapolation, rounds intervals
+outwards, includes caller-supplied drift/measurement uncertainty, and computes
+LSR/DLSR without guessing capture truth. An owner must retain report provenance
+and justify the uncertainty and extrapolation ceilings.
+
 ## Contracts and qualification
 
 The implementation follows RFC 3550 sections 5.1, 5.3.1, 6.1, and 6.4-6.7.

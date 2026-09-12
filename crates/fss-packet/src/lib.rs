@@ -5,9 +5,11 @@
 //! sender, and does not turn packet acceptance into continuity or capture truth.
 //! The owning adapter retains the original datagram and its stream generation.
 
+mod continuity;
 mod error;
 mod rtcp;
 mod rtp;
+mod timing;
 
 pub use error::{PacketError, PacketLimits};
 pub use rtcp::{
@@ -15,3 +17,8 @@ pub use rtcp::{
     RtcpPackets, SenderReport,
 };
 pub use rtp::{HeaderExtension, RtpPacket};
+
+pub use continuity::{
+    ContinuityError, SequenceClass, SequenceObservation, SequenceStats, SequenceTracker, StreamKey,
+};
+pub use timing::{JitterEstimator, SenderReportClock, SenderTimeEstimate, arrival_ticks};
