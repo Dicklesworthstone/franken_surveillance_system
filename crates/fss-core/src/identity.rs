@@ -971,46 +971,148 @@ impl AdapterIdentity {
     /// Verifies standards-first compliance under NEG-002.
     ///
     /// Fail-closed rules:
-    /// 1. Standards claims (ONVIF, RTSP, UVC) must not rely on marketing, box claims,
-    ///    cloud viewing, or consumer app presence.
-    /// 2. Proprietary/vendor/app-automation paths cannot use `IsolationMode::NativePureRust`
+    /// 1. Security boundary integrity: Prohibits scanning, auth bypass, credential theft, persistence, or evasion.
+    /// 2. Standards claims (ONVIF, RTSP, UVC) must not rely on marketing, box claims,
+    ///    cloud viewing, datasheets, or consumer app presence, and must cite a qualifying specification or gate.
+    /// 3. Proprietary/vendor/app-automation paths cannot use `IsolationMode::NativePureRust`
     ///    as a production native driver without authorized lab isolation (`IsolationMode::SealedLaboratoryProcess`).
-    /// 3. Vendor tokens must be explicitly scoped and cannot run under ambient unisolated credentials.
+    /// 4. Vendor tokens must be explicitly scoped to single device/account and cannot run under ambient/global credentials.
     pub fn verify_standards_compliance(&self) -> Result<(), StandardsComplianceError> {
-        let profile_lower = self.protocol_profile.to_ascii_lowercase();
+        let profile_raw_lower = self.protocol_profile.to_ascii_lowercase();
+        let profile_normalized = profile_raw_lower.replace(['_', '-'], " ");
+        let id_raw_lower = self.adapter_id.as_str().to_ascii_lowercase();
+        let id_normalized = id_raw_lower.replace(['_', '-'], " ");
 
-        // Rule 1: Reject marketing / app presence / consumer box claims
-        for forbidden in &[
-            "marketing",
-            "advertised",
-            "inferred",
-            "app_presence",
-            "app presence",
-            "packaging",
-            "box",
-            "cloud_viewing",
-            "cloud viewing",
-            "unverified",
+        // Rule 0 (Defect 6): Security boundary verification
+        for sec_viol in &[
+            "credential theft",
+            "credential harvesting",
+            "auth bypass",
+            "authentication bypass",
+            "bypass auth",
+            "third party account",
+            "broad scanning",
+            "subnet scan",
+            "network scan",
+            "port scan",
+            "ip sweep",
+            "persistence on vendor",
+            "device persistence",
+            "backdoor",
+            "evasion",
         ] {
-            if profile_lower.contains(forbidden) {
-                return Err(StandardsComplianceError::UnverifiedStandardsClaim {
+            if profile_raw_lower.contains(sec_viol)
+                || profile_normalized.contains(sec_viol)
+                || id_raw_lower.contains(sec_viol)
+                || id_normalized.contains(sec_viol)
+            {
+                return Err(StandardsComplianceError::SecurityBoundaryViolation {
                     detail: format!(
-                        "protocol profile '{}' contains forbidden marketing/app-presence indicator '{}'",
-                        self.protocol_profile, forbidden
+                        "adapter '{}' or protocol profile '{}' contains prohibited security boundary violation '{sec_viol}'",
+                        self.adapter_id, self.protocol_profile
                     ),
                 });
             }
         }
 
-        // Rule 2: Proprietary paths cannot claim NativePureRust
-        let id_lower = self.adapter_id.as_str().to_ascii_lowercase();
-        let is_proprietary = id_lower.contains("wyze")
-            || id_lower.contains("aosu")
-            || id_lower.contains("dji")
-            || id_lower.contains("lab")
-            || profile_lower.contains("vendor")
-            || profile_lower.contains("screen_capture")
-            || profile_lower.contains("app_automation");
+        // Rule 1 (Defect 2): Reject marketing / app presence / consumer box claims
+        for forbidden in &[
+            "marketing",
+            "advertised",
+            "advertising",
+            "inferred",
+            "app presence",
+            "packaging",
+            "retail packaging",
+            "consumer box",
+            "box claim",
+            "cloud viewing",
+            "community forum",
+            "promotional",
+            "datasheet",
+            "spec sheet",
+            "press release",
+            "ad copy",
+            "app store",
+            "unverified",
+        ] {
+            if profile_raw_lower.contains(forbidden)
+                || profile_normalized.contains(forbidden)
+                || id_raw_lower.contains(forbidden)
+                || id_normalized.contains(forbidden)
+            {
+                return Err(StandardsComplianceError::UnverifiedStandardsClaim {
+                    detail: format!(
+                        "protocol profile '{}' contains forbidden marketing/app-presence indicator '{forbidden}'",
+                        self.protocol_profile
+                    ),
+                });
+            }
+        }
+
+        // Rule 2 (Defect 1 & 8): Qualifying evidence/spec reference requirement for standards claims
+        match self.adapter_kind {
+            AdapterKind::OnvifProfileT => {
+                let has_spec = [
+                    "profile t", "profile-t", "profile_t", "onvif profile t", "gate 030", "gate-030", "test onvif", "conformance", "proof",
+                ]
+                .iter()
+                .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
+                if !has_spec {
+                    return Err(StandardsComplianceError::UnverifiedStandardsClaim {
+                        detail: format!(
+                            "adapter '{}' claims OnvifProfileT without qualifying profile/specification reference in '{}'",
+                            self.adapter_id, self.protocol_profile
+                        ),
+                    });
+                }
+            }
+            AdapterKind::Rtsp => {
+                let has_spec = [
+                    "rfc2326", "rfc 2326", "rfc7826", "rfc 7826", "rfc3550", "rfc 3550", "gate 030", "gate-030", "test rtsp", "proof",
+                ]
+                .iter()
+                .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
+                if !has_spec {
+                    return Err(StandardsComplianceError::UnverifiedStandardsClaim {
+                        detail: format!(
+                            "adapter '{}' claims Rtsp without qualifying RFC or gate reference in '{}'",
+                            self.adapter_id, self.protocol_profile
+                        ),
+                    });
+                }
+            }
+            AdapterKind::Uvc => {
+                let has_spec = ["uvc", "uac", "gate 020", "gate-020", "test uvc", "proof"]
+                    .iter()
+                    .any(|&s| profile_raw_lower.contains(s) || profile_normalized.contains(s));
+                if !has_spec {
+                    return Err(StandardsComplianceError::UnverifiedStandardsClaim {
+                        detail: format!(
+                            "adapter '{}' claims Uvc without qualifying specification or gate reference in '{}'",
+                            self.adapter_id, self.protocol_profile
+                        ),
+                    });
+                }
+            }
+            _ => {}
+        }
+
+        // Rule 3 (Defect 3 & 4): Proprietary paths cannot claim NativePureRust
+        let is_proprietary = [
+            "wyze", "aosu", "dji", "ring", "nest", "blink", "arlo", "eufy", "tuya",
+            "reolink", "kasa", "tapo", "ezviz", "imou", "proprietary", "closed source",
+            "vendor cloud", "private protocol", "vendor protocol", "screen capture",
+            "app automation", "ui automation", "reverse engineered", "reverse engineering",
+            "cloud bridge", "lab", "vendor",
+        ]
+        .iter()
+        .any(|&p| {
+            id_raw_lower.contains(p)
+                || id_normalized.contains(p)
+                || profile_raw_lower.contains(p)
+                || profile_normalized.contains(p)
+        });
 
         if is_proprietary && self.isolation_mode == IsolationMode::NativePureRust {
             return Err(StandardsComplianceError::ProprietaryNativePromotion {
@@ -1021,16 +1123,36 @@ impl AdapterIdentity {
             });
         }
 
-        // Rule 3: Vendor tokens must be used with explicit isolation
-        if self.credential_method == CredentialMethod::Token
-            && self.isolation_mode == IsolationMode::NativePureRust
-        {
-            return Err(StandardsComplianceError::UnscopedVendorToken {
-                detail: format!(
-                    "adapter '{}' uses vendor token authentication without process boundary isolation",
-                    self.adapter_id
-                ),
+        // Rule 4 (Defect 5 & 8): Vendor token scoping
+        if self.credential_method == CredentialMethod::Token {
+            if self.isolation_mode == IsolationMode::NativePureRust {
+                return Err(StandardsComplianceError::UnscopedVendorToken {
+                    detail: format!(
+                        "adapter '{}' uses vendor token authentication without process boundary isolation",
+                        self.adapter_id
+                    ),
+                });
+            }
+
+            // Even in SealedLaboratoryProcess, ambient/global/unscoped tokens are forbidden
+            let is_unscoped = [
+                "global", "ambient", "multi device", "all devices", "unscoped", "*",
+            ]
+            .iter()
+            .any(|&u| {
+                profile_raw_lower.contains(u)
+                    || profile_normalized.contains(u)
+                    || id_raw_lower.contains(u)
+                    || id_normalized.contains(u)
             });
+            if is_unscoped {
+                return Err(StandardsComplianceError::UnscopedVendorToken {
+                    detail: format!(
+                        "adapter '{}' uses ambient, global, or unscoped vendor token in profile '{}'",
+                        self.adapter_id, self.protocol_profile
+                    ),
+                });
+            }
         }
 
         Ok(())
@@ -1055,6 +1177,11 @@ pub enum StandardsComplianceError {
         /// Diagnostic detail describing the unscoped vendor token usage.
         detail: String,
     },
+    /// Security boundary violation (broad scanning, auth bypass, credential theft, persistence, evasion).
+    SecurityBoundaryViolation {
+        /// Diagnostic detail describing the security boundary violation.
+        detail: String,
+    },
 }
 
 impl fmt::Display for StandardsComplianceError {
@@ -1068,6 +1195,9 @@ impl fmt::Display for StandardsComplianceError {
             }
             Self::UnscopedVendorToken { detail } => {
                 write!(f, "NEG-002 unscoped vendor token: {detail}")
+            }
+            Self::SecurityBoundaryViolation { detail } => {
+                write!(f, "NEG-002 security boundary violation: {detail}")
             }
         }
     }

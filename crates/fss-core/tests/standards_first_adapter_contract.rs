@@ -143,3 +143,179 @@ fn test_unscoped_vendor_token_in_native_driver_fails_closed() -> Result<(), Box<
     ));
     Ok(())
 }
+
+#[test]
+fn test_unverified_standards_claim_without_evidence_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let unverified_adapter = AdapterIdentity {
+        adapter_id: AdapterId::parse("adapter:unverified-onvif-001")?,
+        generation: AdapterGeneration::parse("gen:adapter:cam-v1")?,
+        adapter_kind: AdapterKind::OnvifProfileT,
+        protocol_profile: "generic live onvif stream".to_string(), // lacks qualifying evidence/spec reference
+        isolation_mode: IsolationMode::NativePureRust,
+        credential_method: CredentialMethod::BasicAuth,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 50_000_000,
+        max_buffer_frames: 32,
+        request_timeout_ns: 5_000_000_000,
+    };
+
+    let res = unverified_adapter.verify_standards_compliance();
+    assert!(matches!(
+        res,
+        Err(StandardsComplianceError::UnverifiedStandardsClaim { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_marketing_underscore_and_synonyms_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let bad_adapter = AdapterIdentity {
+        adapter_id: AdapterId::parse("adapter:marketing-cam-001")?,
+        generation: AdapterGeneration::parse("gen:adapter:cam-v1")?,
+        adapter_kind: AdapterKind::Rtsp,
+        protocol_profile: "rtsp:app_presence:datasheet".to_string(),
+        isolation_mode: IsolationMode::NativePureRust,
+        credential_method: CredentialMethod::None,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 10_000_000,
+        max_buffer_frames: 16,
+        request_timeout_ns: 5_000_000_000,
+    };
+
+    let res = bad_adapter.verify_standards_compliance();
+    assert!(matches!(
+        res,
+        Err(StandardsComplianceError::UnverifiedStandardsClaim { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_proprietary_vendor_ring_nest_in_native_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let ring_adapter = AdapterIdentity {
+        adapter_id: AdapterId::parse("adapter:ring-doorbell-001")?,
+        generation: AdapterGeneration::parse("gen:adapter:ring-v1")?,
+        adapter_kind: AdapterKind::VirtualSimulated,
+        protocol_profile: "vendor:ring-cloud-stream".to_string(),
+        isolation_mode: IsolationMode::NativePureRust,
+        credential_method: CredentialMethod::None,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 10_000_000,
+        max_buffer_frames: 16,
+        request_timeout_ns: 5_000_000_000,
+    };
+
+    let res = ring_adapter.verify_standards_compliance();
+    assert!(matches!(
+        res,
+        Err(StandardsComplianceError::ProprietaryNativePromotion { .. })
+    ));
+
+    let nest_adapter = AdapterIdentity {
+        adapter_id: AdapterId::parse("adapter:nest-cam-001")?,
+        generation: AdapterGeneration::parse("gen:adapter:nest-v1")?,
+        adapter_kind: AdapterKind::VirtualSimulated,
+        protocol_profile: "vendor:nest-webrtc-stream".to_string(),
+        isolation_mode: IsolationMode::NativePureRust,
+        credential_method: CredentialMethod::None,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 10_000_000,
+        max_buffer_frames: 16,
+        request_timeout_ns: 5_000_000_000,
+    };
+
+    let res = nest_adapter.verify_standards_compliance();
+    assert!(matches!(
+        res,
+        Err(StandardsComplianceError::ProprietaryNativePromotion { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_screen_capture_with_spaces_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let adapter = AdapterIdentity {
+        adapter_id: AdapterId::parse("adapter:screen-capture-bridge-001")?,
+        generation: AdapterGeneration::parse("gen:adapter:v1")?,
+        adapter_kind: AdapterKind::VirtualSimulated,
+        protocol_profile: "screen capture stream".to_string(), // space instead of underscore
+        isolation_mode: IsolationMode::NativePureRust,
+        credential_method: CredentialMethod::None,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 10_000_000,
+        max_buffer_frames: 16,
+        request_timeout_ns: 5_000_000_000,
+    };
+    let res = adapter.verify_standards_compliance();
+    assert!(matches!(
+        res,
+        Err(StandardsComplianceError::ProprietaryNativePromotion { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_app_automation_with_spaces_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let adapter = AdapterIdentity {
+        adapter_id: AdapterId::parse("adapter:app-automation-bridge-001")?,
+        generation: AdapterGeneration::parse("gen:adapter:v1")?,
+        adapter_kind: AdapterKind::VirtualSimulated,
+        protocol_profile: "app automation bridge".to_string(),
+        isolation_mode: IsolationMode::NativePureRust,
+        credential_method: CredentialMethod::None,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 10_000_000,
+        max_buffer_frames: 16,
+        request_timeout_ns: 5_000_000_000,
+    };
+    let res = adapter.verify_standards_compliance();
+    assert!(matches!(
+        res,
+        Err(StandardsComplianceError::ProprietaryNativePromotion { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_unscoped_vendor_token_in_sealed_lab_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let adapter = AdapterIdentity {
+        adapter_id: AdapterId::parse("adapter:wyze-ambient-001")?,
+        generation: AdapterGeneration::parse("gen:adapter:wyze-v1")?,
+        adapter_kind: AdapterKind::VirtualSimulated,
+        protocol_profile: "authorized-lab:global-ambient-token:wyze-v4".to_string(),
+        isolation_mode: IsolationMode::SealedLaboratoryProcess,
+        credential_method: CredentialMethod::Token,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 10_000_000,
+        max_buffer_frames: 16,
+        request_timeout_ns: 5_000_000_000,
+    };
+    let res = adapter.verify_standards_compliance();
+    assert!(matches!(
+        res,
+        Err(StandardsComplianceError::UnscopedVendorToken { .. })
+    ));
+    Ok(())
+}
+
+#[test]
+fn test_security_boundary_violation_in_rust_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+    let adapter = AdapterIdentity {
+        adapter_id: AdapterId::parse("adapter:scanner-cam-001")?,
+        generation: AdapterGeneration::parse("gen:adapter:v1")?,
+        adapter_kind: AdapterKind::VirtualSimulated,
+        protocol_profile: "auth-bypass:broad-scanning".to_string(),
+        isolation_mode: IsolationMode::SealedLaboratoryProcess,
+        credential_method: CredentialMethod::None,
+        capabilities: AdapterCapabilities::STREAMING,
+        max_bandwidth_bytes_per_sec: 10_000_000,
+        max_buffer_frames: 16,
+        request_timeout_ns: 5_000_000_000,
+    };
+    let res = adapter.verify_standards_compliance();
+    assert!(matches!(
+        res,
+        Err(StandardsComplianceError::SecurityBoundaryViolation { .. })
+    ));
+    Ok(())
+}

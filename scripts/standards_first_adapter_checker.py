@@ -37,6 +37,8 @@ ERR_UNVERIFIED_STANDARDS_CLAIM = "ERR-NEG002-UNVERIFIED-STANDARDS-CLAIM-001"
 ERR_PROPRIETARY_NATIVE_PROMOTION = "ERR-NEG002-PROPRIETARY-NATIVE-PROMOTION-001"
 ERR_UNSCOPED_VENDOR_TOKEN = "ERR-NEG002-UNSCOPED-VENDOR-TOKEN-001"
 ERR_STABLE_ID_MISSING = "ERR-NEG002-STABLE-ID-MISSING-001"
+ERR_SECURITY_BOUNDARY_VIOLATION = "ERR-NEG002-SECURITY-BOUNDARY-VIOLATION-001"
+ERR_UNREADABLE_INPUT = "ERR-NEG002-UNREADABLE-INPUT-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_UNVERIFIED_STANDARDS_CLAIM: {
@@ -59,6 +61,16 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Restore NEG-002 with normative hypothesis, finding, decision, and revival conditions in docs/NEGATIVE_EVIDENCE.md",
         "standard_code": "NEG-002-D",
     },
+    ERR_SECURITY_BOUNDARY_VIOLATION: {
+        "trigger": "A device adapter or capability claims prohibited security-boundary actions: scanning, auth bypass, credential theft, persistence, or evasion",
+        "remediation": "Remove prohibited security-boundary actions; reverse engineering is strictly limited to authorized owner lab fixtures with zero bypass or scanning",
+        "standard_code": "NEG-002-E",
+    },
+    ERR_UNREADABLE_INPUT: {
+        "trigger": "A required specification, registry, or matrix file cannot be read or contains non-UTF-8 corrupt bytes",
+        "remediation": "Restore the file with valid UTF-8 encoding and standard read permissions",
+        "standard_code": "NEG-002-F",
+    },
 }
 
 # Recognized open local standards interfaces
@@ -78,34 +90,131 @@ OPEN_LOCAL_INTERFACES = frozenset({
     "s3-compatible objects",
 })
 
-# Forbidden terms indicating unverified marketing or app-presence claims
+# Forbidden terms indicating unverified marketing or app-presence claims (Defect 2)
 MARKETING_CLAIM_INDICATORS = (
     "marketing",
     "advertised",
+    "advertising",
     "inferred",
     "app presence",
     "packaging",
-    "box",
+    "retail packaging",
+    "box claim",
+    "consumer box",
     "cloud viewing",
     "community forum",
-    "consumer box",
+    "promotional",
+    "datasheet",
+    "spec sheet",
+    "press release",
+    "ad copy",
+    "app store",
     "unverified",
 )
 
-# Terms indicating proprietary, vendor-specific, or app-automation surfaces
+# Terms indicating proprietary, vendor-specific, or app-automation surfaces (Defect 3)
 PROPRIETARY_INDICATORS = (
-    "wyze",
-    "aosu",
-    "dji",
+    # Generic proprietary terms
+    "proprietary",
+    "closed source",
+    "vendor cloud",
+    "private protocol",
+    "vendor protocol",
     "vendor app",
+    "reverse engineering",
+    "reverse engineered",
+    "cloud bridge",
     "screen capture",
     "app automation",
     "ui automation",
-    "reverse engineering",
-    "cloud bridge",
+    "mobile app",
+    # Proprietary consumer camera vendors
+    "wyze",
+    "aosu",
+    "dji",
+    "ring",
+    "nest",
+    "blink",
+    "arlo",
+    "eufy",
+    "tuya",
+    "reolink",
+    "kasa",
+    "tapo",
+    "ezviz",
+    "imou",
+    "hikconnect",
+)
+
+# Prohibited security boundary violations under AGENTS.md (Defect 6)
+SECURITY_BOUNDARY_VIOLATIONS = (
+    "credential theft",
+    "credential harvesting",
+    "harvesting credentials",
+    "authentication bypass",
+    "auth bypass",
+    "bypass auth",
+    "third party account access",
+    "third-party account access",
+    "unauthorized account",
+    "broad scanning",
+    "subnet scan",
+    "network scan",
+    "port scan",
+    "ip sweep",
+    "discovery sweeps",
+    "persistence on vendor devices",
+    "persistence on device",
+    "device persistence",
+    "firmware backdoor",
+    "backdoor",
+    "rooting device",
+    "evasion",
+    "anti analysis",
+    "evading detection",
+)
+
+# Qualifying evidence patterns for open standards streaming claims (Defect 1 & 8)
+QUALIFYING_EVIDENCE_RE = re.compile(
+    r"(?:GATE-0[1-4]0|TEST-(?:RTSP|ONVIF|UVC|REPLAY|FILE|IMPORT)-\d+|RFC\s*(?:2326|7826|3550)|UVC\s*1\.[0-5]|UAC\s*1\.[0-9]|ONVIF\s+Profile\s+[TM]|proof[-_]bundle|conformance[-_]report)",
+    re.IGNORECASE,
 )
 
 DELIMITER_ROW_RE = re.compile(r"^\|(?:\s*:?-+:?\s*\|)+$")
+
+
+def normalize_text(text: str) -> str:
+    """Normalizes text by replacing delimiters (hyphens, underscores, slashes) with spaces."""
+    return re.sub(r"[-_/]+", " ", text).lower()
+
+
+def safe_read_file(path: Path, findings: list[Finding], context_name: str) -> str | None:
+    """Safely reads text file with fail-closed exception handling for non-UTF8/locked files (Defect 7)."""
+    if not path.is_file():
+        code = ERR_STABLE_ID_MISSING if "negative" in context_name.lower() else ERR_UNREADABLE_INPUT
+        findings.append(
+            Finding(
+                severity="error",
+                code=code,
+                file=path.name,
+                location="file",
+                message=f"Missing required file: {path}",
+            )
+        )
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        findings.append(
+            Finding(
+                severity="error",
+                code=ERR_UNREADABLE_INPUT,
+                file=path.name,
+                location="file",
+                message=f"Unreadable file ({type(exc).__name__}): {path}: {exc}",
+            )
+        )
+        return None
 
 
 @dataclass
@@ -156,19 +265,10 @@ def parse_markdown_table(text: str) -> list[dict[str, str]]:
 def check_negative_evidence_integrity(root: Path, findings: list[Finding]) -> str | None:
     """Verifies that docs/NEGATIVE_EVIDENCE.md preserves NEG-002 with normative decision."""
     neg_path = root / "docs" / "NEGATIVE_EVIDENCE.md"
-    if not neg_path.is_file():
-        findings.append(
-            Finding(
-                severity="error",
-                code=ERR_STABLE_ID_MISSING,
-                file="docs/NEGATIVE_EVIDENCE.md",
-                location="file",
-                message="docs/NEGATIVE_EVIDENCE.md is missing from repository",
-            )
-        )
+    content = safe_read_file(neg_path, findings, "negative evidence")
+    if content is None:
         return None
 
-    content = neg_path.read_text(encoding="utf-8")
     if "NEG-002" not in content:
         findings.append(
             Finding(
@@ -196,22 +296,15 @@ def check_negative_evidence_integrity(root: Path, findings: list[Finding]) -> st
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
-def check_device_adapters_registry(root: Path, findings: list[Finding]) -> tuple[int, str | None]:
-    """Audits registries/DEVICE_ADAPTERS.md for proprietary promotion and tier rules."""
+def check_device_adapters_registry(
+    root: Path, findings: list[Finding]
+) -> tuple[int, str | None, dict[str, dict[str, str]]]:
+    """Audits registries/DEVICE_ADAPTERS.md for proprietary promotion, security boundaries, and marketing bypass."""
     adapters_path = root / "registries" / "DEVICE_ADAPTERS.md"
-    if not adapters_path.is_file():
-        findings.append(
-            Finding(
-                severity="error",
-                code=ERR_PROPRIETARY_NATIVE_PROMOTION,
-                file="registries/DEVICE_ADAPTERS.md",
-                location="file",
-                message="registries/DEVICE_ADAPTERS.md is missing",
-            )
-        )
-        return 0, None
+    content = safe_read_file(adapters_path, findings, "device adapters registry")
+    if content is None:
+        return 0, None, {}
 
-    content = adapters_path.read_text(encoding="utf-8")
     rows = parse_markdown_table(content)
     if not rows:
         findings.append(
@@ -223,17 +316,58 @@ def check_device_adapters_registry(root: Path, findings: list[Finding]) -> tuple
                 message="registries/DEVICE_ADAPTERS.md contains no valid adapter rows",
             )
         )
-        return 0, None
+        return 0, None, {}
 
+    registered_adapters: dict[str, dict[str, str]] = {}
     count = len(rows)
+
     for row in rows:
         adapter_id = row.get("id", "")
+        if adapter_id:
+            registered_adapters[adapter_id] = row
+
         surface = row.get("surface", "").lower()
+        surface_normalized = normalize_text(surface)
+        id_normalized = normalize_text(adapter_id)
         tier = row.get("tier", "").strip()
         current_state = row.get("current state", "").lower()
+        row_str = " ".join(row.values()).lower()
+        row_normalized = normalize_text(row_str)
 
-        # Check if surface represents proprietary/vendor/app-automation path
-        is_proprietary = any(term in surface for term in PROPRIETARY_INDICATORS) or "lab" in adapter_id.lower()
+        # Defect 6: Check for security boundary violations across all columns
+        for sec_viol in SECURITY_BOUNDARY_VIOLATIONS:
+            if sec_viol in row_str or sec_viol in row_normalized:
+                findings.append(
+                    Finding(
+                        severity="error",
+                        code=ERR_SECURITY_BOUNDARY_VIOLATION,
+                        file="registries/DEVICE_ADAPTERS.md",
+                        location=adapter_id or "table",
+                        message=f"Adapter entry contains prohibited security boundary violation '{sec_viol}'",
+                    )
+                )
+                break
+
+        # Defect 2: Check for marketing indicators across all columns in DEVICE_ADAPTERS.md
+        for mktg in MARKETING_CLAIM_INDICATORS:
+            if mktg in row_str or mktg in row_normalized:
+                findings.append(
+                    Finding(
+                        severity="error",
+                        code=ERR_UNVERIFIED_STANDARDS_CLAIM,
+                        file="registries/DEVICE_ADAPTERS.md",
+                        location=adapter_id or "table",
+                        message=f"Adapter {adapter_id} in registries/DEVICE_ADAPTERS.md contains unverified marketing indicator '{mktg}'",
+                    )
+                )
+                break
+
+        # Defect 3: Check if surface or ID represents proprietary/vendor/app-automation path
+        is_proprietary = (
+            any(term in surface or term in surface_normalized for term in PROPRIETARY_INDICATORS)
+            or any(term in adapter_id.lower() or term in id_normalized for term in PROPRIETARY_INDICATORS)
+            or "lab" in adapter_id.lower()
+        )
 
         if is_proprietary:
             # Rule 2A: Proprietary adapters cannot be Tier T1 (open local)
@@ -261,7 +395,7 @@ def check_device_adapters_registry(root: Path, findings: list[Finding]) -> tuple
                 )
 
         # Rule 2C: Screen capture or app automation cannot be a native integration or in T1
-        if any(term in surface for term in ("screen capture", "app automation", "ui automation")):
+        if any(term in surface or term in surface_normalized for term in ("screen capture", "app automation", "ui automation")):
             if "t1" in tier.lower() or any(term in current_state for term in ("stable", "production", "native")):
                 findings.append(
                     Finding(
@@ -274,27 +408,21 @@ def check_device_adapters_registry(root: Path, findings: list[Finding]) -> tuple
                 )
 
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-    return count, digest
+    return count, digest, registered_adapters
 
 
-def check_device_adapter_matrix(root: Path, findings: list[Finding]) -> tuple[int, str | None]:
-    """Audits DEVICE_ADAPTER_MATRIX.md for unverified standards claims and tier integrity."""
+def check_device_adapter_matrix(
+    root: Path, findings: list[Finding], registered_adapters: dict[str, dict[str, str]] | None = None
+) -> tuple[int, str | None]:
+    """Audits DEVICE_ADAPTER_MATRIX.md for unverified standards claims, qualifying evidence, and tier integrity."""
     matrix_path = root / "DEVICE_ADAPTER_MATRIX.md"
-    if not matrix_path.is_file():
-        findings.append(
-            Finding(
-                severity="error",
-                code=ERR_UNVERIFIED_STANDARDS_CLAIM,
-                file="DEVICE_ADAPTER_MATRIX.md",
-                location="file",
-                message="DEVICE_ADAPTER_MATRIX.md is missing",
-            )
-        )
+    content = safe_read_file(matrix_path, findings, "device adapter matrix")
+    if content is None:
         return 0, None
 
-    content = matrix_path.read_text(encoding="utf-8")
     rows = parse_markdown_table(content)
     count = len(rows)
+    reg = registered_adapters or {}
 
     for row in rows:
         adapter_id = row.get("adapter id", "")
@@ -306,62 +434,43 @@ def check_device_adapter_matrix(root: Path, findings: list[Finding]) -> tuple[in
         tier = row.get("initial tier", "").strip()
         planned_cap = row.get("planned capability", "").lower()
         current_state = row.get("current fss state", "").lower()
+        row_str = " ".join(row.values()).lower()
+        row_normalized = normalize_text(row_str)
 
-        # Rule 1A: Check for marketing or app-presence claims inferring ONVIF/RTSP
-        for ind in MARKETING_CLAIM_INDICATORS:
-            if ind in public_interface or ind in planned_cap:
+        # Defect 6: Check for security boundary violations across all columns
+        for sec_viol in SECURITY_BOUNDARY_VIOLATIONS:
+            if sec_viol in row_str or sec_viol in row_normalized:
                 findings.append(
                     Finding(
                         severity="error",
-                        code=ERR_UNVERIFIED_STANDARDS_CLAIM,
+                        code=ERR_SECURITY_BOUNDARY_VIOLATION,
                         file="DEVICE_ADAPTER_MATRIX.md",
                         location=adapter_id,
-                        message=f"Adapter {adapter_id} contains unverified standards claim based on '{ind}' in interface/capability",
+                        message=f"Adapter {adapter_id} contains prohibited security boundary violation '{sec_viol}'",
                     )
                 )
                 break
 
-        # Rule 1B: If claiming Tier T1, surface and interface must cite recognized open standards
-        if "t1" in tier.lower():
-            is_valid_open_standard = (
-                any(
-                    spec in public_interface
-                    for spec in (
-                        "uvc",
-                        "rtsp",
-                        "onvif",
-                        "schema",
-                        "standard files",
-                        "s3",
-                        "h.264",
-                        "analytics metadata",
-                    )
-                )
-                or any(
-                    spec in product_surface
-                    for spec in (
-                        "uvc",
-                        "rtsp",
-                        "onvif",
-                        "replay",
-                        "import",
-                        "insta360 link",
-                    )
-                )
-            )
-            if not is_valid_open_standard:
+        # Defect 2: Check for marketing or app-presence claims across ALL columns
+        for mktg in MARKETING_CLAIM_INDICATORS:
+            if mktg in row_str or mktg in row_normalized:
                 findings.append(
                     Finding(
                         severity="error",
                         code=ERR_UNVERIFIED_STANDARDS_CLAIM,
                         file="DEVICE_ADAPTER_MATRIX.md",
                         location=adapter_id,
-                        message=f"Adapter {adapter_id} claims Tier T1 open local without qualifying evidence/interface: '{public_interface}'",
+                        message=f"Adapter {adapter_id} contains unverified marketing indicator '{mktg}' across columns",
                     )
                 )
+                break
 
-        # Rule 2: Proprietary products cannot claim T1 or stable native state
-        is_proprietary = any(term in product_surface for term in PROPRIETARY_INDICATORS) or "lab" in adapter_id.lower()
+        # Defect 3: Proprietary products cannot claim T1 or stable native state
+        is_proprietary = (
+            any(term in product_surface or term in normalize_text(product_surface) for term in PROPRIETARY_INDICATORS)
+            or any(term in adapter_id.lower() or term in normalize_text(adapter_id) for term in PROPRIETARY_INDICATORS)
+            or "lab" in adapter_id.lower()
+        )
         if is_proprietary:
             if "t1" in tier.lower():
                 findings.append(
@@ -373,7 +482,7 @@ def check_device_adapter_matrix(root: Path, findings: list[Finding]) -> tuple[in
                         message=f"Proprietary adapter {adapter_id} registered with initial tier T1 in matrix; must be T3 authorized lab or T4 import",
                     )
                 )
-            if any(term in current_state for term in ("stable", "production native")):
+            if any(term in current_state for term in ("stable", "production native", "native")):
                 findings.append(
                     Finding(
                         severity="error",
@@ -384,26 +493,52 @@ def check_device_adapter_matrix(root: Path, findings: list[Finding]) -> tuple[in
                     )
                 )
 
+        # Defect 1 & 8: Qualifying evidence requirement for open standards / local streaming claims
+        is_honest_negative = (
+            "no public" in public_interface
+            or "no contract" in public_interface
+            or "not found" in public_interface
+            or "no native" in public_interface
+        )
+        claims_standards = (not is_honest_negative) and (
+            "t1" in tier.lower()
+            or any(s in public_interface for s in ("onvif", "rtsp", "uvc", "uac"))
+            or any(s in planned_cap for s in ("onvif", "rtsp"))
+        )
+        if claims_standards:
+            # Check 1: registered in DEVICE_ADAPTERS.md with a qualifying promotion gate
+            reg_entry = reg.get(adapter_id)
+            has_qualifying_gate = bool(
+                reg_entry and any(
+                    g in reg_entry.get("promotion gate", "")
+                    for g in ("GATE-010", "GATE-020", "GATE-030", "GATE-040")
+                )
+            )
+            # Check 2: row itself explicitly cites authentic qualifying evidence
+            has_row_evidence = bool(QUALIFYING_EVIDENCE_RE.search(row_str))
+
+            if not (has_qualifying_gate or has_row_evidence):
+                findings.append(
+                    Finding(
+                        severity="error",
+                        code=ERR_UNVERIFIED_STANDARDS_CLAIM,
+                        file="DEVICE_ADAPTER_MATRIX.md",
+                        location=adapter_id,
+                        message=f"Adapter {adapter_id} claims open standards/local streaming without a qualifying evidence reference or registered promotion gate",
+                    )
+                )
+
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
     return count, digest
 
 
 def check_capability_token_scopes(root: Path, findings: list[Finding]) -> tuple[int, str | None]:
-    """Audits registries/CAPABILITIES.md to verify vendor tokens are strictly scoped."""
+    """Audits registries/CAPABILITIES.md to verify all vendor tokens/adapter capabilities are strictly scoped."""
     caps_path = root / "registries" / "CAPABILITIES.md"
-    if not caps_path.is_file():
-        findings.append(
-            Finding(
-                severity="error",
-                code=ERR_UNSCOPED_VENDOR_TOKEN,
-                file="registries/CAPABILITIES.md",
-                location="file",
-                message="registries/CAPABILITIES.md is missing",
-            )
-        )
+    content = safe_read_file(caps_path, findings, "capability registry")
+    if content is None:
         return 0, None
 
-    content = caps_path.read_text(encoding="utf-8")
     rows = parse_markdown_table(content)
     count = len(rows)
 
@@ -413,8 +548,27 @@ def check_capability_token_scopes(root: Path, findings: list[Finding]) -> tuple[
     for row in rows:
         cap_id = row.get("id", "")
         scope = row.get("scope", "").strip()
+        scope_norm = normalize_text(scope)
         plane = row.get("plane", "").strip()
+        desc = row.get("capability", "").lower()
+        row_str = " ".join(row.values()).lower()
+        row_norm = normalize_text(row_str)
 
+        # Defect 6: Security boundary check
+        for sec_viol in SECURITY_BOUNDARY_VIOLATIONS:
+            if sec_viol in row_str or sec_viol in row_norm:
+                findings.append(
+                    Finding(
+                        severity="error",
+                        code=ERR_SECURITY_BOUNDARY_VIOLATION,
+                        file="registries/CAPABILITIES.md",
+                        location=cap_id,
+                        message=f"Capability {cap_id} contains prohibited security boundary violation '{sec_viol}'",
+                    )
+                )
+                break
+
+        # Defect 5: Exact token/credential checks
         if cap_id == "CAP-ADAPTER-AUTH-001":
             found_auth = True
             # Scope must be exact single device/account
@@ -453,6 +607,24 @@ def check_capability_token_scopes(root: Path, findings: list[Finding]) -> tuple[
                     )
                 )
 
+        # Defect 5: Fail closed on ANY adapter capability or credential/token with ambient/global scope
+        is_adapter_or_credential_cap = (
+            cap_id.startswith("CAP-ADAPTER-")
+            or any(k in desc for k in ("token", "secret", "credential", "adapter auth", "adapter secret"))
+        )
+        if is_adapter_or_credential_cap and cap_id not in ("CAP-ADAPTER-AUTH-001", "CAP-ADAPTER-NET-001"):
+            unscoped_indicators = ("*", "global", "ambient", "all", "multi device", "unrestricted", "unscoped")
+            if any(ind in scope.lower() or ind in scope_norm for ind in unscoped_indicators):
+                findings.append(
+                    Finding(
+                        severity="error",
+                        code=ERR_UNSCOPED_VENDOR_TOKEN,
+                        file="registries/CAPABILITIES.md",
+                        location=cap_id,
+                        message=f"Capability {cap_id} has unscoped/ambient scope '{scope}'; vendor tokens and adapter credentials must be strictly scoped",
+                    )
+                )
+
     if not found_auth:
         findings.append(
             Finding(
@@ -484,8 +656,8 @@ def audit_standards_first_adapters(root: Path) -> tuple[bool, list[Finding], dic
     findings: list[Finding] = []
 
     neg_digest = check_negative_evidence_integrity(root, findings)
-    adapters_count, adapters_digest = check_device_adapters_registry(root, findings)
-    matrix_count, matrix_digest = check_device_adapter_matrix(root, findings)
+    adapters_count, adapters_digest, registered_adapters = check_device_adapters_registry(root, findings)
+    matrix_count, matrix_digest = check_device_adapter_matrix(root, findings, registered_adapters)
     caps_count, caps_digest = check_capability_token_scopes(root, findings)
 
     error_count = sum(1 for f in findings if f.severity == "error")

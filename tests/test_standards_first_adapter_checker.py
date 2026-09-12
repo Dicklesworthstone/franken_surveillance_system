@@ -22,21 +22,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-try:
-    from standards_first_adapter_checker import (
-        ERR_PROPRIETARY_NATIVE_PROMOTION,
-        ERR_STABLE_ID_MISSING,
-        ERR_UNSCOPED_VENDOR_TOKEN,
-        ERR_UNVERIFIED_STANDARDS_CLAIM,
-        audit_standards_first_adapters,
-    )
-except ImportError:
-    # Fallback to canonical error identities so tests fail closed
-    ERR_UNVERIFIED_STANDARDS_CLAIM = "ERR-NEG002-UNVERIFIED-STANDARDS-CLAIM-001"
-    ERR_PROPRIETARY_NATIVE_PROMOTION = "ERR-NEG002-PROPRIETARY-NATIVE-PROMOTION-001"
-    ERR_UNSCOPED_VENDOR_TOKEN = "ERR-NEG002-UNSCOPED-VENDOR-TOKEN-001"
-    ERR_STABLE_ID_MISSING = "ERR-NEG002-STABLE-ID-MISSING-001"
-    audit_standards_first_adapters = None
+import standards_first_adapter_checker as _checker
+
+audit_standards_first_adapters = getattr(_checker, "audit_standards_first_adapters", None)
+ERR_UNVERIFIED_STANDARDS_CLAIM = getattr(
+    _checker, "ERR_UNVERIFIED_STANDARDS_CLAIM", "ERR-NEG002-UNVERIFIED-STANDARDS-CLAIM-001"
+)
+ERR_PROPRIETARY_NATIVE_PROMOTION = getattr(
+    _checker, "ERR_PROPRIETARY_NATIVE_PROMOTION", "ERR-NEG002-PROPRIETARY-NATIVE-PROMOTION-001"
+)
+ERR_UNSCOPED_VENDOR_TOKEN = getattr(
+    _checker, "ERR_UNSCOPED_VENDOR_TOKEN", "ERR-NEG002-UNSCOPED-VENDOR-TOKEN-001"
+)
+ERR_STABLE_ID_MISSING = getattr(
+    _checker, "ERR_STABLE_ID_MISSING", "ERR-NEG002-STABLE-ID-MISSING-001"
+)
+ERR_SECURITY_BOUNDARY_VIOLATION = getattr(
+    _checker, "ERR_SECURITY_BOUNDARY_VIOLATION", "ERR-NEG002-SECURITY-BOUNDARY-VIOLATION-001"
+)
+ERR_UNREADABLE_INPUT = getattr(
+    _checker, "ERR_UNREADABLE_INPUT", "ERR-NEG002-UNREADABLE-INPUT-001"
+)
 
 
 def create_minimal_valid_env(tmp_dir: Path) -> tuple[Path, Path, Path, Path]:
@@ -156,25 +162,77 @@ class TestStandardsFirstPlantedNegatives(unittest.TestCase):
                 f"Expected {ERR_UNVERIFIED_STANDARDS_CLAIM}, got {codes}",
             )
 
-    def test_missing_qualifying_evidence_for_standards_claim_rejected(self) -> None:
-        """Claiming open local standard T1 without authentic protocol interface fails closed."""
+    def test_unverified_onvif_rtsp_claim_without_evidence_rejected(self) -> None:
+        """Claiming ONVIF/RTSP in T1 without any qualifying evidence reference fails closed (Defect 1 & 8)."""
         self.assertIsNotNone(audit_standards_first_adapters, "standards_first_adapter_checker module must be importable")
         with tempfile.TemporaryDirectory() as td:
             tmp_root = Path(td)
             create_minimal_valid_env(tmp_root)
-            # Add an unverified adapter claiming T1 with unverified interface
             matrix = tmp_root / "DEVICE_ADAPTER_MATRIX.md"
-            content = matrix.read_text(encoding="utf-8")
-            content = content.replace(
+            content = matrix.read_text(encoding="utf-8").replace(
                 "| `ADP-S3-IMPORT-001`",
-                "| `ADP-UNKNOWN-CAM-001` | Unknown Smart Cam | consumer box Wi-Fi | T1 | continuous RTSP stream | specified |\n| `ADP-S3-IMPORT-001`",
+                "| `ADP-UNVERIFIED-ONVIF-001` | Generic Unverified Cam | ONVIF Profile S / RTSP | T1 | live stream | specified |\n| `ADP-S3-IMPORT-001`",
             )
             matrix.write_text(content, encoding="utf-8")
 
             is_valid, findings, _ = audit_standards_first_adapters(tmp_root)
-            self.assertFalse(is_valid, "Unverified standard claim without qualifying evidence must fail closed!")
+            self.assertFalse(is_valid, "Unverified standards claim without evidence must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNVERIFIED_STANDARDS_CLAIM, codes, "Unverified standards claim without evidence must fail closed!")
+
+    def test_marketing_underscore_and_column_bypass_fails_closed(self) -> None:
+        """Underscored marketing terms and marketing claims in any column fail closed (Defect 2)."""
+        self.assertIsNotNone(audit_standards_first_adapters, "standards_first_adapter_checker module must be importable")
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            create_minimal_valid_env(tmp_root)
+            matrix = tmp_root / "DEVICE_ADAPTER_MATRIX.md"
+            content = matrix.read_text(encoding="utf-8").replace(
+                "| `ADP-S3-IMPORT-001`",
+                "| `ADP-CAM-001` | Cloud Cam | app_presence and cloud_viewing stream | T3 | live stream | specified |\n| `ADP-S3-IMPORT-001`",
+            )
+            matrix.write_text(content, encoding="utf-8")
+
+            is_valid, findings, _ = audit_standards_first_adapters(tmp_root)
+            self.assertFalse(is_valid, "Underscored marketing indicators must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNVERIFIED_STANDARDS_CLAIM, codes, "Underscored marketing indicators must fail closed!")
+
+    def test_marketing_in_device_adapters_registry_fails_closed(self) -> None:
+        """Marketing terms in registries/DEVICE_ADAPTERS.md columns fail closed (Defect 2)."""
+        self.assertIsNotNone(audit_standards_first_adapters, "standards_first_adapter_checker module must be importable")
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            create_minimal_valid_env(tmp_root)
+            adapters_file = tmp_root / "registries" / "DEVICE_ADAPTERS.md"
+            content = adapters_file.read_text(encoding="utf-8").replace(
+                "| `ADP-S3-IMPORT-001`",
+                "| `ADP-MKTG-001` | Promotional Cam with datasheet spec sheet | T1 | specified | `GATE-020` |\n| `ADP-S3-IMPORT-001`",
+            )
+            adapters_file.write_text(content, encoding="utf-8")
+
+            is_valid, findings, _ = audit_standards_first_adapters(tmp_root)
+            self.assertFalse(is_valid, "Marketing terms in DEVICE_ADAPTERS.md must fail closed!")
             codes = [f.code for f in findings]
             self.assertIn(ERR_UNVERIFIED_STANDARDS_CLAIM, codes)
+
+    def test_proprietary_ring_adapter_promoted_to_t1_rejected(self) -> None:
+        """Proprietary vendors like Ring/Nest/Eufy in T1 fail closed (Defect 3)."""
+        self.assertIsNotNone(audit_standards_first_adapters, "standards_first_adapter_checker module must be importable")
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            create_minimal_valid_env(tmp_root)
+            adapters_file = tmp_root / "registries" / "DEVICE_ADAPTERS.md"
+            content = adapters_file.read_text(encoding="utf-8").replace(
+                "| `ADP-S3-IMPORT-001`",
+                "| `ADP-RING-001` | Ring Video Doorbell native driver | T1 | stable | `GATE-020` |\n| `ADP-S3-IMPORT-001`",
+            )
+            adapters_file.write_text(content, encoding="utf-8")
+
+            is_valid, findings, _ = audit_standards_first_adapters(tmp_root)
+            self.assertFalse(is_valid, "Proprietary Ring camera in T1 must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_PROPRIETARY_NATIVE_PROMOTION, codes, "Proprietary Ring camera in T1 must fail closed!")
 
     def test_proprietary_adapter_promoted_to_t1_rejected(self) -> None:
         """A proprietary camera registered in Tier T1 (open local) fails closed."""
@@ -267,6 +325,61 @@ class TestStandardsFirstPlantedNegatives(unittest.TestCase):
             self.assertFalse(is_valid, "Unscoped vendor network token must fail closed!")
             codes = [f.code for f in findings]
             self.assertIn(ERR_UNSCOPED_VENDOR_TOKEN, codes)
+
+    def test_unscoped_new_vendor_token_capability_rejected(self) -> None:
+        """New capability with ambient or global scope fails closed (Defect 5)."""
+        self.assertIsNotNone(audit_standards_first_adapters, "standards_first_adapter_checker module must be importable")
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            create_minimal_valid_env(tmp_root)
+            caps = tmp_root / "registries" / "CAPABILITIES.md"
+            content = caps.read_text(encoding="utf-8")
+            content += "| `CAP-ADAPTER-AUTH-002` | resolve multi-device ambient vendor token | * (global ambient) | boundary | adapter host only |\n"
+            caps.write_text(content, encoding="utf-8")
+
+            is_valid, findings, _ = audit_standards_first_adapters(tmp_root)
+            self.assertFalse(is_valid, "Ambient vendor token capability must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_UNSCOPED_VENDOR_TOKEN, codes, "Ambient vendor token capability must fail closed!")
+
+    def test_security_boundary_violation_fails_closed(self) -> None:
+        """Security boundary violations like scanning or auth bypass fail closed (Defect 6)."""
+        self.assertIsNotNone(audit_standards_first_adapters, "standards_first_adapter_checker module must be importable")
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            create_minimal_valid_env(tmp_root)
+            matrix = tmp_root / "DEVICE_ADAPTER_MATRIX.md"
+            content = matrix.read_text(encoding="utf-8").replace(
+                "| `ADP-S3-IMPORT-001`",
+                "| `ADP-SCAN-001` | Scanner Cam | broad scanning and auth bypass | T3 | subnet scan | specified |\n| `ADP-S3-IMPORT-001`",
+            )
+            matrix.write_text(content, encoding="utf-8")
+
+            is_valid, findings, _ = audit_standards_first_adapters(tmp_root)
+            self.assertFalse(is_valid, "Security boundary violation must fail closed!")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_SECURITY_BOUNDARY_VIOLATION, codes, f"Expected {ERR_SECURITY_BOUNDARY_VIOLATION} in {codes}")
+
+    def test_unreadable_matrix_emits_typed_finding_without_crashing(self) -> None:
+        """Non-UTF-8 or unreadable files emit a typed finding instead of crashing (Defect 7)."""
+        self.assertIsNotNone(audit_standards_first_adapters, "standards_first_adapter_checker module must be importable")
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            create_minimal_valid_env(tmp_root)
+            (tmp_root / "DEVICE_ADAPTER_MATRIX.md").write_bytes(b"\xff\xfe\x00\x00corrupt")
+
+            try:
+                is_valid, findings, _ = audit_standards_first_adapters(tmp_root)
+                self.assertFalse(is_valid)
+                self.assertTrue(
+                    any(
+                        f.code == ERR_UNREADABLE_INPUT or "unreadable" in f.message.lower()
+                        for f in findings
+                    ),
+                    f"Expected unreadable input finding, got findings: {findings}",
+                )
+            except UnicodeDecodeError:
+                self.fail("Checker crashed on non-UTF-8 file instead of emitting a typed finding!")
 
     def test_missing_neg002_identity_fails_closed(self) -> None:
         """Missing or weakened NEG-002 section in docs/NEGATIVE_EVIDENCE.md fails closed."""
