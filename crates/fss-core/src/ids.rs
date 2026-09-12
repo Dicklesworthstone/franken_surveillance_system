@@ -537,6 +537,8 @@ macro_rules! subsystem_generation {
             }
 
             /// Constructs an unvalidated identifier for testing defense-in-depth and negative boundaries.
+            /// Strictly gated behind the non-default `test-support` feature; unavailable in production builds.
+            #[cfg(feature = "test-support")]
             #[doc(hidden)]
             #[must_use]
             pub fn from_unvalidated_for_test(value: impl Into<String>) -> Self {
@@ -625,7 +627,7 @@ subsystem_generation!(
 );
 subsystem_generation!(
     ModelGeneration,
-    "An immutable model package generation identifier."
+    "An immutable model package generation identifier.\n\nWithout the `test-support` feature, unvalidated constructors are unavailable in production:\n\n```compile_fail,E0599\nuse fss_core::ModelGeneration;\nlet _gen = ModelGeneration::from_unvalidated_for_test(\"model:detector:latest\");\n```"
 );
 subsystem_generation!(
     CalibrationGeneration,

@@ -4,11 +4,11 @@
 use std::error::Error;
 
 use fss_core::{
-    CapsuleId, CaptureInterval, ClockBasis, ContentDigest, ContinuityState, ContractError,
-    DecodeState, ExplicitOmission, IntegrityWitness, KnowledgeState, MediaDescriptor, MediaKind,
-    ModelGeneration, PrivacyDescriptor, ProbabilityInterval, ProvenanceClass,
-    PublicationDescriptor, PublicationState, RedactionState, SensorCapsuleV1, SensorId,
-    SourceCustody, TimestampNs,
+    CanonicalDecode, CanonicalDecoder, CanonicalEncoder, CapsuleId, CaptureInterval, ClockBasis,
+    ContentDigest, ContinuityState, ContractError, DecodeState, ExplicitOmission, IntegrityWitness,
+    KnowledgeState, MediaDescriptor, MediaKind, ModelGeneration, PrivacyDescriptor,
+    ProbabilityInterval, ProvenanceClass, PublicationDescriptor, PublicationState, RedactionState,
+    SensorCapsuleV1, SensorId, SourceCustody, TimestampNs,
 };
 use fss_reference::{
     ADR_0004_ID, ADR_0004_TITLE, CorroboratedModelFinding, CorroborationStatus,
@@ -1286,6 +1286,35 @@ fn test_defect_latest_aliases_slip_through() -> Result<(), Box<dyn Error>> {
         "Whitespace-only generation ID must be rejected"
     );
 
+    Ok(())
+}
+
+#[test]
+fn test_latest_model_generation_refused_on_parse_and_decode_paths() -> Result<(), Box<dyn Error>> {
+    let latest_aliases = [
+        "latest:model:v1",
+        "model:v1:latest",
+        "model:latest:v1",
+        "model:yolo:latest.weights",
+        "model:detector:latest",
+    ];
+    for alias in latest_aliases {
+        // 1. Public parse path must refuse 'latest' aliases
+        assert!(
+            ModelGeneration::parse(alias).is_err(),
+            "Public parse path must reject latest alias: {alias}"
+        );
+
+        // 2. Canonical decode path must refuse 'latest' aliases
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text(alias);
+        let bytes = encoder.finish();
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        assert!(
+            ModelGeneration::decode_canonical(&mut decoder).is_err(),
+            "Canonical decode path must reject latest alias: {alias}"
+        );
+    }
     Ok(())
 }
 

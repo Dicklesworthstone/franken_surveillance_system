@@ -942,3 +942,50 @@ fn test_subsystem_generation_parse_rejects_latest_aliases() {
         "AdapterGeneration must reject 'latest' alias"
     );
 }
+
+#[test]
+fn test_latest_generation_cannot_be_built_without_test_support_feature() {
+    let aliases = [
+        "model:latest:v1",
+        "model:v1:latest",
+        "latest:model:v1",
+        "model:yolo:latest.weights",
+        "device:sensor:latest",
+        "stream:cam0:latest",
+        "policy:alert:latest",
+        "cal:rig:latest",
+        "adapter:driver:latest",
+    ];
+
+    for alias in aliases {
+        // 1. parse
+        assert_eq!(
+            ModelGeneration::parse(alias),
+            Err(ContractError::LatestNotResolvable)
+        );
+        // 2. from_str
+        assert_eq!(
+            alias.parse::<ModelGeneration>(),
+            Err(ContractError::LatestNotResolvable)
+        );
+        // 3. TryFrom<&str>
+        assert_eq!(
+            ModelGeneration::try_from(alias),
+            Err(ContractError::LatestNotResolvable)
+        );
+        // 4. TryFrom<String>
+        assert_eq!(
+            ModelGeneration::try_from(alias.to_string()),
+            Err(ContractError::LatestNotResolvable)
+        );
+        // 5. Canonical decode
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text(alias);
+        let bytes = encoder.finish();
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        assert_eq!(
+            ModelGeneration::decode_canonical(&mut decoder),
+            Err(ContractError::LatestNotResolvable)
+        );
+    }
+}
