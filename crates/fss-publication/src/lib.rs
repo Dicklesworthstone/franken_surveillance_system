@@ -18,6 +18,7 @@ mod error;
 mod ledger;
 mod local;
 mod publisher;
+mod replay;
 
 #[cfg(test)]
 mod tests;
@@ -44,3 +45,11 @@ pub use local::{
     SlotViolation, TOMBSTONE_RECORD_SUFFIX, TombstoneOutcome, VisibleRoot, root_record_bytes,
 };
 pub use publisher::AuthorityPublisher;
+pub use replay::{
+    MAX_REPLAY_BATCHES, MAX_REPLAY_FAULT_DIRECTIVES, MAX_REPLAY_FAULT_REORDER_WINDOW,
+    MAX_REPLAY_OBJECT_BYTES, MAX_REPLAY_OBJECTS, MAX_REPLAY_TEXT_BYTES, MAX_REPLAY_TOTAL_BYTES,
+    REPLAY_BUNDLE_DOMAIN, REPLAY_BUNDLE_FORMAT_VERSION, REPLAY_BUNDLE_MAGIC, REPLAY_TRAILER_LEN,
+    ReplayBundle, ReplayBundleError, ReplayBundleLimits, ReplayBundleReader, ReplayBundleReceipt,
+    ReplayBundleWriter, ReplayFaultAction, ReplayFaultDirective, ReplayFaultSchedule,
+    ReplayMetadata, ReplayObject,
+};
