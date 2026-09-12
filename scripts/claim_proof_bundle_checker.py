@@ -30,7 +30,10 @@ Fail-closed verification invariants:
    receipt is reported as a typed warning and counted in the summary.
 8. Claim-class realization: a promoted bundle of a realized class (``slo``, ``proof``, ``bounded_model``) has
    the evidence its registry row demands opened from disk and bound to the claim; each
-   missing or mismatched item fails closed with a registered finding id.
+   missing or mismatched item fails closed with a registered finding id. A bundle cannot pick
+   its own class: the citing claim's class (for SLO ids, the SLO registry's) governs, and a
+   bundle class that disagrees fails. An ``slo`` target and comparator come only from the
+   authoritative registries/SLOS.md row (parsed by slo_validate), never from the measurement.
 """
 
 from __future__ import annotations
@@ -44,7 +47,7 @@ import re
 import sys
 import tomllib
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +57,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import architecture_registry_consistency  # noqa: F401  (policy-lane import contract)
 from qualification_receipt import write_qualification_receipt  # noqa: F401  (the one atomic receipt writer)
 import schema_validate
+import slo_validate  # the one SLOS.md parser; slo targets are never re-parsed here
 import stable_id_audit
 
 # Typed diagnostic error codes
@@ -85,6 +89,14 @@ ERR_BOUND_EXPRESSION_UNBOUND = "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001"
 ERR_BOUND_UNITS_MISSING = "ERR-CLAIM-BOUND-UNITS-MISSING-001"
 ERR_BOUND_TIGHTER_THAN_DERIVATION = "ERR-CLAIM-BOUND-TIGHTER-THAN-DERIVATION-001"
 ERR_BOUND_SENSITIVITY_MISSING = "ERR-CLAIM-BOUND-SENSITIVITY-MISSING-001"
+ERR_SLO_TARGET_UNBOUND = "ERR-CLAIM-SLO-TARGET-UNBOUND-001"
+ERR_SLO_COMPARATOR_OVERRIDE = "ERR-CLAIM-SLO-COMPARATOR-OVERRIDE-001"
+ERR_SLO_ACTUAL_INVALID = "ERR-CLAIM-SLO-ACTUAL-INVALID-001"
+ERR_SLO_GENERATION_UNBOUND = "ERR-CLAIM-SLO-GENERATION-UNBOUND-001"
+ERR_SLO_WINDOW_INVALID = "ERR-CLAIM-SLO-WINDOW-INVALID-001"
+ERR_SLO_MEASUREMENT_NOT_PASSED = "ERR-CLAIM-SLO-MEASUREMENT-NOT-PASSED-001"
+ERR_SLO_ENVIRONMENT_UNRETAINED = "ERR-CLAIM-SLO-ENVIRONMENT-UNRETAINED-001"
+ERR_SLO_REGISTRY_INVALID = "ERR-CLAIM-SLO-REGISTRY-INVALID-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_PROOF_BUNDLE_NOT_FOUND: {
@@ -198,6 +210,38 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_BOUND_SENSITIVITY_MISSING: {
         "trigger": "A 'bounded_model' claim's derivation declares no sensitivity analysis or no invalidators",
         "remediation": "Retain the sensitivity analysis and the invalidating conditions with the derivation",
+    },
+    ERR_SLO_TARGET_UNBOUND: {
+        "trigger": "An 'slo' claim's target cannot be resolved to exactly one numeric threshold of its registries/SLOS.md row (unregistered, tombstoned, or non-numeric row), the measurement declares no or a different unit, or the measurement restates a target that differs from the row or uses a non-canonical target field",
+        "remediation": "Claim only an SLO row with a registered numeric threshold, measure in its exact unit, and never restate or relax the target",
+    },
+    ERR_SLO_COMPARATOR_OVERRIDE: {
+        "trigger": "An 'slo' measurement declares a comparator that differs from the comparator of its registries/SLOS.md row",
+        "remediation": "Remove the comparator from the measurement; the SLO row alone defines the comparison",
+    },
+    ERR_SLO_ACTUAL_INVALID: {
+        "trigger": "An 'slo' measurement has no single canonical numeric 'actual': it is missing, non-numeric, boolean, negative, overflowing, present only as a rounded value, or shadowed by another actual-like field",
+        "remediation": "Retain exactly one finite, non-negative numeric 'actual' in the SLO unit; never report only a rounded value",
+    },
+    ERR_SLO_GENERATION_UNBOUND: {
+        "trigger": "An 'slo' bundle or measurement declares no generation, or the measurement declares no operation-cost registry generation",
+        "remediation": "Bind the bundle and its measurement to one explicit generation and to the operation-cost registry generation measured against",
+    },
+    ERR_SLO_WINDOW_INVALID: {
+        "trigger": "An 'slo' measurement validity window is missing, unparseable, zone-less, empty, finished before it started, or lies in the future",
+        "remediation": "Retain a zone-qualified ISO-8601 measurement window that ended before the evaluation instant",
+    },
+    ERR_SLO_MEASUREMENT_NOT_PASSED: {
+        "trigger": "An 'slo' measurement status is missing or anything other than 'passed'",
+        "remediation": "Re-run the measurement; a failed, partial, or unlabelled run never supports an slo claim",
+    },
+    ERR_SLO_ENVIRONMENT_UNRETAINED: {
+        "trigger": "An 'slo' claim retains no single digest-bound fss.environment_manifest.v1 artifact, or its measurement is not bound to that manifest's digest",
+        "remediation": "Retain the exact environment manifest and bind the measurement to its digest",
+    },
+    ERR_SLO_REGISTRY_INVALID: {
+        "trigger": "The SLO registry (registries/SLOS.md) or operation-cost registry (architecture/operation_cost_registry.toml) consulted for an 'slo' claim is missing, unreadable, empty, malformed, or declares no rows or generation",
+        "remediation": "Repair the registry under the audited root; slo claims are never checked against a silently skipped registry",
     },
 }
 
@@ -325,6 +369,36 @@ RECEIPT_REQUIRED_FIELDS = (
 )
 RECEIPT_STATUSES: frozenset[str] = frozenset({"passed", "failed", "partial", "interrupted"})
 RECEIPT_COMMAND_STATUSES: frozenset[str] = frozenset({"passed", "failed", "skipped"})
+
+# Claim class 'slo' (fss-x4a.30.87.5).
+SLO_REGISTRY_FILE = "registries/SLOS.md"
+OPERATION_COST_REGISTRY_FILE = "architecture/operation_cost_registry.toml"
+SLO_MEASUREMENT_SCHEMA = "fss.slo_measurement.v1"
+SLO_ENVIRONMENT_SCHEMA = "fss.environment_manifest.v1"
+# No registry row declares a per-SLO staleness allowance, so one conservative bound applies to
+# every slo measurement window (evaluated against the injected evaluation instant).
+SLO_MEASUREMENT_MAX_AGE = timedelta(days=30)
+# slo_validate findings that make the SLO target definitions themselves untrustworthy.
+SLO_STRUCTURAL_CODES: frozenset[str] = frozenset({
+    slo_validate.CODE_INVALID_SLO_ID,
+    slo_validate.CODE_DUPLICATE_SLO_ID,
+    slo_validate.CODE_INVALID_SLO_STATUS,
+    slo_validate.CODE_MISSING_TARGET,
+    slo_validate.CODE_INVALID_TOMBSTONE,
+    slo_validate.CODE_MALFORMED_TABLE,
+    slo_validate.CODE_AMBIGUOUS_TARGET_UNIT,
+})
+_COMPARATOR_ALIASES: dict[str, str] = {
+    "\u2264": "<=", "<=": "<=", "le": "<=",
+    "<": "<", "lt": "<",
+    "\u2265": ">=", ">=": ">=", "ge": ">=",
+    ">": ">", "gt": ">",
+}
+_SLO_THRESHOLD_RE = re.compile(r"(\u2264|<=|\u2265|>=|<|>)\s*(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)")
+SLO_COMPARATOR_FIELDS = ("comparison", "comparator", "operator")
+SLO_ROUNDED_FIELDS = ("reported_rounded", "reported_rounded_ms", "rounded", "rounded_value", "rounded_ms")
+# Any field that could carry a competing actual value (actual_ms, achieved, observed_*, p95_ms, ...).
+_ACTUAL_ALIAS_RE = re.compile(r"^(?:actual|achieved|observed|measured)(?:_|$)|^p\d{1,3}(?:_|$)|^value$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -875,23 +949,127 @@ def _verify_receipt_payload(
     return findings, recognized
 
 
-def load_operation_cost_registry(root: Path) -> tuple[dict[str, dict[str, Any]], list[ClaimFinding]]:
-    """Loads architecture/operation_cost_registry.toml mapping operation_id -> operation data."""
-    costs_file = root / "architecture/operation_cost_registry.toml"
-    if not costs_file.is_file():
-        costs_file = ROOT / "architecture/operation_cost_registry.toml"
-    if not costs_file.is_file():
-        return {}, [_finding(ERR_PROOF_BUNDLE_NOT_FOUND, "architecture/operation_cost_registry.toml", "file", "Operation cost registry not found")]
+@dataclass(frozen=True)
+class CostRegistry:
+    """The operation-cost registry an slo claim is bound to."""
+    generation: str
+    operations: dict[str, dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class SloThreshold:
+    """One numeric threshold parsed from the target cell of an authoritative SLO row."""
+    comparator: str
+    value: float
+    unit: str
+
+
+def _authority_file(root: Path, rel: str) -> tuple[Path, Path]:
+    """The authority file for an audit of root: the copy under root whenever anything exists
+    there (so a malformed or empty copy is audited, never bypassed); the repository's own copy
+    only when root holds nothing at that path. Returns (path, the root it belongs to)."""
+    candidate = root / rel
+    if candidate.exists() or candidate.is_symlink():
+        return candidate, root
+    return ROOT / rel, ROOT
+
+
+def _registry_invalid(rel: str, message: str) -> list[ClaimFinding]:
+    return [_finding(ERR_SLO_REGISTRY_INVALID, rel, "file", message, {"registry": rel})]
+
+
+def _read_authority_text(path: Path, rel: str) -> tuple[str | None, list[ClaimFinding]]:
+    if not path.is_file():
+        return None, _registry_invalid(rel, f"Registry '{rel}' is missing or not a regular file")
     try:
-        content = costs_file.read_text(encoding="utf-8")
-        data = tomllib.loads(content)
-    except Exception as exc:
-        return {}, [_finding(ERR_UNREADABLE_INPUT, "architecture/operation_cost_registry.toml", "file", f"Failed to parse operation cost registry: {exc}")]
-    ops: dict[str, dict[str, Any]] = {}
-    for op in data.get("operation", []):
-        if isinstance(op, dict) and "id" in op:
-            ops[str(op["id"]).strip()] = op
-    return ops, []
+        text = path.read_bytes().decode("utf-8")
+    except OSError as exc:
+        return None, _registry_invalid(rel, f"Registry '{rel}' could not be read: {exc}")
+    except UnicodeDecodeError as exc:
+        return None, _registry_invalid(rel, f"Registry '{rel}' is not valid UTF-8: {exc}")
+    if not text.strip():
+        return None, _registry_invalid(rel, f"Registry '{rel}' is empty")
+    return text, []
+
+
+def load_operation_cost_registry(root: Path) -> tuple[CostRegistry | None, list[ClaimFinding]]:
+    """Loads architecture/operation_cost_registry.toml (operation id -> row, plus its declared
+    generation). Every defect is returned as a finding; the registry is never silently empty."""
+    path, _ = _authority_file(root, OPERATION_COST_REGISTRY_FILE)
+    text, findings = _read_authority_text(path, OPERATION_COST_REGISTRY_FILE)
+    if text is None:
+        return None, findings
+    try:
+        data = tomllib.loads(text)
+    except tomllib.TOMLDecodeError as exc:
+        return None, _registry_invalid(OPERATION_COST_REGISTRY_FILE, f"Registry '{OPERATION_COST_REGISTRY_FILE}' is not valid TOML: {exc}")
+    generation = _nonempty_str(data.get("generation"))
+    if generation is None:
+        return None, _registry_invalid(OPERATION_COST_REGISTRY_FILE, f"Registry '{OPERATION_COST_REGISTRY_FILE}' declares no generation")
+    rows = data.get("operation")
+    if not isinstance(rows, list) or not rows:
+        return None, _registry_invalid(OPERATION_COST_REGISTRY_FILE, f"Registry '{OPERATION_COST_REGISTRY_FILE}' declares no [[operation]] rows")
+    operations: dict[str, dict[str, Any]] = {}
+    problems: list[str] = []
+    for idx, row in enumerate(rows):
+        op_id = _nonempty_str(row.get("id")) if isinstance(row, dict) else None
+        slo_ids = row.get("slo_ids") if isinstance(row, dict) else None
+        if op_id is None:
+            problems.append(f"operation[{idx}] has no id")
+        elif not isinstance(slo_ids, list) or not all(isinstance(s, str) for s in slo_ids):
+            problems.append(f"operation '{op_id}' slo_ids is not a list of strings")
+        elif op_id in operations:
+            problems.append(f"operation '{op_id}' is declared twice")
+        else:
+            operations[op_id] = row
+    if problems:
+        return None, _registry_invalid(OPERATION_COST_REGISTRY_FILE, f"Registry '{OPERATION_COST_REGISTRY_FILE}' is malformed: {problems}")
+    return CostRegistry(generation=generation, operations=operations), []
+
+
+def load_slo_registry(root: Path) -> tuple[dict[str, slo_validate.SloRow], list[ClaimFinding]]:
+    """Resolves the authoritative SLO rows through slo_validate.parse_slos (the one SLOS.md
+    parser). Structural defects (IDs, duplicates, table shape, target grammar, tombstones,
+    statuses) fail closed; proof-root findings about promoted rows are the claim checker's own
+    concern and are not a defect of the target definitions."""
+    path, base = _authority_file(root, SLO_REGISTRY_FILE)
+    text, findings = _read_authority_text(path, SLO_REGISTRY_FILE)
+    if text is None:
+        return {}, findings
+    slo_findings: list[slo_validate.SloFinding] = []
+    rows = slo_validate.parse_slos(text, path, base, slo_findings)
+    structural = [f for f in slo_findings if f.severity == "error" and f.code in SLO_STRUCTURAL_CODES]
+    if structural:
+        return {}, _registry_invalid(
+            SLO_REGISTRY_FILE,
+            f"Registry '{SLO_REGISTRY_FILE}' is malformed: {[f'{f.code}: {f.message}' for f in structural[:5]]}",
+        )
+    if not rows:
+        return {}, _registry_invalid(SLO_REGISTRY_FILE, f"Registry '{SLO_REGISTRY_FILE}' declares no SLO rows")
+    return rows, []
+
+
+def _slo_thresholds(target: str) -> list[SloThreshold]:
+    """Every '<comparator> <number> <registered unit>' threshold in an SLO target cell. Units
+    are slo_validate.REGISTERED_UNITS, longest first, so 'ms' never reads as 's'."""
+    units = sorted(slo_validate.REGISTERED_UNITS, key=len, reverse=True)
+    found: list[SloThreshold] = []
+    for match in _SLO_THRESHOLD_RE.finditer(target):
+        rest = target[match.end():].lstrip().lower()
+        unit = next(
+            (u for u in units if rest.startswith(u) and (len(rest) == len(u) or not rest[len(u)].isalnum())),
+            None,
+        )
+        if unit is not None:
+            found.append(SloThreshold(_COMPARATOR_ALIASES[match.group(1)], float(match.group(2).replace(",", "")), unit))
+    return found
+
+
+def _registry_claim_class(claim_id: Any) -> str | None:
+    """The claim class a registry assigns to a claim id: every SLO-grammar id is an 'slo' claim."""
+    if isinstance(claim_id, str) and slo_validate.SLO_ID_REGEX.match(claim_id.strip().strip("`").strip()):
+        return "slo"
+    return None
 
 
 def _scan_nan_inf_negative(obj: Any, path_str: str, location: str, findings: list[ClaimFinding]) -> bool:
@@ -925,231 +1103,280 @@ def _scan_nan_inf_negative(obj: Any, path_str: str, location: str, findings: lis
     return has_error
 
 
+def _check_slo_window(
+    meas: dict[str, Any],
+    now: datetime,
+    path_str: str,
+    loc: str,
+    params: dict[str, Any],
+    findings: list[ClaimFinding],
+) -> None:
+    """The measurement window is a real validity interval: both ends zone-qualified ISO-8601,
+    finished strictly after started, not in the future, and no older than the allowed staleness."""
+    window = meas.get("measurement_window")
+    if not isinstance(window, dict):
+        findings.append(_finding(ERR_SLO_WINDOW_INVALID, path_str, f"{loc}.measurement_window",
+                                 "Measurement declares no measurement_window {started_at, finished_at}", params))
+        return
+    started_raw, finished_raw = window.get("started_at"), window.get("finished_at")
+    started, finished = _parse_instant(started_raw), _parse_instant(finished_raw)
+    if started is None or finished is None:
+        findings.append(_finding(
+            ERR_SLO_WINDOW_INVALID, path_str, f"{loc}.measurement_window",
+            f"Measurement window {started_raw!r}..{finished_raw!r} is not a pair of zone-qualified ISO-8601 instants",
+            params,
+        ))
+    elif finished <= started:
+        findings.append(_finding(
+            ERR_SLO_WINDOW_INVALID, path_str, f"{loc}.measurement_window",
+            f"Measurement window finished at {finished_raw} which is not after it started at {started_raw}",
+            params,
+        ))
+    elif finished > now:
+        findings.append(_finding(
+            ERR_SLO_WINDOW_INVALID, path_str, f"{loc}.measurement_window",
+            f"Measurement window ends at {finished_raw}, after the evaluation instant {now.isoformat()}",
+            params,
+        ))
+    elif now - finished > SLO_MEASUREMENT_MAX_AGE:
+        findings.append(_finding(
+            ERR_STALE_GENERATION, path_str, f"{loc}.measurement_window",
+            f"Measurement window ended at {finished_raw}, older than the allowed staleness of "
+            f"{SLO_MEASUREMENT_MAX_AGE.days} days as of {now.isoformat()}",
+            {**params, "finished_at": finished_raw, "max_age_days": SLO_MEASUREMENT_MAX_AGE.days},
+        ))
+
+
+def _resolve_slo_threshold(
+    claim_id: str,
+    slo_rows: dict[str, slo_validate.SloRow],
+    meas: dict[str, Any],
+    path_str: str,
+    loc: str,
+    params: dict[str, Any],
+    findings: list[ClaimFinding],
+) -> SloThreshold | None:
+    """The single threshold of the authoritative SLO row measured in the measurement's unit."""
+    def unbound(message: str) -> None:
+        findings.append(_finding(ERR_SLO_TARGET_UNBOUND, path_str, f"{loc}.target", message, params))
+
+    row = slo_rows.get(claim_id)
+    if row is None:
+        unbound(f"Claim '{claim_id}' is not a row of {SLO_REGISTRY_FILE}; its target cannot be resolved")
+        return None
+    if row.is_tombstone:
+        unbound(f"SLO '{claim_id}' is tombstoned; it has no active target")
+        return None
+    thresholds = _slo_thresholds(row.target) if slo_validate.validate_target_units(row.target, False) else []
+    if not thresholds:
+        unbound(f"SLO '{claim_id}' target '{row.target}' declares no numeric threshold a measurement can establish")
+        return None
+    unit = _nonempty_str(meas.get("unit"))
+    if unit is None:
+        unbound(f"Measurement declares no unit; SLO '{claim_id}' thresholds are in {sorted({t.unit for t in thresholds})}")
+        return None
+    matching = [t for t in thresholds if t.unit == unit.lower()]
+    if len(matching) != 1:
+        unbound(
+            f"Measurement unit '{unit}' selects {len(matching)} thresholds of SLO '{claim_id}' target "
+            f"'{row.target}' (units {sorted({t.unit for t in thresholds})}); units are never converted"
+        )
+        return None
+    return matching[0]
+
+
 def _verify_slo_claim_evidence(
     bundle_data: dict[str, Any],
     root: Path,
     path_str: str,
     expected_claim_id: str | None,
+    now: datetime,
     findings: list[ClaimFinding],
 ) -> None:
-    """Performs strict evidence verification for an SLO claim proof bundle per mail #806 / fss-x4a.30.87.5:
-    1. Requires a non-empty artifacts list with a valid measurement artifact on disk.
-    2. Verifies binding to the exact citing SLO ID.
-    3. Verifies operation_id from architecture/operation_cost_registry.toml and that the operation associates with this SLO.
-    4. Verifies active generation without staleness.
-    5. Verifies measurement window bounds and freshness against current generation (rejecting pre-2026/stale dates).
-    6. Rejects NaN, Infinity, negative values, and verifies achieved <= target (or >= for availability) without rounding tolerances.
+    """Opens and binds the evidence an 'slo' claim demands (fss-x4a.30.87.5):
+
+    - the SLO registry (via slo_validate.parse_slos) and operation-cost registry, fail-closed;
+    - one retained, digest-bound fss.environment_manifest.v1 the measurement is bound to;
+    - one retained, digest-bound fss.slo_measurement.v1 with status 'passed', bound to the
+      claim's SLO id, a registered operation associated with that SLO, the bundle generation,
+      and the operation-cost registry generation;
+    - a real validity window (ISO-8601, ordered, not future, not older than the staleness bound)
+      evaluated against the injected ``now``;
+    - exactly one canonical numeric ``actual`` compared, unrounded, against the target and
+      comparator of the authoritative SLO row; the measurement can neither restate nor override them.
     """
-    # 1. NaN / Infinity scan across bundle itself
     if _scan_nan_inf_negative(bundle_data, path_str, "bundle", findings):
         return
+    claim_id = _bound_claim_id(bundle_data, expected_claim_id)
+    params: dict[str, Any] = {"claim_class": "slo", "claim_id": claim_id}
 
-    # 2. Check artifacts list
     artifacts_field, artifacts_list = _single_field(bundle_data, ARTIFACT_LIST_FIELDS)
     if not artifacts_field or not isinstance(artifacts_list, list) or len(artifacts_list) == 0:
         findings.append(_finding(
             ERR_CLAIM_LEVEL_EXCEEDED, path_str, "artifacts",
             "SLO claim proof bundle requires a retained measurement artifact on disk; artifacts list is missing or empty",
-            {"claim_class": "slo"},
+            params,
         ))
         return
 
-    # Find candidate measurement artifacts
-    measurement_candidates: list[tuple[str, dict[str, Any]]] = []
-    for idx, art in enumerate(artifacts_list):
-        if not isinstance(art, dict):
-            continue
-        art_loc_field, art_path_val = _single_field(art, ARTIFACT_LOCATOR_FIELDS)
-        if not art_path_val or not isinstance(art_path_val, str):
-            continue
-        art_path = Path(art_path_val)
-        full_art_path = art_path if art_path.is_absolute() else (root / art_path)
-        if not full_art_path.is_file():
-            continue
-        try:
-            art_data = json.loads(full_art_path.read_text(encoding="utf-8"))
-            if isinstance(art_data, dict):
-                schema = art_data.get("schema", "")
-                if (
-                    schema in ("fss.operation_cost_measurement.v1", "fss.slo_measurement.v1")
-                    or "slo_id" in art_data
-                    or "operation_id" in art_data
-                    or "target_ms" in art_data
-                    or "actual_ms" in art_data
-                    or "target" in art_data
-                ):
-                    measurement_candidates.append((art_path_val, art_data))
-        except Exception:
-            continue
+    slo_rows, slo_registry_findings = load_slo_registry(root)
+    cost_registry, cost_registry_findings = load_operation_cost_registry(root)
+    findings.extend(slo_registry_findings)
+    findings.extend(cost_registry_findings)
 
-    if not measurement_candidates:
+    bundle_generation = _nonempty_str(bundle_data.get("generation"))
+    if bundle_generation is None:
+        findings.append(_finding(ERR_SLO_GENERATION_UNBOUND, path_str, "generation",
+                                 "SLO claim proof bundle declares no generation", params))
+
+    env_doc, env_reason = _open_role_document(bundle_data, root, "environment_manifest", SLO_ENVIRONMENT_SCHEMA)
+    env_digest: str | None = None
+    if env_doc is None:
+        findings.append(_finding(ERR_SLO_ENVIRONMENT_UNRETAINED, path_str, "artifacts",
+                                 f"SLO claim {env_reason}", params))
+    elif len(env_doc) < 2:
+        findings.append(_finding(ERR_SLO_ENVIRONMENT_UNRETAINED, path_str, "artifacts",
+                                 "SLO claim environment manifest declares nothing beyond its schema", params))
+    else:
+        env_digest = str(_role_artifacts(bundle_data, "environment_manifest")[0]["digest"]).strip().lower()
+
+    meas, meas_reason = _open_role_document(bundle_data, root, "measurement_artifact", SLO_MEASUREMENT_SCHEMA)
+    if meas is None:
+        findings.append(_finding(ERR_CLAIM_LEVEL_EXCEEDED, path_str, "artifacts",
+                                 f"SLO claim requires a retained measurement: {meas_reason}", params))
+        return
+    loc = f"artifact[{_artifact_locator(_role_artifacts(bundle_data, 'measurement_artifact')[0])}]"
+    if _scan_nan_inf_negative(meas, path_str, loc, findings):
+        return
+
+    if meas.get("status") != "passed":
+        findings.append(_finding(ERR_SLO_MEASUREMENT_NOT_PASSED, path_str, f"{loc}.status",
+                                 f"Measurement status {meas.get('status')!r} is not 'passed'", params))
+
+    # Binding: SLO id and registered operation associated with it.
+    meas_slo = _nonempty_str(meas.get("slo_id"))
+    if meas_slo is None:
+        findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.slo_id",
+                                 "Measurement is not bound to an SLO id ('slo_id')", params))
+    elif meas_slo != claim_id:
+        findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.slo_id",
+                                 f"Measurement binds SLO '{meas_slo}', expected '{claim_id}'",
+                                 {**params, "bound_slo": meas_slo}))
+    meas_op = _nonempty_str(meas.get("operation_id"))
+    if meas_op is None:
+        findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.operation_id",
+                                 "Measurement names no 'operation_id' from the operation-cost registry", params))
+    elif cost_registry is not None:
+        op_row = cost_registry.operations.get(meas_op)
+        if op_row is None:
+            findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.operation_id",
+                                     f"Measurement names operation '{meas_op}', which is not in the operation-cost registry",
+                                     {**params, "operation_id": meas_op}))
+        elif claim_id not in op_row["slo_ids"]:
+            findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.operation_id",
+                                     f"Operation '{meas_op}' is not associated with SLO '{claim_id}' (slo_ids {op_row['slo_ids']})",
+                                     {**params, "operation_id": meas_op}))
+
+    # Generations: required, equal to the bundle's, and bound to the cost-registry generation.
+    meas_generation = _nonempty_str(meas.get("generation"))
+    if meas_generation is None:
+        findings.append(_finding(ERR_SLO_GENERATION_UNBOUND, path_str, f"{loc}.generation",
+                                 "Measurement declares no generation", params))
+    elif bundle_generation is not None and meas_generation != bundle_generation:
+        findings.append(_finding(ERR_STALE_GENERATION, path_str, f"{loc}.generation",
+                                 f"Measurement generation '{meas_generation}' is not the bundle generation '{bundle_generation}'",
+                                 params))
+    cost_generation = _nonempty_str(meas.get("operation_cost_generation"))
+    if cost_generation is None:
+        findings.append(_finding(ERR_SLO_GENERATION_UNBOUND, path_str, f"{loc}.operation_cost_generation",
+                                 "Measurement is not bound to an operation-cost registry generation", params))
+    elif cost_registry is not None and cost_generation != cost_registry.generation:
+        findings.append(_finding(ERR_STALE_GENERATION, path_str, f"{loc}.operation_cost_generation",
+                                 f"Measurement was taken against operation-cost generation '{cost_generation}', "
+                                 f"not the registry's current '{cost_registry.generation}'", params))
+
+    # Environment binding.
+    bound_env = meas.get("environment_manifest_digest")
+    if not isinstance(bound_env, str) or not bound_env.strip():
+        findings.append(_finding(ERR_SLO_ENVIRONMENT_UNRETAINED, path_str, f"{loc}.environment_manifest_digest",
+                                 "Measurement is not bound to a retained environment manifest digest", params))
+    elif env_digest is not None and bound_env.strip().lower() != env_digest:
+        findings.append(_finding(ERR_SLO_ENVIRONMENT_UNRETAINED, path_str, f"{loc}.environment_manifest_digest",
+                                 f"Measurement binds environment manifest '{bound_env}', not the retained '{env_digest}'",
+                                 params))
+
+    _check_slo_window(meas, now, path_str, loc, params, findings)
+
+    # Target and comparator come only from the authoritative SLO row.
+    threshold = None
+    if not slo_registry_findings:
+        threshold = _resolve_slo_threshold(claim_id, slo_rows, meas, path_str, loc, params, findings)
+    target_aliases = sorted(k for k in meas if k != "target" and k.lower().startswith("target"))
+    if target_aliases:
+        findings.append(_finding(ERR_SLO_TARGET_UNBOUND, path_str, f"{loc}.target",
+                                 f"Measurement declares non-canonical target field(s) {target_aliases}; the target is the SLO row's",
+                                 params))
+    if "target" in meas and threshold is not None:
+        restated = meas["target"]
+        if isinstance(restated, bool) or not isinstance(restated, (int, float)) or float(restated) != threshold.value:
+            findings.append(_finding(
+                ERR_SLO_TARGET_UNBOUND, path_str, f"{loc}.target",
+                f"Measurement target {restated!r} differs from the authoritative SLO target {threshold.value} {threshold.unit}",
+                params,
+            ))
+    for name in SLO_COMPARATOR_FIELDS:
+        if name in meas:
+            declared = meas[name]
+            normalized = _COMPARATOR_ALIASES.get(declared.strip().lower()) if isinstance(declared, str) else None
+            if threshold is None or normalized != threshold.comparator:
+                findings.append(_finding(
+                    ERR_SLO_COMPARATOR_OVERRIDE, path_str, f"{loc}.{name}",
+                    f"Measurement declares comparator {declared!r}; only the SLO row's comparator "
+                    f"{threshold.comparator if threshold else '(none)'!r} applies",
+                    params,
+                ))
+
+    # Exactly one canonical, finite, non-negative numeric actual; never a rounded value.
+    actual: float | None = None
+    shadows = sorted(k for k in meas if k != "actual" and _ACTUAL_ALIAS_RE.match(k))
+    if shadows:
         findings.append(_finding(
-            ERR_CLAIM_LEVEL_EXCEEDED, path_str, "artifacts",
-            "SLO claim proof bundle requires a retained measurement artifact on disk; none found in declared artifacts",
-            {"claim_class": "slo"},
+            ERR_SLO_ACTUAL_INVALID, path_str, f"{loc}.actual",
+            f"Measurement declares actual-like field(s) {shadows} "
+            f"{'beside' if 'actual' in meas else 'instead of'} the single canonical 'actual'",
+            params,
         ))
-        return
+    elif "actual" not in meas:
+        rounded_only = sorted(k for k in meas if k in SLO_ROUNDED_FIELDS)
+        findings.append(_finding(
+            ERR_SLO_ACTUAL_INVALID, path_str, f"{loc}.actual",
+            "Measurement declares no 'actual'" + (f"; rounded value(s) {rounded_only} are never compared" if rounded_only else ""),
+            params,
+        ))
+    else:
+        raw_actual = meas["actual"]
+        actual = _finite_number(raw_actual)
+        if actual is None or actual < 0.0:
+            findings.append(_finding(ERR_SLO_ACTUAL_INVALID, path_str, f"{loc}.actual",
+                                     f"Measurement actual {raw_actual!r} is not a finite non-negative number", params))
+            actual = None
 
-    op_costs, _ = load_operation_cost_registry(root)
-
-    for art_path_val, meas_data in measurement_candidates:
-        meas_loc = f"artifact[{art_path_val}]"
-
-        # Check NaN / Infinity in measurement artifact
-        if _scan_nan_inf_negative(meas_data, art_path_val, meas_loc, findings):
-            continue
-
-        # Check SLO binding
-        meas_slo = meas_data.get("slo_id") or meas_data.get("sloId") or meas_data.get("claim_id")
-        target_slo = expected_claim_id or bundle_data.get("claim_id") or bundle_data.get("claimId")
-        if not meas_slo or not isinstance(meas_slo, str) or not meas_slo.strip():
+    if threshold is not None and actual is not None:
+        met = {
+            "<=": actual <= threshold.value,
+            "<": actual < threshold.value,
+            ">=": actual >= threshold.value,
+            ">": actual > threshold.value,
+        }[threshold.comparator]
+        if not met:
+            rounded = [meas[k] for k in SLO_ROUNDED_FIELDS if k in meas]
             findings.append(_finding(
-                ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.slo_id",
-                f"Measurement artifact '{art_path_val}' missing required 'slo_id' binding",
+                ERR_CLAIM_LEVEL_EXCEEDED, path_str, f"{loc}.actual",
+                f"SLO target not achieved: actual {actual} {threshold.unit} does not satisfy "
+                f"'{threshold.comparator} {threshold.value} {threshold.unit}' of SLO '{claim_id}'"
+                + (f" (rounded values {rounded} are never compared)" if rounded else ""),
+                {**params, "actual": actual, "target": threshold.value, "comparator": threshold.comparator},
             ))
-        elif target_slo and meas_slo.strip() != str(target_slo).strip():
-            findings.append(_finding(
-                ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.slo_id",
-                f"Measurement artifact '{art_path_val}' binds SLO '{meas_slo}', expected '{target_slo}'",
-                {"bound_slo": meas_slo, "expected_slo": target_slo},
-            ))
-
-        # Check operation_id
-        meas_op = meas_data.get("operation_id") or meas_data.get("operationId") or meas_data.get("cost_id")
-        if not meas_op or not isinstance(meas_op, str) or not meas_op.strip():
-            findings.append(_finding(
-                ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.operation_id",
-                f"Measurement artifact '{art_path_val}' missing required 'operation_id' from operation cost registry",
-            ))
-        else:
-            meas_op = meas_op.strip()
-            if op_costs and meas_op not in op_costs:
-                findings.append(_finding(
-                    ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.operation_id",
-                    f"Measurement artifact references unknown operation '{meas_op}' not in operation cost registry",
-                    {"operation_id": meas_op},
-                ))
-            elif op_costs and meas_op in op_costs:
-                op_entry = op_costs[meas_op]
-                op_slo_ids = op_entry.get("slo_ids", [])
-                if target_slo and target_slo not in op_slo_ids:
-                    findings.append(_finding(
-                        ERR_CLAIM_BINDING_MISMATCH, art_path_val, f"{meas_loc}.operation_id",
-                        f"Operation '{meas_op}' is not associated with SLO '{target_slo}' in operation cost registry (declared slo_ids: {op_slo_ids})",
-                        {"operation_id": meas_op, "slo_id": target_slo},
-                    ))
-
-        # Check generation
-        meas_gen = meas_data.get("generation")
-        bundle_gen = bundle_data.get("generation")
-        if not meas_gen or not isinstance(meas_gen, str) or not meas_gen.strip():
-            findings.append(_finding(
-                ERR_STALE_GENERATION, art_path_val, f"{meas_loc}.generation",
-                f"Measurement artifact '{art_path_val}' missing required 'generation'",
-            ))
-        else:
-            meas_gen = meas_gen.strip()
-            if bundle_gen and meas_gen != str(bundle_gen).strip():
-                findings.append(_finding(
-                    ERR_STALE_GENERATION, art_path_val, f"{meas_loc}.generation",
-                    f"Measurement artifact generation '{meas_gen}' does not match proof bundle generation '{bundle_gen}'",
-                ))
-            if meas_gen.startswith("gen-2020") or "stale" in meas_gen.lower() or meas_gen == "latest":
-                findings.append(_finding(
-                    ERR_STALE_GENERATION, art_path_val, f"{meas_loc}.generation",
-                    f"Measurement artifact generation '{meas_gen}' is stale or prohibited alias",
-                ))
-
-        # Check measurement window & freshness
-        meas_window = meas_data.get("measurement_window")
-        started_at = meas_data.get("started_at") or meas_data.get("startedAt")
-        finished_at = meas_data.get("finished_at") or meas_data.get("finishedAt")
-        if isinstance(meas_window, dict):
-            started_at = started_at or meas_window.get("started_at") or meas_window.get("startedAt") or meas_window.get("start_time")
-            finished_at = finished_at or meas_window.get("finished_at") or meas_window.get("finishedAt") or meas_window.get("end_time")
-
-        if not started_at or not finished_at:
-            findings.append(_finding(
-                ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.measurement_window",
-                f"Measurement artifact '{art_path_val}' missing measurement window (started_at, finished_at)",
-            ))
-        else:
-            date_strs = [str(started_at), str(finished_at)]
-            for ds in date_strs:
-                m = re.search(r"\b(20[0-2][0-5])\b", ds)
-                if m:
-                    findings.append(_finding(
-                        ERR_STALE_GENERATION, art_path_val, f"{meas_loc}.measurement_window",
-                        f"Measurement window is stale: timestamp '{ds}' is prior to active generation window (2026+)",
-                        {"timestamp": ds},
-                    ))
-                    break
-
-        # Check achieved vs target metrics
-        target_val: float | None = None
-        actual_val: float | None = None
-        reported_rounded: float | None = None
-        comparator = "<="
-
-        for t_key in ("target_ms", "target_value", "target", "target_latency"):
-            if t_key in meas_data and isinstance(meas_data[t_key], (int, float)):
-                target_val = float(meas_data[t_key])
-                break
-        for a_key in ("actual_ms", "actual_value", "actual", "achieved_value", "achieved", "actual_latency"):
-            if a_key in meas_data and isinstance(meas_data[a_key], (int, float)):
-                actual_val = float(meas_data[a_key])
-                break
-        for r_key in ("reported_rounded_ms", "reported_rounded", "rounded_value", "rounded_ms"):
-            if r_key in meas_data and isinstance(meas_data[r_key], (int, float)):
-                reported_rounded = float(meas_data[r_key])
-                break
-
-        if (target_val is None or actual_val is None) and isinstance(meas_data.get("metrics"), dict):
-            metrics_dict = meas_data["metrics"]
-            for m_key, m_val in metrics_dict.items():
-                if isinstance(m_val, dict):
-                    t = m_val.get("target") or m_val.get("target_value")
-                    a = m_val.get("actual") or m_val.get("achieved")
-                    if isinstance(t, (int, float)) and isinstance(a, (int, float)):
-                        target_val = float(t)
-                        actual_val = float(a)
-                        if "rounded" in m_val and isinstance(m_val["rounded"], (int, float)):
-                            reported_rounded = float(m_val["rounded"])
-                        break
-
-        if "comparison" in meas_data:
-            c = str(meas_data["comparison"]).strip()
-            if c in (">=", "ge", ">"):
-                comparator = ">="
-
-        if target_val is not None and actual_val is not None:
-            if actual_val < 0.0 and comparator == "<=":
-                findings.append(_finding(
-                    ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.actual",
-                    f"Measurement actual value cannot be negative: {actual_val}",
-                ))
-            elif comparator == "<=":
-                if actual_val > target_val:
-                    if reported_rounded is not None and reported_rounded <= target_val:
-                        findings.append(_finding(
-                            ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.actual",
-                            f"SLO target met only by rounding: actual {actual_val} exceeds target {target_val} (reported rounded: {reported_rounded})",
-                            {"actual": actual_val, "target": target_val, "reported_rounded": reported_rounded},
-                        ))
-                    else:
-                        findings.append(_finding(
-                            ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.actual",
-                            f"SLO target not achieved: actual {actual_val} exceeds target {target_val}",
-                            {"actual": actual_val, "target": target_val},
-                        ))
-            elif comparator == ">=":
-                if actual_val < target_val:
-                    findings.append(_finding(
-                        ERR_CLAIM_LEVEL_EXCEEDED, art_path_val, f"{meas_loc}.actual",
-                        f"SLO target not achieved: actual {actual_val} below target {target_val}",
-                        {"actual": actual_val, "target": target_val},
-                    ))
-
 
 
 def _is_promoted_bundle(bundle_data: dict[str, Any], claim_level: str | None) -> bool:
@@ -1864,7 +2091,8 @@ def verify_proof_bundle(
     # 4. Generation checks: stale, superseded, tombstoned, 'latest', and expiry.
     tombstones = {normalize_id(t) for t in (tombstoned_ids or ())}
     _check_generations(data, path_str, tombstones, findings)
-    _check_expiry(data, path_str, now or datetime.now(timezone.utc), findings)
+    effective_now = now if now is not None else datetime.now(timezone.utc)
+    _check_expiry(data, path_str, effective_now, findings)
 
     # 5. Status: closed vocabulary.
     raw_status = data.get("status")
@@ -1947,20 +2175,32 @@ def verify_proof_bundle(
                 {"claimed_level": claim_level, "supported_level": supported_str},
             ))
 
-    # 8. Claim class and required evidence.
-    _, bundle_class = _single_field(data, CLAIM_CLASS_FIELDS)
-    effective_class = claim_class if claim_class is not None else bundle_class
-    if claim_class is not None and bundle_class is not None and str(bundle_class) != claim_class:
+    # 8. Claim class and required evidence. The class is the citing claim's: the one passed by
+    # the claim row, else the registry's (every SLO id is an 'slo' claim). A bundle never picks
+    # its own class; one that declares none or disagrees fails closed.
+    _, raw_bundle_class = _single_field(data, CLAIM_CLASS_FIELDS)
+    bundle_class = _nonempty_str(raw_bundle_class)
+    citing_class = claim_class if claim_class is not None else _registry_claim_class(
+        expected_claim_id if expected_claim_id is not None else bundle_claim_id
+    )
+    effective_class = citing_class if citing_class is not None else bundle_class
+    if citing_class is not None and bundle_class is not None and bundle_class != citing_class:
         findings.append(_finding(
             ERR_CLAIM_BINDING_MISMATCH, path_str, "claim_class",
-            f"Proof bundle claim class '{bundle_class}' differs from the citing claim class '{claim_class}'",
+            f"Proof bundle claim class '{bundle_class}' differs from the citing claim class '{citing_class}'",
+            {"bundle_claim_class": bundle_class, "claim_class": citing_class},
+        ))
+    if bundle_class is None and effective_class is not None:
+        findings.append(_finding(
+            ERR_INVALID_CLAIM_CLASS, path_str, "claim_class",
+            f"Proof bundle '{path_str}' declares no claim class; it must restate the citing claim class '{effective_class}'",
         ))
     if known_classes is None:
         findings.append(_finding(
             ERR_INVALID_CLAIM_CLASS, path_str, "claim_class",
             "No authoritative claim-class registry was supplied; required evidence cannot be verified",
         ))
-    elif not isinstance(effective_class, str) or not effective_class.strip():
+    elif effective_class is None:
         findings.append(_finding(
             ERR_INVALID_CLAIM_CLASS, path_str, "claim_class",
             f"Proof bundle '{path_str}' declares no claim class; required evidence cannot be verified",
@@ -1995,7 +2235,7 @@ def verify_proof_bundle(
                 ))
 
         if effective_class == "slo" and _is_promoted_bundle(data, claim_level):
-            _verify_slo_claim_evidence(data, root, path_str, expected_claim_id, findings)
+            _verify_slo_claim_evidence(data, root, path_str, expected_claim_id, effective_now, findings)
         elif effective_class == "proof" and _is_promoted_bundle(data, claim_level):
             _verify_proof_claim_evidence(data, root, path_str, expected_claim_id, findings)
         elif effective_class == "bounded_model" and _is_promoted_bundle(data, claim_level):
@@ -2953,7 +3193,7 @@ def main() -> int:
         root=args.root,
         claims_json_path=args.claims,
         target_bundle=args.bundle,
-        now=args.as_of,
+        now=args.as_of if args.as_of is not None else datetime.now(timezone.utc),
     )
 
     if args.json:
