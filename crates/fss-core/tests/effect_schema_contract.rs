@@ -95,11 +95,8 @@ fn sample_reconciliation_verified() -> Result<EffectReconciliationRecord, Box<dy
 
 fn sample_operation_receipt() -> Result<OperationReceipt, Box<dyn Error>> {
     let intent = sample_intent()?;
-    let authority = EffectAuthority::new(
-        "principal:operator:sec-ops",
-        "cap:alert:dispatch",
-        Some(42),
-    )?;
+    let authority =
+        EffectAuthority::new("principal:operator:sec-ops", "cap:alert:dispatch", Some(42))?;
     Ok(OperationReceipt {
         intent,
         state: EffectState::Prepared,
@@ -789,7 +786,10 @@ fn test_review_562_finding_3_operation_receipt_schema_authority_fields_present()
 
     // Also test roundtrip from_json
     let parsed = OperationReceipt::from_json(&json)?;
-    assert_eq!(receipt, parsed, "OperationReceipt must roundtrip through canonical JSON");
+    assert_eq!(
+        receipt, parsed,
+        "OperationReceipt must roundtrip through canonical JSON"
+    );
     Ok(())
 }
 
@@ -798,7 +798,11 @@ fn test_review_562_finding_3_prepare_effect_requires_explicit_authority()
 -> Result<(), Box<dyn Error>> {
     let mut journal = EffectJournal::new();
     let prepared = sample_prepared()?;
-    let authority = EffectAuthority::new("principal:operator:sec-ops", "cap:alert:dispatch", Some(101))?;
+    let authority = EffectAuthority::new(
+        "principal:operator:sec-ops",
+        "cap:alert:dispatch",
+        Some(101),
+    )?;
     let receipt = journal.prepare_effect(prepared.clone(), authority.clone())?;
     assert_eq!(receipt.authority, authority);
     assert_eq!(receipt.intent, prepared.intent);
@@ -895,17 +899,44 @@ fn test_review_562_finding_7_serialized_receipts_validate_against_disk_schemas()
     let op_schema = include_str!("../../../schemas/operation_receipt.v1.json");
 
     // All schemas must mandate idempotencyKey and preparedEffectDigest
-    assert!(rec_schema.contains("\"idempotencyKey\""), "rec_schema must define idempotencyKey");
-    assert!(rec_schema.contains("\"preparedEffectDigest\""), "rec_schema must define preparedEffectDigest");
-    assert!(obs_schema.contains("\"idempotencyKey\""), "obs_schema must define idempotencyKey");
-    assert!(obs_schema.contains("\"preparedEffectDigest\""), "obs_schema must define preparedEffectDigest");
-    assert!(fail_schema.contains("\"idempotencyKey\""), "fail_schema must define idempotencyKey");
-    assert!(fail_schema.contains("\"preparedEffectDigest\""), "fail_schema must define preparedEffectDigest");
+    assert!(
+        rec_schema.contains("\"idempotencyKey\""),
+        "rec_schema must define idempotencyKey"
+    );
+    assert!(
+        rec_schema.contains("\"preparedEffectDigest\""),
+        "rec_schema must define preparedEffectDigest"
+    );
+    assert!(
+        obs_schema.contains("\"idempotencyKey\""),
+        "obs_schema must define idempotencyKey"
+    );
+    assert!(
+        obs_schema.contains("\"preparedEffectDigest\""),
+        "obs_schema must define preparedEffectDigest"
+    );
+    assert!(
+        fail_schema.contains("\"idempotencyKey\""),
+        "fail_schema must define idempotencyKey"
+    );
+    assert!(
+        fail_schema.contains("\"preparedEffectDigest\""),
+        "fail_schema must define preparedEffectDigest"
+    );
 
     // Operation receipt must require authority
-    assert!(op_schema.contains("\"authority\""), "op_schema must define authority");
-    assert!(op_schema.contains("\"principal\""), "op_schema must define principal");
-    assert!(op_schema.contains("\"capability\""), "op_schema must define capability");
+    assert!(
+        op_schema.contains("\"authority\""),
+        "op_schema must define authority"
+    );
+    assert!(
+        op_schema.contains("\"principal\""),
+        "op_schema must define principal"
+    );
+    assert!(
+        op_schema.contains("\"capability\""),
+        "op_schema must define capability"
+    );
 
     // Serialized instances must contain the bound keys
     let rec_json = sample_reconciliation_verified()?.to_canonical_json();

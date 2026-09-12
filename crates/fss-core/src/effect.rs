@@ -1006,7 +1006,8 @@ impl ProviderFailureReceipt {
         &self,
         lookup: &impl ProviderFailureLookup,
     ) -> Result<(), EffectSchemaError> {
-        match lookup.contains_failure(&self.provider_nonce, &self.message_digest, &self.error_code) {
+        match lookup.contains_failure(&self.provider_nonce, &self.message_digest, &self.error_code)
+        {
             ReceiptLookupStatus::Found => Ok(()),
             ReceiptLookupStatus::NotFound => Err(EffectSchemaError::UnverifiedReceipt {
                 detail: format!(
@@ -1058,11 +1059,19 @@ impl CanonicalDecode for ProviderFailureReceipt {
 /// Receipts cannot be verified without consulting the issuing provider oracle.
 pub trait ProviderReceiptLookup {
     /// Returns 3-valued status for whether the given observation receipt was authentically issued by the provider.
-    fn contains_observation(&self, nonce: &ContentDigest, message_digest: &ContentDigest) -> ReceiptLookupStatus;
+    fn contains_observation(
+        &self,
+        nonce: &ContentDigest,
+        message_digest: &ContentDigest,
+    ) -> ReceiptLookupStatus;
 }
 
 impl ProviderReceiptLookup for BTreeSet<(ContentDigest, ContentDigest)> {
-    fn contains_observation(&self, nonce: &ContentDigest, message_digest: &ContentDigest) -> ReceiptLookupStatus {
+    fn contains_observation(
+        &self,
+        nonce: &ContentDigest,
+        message_digest: &ContentDigest,
+    ) -> ReceiptLookupStatus {
         if self.contains(&(*nonce, *message_digest)) {
             ReceiptLookupStatus::Found
         } else {
@@ -1513,8 +1522,7 @@ impl CanonicalDecode for EffectAuthority {
         } else {
             None
         };
-        Self::new(principal, capability, lease_fence)
-            .map_err(|_| ContractError::InvalidIdentifier)
+        Self::new(principal, capability, lease_fence).map_err(|_| ContractError::InvalidIdentifier)
     }
 }
 
