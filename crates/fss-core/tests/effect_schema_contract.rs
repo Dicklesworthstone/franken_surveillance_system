@@ -15,13 +15,16 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use fss_core::effect::{
-    EffectIntent, EffectJournal, EffectReconciliationRecord, EffectSchemaError,
-    EffectState, IdempotencyKey, ObligationId, OperationId, PreparedEffect,
-    ProviderFailureLookup, ProviderFailureReceipt, ProviderObservationReceipt,
-    ProviderReceiptLookup, ReconciliationOutcome, TimestampNs, MAX_DETAIL_LEN,
-    MAX_EFFECT_CLASS_LEN, MAX_ERROR_CODE_LEN, MAX_TERMINAL_PREDICATE_LEN,
+    EffectIntent, EffectJournal, EffectReconciliationRecord, EffectSchemaError, EffectState,
+    IdempotencyKey, MAX_DETAIL_LEN, MAX_EFFECT_CLASS_LEN, MAX_ERROR_CODE_LEN,
+    MAX_TERMINAL_PREDICATE_LEN, ObligationId, OperationId, PreparedEffect, ProviderFailureLookup,
+    ProviderFailureReceipt, ProviderObservationReceipt, ProviderReceiptLookup,
+    ReconciliationOutcome, TimestampNs,
 };
-use fss_core::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError};
+use fss_core::{
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
+    ContractError,
+};
 
 fn sample_intent() -> Result<EffectIntent, Box<dyn Error>> {
     let op_id = OperationId::parse("op:alert:dispatch:01")?;
@@ -219,7 +222,11 @@ fn test_receipts_verified_by_lookup_never_recomputable() -> Result<(), Box<dyn E
 
     // Register authentic receipts in provider tables
     issued_obs.insert((obs.provider_nonce, obs.message_digest));
-    issued_fail.insert((fail.provider_nonce, fail.message_digest, fail.error_code.clone()));
+    issued_fail.insert((
+        fail.provider_nonce,
+        fail.message_digest,
+        fail.error_code.clone(),
+    ));
 
     // Now lookup verification succeeds
     assert!(obs.verify_lookup(&issued_obs).is_ok());
@@ -254,7 +261,13 @@ fn test_reconciliation_outcome_invariants() -> Result<(), Box<dyn Error>> {
         None,
     );
     assert!(
-        matches!(verified_no_evidence, Err(EffectSchemaError::InvalidOutcome { outcome: "verified", .. })),
+        matches!(
+            verified_no_evidence,
+            Err(EffectSchemaError::InvalidOutcome {
+                outcome: "verified",
+                ..
+            })
+        ),
         "Verified outcome without evidence must fail with InvalidOutcome"
     );
 
@@ -277,7 +290,13 @@ fn test_reconciliation_outcome_invariants() -> Result<(), Box<dyn Error>> {
         None,
     );
     assert!(
-        matches!(failed_no_detail, Err(EffectSchemaError::InvalidOutcome { outcome: "failed", .. })),
+        matches!(
+            failed_no_detail,
+            Err(EffectSchemaError::InvalidOutcome {
+                outcome: "failed",
+                ..
+            })
+        ),
         "Failed outcome without detail must fail"
     );
 
@@ -300,7 +319,13 @@ fn test_reconciliation_outcome_invariants() -> Result<(), Box<dyn Error>> {
         Some("timeout awaiting ack".to_string()),
     );
     assert!(
-        matches!(indeterminate_with_evidence, Err(EffectSchemaError::InvalidOutcome { outcome: "indeterminate", .. })),
+        matches!(
+            indeterminate_with_evidence,
+            Err(EffectSchemaError::InvalidOutcome {
+                outcome: "indeterminate",
+                ..
+            })
+        ),
         "Indeterminate outcome carrying evidence must fail"
     );
 
@@ -369,7 +394,12 @@ fn test_effect_class_length_bounds() -> Result<(), Box<dyn Error>> {
 
     // Empty fails
     let err_empty = EffectIntent::new(op_id.clone(), idem_key.clone(), "", req, pre);
-    assert!(matches!(err_empty, Err(EffectSchemaError::MissingField { field: "effectClass" })));
+    assert!(matches!(
+        err_empty,
+        Err(EffectSchemaError::MissingField {
+            field: "effectClass"
+        })
+    ));
 
     // Exactly at bound (MAX_EFFECT_CLASS_LEN)
     let at_bound = "a".repeat(MAX_EFFECT_CLASS_LEN);
@@ -401,7 +431,12 @@ fn test_terminal_predicate_length_bounds() -> Result<(), Box<dyn Error>> {
 
     // Empty fails
     let err_empty = PreparedEffect::new(intent.clone(), ob_id.clone(), "", TimestampNs(1));
-    assert!(matches!(err_empty, Err(EffectSchemaError::MissingField { field: "terminalPredicate" })));
+    assert!(matches!(
+        err_empty,
+        Err(EffectSchemaError::MissingField {
+            field: "terminalPredicate"
+        })
+    ));
 
     // Exactly at bound (MAX_TERMINAL_PREDICATE_LEN)
     let at_bound = "p".repeat(MAX_TERMINAL_PREDICATE_LEN);
@@ -433,7 +468,10 @@ fn test_failure_error_code_length_bounds() -> Result<(), Box<dyn Error>> {
 
     // Empty fails
     let err_empty = ProviderFailureReceipt::new(nonce, msg, "");
-    assert!(matches!(err_empty, Err(EffectSchemaError::MissingField { field: "errorCode" })));
+    assert!(matches!(
+        err_empty,
+        Err(EffectSchemaError::MissingField { field: "errorCode" })
+    ));
 
     // Exactly at bound (MAX_ERROR_CODE_LEN)
     let at_bound = "e".repeat(MAX_ERROR_CODE_LEN);
@@ -556,9 +594,6 @@ fn test_typed_decode_errors_binary_truncated_rejected() -> Result<(), Box<dyn Er
     let bytes = sample_prepared()?.to_canonical_bytes()?;
     let truncated = &bytes[..bytes.len() - 5];
     let res = PreparedEffect::from_canonical_bytes(truncated);
-    assert!(
-        res.is_err(),
-        "Truncated binary envelope must fail decoding"
-    );
+    assert!(res.is_err(), "Truncated binary envelope must fail decoding");
     Ok(())
 }
