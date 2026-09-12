@@ -10,8 +10,8 @@ use fss_core::{
 use fss_reference::{
     CalibrationError, CalibrationLifecycle, CalibrationLifecycleState, CalibrationSample,
     CameraIntrinsics, DistortionModel, Fixed64, IntrinsicsCertificateBuilder, IntrinsicsCovariance,
-    IntrinsicsResidual, MAX_CALIBRATION_SAMPLES, MAX_CERTIFICATE_ID_BYTES,
-    MAX_IMAGE_DIMENSION_PX, MAX_REPROJECTION_TOLERANCE_UPX, MIN_CALIBRATION_SAMPLES,
+    IntrinsicsResidual, MAX_CALIBRATION_SAMPLES, MAX_CERTIFICATE_ID_BYTES, MAX_IMAGE_DIMENSION_PX,
+    MAX_REPROJECTION_TOLERANCE_UPX, MIN_CALIBRATION_SAMPLES,
 };
 
 /// Helper to generate synthetic, non-degenerate calibration sample points.
@@ -1132,7 +1132,10 @@ fn test_finding_f2_distinct_3d_points_bound_and_bound_minus_one() -> Result<(), 
     match res_7 {
         Err(CalibrationError::DegenerateEvidence { reason }) => {
             if !reason.contains("insufficient distinct 3D points: 7 distinct, minimum 8 required") {
-                return Err(format!("Expected insufficient distinct 3D points message, got: {reason}").into());
+                return Err(format!(
+                    "Expected insufficient distinct 3D points message, got: {reason}"
+                )
+                .into());
             }
         }
         Ok(_) => return Err("CRITICAL: builder accepted 7 distinct 3D points (bound-1)!".into()),
@@ -1157,7 +1160,11 @@ fn test_finding_f2_distinct_3d_points_bound_and_bound_minus_one() -> Result<(), 
         .build();
 
     if res_8.is_err() {
-        return Err(format!("CRITICAL: builder rejected 8 distinct 3D points at exact bound: {:?}", res_8).into());
+        return Err(format!(
+            "CRITICAL: builder rejected 8 distinct 3D points at exact bound: {:?}",
+            res_8
+        )
+        .into());
     }
 
     Ok(())
@@ -1193,11 +1200,18 @@ fn test_finding_f2_distinct_2d_points_bound_minus_one() -> Result<(), Box<dyn Er
 
     match res {
         Err(CalibrationError::DegenerateEvidence { reason }) => {
-            if !reason.contains("insufficient distinct 2D observations: 7 distinct, minimum 8 required") {
-                return Err(format!("Expected insufficient distinct 2D observations message, got: {reason}").into());
+            if !reason
+                .contains("insufficient distinct 2D observations: 7 distinct, minimum 8 required")
+            {
+                return Err(format!(
+                    "Expected insufficient distinct 2D observations message, got: {reason}"
+                )
+                .into());
             }
         }
-        Ok(_) => return Err("CRITICAL: builder accepted 7 distinct 2D observations (bound-1)!".into()),
+        Ok(_) => {
+            return Err("CRITICAL: builder accepted 7 distinct 2D observations (bound-1)!".into());
+        }
         Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
     }
 
@@ -1214,10 +1228,15 @@ fn test_finding_f2_positive_depth_bound_and_bound_minus_one() -> Result<(), Box<
     let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
 
     // Bound - 1: Z = 0 mm must be REJECTED fail-closed
-    let mut samples_z0 = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+    let mut samples_z0 =
+        generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
     samples_z0[0] = CalibrationSample::new(
         samples_z0[0].point_id,
-        [samples_z0[0].world_point_mm[0], samples_z0[0].world_point_mm[1], 0],
+        [
+            samples_z0[0].world_point_mm[0],
+            samples_z0[0].world_point_mm[1],
+            0,
+        ],
         samples_z0[0].observed_pixel_upx,
         samples_z0[0].frame_index,
         samples_z0[0].capture_time,
@@ -1243,10 +1262,15 @@ fn test_finding_f2_positive_depth_bound_and_bound_minus_one() -> Result<(), Box<
     }
 
     // Bound: Z = 1 mm must pass the depth check (remains strictly positive)
-    let mut samples_z1 = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+    let mut samples_z1 =
+        generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
     samples_z1[0] = CalibrationSample::new(
         samples_z1[0].point_id,
-        [samples_z1[0].world_point_mm[0], samples_z1[0].world_point_mm[1], 1],
+        [
+            samples_z1[0].world_point_mm[0],
+            samples_z1[0].world_point_mm[1],
+            1,
+        ],
         samples_z1[0].observed_pixel_upx,
         samples_z1[0].frame_index,
         samples_z1[0].capture_time,
@@ -1262,7 +1286,11 @@ fn test_finding_f2_positive_depth_bound_and_bound_minus_one() -> Result<(), Box<
         .build();
 
     if res_z1.is_err() {
-        return Err(format!("CRITICAL: builder rejected sample with Z = 1 mm at exact bound: {:?}", res_z1).into());
+        return Err(format!(
+            "CRITICAL: builder rejected sample with Z = 1 mm at exact bound: {:?}",
+            res_z1
+        )
+        .into());
     }
 
     Ok(())
@@ -1281,7 +1309,13 @@ fn test_finding_f2_3d_spatial_spread_bound_and_bound_minus_one() -> Result<(), B
     // d^2 = 9^2 = 81 < 100 mm^2. Must fail with DegenerateEvidence
     let mut samples_span9 = Vec::new();
     for i in 0..16 {
-        let x = if i == 0 { 0 } else if i == 1 { 9 } else { i % 9 };
+        let x = if i == 0 {
+            0
+        } else if i == 1 {
+            9
+        } else {
+            i % 9
+        };
         let s = CalibrationSample::new(
             (i + 1) as u64,
             [x, 0, 1000],
@@ -1304,7 +1338,10 @@ fn test_finding_f2_3d_spatial_spread_bound_and_bound_minus_one() -> Result<(), B
     match res_9 {
         Err(CalibrationError::DegenerateEvidence { reason }) => {
             if !reason.contains("insufficient 3D spatial spread (< 10mm)") {
-                return Err(format!("Expected insufficient 3D spatial spread message, got: {reason}").into());
+                return Err(format!(
+                    "Expected insufficient 3D spatial spread message, got: {reason}"
+                )
+                .into());
             }
         }
         Ok(_) => return Err("CRITICAL: builder accepted 3D span of 9 mm (bound-1)!".into()),
@@ -1329,7 +1366,11 @@ fn test_finding_f2_3d_non_collinearity_bound_and_bound_minus_one() -> Result<(),
     let mut samples_collinear9 = Vec::new();
     for i in 0..16 {
         let x = i * 50;
-        let y = if i == 0 || i == 15 { 0 } else { (i % 3 - 1) * 9 };
+        let y = if i == 0 || i == 15 {
+            0
+        } else {
+            (i % 3 - 1) * 9
+        };
         let s = CalibrationSample::new(
             (i + 1) as u64,
             [x, y, 1000],
@@ -1358,7 +1399,11 @@ fn test_finding_f2_3d_non_collinearity_bound_and_bound_minus_one() -> Result<(),
                 return Err(format!("Expected 3D collinear message, got: {reason}").into());
             }
         }
-        Ok(_) => return Err("CRITICAL: builder accepted 3D perpendicular deviation of 9 mm (bound-1)!".into()),
+        Ok(_) => {
+            return Err(
+                "CRITICAL: builder accepted 3D perpendicular deviation of 9 mm (bound-1)!".into(),
+            );
+        }
         Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
     }
 
@@ -1378,7 +1423,12 @@ fn test_finding_f2_2d_pixel_spread_bound_and_bound_minus_one() -> Result<(), Box
     // max_2d_d2 = 9_000_000^2 = 81 * 10^12 < 100 * 10^12 upx^2. Must fail with DegenerateEvidence
     let mut samples_2d_9px = generate_synthetic_samples(16, &intrinsics, 1_000_000_000)?;
     for (i, s) in samples_2d_9px.iter_mut().enumerate() {
-        let u = 960_000_000 + (if i == 15 { 9_000_000 } else { (i as i64) * 500_000 });
+        let u = 960_000_000
+            + (if i == 15 {
+                9_000_000
+            } else {
+                (i as i64) * 500_000
+            });
         let v = 540_000_000;
         s.observed_pixel_upx = (u, v);
     }
@@ -1395,10 +1445,15 @@ fn test_finding_f2_2d_pixel_spread_bound_and_bound_minus_one() -> Result<(), Box
     match res {
         Err(CalibrationError::DegenerateEvidence { reason }) => {
             if !reason.contains("insufficient 2D pixel spread (< 10 pixels)") {
-                return Err(format!("Expected insufficient 2D pixel spread message, got: {reason}").into());
+                return Err(format!(
+                    "Expected insufficient 2D pixel spread message, got: {reason}"
+                )
+                .into());
             }
         }
-        Ok(_) => return Err("CRITICAL: builder accepted 2D pixel spread of 9 pixels (bound-1)!".into()),
+        Ok(_) => {
+            return Err("CRITICAL: builder accepted 2D pixel spread of 9 pixels (bound-1)!".into());
+        }
         Err(other) => return Err(format!("unexpected error: {:?}", other).into()),
     }
 
@@ -1468,7 +1523,9 @@ fn test_finding_f7_image_dimension_bound_and_bound_plus_one() -> Result<(), Box<
     match intrinsics.validate() {
         Err(CalibrationError::InvalidIntrinsics(msg)) => {
             if !msg.contains("exceed maximum supported bound") {
-                return Err(format!("Expected exceed maximum supported bound message, got: {msg}").into());
+                return Err(
+                    format!("Expected exceed maximum supported bound message, got: {msg}").into(),
+                );
             }
         }
         Ok(_) => return Err("CRITICAL: validate accepted 65537 px (bound+1)!".into()),
@@ -1489,4 +1546,3 @@ fn test_finding_f7_image_dimension_bound_and_bound_plus_one() -> Result<(), Box<
 
     Ok(())
 }
-
