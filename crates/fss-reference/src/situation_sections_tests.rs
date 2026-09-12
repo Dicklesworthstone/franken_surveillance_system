@@ -3,10 +3,11 @@ use std::error::Error;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest, ContractBasis,
-    ContractBasisRegistryBytes, ContractError, HandoffId, KnowledgeCell, KnowledgeState,
-    KnowledgeStateBasis, LedgerAnchor, MissionId, ObligationId, PrincipalId, PrivacyGeneration,
-    ProvenanceClass, REDACTED_STATEMENT_MARKER, RedactionMarker, RedactionReason, ResourcePressure,
-    SessionId, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    ContractBasisRegistryBytes, ContractError, Generation, HandoffId, KnowledgeCell,
+    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, MissionId, ObligationId, PrincipalId,
+    PrivacyGeneration, ProvenanceClass, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
+    RedactionMarker, RedactionReason, ResourcePressure, SessionId, SituationCapsule,
+    SituationFrame, StaleBasis, TimestampNs, WorldEnvelope,
 };
 
 use crate::{
@@ -30,6 +31,13 @@ fn basis() -> ContractBasis {
 }
 
 fn situation(long_optional_why: bool) -> Result<ReferenceSituation, ContractError> {
+    situation_with_cells(long_optional_why, Vec::new())
+}
+
+fn situation_with_cells(
+    long_optional_why: bool,
+    extra_cells: Vec<KnowledgeCell>,
+) -> Result<ReferenceSituation, ContractError> {
     let anchor = LedgerAnchor::genesis("site:situation-sections");
     let evidence = ContentDigest::sha256(b"retained-evidence");
     let world = fss_core::PossibleWorld {
@@ -95,6 +103,8 @@ fn situation(long_optional_why: bool) -> Result<ReferenceSituation, ContractErro
         valid_until: None,
         state_basis: None,
     };
+    let mut knowledge_cells = vec![known, conflicted];
+    knowledge_cells.extend(extra_cells);
     let why = if long_optional_why {
         vec!["optional explanatory detail ".repeat(400)]
     } else {
@@ -105,7 +115,7 @@ fn situation(long_optional_why: bool) -> Result<ReferenceSituation, ContractErro
         objective_id: "objective:sections".to_owned(),
         anchor: anchor.clone(),
         world_envelope: envelope,
-        knowledge_cells: vec![known, conflicted],
+        knowledge_cells,
         now: vec!["A candidate event is under investigation.".to_owned()],
         changed: vec!["A contradictory observation arrived.".to_owned()],
         why,
@@ -312,5 +322,188 @@ fn redacted_cells_never_disclose_their_statement() -> Result<(), Box<dyn Error>>
             .all(|item| !item.content.contains(secret))
     );
     assert!(!format!("{projected:?}").contains(secret));
+    Ok(())
+}
+
+/// Builds a validated cell carrying the typed basis its state requires (`None` otherwise).
+fn cell(
+    claim_id: &str,
+    statement: &str,
+    knowledge_state: KnowledgeState,
+) -> Result<KnowledgeCell, Box<dyn Error>> {
+    let state_basis = match knowledge_state {
+        KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+            reason: RedactionReason::PrivacyProjection,
+            privacy_generation: PrivacyGeneration::parse("privacy:projection:v7")?,
+        })),
+        KnowledgeState::Stale => Some(KnowledgeStateBasis::Stale(StaleBasis::OlderGeneration {
+            valid_at: Generation(1),
+            current: Generation(2),
+        })),
+        KnowledgeState::Indeterminate => Some(KnowledgeStateBasis::Reconciliation(
+            ReconciliationBasis::occurred_or_not(ContentDigest::sha256(claim_id.as_bytes())),
+        )),
+        KnowledgeState::Known
+        | KnowledgeState::Estimated
+        | KnowledgeState::Unknown
+        | KnowledgeState::Conflicted
+        | KnowledgeState::NotObservable
+        | KnowledgeState::NotApplicable => None,
+    };
+    Ok(KnowledgeCell {
+        claim_id: claim_id.to_owned(),
+        statement: statement.to_owned(),
+        knowledge_state,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(claim_id.as_bytes())],
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis,
+    }
+    .validated()?)
+}
+
+/// Every knowledge state, spelled out so a new variant forces this test to be revisited.
+const ALL_KNOWLEDGE_STATES: [KnowledgeState; 9] = [
+    KnowledgeState::Known,
+    KnowledgeState::Estimated,
+    KnowledgeState::Unknown,
+    KnowledgeState::Conflicted,
+    KnowledgeState::Stale,
+    KnowledgeState::NotObservable,
+    KnowledgeState::Redacted,
+    KnowledgeState::Indeterminate,
+    KnowledgeState::NotApplicable,
+];
+
+#[test]
+fn every_knowledge_state_cell_lands_in_an_explicit_context_item() -> Result<(), Box<dyn Error>> {
+    let cells: Vec<KnowledgeCell> = ALL_KNOWLEDGE_STATES
+        .iter()
+        .map(|state| {
+            cell(
+                &format!("claim:state:{}", state.as_str()),
+                &format!("A proposition whose knowledge state is {}.", state.as_str()),
+                *state,
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    let publication =
+        project_reference_situation(situation_with_cells(false, cells.clone())?, &spec(10_000))?;
+    publication.verify()?;
+    assert_eq!(
+        publication.compression_receipt.stop_reason,
+        fss_core::CompressionStopReason::Complete
+    );
+    for cell in &cells {
+        let carried = publication.context_pack.items.iter().any(|item| {
+            item.basis.contains(&cell.claim_id) && item.epistemic_state == cell.knowledge_state
+        });
+        assert!(
+            carried,
+            "{} cell {} vanished from the context pack without an omission or redundancy record",
+            cell.knowledge_state.as_str(),
+            cell.claim_id
+        );
+    }
+    let not_applicable = publication
+        .context_pack
+        .items
+        .iter()
+        .find(|item| item.item_id == "context:not_applicable:claim:state:not_applicable")
+        .ok_or(ReferenceError::InvalidSpec("missing_not_applicable_item"))?;
+    assert_eq!(not_applicable.kind, "not_applicable");
+    assert_eq!(
+        not_applicable.epistemic_state,
+        KnowledgeState::NotApplicable
+    );
+    Ok(())
+}
+
+#[test]
+fn over_budget_not_applicable_cell_is_a_receipted_hydratable_omission() -> Result<(), Box<dyn Error>>
+{
+    let long_statement = "not applicable lifecycle detail ".repeat(400);
+    let publication = project_reference_situation(
+        situation_with_cells(
+            false,
+            vec![cell(
+                "claim:not-applicable",
+                &long_statement,
+                KnowledgeState::NotApplicable,
+            )?],
+        )?,
+        &spec(2_000),
+    )?;
+    publication.verify()?;
+    assert!(
+        publication
+            .compression_receipt
+            .omitted_classes
+            .contains("not_applicable"),
+        "an omitted not_applicable cell must be named in the receipt's omitted classes"
+    );
+    let completeness = publication
+        .compression_receipt
+        .completeness
+        .iter()
+        .find(|entry| entry.domain == "not_applicable")
+        .ok_or(ReferenceError::InvalidSpec(
+            "missing_not_applicable_completeness",
+        ))?;
+    assert_eq!(completeness.state, Completeness::Bounded);
+    assert_eq!(completeness.omitted_count, 1);
+    assert!(
+        publication
+            .compression_receipt
+            .expansion_handles
+            .iter()
+            .any(|handle| handle.purpose.contains("not_applicable"))
+    );
+    assert_eq!(
+        publication.compression_receipt.stop_reason,
+        fss_core::CompressionStopReason::TargetBudget
+    );
+    assert!(publication.context_pack.continuation.is_some());
+    assert!(
+        publication
+            .compression_receipt
+            .critical_preservation
+            .is_lossless()
+    );
+    Ok(())
+}
+
+#[test]
+fn duplicate_not_applicable_cells_leave_a_redundancy_record() -> Result<(), Box<dyn Error>> {
+    let statement = "Door-lock telemetry does not apply to this camera-only zone.";
+    let first = cell(
+        "claim:not-applicable:a",
+        statement,
+        KnowledgeState::NotApplicable,
+    )?;
+    let mut second = first.clone();
+    second.claim_id = "claim:not-applicable:b".to_owned();
+    let publication = project_reference_situation(
+        situation_with_cells(false, vec![first, second])?,
+        &spec(10_000),
+    )?;
+    publication.verify()?;
+    assert!(
+        publication
+            .context_pack
+            .items
+            .iter()
+            .any(|item| item.item_id == "context:not_applicable:claim:not-applicable:a")
+    );
+    assert!(
+        publication.redundancy_records().iter().any(|record| {
+            record.kind == "not_applicable"
+                && record.dropped_item_id == "context:not_applicable:claim:not-applicable:b"
+                && record.retained_item_id == "context:not_applicable:claim:not-applicable:a"
+        }),
+        "the dropped duplicate not_applicable cell must be receipted, not silently removed"
+    );
     Ok(())
 }

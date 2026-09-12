@@ -706,16 +706,7 @@ fn context_candidates(
     }
     let mut seen_epistemic: Vec<(&KnowledgeCell, String)> = Vec::new();
     for cell in &frame.knowledge_cells {
-        if matches!(
-            cell.knowledge_state,
-            KnowledgeState::Unknown
-                | KnowledgeState::Stale
-                | KnowledgeState::NotObservable
-                | KnowledgeState::Redacted
-                | KnowledgeState::Indeterminate
-        ) || (cell.knowledge_state == KnowledgeState::Conflicted
-            && cell.contradictions.is_empty())
-        {
+        if cell_state_lane(cell) == CellStateLane::EpistemicBoundary {
             let item_id = format!("context:epistemic:{}", cell.claim_id);
             if let Some((_, prev_item_id)) = seen_epistemic.iter().find(|(c, _)| {
                 c.statement == cell.statement
@@ -786,10 +777,7 @@ fn context_candidates(
     }
     let mut seen_knowledge: Vec<(&KnowledgeCell, String)> = Vec::new();
     for cell in &frame.knowledge_cells {
-        if matches!(
-            cell.knowledge_state,
-            KnowledgeState::Known | KnowledgeState::Estimated
-        ) {
+        if cell_state_lane(cell) == CellStateLane::Knowledge {
             let item_id = format!("context:knowledge:{}", cell.claim_id);
             if let Some((_, prev_item_id)) = seen_knowledge.iter().find(|(c, _)| {
                 c.statement == cell.statement
@@ -824,6 +812,59 @@ fn context_candidates(
                             item_id,
                             kind: "knowledge".to_owned(),
                             epistemic_state: cell.knowledge_state,
+                            content: cell.disclosable_statement().to_owned(),
+                            basis,
+                            expansion_handles: BTreeSet::new(),
+                        },
+                        critical: false,
+                        priority: 4,
+                    },
+                )?;
+            }
+        }
+    }
+    // KSTATE-009: a not_applicable proposition is carried as its own optional kind so it is never
+    // aggregated with, or mistaken for, false or missing knowledge. Budget pressure can omit it,
+    // but only through the receipted Truncate/omitted-class/expansion-handle path, and exact
+    // duplicates leave a redundancy record; it never vanishes silently.
+    let mut seen_not_applicable: Vec<(&KnowledgeCell, String)> = Vec::new();
+    for cell in &frame.knowledge_cells {
+        if cell_state_lane(cell) == CellStateLane::NotApplicable {
+            let item_id = format!("context:not_applicable:{}", cell.claim_id);
+            if let Some((_, prev_item_id)) = seen_not_applicable.iter().find(|(c, _)| {
+                c.statement == cell.statement
+                    && c.evidence == cell.evidence
+                    && c.contradictions == cell.contradictions
+            }) {
+                let dropped_item_id = if item_id == *prev_item_id {
+                    let duplicate_count = redundancy
+                        .iter()
+                        .filter(|r| r.retained_item_id == *prev_item_id)
+                        .count()
+                        + 1;
+                    format!("{item_id}:duplicate:{duplicate_count}")
+                } else {
+                    item_id
+                };
+                redundancy.push(RedundancyRecord {
+                    dropped_item_id,
+                    retained_item_id: prev_item_id.clone(),
+                    kind: "not_applicable".to_owned(),
+                    reason: "duplicate not_applicable proposition with identical statement and evidence roots; retained earlier representative".to_owned(),
+                });
+            } else {
+                seen_not_applicable.push((cell, item_id.clone()));
+                let mut basis = BTreeSet::from([cell.claim_id.clone()]);
+                basis.extend(cell.evidence.iter().map(ToString::to_string));
+                basis.extend(cell.contradictions.iter().map(ToString::to_string));
+                insert_candidate(
+                    &mut candidates,
+                    &mut redundancy,
+                    ContextCandidate {
+                        item: ContextItem {
+                            item_id,
+                            kind: "not_applicable".to_owned(),
+                            epistemic_state: KnowledgeState::NotApplicable,
                             content: cell.disclosable_statement().to_owned(),
                             basis,
                             expansion_handles: BTreeSet::new(),
@@ -885,6 +926,47 @@ fn context_candidates(
     }
 
     Ok((candidates.into_values().collect(), redundancy))
+}
+
+/// Context lane that a knowledge cell's own knowledge state routes it to.
+///
+/// A cell carrying contradicting roots is additionally projected as a critical `contradiction`
+/// item; the lane below decides where its knowledge state itself lands. The classifier is an
+/// exhaustive match so a new `KnowledgeState` cannot silently vanish from the context pack.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CellStateLane {
+    /// Critical epistemic boundary item.
+    EpistemicBoundary,
+    /// Optional known/estimated knowledge item.
+    Knowledge,
+    /// Optional `not_applicable` item (KSTATE-009), kept distinct from knowledge and boundaries.
+    NotApplicable,
+    /// Conflicted cell whose state is already carried by its critical contradiction item.
+    ContradictionItem,
+}
+
+fn cell_state_lane(cell: &KnowledgeCell) -> CellStateLane {
+    match cell.knowledge_state {
+        // Admissible or model-supported propositions.
+        KnowledgeState::Known | KnowledgeState::Estimated => CellStateLane::Knowledge,
+        // Non-known states that bound what the agent may conclude: never optional.
+        KnowledgeState::Unknown
+        | KnowledgeState::Stale
+        | KnowledgeState::NotObservable
+        | KnowledgeState::Redacted
+        | KnowledgeState::Indeterminate => CellStateLane::EpistemicBoundary,
+        // A conflicted cell with contradicting roots is projected once, as a contradiction; one
+        // without roots is still a conflict boundary.
+        KnowledgeState::Conflicted => {
+            if cell.contradictions.is_empty() {
+                CellStateLane::EpistemicBoundary
+            } else {
+                CellStateLane::ContradictionItem
+            }
+        }
+        // The proposition has no meaning for this scope: carried explicitly, not aggregated.
+        KnowledgeState::NotApplicable => CellStateLane::NotApplicable,
+    }
 }
 
 struct StatementCandidateSpec<'a> {
