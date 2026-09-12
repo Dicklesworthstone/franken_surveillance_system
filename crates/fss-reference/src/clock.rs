@@ -29,11 +29,14 @@ impl VirtualClock {
     /// Constructs a new virtual clock anchored at `start_ns` with deterministic `seed`.
     #[must_use]
     pub fn new(seed: u64, start_ns: TimestampNs) -> Self {
-        let prng_state = if seed == 0 {
+        let mut prng_state = if seed == 0 {
             0xd1b5_4a32_d192_ed03_u64
         } else {
             seed ^ 0x9e37_79b9_7f4a_7c15_u64
         };
+        if prng_state == 0 {
+            prng_state = 0xd1b5_4a32_d192_ed03_u64;
+        }
         Self {
             start_ns,
             current_ns: start_ns,
@@ -168,7 +171,8 @@ impl VirtualClock {
 
         let jitter = if self.max_jitter_ns > 0 {
             let sample = self.next_u64();
-            i128::from(sample % (self.max_jitter_ns + 1))
+            let modulus = u128::from(self.max_jitter_ns) + 1;
+            (u128::from(sample) % modulus) as i128
         } else {
             0
         };
@@ -179,7 +183,7 @@ impl VirtualClock {
             .checked_add(jitter)
             .ok_or(ReferenceError::ArithmeticOverflow)?;
 
-        if effective_delta < 0 {
+        if effective_delta <= 0 {
             let attempted = self.current_ns.0.wrapping_add(effective_delta);
             return Err(ReferenceError::BackwardStepAttempt {
                 current: self.current_ns,

@@ -131,6 +131,7 @@ pub struct VirtualSource {
     spec: VirtualCameraSpec,
     clock: VirtualClock,
     current_sequence: u64,
+    pending_indeterminate: bool,
     payload_state: u64,
     indeterminate_faults: std::collections::BTreeMap<u64, String>,
     unobservable_faults: std::collections::BTreeMap<u64, String>,
@@ -162,6 +163,7 @@ impl VirtualSource {
             spec,
             clock,
             current_sequence: 0,
+            pending_indeterminate: false,
             payload_state,
             indeterminate_faults: std::collections::BTreeMap::new(),
             unobservable_faults: std::collections::BTreeMap::new(),
@@ -208,6 +210,21 @@ impl VirtualSource {
             .insert(sequence, reason.into());
     }
 
+    /// Clears an injected indeterminate read fault for the specified sequence.
+    pub fn clear_indeterminate_read(&mut self, sequence: u64) -> Option<String> {
+        self.indeterminate_faults.remove(&sequence)
+    }
+
+    /// Clears an injected unobservable read fault for the specified sequence.
+    pub fn clear_unobservable_read(&mut self, sequence: u64) -> Option<String> {
+        self.unobservable_faults.remove(&sequence)
+    }
+
+    /// Clears an injected execution failure fault for the specified sequence.
+    pub fn clear_execution_failure(&mut self, sequence: u64) -> Option<String> {
+        self.execution_failure_faults.remove(&sequence)
+    }
+
     /// Emits the next capture interval through the virtual clock.
     ///
     /// Advances the clock by `period_ns` for all emissions after the first packet.
@@ -215,29 +232,37 @@ impl VirtualSource {
     /// or [`OperationOutcome::Indeterminate`], [`OperationOutcome::UnauthorizedOrNotObservable`],
     /// or [`OperationOutcome::Failed`] if a fault is triggered.
     pub fn emit_interval(&mut self) -> Result<OperationOutcome<CaptureInterval>, ReferenceError> {
-        let next_sequence = self.current_sequence + 1;
-        if next_sequence > u64::from(self.spec.packet_count) {
-            return Err(ReferenceError::UnknownSourceSequence(next_sequence));
-        }
+        let sequence_to_attempt = if self.pending_indeterminate {
+            self.current_sequence
+        } else {
+            let next = self.current_sequence + 1;
+            if next > u64::from(self.spec.packet_count) {
+                return Err(ReferenceError::UnknownSourceSequence(next));
+            }
+            if self.current_sequence > 0 {
+                self.clock.advance(self.spec.period_ns)?;
+            }
+            self.current_sequence = next;
+            next
+        };
 
-        if self.current_sequence > 0 {
-            self.clock.advance(self.spec.period_ns)?;
-        }
-        self.current_sequence = next_sequence;
-
-        if let Some(reason) = self.indeterminate_faults.get(&self.current_sequence) {
+        if let Some(reason) = self.indeterminate_faults.get(&sequence_to_attempt) {
+            self.pending_indeterminate = true;
             return Ok(OperationOutcome::indeterminate(IndeterminateDetail::new(
                 "virtual_source_capture",
                 reason.clone(),
                 "resnapshot sensor anchor and re-poll capture interval",
             )));
         }
-        if let Some(reason) = self.unobservable_faults.get(&self.current_sequence) {
+
+        self.pending_indeterminate = false;
+
+        if let Some(reason) = self.unobservable_faults.get(&sequence_to_attempt) {
             return Ok(OperationOutcome::unauthorized_or_not_observable(
                 RefusalDetail::not_observable(reason.clone(), true),
             ));
         }
-        if let Some(reason) = self.execution_failure_faults.get(&self.current_sequence) {
+        if let Some(reason) = self.execution_failure_faults.get(&sequence_to_attempt) {
             return Ok(OperationOutcome::failed(OperationError::execution_failed(
                 reason.clone(),
             )?));
@@ -287,14 +312,17 @@ impl VirtualSource {
     /// Any non-success outcome is returned as a typed [`ReferenceError`].
     pub fn generate_packets(&mut self) -> Result<Vec<SourcePacket>, ReferenceError> {
         let mut packets = Vec::with_capacity(self.spec.packet_count as usize);
-        while self.current_sequence < u64::from(self.spec.packet_count) {
+        while self.current_sequence < u64::from(self.spec.packet_count)
+            || self.pending_indeterminate
+        {
             let outcome = self.emit_packet()?;
             match outcome {
                 OperationOutcome::Success(packet) => packets.push(packet),
-                OperationOutcome::Failed(_) => {
-                    return Err(ReferenceError::Contract(
-                        fss_core::ContractError::InvalidIdentifier,
-                    ));
+                OperationOutcome::Failed(err) => {
+                    return Err(ReferenceError::ExecutionFailedSourceCapture {
+                        sequence: self.current_sequence,
+                        reason: err.message,
+                    });
                 }
                 OperationOutcome::Indeterminate(detail) => {
                     return Err(ReferenceError::IndeterminateSourceCapture {

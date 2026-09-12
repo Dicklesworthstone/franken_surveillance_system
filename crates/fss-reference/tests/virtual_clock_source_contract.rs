@@ -208,6 +208,18 @@ fn virtual_source_stepwise_emission_and_outcomes() -> Result<(), Box<dyn Error>>
         other => return Err(format!("expected Indeterminate for packet 2, got {other:?}").into()),
     }
 
+    // Following reconciliation guidance: clear obstruction and re-poll sequence 2
+    source.clear_indeterminate_read(2);
+    let outcome2_retry = source.emit_packet()?;
+    match outcome2_retry {
+        OperationOutcome::Success(packet) => {
+            assert_eq!(packet.sequence, 2);
+        }
+        other => {
+            return Err(format!("expected Success for packet 2 re-poll, got {other:?}").into());
+        }
+    }
+
     // Packet 3: Unobservable
     let outcome3 = source.emit_packet()?;
     match outcome3 {
@@ -427,5 +439,118 @@ fn e2e_multi_camera_surveillance_scenario_with_clock_drift_and_replay() -> Resul
 
     let _ = fs::remove_file(path_a);
     let _ = fs::remove_file(path_b);
+    Ok(())
+}
+
+#[test]
+fn test_clock_prng_seed_zero_freeze_degeneracy() -> Result<(), Box<dyn Error>> {
+    let magic_seed = 0x9e37_79b9_7f4a_7c15_u64;
+    let mut clock = VirtualClock::new(magic_seed, TimestampNs(1_000_000));
+    clock.inject_jitter(10_000);
+
+    let mut saw_jitter = false;
+    for _ in 0..50 {
+        let t_before = clock.now();
+        let t_after = clock.advance(100_000)?;
+        if t_after.0 - t_before.0 > 100_000 {
+            saw_jitter = true;
+            break;
+        }
+    }
+    assert!(
+        saw_jitter,
+        "Jitter was permanently suppressed due to PRNG zero state lockup!"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_clock_advance_jitter_overflow_no_panic() -> Result<(), Box<dyn Error>> {
+    let mut clock = VirtualClock::new(42, TimestampNs(1_000_000));
+    clock.inject_jitter(u64::MAX);
+
+    let res = clock.advance(10_000);
+    assert!(
+        res.is_ok(),
+        "advance should not panic on u64::MAX jitter bound"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_clock_advance_rejects_non_positive_delta() -> Result<(), Box<dyn Error>> {
+    let mut clock = VirtualClock::new(42, TimestampNs(1_000_000));
+    let initial_time = clock.now();
+    let initial_steps = clock.step_count();
+
+    let res = clock.advance(0);
+    assert!(matches!(
+        res,
+        Err(ReferenceError::BackwardStepAttempt { .. })
+    ));
+    assert_eq!(clock.now(), initial_time);
+    assert_eq!(clock.step_count(), initial_steps);
+    Ok(())
+}
+
+#[test]
+fn test_virtual_source_execution_failure_error_taxonomy() -> Result<(), Box<dyn Error>> {
+    let spec = create_spec("capture:fault:1", "sensor:cam:1", 1234, 2)?;
+    spec.validate()?;
+    let mut source = VirtualSource::new(spec)?;
+    source.inject_execution_failure(1, "sensor FIFO overflow");
+
+    let err = source.generate_packets();
+    match err {
+        Err(ReferenceError::ExecutionFailedSourceCapture { sequence, reason }) => {
+            assert_eq!(sequence, 1);
+            assert!(reason.contains("sensor FIFO overflow"));
+        }
+        other => {
+            return Err(format!("expected ExecutionFailedSourceCapture, got {other:?}").into());
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_virtual_source_indeterminate_repoll_does_not_skip_sequence() -> Result<(), Box<dyn Error>> {
+    let spec = create_spec("capture:indet:1", "sensor:cam:1", 5678, 3)?;
+    spec.validate()?;
+    let mut source = VirtualSource::new(spec)?;
+    source.inject_indeterminate_read(2, "transient optical flare");
+
+    // Packet 1: Success
+    assert!(matches!(
+        source.emit_packet()?,
+        OperationOutcome::Success(_)
+    ));
+    assert_eq!(source.current_sequence(), 1);
+
+    // Packet 2: Indeterminate
+    let outcome2 = source.emit_packet()?;
+    assert!(matches!(outcome2, OperationOutcome::Indeterminate(_)));
+    assert_eq!(source.current_sequence(), 2);
+
+    // Re-poll attempt: should retry sequence 2, not jump to sequence 3!
+    let repoll = source.emit_packet()?;
+    assert!(matches!(repoll, OperationOutcome::Indeterminate(_)));
+    assert_eq!(
+        source.current_sequence(),
+        2,
+        "Re-polling indeterminate read must not skip sequence to 3"
+    );
+
+    // After resolving fault, re-poll succeeds on sequence 2
+    source.clear_indeterminate_read(2);
+    let outcome2_resolved = source.emit_packet()?;
+    assert!(matches!(outcome2_resolved, OperationOutcome::Success(_)));
+    assert_eq!(source.current_sequence(), 2);
+
+    // Next packet advances to sequence 3
+    let outcome3 = source.emit_packet()?;
+    assert!(matches!(outcome3, OperationOutcome::Success(_)));
+    assert_eq!(source.current_sequence(), 3);
+
     Ok(())
 }

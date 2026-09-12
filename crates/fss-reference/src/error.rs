@@ -47,6 +47,13 @@ pub enum ReferenceError {
         /// Reason for unobservable read.
         reason: String,
     },
+    /// Virtual source emission encountered an operational execution failure.
+    ExecutionFailedSourceCapture {
+        /// 1-based packet sequence where execution failure occurred.
+        sequence: u64,
+        /// Reason for failure.
+        reason: String,
+    },
     /// Insufficient synchronization samples were provided to compute an offset/skew fit.
     InsufficientSyncSamples {
         /// Number of samples provided.
@@ -60,6 +67,13 @@ pub enum ReferenceError {
         previous: TimestampNs,
         /// Current non-monotonic timestamp.
         current: TimestampNs,
+    },
+    /// Synchronization samples have non-monotonic sequence numbers.
+    NonMonotonicSyncSequence {
+        /// Previous sequence number.
+        previous: u64,
+        /// Current non-monotonic sequence number.
+        current: u64,
     },
     /// Synchronization fit is dominated by outliers exceeding tolerance.
     OutlierDominatedFit {
@@ -126,6 +140,12 @@ impl fmt::Display for ReferenceError {
                     "virtual source emission unobservable at sequence {sequence}: {reason}"
                 )
             }
+            Self::ExecutionFailedSourceCapture { sequence, reason } => {
+                write!(
+                    formatter,
+                    "virtual source emission failed at sequence {sequence}: {reason}"
+                )
+            }
             Self::InsufficientSyncSamples {
                 count,
                 minimum_required,
@@ -139,6 +159,12 @@ impl fmt::Display for ReferenceError {
                 write!(
                     formatter,
                     "synchronization samples are non-monotonic: previous {previous}, current {current}"
+                )
+            }
+            Self::NonMonotonicSyncSequence { previous, current } => {
+                write!(
+                    formatter,
+                    "synchronization sequences are non-monotonic: previous {previous}, current {current}"
                 )
             }
             Self::OutlierDominatedFit {
@@ -188,8 +214,10 @@ impl Error for ReferenceError {
             | Self::InvalidClockParameter(_)
             | Self::IndeterminateSourceCapture { .. }
             | Self::UnobservableSourceCapture { .. }
+            | Self::ExecutionFailedSourceCapture { .. }
             | Self::InsufficientSyncSamples { .. }
             | Self::NonMonotonicSyncSamples { .. }
+            | Self::NonMonotonicSyncSequence { .. }
             | Self::OutlierDominatedFit { .. }
             | Self::StaleEstimatePastValidity { .. }
             | Self::ContradictedEstimate { .. } => None,
