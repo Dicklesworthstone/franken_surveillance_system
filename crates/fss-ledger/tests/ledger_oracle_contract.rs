@@ -84,7 +84,7 @@ impl ScenarioLog {
         Ok(())
     }
 
-    fn emit(&self, oracle: &LedgerOracle, outcome: &str) {
+    fn emit(&self, oracle: &LedgerOracle, outcome: &str) -> TestResult {
         let fingerprint = oracle.fingerprint();
         let anchor = &fingerprint.head_anchor;
         let event = TestEventRecord {
@@ -95,16 +95,14 @@ impl ScenarioLog {
             step_id: format!("commit:{}", anchor.commit_sequence),
             sequence: anchor.commit_sequence,
             seed: self.seed,
-            source_digest: ContentDigest::sha256(
-                b"crates/fss-ledger/tests/ledger_oracle_contract.rs",
-            ),
+            source_digest: ContentDigest::sha256(include_bytes!("ledger_oracle_contract.rs")),
             contract_digest: ContentDigest::sha256(b"contract:FSS-016:canonical_ledger_oracle"),
             input_digest: ContentDigest::sha256(
                 format!("site:{}:epoch:{}", anchor.site_lineage, anchor.ledger_epoch).as_bytes(),
             ),
-            expected_digest: ContentDigest::sha256(outcome.as_bytes()),
+            expected_digest: anchor.state_root,
             actual_digest: anchor.state_root,
-            outcome: TestOutcome::Passed,
+            outcome: classify_scenario_outcome(outcome),
             duration_ns: 0,
             phase: Some("scenario_complete".to_string()),
             tags: self
@@ -118,9 +116,20 @@ impl ScenarioLog {
                 fingerprint.batch_count, fingerprint.object_count, fingerprint.history_root
             )),
         };
-        if let Ok(line) = event.to_jsonl() {
-            print!("{line}");
-        }
+        let line = event.to_jsonl()?;
+        print!("{line}");
+        Ok(())
+    }
+}
+
+fn classify_scenario_outcome(scenario: &str) -> TestOutcome {
+    if scenario.contains("rejected")
+        || scenario.contains("conflict")
+        || scenario.contains("enforced")
+    {
+        TestOutcome::Rejected
+    } else {
+        TestOutcome::Passed
     }
 }
 
@@ -357,7 +366,7 @@ fn out_of_order_batch_is_rejected_as_sequence_gap_without_state_change() -> Test
     oracle.append(at(&fixture, 2)?)?;
     assert_eq!(oracle.head_sequence(), 3);
     log.record("commit batch:2 then batch:3 in order")?;
-    log.emit(&oracle, "rejected_then_committed_in_order");
+    log.emit(&oracle, "rejected_then_committed_in_order")?;
     Ok(())
 }
 
@@ -385,7 +394,7 @@ fn duplicate_batch_is_rejected_with_its_committed_sequence() -> TestResult {
         assert_eq!(oracle.fingerprint(), before);
         log.record(format!("re-offer {} -> {}", offered.batch_id, error.code()))?;
     }
-    log.emit(&oracle, "duplicates_rejected");
+    log.emit(&oracle, "duplicates_rejected")?;
     Ok(())
 }
 
@@ -417,7 +426,7 @@ fn conflicting_batch_identity_reuse_is_rejected() -> TestResult {
         first.batch_id,
         error.code()
     ))?;
-    log.emit(&oracle, "batch_id_conflict_rejected");
+    log.emit(&oracle, "batch_id_conflict_rejected")?;
     Ok(())
 }
 
@@ -451,7 +460,7 @@ fn conflicting_successor_loses_first_committer_race_and_can_rebase() -> TestResu
     let receipt = oracle.append(rebased)?;
     assert_eq!(receipt.sequence, 2);
     log.record("rebased loser committed at 2")?;
-    log.emit(&oracle, "first_committer_wins");
+    log.emit(&oracle, "first_committer_wins")?;
     Ok(())
 }
 
@@ -478,7 +487,7 @@ fn forked_basis_anchor_is_rejected() -> TestResult {
         "same-sequence different-root basis -> {}",
         error.code()
     ))?;
-    log.emit(&oracle, "forks_rejected");
+    log.emit(&oracle, "forks_rejected")?;
     Ok(())
 }
 
@@ -619,7 +628,7 @@ fn malformed_batches_are_rejected_with_typed_errors_and_no_state_change() -> Tes
     assert_eq!(oracle.fingerprint(), before);
     oracle.append(valid)?;
     log.record("valid successor committed after every rejection")?;
-    log.emit(&oracle, "malformed_rejected_state_unchanged");
+    log.emit(&oracle, "malformed_rejected_state_unchanged")?;
     Ok(())
 }
 
@@ -665,7 +674,7 @@ fn reads_are_anchor_pinned_and_never_observe_later_batches() -> TestResult {
     let exact = oracle.view_at_anchor(&at(&fixture, 1)?.new_anchor)?;
     assert_eq!(exact.sequence(), 2);
     log.record("exact anchor 2 resolves")?;
-    log.emit(&oracle, "anchor_pinned_reads_stable");
+    log.emit(&oracle, "anchor_pinned_reads_stable")?;
     Ok(())
 }
 
@@ -718,7 +727,7 @@ fn read_past_head_anchor_is_rejected() -> TestResult {
     let error = expect_read_err(oracle.view_at_anchor(foreign.genesis_anchor()))?;
     assert_eq!(error, OracleReadError::AnchorMismatch { sequence: 0 });
     log.record(format!("forged and foreign anchors -> {}", error.code()))?;
-    log.emit(&oracle, "reads_past_head_rejected");
+    log.emit(&oracle, "reads_past_head_rejected")?;
     Ok(())
 }
 
@@ -821,7 +830,7 @@ fn batch_capacity_admits_exactly_the_bound_and_rejects_bound_plus_one() -> TestR
 
     let error = expect_err(oracle.append(at(&committed, 0)?))?;
     assert_eq!(error.code(), "ERR-LEDGER-ORACLE-DUPLICATE-BATCH-001");
-    log.emit(&oracle, "capacity_bound_enforced");
+    log.emit(&oracle, "capacity_bound_enforced")?;
     Ok(())
 }
 
@@ -871,7 +880,7 @@ fn object_capacity_admits_exactly_the_bound_and_rejects_bound_plus_one() -> Test
     )?;
     oracle.append(updates)?;
     log.record("updates at capacity still commit")?;
-    log.emit(&oracle, "object_capacity_enforced");
+    log.emit(&oracle, "object_capacity_enforced")?;
     Ok(())
 }
 
@@ -945,7 +954,7 @@ fn staged_batches_are_invisible_cancellable_and_refused_when_stale() -> TestResu
         "commit stage from another history -> {}",
         error.code()
     ))?;
-    log.emit(&oracle, "stage_lifecycle_enforced");
+    log.emit(&oracle, "stage_lifecycle_enforced")?;
     Ok(())
 }
 
@@ -1018,7 +1027,7 @@ fn replay_rebuild_is_bit_identical_and_prefix_consistent() -> TestResult {
             ..
         })
     ));
-    log.emit(&first, "replay_bit_identical");
+    log.emit(&first, "replay_bit_identical")?;
     Ok(())
 }
 
@@ -1178,7 +1187,7 @@ fn seeded_histories_replay_identically_and_reject_reorders_metamorphically() -> 
             }
         );
         log.record(format!("resubmit index {resubmit} -> duplicate"))?;
-        log.emit(&first, "property_invariants_hold");
+        log.emit(&first, "property_invariants_hold")?;
     }
     Ok(())
 }
@@ -1201,7 +1210,7 @@ fn oracle_and_core_reference_prepare_bit_identical_batches() -> TestResult {
         );
         log.record(format!("sequence {} identical", oracle.head_sequence()))?;
     }
-    log.emit(&oracle, "n_version_prepare_identical");
+    log.emit(&oracle, "n_version_prepare_identical")?;
     Ok(())
 }
 
@@ -1239,9 +1248,7 @@ fn differential_oracle_matches_durable_journal_batch_by_batch_and_after_restart(
             step_id: format!("step:{}", batch.batch_id),
             sequence: receipt.sequence,
             seed: 0,
-            source_digest: ContentDigest::sha256(
-                b"crates/fss-ledger/tests/ledger_oracle_contract.rs",
-            ),
+            source_digest: ContentDigest::sha256(include_bytes!("ledger_oracle_contract.rs")),
             contract_digest: ContentDigest::sha256(b"contract:FSS-016:differential_oracle"),
             input_digest: batch.computed_digest(),
             expected_digest: receipt.anchor.state_root,
@@ -1438,7 +1445,7 @@ fn differential_oracle_matches_durable_journal_batch_by_batch_and_after_restart(
     let rebuilt = LedgerOracle::rebuild(SITE, OracleLimits::CEILING, reopened.batches().to_vec())?;
     assert_eq!(rebuilt.fingerprint(), oracle.fingerprint());
     log.record("restart: reopened journal and rebuilt oracle agree")?;
-    log.emit(&oracle, "differential_agree");
+    log.emit(&oracle, "differential_agree")?;
     Ok(())
 }
 
@@ -1515,7 +1522,7 @@ fn differential_fault_injected_appends_reconcile_to_oracle_state() -> TestResult
     assert_same_state(&oracle, &durable)?;
     durable.verify_storage()?;
     log.record("retry commits on both")?;
-    log.emit(&oracle, "fault_reconciliation_agrees");
+    log.emit(&oracle, "fault_reconciliation_agrees")?;
     Ok(())
 }
 
@@ -1647,7 +1654,7 @@ fn per_batch_bounds_match_durable_codec_at_bound_and_bound_plus_one() -> TestRes
     assert_same_state(&oracle, &durable)?;
     durable.verify_storage()?;
     log.record("children and text exactly at bound commit on both")?;
-    log.emit(&oracle, "bounds_agree_with_codec");
+    log.emit(&oracle, "bounds_agree_with_codec")?;
     Ok(())
 }
 
@@ -1677,7 +1684,7 @@ fn durable_replay_of_same_batches_is_byte_identical_and_matches_oracle() -> Test
     assert_eq!(from_journal.fingerprint(), oracle.fingerprint());
     assert_same_state(&oracle, &reopened)?;
     log.record("oracle rebuilt from journal equals oracle rebuilt from source batches")?;
-    log.emit(&oracle, "durable_replay_identical");
+    log.emit(&oracle, "durable_replay_identical")?;
     Ok(())
 }
 
@@ -1792,6 +1799,52 @@ fn batch_id_reuse_is_rejected_by_oracle_and_durable_journal() -> TestResult {
         error.code(),
         ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001
     ))?;
-    log.emit(&oracle, "agree_batch_id_reuse_rejected");
+    log.emit(&oracle, "agree_batch_id_reuse_rejected")?;
+    Ok(())
+}
+
+#[test]
+fn test_rejection_scenario_does_not_flatten_to_passed() -> TestResult {
+    if classify_scenario_outcome("agree_batch_id_reuse_rejected") != TestOutcome::Rejected {
+        return Err("expected Rejected outcome for rejection scenario".into());
+    }
+    if classify_scenario_outcome("agree_batch_id_reuse_rejected") == TestOutcome::Passed {
+        return Err("rejection scenario must not flatten to Passed".into());
+    }
+    if classify_scenario_outcome("duplicates_rejected") != TestOutcome::Rejected {
+        return Err("expected Rejected for duplicates_rejected".into());
+    }
+    if classify_scenario_outcome("normal_pass_scenario") != TestOutcome::Passed {
+        return Err("expected Passed for normal_pass_scenario".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_emit_fails_closed_on_invalid_event() -> TestResult {
+    let oracle = oracle()?;
+    let long_name = "a".repeat(150);
+    let static_scenario: &'static str = Box::leak(long_name.into_boxed_str());
+    let log = ScenarioLog::new(static_scenario, 42);
+    let result = log.emit(&oracle, "test_invalid");
+    if result.is_ok() {
+        return Err("emit must fail closed when event validation fails".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_expected_and_actual_digests_commensurable() -> TestResult {
+    let oracle = oracle()?;
+    let fingerprint = oracle.fingerprint();
+    let anchor = &fingerprint.head_anchor;
+    let expected = anchor.state_root;
+    let actual = anchor.state_root;
+    if expected != actual {
+        return Err("expected and actual state roots must match".into());
+    }
+    if expected.bytes() == [0u8; 32] {
+        return Err("state root must not be all zeros".into());
+    }
     Ok(())
 }

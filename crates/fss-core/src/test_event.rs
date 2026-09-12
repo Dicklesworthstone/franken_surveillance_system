@@ -46,6 +46,9 @@ pub const MAX_TEST_DETAIL_LEN: usize = 1024;
 /// Maximum total encoded JSON byte length for a single test event record.
 pub const MAX_TEST_EVENT_JSON_BYTES: usize = 8192;
 
+/// Maximum number of records retained in a single test event collector.
+pub const MAX_TEST_EVENTS_COUNT: usize = 65_536;
+
 /// Typed outcome of a test step or execution episode.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum TestOutcome {
@@ -61,6 +64,8 @@ pub enum TestOutcome {
     Cancelled,
     /// Step reached an indeterminate or torn state requiring reconciliation.
     Indeterminate,
+    /// Negative test or step where an illegal, unauthorized, or invalid action was successfully rejected.
+    Rejected,
 }
 
 impl TestOutcome {
@@ -74,6 +79,7 @@ impl TestOutcome {
             Self::Crashed => "crashed",
             Self::Cancelled => "cancelled",
             Self::Indeterminate => "indeterminate",
+            Self::Rejected => "rejected",
         }
     }
 
@@ -86,6 +92,7 @@ impl TestOutcome {
             "crashed" => Ok(Self::Crashed),
             "cancelled" => Ok(Self::Cancelled),
             "indeterminate" => Ok(Self::Indeterminate),
+            "rejected" => Ok(Self::Rejected),
             _ => Err(TestEventError::InvalidOutcome(s.to_string())),
         }
     }
@@ -181,6 +188,13 @@ pub enum TestEventError {
         /// The actual sequence number observed.
         actual: u64,
     },
+    /// Collector capacity exceeded.
+    CollectorCapacityExceeded {
+        /// Maximum allowed count.
+        max: usize,
+        /// Actual attempted count.
+        actual: usize,
+    },
     /// Forbidden secret or credential pattern detected.
     SecretDetected {
         /// Field where secret pattern was detected.
@@ -242,6 +256,12 @@ impl fmt::Display for TestEventError {
                 f,
                 "monotone sequence regression: expected at least {expected_at_least}, found {actual}"
             ),
+            Self::CollectorCapacityExceeded { max, actual } => {
+                write!(
+                    f,
+                    "test event collector capacity {actual} exceeds maximum of {max}"
+                )
+            }
             Self::SecretDetected { field } => {
                 write!(
                     f,
@@ -263,12 +283,32 @@ fn check_for_secrets(field: &'static str, s: &str) -> Result<(), TestEventError>
     let lower = s.to_ascii_lowercase();
     for needle in [
         "bearer ",
+        "bearer\t",
+        "bearer\n",
+        "bearer\r",
         "private_key",
+        "private key",
+        "private-key",
         "secret_key",
+        "secret key",
+        "secret-key",
         "auth_token",
+        "auth token",
+        "auth-token",
         "access_token",
+        "access token",
+        "access-token",
         "authorization:",
+        "authorization=",
+        "authorization ",
         "password=",
+        "password:",
+        "password ",
+        "data:image",
+        "data:video",
+        "data:audio",
+        "data:application",
+        "base64,",
     ] {
         if lower.contains(needle) {
             return Err(TestEventError::SecretDetected { field });
@@ -766,11 +806,19 @@ fn unescape_json_slice(bytes: &[u8]) -> Result<String, TestEventError> {
     let mut out = String::with_capacity(bytes.len());
     let mut idx = 0;
     while idx < bytes.len() {
-        if bytes[idx] == b'\\' && idx + 1 < bytes.len() {
+        if bytes[idx] == b'\\' {
             idx += 1;
+            if idx >= bytes.len() {
+                return Err(TestEventError::MalformedJson(
+                    "trailing backslash in json string".to_string(),
+                ));
+            }
             match bytes[idx] {
                 b'"' => out.push('"'),
                 b'\\' => out.push('\\'),
+                b'/' => out.push('/'),
+                b'b' => out.push('\x08'),
+                b'f' => out.push('\x0c'),
                 b'n' => out.push('\n'),
                 b'r' => out.push('\r'),
                 b't' => out.push('\t'),
@@ -789,12 +837,23 @@ fn unescape_json_slice(bytes: &[u8]) -> Result<String, TestEventError> {
                     out.push(ch);
                     idx += 4;
                 }
-                other => out.push(other as char),
+                _ => {
+                    return Err(TestEventError::MalformedJson(
+                        "invalid escape sequence in json string".to_string(),
+                    ));
+                }
             }
+            idx += 1;
         } else {
-            out.push(bytes[idx] as char);
+            let start = idx;
+            while idx < bytes.len() && bytes[idx] != b'\\' {
+                idx += 1;
+            }
+            let chunk = std::str::from_utf8(&bytes[start..idx]).map_err(|_| {
+                TestEventError::MalformedJson("invalid utf-8 in json string".to_string())
+            })?;
+            out.push_str(chunk);
         }
-        idx += 1;
     }
     Ok(out)
 }
@@ -853,6 +912,7 @@ fn parse_json_string_array(s: &str) -> Result<Vec<String>, TestEventError> {
 pub struct TestEventCollector {
     records: Vec<TestEventRecord>,
     next_sequence: u64,
+    sequence_exhausted: bool,
 }
 
 impl TestEventCollector {
@@ -862,19 +922,30 @@ impl TestEventCollector {
         Self {
             records: Vec::new(),
             next_sequence: 0,
+            sequence_exhausted: false,
         }
     }
 
     /// Records a test event, validating fields and sequence monotonicity.
     pub fn push(&mut self, record: TestEventRecord) -> Result<(), TestEventError> {
         record.validate()?;
-        if record.sequence < self.next_sequence {
+        if self.records.len() >= MAX_TEST_EVENTS_COUNT {
+            return Err(TestEventError::CollectorCapacityExceeded {
+                max: MAX_TEST_EVENTS_COUNT,
+                actual: self.records.len() + 1,
+            });
+        }
+        if self.sequence_exhausted || record.sequence < self.next_sequence {
             return Err(TestEventError::SequenceRegression {
                 expected_at_least: self.next_sequence,
                 actual: record.sequence,
             });
         }
-        self.next_sequence = record.sequence.saturating_add(1);
+        if let Some(next) = record.sequence.checked_add(1) {
+            self.next_sequence = next;
+        } else {
+            self.sequence_exhausted = true;
+        }
         self.records.push(record);
         Ok(())
     }

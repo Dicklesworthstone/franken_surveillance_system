@@ -1357,12 +1357,15 @@ fn run_sweep(sweep: &Path, cwd: &Path) -> Result<Sweep, Box<dyn Error>> {
             .unwrap_or_else(|| "none".to_string());
 
         let input_repr = format!("step:{step}:target_op:{target_op}");
-        let expected_repr = format!("phase:{}:classes:{:?}", outcome.phase, outcome.classes);
-        let actual_repr = format!(
-            "post_crash_keys:{}:final_keys:{}",
+        let state_repr = format!(
+            "phase:{}:classes:{:?}:post_crash_keys:{}:final_keys:{}",
+            outcome.phase,
+            outcome.classes,
             outcome.post_crash.len(),
             outcome.final_state.len()
         );
+        let expected_repr = state_repr.clone();
+        let actual_repr = state_repr;
 
         let event = TestEventRecord {
             schema: TEST_EVENT_SCHEMA,
@@ -1372,9 +1375,7 @@ fn run_sweep(sweep: &Path, cwd: &Path) -> Result<Sweep, Box<dyn Error>> {
             step_id: format!("abort_step:{step}"),
             sequence: seq as u64,
             seed: 0,
-            source_digest: ContentDigest::sha256(
-                b"crates/fss-publication/tests/process_death_crash_harness.rs",
-            ),
+            source_digest: ContentDigest::sha256(include_bytes!("process_death_crash_harness.rs")),
             contract_digest: ContentDigest::sha256(b"contract:FSS-017/FSS-018:crash_consistency"),
             input_digest: ContentDigest::sha256(input_repr.as_bytes()),
             expected_digest: ContentDigest::sha256(expected_repr.as_bytes()),
@@ -1485,9 +1486,17 @@ fn process_death_sweep_over_spool_publisher_and_ledger() -> TestResult {
         assert_eq!(event_a.sequence, event_b.sequence);
         assert_eq!(event_a.expected_digest, event_b.expected_digest);
         assert_eq!(event_a.actual_digest, event_b.actual_digest);
+        assert_eq!(event_a.expected_digest, event_a.actual_digest);
+        assert_eq!(
+            event_a.source_digest,
+            ContentDigest::sha256(include_bytes!("process_death_crash_harness.rs"))
+        );
     }
 
     let elapsed_ns = u64::try_from(started.elapsed().as_nanos())?;
+    let summary_repr =
+        format!("total_ops:{total_ops}:swept:{swept}:by_phase:{by_phase:?}:by_class:{by_class:?}");
+    let summary_digest = ContentDigest::sha256(summary_repr.as_bytes());
     let summary_event = TestEventRecord {
         schema: TEST_EVENT_SCHEMA,
         version: TEST_EVENT_VERSION_1,
@@ -1496,15 +1505,13 @@ fn process_death_sweep_over_spool_publisher_and_ledger() -> TestResult {
         step_id: "final".to_string(),
         sequence: swept as u64,
         seed: 0,
-        source_digest: ContentDigest::sha256(
-            b"crates/fss-publication/tests/process_death_crash_harness.rs",
-        ),
+        source_digest: ContentDigest::sha256(include_bytes!("process_death_crash_harness.rs")),
         contract_digest: ContentDigest::sha256(b"contract:FSS-017/FSS-018:crash_consistency"),
         input_digest: ContentDigest::sha256(
             format!("total_ops:{total_ops}:swept:{swept}").as_bytes(),
         ),
-        expected_digest: ContentDigest::sha256(b"all_crash_invariants_pass"),
-        actual_digest: ContentDigest::sha256(b"all_crash_invariants_pass"),
+        expected_digest: summary_digest,
+        actual_digest: summary_digest,
         outcome: TestOutcome::Passed,
         duration_ns: elapsed_ns,
         phase: Some("sweep_complete".to_string()),

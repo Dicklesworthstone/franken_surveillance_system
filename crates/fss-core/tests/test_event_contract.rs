@@ -14,9 +14,9 @@ use std::error::Error;
 
 use fss_core::{
     ContentDigest, MAX_TEST_CASE_ID_LEN, MAX_TEST_DETAIL_LEN, MAX_TEST_EVENT_JSON_BYTES,
-    MAX_TEST_PHASE_LEN, MAX_TEST_RUN_ID_LEN, MAX_TEST_STEP_ID_LEN, MAX_TEST_TAG_LEN,
-    MAX_TEST_TAGS_COUNT, TEST_EVENT_SCHEMA, TEST_EVENT_VERSION_1, TestEventCollector,
-    TestEventError, TestEventRecord, TestOutcome,
+    MAX_TEST_EVENTS_COUNT, MAX_TEST_PHASE_LEN, MAX_TEST_RUN_ID_LEN, MAX_TEST_STEP_ID_LEN,
+    MAX_TEST_TAG_LEN, MAX_TEST_TAGS_COUNT, TEST_EVENT_SCHEMA, TEST_EVENT_VERSION_1,
+    TestEventCollector, TestEventError, TestEventRecord, TestOutcome,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -85,6 +85,7 @@ fn test_all_outcome_variants() -> TestResult {
         (TestOutcome::Crashed, "crashed"),
         (TestOutcome::Cancelled, "cancelled"),
         (TestOutcome::Indeterminate, "indeterminate"),
+        (TestOutcome::Rejected, "rejected"),
     ];
 
     for (variant, name) in outcomes {
@@ -387,5 +388,77 @@ fn test_malformed_json_rejections() -> TestResult {
         Err(TestEventError::MalformedJson(_)) => {}
         other => return Err(format!("expected MalformedJson, got {other:?}").into()),
     }
+    Ok(())
+}
+
+#[test]
+fn test_json_utf8_unescaping_corruption() -> TestResult {
+    let mut rec = sample_record();
+    rec.detail = Some("Measurement: 42 µm at café sensor".to_string());
+    let jsonl = rec.to_jsonl()?;
+    let parsed = TestEventRecord::from_json_str(&jsonl)?;
+    assert_eq!(
+        parsed.detail.as_deref(),
+        Some("Measurement: 42 µm at café sensor"),
+        "UTF-8 characters must not be corrupted into Mojibake upon unescaping"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_pem_private_key_leak_rejected() {
+    let mut rec = sample_record();
+    rec.detail = Some(
+        "-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQ..."
+            .to_string(),
+    );
+    assert!(matches!(
+        rec.validate(),
+        Err(TestEventError::SecretDetected { field: "detail" })
+    ));
+}
+
+#[test]
+fn test_unredacted_media_leak_rejected() {
+    let mut rec = sample_record();
+    rec.detail = Some("captured: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...".to_string());
+    assert!(matches!(
+        rec.validate(),
+        Err(TestEventError::SecretDetected { field: "detail" })
+    ));
+}
+
+#[test]
+fn test_collector_rejects_duplicate_u64_max_sequence() -> TestResult {
+    let mut collector = TestEventCollector::new();
+    let mut r1 = sample_record();
+    r1.sequence = u64::MAX;
+    collector.push(r1.clone())?;
+    let r2 = r1;
+    let err = collector.push(r2);
+    assert!(
+        matches!(err, Err(TestEventError::SequenceRegression { .. })),
+        "pushing record with sequence u64::MAX twice must fail with SequenceRegression"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_collector_capacity_bound() -> TestResult {
+    let mut collector = TestEventCollector::new();
+    for seq in 0..MAX_TEST_EVENTS_COUNT as u64 {
+        let mut rec = sample_record();
+        rec.sequence = seq;
+        collector.push(rec)?;
+    }
+    assert_eq!(collector.records().len(), MAX_TEST_EVENTS_COUNT);
+
+    let mut over_bound = sample_record();
+    over_bound.sequence = MAX_TEST_EVENTS_COUNT as u64;
+    let err = collector.push(over_bound);
+    assert!(
+        matches!(err, Err(TestEventError::CollectorCapacityExceeded { max, actual }) if max == MAX_TEST_EVENTS_COUNT && actual == MAX_TEST_EVENTS_COUNT + 1),
+        "pushing past MAX_TEST_EVENTS_COUNT must return CollectorCapacityExceeded"
+    );
     Ok(())
 }
