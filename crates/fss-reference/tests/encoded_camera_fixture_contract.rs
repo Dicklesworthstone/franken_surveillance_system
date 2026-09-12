@@ -26,24 +26,24 @@ fn create_valid_spec(
     frame_count: u32,
     cadence: u32,
 ) -> Result<EncodedCameraSpec, Box<dyn Error>> {
-    EncodedCameraSpec::new(
+    EncodedCameraSpec::builder(
         CapsuleId::parse("cap:fixture:e2e:cam01")?,
         SensorId::parse("sensor:cam:driveway-01")?,
         DeviceId::parse("device:axis-p3245-01")?,
         SourceId::parse("src:cam:driveway-01:main")?,
-        seed,
-        frame_count,
-        1024,
-        1_000_000_000,
-        33_333_333,
-        500_000,
-        1920,
-        1080,
-        VideoCodec::H264,
-        ContainerFormat::Mp4,
-        cadence,
-        "sha256:firmware-v1-production-active".to_string(),
     )
+    .seed(seed)
+    .frame_count(frame_count)
+    .frame_bytes(1024)
+    .start_ns(1_000_000_000)
+    .period_ns(33_333_333)
+    .uncertainty_ns(500_000)
+    .dimensions(1920, 1080)
+    .codec(VideoCodec::H264)
+    .container(ContainerFormat::Mp4)
+    .keyframe_cadence(cadence)
+    .firmware_fingerprint("sha256:firmware-v1-production-active")
+    .build()
     .map_err(Into::into)
 }
 
@@ -76,7 +76,7 @@ fn encoded_fixture_nominal_generation_and_capsule_binding() -> Result<(), Box<dy
         assert_eq!(capsule.media.source_bytes, 1024);
 
         // Strict custody is verified: payload digest matches custody
-        assert_eq!(capsule.custody.is_retained(), true);
+        assert!(capsule.custody.is_retained());
         assert_eq!(capsule.integrity.decode, DecodeState::Verified);
         assert_eq!(capsule.integrity.continuity, ContinuityState::Verified);
 
@@ -277,8 +277,8 @@ fn encoded_fixture_e2e_with_fault_injector_and_gap_witness() -> Result<(), Box<d
     assert!(found_gap_witness);
 
     // Journal verifies all typed evidence
-    assert_eq!(journal.lost_sequences.contains(&2), true);
-    assert_eq!(journal.duplicated_sequences.contains(&4), true);
+    assert!(journal.lost_sequences.contains(&2));
+    assert!(journal.duplicated_sequences.contains(&4));
     assert_eq!(journal.gap_witnesses.len(), 1);
     assert_eq!(journal.gap_witnesses[0].start_sequence, 5);
     assert_eq!(journal.gap_witnesses[0].end_sequence, 6);

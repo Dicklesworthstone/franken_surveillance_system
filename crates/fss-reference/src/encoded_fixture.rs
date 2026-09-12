@@ -167,46 +167,15 @@ pub struct EncodedCameraSpec {
 }
 
 impl EncodedCameraSpec {
-    /// Constructs and validates a new encoded camera specification.
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    /// Begins building an encoded camera specification.
+    #[must_use]
+    pub fn builder(
         capture_id: CapsuleId,
         sensor_id: SensorId,
         device_id: DeviceId,
         source_id: SourceId,
-        seed: u64,
-        frame_count: u32,
-        frame_bytes: usize,
-        start_ns: i128,
-        period_ns: u64,
-        uncertainty_ns: u64,
-        width: u32,
-        height: u32,
-        codec: VideoCodec,
-        container: ContainerFormat,
-        keyframe_cadence: u32,
-        firmware_fingerprint: String,
-    ) -> Result<Self, EncodedFixtureError> {
-        let spec = Self {
-            capture_id,
-            sensor_id,
-            device_id,
-            source_id,
-            seed,
-            frame_count,
-            frame_bytes,
-            start_ns,
-            period_ns,
-            uncertainty_ns,
-            width,
-            height,
-            codec,
-            container,
-            keyframe_cadence,
-            firmware_fingerprint,
-        };
-        spec.validate()?;
-        Ok(spec)
+    ) -> EncodedCameraSpecBuilder {
+        EncodedCameraSpecBuilder::new(capture_id, sensor_id, device_id, source_id)
     }
 
     /// Validates all parameters against hard bounds.
@@ -264,6 +233,159 @@ impl EncodedCameraSpec {
             ));
         }
         Ok(())
+    }
+}
+
+/// Builder for constructing and validating an [`EncodedCameraSpec`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EncodedCameraSpecBuilder {
+    capture_id: CapsuleId,
+    sensor_id: SensorId,
+    device_id: DeviceId,
+    source_id: SourceId,
+    seed: u64,
+    frame_count: u32,
+    frame_bytes: usize,
+    start_ns: i128,
+    period_ns: u64,
+    uncertainty_ns: u64,
+    width: u32,
+    height: u32,
+    codec: VideoCodec,
+    container: ContainerFormat,
+    keyframe_cadence: u32,
+    firmware_fingerprint: String,
+}
+
+impl EncodedCameraSpecBuilder {
+    /// Constructs a new builder initialized with identity anchors and safe defaults.
+    #[must_use]
+    pub fn new(
+        capture_id: CapsuleId,
+        sensor_id: SensorId,
+        device_id: DeviceId,
+        source_id: SourceId,
+    ) -> Self {
+        Self {
+            capture_id,
+            sensor_id,
+            device_id,
+            source_id,
+            seed: 0,
+            frame_count: 1,
+            frame_bytes: 1024,
+            start_ns: 0,
+            period_ns: 33_333_333,
+            uncertainty_ns: 500_000,
+            width: 1920,
+            height: 1080,
+            codec: VideoCodec::H264,
+            container: ContainerFormat::Mp4,
+            keyframe_cadence: 30,
+            firmware_fingerprint: "sha256:firmware-v1-production-active".to_string(),
+        }
+    }
+
+    /// Sets the deterministic generator seed.
+    #[must_use]
+    pub const fn seed(mut self, seed: u64) -> Self {
+        self.seed = seed;
+        self
+    }
+
+    /// Sets the frame count to generate.
+    #[must_use]
+    pub const fn frame_count(mut self, frame_count: u32) -> Self {
+        self.frame_count = frame_count;
+        self
+    }
+
+    /// Sets the nominal payload bytes per frame.
+    #[must_use]
+    pub const fn frame_bytes(mut self, frame_bytes: usize) -> Self {
+        self.frame_bytes = frame_bytes;
+        self
+    }
+
+    /// Sets the timeline start timestamp in nanoseconds.
+    #[must_use]
+    pub const fn start_ns(mut self, start_ns: i128) -> Self {
+        self.start_ns = start_ns;
+        self
+    }
+
+    /// Sets the nominal period between frames in nanoseconds.
+    #[must_use]
+    pub const fn period_ns(mut self, period_ns: u64) -> Self {
+        self.period_ns = period_ns;
+        self
+    }
+
+    /// Sets the conservative uncertainty in nanoseconds.
+    #[must_use]
+    pub const fn uncertainty_ns(mut self, uncertainty_ns: u64) -> Self {
+        self.uncertainty_ns = uncertainty_ns;
+        self
+    }
+
+    /// Sets the frame dimensions in pixels.
+    #[must_use]
+    pub const fn dimensions(mut self, width: u32, height: u32) -> Self {
+        self.width = width;
+        self.height = height;
+        self
+    }
+
+    /// Sets the video compression codec.
+    #[must_use]
+    pub const fn codec(mut self, codec: VideoCodec) -> Self {
+        self.codec = codec;
+        self
+    }
+
+    /// Sets the media container format.
+    #[must_use]
+    pub const fn container(mut self, container: ContainerFormat) -> Self {
+        self.container = container;
+        self
+    }
+
+    /// Sets the keyframe cadence (GOP size).
+    #[must_use]
+    pub const fn keyframe_cadence(mut self, keyframe_cadence: u32) -> Self {
+        self.keyframe_cadence = keyframe_cadence;
+        self
+    }
+
+    /// Sets the active firmware fingerprint.
+    #[must_use]
+    pub fn firmware_fingerprint(mut self, fingerprint: impl Into<String>) -> Self {
+        self.firmware_fingerprint = fingerprint.into();
+        self
+    }
+
+    /// Builds and validates the [`EncodedCameraSpec`].
+    pub fn build(self) -> Result<EncodedCameraSpec, EncodedFixtureError> {
+        let spec = EncodedCameraSpec {
+            capture_id: self.capture_id,
+            sensor_id: self.sensor_id,
+            device_id: self.device_id,
+            source_id: self.source_id,
+            seed: self.seed,
+            frame_count: self.frame_count,
+            frame_bytes: self.frame_bytes,
+            start_ns: self.start_ns,
+            period_ns: self.period_ns,
+            uncertainty_ns: self.uncertainty_ns,
+            width: self.width,
+            height: self.height,
+            codec: self.codec,
+            container: self.container,
+            keyframe_cadence: self.keyframe_cadence,
+            firmware_fingerprint: self.firmware_fingerprint,
+        };
+        spec.validate()?;
+        Ok(spec)
     }
 }
 
