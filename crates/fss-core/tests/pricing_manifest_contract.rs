@@ -356,12 +356,12 @@ fn ac1_hard_bounds_enforced_at_bound_and_bound_plus_one() -> TestResult {
         vec![],
     );
     match err_rates {
-        Err(PricingManifestError::ItemCountOutOfBounds { field, count, .. }) => {
+        Err(PricingManifestError::OverLimit { field, count, .. }) => {
             if field != "rates" || count != MAX_RATES_COUNT + 1 {
                 return Err("unexpected count error".into());
             }
         }
-        _ => return Err("expected ItemCountOutOfBounds for rates".into()),
+        _ => return Err("expected OverLimit for rates".into()),
     }
 
     // Operation mappings count: bound + 1
@@ -382,12 +382,12 @@ fn ac1_hard_bounds_enforced_at_bound_and_bound_plus_one() -> TestResult {
         over_mappings,
     );
     match err_map {
-        Err(PricingManifestError::ItemCountOutOfBounds { field, count, .. }) => {
+        Err(PricingManifestError::OverLimit { field, count, .. }) => {
             if field != "operation_mappings" || count != MAX_MAPPINGS_COUNT + 1 {
                 return Err("unexpected count error".into());
             }
         }
-        _ => return Err("expected ItemCountOutOfBounds for operation_mappings".into()),
+        _ => return Err("expected OverLimit for operation_mappings".into()),
     }
 
     Ok(())
@@ -653,18 +653,18 @@ fn ac4_exact_b2_cost_calculation() -> TestResult {
 #[test]
 fn ac5_canonical_round_trip_bit_identical() -> TestResult {
     let manifest = sample_r2_manifest(None)?;
-    let encoded = manifest.encode();
+    let encoded = manifest.encode()?;
 
     let decoded = ProviderPricingManifest::decode(&encoded)?;
     if decoded != manifest {
         return Err("decoded manifest does not match original".into());
     }
-    if decoded.manifest_digest() != manifest.manifest_digest() {
+    if decoded.manifest_digest()? != manifest.manifest_digest()? {
         return Err("decoded digest mismatch".into());
     }
 
     // Bit-identical re-encoding
-    let re_encoded = decoded.encode();
+    let re_encoded = decoded.encode()?;
     if re_encoded != encoded {
         return Err("re-encoded bytes are not bit-identical".into());
     }
@@ -678,7 +678,7 @@ fn ac5_registered_digest_domain_verification() -> TestResult {
         return Err("domain constant mismatch".into());
     }
     let manifest = sample_r2_manifest(None)?;
-    let digest = manifest.manifest_digest();
+    let digest = manifest.manifest_digest()?;
     if digest.algorithm() != fss_core::DigestAlgorithm::Sha256 {
         return Err("digest algorithm must be sha256".into());
     }
@@ -691,7 +691,7 @@ fn ac5_registered_digest_domain_verification() -> TestResult {
 #[test]
 fn ac5_non_canonical_sorting_rejected_on_decode() -> TestResult {
     let manifest = sample_r2_manifest(None)?;
-    let encoded = manifest.encode();
+    let encoded = manifest.encode()?;
 
     // Verify that encoded bytes can be decoded
     let _ = ProviderPricingManifest::decode(&encoded)?;
@@ -744,14 +744,14 @@ fn ac5_non_canonical_sorting_rejected_on_decode() -> TestResult {
 #[test]
 fn ac6_superseding_chain_and_latest_alias_rejection() -> TestResult {
     let manifest_v1 = sample_r2_manifest(None)?;
-    let digest_v1 = manifest_v1.manifest_digest();
+    let digest_v1 = manifest_v1.manifest_digest()?;
 
     // v2 supersedes v1 explicitly via digest:
     let manifest_v2 = sample_r2_manifest(Some(digest_v1))?;
     if manifest_v2.supersedes_manifest() != Some(digest_v1) {
         return Err("supersedes digest mismatch in v2".into());
     }
-    if manifest_v2.manifest_digest() == digest_v1 {
+    if manifest_v2.manifest_digest()? == digest_v1 {
         return Err("v2 digest must differ from v1".into());
     }
 
@@ -894,7 +894,7 @@ fn ac7_malformed_and_edge_case_gauntlet() -> TestResult {
     }
 
     // 5. Truncation at every byte prefix in decode
-    let encoded = manifest.encode();
+    let encoded = manifest.encode()?;
     for offset in 0..encoded.len().min(40) {
         let truncated = &encoded[..offset];
         if ProviderPricingManifest::decode(truncated).is_ok() {
@@ -924,6 +924,164 @@ fn ac7_malformed_and_edge_case_gauntlet() -> TestResult {
     match err_curr {
         Err(PricingManifestError::CurrencyCodeInvalid { .. }) => {}
         _ => return Err("expected CurrencyCodeInvalid for lowercase currency".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_g1_manifest_digest_returns_result_and_never_fabricates_default() -> TestResult {
+    let manifest1 = sample_r2_manifest(None)?;
+    let digest1 = manifest1.manifest_digest()?;
+
+    let manifest2 = sample_b2_manifest()?;
+    let digest2 = manifest2.manifest_digest()?;
+
+    let default_bytes = [0u8; 32];
+    if digest1.bytes() == default_bytes || digest2.bytes() == default_bytes {
+        return Err("manifest_digest must never fabricate default all-zero bytes".into());
+    }
+    if digest1 == digest2 {
+        return Err("distinct manifests must produce distinct digests".into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_g2_rates_bound_enforced_at_bound_and_bound_plus_one() -> TestResult {
+    let window = test_validity_window(100, 200)?;
+    let base_prov = PricingProvenance {
+        source: "https://example.com/pricing".to_string(),
+        retrieved_at: test_timestamp(150),
+        validity_window: window,
+        retrieval_witness: None,
+        provenance_class: ProvenanceClass::Observed,
+    };
+
+    // Exactly at bound: MAX_RATES_COUNT (128)
+    let mut bound_rates = Vec::with_capacity(MAX_RATES_COUNT);
+    for i in 0..MAX_RATES_COUNT {
+        bound_rates.push(DatedPriceRate {
+            cost_class: CostClass::Storage,
+            operation_name: Some(format!("op_{i}")),
+            unit: PricingUnit::PerByteMonth,
+            rate_pico_currency: 1,
+            free_tier_allowance: None,
+            minimum_billable_unit: None,
+        });
+    }
+    let m_bound = ProviderPricingManifest::new(
+        "provider".to_string(),
+        "standard".to_string(),
+        "USD".to_string(),
+        base_prov.clone(),
+        None,
+        bound_rates,
+        vec![],
+    )?;
+    let encoded_bound = m_bound.encode()?;
+    if encoded_bound.is_empty() {
+        return Err("encoded at bound must not be empty".into());
+    }
+
+    // Bound + 1: MAX_RATES_COUNT + 1 (129)
+    let mut over_rates = Vec::with_capacity(MAX_RATES_COUNT + 1);
+    for i in 0..=MAX_RATES_COUNT {
+        over_rates.push(DatedPriceRate {
+            cost_class: CostClass::Storage,
+            operation_name: Some(format!("op_{i}")),
+            unit: PricingUnit::PerByteMonth,
+            rate_pico_currency: 1,
+            free_tier_allowance: None,
+            minimum_billable_unit: None,
+        });
+    }
+    let err_new = ProviderPricingManifest::new(
+        "provider".to_string(),
+        "standard".to_string(),
+        "USD".to_string(),
+        base_prov,
+        None,
+        over_rates,
+        vec![],
+    );
+    match err_new {
+        Err(PricingManifestError::OverLimit { field, count, max }) => {
+            if field != "rates" || count != MAX_RATES_COUNT + 1 || max != MAX_RATES_COUNT {
+                return Err("unexpected OverLimit parameters for rates".into());
+            }
+        }
+        _ => return Err("expected typed OverLimit error at bound + 1 for rates".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_g3_operation_mappings_bound_enforced_at_bound_and_bound_plus_one() -> TestResult {
+    let window = test_validity_window(100, 200)?;
+    let base_prov = PricingProvenance {
+        source: "https://example.com/pricing".to_string(),
+        retrieved_at: test_timestamp(150),
+        validity_window: window,
+        retrieval_witness: None,
+        provenance_class: ProvenanceClass::Observed,
+    };
+
+    // Exactly at bound: MAX_MAPPINGS_COUNT (256)
+    let mut bound_mappings = Vec::with_capacity(MAX_MAPPINGS_COUNT);
+    for i in 0..MAX_MAPPINGS_COUNT {
+        bound_mappings.push(OperationCostMapping {
+            provider_operation: format!("op_{i}"),
+            cost_class: CostClass::ClassAOperations,
+        });
+    }
+    let m_bound = ProviderPricingManifest::new(
+        "provider".to_string(),
+        "standard".to_string(),
+        "USD".to_string(),
+        base_prov.clone(),
+        None,
+        vec![],
+        bound_mappings,
+    )?;
+    let encoded_bound = m_bound.encode()?;
+    if encoded_bound.is_empty() {
+        return Err("encoded mappings at bound must not be empty".into());
+    }
+
+    // Bound + 1: MAX_MAPPINGS_COUNT + 1 (257)
+    let mut over_mappings = Vec::with_capacity(MAX_MAPPINGS_COUNT + 1);
+    for i in 0..=MAX_MAPPINGS_COUNT {
+        over_mappings.push(OperationCostMapping {
+            provider_operation: format!("op_{i}"),
+            cost_class: CostClass::ClassAOperations,
+        });
+    }
+    let err_new = ProviderPricingManifest::new(
+        "provider".to_string(),
+        "standard".to_string(),
+        "USD".to_string(),
+        base_prov,
+        None,
+        vec![],
+        over_mappings,
+    );
+    match err_new {
+        Err(PricingManifestError::OverLimit { field, count, max }) => {
+            if field != "operation_mappings"
+                || count != MAX_MAPPINGS_COUNT + 1
+                || max != MAX_MAPPINGS_COUNT
+            {
+                return Err("unexpected OverLimit parameters for operation_mappings".into());
+            }
+        }
+        _ => {
+            return Err(
+                "expected typed OverLimit error at bound + 1 for operation_mappings".into(),
+            );
+        }
     }
 
     Ok(())

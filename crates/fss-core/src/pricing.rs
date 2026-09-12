@@ -496,7 +496,7 @@ impl ProviderPricingManifest {
         provenance.validate()?;
 
         if rates.len() > MAX_RATES_COUNT {
-            return Err(PricingManifestError::ItemCountOutOfBounds {
+            return Err(PricingManifestError::OverLimit {
                 field: "rates",
                 count: rates.len(),
                 max: MAX_RATES_COUNT,
@@ -504,7 +504,7 @@ impl ProviderPricingManifest {
         }
 
         if operation_mappings.len() > MAX_MAPPINGS_COUNT {
-            return Err(PricingManifestError::ItemCountOutOfBounds {
+            return Err(PricingManifestError::OverLimit {
                 field: "operation_mappings",
                 count: operation_mappings.len(),
                 max: MAX_MAPPINGS_COUNT,
@@ -553,7 +553,7 @@ impl ProviderPricingManifest {
             manifest_digest: ContentDigest::sha256(&[]),
         };
 
-        manifest.manifest_digest = manifest.compute_manifest_digest();
+        manifest.manifest_digest = manifest.compute_manifest_digest()?;
         Ok(manifest)
     }
 
@@ -605,9 +605,92 @@ impl ProviderPricingManifest {
         &self.operation_mappings
     }
 
+    /// Validates all structural constraints and bounds of this manifest.
+    pub fn validate(&self) -> Result<(), PricingManifestError> {
+        if self.provider_id.len() < MIN_PROVIDER_ID_LEN
+            || self.provider_id.len() > MAX_PROVIDER_ID_LEN
+        {
+            return Err(PricingManifestError::StringLengthOutOfBounds {
+                field: "provider_id",
+                length: self.provider_id.len(),
+                min: MIN_PROVIDER_ID_LEN,
+                max: MAX_PROVIDER_ID_LEN,
+            });
+        }
+        reject_latest_alias(&self.provider_id, "provider_id")?;
+
+        if self.pricing_tier.len() < MIN_TIER_LEN || self.pricing_tier.len() > MAX_TIER_LEN {
+            return Err(PricingManifestError::StringLengthOutOfBounds {
+                field: "pricing_tier",
+                length: self.pricing_tier.len(),
+                min: MIN_TIER_LEN,
+                max: MAX_TIER_LEN,
+            });
+        }
+        reject_latest_alias(&self.pricing_tier, "pricing_tier")?;
+
+        if self.currency.len() < MIN_CURRENCY_LEN || self.currency.len() > MAX_CURRENCY_LEN {
+            return Err(PricingManifestError::StringLengthOutOfBounds {
+                field: "currency",
+                length: self.currency.len(),
+                min: MIN_CURRENCY_LEN,
+                max: MAX_CURRENCY_LEN,
+            });
+        }
+        if !self.currency.chars().all(|c| c.is_ascii_uppercase()) {
+            return Err(PricingManifestError::CurrencyCodeInvalid {
+                code: self.currency.clone(),
+            });
+        }
+
+        self.provenance.validate()?;
+
+        if self.rates.len() > MAX_RATES_COUNT {
+            return Err(PricingManifestError::OverLimit {
+                field: "rates",
+                count: self.rates.len(),
+                max: MAX_RATES_COUNT,
+            });
+        }
+        if self.operation_mappings.len() > MAX_MAPPINGS_COUNT {
+            return Err(PricingManifestError::OverLimit {
+                field: "operation_mappings",
+                count: self.operation_mappings.len(),
+                max: MAX_MAPPINGS_COUNT,
+            });
+        }
+
+        for r in &self.rates {
+            r.validate()?;
+        }
+        for m in &self.operation_mappings {
+            m.validate()?;
+        }
+
+        for window in self.rates.windows(2) {
+            if window[0].canonical_key() >= window[1].canonical_key() {
+                return Err(PricingManifestError::NonCanonicalOrder { field: "rates" });
+            }
+        }
+        for window in self.operation_mappings.windows(2) {
+            if window[0].provider_operation >= window[1].provider_operation {
+                return Err(PricingManifestError::NonCanonicalOrder {
+                    field: "operation_mappings",
+                });
+            }
+        }
+
+        Ok(())
+    }
+
     /// Canonical content digest over all fields under the registered domain.
+    pub fn manifest_digest(&self) -> Result<ContentDigest, PricingManifestError> {
+        self.compute_manifest_digest()
+    }
+
+    /// Returns the precomputed canonical content digest.
     #[must_use]
-    pub const fn manifest_digest(&self) -> ContentDigest {
+    pub const fn precomputed_digest(&self) -> ContentDigest {
         self.manifest_digest
     }
 
@@ -794,7 +877,22 @@ impl ProviderPricingManifest {
     }
 
     /// Computes the cryptographic manifest digest over exact canonical bytes.
-    fn compute_manifest_digest(&self) -> ContentDigest {
+    fn compute_manifest_digest(&self) -> Result<ContentDigest, PricingManifestError> {
+        if self.rates.len() > MAX_RATES_COUNT {
+            return Err(PricingManifestError::OverLimit {
+                field: "rates",
+                count: self.rates.len(),
+                max: MAX_RATES_COUNT,
+            });
+        }
+        if self.operation_mappings.len() > MAX_MAPPINGS_COUNT {
+            return Err(PricingManifestError::OverLimit {
+                field: "operation_mappings",
+                count: self.operation_mappings.len(),
+                max: MAX_MAPPINGS_COUNT,
+            });
+        }
+
         let mut hasher = Sha256Hasher::new();
         hasher.update(PROVIDER_PRICING_MANIFEST_DOMAIN.as_bytes());
         hasher.update(&PROVIDER_PRICING_MANIFEST_MAGIC);
@@ -822,7 +920,16 @@ impl ProviderPricingManifest {
             hasher.update(&[0]);
         }
 
-        let rates_count = self.rates.len() as u32;
+        let rates_count = match u32::try_from(self.rates.len()) {
+            Ok(count) => count,
+            Err(_) => {
+                return Err(PricingManifestError::OverLimit {
+                    field: "rates",
+                    count: self.rates.len(),
+                    max: MAX_RATES_COUNT,
+                });
+            }
+        };
         hasher.update(&rates_count.to_be_bytes());
         for r in &self.rates {
             hasher.update(&[r.cost_class.as_u8()]);
@@ -848,22 +955,32 @@ impl ProviderPricingManifest {
             }
         }
 
-        let mappings_count = self.operation_mappings.len() as u32;
+        let mappings_count = match u32::try_from(self.operation_mappings.len()) {
+            Ok(count) => count,
+            Err(_) => {
+                return Err(PricingManifestError::OverLimit {
+                    field: "operation_mappings",
+                    count: self.operation_mappings.len(),
+                    max: MAX_MAPPINGS_COUNT,
+                });
+            }
+        };
         hasher.update(&mappings_count.to_be_bytes());
         for m in &self.operation_mappings {
             hasher.update(m.provider_operation.as_bytes());
             hasher.update(&[m.cost_class.as_u8()]);
         }
 
-        let bytes = hasher.finalize().unwrap_or_default();
-        ContentDigest::new(DigestAlgorithm::Sha256, bytes)
+        let bytes = hasher.finalize().map_err(PricingManifestError::Contract)?;
+        Ok(ContentDigest::new(DigestAlgorithm::Sha256, bytes))
     }
 
-    /// Encodes into a canonical byte envelope.
-    pub fn encode(&self) -> Vec<u8> {
+    /// Encodes into a canonical byte envelope, returning typed [`PricingManifestError::OverLimit`] if bounds are exceeded.
+    pub fn encode(&self) -> Result<Vec<u8>, PricingManifestError> {
+        self.validate()?;
         let mut encoder = CanonicalEncoder::new();
-        self.encode_canonical(&mut encoder);
-        encoder.finish()
+        self.encode_canonical_checked(&mut encoder)?;
+        Ok(encoder.finish())
     }
 
     /// Decodes from a canonical byte envelope, verifying canonical sort and bound invariants.
@@ -873,10 +990,27 @@ impl ProviderPricingManifest {
         decoder.ensure_finished()?;
         Ok(manifest)
     }
-}
 
-impl CanonicalEncode for ProviderPricingManifest {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+    /// Canonical encoding with explicit boundary checking.
+    pub fn encode_canonical_checked(
+        &self,
+        encoder: &mut CanonicalEncoder,
+    ) -> Result<(), PricingManifestError> {
+        if self.rates.len() > MAX_RATES_COUNT {
+            return Err(PricingManifestError::OverLimit {
+                field: "rates",
+                count: self.rates.len(),
+                max: MAX_RATES_COUNT,
+            });
+        }
+        if self.operation_mappings.len() > MAX_MAPPINGS_COUNT {
+            return Err(PricingManifestError::OverLimit {
+                field: "operation_mappings",
+                count: self.operation_mappings.len(),
+                max: MAX_MAPPINGS_COUNT,
+            });
+        }
+
         encoder.bytes(&PROVIDER_PRICING_MANIFEST_MAGIC);
         encoder.text(PROVIDER_PRICING_MANIFEST_DOMAIN);
         encoder.u32(self.manifest_version);
@@ -905,7 +1039,16 @@ impl CanonicalEncode for ProviderPricingManifest {
         }
 
         // Rates
-        let rates_count = u32::try_from(self.rates.len()).unwrap_or(u32::MAX);
+        let rates_count = match u32::try_from(self.rates.len()) {
+            Ok(count) => count,
+            Err(_) => {
+                return Err(PricingManifestError::OverLimit {
+                    field: "rates",
+                    count: self.rates.len(),
+                    max: MAX_RATES_COUNT,
+                });
+            }
+        };
         encoder.u32(rates_count);
         for r in &self.rates {
             encoder.tag(r.cost_class.as_u8());
@@ -932,12 +1075,29 @@ impl CanonicalEncode for ProviderPricingManifest {
         }
 
         // Operation mappings
-        let mappings_count = u32::try_from(self.operation_mappings.len()).unwrap_or(u32::MAX);
+        let mappings_count = match u32::try_from(self.operation_mappings.len()) {
+            Ok(count) => count,
+            Err(_) => {
+                return Err(PricingManifestError::OverLimit {
+                    field: "operation_mappings",
+                    count: self.operation_mappings.len(),
+                    max: MAX_MAPPINGS_COUNT,
+                });
+            }
+        };
         encoder.u32(mappings_count);
         for m in &self.operation_mappings {
             encoder.text(&m.provider_operation);
             encoder.tag(m.cost_class.as_u8());
         }
+
+        Ok(())
+    }
+}
+
+impl CanonicalEncode for ProviderPricingManifest {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        let _ = self.encode_canonical_checked(encoder);
     }
 }
 
@@ -1141,7 +1301,9 @@ impl CanonicalDecode for ProviderPricingManifest {
             manifest_digest: ContentDigest::sha256(&[]),
         };
 
-        manifest.manifest_digest = manifest.compute_manifest_digest();
+        manifest.manifest_digest = manifest
+            .compute_manifest_digest()
+            .map_err(|_| ContractError::InvalidDigest)?;
         Ok(manifest)
     }
 }
@@ -1261,8 +1423,8 @@ pub enum PricingManifestError {
         /// Maximum permitted length.
         max: usize,
     },
-    /// List item count exceeds maximum.
-    ItemCountOutOfBounds {
+    /// List item count exceeds maximum permitted limit.
+    OverLimit {
         /// Field name.
         field: &'static str,
         /// Actual item count.
@@ -1339,7 +1501,7 @@ impl fmt::Display for PricingManifestError {
                     "pricing manifest field '{field}' length {length} out of bounds [{min}..={max}]"
                 )
             }
-            Self::ItemCountOutOfBounds { field, count, max } => {
+            Self::OverLimit { field, count, max } => {
                 write!(
                     f,
                     "pricing manifest list '{field}' count {count} exceeds maximum {max}"
