@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/provider_observation_receipt.v1.json",
+  "title": "FSS Provider Observation Receipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "messageDigest",
+    "providerNonce",
+    "schema"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.provider_observation_receipt.v1"
+    },
+    "providerNonce": {
+      "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+    },
+    "messageDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+    }
+  }
+}

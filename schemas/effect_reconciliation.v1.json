@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/effect_reconciliation.v1.json",
+  "title": "FSS Effect Reconciliation Record v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "operationId",
+    "outcome",
+    "reconciledAt",
+    "schema"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.effect_reconciliation.v1"
+    },
+    "operationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "outcome": {
+      "enum": [
+        "delivered",
+        "failed",
+        "indeterminate",
+        "verified"
+      ]
+    },
+    "evidenceDigest": {
+      "anyOf": [
+        {
+          "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "reconciledAt": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "detail": {
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

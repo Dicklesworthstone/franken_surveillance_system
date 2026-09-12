@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/effect_intent.v1.json",
+  "title": "FSS Effect Intent v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "effectClass",
+    "idempotencyKey",
+    "operationId",
+    "preconditionDigest",
+    "requestDigest",
+    "schema"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.effect_intent.v1"
+    },
+    "operationId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "effectClass": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "requestDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+    },
+    "preconditionDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+    }
+  }
+}
