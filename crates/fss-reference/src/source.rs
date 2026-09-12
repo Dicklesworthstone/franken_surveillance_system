@@ -117,12 +117,16 @@ pub fn generate_source(spec: &VirtualCameraSpec) -> Result<Vec<SourcePacket>, Re
 }
 
 /// Generates source packets using an explicit virtual clock authority.
+///
+/// Time progression and step counts in `clock` are advanced to the end of the capture timeline.
 pub fn generate_source_with_clock(
     spec: &VirtualCameraSpec,
-    clock: VirtualClock,
+    clock: &mut VirtualClock,
 ) -> Result<Vec<SourcePacket>, ReferenceError> {
-    let mut source = VirtualSource::with_clock(spec.clone(), clock)?;
-    source.generate_packets()
+    let mut source = VirtualSource::with_clock(spec.clone(), clock.clone())?;
+    let packets = source.generate_packets()?;
+    *clock = source.into_clock();
+    Ok(packets)
 }
 
 /// Deterministic virtual sensor source driven by an explicit [`VirtualClock`].
@@ -180,6 +184,12 @@ impl VirtualSource {
     /// Returns a mutable reference to the underlying virtual clock.
     pub fn clock_mut(&mut self) -> &mut VirtualClock {
         &mut self.clock
+    }
+
+    /// Consumes the virtual source and returns the underlying virtual clock time authority.
+    #[must_use]
+    pub fn into_clock(self) -> VirtualClock {
+        self.clock
     }
 
     /// Returns the active virtual camera specification.

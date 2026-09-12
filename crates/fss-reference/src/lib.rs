@@ -61,8 +61,8 @@ pub use alert::{
 };
 pub use bundle::{ReplayBundle, ReplayBundleError, ReplayCursor};
 pub use capture::{
-    ReferenceCapture, ReferenceCaptureReceipt, run_reference_capture,
-    run_reference_capture_with_clock,
+    ReferenceCapture, ReferenceCaptureReceipt, SourceFaultSchedule, run_reference_capture,
+    run_reference_capture_with_clock, run_reference_capture_with_source,
 };
 pub use clock::{MAX_SKEW_PPM, VirtualClock};
 pub use clock_sync::{

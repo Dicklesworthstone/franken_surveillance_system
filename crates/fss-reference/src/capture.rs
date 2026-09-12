@@ -1,5 +1,7 @@
 //! End-to-end deterministic virtual capture through custody and authority publication.
 
+use std::collections::BTreeMap;
+
 use fss_core::{
     BatchId, CanonicalEncode, CaptureInterval, ContentDigest, EvidenceDelta, LedgerAnchor,
     ObjectId, Plane,
@@ -10,23 +12,70 @@ use fss_publication::AuthorityPublisher;
 
 use crate::{
     DeliveryContinuity, DeliveryPacket, DeliveryPlan, DeliveryTrace, ReferenceError, SourcePacket,
-    SourceTrace, VirtualCameraSpec, VirtualClock, generate_source_with_clock,
+    SourceTrace, VirtualCameraSpec, VirtualClock, VirtualSource,
 };
 
-/// Receipt binding virtual source truth, delivery truth, object closure, and authority history.
+/// Typed source-level fault schedule that can be injected into virtual camera capture.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SourceFaultSchedule {
+    /// Injected indeterminate read faults indexed by 1-based packet sequence.
+    pub indeterminate: BTreeMap<u64, String>,
+    /// Injected unobservable read faults indexed by 1-based packet sequence.
+    pub unobservable: BTreeMap<u64, String>,
+    /// Injected operational execution failures indexed by 1-based packet sequence.
+    pub execution_failures: BTreeMap<u64, String>,
+}
+
+impl SourceFaultSchedule {
+    /// Creates an empty fault schedule.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Injects an indeterminate read fault at 1-based `sequence`.
+    pub fn inject_indeterminate(&mut self, sequence: u64, reason: impl Into<String>) {
+        self.indeterminate.insert(sequence, reason.into());
+    }
+
+    /// Injects an unobservable read fault at 1-based `sequence`.
+    pub fn inject_unobservable(&mut self, sequence: u64, reason: impl Into<String>) {
+        self.unobservable.insert(sequence, reason.into());
+    }
+
+    /// Injects an operational execution failure at 1-based `sequence`.
+    pub fn inject_execution_failure(&mut self, sequence: u64, reason: impl Into<String>) {
+        self.execution_failures.insert(sequence, reason.into());
+    }
+
+    /// Applies this fault schedule to a mutable virtual source instance.
+    pub fn apply_to(&self, source: &mut VirtualSource) {
+        for (&seq, reason) in &self.indeterminate {
+            source.inject_indeterminate_read(seq, reason.clone());
+        }
+        for (&seq, reason) in &self.unobservable {
+            source.inject_unobservable_read(seq, reason.clone());
+        }
+        for (&seq, reason) in &self.execution_failures {
+            source.inject_execution_failure(seq, reason.clone());
+        }
+    }
+}
+
+/// Provenance metadata emitted upon reference capture completion.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReferenceCaptureReceipt {
-    /// Root manifest for the complete capture object graph.
+    /// Merkle root of the capture session manifest.
     pub capture_root: ContentDigest,
-    /// Root manifest for immutable source packet custody.
+    /// Merkle root of raw retained source bytes.
     pub source_root: ContentDigest,
-    /// Root manifest for delivered transport bytes and ordered trace.
+    /// Merkle root of observed delivery packets.
     pub delivery_root: ContentDigest,
-    /// Exact retained continuity/integrity witness object.
+    /// Content digest of the transport continuity witness.
     pub continuity_digest: ContentDigest,
-    /// Canonical authority anchor after publication.
+    /// Anchor published into authority storage.
     pub authority_anchor: LedgerAnchor,
-    /// Number of objects reachable from the capture root.
+    /// Total objects reachable from the capture root.
     pub closure_object_count: usize,
     /// Number of source packets.
     pub source_packet_count: usize,
@@ -45,6 +94,8 @@ pub struct ReferenceCapture {
     pub delivery_packets: Vec<DeliveryPacket>,
     /// Explicit loss/duplicate/reorder/corruption witness.
     pub continuity: DeliveryContinuity,
+    /// Mutated virtual clock carrying time progression after capture.
+    pub clock: VirtualClock,
 }
 
 /// Executes one deterministic virtual capture.
@@ -59,21 +110,42 @@ pub fn run_reference_capture(
     objects: &mut InMemoryObjectStore,
     ledger: &mut DurableReferenceLedger,
 ) -> Result<ReferenceCapture, ReferenceError> {
-    let clock = VirtualClock::from_spec(spec);
-    run_reference_capture_with_clock(spec, clock, plan, objects, ledger)
+    let mut clock = VirtualClock::from_spec(spec);
+    run_reference_capture_with_clock(spec, &mut clock, None, plan, objects, ledger)
 }
 
 /// Executes one deterministic virtual capture driven by an explicit [`VirtualClock`] time authority.
+///
+/// If `source_faults` are provided, they are injected into the source before packet generation.
+/// Mutates `clock` in place to reflect the advanced timeline and PRNG state at the end of the capture.
 pub fn run_reference_capture_with_clock(
     spec: &VirtualCameraSpec,
-    clock: VirtualClock,
+    clock: &mut VirtualClock,
+    source_faults: Option<&SourceFaultSchedule>,
     plan: &DeliveryPlan,
     objects: &mut InMemoryObjectStore,
     ledger: &mut DurableReferenceLedger,
 ) -> Result<ReferenceCapture, ReferenceError> {
+    let mut source = VirtualSource::with_clock(spec.clone(), clock.clone())?;
+    if let Some(faults) = source_faults {
+        faults.apply_to(&mut source);
+    }
+    let capture = run_reference_capture_with_source(&mut source, plan, objects, ledger)?;
+    *clock = source.into_clock();
+    Ok(capture)
+}
+
+/// Executes one deterministic virtual capture driven by an explicit [`VirtualSource`].
+pub fn run_reference_capture_with_source(
+    source: &mut VirtualSource,
+    plan: &DeliveryPlan,
+    objects: &mut InMemoryObjectStore,
+    ledger: &mut DurableReferenceLedger,
+) -> Result<ReferenceCapture, ReferenceError> {
+    let spec = source.spec().clone();
     spec.validate()?;
     plan.validate_against(spec.packet_count)?;
-    let source_packets = generate_source_with_clock(spec, clock)?;
+    let source_packets = source.generate_packets()?;
 
     for packet in &source_packets {
         let stored = objects.put_verified(&packet.bytes)?;
@@ -81,7 +153,7 @@ pub fn run_reference_capture_with_clock(
             return Err(ReferenceError::DigestMismatch);
         }
     }
-    let source_trace = SourceTrace::from_packets(spec, &source_packets);
+    let source_trace = SourceTrace::from_packets(&spec, &source_packets);
     let source_trace_digest = objects.put_verified(&source_trace.canonical_bytes())?;
     let source_manifest = ObjectManifest::new(
         "virtual-source-session",
@@ -167,5 +239,6 @@ pub fn run_reference_capture_with_clock(
         source_packets,
         delivery_packets,
         continuity,
+        clock: source.clock().clone(),
     })
 }

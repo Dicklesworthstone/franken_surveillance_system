@@ -8,8 +8,9 @@ use fss_core::{CapsuleId, ContentDigest, OperationOutcome, RefusalReason, Sensor
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 use fss_reference::{
-    DeliveryPlan, MAX_SKEW_PPM, ReferenceError, VirtualCameraSpec, VirtualClock, VirtualSource,
-    generate_source, run_reference_capture_with_clock,
+    DeliveryDirective, DeliveryPlan, MAX_SKEW_PPM, PacketFaultSchedule, ReferenceError,
+    SourceFaultSchedule, VirtualCameraSpec, VirtualClock, VirtualSource, generate_source,
+    generate_source_with_clock, inject_packets, run_reference_capture_with_clock,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -331,8 +332,15 @@ fn reference_capture_wires_virtual_clock_with_full_custody() -> Result<(), Box<d
     let mut ledger =
         DurableReferenceLedger::open(&path, "site:wired", IncompleteTailPolicy::Reject)?;
 
-    let clock = VirtualClock::from_spec(&spec);
-    let capture = run_reference_capture_with_clock(&spec, clock, &plan, &mut objects, &mut ledger)?;
+    let mut clock = VirtualClock::from_spec(&spec);
+    let capture = run_reference_capture_with_clock(
+        &spec,
+        &mut clock,
+        None,
+        &plan,
+        &mut objects,
+        &mut ledger,
+    )?;
 
     assert_eq!(capture.source_packets.len(), 5);
     assert_eq!(capture.delivery_packets.len(), 5);
@@ -374,12 +382,12 @@ fn e2e_multi_camera_surveillance_scenario_with_clock_drift_and_replay() -> Resul
     let side_spec = create_spec("capture:e2e:side", "sensor:cam-side", 0x2002, 6)?;
 
     // front camera uses nominal clock
-    let clock_front = VirtualClock::from_spec(&front_spec);
+    let mut clock_front_a = VirtualClock::from_spec(&front_spec);
 
     // side camera experiences +2000 ppm clock drift and 100 ns jitter
-    let mut clock_side = VirtualClock::from_spec(&side_spec);
-    clock_side.inject_skew(2_000)?;
-    clock_side.inject_jitter(100);
+    let mut clock_side_a = VirtualClock::from_spec(&side_spec);
+    clock_side_a.inject_skew(2_000)?;
+    clock_side_a.inject_jitter(100);
 
     let plan = DeliveryPlan::identity(6)?;
     let mut objects_a = InMemoryObjectStore::new(ObjectLimits::new(256, 2 * 1024 * 1024));
@@ -389,7 +397,8 @@ fn e2e_multi_camera_surveillance_scenario_with_clock_drift_and_replay() -> Resul
     // Execute capture for both cameras into shared ledger and object custody
     let capture_front_a = run_reference_capture_with_clock(
         &front_spec,
-        clock_front.clone(),
+        &mut clock_front_a,
+        None,
         &plan,
         &mut objects_a,
         &mut ledger_a,
@@ -397,7 +406,8 @@ fn e2e_multi_camera_surveillance_scenario_with_clock_drift_and_replay() -> Resul
 
     let capture_side_a = run_reference_capture_with_clock(
         &side_spec,
-        clock_side.clone(),
+        &mut clock_side_a,
+        None,
         &plan,
         &mut objects_a,
         &mut ledger_a,
@@ -406,13 +416,19 @@ fn e2e_multi_camera_surveillance_scenario_with_clock_drift_and_replay() -> Resul
     assert_eq!(ledger_a.current().anchor.commit_sequence, 2);
 
     // Second run: prove byte-identical replay
+    let mut clock_front_b = VirtualClock::from_spec(&front_spec);
+    let mut clock_side_b = VirtualClock::from_spec(&side_spec);
+    clock_side_b.inject_skew(2_000)?;
+    clock_side_b.inject_jitter(100);
+
     let mut objects_b = InMemoryObjectStore::new(ObjectLimits::new(256, 2 * 1024 * 1024));
     let mut ledger_b =
         DurableReferenceLedger::open(&path_b, "site:lab-e2e", IncompleteTailPolicy::Reject)?;
 
     let capture_front_b = run_reference_capture_with_clock(
         &front_spec,
-        clock_front,
+        &mut clock_front_b,
+        None,
         &plan,
         &mut objects_b,
         &mut ledger_b,
@@ -420,7 +436,8 @@ fn e2e_multi_camera_surveillance_scenario_with_clock_drift_and_replay() -> Resul
 
     let capture_side_b = run_reference_capture_with_clock(
         &side_spec,
-        clock_side,
+        &mut clock_side_b,
+        None,
         &plan,
         &mut objects_b,
         &mut ledger_b,
@@ -428,6 +445,8 @@ fn e2e_multi_camera_surveillance_scenario_with_clock_drift_and_replay() -> Resul
 
     assert_eq!(capture_front_a, capture_front_b);
     assert_eq!(capture_side_a, capture_side_b);
+    assert_eq!(clock_front_a, clock_front_b);
+    assert_eq!(clock_side_a, clock_side_b);
     assert_eq!(ledger_a.batches(), ledger_b.batches());
     assert_eq!(ledger_a.current().anchor, ledger_b.current().anchor);
 
@@ -551,6 +570,284 @@ fn test_virtual_source_indeterminate_repoll_does_not_skip_sequence() -> Result<(
     let outcome3 = source.emit_packet()?;
     assert!(matches!(outcome3, OperationOutcome::Success(_)));
     assert_eq!(source.current_sequence(), 3);
+
+    Ok(())
+}
+
+#[test]
+fn test_clock_skew_quantization_eliminated_via_residual_accumulator() -> Result<(), Box<dyn Error>>
+{
+    let start = TimestampNs(1_000_000_000);
+    // Skew +500 ppm: 500 / 1_000_000.
+    // 1000 steps of 1_000 ns (1 µs) = 1_000_000 ns nominal delta.
+    // Without residual accumulator, 1_000 * 500 / 1_000_000 = 0 skew offset each step, losing 500 ns.
+    // With accumulator, residual accumulates to produce exactly 500 ns skew offset in total.
+    let mut clock_stepped = VirtualClock::new(42, start);
+    clock_stepped.inject_skew(500)?;
+    for _ in 0..1_000 {
+        clock_stepped.advance(1_000)?;
+    }
+
+    // Compare with a single advance of 1_000_000 ns (1 ms)
+    let mut clock_single = VirtualClock::new(42, start);
+    clock_single.inject_skew(500)?;
+    clock_single.advance(1_000_000)?;
+
+    assert_eq!(
+        clock_stepped.now(),
+        clock_single.now(),
+        "Accumulator must eliminate small-step quantization loss: stepped={:?} vs single={:?}",
+        clock_stepped.now(),
+        clock_single.now()
+    );
+    // Total nominal 1_000_000 + 500 skew = 1_000_000_500 ns elapsed from start
+    assert_eq!(clock_stepped.now().0, start.0 + 1_000_500);
+    assert_eq!(clock_stepped.step_count(), 1_000);
+    assert_eq!(clock_single.step_count(), 1);
+
+    Ok(())
+}
+
+#[test]
+fn test_capture_pipeline_preserves_and_advances_time_authority() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("time-authority");
+    let _ = fs::remove_file(&path);
+
+    let spec_1 = create_spec("capture:seq:1", "sensor:cam:1", 100, 3)?;
+    let plan = DeliveryPlan::identity(spec_1.packet_count)?;
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(256, 1024 * 1024));
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site:time-test", IncompleteTailPolicy::Reject)?;
+
+    let mut clock = VirtualClock::from_spec(&spec_1);
+    let initial_now = clock.now();
+    assert_eq!(clock.step_count(), 0);
+
+    // First capture advances time authority explicitly in place
+    let capture_1 = run_reference_capture_with_clock(
+        &spec_1,
+        &mut clock,
+        None,
+        &plan,
+        &mut objects,
+        &mut ledger,
+    )?;
+
+    assert_eq!(capture_1.clock, clock);
+    assert!(clock.now().0 > initial_now.0);
+    assert_eq!(clock.step_count(), 2);
+    let intermediate_now = clock.now();
+
+    // Second capture continues with the same mutated clock authority
+    let spec_2 = create_spec("capture:seq:2", "sensor:cam:1", 200, 3)?;
+    let capture_2 = run_reference_capture_with_clock(
+        &spec_2,
+        &mut clock,
+        None,
+        &plan,
+        &mut objects,
+        &mut ledger,
+    )?;
+
+    assert_eq!(capture_2.clock, clock);
+    assert!(clock.now().0 > intermediate_now.0);
+    assert_eq!(clock.step_count(), 4);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_capture_pipeline_unobservable_fault_outcome() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("unobservable-fault");
+    let _ = fs::remove_file(&path);
+
+    let spec = create_spec("capture:unobs:1", "sensor:cam:1", 42, 4)?;
+    let plan = DeliveryPlan::identity(spec.packet_count)?;
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(256, 1024 * 1024));
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site:fault-test", IncompleteTailPolicy::Reject)?;
+
+    let mut faults = SourceFaultSchedule::new();
+    faults.inject_unobservable(2, "hardware sensor lens obscured");
+
+    let mut clock = VirtualClock::from_spec(&spec);
+    let res = run_reference_capture_with_clock(
+        &spec,
+        &mut clock,
+        Some(&faults),
+        &plan,
+        &mut objects,
+        &mut ledger,
+    );
+
+    match res {
+        Err(ReferenceError::UnobservableSourceCapture { sequence, reason }) => {
+            assert_eq!(sequence, 2);
+            assert!(reason.contains("hardware sensor lens obscured"));
+        }
+        other => return Err(format!("expected UnobservableSourceCapture, got {other:?}").into()),
+    }
+
+    // Ledger must be completely empty: no batch committed on unobservable source fault
+    assert!(ledger.batches().is_empty());
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_capture_pipeline_indeterminate_fault_outcome() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("indet-fault");
+    let _ = fs::remove_file(&path);
+
+    let spec = create_spec("capture:indet:pipe", "sensor:cam:1", 43, 3)?;
+    let plan = DeliveryPlan::identity(spec.packet_count)?;
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(256, 1024 * 1024));
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site:fault-test", IncompleteTailPolicy::Reject)?;
+
+    let mut faults = SourceFaultSchedule::new();
+    faults.inject_indeterminate(3, "transient bus glitch");
+
+    let mut clock = VirtualClock::from_spec(&spec);
+    let res = run_reference_capture_with_clock(
+        &spec,
+        &mut clock,
+        Some(&faults),
+        &plan,
+        &mut objects,
+        &mut ledger,
+    );
+
+    match res {
+        Err(ReferenceError::IndeterminateSourceCapture { sequence, reason }) => {
+            assert_eq!(sequence, 3);
+            assert!(reason.contains("transient bus glitch"));
+        }
+        other => return Err(format!("expected IndeterminateSourceCapture, got {other:?}").into()),
+    }
+
+    assert!(ledger.batches().is_empty());
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_capture_pipeline_delivery_gap_fault_witnessed_in_continuity() -> Result<(), Box<dyn Error>>
+{
+    let path = temp_journal("delivery-gap");
+    let _ = fs::remove_file(&path);
+
+    let spec = create_spec("capture:gap:1", "sensor:cam:1", 99, 4)?;
+    // Directive intentionally omits sequence 2 to model packet loss/gap
+    let plan = DeliveryPlan::new(vec![
+        DeliveryDirective::exact(1),
+        DeliveryDirective::exact(3),
+        DeliveryDirective::exact(4),
+    ])?;
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(256, 1024 * 1024));
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site:gap-test", IncompleteTailPolicy::Reject)?;
+
+    let mut clock = VirtualClock::from_spec(&spec);
+    let capture = run_reference_capture_with_clock(
+        &spec,
+        &mut clock,
+        None,
+        &plan,
+        &mut objects,
+        &mut ledger,
+    )?;
+
+    // Source produced 4 packets, delivery received 3
+    assert_eq!(capture.source_packets.len(), 4);
+    assert_eq!(capture.delivery_packets.len(), 3);
+    assert!(!capture.continuity.exact_once_ordered);
+    assert_eq!(capture.continuity.missing_sequences, vec![2]);
+    assert!(capture.continuity.duplicate_sequences.is_empty());
+    assert!(capture.continuity.corrupted_sequences.is_empty());
+
+    // Continuity digest was published to durable ledger
+    assert_eq!(ledger.batches().len(), 1);
+    assert_eq!(
+        ledger.batches()[0].deltas[0].witness_digest,
+        Some(capture.receipt.continuity_digest)
+    );
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_capture_pipeline_delivery_corruption_fault_witnessed_in_continuity()
+-> Result<(), Box<dyn Error>> {
+    let path = temp_journal("delivery-corrupt");
+    let _ = fs::remove_file(&path);
+
+    let spec = create_spec("capture:corrupt:1", "sensor:cam:1", 101, 3)?;
+    // Directive corrupts packet sequence 2
+    let plan = DeliveryPlan::new(vec![
+        DeliveryDirective::exact(1),
+        DeliveryDirective::corrupt(2),
+        DeliveryDirective::exact(3),
+    ])?;
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(256, 1024 * 1024));
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site:corrupt-test", IncompleteTailPolicy::Reject)?;
+
+    let mut clock = VirtualClock::from_spec(&spec);
+    let capture = run_reference_capture_with_clock(
+        &spec,
+        &mut clock,
+        None,
+        &plan,
+        &mut objects,
+        &mut ledger,
+    )?;
+
+    assert_eq!(capture.delivery_packets.len(), 3);
+    assert_ne!(
+        capture.delivery_packets[1].bytes,
+        capture.source_packets[1].bytes
+    );
+    assert!(!capture.continuity.exact_once_ordered);
+    assert_eq!(capture.continuity.corrupted_sequences, vec![2]);
+    assert!(capture.continuity.missing_sequences.is_empty());
+
+    assert_eq!(ledger.batches().len(), 1);
+    assert_eq!(
+        ledger.batches()[0].deltas[0].witness_digest,
+        Some(capture.receipt.continuity_digest)
+    );
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn test_capture_pipeline_packet_fault_injector_schedule_compatibility() -> Result<(), Box<dyn Error>>
+{
+    let spec = create_spec("capture:injector:1", "sensor:cam:1", 777, 5)?;
+    let mut clock = VirtualClock::from_spec(&spec);
+    let source_packets = generate_source_with_clock(&spec, &mut clock)?;
+    assert_eq!(source_packets.len(), 5);
+
+    // Reuse RusticGoose's 7.3 packet_fault injector over 7.1 SourcePacket
+    let mut schedule = PacketFaultSchedule::with_deterministic_rules(0xfeed_cafe, 4)?;
+    schedule.add_drop_rule(2, "simulated network loss")?;
+    schedule.add_duplicate_rule(4, 1)?;
+
+    let (injected_packets, journal) = inject_packets(source_packets, schedule)?;
+
+    assert_eq!(journal.lost_sequences, vec![2]);
+    assert_eq!(journal.duplicated_sequences, vec![4]);
+    assert_eq!(journal.total_input_packets, 5);
+
+    let delivered_seqs: Vec<u64> = injected_packets.iter().map(|p| p.sequence).collect();
+    // Packet 2 dropped, packet 4 duplicated
+    assert_eq!(delivered_seqs, vec![1, 3, 4, 4, 5]);
 
     Ok(())
 }

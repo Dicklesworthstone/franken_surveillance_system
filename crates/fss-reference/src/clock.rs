@@ -21,6 +21,7 @@ pub struct VirtualClock {
     seed: u64,
     prng_state: u64,
     skew_ppm: i64,
+    skew_residual: i128,
     max_jitter_ns: u64,
     step_count: u64,
 }
@@ -43,6 +44,7 @@ impl VirtualClock {
             seed,
             prng_state,
             skew_ppm: 0,
+            skew_residual: 0,
             max_jitter_ns: 0,
             step_count: 0,
         }
@@ -164,10 +166,13 @@ impl VirtualClock {
     /// the step is rejected and the clock remains unchanged.
     pub fn advance(&mut self, nominal_delta_ns: u64) -> Result<TimestampNs, ReferenceError> {
         let nominal = i128::from(nominal_delta_ns);
-        let skew_offset = nominal
+        let total_skew_units = nominal
             .checked_mul(i128::from(self.skew_ppm))
             .ok_or(ReferenceError::ArithmeticOverflow)?
-            / 1_000_000;
+            .checked_add(self.skew_residual)
+            .ok_or(ReferenceError::ArithmeticOverflow)?;
+        let skew_offset = total_skew_units / 1_000_000;
+        let new_residual = total_skew_units % 1_000_000;
 
         let jitter = if self.max_jitter_ns > 0 {
             let sample = self.next_u64();
@@ -197,14 +202,8 @@ impl VirtualClock {
             .checked_add(effective_delta)
             .ok_or(ReferenceError::ArithmeticOverflow)?;
 
-        if new_time < self.current_ns.0 {
-            return Err(ReferenceError::BackwardStepAttempt {
-                current: self.current_ns,
-                attempted: TimestampNs(new_time),
-            });
-        }
-
         self.current_ns = TimestampNs(new_time);
+        self.skew_residual = new_residual;
         self.step_count = self
             .step_count
             .checked_add(1)
