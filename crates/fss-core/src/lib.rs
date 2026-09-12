@@ -69,14 +69,15 @@ pub use identity::{
     DeviceClass, DeviceIdentity, IsolationMode, MediaKind, SourceIdentity, SourceKind,
 };
 pub use ids::{
-    AdapterEpoch, AdapterGeneration, AdapterId, AffordanceId, BatchId, CalibrationGeneration,
-    CapsuleId, CaseId, ContextPackId, DeviceGeneration, DeviceId, EpisodeId, Epoch, EventId,
-    FindingId, Generation, GraphGeneration, HandoffId, HypothesisId, IdempotencyKey,
-    IdentityLifecycleState, LedgerEpoch, MissionId, ModelGeneration, ObjectId, ObligationId,
-    OntologyGeneration, OperationId, PlanId, PolicyEpoch, PolicyGeneration, PolicyId, PrincipalId,
-    PrivacyEpoch, PrivacyGeneration, PropertyId, SchemaEpoch, SchemaId, SearchGeneration, SensorId,
-    SessionId, SourceId, StreamGeneration, StreamId, TombstoneId, TombstoneReason, TombstoneRecord,
-    TombstoneRegistry, TrackId, WorkspaceId,
+    AdapterEpoch, AdapterGeneration, AdapterId, AffordanceId, AppGeneration, ApplicationGeneration,
+    BatchId, CalibrationGeneration, CapsuleId, CaseId, ContextPackId, DeviceGeneration, DeviceId,
+    EpisodeId, Epoch, EventId, FindingId, FirmwareGeneration, Generation, GraphGeneration,
+    HandoffId, HypothesisId, IdempotencyKey, IdentityLifecycleState, LedgerEpoch, MissionId,
+    ModelGeneration, ObjectId, ObligationId, OntologyGeneration, OperationId, PlanId, PolicyEpoch,
+    PolicyGeneration, PolicyId, PrincipalId, PrivacyEpoch, PrivacyGeneration, PropertyId,
+    SchemaEpoch, SchemaId, SearchGeneration, SensorId, SessionId, SourceId, StreamGeneration,
+    StreamId, TombstoneId, TombstoneReason, TombstoneRecord, TombstoneRegistry, TrackId,
+    WorkspaceId,
 };
 
 pub use outcome::{

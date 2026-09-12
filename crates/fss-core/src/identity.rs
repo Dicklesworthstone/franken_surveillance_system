@@ -9,8 +9,8 @@ use core::fmt;
 
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::ids::{
-    AdapterGeneration, AdapterId, DeviceGeneration, DeviceId, ModelGeneration, SourceId,
-    StreamGeneration,
+    AdapterGeneration, AdapterId, AppGeneration, DeviceGeneration, DeviceId, FirmwareGeneration,
+    ModelGeneration, SourceId, StreamGeneration,
 };
 use crate::{ClockBasis, ContentDigest, ContractError};
 
@@ -108,10 +108,27 @@ impl DeviceCapabilities {
     /// Hardware PTP/synchronized capture timestamping.
     pub const HARDWARE_TIMESTAMPING: Self = Self(1 << 6);
 
-    /// Constructs capabilities from raw bits.
+    /// Mask of all defined device capability bits (bits 0..=6).
+    pub const ALL: Self = Self(0x7F);
+
+    /// Validates and constructs capabilities from raw bits, returning an error if undefined bits are set.
+    pub const fn from_bits(bits: u32) -> Result<Self, ContractError> {
+        if (bits & !Self::ALL.0) != 0 {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        Ok(Self(bits))
+    }
+
+    /// Constructs capabilities from raw bits, truncating any undefined bits.
     #[must_use]
-    pub const fn from_bits(bits: u32) -> Self {
-        Self(bits)
+    pub const fn from_bits_truncate(bits: u32) -> Self {
+        Self(bits & Self::ALL.0)
+    }
+
+    /// Returns true if only defined capability bits are set.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        (self.0 & !Self::ALL.0) == 0
     }
 
     /// Returns the raw bits value.
@@ -147,7 +164,8 @@ impl CanonicalEncode for DeviceCapabilities {
 
 impl CanonicalDecode for DeviceCapabilities {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        decoder.u32().map(Self)
+        let bits = decoder.u32()?;
+        Self::from_bits(bits)
     }
 }
 
@@ -505,10 +523,27 @@ impl AdapterCapabilities {
     /// Health telemetry and diagnostic metrics.
     pub const TELEMETRY: Self = Self(1 << 7);
 
-    /// Constructs capabilities from raw bits.
+    /// Mask of all defined adapter capability bits (bits 0..=7).
+    pub const ALL: Self = Self(0xFF);
+
+    /// Validates and constructs capabilities from raw bits, returning an error if undefined bits are set.
+    pub const fn from_bits(bits: u32) -> Result<Self, ContractError> {
+        if (bits & !Self::ALL.0) != 0 {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        Ok(Self(bits))
+    }
+
+    /// Constructs capabilities from raw bits, truncating any undefined bits.
     #[must_use]
-    pub const fn from_bits(bits: u32) -> Self {
-        Self(bits)
+    pub const fn from_bits_truncate(bits: u32) -> Self {
+        Self(bits & Self::ALL.0)
+    }
+
+    /// Returns true if only defined capability bits are set.
+    #[must_use]
+    pub const fn is_valid(&self) -> bool {
+        (self.0 & !Self::ALL.0) == 0
     }
 
     /// Returns the raw bits value.
@@ -544,7 +579,8 @@ impl CanonicalEncode for AdapterCapabilities {
 
 impl CanonicalDecode for AdapterCapabilities {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        decoder.u32().map(Self)
+        let bits = decoder.u32()?;
+        Self::from_bits(bits)
     }
 }
 
@@ -564,10 +600,10 @@ pub struct DeviceIdentity {
     pub model: String,
     /// Hardware board or revision code.
     pub hardware_revision: String,
-    /// Active firmware version string.
-    pub firmware_version: String,
-    /// Optional vendor application or agent version.
-    pub application_version: Option<String>,
+    /// Active firmware build generation.
+    pub firmware_version: FirmwareGeneration,
+    /// Optional vendor application or agent release generation.
+    pub application_version: Option<AppGeneration>,
     /// Optional model package generation bound to this device.
     pub model_generation: Option<ModelGeneration>,
     /// Device classification.
@@ -598,14 +634,7 @@ impl DeviceIdentity {
         {
             return Err(ContractError::InvalidIdentifier);
         }
-        if self.firmware_version.is_empty() || self.firmware_version.len() > Self::MAX_VERSION_LEN {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if self
-            .application_version
-            .as_deref()
-            .is_some_and(|app| app.is_empty() || app.len() > Self::MAX_VERSION_LEN)
-        {
+        if !self.capabilities.is_valid() {
             return Err(ContractError::InvalidIdentifier);
         }
         if self.failure_domain.is_empty() || self.failure_domain.len() > Self::MAX_STR_LEN {
@@ -622,14 +651,14 @@ impl DeviceIdentity {
 
     /// Creates a new device identity with an updated generation.
     ///
-    /// Monotonically transitions to a distinct configuration generation.
-    /// Attempting to transition to the identical generation fails closed with
+    /// Monotonically transitions to a strictly newer configuration generation.
+    /// Attempting to transition to an older or identical generation fails closed with
     /// [`ContractError::GenerationConflict`].
     pub fn transition_generation(
         &self,
         new_generation: DeviceGeneration,
     ) -> Result<Self, ContractError> {
-        if self.generation == new_generation {
+        if new_generation <= self.generation {
             return Err(ContractError::GenerationConflict);
         }
         let mut next = self.clone();
@@ -666,11 +695,11 @@ impl CanonicalEncode for DeviceIdentity {
         encoder.text(&self.manufacturer);
         encoder.text(&self.model);
         encoder.text(&self.hardware_revision);
-        encoder.text(&self.firmware_version);
+        self.firmware_version.encode_canonical(encoder);
         match &self.application_version {
             Some(app) => {
                 encoder.bool(true);
-                encoder.text(app);
+                app.encode_canonical(encoder);
             }
             None => {
                 encoder.bool(false);
@@ -702,9 +731,9 @@ impl CanonicalDecode for DeviceIdentity {
         let manufacturer = decoder.text()?.to_string();
         let model = decoder.text()?.to_string();
         let hardware_revision = decoder.text()?.to_string();
-        let firmware_version = decoder.text()?.to_string();
+        let firmware_version = FirmwareGeneration::decode_canonical(decoder)?;
         let application_version = if decoder.bool()? {
-            Some(decoder.text()?.to_string())
+            Some(AppGeneration::decode_canonical(decoder)?)
         } else {
             None
         };
@@ -787,13 +816,14 @@ impl SourceIdentity {
 
     /// Creates a new source identity with an updated stream generation.
     ///
-    /// Attempting to transition to the identical generation fails closed with
+    /// Monotonically transitions to a strictly newer stream generation.
+    /// Attempting to transition to an older or identical generation fails closed with
     /// [`ContractError::GenerationConflict`].
     pub fn transition_stream_generation(
         &self,
         new_generation: StreamGeneration,
     ) -> Result<Self, ContractError> {
-        if self.stream_generation == new_generation {
+        if new_generation <= self.stream_generation {
             return Err(ContractError::GenerationConflict);
         }
         let mut next = self.clone();
@@ -899,6 +929,9 @@ impl AdapterIdentity {
         if self.protocol_profile.is_empty() || self.protocol_profile.len() > Self::MAX_STR_LEN {
             return Err(ContractError::InvalidIdentifier);
         }
+        if !self.capabilities.is_valid() {
+            return Err(ContractError::InvalidIdentifier);
+        }
         if self.max_bandwidth_bytes_per_sec == 0 {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -919,13 +952,14 @@ impl AdapterIdentity {
 
     /// Creates a new adapter identity with an updated generation.
     ///
-    /// Attempting to transition to the identical generation fails closed with
+    /// Monotonically transitions to a strictly newer configuration generation.
+    /// Attempting to transition to an older or identical generation fails closed with
     /// [`ContractError::GenerationConflict`].
     pub fn transition_generation(
         &self,
         new_generation: AdapterGeneration,
     ) -> Result<Self, ContractError> {
-        if self.generation == new_generation {
+        if new_generation <= self.generation {
             return Err(ContractError::GenerationConflict);
         }
         let mut next = self.clone();

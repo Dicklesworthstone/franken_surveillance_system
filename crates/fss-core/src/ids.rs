@@ -172,29 +172,128 @@ stable_id!(HandoffId, "A stable handoff-capsule identity.");
 stable_id!(ObjectId, "A stable object identity in the semantic ledger.");
 
 // Additional architectural stable IDs
-stable_id!(
+macro_rules! stable_id_with_prefix_alias {
+    ($name:ident, $description:literal, $canonical_prefix:literal, $alt_prefix:literal) => {
+        #[doc = $description]
+        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        pub struct $name(String);
+
+        impl $name {
+            /// Canonical prefix for this identifier.
+            pub const PREFIX: &'static str = $canonical_prefix;
+            /// Alternative accepted prefix for this identifier.
+            pub const ALT_PREFIX: &'static str = $alt_prefix;
+
+            /// Parses an identifier in the canonical portable alphabet, normalizing any accepted alternative prefix.
+            pub fn parse(value: impl Into<String>) -> Result<Self, ContractError> {
+                let value = value.into();
+                let normalized = if let Some(suffix) = value.strip_prefix(Self::ALT_PREFIX) {
+                    format!("{}{suffix}", Self::PREFIX)
+                } else {
+                    value
+                };
+                validate_id(&normalized)?;
+                Ok(Self(normalized))
+            }
+
+            /// Creates an identifier from a suffix using the canonical prefix.
+            pub fn from_suffix(suffix: &str) -> Result<Self, ContractError> {
+                let text = format!("{}{suffix}", Self::PREFIX);
+                Self::parse(text)
+            }
+
+            /// Returns the identifier text.
+            #[must_use]
+            pub fn as_str(&self) -> &str {
+                &self.0
+            }
+
+            /// Consumes the wrapper and returns the inner String.
+            #[must_use]
+            pub fn into_inner(self) -> String {
+                self.0
+            }
+        }
+
+        impl fmt::Display for $name {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(&self.0)
+            }
+        }
+
+        impl Deref for $name {
+            type Target = str;
+
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl AsRef<str> for $name {
+            fn as_ref(&self) -> &str {
+                &self.0
+            }
+        }
+
+        impl FromStr for $name {
+            type Err = ContractError;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Self::parse(s)
+            }
+        }
+
+        impl TryFrom<String> for $name {
+            type Error = ContractError;
+
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                Self::parse(value)
+            }
+        }
+
+        impl TryFrom<&str> for $name {
+            type Error = ContractError;
+
+            fn try_from(value: &str) -> Result<Self, Self::Error> {
+                Self::parse(value)
+            }
+        }
+
+        impl CanonicalEncode for $name {
+            fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+                encoder.text(&self.0);
+            }
+        }
+
+        impl CanonicalDecode for $name {
+            fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+                let text = decoder.text()?;
+                Self::parse(text)
+            }
+        }
+    };
+}
+
+stable_id_with_prefix_alias!(
     SourceId,
-    "A stable opaque identifier for an evidence source."
+    "A stable opaque identifier for an evidence source.",
+    "src:",
+    "source:"
 );
-stable_id!(DeviceId, "A stable physical or virtual device identity.");
-stable_id!(
+stable_id_with_prefix_alias!(
+    DeviceId,
+    "A stable physical or virtual device identity.",
+    "device:",
+    "dev:"
+);
+stable_id_with_prefix_alias!(
     AdapterId,
-    "A stable opaque identifier for a device adapter."
+    "A stable opaque identifier for a device adapter.",
+    "adapter:",
+    "adp:"
 );
 
 impl SourceId {
-    /// Canonical prefix for source identifiers (`"src:"`).
-    pub const PREFIX: &'static str = "src:";
-
-    /// Alternative accepted prefix for source identifiers (`"source:"`).
-    pub const ALT_PREFIX: &'static str = "source:";
-
-    /// Creates a source identifier from a suffix using the canonical `"src:"` prefix.
-    pub fn from_suffix(suffix: &str) -> Result<Self, ContractError> {
-        let text = format!("{}{suffix}", Self::PREFIX);
-        Self::parse(text)
-    }
-
     /// Returns true if the identifier text begins with a recognized source prefix (`src:` or `source:`).
     #[must_use]
     pub fn has_source_prefix(&self) -> bool {
@@ -203,18 +302,6 @@ impl SourceId {
 }
 
 impl DeviceId {
-    /// Canonical prefix for device identifiers (`"device:"`).
-    pub const PREFIX: &'static str = "device:";
-
-    /// Alternative accepted prefix for device identifiers (`"dev:"`).
-    pub const ALT_PREFIX: &'static str = "dev:";
-
-    /// Creates a device identifier from a suffix using the canonical `"device:"` prefix.
-    pub fn from_suffix(suffix: &str) -> Result<Self, ContractError> {
-        let text = format!("{}{suffix}", Self::PREFIX);
-        Self::parse(text)
-    }
-
     /// Returns true if the identifier text begins with a recognized device prefix (`device:` or `dev:`).
     #[must_use]
     pub fn has_device_prefix(&self) -> bool {
@@ -223,18 +310,6 @@ impl DeviceId {
 }
 
 impl AdapterId {
-    /// Canonical prefix for adapter identifiers (`"adapter:"`).
-    pub const PREFIX: &'static str = "adapter:";
-
-    /// Alternative accepted prefix for adapter identifiers (`"adp:"`).
-    pub const ALT_PREFIX: &'static str = "adp:";
-
-    /// Creates an adapter identifier from a suffix using the canonical `"adapter:"` prefix.
-    pub fn from_suffix(suffix: &str) -> Result<Self, ContractError> {
-        let text = format!("{}{suffix}", Self::PREFIX);
-        Self::parse(text)
-    }
-
     /// Returns true if the identifier text begins with a recognized adapter prefix (`adapter:` or `adp:`).
     #[must_use]
     pub fn has_adapter_prefix(&self) -> bool {
@@ -552,6 +627,16 @@ subsystem_generation!(
     PrivacyGeneration,
     "An immutable privacy projection generation identifier."
 );
+subsystem_generation!(
+    FirmwareGeneration,
+    "An immutable device firmware build and release generation identifier."
+);
+subsystem_generation!(
+    AppGeneration,
+    "An immutable device application or agent release generation identifier."
+);
+/// Type alias for [`AppGeneration`].
+pub type ApplicationGeneration = AppGeneration;
 
 /// The semantic reason why an identity was tombstoned.
 ///

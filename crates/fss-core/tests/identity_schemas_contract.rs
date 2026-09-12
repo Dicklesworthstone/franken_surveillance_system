@@ -4,17 +4,19 @@
 use std::collections::BTreeSet;
 
 use fss_core::{
-    AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind,
-    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ClockBasis,
-    ContractError, CredentialMethod, DeviceCapabilities, DeviceClass, DeviceGeneration, DeviceId,
-    DeviceIdentity, IsolationMode, MediaKind, ModelGeneration, SourceId, SourceIdentity,
-    SourceKind, StreamGeneration,
+    AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind, AppGeneration,
+    ApplicationGeneration, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
+    ClockBasis, ContentDigest, ContractError, CredentialMethod, DeviceCapabilities, DeviceClass,
+    DeviceGeneration, DeviceId, DeviceIdentity, FirmwareGeneration, IsolationMode, MediaKind,
+    ModelGeneration, SourceId, SourceIdentity, SourceKind, StreamGeneration,
 };
 
 fn sample_device() -> Result<DeviceIdentity, ContractError> {
     let device_id = DeviceId::parse("device:insta360-link-main")?;
     let generation = DeviceGeneration::parse("gen:dev:2026-09-11:rev1")?;
     let model_gen = ModelGeneration::parse("gen:model:yolo-pose-v4")?;
+    let firmware_version = FirmwareGeneration::parse("gen:firmware:v1-2-64")?;
+    let application_version = Some(AppGeneration::parse("gen:app:2026-09")?);
 
     let device = DeviceIdentity {
         device_id,
@@ -22,8 +24,8 @@ fn sample_device() -> Result<DeviceIdentity, ContractError> {
         manufacturer: "Insta360".to_string(),
         model: "Link".to_string(),
         hardware_revision: "HW-REV-2.1".to_string(),
-        firmware_version: "FW-1.2.64".to_string(),
-        application_version: Some("APP-2026.9".to_string()),
+        firmware_version,
+        application_version,
         model_generation: Some(model_gen),
         device_class: DeviceClass::Camera,
         capabilities: DeviceCapabilities::PTZ
@@ -188,9 +190,9 @@ fn test_device_identity_construction_and_bounds() -> Result<(), ContractError> {
         return Err(ContractError::InvalidIdentifier);
     }
 
-    // Verify empty firmware_version fails closed
+    // Verify unknown capabilities fail closed in verify
     let mut invalid = device.clone();
-    invalid.firmware_version.clear();
+    invalid.capabilities = DeviceCapabilities(1 << 31);
     if invalid.verify().is_ok() {
         return Err(ContractError::InvalidIdentifier);
     }
@@ -370,7 +372,7 @@ fn test_unknown_version_fails_closed() -> Result<(), ContractError> {
     enc.text(&dev.manufacturer);
     enc.text(&dev.model);
     enc.text(&dev.hardware_revision);
-    enc.text(&dev.firmware_version);
+    dev.firmware_version.encode_canonical(&mut enc);
     enc.bool(false);
     enc.bool(false);
     dev.device_class.encode_canonical(&mut enc);
@@ -558,6 +560,280 @@ fn test_capabilities_bitflags() -> Result<(), ContractError> {
     let mut dec = CanonicalDecoder::new(&bytes);
     let adecoded = AdapterCapabilities::decode_canonical(&mut dec)?;
     if adecoded != acaps {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    Ok(())
+}
+
+/// Finding 1: Prefix aliases normalize to canonical prefixes and produce identical canonical digests.
+#[test]
+fn test_prefix_aliases_canonical_normalization_and_digest_agreement() -> Result<(), ContractError> {
+    let src_canonical = SourceId::parse("src:cam01")?;
+    let src_alt = SourceId::parse("source:cam01")?;
+    if src_canonical != src_alt {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if src_alt.as_str() != "src:cam01" {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    let mut enc1 = CanonicalEncoder::new();
+    src_canonical.encode_canonical(&mut enc1);
+    let mut enc2 = CanonicalEncoder::new();
+    src_alt.encode_canonical(&mut enc2);
+    let bytes1 = enc1.finish();
+    let bytes2 = enc2.finish();
+    if bytes1 != bytes2 {
+        return Err(ContractError::NonCanonicalOrdering);
+    }
+    if ContentDigest::sha256(&bytes1) != ContentDigest::sha256(&bytes2) {
+        return Err(ContractError::DigestMismatch);
+    }
+
+    let dev_canonical = DeviceId::parse("device:cam-front")?;
+    let dev_alt = DeviceId::parse("dev:cam-front")?;
+    if dev_canonical != dev_alt {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if dev_alt.as_str() != "device:cam-front" {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    let mut enc1 = CanonicalEncoder::new();
+    dev_canonical.encode_canonical(&mut enc1);
+    let mut enc2 = CanonicalEncoder::new();
+    dev_alt.encode_canonical(&mut enc2);
+    let bytes1 = enc1.finish();
+    let bytes2 = enc2.finish();
+    if bytes1 != bytes2 {
+        return Err(ContractError::NonCanonicalOrdering);
+    }
+    if ContentDigest::sha256(&bytes1) != ContentDigest::sha256(&bytes2) {
+        return Err(ContractError::DigestMismatch);
+    }
+
+    let adp_canonical = AdapterId::parse("adapter:onvif-01")?;
+    let adp_alt = AdapterId::parse("adp:onvif-01")?;
+    if adp_canonical != adp_alt {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if adp_alt.as_str() != "adapter:onvif-01" {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    let mut enc1 = CanonicalEncoder::new();
+    adp_canonical.encode_canonical(&mut enc1);
+    let mut enc2 = CanonicalEncoder::new();
+    adp_alt.encode_canonical(&mut enc2);
+    let bytes1 = enc1.finish();
+    let bytes2 = enc2.finish();
+    if bytes1 != bytes2 {
+        return Err(ContractError::NonCanonicalOrdering);
+    }
+    if ContentDigest::sha256(&bytes1) != ContentDigest::sha256(&bytes2) {
+        return Err(ContractError::DigestMismatch);
+    }
+
+    Ok(())
+}
+
+/// Finding 2: Subsystem generation transitions enforce monotonicity and reject backward rollback.
+#[test]
+fn test_generation_transitions_reject_non_monotonic_rollback() -> Result<(), ContractError> {
+    let dev = sample_device()?;
+    let gen_older = DeviceGeneration::parse("gen:dev:2026-09-10:rev0")?;
+    let gen_same = dev.generation.clone();
+    let gen_newer = DeviceGeneration::parse("gen:dev:2026-09-12:rev2")?;
+
+    match dev.transition_generation(gen_older) {
+        Err(ContractError::GenerationConflict) => {}
+        _ => return Err(ContractError::InvalidIdentifier),
+    }
+    match dev.transition_generation(gen_same) {
+        Err(ContractError::GenerationConflict) => {}
+        _ => return Err(ContractError::InvalidIdentifier),
+    }
+    let dev_updated = dev.transition_generation(gen_newer)?;
+    if dev_updated.generation.as_str() != "gen:dev:2026-09-12:rev2" {
+        return Err(ContractError::GenerationConflict);
+    }
+
+    let adapter = sample_adapter()?;
+    let adp_older = AdapterGeneration::parse("gen:adapter:uvc-rust-v0")?;
+    let adp_same = adapter.generation.clone();
+    let adp_newer = AdapterGeneration::parse("gen:adapter:uvc-rust-v2")?;
+
+    match adapter.transition_generation(adp_older) {
+        Err(ContractError::GenerationConflict) => {}
+        _ => return Err(ContractError::InvalidIdentifier),
+    }
+    match adapter.transition_generation(adp_same) {
+        Err(ContractError::GenerationConflict) => {}
+        _ => return Err(ContractError::InvalidIdentifier),
+    }
+    let adp_updated = adapter.transition_generation(adp_newer)?;
+    if adp_updated.generation.as_str() != "gen:adapter:uvc-rust-v2" {
+        return Err(ContractError::GenerationConflict);
+    }
+
+    let source = sample_source()?;
+    let stm_older = StreamGeneration::parse("gen:stream:0480p30-nv12")?;
+    let stm_same = source.stream_generation.clone();
+    let stm_newer = StreamGeneration::parse("gen:stream:1440p60-nv12")?;
+
+    match source.transition_stream_generation(stm_older) {
+        Err(ContractError::GenerationConflict) => {}
+        _ => return Err(ContractError::InvalidIdentifier),
+    }
+    match source.transition_stream_generation(stm_same) {
+        Err(ContractError::GenerationConflict) => {}
+        _ => return Err(ContractError::InvalidIdentifier),
+    }
+    let stm_updated = source.transition_stream_generation(stm_newer)?;
+    if stm_updated.stream_generation.as_str() != "gen:stream:1440p60-nv12" {
+        return Err(ContractError::GenerationConflict);
+    }
+
+    Ok(())
+}
+
+/// Finding 3: Capability bitfields reject unknown bits during decoding and verification.
+#[test]
+fn test_capabilities_reject_unknown_bits_in_decode_and_verify() -> Result<(), ContractError> {
+    if DeviceCapabilities::from_bits(1 << 7).is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if DeviceCapabilities::from_bits(1 << 31).is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    let valid_dev_caps = DeviceCapabilities::from_bits(0x7F)?;
+    if valid_dev_caps != DeviceCapabilities::ALL {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    let mut enc = CanonicalEncoder::new();
+    enc.u32(1 << 31);
+    let bytes = enc.finish();
+    let mut dec = CanonicalDecoder::new(&bytes);
+    if DeviceCapabilities::decode_canonical(&mut dec).is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    let mut enc = CanonicalEncoder::new();
+    enc.u32(1 << 7);
+    let bytes = enc.finish();
+    let mut dec = CanonicalDecoder::new(&bytes);
+    if DeviceCapabilities::decode_canonical(&mut dec).is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    if AdapterCapabilities::from_bits(1 << 8).is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if AdapterCapabilities::from_bits(1 << 31).is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    let valid_adp_caps = AdapterCapabilities::from_bits(0xFF)?;
+    if valid_adp_caps != AdapterCapabilities::ALL {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    let mut enc = CanonicalEncoder::new();
+    enc.u32(1 << 31);
+    let bytes = enc.finish();
+    let mut dec = CanonicalDecoder::new(&bytes);
+    if AdapterCapabilities::decode_canonical(&mut dec).is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    let mut enc = CanonicalEncoder::new();
+    enc.u32(1 << 8);
+    let bytes = enc.finish();
+    let mut dec = CanonicalDecoder::new(&bytes);
+    if AdapterCapabilities::decode_canonical(&mut dec).is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    let mut dev = sample_device()?;
+    dev.capabilities = DeviceCapabilities(1 << 31);
+    if dev.verify().is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    let mut adapter = sample_adapter()?;
+    adapter.capabilities = AdapterCapabilities(1 << 31);
+    if adapter.verify().is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    Ok(())
+}
+
+/// Finding 4: Firmware and application versions are typed subsystem generations.
+#[test]
+fn test_firmware_and_app_generation_newtypes() -> Result<(), ContractError> {
+    let fw = FirmwareGeneration::parse("fwgen:v0001:rev2")?;
+    if fw.as_str() != "fwgen:v0001:rev2" {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if FirmwareGeneration::parse("UPPERCASE:NOT:ALLOWED").is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if FirmwareGeneration::parse("short").is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if FirmwareGeneration::parse("").is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    let app = AppGeneration::parse("appgen:v0001:sec1")?;
+    if app.as_str() != "appgen:v0001:sec1" {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    let app_alias: ApplicationGeneration = app;
+    if app_alias.as_str() != "appgen:v0001:sec1" {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if AppGeneration::parse("with whitespace").is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if AppGeneration::parse("toolong:".to_string() + &"a".repeat(260)).is_ok() {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    let dev = sample_device()?;
+    if dev.firmware_version.as_str() != "gen:firmware:v1-2-64" {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if dev.application_version.as_ref().map(|a| a.as_str()) != Some("gen:app:2026-09") {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    Ok(())
+}
+
+/// Finding 5: Schemas match capability bitfield maximums and typed generation bounds.
+#[test]
+fn test_schemas_capability_and_version_bounds() -> Result<(), ContractError> {
+    let dev_schema = include_str!("../../../schemas/device_identity.v1.json");
+    let adp_schema = include_str!("../../../schemas/adapter_identity.v1.json");
+
+    // Device capability maximum must match 7 defined bits (0x7F = 127)
+    if !dev_schema.contains("\"maximum\": 127") {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if dev_schema.contains("\"maximum\": 4294967295") {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    // Adapter capability maximum must match 8 defined bits (0xFF = 255)
+    if !adp_schema.contains("\"maximum\": 255") {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if adp_schema.contains("\"maximum\": 4294967295") {
+        return Err(ContractError::InvalidIdentifier);
+    }
+
+    // Firmware version and application version must specify subsystem generation bounds
+    if !dev_schema.contains("^[a-z0-9][a-z0-9:+._-]{7,255}$") {
         return Err(ContractError::InvalidIdentifier);
     }
 
