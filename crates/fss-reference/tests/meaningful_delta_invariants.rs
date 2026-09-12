@@ -779,8 +779,8 @@ fn test_coalescing_preserves_terminal_and_invalidation_deltas() -> Result<(), Bo
     assert!(!delta_budget.is_non_coalescible());
     assert!(delta_terminal.is_non_coalescible());
 
-    assert_eq!(delta_budget.can_coalesce_with(&delta_terminal)?, false);
-    assert_eq!(delta_terminal.can_coalesce_with(&delta_budget)?, false);
+    assert!(!delta_budget.can_coalesce_with(&delta_terminal)?);
+    assert!(!delta_terminal.can_coalesce_with(&delta_budget)?);
 
     let result = delta_budget.coalesce(
         &delta_terminal,
