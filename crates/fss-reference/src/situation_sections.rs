@@ -7,8 +7,8 @@ use fss_core::{
     CompressionCompleteness, CompressionLossClass, CompressionStopReason, CompressionTransform,
     CompressionTransformKind, ContentDigest, ContextItem, ContractError, ControlEnvelope,
     CriticalPreservation, ExpansionHandle, HandoffCapsule, HandoffId, HandoffPublishParams,
-    KnowledgeState, OperationReceipt, ResourcePressure, ResourceState, SemanticCompressionReceipt,
-    SemanticContextPack, TimestampNs, reference_token_count,
+    KnowledgeCell, KnowledgeState, OperationReceipt, ResourcePressure, ResourceState,
+    SemanticCompressionReceipt, SemanticContextPack, TimestampNs, reference_token_count,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -102,6 +102,31 @@ impl ReferenceSituationPublication {
         required_context_item_ids(situation)
     }
 
+    /// Returns the redundancy records documented in this publication's compression receipt.
+    pub fn redundancy_records(&self) -> Vec<RedundancyRecord> {
+        let mut records = Vec::new();
+        for transform in &self.compression_receipt.transforms {
+            if transform.kind == CompressionTransformKind::Deduplicate
+                && let Some((kind, dropped_id)) = transform.scope.split_once(':')
+                && let Some(ref details) = transform.details
+            {
+                let retained_prefix = "retained representative: ";
+                let reason_prefix = "; reason: ";
+                if let Some(start) = details.strip_prefix(retained_prefix)
+                    && let Some((retained_id, reason)) = start.split_once(reason_prefix)
+                {
+                    records.push(RedundancyRecord {
+                        dropped_item_id: dropped_id.to_owned(),
+                        retained_item_id: retained_id.to_owned(),
+                        kind: kind.to_owned(),
+                        reason: reason.to_owned(),
+                    });
+                }
+            }
+        }
+        records
+    }
+
     /// Recomputes all cross-section invariants and publication identity.
     pub fn verify(&self) -> Result<ContentDigest, ReferenceError> {
         let base = self.situation.verify()?;
@@ -134,6 +159,7 @@ impl ReferenceSituationPublication {
                 .critical_preservation
                 .known_critical_items
                 != required.len() as u64
+            || !self.compression_receipt.critical_preservation.is_lossless()
         {
             return Err(ContractError::EvidenceRequired.into());
         }
@@ -249,6 +275,17 @@ pub fn project_reference_situation(
         loss_class: CompressionLossClass::DecisionPreserving,
         details: Some("all critical items are hard inclusions".to_owned()),
     }];
+    for record in &selection.redundancy_records {
+        transforms.push(CompressionTransform {
+            kind: CompressionTransformKind::Deduplicate,
+            scope: format!("{}:{}", record.kind, record.dropped_item_id),
+            loss_class: CompressionLossClass::Lossless,
+            details: Some(format!(
+                "retained representative: {}; reason: {}",
+                record.retained_item_id, record.reason
+            )),
+        });
+    }
     if !selection.omitted.is_empty() {
         transforms.push(CompressionTransform {
             kind: CompressionTransformKind::Truncate,
@@ -347,19 +384,33 @@ struct ContextCandidate {
     priority: u8,
 }
 
+/// Typed record explaining why a redundant context candidate was dropped in favor of a retained representative.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RedundancyRecord {
+    /// Identifier of the candidate that was dropped.
+    pub dropped_item_id: String,
+    /// Identifier of the retained representative candidate.
+    pub retained_item_id: String,
+    /// Semantic class of the item (e.g., "contradiction", "at_risk").
+    pub kind: String,
+    /// Explanatory reason for redundancy removal.
+    pub reason: String,
+}
+
 #[derive(Clone, Debug)]
 struct ContextSelection {
     selected: Vec<ContextItem>,
     omitted: Vec<ContextItem>,
     critical_count: usize,
     frontier_digest: ContentDigest,
+    redundancy_records: Vec<RedundancyRecord>,
 }
 
 fn select_context(
     situation: &ReferenceSituation,
     target_tokens: u64,
 ) -> Result<ContextSelection, ReferenceError> {
-    let mut candidates = context_candidates(situation)?;
+    let (mut candidates, redundancy_records) = context_candidates(situation)?;
     candidates.sort_by(|left, right| {
         (!left.critical, left.priority, left.item.item_id.as_str()).cmp(&(
             !right.critical,
@@ -392,20 +443,39 @@ fn select_context(
     }
     selected.sort_by(|left, right| left.item_id.cmp(&right.item_id));
     omitted.sort_by(|left, right| left.item_id.cmp(&right.item_id));
+
+    // INV-092: Context selection may remove redundancy but must not remove protected
+    // high-loss worlds, contradictions, or required warnings.
+    for item in &omitted {
+        if matches!(
+            item.kind.as_str(),
+            "protected_world"
+                | "contradiction"
+                | "at_risk"
+                | "hard_clamp"
+                | "obligation"
+                | "epistemic_boundary"
+        ) {
+            return Err(ContractError::EvidenceRequired.into());
+        }
+    }
+
     Ok(ContextSelection {
         selected,
         omitted,
         critical_count,
         frontier_digest,
+        redundancy_records,
     })
 }
 
 fn context_candidates(
     situation: &ReferenceSituation,
-) -> Result<Vec<ContextCandidate>, ReferenceError> {
+) -> Result<(Vec<ContextCandidate>, Vec<RedundancyRecord>), ReferenceError> {
     let capsule = &situation.capsule;
     let frame = &capsule.frame;
     let mut candidates: BTreeMap<String, ContextCandidate> = BTreeMap::new();
+    let mut redundancy: Vec<RedundancyRecord> = Vec::new();
     let summary = frame
         .now
         .first()
@@ -413,6 +483,7 @@ fn context_candidates(
         .ok_or(ReferenceError::InvalidSpec("frame.now must not be empty"))?;
     insert_candidate(
         &mut candidates,
+        &mut redundancy,
         ContextCandidate {
             item: ContextItem {
                 item_id: "context:frame:summary".to_owned(),
@@ -433,6 +504,7 @@ fn context_candidates(
     for statement in &frame.at_risk {
         insert_statement(
             &mut candidates,
+            &mut redundancy,
             StatementCandidateSpec {
                 id_class: "at-risk",
                 kind: "at_risk",
@@ -447,6 +519,7 @@ fn context_candidates(
     for statement in &frame.unknown {
         insert_statement(
             &mut candidates,
+            &mut redundancy,
             StatementCandidateSpec {
                 id_class: "unknown",
                 kind: "unknown",
@@ -461,6 +534,7 @@ fn context_candidates(
     for statement in &frame.changed {
         insert_statement(
             &mut candidates,
+            &mut redundancy,
             StatementCandidateSpec {
                 id_class: "changed",
                 kind: "changed",
@@ -475,6 +549,7 @@ fn context_candidates(
     for obligation in &capsule.obligations {
         insert_candidate(
             &mut candidates,
+            &mut redundancy,
             ContextCandidate {
                 item: ContextItem {
                     item_id: format!("context:obligation:{obligation}"),
@@ -502,6 +577,7 @@ fn context_candidates(
         basis.insert(affordance.target.clone());
         insert_candidate(
             &mut candidates,
+            &mut redundancy,
             ContextCandidate {
                 item: ContextItem {
                     item_id: format!("context:affordance:{}", affordance.affordance_id),
@@ -526,6 +602,7 @@ fn context_candidates(
             basis.extend(affordance.required_capabilities.clone());
             insert_candidate(
                 &mut candidates,
+                &mut redundancy,
                 ContextCandidate {
                     item: ContextItem {
                         item_id: format!("context:hard_clamp:{}", affordance.affordance_id),
@@ -552,6 +629,7 @@ fn context_candidates(
         basis.extend(world.evidence.iter().map(ToString::to_string));
         insert_candidate(
             &mut candidates,
+            &mut redundancy,
             ContextCandidate {
                 item: ContextItem {
                     item_id: format!("context:world:{}", world.world_id),
@@ -566,26 +644,44 @@ fn context_candidates(
             },
         )?;
     }
+    let mut seen_contradictions: Vec<(&KnowledgeCell, String)> = Vec::new();
     for cell in &frame.knowledge_cells {
         if !cell.contradictions.is_empty() {
-            let mut basis = BTreeSet::from([cell.claim_id.clone()]);
-            basis.extend(cell.contradictions.iter().map(ToString::to_string));
-            insert_candidate(
-                &mut candidates,
-                ContextCandidate {
-                    item: ContextItem {
-                        item_id: format!("context:contradiction:{}", cell.claim_id),
-                        kind: "contradiction".to_owned(),
-                        epistemic_state: KnowledgeState::Conflicted,
-                        content: cell.statement.clone(),
-                        basis,
-                        expansion_handles: BTreeSet::new(),
+            let item_id = format!("context:contradiction:{}", cell.claim_id);
+            if let Some((_, prev_item_id)) = seen_contradictions.iter().find(|(c, _)| {
+                c.statement == cell.statement && c.contradictions == cell.contradictions
+            }) {
+                redundancy.push(RedundancyRecord {
+                    dropped_item_id: item_id,
+                    retained_item_id: prev_item_id.clone(),
+                    kind: "contradiction".to_owned(),
+                    reason: "duplicate contradiction with identical statement and contradicting evidence roots; retained earlier representative".to_owned(),
+                });
+            } else {
+                seen_contradictions.push((cell, item_id.clone()));
+                let mut basis = BTreeSet::from([cell.claim_id.clone()]);
+                basis.extend(cell.contradictions.iter().map(ToString::to_string));
+                insert_candidate(
+                    &mut candidates,
+                    &mut redundancy,
+                    ContextCandidate {
+                        item: ContextItem {
+                            item_id,
+                            kind: "contradiction".to_owned(),
+                            epistemic_state: KnowledgeState::Conflicted,
+                            content: cell.statement.clone(),
+                            basis,
+                            expansion_handles: BTreeSet::new(),
+                        },
+                        critical: true,
+                        priority: 0,
                     },
-                    critical: true,
-                    priority: 0,
-                },
-            )?;
+                )?;
+            }
         }
+    }
+    let mut seen_epistemic: Vec<(&KnowledgeCell, String)> = Vec::new();
+    for cell in &frame.knowledge_cells {
         if matches!(
             cell.knowledge_state,
             KnowledgeState::Unknown
@@ -595,30 +691,48 @@ fn context_candidates(
                 | KnowledgeState::Redacted
                 | KnowledgeState::Indeterminate
         ) {
-            let mut basis = BTreeSet::from([cell.claim_id.clone()]);
-            basis.extend(cell.evidence.iter().map(ToString::to_string));
-            basis.extend(cell.contradictions.iter().map(ToString::to_string));
-            insert_candidate(
-                &mut candidates,
-                ContextCandidate {
-                    item: ContextItem {
-                        item_id: format!("context:epistemic:{}", cell.claim_id),
-                        kind: "epistemic_boundary".to_owned(),
-                        epistemic_state: cell.knowledge_state,
-                        content: cell.statement.clone(),
-                        basis,
-                        expansion_handles: BTreeSet::new(),
+            let item_id = format!("context:epistemic:{}", cell.claim_id);
+            if let Some((_, prev_item_id)) = seen_epistemic.iter().find(|(c, _)| {
+                c.statement == cell.statement
+                    && c.knowledge_state == cell.knowledge_state
+                    && c.evidence == cell.evidence
+                    && c.contradictions == cell.contradictions
+            }) {
+                redundancy.push(RedundancyRecord {
+                    dropped_item_id: item_id,
+                    retained_item_id: prev_item_id.clone(),
+                    kind: "epistemic_boundary".to_owned(),
+                    reason: "duplicate epistemic boundary with identical statement and evidence roots; retained earlier representative".to_owned(),
+                });
+            } else {
+                seen_epistemic.push((cell, item_id.clone()));
+                let mut basis = BTreeSet::from([cell.claim_id.clone()]);
+                basis.extend(cell.evidence.iter().map(ToString::to_string));
+                basis.extend(cell.contradictions.iter().map(ToString::to_string));
+                insert_candidate(
+                    &mut candidates,
+                    &mut redundancy,
+                    ContextCandidate {
+                        item: ContextItem {
+                            item_id,
+                            kind: "epistemic_boundary".to_owned(),
+                            epistemic_state: cell.knowledge_state,
+                            content: cell.statement.clone(),
+                            basis,
+                            expansion_handles: BTreeSet::new(),
+                        },
+                        critical: true,
+                        priority: 0,
                     },
-                    critical: true,
-                    priority: 0,
-                },
-            )?;
+                )?;
+            }
         }
     }
 
     for statement in &frame.now {
         insert_statement(
             &mut candidates,
+            &mut redundancy,
             StatementCandidateSpec {
                 id_class: "now",
                 kind: "now",
@@ -633,6 +747,7 @@ fn context_candidates(
     for statement in &frame.why {
         insert_statement(
             &mut candidates,
+            &mut redundancy,
             StatementCandidateSpec {
                 id_class: "why",
                 kind: "why",
@@ -644,28 +759,45 @@ fn context_candidates(
             },
         )?;
     }
+    let mut seen_knowledge: Vec<(&KnowledgeCell, String)> = Vec::new();
     for cell in &frame.knowledge_cells {
         if matches!(
             cell.knowledge_state,
             KnowledgeState::Known | KnowledgeState::Estimated
         ) {
-            let mut basis = BTreeSet::from([cell.claim_id.clone()]);
-            basis.extend(cell.evidence.iter().map(ToString::to_string));
-            insert_candidate(
-                &mut candidates,
-                ContextCandidate {
-                    item: ContextItem {
-                        item_id: format!("context:knowledge:{}", cell.claim_id),
-                        kind: "knowledge".to_owned(),
-                        epistemic_state: cell.knowledge_state,
-                        content: cell.statement.clone(),
-                        basis,
-                        expansion_handles: BTreeSet::new(),
+            let item_id = format!("context:knowledge:{}", cell.claim_id);
+            if let Some((_, prev_item_id)) = seen_knowledge.iter().find(|(c, _)| {
+                c.statement == cell.statement
+                    && c.knowledge_state == cell.knowledge_state
+                    && c.evidence == cell.evidence
+            }) {
+                redundancy.push(RedundancyRecord {
+                    dropped_item_id: item_id,
+                    retained_item_id: prev_item_id.clone(),
+                    kind: "knowledge".to_owned(),
+                    reason: "duplicate knowledge proposition with identical statement and evidence roots; retained earlier representative".to_owned(),
+                });
+            } else {
+                seen_knowledge.push((cell, item_id.clone()));
+                let mut basis = BTreeSet::from([cell.claim_id.clone()]);
+                basis.extend(cell.evidence.iter().map(ToString::to_string));
+                insert_candidate(
+                    &mut candidates,
+                    &mut redundancy,
+                    ContextCandidate {
+                        item: ContextItem {
+                            item_id,
+                            kind: "knowledge".to_owned(),
+                            epistemic_state: cell.knowledge_state,
+                            content: cell.statement.clone(),
+                            basis,
+                            expansion_handles: BTreeSet::new(),
+                        },
+                        critical: false,
+                        priority: 4,
                     },
-                    critical: false,
-                    priority: 4,
-                },
-            )?;
+                )?;
+            }
         }
     }
     for world in frame
@@ -679,6 +811,7 @@ fn context_candidates(
         basis.extend(world.evidence.iter().map(ToString::to_string));
         insert_candidate(
             &mut candidates,
+            &mut redundancy,
             ContextCandidate {
                 item: ContextItem {
                     item_id: format!("context:world:{}", world.world_id),
@@ -696,6 +829,7 @@ fn context_candidates(
     for handle in &frame.evidence_handles {
         insert_candidate(
             &mut candidates,
+            &mut redundancy,
             ContextCandidate {
                 item: ContextItem {
                     item_id: format!(
@@ -714,7 +848,7 @@ fn context_candidates(
         )?;
     }
 
-    Ok(candidates.into_values().collect())
+    Ok((candidates.into_values().collect(), redundancy))
 }
 
 struct StatementCandidateSpec<'a> {
@@ -729,6 +863,7 @@ struct StatementCandidateSpec<'a> {
 
 fn insert_statement(
     candidates: &mut BTreeMap<String, ContextCandidate>,
+    redundancy: &mut Vec<RedundancyRecord>,
     spec: StatementCandidateSpec<'_>,
 ) -> Result<(), ReferenceError> {
     let item_id = format!(
@@ -738,6 +873,7 @@ fn insert_statement(
     );
     insert_candidate(
         candidates,
+        redundancy,
         ContextCandidate {
             item: ContextItem {
                 item_id,
@@ -755,11 +891,20 @@ fn insert_statement(
 
 fn insert_candidate(
     candidates: &mut BTreeMap<String, ContextCandidate>,
+    redundancy: &mut Vec<RedundancyRecord>,
     candidate: ContextCandidate,
 ) -> Result<(), ReferenceError> {
     candidate.item.validate()?;
     match candidates.get(&candidate.item.item_id) {
-        Some(existing) if existing.item == candidate.item => Ok(()),
+        Some(existing) if existing.item == candidate.item => {
+            redundancy.push(RedundancyRecord {
+                dropped_item_id: candidate.item.item_id.clone(),
+                retained_item_id: existing.item.item_id.clone(),
+                kind: candidate.item.kind.clone(),
+                reason: format!("duplicate exact {} item", candidate.item.kind),
+            });
+            Ok(())
+        }
         Some(_) => Err(ContractError::IdempotencyConflict.into()),
         None => {
             candidates.insert(candidate.item.item_id.clone(), candidate);
@@ -772,7 +917,7 @@ fn insert_candidate(
 pub fn required_context_item_ids(
     situation: &ReferenceSituation,
 ) -> Result<BTreeSet<String>, ReferenceError> {
-    context_candidates(situation).map(|candidates| {
+    context_candidates(situation).map(|(candidates, _)| {
         candidates
             .into_iter()
             .filter(|candidate| candidate.critical)

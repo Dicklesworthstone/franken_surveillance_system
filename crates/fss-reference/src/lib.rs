@@ -116,7 +116,7 @@ pub use situation_guard::{
     compile_reference_situation_with_operation_receipt, seal_reference_handoff,
 };
 pub use situation_sections::{
-    ReferenceProjectionSpec, ReferenceSituationPublication,
+    RedundancyRecord, ReferenceProjectionSpec, ReferenceSituationPublication,
     compile_reference_situation_publication,
     compile_reference_situation_publication_with_operation_receipt, project_reference_situation,
     seal_reference_publication_handoff,
