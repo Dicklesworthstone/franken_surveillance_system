@@ -38,21 +38,31 @@
 //!    lease/fence, and lab controls. It never broadens authority.
 //!
 //! 4. **Closure Protocol (Request → Drain → Finalize)**:
+//!    Every state change goes through the single transition table
+//!    [`RegionState::can_transition_to`]:
+//!    `Active → DrainRequested → Draining → Finalizing → Closed`; no state is ever skipped.
 //!    - `Active`: Normal work execution; can accept new work and spawn children.
-//!    - `DrainRequested`: Cancellation or shutdown requested; rejects new work, children notified.
-//!    - `Draining`: Waiting for children to finalize/close and local obligations/tasks to resolve.
-//!    - `Finalizing`: All children closed, resolving local staged state and releasing resources.
-//!    - `Closed`: Quiescence achieved; terminal proof emitted.
+//!    - `DrainRequested` ([`RegionTree::request_drain`]): Cancellation or shutdown requested;
+//!      rejects new work, and every live descendant is notified in the same step.
+//!    - `Draining` ([`RegionTree::begin_drain`]): Waiting for children to close and local
+//!      obligations/tasks to resolve.
+//!    - `Finalizing` ([`RegionTree::begin_finalize`]): Quiescence verified; resolving local
+//!      staged state and releasing resources. Rejects new work.
+//!    - `Closed` ([`RegionTree::finalize`]): Quiescence achieved; a terminal proof aggregating
+//!      the whole subtree is emitted.
 //!
 //! 5. **Formal Invariants**:
 //!    - **FORMAL-001**: A region cannot close while it has live children or unresolved obligations.
 //!    - **INV-006**: Every asynchronous child is owned by a region, and shutdown drains to a terminal
-//!      or indeterminate receipt with durable reconciliation obligation.
+//!      or indeterminate receipt with durable reconciliation obligation. An indeterminate
+//!      obligation without a reconciliation record blocks closure.
+//!    - **Tree Integrity**: A dangling or mis-owned child reference is typed tree corruption and
+//!      always fails closed.
 //!    - **Orphan Work Detection**: Work whose region has closed or entered drain is a typed error,
 //!      never silently continued or dropped.
 
 use core::fmt;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use crate::canonical::{CanonicalEncode, CanonicalEncoder};
 use crate::contract::{BudgetVector, ContractError, RecoveryClass};
@@ -379,12 +389,15 @@ impl RegionState {
     }
 
     /// Validates whether a state transition from `self` to `next` is permitted.
+    ///
+    /// This is the single transition table of the closure protocol; every state change made by
+    /// [`RegionTree`] is checked against it. The protocol is strictly linear:
+    /// `Active → DrainRequested → Draining → Finalizing → Closed`.
     #[must_use]
     pub const fn can_transition_to(self, next: Self) -> bool {
         matches!(
             (self, next),
             (Self::Active, Self::DrainRequested)
-                | (Self::Active, Self::Draining)
                 | (Self::DrainRequested, Self::Draining)
                 | (Self::Draining, Self::Finalizing)
                 | (Self::Finalizing, Self::Closed)
@@ -536,6 +549,73 @@ impl ContextAuthority {
             .is_ok()
     }
 
+    /// Verifies that `self` is a monotone (possibly non-strict) narrowing of `parent`.
+    ///
+    /// Trace, principal, anchor universe, and generation must be preserved; capabilities must be
+    /// a subset of the parent's; the deadline may not be later (nor unbounded under a bounded
+    /// parent); priority may not be higher; budgets must fit within the parent's; and an active
+    /// parent cancellation reason, lease fence, or lab control may not be shed.
+    pub fn verify_narrowing_of(&self, parent: &ContextAuthority) -> Result<(), RegionError> {
+        if self.trace_id != parent.trace_id {
+            return Err(RegionError::AuthorityBroadened("trace_id"));
+        }
+        if self.principal != parent.principal {
+            return Err(RegionError::AuthorityBroadened("principal"));
+        }
+        if self.anchor_universe != parent.anchor_universe {
+            return Err(RegionError::AnchorMismatch {
+                expected: parent.anchor_universe,
+                actual: self.anchor_universe,
+            });
+        }
+        if self.generation != parent.generation {
+            return Err(RegionError::GenerationMismatch {
+                expected: parent.generation,
+                actual: self.generation,
+            });
+        }
+        if self.capabilities.len() > MAX_CAPABILITIES_PER_CONTEXT {
+            return Err(RegionError::CapacityExceeded("capabilities"));
+        }
+        if self
+            .capabilities
+            .iter()
+            .any(|cap| !parent.has_capability(cap))
+        {
+            return Err(RegionError::AuthorityBroadened("capabilities"));
+        }
+        match (parent.deadline, self.deadline) {
+            (Some(parent_d), Some(child_d)) if child_d > parent_d => {
+                return Err(RegionError::AuthorityBroadened("deadline"));
+            }
+            (Some(_), None) => return Err(RegionError::AuthorityBroadened("deadline")),
+            _ => {}
+        }
+        if self.priority < parent.priority {
+            return Err(RegionError::AuthorityBroadened("priority"));
+        }
+        if !self.budgets.is_valid() {
+            return Err(RegionError::InvalidBudget(
+                "child budget vector is not valid",
+            ));
+        }
+        if !self.budgets.fits_within(parent.budgets) {
+            return Err(RegionError::AuthorityBroadened("budgets"));
+        }
+        if parent.cancellation_reason.is_some()
+            && self.cancellation_reason != parent.cancellation_reason
+        {
+            return Err(RegionError::AuthorityBroadened("cancellation_reason"));
+        }
+        if parent.lease_fence.is_some() && self.lease_fence.is_none() {
+            return Err(RegionError::AuthorityBroadened("lease_fence"));
+        }
+        if parent.lab_controls.is_some() && self.lab_controls.is_none() {
+            return Err(RegionError::AuthorityBroadened("lab_controls"));
+        }
+        Ok(())
+    }
+
     /// Narrows this authority for a child region, strictly enforcing the monotone narrowing invariant.
     ///
     /// Any attempt to broaden authority (e.g. adding new capabilities, extending deadlines,
@@ -585,7 +665,7 @@ impl ContextAuthority {
             return Err(RegionError::AuthorityBroadened("budgets"));
         }
 
-        Ok(Self {
+        let child = Self {
             trace_id: self.trace_id.clone(),
             operation_id: spec.operation_id,
             principal: self.principal.clone(),
@@ -601,7 +681,9 @@ impl ContextAuthority {
             lease_fence: spec.lease_fence.or(self.lease_fence),
             idempotency_key: spec.idempotency_key,
             lab_controls: spec.lab_controls.or_else(|| self.lab_controls.clone()),
-        })
+        };
+        child.verify_narrowing_of(self)?;
+        Ok(child)
     }
 }
 
@@ -620,11 +702,11 @@ pub struct QuiescenceProof {
     pub parent_id: Option<RegionId>,
     /// Timestamp when quiescence was verified and closed.
     pub closed_at: TimestampNs,
-    /// Total tasks processed across region lifecycle.
+    /// Total tasks completed across this region's whole subtree (itself and all descendants).
     pub total_tasks: u64,
-    /// Total obligations settled.
+    /// Total obligations settled across this region's whole subtree.
     pub total_obligations: u64,
-    /// Count of indeterminate obligations requiring durable reconciliation.
+    /// Count of reconciled indeterminate obligations across this region's whole subtree.
     pub indeterminate_obligations: u64,
     /// Cryptographic digest binding all quiescence parameters.
     pub proof_digest: ContentDigest,
@@ -810,12 +892,17 @@ impl RegionTree {
 
     /// Attaches a new child region under `parent_id`.
     ///
-    /// Validates:
-    /// - Tree capacity bound
+    /// Validates, in order:
+    /// - Tree capacity bound ([`MAX_REGIONS_IN_TREE`])
+    /// - Single-owner rule: the child is not a root kind and does not exist yet. A child already
+    ///   owned by another region is a [`RegionError::SingleOwnerViolation`], one already owned
+    ///   by `parent_id` is a [`RegionError::DuplicateRegion`], and the root never gains an owner.
     /// - Parent existence and active state (orphan work rejection)
-    /// - Child uniqueness (no duplicate region ID)
-    /// - Single-owner rule (child has no other owner)
-    /// - Tree hierarchy grammar (legal parentage and multiplicities)
+    /// - Tree hierarchy grammar (legal parentage, [`MAX_CHILDREN_PER_REGION`], multiplicities);
+    ///   a dangling or mis-owned child reference fails closed with
+    ///   [`RegionError::TreeCorruption`]
+    /// - Monotone authority narrowing from the direct parent
+    ///   ([`ContextAuthority::verify_narrowing_of`])
     pub fn attach_child(
         &mut self,
         parent_id: &RegionId,
@@ -834,16 +921,21 @@ impl RegionTree {
             return Err(RegionError::RootCannotHaveParent(child_id));
         }
 
-        // 3. Child uniqueness
-        if self.nodes.contains_key(&child_id) {
-            return Err(RegionError::DuplicateRegion(child_id));
+        // 3. Child uniqueness and the single-owner rule
+        if let Some(existing) = self.nodes.get(&child_id) {
+            return Err(match &existing.parent_id {
+                None => RegionError::RootCannotHaveParent(child_id),
+                Some(owner) if owner == parent_id => RegionError::DuplicateRegion(child_id),
+                Some(owner) => RegionError::SingleOwnerViolation {
+                    child: child_id,
+                    current_owner: owner.clone(),
+                    attempted_owner: parent_id.clone(),
+                },
+            });
         }
 
         // 4. Parent must exist
-        let parent = self
-            .nodes
-            .get(parent_id)
-            .ok_or_else(|| RegionError::RegionNotFound(parent_id.clone()))?;
+        let parent = self.get(parent_id)?;
 
         // 5. Parent must be active (reject orphan work)
         if !parent.state.is_active() {
@@ -856,31 +948,29 @@ impl RegionTree {
         // 6. Child kind must be valid for parent
         parent.kind.validate_child_kind(child_kind)?;
 
-        // 7. Check parent child count and multiplicity
+        // 7. Parent child count and multiplicity. Every listed child must resolve to a node owned
+        //    by this parent; otherwise the tree is corrupt and the count cannot be trusted.
         if parent.children.len() >= MAX_CHILDREN_PER_REGION {
             return Err(RegionError::CapacityExceeded("children_per_region"));
         }
-
-        if let Some(max) = parent.kind.max_multiplicity(child_kind) {
-            let existing_count = parent
-                .children
-                .iter()
-                .filter(|cid| {
-                    self.nodes
-                        .get(cid)
-                        .map(|c| c.kind == child_kind)
-                        .unwrap_or(false)
-                })
-                .count();
-
-            if existing_count >= max {
-                return Err(RegionError::MultiplicityExceeded {
-                    parent_kind: parent.kind,
-                    child_kind,
-                    max,
-                });
+        let mut existing_count = 0_usize;
+        for cid in &parent.children {
+            if self.child_of(parent_id, cid)?.kind == child_kind {
+                existing_count += 1;
             }
         }
+        if let Some(max) = parent.kind.max_multiplicity(child_kind)
+            && existing_count >= max
+        {
+            return Err(RegionError::MultiplicityExceeded {
+                parent_kind: parent.kind,
+                child_kind,
+                max,
+            });
+        }
+
+        // 8. Child authority must be a monotone narrowing of the direct parent's authority
+        child_authority.verify_narrowing_of(&parent.authority)?;
 
         // Create child node and attach to parent
         let child_node = RegionNode::new(
@@ -891,12 +981,7 @@ impl RegionTree {
             now,
         );
 
-        let parent_mut = self
-            .nodes
-            .get_mut(parent_id)
-            .ok_or_else(|| RegionError::RegionNotFound(parent_id.clone()))?;
-        parent_mut.children.push(child_id.clone());
-
+        self.node_mut(parent_id)?.children.push(child_id.clone());
         self.nodes.insert(child_id, child_node);
         Ok(())
     }
@@ -1033,9 +1118,11 @@ impl RegionTree {
             .ok_or_else(|| RegionError::ObligationNotFound(obligation_id.clone()))?;
 
         if state == ObligationState::Indeterminate {
-            let note = reconciliation_note.ok_or_else(|| {
-                RegionError::MissingReconciliationObligation(obligation_id.clone())
-            })?;
+            let note = reconciliation_note
+                .filter(|n| !n.trim().is_empty())
+                .ok_or_else(|| {
+                    RegionError::MissingReconciliationObligation(obligation_id.clone())
+                })?;
             node.reconciliation_obligations
                 .insert(obligation_id.clone(), note.to_string());
         }
@@ -1045,140 +1132,151 @@ impl RegionTree {
         Ok(())
     }
 
-    /// Requests cancellation / drain on `region_id` and recursively on all active descendants.
+    /// Requests cancellation / drain on `region_id` and on every live descendant.
+    ///
+    /// Each `Active` region moves to `DrainRequested` through the transition table; regions
+    /// already in `DrainRequested` or `Draining` are left in place (idempotent request), and
+    /// `Finalizing`/`Closed` subtrees are skipped. The whole subtree is validated before any
+    /// region is mutated, so a corrupt child reference fails closed with
+    /// [`RegionError::TreeCorruption`] and leaves the tree unchanged.
     pub fn request_drain(
         &mut self,
         region_id: &RegionId,
         reason: Option<&str>,
         now: TimestampNs,
     ) -> Result<(), RegionError> {
-        if !self.nodes.contains_key(region_id) {
-            return Err(RegionError::RegionNotFound(region_id.clone()));
-        }
-
-        // Check target region state first
-        let target_node = self
-            .nodes
-            .get(region_id)
-            .ok_or_else(|| RegionError::RegionNotFound(region_id.clone()))?;
-        if target_node.state.is_closed() || target_node.state == RegionState::Finalizing {
+        let target = self.get(region_id)?;
+        if matches!(target.state, RegionState::Finalizing | RegionState::Closed) {
             return Err(RegionError::InvalidStateTransition {
                 region_id: region_id.clone(),
-                current: target_node.state,
+                current: target.state,
                 attempted: RegionState::DrainRequested,
             });
         }
 
-        // Collect non-closed descendant IDs in pre-order
-        let mut queue = vec![region_id.clone()];
+        // Collect the live subtree breadth-first (FIFO) before mutating anything.
+        let mut queue = VecDeque::from([region_id.clone()]);
         let mut to_drain = Vec::new();
-
-        while let Some(current_id) = queue.pop() {
-            if let Some(node) = self.nodes.get(&current_id)
-                && !node.state.is_closed()
-                && node.state != RegionState::Finalizing
-            {
-                to_drain.push(current_id.clone());
-                for child_id in &node.children {
-                    queue.push(child_id.clone());
-                }
+        while let Some(current_id) = queue.pop_front() {
+            let node = self.get(&current_id)?;
+            if matches!(node.state, RegionState::Finalizing | RegionState::Closed) {
+                continue;
             }
+            for child_id in &node.children {
+                self.child_of(&current_id, child_id)?;
+                queue.push_back(child_id.clone());
+            }
+            to_drain.push(current_id);
         }
 
-        for id in to_drain {
-            if let Some(node) = self.nodes.get_mut(&id) {
-                match node.state {
-                    RegionState::Active => {
-                        node.state = RegionState::DrainRequested;
-                        node.drain_requested_at = Some(now);
-                        if let Some(r) = reason {
-                            node.authority.cancellation_reason = Some(r.to_string());
-                        }
-                    }
-                    RegionState::DrainRequested | RegionState::Draining => {
-                        // Idempotent drain request; update reason if newly provided
-                        if let Some(r) = reason
-                            && node.authority.cancellation_reason.is_none()
-                        {
-                            node.authority.cancellation_reason = Some(r.to_string());
-                        }
-                    }
-                    RegionState::Finalizing | RegionState::Closed => {}
+        for id in &to_drain {
+            let node = self.node_mut(id)?;
+            if node.state == RegionState::Active {
+                apply_transition(node, RegionState::DrainRequested)?;
+                node.drain_requested_at = Some(now);
+                if let Some(r) = reason {
+                    node.authority.cancellation_reason = Some(r.to_string());
                 }
+            } else if let Some(r) = reason
+                && node.authority.cancellation_reason.is_none()
+            {
+                // Idempotent drain request; record the reason if newly provided
+                node.authority.cancellation_reason = Some(r.to_string());
             }
         }
 
         Ok(())
     }
 
-    /// Transitions a region from `DrainRequested` to `Draining`.
+    /// Transitions a region from `DrainRequested` to `Draining` through the transition table.
+    ///
+    /// A region must first be drain-requested ([`RegionTree::request_drain`]) so that its
+    /// descendants are notified; `Active -> Draining` is rejected with
+    /// [`RegionError::InvalidStateTransition`].
     pub fn begin_drain(
         &mut self,
         region_id: &RegionId,
-        now: TimestampNs,
+        _now: TimestampNs,
     ) -> Result<(), RegionError> {
-        let node = self
-            .nodes
-            .get_mut(region_id)
-            .ok_or_else(|| RegionError::RegionNotFound(region_id.clone()))?;
-
-        match node.state {
-            RegionState::DrainRequested => {
-                node.state = RegionState::Draining;
-            }
-            RegionState::Active => {
-                // Transition Active -> DrainRequested -> Draining
-                node.state = RegionState::Draining;
-                node.drain_requested_at = Some(now);
-            }
-            RegionState::Draining => {
-                // Already draining
-            }
-            _ => {
-                return Err(RegionError::InvalidStateTransition {
-                    region_id: region_id.clone(),
-                    current: node.state,
-                    attempted: RegionState::Draining,
-                });
-            }
-        }
-        Ok(())
+        apply_transition(self.node_mut(region_id)?, RegionState::Draining)
     }
 
-    /// Finalizes and closes `region_id`, verifying all formal invariants:
+    /// Transitions a region from `Draining` to `Finalizing` after verifying quiescence.
     ///
-    /// 1. All direct children must be in `Closed` state (bottom-up closure).
-    /// 2. FORMAL-001: All obligations must be resolved (no `Pending` obligations).
-    /// 3. All active tasks must be completed (no orphan work).
-    /// 4. Generates cryptographic [`QuiescenceProof`].
+    /// Quiescence requires every direct child to be `Closed` with a quiescence proof, no active
+    /// tasks, no `Pending` obligations (FORMAL-001), and a durable reconciliation record for
+    /// every `Indeterminate` obligation (INV-006). On failure the region stays in `Draining`.
+    pub fn begin_finalize(
+        &mut self,
+        region_id: &RegionId,
+        _now: TimestampNs,
+    ) -> Result<(), RegionError> {
+        check_transition(self.get(region_id)?, RegionState::Finalizing)?;
+        self.verify_quiescence(region_id)?;
+        apply_transition(self.node_mut(region_id)?, RegionState::Finalizing)
+    }
+
+    /// Finalizes and closes `region_id`, emitting its [`QuiescenceProof`].
+    ///
+    /// Accepts a region in `Draining` (which passes through `Finalizing`) or already in
+    /// `Finalizing`; every other state is rejected with
+    /// [`RegionError::InvalidStateTransition`] naming the attempted `Finalizing` step.
+    /// Quiescence is (re-)verified exactly as in [`RegionTree::begin_finalize`], and the proof
+    /// aggregates task and obligation counts over the region's whole subtree.
     pub fn finalize(
         &mut self,
         region_id: &RegionId,
         now: TimestampNs,
     ) -> Result<QuiescenceProof, RegionError> {
-        let node = self
-            .nodes
-            .get(region_id)
-            .ok_or_else(|| RegionError::RegionNotFound(region_id.clone()))?;
-
-        // 1. Validate state
-        match node.state {
-            RegionState::DrainRequested | RegionState::Draining | RegionState::Finalizing => {}
-            _ => {
-                return Err(RegionError::InvalidStateTransition {
-                    region_id: region_id.clone(),
-                    current: node.state,
-                    attempted: RegionState::Finalizing,
-                });
-            }
+        let node = self.get(region_id)?;
+        let enter_finalizing = node.state != RegionState::Finalizing;
+        if enter_finalizing {
+            check_transition(node, RegionState::Finalizing)?;
         }
+        let region_kind = node.kind;
+        let parent_id = node.parent_id.clone();
 
-        // 2. Bottom-up closure invariant: all child regions must be Closed
+        let counts = self.verify_quiescence(region_id)?;
+        let proof_digest = QuiescenceProof::compute_digest(
+            region_id,
+            region_kind,
+            parent_id.as_ref(),
+            now,
+            counts.tasks,
+            counts.obligations,
+            counts.indeterminate,
+        );
+        let proof = QuiescenceProof {
+            region_id: region_id.clone(),
+            region_kind,
+            parent_id,
+            closed_at: now,
+            total_tasks: counts.tasks,
+            total_obligations: counts.obligations,
+            indeterminate_obligations: counts.indeterminate,
+            proof_digest,
+        };
+
+        let node = self.node_mut(region_id)?;
+        if enter_finalizing {
+            apply_transition(node, RegionState::Finalizing)?;
+        }
+        apply_transition(node, RegionState::Closed)?;
+        node.closed_at = Some(now);
+        node.quiescence_proof = Some(proof.clone());
+
+        Ok(proof)
+    }
+
+    /// Verifies the quiescence preconditions for closing `region_id` and returns the counts
+    /// aggregated over its whole subtree.
+    fn verify_quiescence(&self, region_id: &RegionId) -> Result<SubtreeCounts, RegionError> {
+        let node = self.get(region_id)?;
+        let mut counts = SubtreeCounts::default();
+
+        // 1. Bottom-up closure: every child is Closed with a proof; fold its subtree counts.
         for child_id in &node.children {
-            let child = self
-                .nodes
-                .get(child_id)
-                .ok_or_else(|| RegionError::RegionNotFound(child_id.clone()))?;
+            let child = self.child_of(region_id, child_id)?;
             if !child.state.is_closed() {
                 return Err(RegionError::ChildNotDrained {
                     parent_id: region_id.clone(),
@@ -1186,9 +1284,22 @@ impl RegionTree {
                     child_state: child.state,
                 });
             }
+            let proof =
+                child
+                    .quiescence_proof
+                    .as_ref()
+                    .ok_or_else(|| RegionError::TreeCorruption {
+                        parent_id: region_id.clone(),
+                        child_id: child_id.clone(),
+                    })?;
+            counts = counts.checked_add(
+                proof.total_tasks,
+                proof.total_obligations,
+                proof.indeterminate_obligations,
+            )?;
         }
 
-        // 3. No active tasks
+        // 2. No active tasks
         if !node.active_tasks.is_empty() {
             return Err(RegionError::DescendantActive {
                 parent_id: region_id.clone(),
@@ -1196,13 +1307,12 @@ impl RegionTree {
             });
         }
 
-        // 4. FORMAL-001: No pending obligations
+        // 3. FORMAL-001: No pending obligations
         let pending_obligations = node
             .obligations
             .values()
             .filter(|o| o.state == ObligationState::Pending)
             .count();
-
         if pending_obligations > 0 {
             return Err(RegionError::LiveObligationsRemaining {
                 region_id: region_id.clone(),
@@ -1210,45 +1320,48 @@ impl RegionTree {
             });
         }
 
-        // Count totals
-        let total_tasks = node.completed_tasks.len() as u64;
-        let total_obligations = node.obligations.len() as u64;
-        let indeterminate_obligations = node
-            .obligations
-            .values()
-            .filter(|o| o.state == ObligationState::Indeterminate)
-            .count() as u64;
+        // 4. INV-006: every indeterminate obligation has a durable reconciliation record
+        let mut local_indeterminate = 0_usize;
+        for (obligation_id, obligation) in &node.obligations {
+            if obligation.state == ObligationState::Indeterminate {
+                if !node.reconciliation_obligations.contains_key(obligation_id) {
+                    return Err(RegionError::UnreconciledIndeterminateObligation {
+                        region_id: region_id.clone(),
+                        obligation_id: obligation_id.clone(),
+                    });
+                }
+                local_indeterminate += 1;
+            }
+        }
 
-        let proof_digest = QuiescenceProof::compute_digest(
-            region_id,
-            node.kind,
-            node.parent_id.as_ref(),
-            now,
-            total_tasks,
-            total_obligations,
-            indeterminate_obligations,
-        );
+        counts.checked_add(
+            count_u64(node.completed_tasks.len())?,
+            count_u64(node.obligations.len())?,
+            count_u64(local_indeterminate)?,
+        )
+    }
 
-        let proof = QuiescenceProof {
-            region_id: region_id.clone(),
-            region_kind: node.kind,
-            parent_id: node.parent_id.clone(),
-            closed_at: now,
-            total_tasks,
-            total_obligations,
-            indeterminate_obligations,
-            proof_digest,
-        };
+    /// Resolves `child_id` as a direct child of `parent_id`, failing closed with
+    /// [`RegionError::TreeCorruption`] when it is absent or owned by another region.
+    fn child_of(
+        &self,
+        parent_id: &RegionId,
+        child_id: &RegionId,
+    ) -> Result<&RegionNode, RegionError> {
+        match self.nodes.get(child_id) {
+            Some(child) if child.parent_id.as_ref() == Some(parent_id) => Ok(child),
+            _ => Err(RegionError::TreeCorruption {
+                parent_id: parent_id.clone(),
+                child_id: child_id.clone(),
+            }),
+        }
+    }
 
-        let node_mut = self
-            .nodes
-            .get_mut(region_id)
-            .ok_or_else(|| RegionError::RegionNotFound(region_id.clone()))?;
-        node_mut.state = RegionState::Closed;
-        node_mut.closed_at = Some(now);
-        node_mut.quiescence_proof = Some(proof.clone());
-
-        Ok(proof)
+    /// Returns a mutable reference to a region node.
+    fn node_mut(&mut self, id: &RegionId) -> Result<&mut RegionNode, RegionError> {
+        self.nodes
+            .get_mut(id)
+            .ok_or_else(|| RegionError::RegionNotFound(id.clone()))
     }
 
     /// Converts the current tree into a machine-checkable topology fixture.
@@ -1300,10 +1413,7 @@ impl RegionTree {
             // Check multiplicity under this node
             let mut counts: BTreeMap<RegionKind, usize> = BTreeMap::new();
             for child_id in &node.children {
-                let child = self
-                    .nodes
-                    .get(child_id)
-                    .ok_or_else(|| RegionError::RegionNotFound(child_id.clone()))?;
+                let child = self.child_of(id, child_id)?;
                 *counts.entry(child.kind).or_insert(0) += 1;
             }
 
@@ -1322,6 +1432,61 @@ impl RegionTree {
 
         Ok(())
     }
+}
+
+/// Checks `node.state -> next` against the single transition table
+/// ([`RegionState::can_transition_to`]).
+fn check_transition(node: &RegionNode, next: RegionState) -> Result<(), RegionError> {
+    if node.state.can_transition_to(next) {
+        Ok(())
+    } else {
+        Err(RegionError::InvalidStateTransition {
+            region_id: node.id.clone(),
+            current: node.state,
+            attempted: next,
+        })
+    }
+}
+
+/// Applies `node.state -> next` after checking it against the transition table.
+fn apply_transition(node: &mut RegionNode, next: RegionState) -> Result<(), RegionError> {
+    check_transition(node, next)?;
+    node.state = next;
+    Ok(())
+}
+
+/// Task and obligation counts aggregated over a region subtree.
+#[derive(Clone, Copy, Debug, Default)]
+struct SubtreeCounts {
+    tasks: u64,
+    obligations: u64,
+    indeterminate: u64,
+}
+
+impl SubtreeCounts {
+    fn checked_add(
+        self,
+        tasks: u64,
+        obligations: u64,
+        indeterminate: u64,
+    ) -> Result<Self, RegionError> {
+        let overflow = || RegionError::CapacityExceeded("quiescence_proof_counts");
+        Ok(Self {
+            tasks: self.tasks.checked_add(tasks).ok_or_else(overflow)?,
+            obligations: self
+                .obligations
+                .checked_add(obligations)
+                .ok_or_else(overflow)?,
+            indeterminate: self
+                .indeterminate
+                .checked_add(indeterminate)
+                .ok_or_else(overflow)?,
+        })
+    }
+}
+
+fn count_u64(n: usize) -> Result<u64, RegionError> {
+    u64::try_from(n).map_err(|_| RegionError::CapacityExceeded("quiescence_proof_counts"))
 }
 
 // ---------------------------------------------------------------------------
@@ -1516,6 +1681,10 @@ impl TopologyFixture {
     }
 
     /// Builds a live [`RegionTree`] from this topology fixture using `root_authority`.
+    ///
+    /// Each child receives its parent's authority unchanged, which is a valid (non-strict)
+    /// monotone narrowing; callers needing narrower per-region authority attach regions
+    /// explicitly with [`ContextAuthority::narrow`].
     pub fn instantiate(
         &self,
         root_authority: ContextAuthority,
@@ -1674,6 +1843,25 @@ pub enum RegionError {
     InvalidBudget(&'static str),
     /// Invalid identifier string.
     InvalidIdentifier(String),
+    /// Tree corruption: `parent_id` lists `child_id` as a direct child, but the child is absent
+    /// from the tree, is not owned by `parent_id`, or is closed without a quiescence proof.
+    /// Always fails closed.
+    TreeCorruption {
+        /// Region whose child list holds the corrupt reference.
+        parent_id: RegionId,
+        /// Referenced child identity that is absent or owned elsewhere.
+        child_id: RegionId,
+    },
+    /// INV-006 violation: closure attempted while an indeterminate obligation has no durable
+    /// reconciliation record.
+    UnreconciledIndeterminateObligation {
+        /// Region whose closure is blocked.
+        region_id: RegionId,
+        /// Indeterminate obligation lacking a reconciliation record.
+        obligation_id: ObligationId,
+    },
+    /// A semantic-kernel contract error, preserved with its specific variant.
+    Contract(ContractError),
 }
 
 impl RegionError {
@@ -1684,6 +1872,7 @@ impl RegionError {
             Self::ChildNotDrained { .. }
             | Self::DescendantActive { .. }
             | Self::LiveObligationsRemaining { .. }
+            | Self::UnreconciledIndeterminateObligation { .. }
             | Self::OrphanWork { .. } => ERR_QUIESCENCE_001,
             Self::AuthorityBroadened(_) => ERR_AUTH_DENIED_001,
             _ => ERR_OP_EXECUTION_FAILED_001,
@@ -1846,14 +2035,166 @@ impl fmt::Display for RegionError {
             ),
             Self::InvalidBudget(msg) => write!(f, "invalid budget: {msg}"),
             Self::InvalidIdentifier(id) => write!(f, "invalid identifier: {id}"),
+            Self::TreeCorruption {
+                parent_id,
+                child_id,
+            } => write!(
+                f,
+                "region tree corruption: {} lists child {} that is absent or owned elsewhere",
+                parent_id.as_str(),
+                child_id.as_str()
+            ),
+            Self::UnreconciledIndeterminateObligation {
+                region_id,
+                obligation_id,
+            } => write!(
+                f,
+                "INV-006 violation: region {} cannot close with unreconciled indeterminate obligation {}",
+                region_id.as_str(),
+                obligation_id.as_str()
+            ),
+            Self::Contract(err) => write!(f, "contract error: {err}"),
         }
     }
 }
 
-impl std::error::Error for RegionError {}
+impl std::error::Error for RegionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Contract(err) => Some(err),
+            _ => None,
+        }
+    }
+}
 
 impl From<ContractError> for RegionError {
     fn from(err: ContractError) -> Self {
-        Self::InvalidIdentifier(format!("{err}"))
+        Self::Contract(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contract::{BudgetQuantitiesSpec, BudgetQuantity};
+
+    fn authority() -> Result<ContextAuthority, RegionError> {
+        ContextAuthority::new_root(RootAuthoritySpec {
+            trace_id: "trace-unit".to_string(),
+            operation_id: OperationId::parse("op-unit")?,
+            principal: "principal-unit".to_string(),
+            capabilities: vec!["camera:read".to_string()],
+            deadline: None,
+            priority: 10,
+            budgets: BudgetVector::from_quantities(BudgetQuantitiesSpec {
+                latency_ms: 1_000,
+                tokens: 1_000,
+                bytes: 1_000,
+                model_calls: 10,
+                cpu_millis: 1_000,
+                accelerator_millis: 100,
+                energy_millijoules: 1_000,
+                network_bytes: 1_000,
+                storage_operations: 10,
+                privacy_exposure: BudgetQuantity::ZERO,
+                operator_attention_seconds: BudgetQuantity::ZERO,
+            }),
+            privacy_scope: "privacy-internal".to_string(),
+            retention_scope: "retention-30d".to_string(),
+            anchor_universe: ContentDigest::sha256(b"unit-anchor"),
+            generation: 1,
+        })
+    }
+
+    fn corrupt_children(
+        tree: &mut RegionTree,
+        parent: &RegionId,
+        dangling: &RegionId,
+    ) -> Result<(), RegionError> {
+        tree.nodes
+            .get_mut(parent)
+            .ok_or_else(|| RegionError::RegionNotFound(parent.clone()))?
+            .children
+            .push(dangling.clone());
+        Ok(())
+    }
+
+    // Review-523 F1: a dangling child reference must fail closed, not be undercounted.
+    #[test]
+    fn dangling_child_reference_is_typed_tree_corruption() -> Result<(), RegionError> {
+        let auth = authority()?;
+        let now = TimestampNs(1);
+        let mut tree = RegionTree::new(RegionId::new("proc")?, auth.clone(), now)?;
+        let root = tree.root_id().clone();
+        let prop = RegionId::new("prop")?;
+        tree.attach_child(&root, prop.clone(), RegionKind::Property, auth.clone(), now)?;
+
+        let ghost = RegionId::new("ghost-ledger")?;
+        corrupt_children(&mut tree, &prop, &ghost)?;
+        let corruption = RegionError::TreeCorruption {
+            parent_id: prop.clone(),
+            child_id: ghost.clone(),
+        };
+
+        let res = tree.attach_child(
+            &prop,
+            RegionId::new("ledger")?,
+            RegionKind::Ledger,
+            auth.clone(),
+            now,
+        );
+        assert_eq!(res, Err(corruption.clone()));
+        assert_eq!(tree.region_count(), 2);
+
+        // Drain propagation must fail closed before mutating any region.
+        assert_eq!(
+            tree.request_drain(&root, None, TimestampNs(2)),
+            Err(corruption.clone())
+        );
+        assert_eq!(tree.get(&root)?.state, RegionState::Active);
+        assert_eq!(tree.get(&prop)?.state, RegionState::Active);
+
+        assert_eq!(tree.validate_topology(), Err(corruption));
+        Ok(())
+    }
+
+    // Review-523 F1: a child listed under a parent that does not own it is also corruption.
+    #[test]
+    fn misowned_child_reference_is_typed_tree_corruption() -> Result<(), RegionError> {
+        let auth = authority()?;
+        let now = TimestampNs(1);
+        let mut tree = RegionTree::new(RegionId::new("proc")?, auth.clone(), now)?;
+        let root = tree.root_id().clone();
+        let prop = RegionId::new("prop")?;
+        tree.attach_child(&root, prop.clone(), RegionKind::Property, auth.clone(), now)?;
+        let s1 = RegionId::new("sensor-1")?;
+        let s2 = RegionId::new("sensor-2")?;
+        tree.attach_child(&prop, s1.clone(), RegionKind::Sensor, auth.clone(), now)?;
+        tree.attach_child(&prop, s2.clone(), RegionKind::Sensor, auth.clone(), now)?;
+        let adapter = RegionId::new("adapter-1")?;
+        tree.attach_child(
+            &s1,
+            adapter.clone(),
+            RegionKind::AdapterSession,
+            auth.clone(),
+            now,
+        )?;
+        corrupt_children(&mut tree, &s2, &adapter)?;
+
+        let res = tree.attach_child(
+            &s2,
+            RegionId::new("adapter-2")?,
+            RegionKind::AdapterSession,
+            auth.clone(),
+            now,
+        );
+        assert_eq!(
+            res,
+            Err(RegionError::TreeCorruption {
+                parent_id: s2,
+                child_id: adapter,
+            })
+        );
+        Ok(())
     }
 }
