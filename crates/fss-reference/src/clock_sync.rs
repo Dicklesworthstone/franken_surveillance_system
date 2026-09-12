@@ -108,6 +108,12 @@ impl ClockSyncEstimate {
         &self,
         ref_time: TimestampNs,
     ) -> Result<CaptureInterval, ReferenceError> {
+        if self.sample_evidence.is_empty() {
+            return Err(ReferenceError::InsufficientSyncSamples {
+                count: 0,
+                minimum_required: 1,
+            });
+        }
         if ref_time.0 < self.validity.earliest.0 || ref_time.0 > self.validity.latest.0 {
             return Err(ReferenceError::StaleEstimatePastValidity {
                 requested: ref_time,
@@ -132,7 +138,7 @@ impl ClockSyncEstimate {
             .checked_add(skew_offset)
             .ok_or(ReferenceError::ArithmeticOverflow)?;
 
-        // Conservative uncertainty: maximum sample uncertainty + fit max residual
+        // Conservative uncertainty: maximum sample uncertainty + fit max residual (with minimum 1 ns floor)
         let max_sample_uncert = self
             .sample_evidence
             .iter()
@@ -140,8 +146,8 @@ impl ClockSyncEstimate {
             .max()
             .unwrap_or(0);
         let total_uncertainty = max_sample_uncert
-            .checked_add(self.residual.max_residual_ns)
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
+            .saturating_add(self.residual.max_residual_ns)
+            .max(1);
 
         let earliest = nominal_sensor_time
             .checked_sub(i128::from(total_uncertainty))
@@ -159,6 +165,12 @@ impl ClockSyncEstimate {
         &self,
         sensor_time: TimestampNs,
     ) -> Result<CaptureInterval, ReferenceError> {
+        if self.sample_evidence.is_empty() {
+            return Err(ReferenceError::InsufficientSyncSamples {
+                count: 0,
+                minimum_required: 1,
+            });
+        }
         // Approximate inverted time: ref ~= (sensor - offset) / (1 + skew/1e6)
         // Since |skew| <= 500_000 ppm, 1 + skew_ppm/1e6 = (1_000_000 + skew_ppm) / 1_000_000
         let effective_rate = 1_000_000_i128
@@ -201,8 +213,8 @@ impl ClockSyncEstimate {
             .max()
             .unwrap_or(0);
         let total_uncertainty = max_sample_uncert
-            .checked_add(self.residual.max_residual_ns)
-            .ok_or(ReferenceError::ArithmeticOverflow)?;
+            .saturating_add(self.residual.max_residual_ns)
+            .max(1);
 
         let earliest = nominal_ref_time
             .checked_sub(i128::from(total_uncertainty))
@@ -371,27 +383,33 @@ impl ClockOffsetSkewEstimator {
                 });
             }
             if sample.sequence <= prev.sequence {
-                return Err(ReferenceError::NonMonotonicSyncSamples {
-                    previous: prev.reference_time,
-                    current: sample.reference_time,
+                return Err(ReferenceError::NonMonotonicSyncSequence {
+                    previous: prev.sequence,
+                    current: sample.sequence,
                 });
             }
         }
 
-        // Check contradiction against current active estimate if within validity
-        if let Some(ref estimate) = self.active_estimate
+        // Check contradiction against current active or prior estimate
+        let candidate_estimate = match &self.state {
+            EstimatorState::Synchronized(est) => Some(est),
+            EstimatorState::Invalidated { prior_estimate, .. } => Some(prior_estimate),
+            EstimatorState::Uncalibrated => None,
+        };
+        if let Some(estimate) = candidate_estimate
             && let Err(err) =
                 estimate.validate_sample(&sample, self.config.contradiction_tolerance_ns)
         {
-            let prior = estimate.clone();
-            let reason = format!("{err}");
-            self.state = EstimatorState::Invalidated {
-                prior_estimate: prior,
-                contradicting_sample: sample.clone(),
-                reason,
-            };
-            self.active_estimate = None;
-            self.samples.push(sample);
+            if self.active_estimate.is_some() {
+                let prior = estimate.clone();
+                let reason = format!("{err}");
+                self.state = EstimatorState::Invalidated {
+                    prior_estimate: prior,
+                    contradicting_sample: sample.clone(),
+                    reason,
+                };
+                self.active_estimate = None;
+            }
             return Err(err);
         }
 
@@ -399,35 +417,18 @@ impl ClockOffsetSkewEstimator {
         Ok(())
     }
 
-    /// Fits a deterministic linear model from the accumulated samples.
-    ///
-    /// Emits typed errors on failure:
-    /// - [`ReferenceError::InsufficientSyncSamples`] if fewer than `min_samples` exist.
-    /// - [`ReferenceError::OutlierDominatedFit`] if outlier ratio exceeds threshold.
-    pub fn fit(&mut self) -> Result<ClockSyncEstimate, ReferenceError> {
-        let n = self.samples.len();
-        if n < self.config.min_samples {
-            return Err(ReferenceError::InsufficientSyncSamples {
-                count: n,
-                minimum_required: self.config.min_samples,
-            });
-        }
-
-        let first = &self.samples[0];
-        let last = &self.samples[n - 1];
-        let reference_anchor = first.reference_time;
-
-        // Linear regression: y = offset + skew * x
-        // x_i = ref_i - t0 (>= 0)
-        // y_i = sensor_i - ref_i (raw offset)
+    fn fit_ols(
+        samples: &[TimeSyncSample],
+        reference_anchor: TimestampNs,
+    ) -> Result<(i64, i64, i128, i128), ReferenceError> {
+        let n = samples.len();
+        let n_i128 = i128::try_from(n).map_err(|_| ReferenceError::ArithmeticOverflow)?;
         let mut sum_x: i128 = 0;
         let mut sum_y: i128 = 0;
         let mut sum_xx: i128 = 0;
         let mut sum_xy: i128 = 0;
 
-        let n_i128 = i128::try_from(n).map_err(|_| ReferenceError::ArithmeticOverflow)?;
-
-        for sample in &self.samples {
+        for sample in samples {
             let x = sample
                 .reference_time
                 .0
@@ -463,7 +464,7 @@ impl ClockOffsetSkewEstimator {
             )
             .ok_or(ReferenceError::ArithmeticOverflow)?;
 
-        if denominator == 0 {
+        if denominator <= 0 {
             return Err(ReferenceError::ArithmeticOverflow);
         }
 
@@ -498,16 +499,89 @@ impl ClockOffsetSkewEstimator {
         let offset_ns =
             i64::try_from(offset_ns_raw).map_err(|_| ReferenceError::ArithmeticOverflow)?;
 
-        // Residual analysis and outlier detection
+        Ok((offset_ns, skew_ppm, sum_xx, denominator))
+    }
+
+    /// Fits a deterministic linear model from the accumulated samples.
+    ///
+    /// Emits typed errors on failure:
+    /// - [`ReferenceError::InsufficientSyncSamples`] if fewer than `min_samples` exist.
+    /// - [`ReferenceError::OutlierDominatedFit`] if outlier ratio exceeds threshold.
+    pub fn fit(&mut self) -> Result<ClockSyncEstimate, ReferenceError> {
+        let n = self.samples.len();
+        if n < self.config.min_samples {
+            return Err(ReferenceError::InsufficientSyncSamples {
+                count: n,
+                minimum_required: self.config.min_samples,
+            });
+        }
+
+        let first = &self.samples[0];
+        let last = &self.samples[n - 1];
+        let reference_anchor = first.reference_time;
+
+        let mut active_samples: Vec<TimeSyncSample> = self.samples.clone();
+        let mut outlier_count: usize = 0;
+        let mut worst_residual_ns: u64 = 0;
+
+        let (offset_ns, skew_ppm, sum_xx, denominator) = loop {
+            let (cur_offset, cur_skew, cur_sxx, cur_den) =
+                Self::fit_ols(&active_samples, reference_anchor)?;
+
+            let mut max_res: u64 = 0;
+            let mut peel_idx: usize = 0;
+
+            for (idx, sample) in active_samples.iter().enumerate() {
+                let x = sample.reference_time.0 - reference_anchor.0;
+                let y = sample.sensor_time.0 - sample.reference_time.0;
+
+                let predicted_y = i128::from(cur_offset) + (i128::from(cur_skew) * x / 1_000_000);
+                let residual = (y - predicted_y).unsigned_abs();
+                let residual_u64 = u64::try_from(residual).unwrap_or(u64::MAX);
+
+                if residual_u64 > max_res {
+                    max_res = residual_u64;
+                    peel_idx = idx;
+                }
+            }
+
+            if max_res > worst_residual_ns {
+                worst_residual_ns = max_res;
+            }
+
+            if max_res <= self.config.max_residual_tolerance_ns {
+                break (cur_offset, cur_skew, cur_sxx, cur_den);
+            }
+
+            outlier_count += 1;
+            let outlier_bp = (outlier_count as u64 * 10_000) / n as u64;
+            if outlier_bp > u64::from(self.config.max_outlier_basis_points) {
+                return Err(ReferenceError::OutlierDominatedFit {
+                    outlier_count,
+                    total_samples: n,
+                    max_residual_ns: worst_residual_ns,
+                });
+            }
+
+            active_samples.remove(peel_idx);
+
+            if active_samples.len() < self.config.min_samples {
+                return Err(ReferenceError::InsufficientSyncSamples {
+                    count: active_samples.len(),
+                    minimum_required: self.config.min_samples,
+                });
+            }
+        };
+
+        let eff_n = active_samples.len();
         let mut max_residual_ns: u64 = 0;
         let mut sum_sq_residuals: u128 = 0;
-        let mut outlier_count: usize = 0;
 
-        for sample in &self.samples {
+        for sample in &active_samples {
             let x = sample.reference_time.0 - reference_anchor.0;
             let y = sample.sensor_time.0 - sample.reference_time.0;
 
-            let predicted_y = offset_ns_raw + (skew_ppm_raw * x / 1_000_000);
+            let predicted_y = i128::from(offset_ns) + (i128::from(skew_ppm) * x / 1_000_000);
             let residual = (y - predicted_y).unsigned_abs();
             let residual_u64 = u64::try_from(residual).unwrap_or(u64::MAX);
 
@@ -515,35 +589,22 @@ impl ClockOffsetSkewEstimator {
                 max_residual_ns = residual_u64;
             }
             sum_sq_residuals = sum_sq_residuals.saturating_add(residual.saturating_mul(residual));
-
-            if residual_u64 > self.config.max_residual_tolerance_ns {
-                outlier_count += 1;
-            }
         }
 
-        let outlier_bp = (outlier_count as u64 * 10_000) / n as u64;
-        if outlier_bp > u64::from(self.config.max_outlier_basis_points) {
-            return Err(ReferenceError::OutlierDominatedFit {
-                outlier_count,
-                total_samples: n,
-                max_residual_ns,
-            });
-        }
-
-        let mse = (sum_sq_residuals / n as u128) as u64;
+        let mse = (sum_sq_residuals / eff_n as u128) as u64;
         let offset_variance_ns2 = if denominator > 0 {
             let var = (u128::from(mse) * sum_xx.unsigned_abs()) / denominator.unsigned_abs();
             u64::try_from(var).unwrap_or(u64::MAX)
         } else {
-            0
+            u64::MAX
         };
 
         let skew_variance_ppm2 = if denominator > 0 {
-            let var =
-                (u128::from(mse) * n as u128 * 1_000_000_000_000_u128) / denominator.unsigned_abs();
+            let var = (u128::from(mse) * eff_n as u128 * 1_000_000_000_000_u128)
+                / denominator.unsigned_abs();
             u64::try_from(var).unwrap_or(u64::MAX)
         } else {
-            0
+            u64::MAX
         };
 
         let residual = SyncFitResidual {
@@ -551,7 +612,7 @@ impl ClockOffsetSkewEstimator {
             mean_squared_error_ns2: mse,
             offset_variance_ns2,
             skew_variance_ppm2,
-            sample_count: n,
+            sample_count: eff_n,
         };
 
         // Validity interval: [first_sample.reference_time, last_sample.reference_time + validity_horizon_ns]
@@ -563,11 +624,11 @@ impl ClockOffsetSkewEstimator {
         let validity = CaptureInterval::new(first.reference_time, TimestampNs(valid_latest_raw))
             .map_err(ReferenceError::Contract)?;
 
-        // Canonical evidence root
-        let mut evidence_bytes = Vec::with_capacity(32 + 8 + n * 32);
+        // Canonical evidence root computed over effective inlier samples
+        let mut evidence_bytes = Vec::with_capacity(32 + 8 + eff_n * 32);
         evidence_bytes.extend_from_slice(b"fss.clock_sync_evidence.v1");
-        evidence_bytes.extend_from_slice(&(n as u64).to_be_bytes());
-        for s in &self.samples {
+        evidence_bytes.extend_from_slice(&(eff_n as u64).to_be_bytes());
+        for s in &active_samples {
             evidence_bytes.extend_from_slice(&s.digest.bytes());
         }
         let evidence_root = ContentDigest::sha256(&evidence_bytes);
@@ -583,7 +644,7 @@ impl ClockOffsetSkewEstimator {
             skew_ppm,
             residual,
             validity,
-            sample_evidence: self.samples.clone(),
+            sample_evidence: active_samples,
             evidence_root,
             generation: self.generation_counter,
         };
@@ -609,12 +670,17 @@ impl ClockOffsetSkewEstimator {
                 contradicting_sample,
                 ..
             } => {
-                if let Some(last) = self.samples.last()
-                    && last == contradicting_sample
-                {
-                    self.samples.pop();
-                }
-                Some(prior_estimate.clone())
+                let mut prior = prior_estimate.clone();
+                let clamped_latest = TimestampNs(
+                    contradicting_sample
+                        .reference_time
+                        .0
+                        .saturating_sub(1)
+                        .max(prior.validity.earliest.0),
+                );
+                prior.validity = CaptureInterval::new(prior.validity.earliest, clamped_latest)
+                    .map_err(ReferenceError::Contract)?;
+                Some(prior)
             }
             _ => self.prior_estimates.pop(),
         };

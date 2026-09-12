@@ -6,7 +6,7 @@ use std::error::Error;
 use fss_core::TimestampNs;
 use fss_reference::{
     ClockOffsetSkewEstimator, ClockSyncEstimate, EstimatorConfig, EstimatorState, ReferenceError,
-    TimeSyncSample, VirtualClock,
+    SyncFitResidual, TimeSyncSample, VirtualClock,
 };
 
 fn create_nominal_sample(
@@ -230,13 +230,19 @@ fn fault_contradicted_estimate_triggers_invalidation_and_rollback() -> Result<()
     }
     assert!(estimator.active_estimate().is_none());
 
-    // Rollback restores the prior valid estimate
-    let restored = estimator.rollback()?;
-    assert_eq!(restored, Some(initial_estimate.clone()));
+    // Rollback restores the prior valid estimate with validity clamped before contradiction
+    let Some(restored) = estimator.rollback()? else {
+        return Err("prior estimate must be restored".into());
+    };
+    assert_eq!(restored.offset_ns, initial_estimate.offset_ns);
+    assert_eq!(restored.skew_ppm, initial_estimate.skew_ppm);
     assert_eq!(
-        *estimator.state(),
-        EstimatorState::Synchronized(initial_estimate)
+        restored.validity.earliest,
+        initial_estimate.validity.earliest
     );
+    assert_eq!(restored.validity.latest, TimestampNs(39_999_999));
+    assert!(restored.validity.latest <= contradictory_sample.reference_time);
+    assert_eq!(*estimator.state(), EstimatorState::Synchronized(restored));
 
     Ok(())
 }
@@ -366,6 +372,129 @@ fn end_to_end_virtual_clock_sync_workflow() -> Result<(), Box<dyn Error>> {
 
     assert!(predicted_interval.earliest.0 <= actual_sensor.0);
     assert!(predicted_interval.latest.0 >= actual_sensor.0);
+
+    Ok(())
+}
+
+#[test]
+fn fault_empty_evidence_rejected_in_predictions() -> Result<(), Box<dyn Error>> {
+    let estimate = ClockSyncEstimate {
+        reference_anchor: TimestampNs(1_000_000),
+        offset_ns: 50_000,
+        skew_ppm: 0,
+        residual: SyncFitResidual {
+            max_residual_ns: 0,
+            mean_squared_error_ns2: 0,
+            offset_variance_ns2: 0,
+            skew_variance_ppm2: 0,
+            sample_count: 0,
+        },
+        validity: fss_core::CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?,
+        sample_evidence: Vec::new(),
+        evidence_root: fss_core::ContentDigest::sha256(b"empty"),
+        generation: 1,
+    };
+
+    let query = TimestampNs(1_500_000);
+    match estimate.predict_sensor_interval(query) {
+        Err(ReferenceError::InsufficientSyncSamples {
+            count,
+            minimum_required,
+        }) => {
+            assert_eq!(count, 0);
+            assert_eq!(minimum_required, 1);
+        }
+        other => return Err(format!("expected InsufficientSyncSamples, got {other:?}").into()),
+    }
+
+    match estimate.predict_reference_interval(query) {
+        Err(ReferenceError::InsufficientSyncSamples {
+            count,
+            minimum_required,
+        }) => {
+            assert_eq!(count, 0);
+            assert_eq!(minimum_required, 1);
+        }
+        other => return Err(format!("expected InsufficientSyncSamples, got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn fault_contradicting_sample_not_retained_in_samples() -> Result<(), Box<dyn Error>> {
+    let config = EstimatorConfig {
+        min_samples: 3,
+        contradiction_tolerance_ns: 10_000,
+        ..EstimatorConfig::default()
+    };
+    let mut estimator = ClockOffsetSkewEstimator::new(config);
+
+    estimator.add_sample(create_nominal_sample(1, 10_000_000, 11_000_000)?)?;
+    estimator.add_sample(create_nominal_sample(2, 20_000_000, 21_000_000)?)?;
+    estimator.add_sample(create_nominal_sample(3, 30_000_000, 31_000_000)?)?;
+    let _ = estimator.fit()?;
+
+    let bad_sample = create_nominal_sample(4, 40_000_000, 61_000_000)?;
+    let res = estimator.add_sample(bad_sample);
+    assert!(matches!(
+        res,
+        Err(ReferenceError::ContradictedEstimate { .. })
+    ));
+
+    assert_eq!(estimator.samples().len(), 3);
+    Ok(())
+}
+
+#[test]
+fn fault_non_monotonic_sequence_rejected_with_typed_error() -> Result<(), Box<dyn Error>> {
+    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default());
+    estimator.add_sample(create_nominal_sample(5, 10_000_000, 11_000_000)?)?;
+
+    match estimator.add_sample(create_nominal_sample(5, 20_000_000, 21_000_000)?) {
+        Err(ReferenceError::NonMonotonicSyncSequence { previous, current }) => {
+            assert_eq!(previous, 5);
+            assert_eq!(current, 5);
+        }
+        other => return Err(format!("expected NonMonotonicSyncSequence, got {other:?}").into()),
+    }
+
+    match estimator.add_sample(create_nominal_sample(3, 20_000_000, 21_000_000)?) {
+        Err(ReferenceError::NonMonotonicSyncSequence { previous, current }) => {
+            assert_eq!(previous, 5);
+            assert_eq!(current, 3);
+        }
+        other => return Err(format!("expected NonMonotonicSyncSequence, got {other:?}").into()),
+    }
+
+    assert_eq!(estimator.samples().len(), 1);
+    Ok(())
+}
+
+#[test]
+fn outliers_trimmed_from_final_linear_fit() -> Result<(), Box<dyn Error>> {
+    let config = EstimatorConfig {
+        min_samples: 3,
+        max_residual_tolerance_ns: 2_000,
+        max_outlier_basis_points: 3_000, // allow up to 30% outliers
+        ..EstimatorConfig::default()
+    };
+    let mut estimator = ClockOffsetSkewEstimator::new(config);
+
+    // 4 samples: 3 follow exact offset=1_000_000, skew=0; 1 is an outlier (+50us)
+    estimator.add_sample(create_nominal_sample(1, 10_000_000, 11_000_000)?)?;
+    estimator.add_sample(create_nominal_sample(2, 20_000_000, 21_050_000)?)?; // outlier
+    estimator.add_sample(create_nominal_sample(3, 30_000_000, 31_000_000)?)?;
+    estimator.add_sample(create_nominal_sample(4, 40_000_000, 41_000_000)?)?;
+
+    let estimate = estimator.fit()?;
+
+    // With outlier trimmed, fitted model is pure offset=1_000_000, skew=0
+    assert_eq!(estimate.offset_ns, 1_000_000);
+    assert_eq!(estimate.skew_ppm, 0);
+    assert_eq!(estimate.residual.sample_count, 3);
+    assert_eq!(estimate.residual.max_residual_ns, 0);
+    assert_eq!(estimate.sample_evidence.len(), 3);
 
     Ok(())
 }
