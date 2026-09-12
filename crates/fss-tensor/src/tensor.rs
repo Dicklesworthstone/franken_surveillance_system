@@ -8,7 +8,7 @@ use fss_core::{ContentDigest, DigestAlgorithm, Generation, Sha256Hasher};
 use crate::dtype::{DType, TensorScalar};
 use crate::error::TensorError;
 use crate::shape::Shape;
-use crate::storage::TensorStorage;
+use crate::storage::{MAX_STORAGE_BYTES, TensorStorage};
 use crate::stride::Strides;
 use crate::view::TensorView;
 
@@ -49,7 +49,7 @@ impl Tensor {
         let total_bytes = shape.size_bytes(T::DTYPE)?;
         let mut buffer = Vec::with_capacity(total_bytes);
         for val in values {
-            buffer.extend_from_slice(&val.to_ne_bytes());
+            val.append_ne_bytes(&mut buffer);
         }
 
         let storage = Arc::new(TensorStorage::from_vec(buffer, generation)?);
@@ -212,9 +212,34 @@ impl Tensor {
     /// Extracts all elements in row-major logical coordinate order as a `Vec<T>`.
     ///
     /// # Errors
-    /// Returns [`TensorError::TypeMismatch`] or reading errors.
+    /// Returns [`TensorError::TypeMismatch`] if `T::DTYPE != self.dtype()`.
+    /// Returns [`TensorError::ArithmeticOverflow`] on calculation overflow.
+    /// Returns [`TensorError::AllocationLimitExceeded`] if memory required exceeds [`MAX_STORAGE_BYTES`].
+    /// Returns reading or index errors.
     pub fn to_vec<T: TensorScalar>(&self) -> Result<Vec<T>, TensorError> {
+        if T::DTYPE != self.dtype() {
+            return Err(TensorError::TypeMismatch {
+                expected: self.dtype(),
+                actual: T::DTYPE,
+            });
+        }
+
         let total_elements = self.num_elements()?;
+        let elem_size = core::mem::size_of::<T>();
+        let total_bytes =
+            total_elements
+                .checked_mul(elem_size)
+                .ok_or(TensorError::ArithmeticOverflow {
+                    operation: "to_vec byte allocation",
+                })?;
+
+        if total_bytes > MAX_STORAGE_BYTES {
+            return Err(TensorError::AllocationLimitExceeded {
+                requested_bytes: total_bytes,
+                max_bytes: MAX_STORAGE_BYTES,
+            });
+        }
+
         let mut result = Vec::with_capacity(total_elements);
 
         if self.shape().is_scalar() {
@@ -270,6 +295,13 @@ impl Tensor {
                 .ok_or(TensorError::ArithmeticOverflow {
                     operation: "contiguous buffer size multiplication",
                 })?;
+
+        if total_bytes > MAX_STORAGE_BYTES {
+            return Err(TensorError::AllocationLimitExceeded {
+                requested_bytes: total_bytes,
+                max_bytes: MAX_STORAGE_BYTES,
+            });
+        }
 
         let mut buffer = Vec::with_capacity(total_bytes);
 
@@ -330,7 +362,7 @@ impl Tensor {
     pub fn content_digest(&self) -> Result<ContentDigest, TensorError> {
         let mut hasher = Sha256Hasher::new();
         hasher.update(b"fss.tensor.v1\0");
-        hasher.update(&[self.dtype() as u8]);
+        hasher.update(&[self.dtype().type_tag()]);
         hasher.update(&self.generation().get().to_be_bytes());
         hasher.update(&[self.rank() as u8]);
         for &d in self.shape().dims() {

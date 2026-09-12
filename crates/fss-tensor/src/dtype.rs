@@ -7,33 +7,34 @@ use crate::error::TensorError;
 
 /// Fundamental scalar data types supported by `fss-tensor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum DType {
     /// 32-bit IEEE 754 single-precision floating point.
-    F32,
+    F32 = 1,
     /// 64-bit IEEE 754 double-precision floating point.
-    F64,
+    F64 = 2,
     /// 16-bit IEEE 754 half-precision floating point.
-    F16,
+    F16 = 3,
     /// 16-bit Brain floating point.
-    BF16,
+    BF16 = 4,
     /// 8-bit signed two's-complement integer.
-    I8,
+    I8 = 5,
     /// 16-bit signed two's-complement integer.
-    I16,
+    I16 = 6,
     /// 32-bit signed two's-complement integer.
-    I32,
+    I32 = 7,
     /// 64-bit signed two's-complement integer.
-    I64,
+    I64 = 8,
     /// 8-bit unsigned integer.
-    U8,
+    U8 = 9,
     /// 16-bit unsigned integer.
-    U16,
+    U16 = 10,
     /// 32-bit unsigned integer.
-    U32,
+    U32 = 11,
     /// 64-bit unsigned integer.
-    U64,
+    U64 = 12,
     /// 8-bit boolean (0 = false, 1 = true).
-    Bool,
+    Bool = 13,
 }
 
 impl DType {
@@ -82,6 +83,12 @@ impl DType {
             Self::U64 => "u64",
             Self::Bool => "bool",
         }
+    }
+
+    /// Returns the canonical `u8` representation discriminant for this data type.
+    #[must_use]
+    pub const fn type_tag(self) -> u8 {
+        self as u8
     }
 
     /// Returns `true` if this type is a floating-point format.
@@ -218,8 +225,18 @@ pub trait TensorScalar: Copy + 'static {
     /// The associated tensor data type.
     const DTYPE: DType;
 
+    /// Appends the native-endian bytes of this scalar directly to a destination byte buffer
+    /// without incurring an intermediate heap allocation.
+    fn append_ne_bytes(&self, buffer: &mut Vec<u8>);
+
+    /// Returns the native-endian bytes of this scalar as a fixed-size byte array and byte length.
+    fn to_ne_bytes_fixed(&self) -> ([u8; 8], usize);
+
     /// Encodes the scalar into native-endian bytes.
-    fn to_ne_bytes(&self) -> Vec<u8>;
+    fn to_ne_bytes(&self) -> Vec<u8> {
+        let (arr, len) = self.to_ne_bytes_fixed();
+        arr[..len].to_vec()
+    }
 
     /// Decodes the scalar from native-endian bytes without unsafe code.
     fn from_ne_bytes(bytes: &[u8]) -> Result<Self, TensorError>;
@@ -230,8 +247,15 @@ macro_rules! impl_tensor_scalar {
         impl TensorScalar for $t {
             const DTYPE: DType = DType::$dtype;
 
-            fn to_ne_bytes(&self) -> Vec<u8> {
-                <$t>::to_ne_bytes(*self).to_vec()
+            fn append_ne_bytes(&self, buffer: &mut Vec<u8>) {
+                buffer.extend_from_slice(&<$t>::to_ne_bytes(*self));
+            }
+
+            fn to_ne_bytes_fixed(&self) -> ([u8; 8], usize) {
+                let mut arr = [0u8; 8];
+                let bytes = <$t>::to_ne_bytes(*self);
+                arr[..$size].copy_from_slice(&bytes);
+                (arr, $size)
             }
 
             fn from_ne_bytes(bytes: &[u8]) -> Result<Self, TensorError> {
@@ -263,8 +287,14 @@ impl_tensor_scalar!(u64, U64, 8);
 impl TensorScalar for F16 {
     const DTYPE: DType = DType::F16;
 
-    fn to_ne_bytes(&self) -> Vec<u8> {
-        self.0.to_ne_bytes().to_vec()
+    fn append_ne_bytes(&self, buffer: &mut Vec<u8>) {
+        buffer.extend_from_slice(&self.0.to_ne_bytes());
+    }
+
+    fn to_ne_bytes_fixed(&self) -> ([u8; 8], usize) {
+        let mut arr = [0u8; 8];
+        arr[..2].copy_from_slice(&self.0.to_ne_bytes());
+        (arr, 2)
     }
 
     fn from_ne_bytes(bytes: &[u8]) -> Result<Self, TensorError> {
@@ -283,8 +313,14 @@ impl TensorScalar for F16 {
 impl TensorScalar for BF16 {
     const DTYPE: DType = DType::BF16;
 
-    fn to_ne_bytes(&self) -> Vec<u8> {
-        self.0.to_ne_bytes().to_vec()
+    fn append_ne_bytes(&self, buffer: &mut Vec<u8>) {
+        buffer.extend_from_slice(&self.0.to_ne_bytes());
+    }
+
+    fn to_ne_bytes_fixed(&self) -> ([u8; 8], usize) {
+        let mut arr = [0u8; 8];
+        arr[..2].copy_from_slice(&self.0.to_ne_bytes());
+        (arr, 2)
     }
 
     fn from_ne_bytes(bytes: &[u8]) -> Result<Self, TensorError> {
@@ -303,8 +339,14 @@ impl TensorScalar for BF16 {
 impl TensorScalar for bool {
     const DTYPE: DType = DType::Bool;
 
-    fn to_ne_bytes(&self) -> Vec<u8> {
-        vec![u8::from(*self)]
+    fn append_ne_bytes(&self, buffer: &mut Vec<u8>) {
+        buffer.push(if *self { 1 } else { 0 });
+    }
+
+    fn to_ne_bytes_fixed(&self) -> ([u8; 8], usize) {
+        let mut arr = [0u8; 8];
+        arr[0] = if *self { 1 } else { 0 };
+        (arr, 1)
     }
 
     fn from_ne_bytes(bytes: &[u8]) -> Result<Self, TensorError> {

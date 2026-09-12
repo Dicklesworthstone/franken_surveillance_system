@@ -5,12 +5,14 @@
 #![forbid(unsafe_code)]
 
 use std::error::Error;
+use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 use fss_core::Generation;
 use fss_tensor::{
     BF16, DType, F16, MAX_STORAGE_BYTES, MAX_TENSOR_RANK, Shape, Strides, Tensor, TensorError,
-    TensorStorage, TensorView,
+    TensorScalar, TensorStorage, TensorView,
 };
 
 #[test]
@@ -422,13 +424,182 @@ fn test_squeeze_unsqueeze() -> Result<(), Box<dyn Error>> {
     let sq0 = tensor.squeeze(Some(0))?;
     assert_eq!(sq0.shape().dims(), &[3, 1, 2]);
 
+    // Squeeze non-1 dimension fails closed with typed InvalidSqueezeDimension error
+    match tensor.squeeze(Some(1)) {
+        Err(err @ TensorError::InvalidSqueezeDimension { dim, size }) => {
+            assert_eq!(dim, 1);
+            assert_eq!(size, 3);
+            assert!(
+                err.to_string()
+                    .contains("cannot squeeze dimension 1 with size 3")
+            );
+        }
+        other => return Err(format!("expected InvalidSqueezeDimension, got {other:?}").into()),
+    }
+
     // Squeeze all size 1 dims
     let sq_all = tensor.squeeze(None)?;
     assert_eq!(sq_all.shape().dims(), &[3, 2]);
+    assert_eq!(sq_all.strides().as_slice(), &[2, 1]);
+    assert!(sq_all.is_c_contiguous());
 
-    // Unsqueeze at dim 1
-    let unsq = sq_all.unsqueeze(1)?;
-    assert_eq!(unsq.shape().dims(), &[3, 1, 2]);
+    // Unsqueeze at dim 1: shape [3, 2] -> [3, 1, 2]
+    let unsq1 = sq_all.unsqueeze(1)?;
+    assert_eq!(unsq1.shape().dims(), &[3, 1, 2]);
+    assert_eq!(unsq1.strides().as_slice(), &[2, 2, 1]);
+    assert!(unsq1.is_c_contiguous());
+
+    // Valid reshape of unsqueezed tensor succeeds without copying
+    let reshaped = unsq1.reshape(Shape::new(vec![6])?)?;
+    assert_eq!(reshaped.shape().dims(), &[6]);
+
+    // Unsqueeze at dim 0: shape [3, 2] -> [1, 3, 2]
+    let unsq0 = sq_all.unsqueeze(0)?;
+    assert_eq!(unsq0.shape().dims(), &[1, 3, 2]);
+    assert_eq!(unsq0.strides().as_slice(), &[6, 2, 1]);
+    assert!(unsq0.is_c_contiguous());
+
+    // Unsqueeze at dim 2: shape [3, 2] -> [3, 2, 1]
+    let unsq2 = sq_all.unsqueeze(2)?;
+    assert_eq!(unsq2.shape().dims(), &[3, 2, 1]);
+    assert_eq!(unsq2.strides().as_slice(), &[2, 1, 1]);
+    assert!(unsq2.is_c_contiguous());
+
+    Ok(())
+}
+
+#[test]
+fn test_review761_finding1_unsqueeze_c_contiguity_and_reshape() -> Result<(), Box<dyn Error>> {
+    let t = Tensor::zeros(Shape::new(vec![2, 3])?, DType::F32, Generation::GENESIS)?;
+    assert!(t.is_c_contiguous());
+    let unsq = t.unsqueeze(0)?;
+    assert_eq!(unsq.shape().dims(), &[1, 2, 3]);
+    // Row-major strides for [1, 2, 3] must be [6, 3, 1]
+    assert_eq!(unsq.strides().as_slice(), &[6, 3, 1]);
+    assert!(unsq.is_c_contiguous());
+    let reshaped = unsq.reshape(Shape::new(vec![6])?)?;
+    assert_eq!(reshaped.shape().dims(), &[6]);
+    assert!(reshaped.is_c_contiguous());
+
+    let contiguous = unsq.to_contiguous()?;
+    assert_eq!(contiguous.shape().dims(), &[1, 2, 3]);
+    assert!(contiguous.is_c_contiguous());
+    Ok(())
+}
+
+#[test]
+fn test_review761_finding2_to_vec_broadcast_hostile_metadata_no_panic() -> Result<(), Box<dyn Error>>
+{
+    let storage = Arc::new(TensorStorage::zeros(4, Generation::GENESIS)?);
+    let shape = Shape::new(vec![usize::MAX])?;
+    let strides = Strides::new(vec![0]);
+    let view = TensorView::new(storage, 0, DType::F32, shape, strides, Generation::GENESIS)?;
+    let tensor = Tensor::from_view(view);
+
+    // Must return a typed error, never panic with capacity overflow
+    let res = tensor.to_vec::<f32>();
+    assert!(
+        matches!(
+            res,
+            Err(TensorError::ArithmeticOverflow { .. })
+                | Err(TensorError::AllocationLimitExceeded { .. })
+        ),
+        "expected typed allocation or arithmetic error, got: {res:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_review761_finding3_to_contiguous_hostile_broadcast_bounded_pre_allocation()
+-> Result<(), Box<dyn Error>> {
+    let storage = Arc::new(TensorStorage::zeros(4, Generation::GENESIS)?);
+    let hostile_dim = MAX_STORAGE_BYTES / 4 + 1000;
+    let shape = Shape::new(vec![hostile_dim])?;
+    let strides = Strides::new(vec![0]);
+    let view = TensorView::new(storage, 0, DType::F32, shape, strides, Generation::GENESIS)?;
+    let tensor = Tensor::from_view(view);
+
+    // Must fail fast with AllocationLimitExceeded before running copy loop or allocating >256 MiB
+    match tensor.to_contiguous() {
+        Err(TensorError::AllocationLimitExceeded {
+            requested_bytes,
+            max_bytes,
+        }) => {
+            assert_eq!(requested_bytes, hostile_dim * 4);
+            assert_eq!(max_bytes, MAX_STORAGE_BYTES);
+        }
+        other => return Err(format!("expected AllocationLimitExceeded, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_review761_finding4_dtype_repr_and_digest_domain() -> Result<(), Box<dyn Error>> {
+    // Assert repr(u8) explicit stable discriminants
+    assert_eq!(DType::F32.type_tag(), 1);
+    assert_eq!(DType::F64.type_tag(), 2);
+    assert_eq!(DType::F16.type_tag(), 3);
+    assert_eq!(DType::BF16.type_tag(), 4);
+    assert_eq!(DType::I8.type_tag(), 5);
+    assert_eq!(DType::I16.type_tag(), 6);
+    assert_eq!(DType::I32.type_tag(), 7);
+    assert_eq!(DType::I64.type_tag(), 8);
+    assert_eq!(DType::U8.type_tag(), 9);
+    assert_eq!(DType::U16.type_tag(), 10);
+    assert_eq!(DType::U32.type_tag(), 11);
+    assert_eq!(DType::U64.type_tag(), 12);
+    assert_eq!(DType::Bool.type_tag(), 13);
+
+    // Verify digest domain registration in registries/DIGEST_DOMAINS.md
+    let domains_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../registries/DIGEST_DOMAINS.md");
+    let content = fs::read_to_string(&domains_path)?;
+    assert!(
+        content.contains("fss.tensor.v1"),
+        "DIGEST_DOMAINS.md must declare fss.tensor.v1"
+    );
+    assert!(
+        content.contains("SCHEMA-DOMAIN-TENSOR-001"),
+        "DIGEST_DOMAINS.md must declare SCHEMA-DOMAIN-TENSOR-001"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_review761_finding7_squeeze_invalid_dimension_error() -> Result<(), Box<dyn Error>> {
+    let t = Tensor::zeros(Shape::new(vec![2, 3])?, DType::F32, Generation::GENESIS)?;
+    match t.squeeze(Some(0)) {
+        Err(err @ TensorError::InvalidSqueezeDimension { dim, size }) => {
+            assert_eq!(dim, 0);
+            assert_eq!(size, 2);
+            assert_eq!(
+                err.to_string(),
+                "cannot squeeze dimension 0 with size 2 (must be 1)"
+            );
+        }
+        other => return Err(format!("expected InvalidSqueezeDimension, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_review761_finding8_tensor_scalar_zero_alloc_append() -> Result<(), Box<dyn Error>> {
+    let val: f32 = 123.456;
+    let mut buf = Vec::new();
+    val.append_ne_bytes(&mut buf);
+    assert_eq!(buf, val.to_ne_bytes());
+
+    let (arr, len) = val.to_ne_bytes_fixed();
+    assert_eq!(len, 4);
+    assert_eq!(&arr[..len], val.to_ne_bytes().as_slice());
+
+    // Verify from_values uses append_ne_bytes correctly
+    let tensor = Tensor::from_values(
+        Shape::new(vec![3])?,
+        &[1.0f32, 2.0f32, 3.0f32],
+        Generation::GENESIS,
+    )?;
+    assert_eq!(tensor.to_vec::<f32>()?, vec![1.0, 2.0, 3.0]);
     Ok(())
 }
 

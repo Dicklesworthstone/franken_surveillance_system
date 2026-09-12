@@ -114,6 +114,13 @@ pub enum TensorError {
         /// The invalid string identifier.
         name: String,
     },
+    /// Squeeze dimension size is greater than 1.
+    InvalidSqueezeDimension {
+        /// Dimension index requested to squeeze.
+        dim: usize,
+        /// Actual size of the dimension.
+        size: usize,
+    },
 }
 
 impl fmt::Display for TensorError {
@@ -222,6 +229,12 @@ impl fmt::Display for TensorError {
             }
             Self::InvalidDTypeName { name } => {
                 write!(f, "invalid data type name: '{name}'")
+            }
+            Self::InvalidSqueezeDimension { dim, size } => {
+                write!(
+                    f,
+                    "cannot squeeze dimension {dim} with size {size} (must be 1)"
+                )
             }
         }
     }

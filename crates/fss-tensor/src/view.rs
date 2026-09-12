@@ -318,11 +318,9 @@ impl TensorView {
                 });
             }
             if dims[target_dim] != 1 {
-                return Err(TensorError::InvalidSlice {
+                return Err(TensorError::InvalidSqueezeDimension {
                     dim: target_dim,
-                    start: 0,
-                    end: dims[target_dim],
-                    bound: 1,
+                    size: dims[target_dim],
                 });
             }
             for (i, (&d, &s)) in dims.iter().zip(strides).enumerate() {
@@ -357,6 +355,7 @@ impl TensorView {
     /// # Errors
     /// Returns [`TensorError::DimensionOutOfBounds`] if `dim > rank`.
     /// Returns [`TensorError::RankOverflow`] if `rank + 1 > MAX_TENSOR_RANK`.
+    /// Returns [`TensorError::ArithmeticOverflow`] if stride calculation overflows.
     pub fn unsqueeze(&self, dim: usize) -> Result<Self, TensorError> {
         let rank = self.shape.rank();
         if dim > rank {
@@ -374,9 +373,17 @@ impl TensorView {
         let new_shape = Shape::new(new_dims)?;
 
         let mut new_strides = self.strides.as_slice().to_vec();
-        // The stride for dimension of size 1: if followed by another dimension, stride of that dimension, else 1.
-        let inserted_stride = if dim < self.strides.rank() {
-            self.strides.as_slice()[dim]
+        // The stride for an inserted dimension of size 1 at `dim`:
+        // If dim < rank, its row-major stride is old_dims[dim] * old_strides[dim].
+        // If dim == rank, its stride is 1.
+        let inserted_stride = if dim < rank {
+            let old_dim = self.shape.dims()[dim];
+            let old_stride = self.strides.as_slice()[dim];
+            old_dim
+                .checked_mul(old_stride)
+                .ok_or(TensorError::ArithmeticOverflow {
+                    operation: "unsqueeze stride calculation",
+                })?
         } else {
             1
         };
