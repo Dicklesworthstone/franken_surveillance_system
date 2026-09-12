@@ -1786,7 +1786,13 @@ impl LocalRootPublisher {
                             self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
                         if self.io.symlink_metadata(&target_path).is_ok() {
                             let temp_path = self.root.join(&relative);
-                            let _ = self.io.remove_file(&temp_path);
+                            match self.io.remove_file(&temp_path) {
+                                Ok(()) => {}
+                                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                                Err(_) => {
+                                    self.orphan_temps.insert(relative);
+                                }
+                            }
                             continue;
                         }
                         self.orphan_temps.insert(relative);

@@ -9,7 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
-use fss_object::{HostSpoolIo, ObjectManifest, SpoolIo, SpoolLimits};
+use fss_object::{
+    FaultInjectingSpoolIo, HostSpoolIo, ObjectManifest, SpoolFaultPlan, SpoolIo, SpoolIoCall,
+    SpoolLimits,
+};
 use fss_publication::{
     ClaimStatus, InjectedIoFault, IoFaultPoint, LedgeredRootPublisher, LocalPublicationError,
     LocalPublicationLimits, LocalPublicationState, LocalRootPublisher, PublicationClaims,
@@ -541,5 +544,44 @@ fn test_target_created_in_toctou_window_is_refused_and_never_clobbered() -> Test
         "temporary record must be cleaned up on refusal"
     );
 
+    Ok(())
+}
+
+/// Finding 6 / 7.6 follow-up: When reopening with a leftover temp root where the target already exists,
+/// a failed remove_file must not be silently discarded; it must be recorded in orphan_temps
+/// and reported in the recovery report.
+#[test]
+fn test_reopen_scan_records_failed_temp_removal_when_target_exists() -> TestResult {
+    let root = fresh_root("test_reopen_scan_records_failed_temp_removal_when_target_exists")?;
+    let limits = test_limits();
+
+    let slot = SlotName::parse("slot-temp-fail")?;
+    // 1. Cleanly publish the root
+    {
+        let mut publisher = LocalRootPublisher::open(&root, limits)?;
+        let leaf = publisher.stage_object(b"payload")?;
+        let manifest = ObjectManifest::new("clip", [leaf], None)?;
+        publisher.publish(&slot, &manifest)?;
+    }
+
+    // 2. Create leftover temp file at roots/slot-temp-fail.root.tmp
+    let temp_relative = PathBuf::from("roots").join(format!("{slot}.root.tmp"));
+    let temp_path = root.join(&temp_relative);
+    fs::write(&temp_path, b"leftover temp content")?;
+    assert!(temp_path.exists());
+
+    // 3. Reopen with FaultInjectingSpoolIo that fails RemoveFile
+    let plan =
+        SpoolFaultPlan::new().fail(SpoolIoCall::RemoveFile, 1, io::ErrorKind::PermissionDenied);
+    let io = Arc::new(FaultInjectingSpoolIo::new(plan));
+    let reopened = LocalRootPublisher::open_with_io(&root, limits, io)?;
+
+    // The failed removal must be recorded in orphan_temps and recovery report
+    let report = reopened.recovery_report();
+    assert!(
+        report.orphaned_temps.contains(&temp_relative),
+        "recovery report must report the failed temp removal in orphaned_temps: {report:?}"
+    );
+    assert!(temp_path.exists(), "temp file must remain on disk");
     Ok(())
 }
