@@ -3,10 +3,13 @@
 //!
 //! The crate intentionally owns no network, async runtime, database, or remote archive behavior.
 //! It is the deterministic oracle that later FrankenFS/ATP/provider adapters must match.
+//! [`StagingSpool`] is its one local-filesystem backend: a crash-safe content-addressed staging
+//! spool that holds staged and verified bytes and never claims visibility or durability.
 
 mod error;
 mod manifest;
 mod memory;
+mod spool;
 
 #[cfg(test)]
 mod tests;
@@ -15,6 +18,13 @@ pub use error::ObjectError;
 pub use fss_core::TombstoneRecord;
 pub use manifest::ObjectManifest;
 pub use memory::{InMemoryObjectStore, ObjectLimits};
+pub use spool::{
+    CorruptObject, CorruptionKind, DiscardReceipt, ForeignEntry, ForeignReason,
+    MAX_STAGING_NAME_ATTEMPTS, OrphanedStaging, SPOOL_LOCK_FILE, SPOOL_OBJECT_FORMAT_VERSION,
+    SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC, SPOOL_OBJECTS_DIR, SPOOL_STAGING_DIR, SpoolError,
+    SpoolIoOperation, SpoolLimitViolation, SpoolLimits, SpoolObjectState, SpoolRecoveryReport,
+    StageOutcome, StagePhase, StageReceipt, StagingSpool,
+};
 
 use fss_core::ContentDigest;
 
