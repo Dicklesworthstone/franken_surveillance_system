@@ -1034,7 +1034,10 @@ impl ProviderPricingManifest {
     fn compute_manifest_digest(&self) -> Result<ContentDigest, PricingManifestError> {
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical_checked(&mut encoder)?;
-        Ok(ContentDigest::sha256(&encoder.finish()))
+        let bytes = encoder
+            .finish_checked()
+            .map_err(PricingManifestError::Contract)?;
+        Ok(ContentDigest::sha256(&bytes))
     }
 
     /// Encodes into a canonical byte envelope, returning typed [`PricingManifestError::OverLimit`] if bounds are exceeded.
@@ -1042,7 +1045,9 @@ impl ProviderPricingManifest {
         self.validate()?;
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical_checked(&mut encoder)?;
-        Ok(encoder.finish())
+        encoder
+            .finish_checked()
+            .map_err(PricingManifestError::Contract)
     }
 
     /// Decodes from a canonical byte envelope, returning rich typed [`PricingManifestError`].
@@ -1061,6 +1066,10 @@ impl ProviderPricingManifest {
         &self,
         encoder: &mut CanonicalEncoder,
     ) -> Result<(), PricingManifestError> {
+        self.validate()?;
+        if let Some(err) = encoder.error() {
+            return Err(PricingManifestError::Contract(err.clone()));
+        }
         if self.rates.len() > MAX_RATES_COUNT {
             return Err(PricingManifestError::OverLimit {
                 field: "rates",
@@ -1154,6 +1163,10 @@ impl ProviderPricingManifest {
         for m in &self.operation_mappings {
             encoder.text(&m.provider_operation);
             encoder.tag(m.cost_class.as_u8());
+        }
+
+        if let Some(err) = encoder.error() {
+            return Err(PricingManifestError::Contract(err.clone()));
         }
 
         Ok(())
@@ -1449,12 +1462,6 @@ impl ProviderPricingManifest {
 
         manifest.manifest_digest = manifest.compute_manifest_digest()?;
         Ok(manifest)
-    }
-}
-
-impl CanonicalEncode for ProviderPricingManifest {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        let _ = self.encode_canonical_checked(encoder);
     }
 }
 

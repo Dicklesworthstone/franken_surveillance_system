@@ -1411,3 +1411,26 @@ fn test_finding8_decode_returns_rich_error_variants() -> TestResult {
         other => Err(format!("expected UnsupportedVersion(99), got {other:?}").into()),
     }
 }
+
+#[test]
+fn test_gate_encode_canonical_checked_fails_closed_on_encoder_error() -> TestResult {
+    let manifest = sample_r2_manifest(None)?;
+
+    // If an encoder is already in an error state (or encounters an error),
+    // encode_canonical_checked must fail closed with a typed error rather than returning Ok(()).
+    let mut bad_encoder = CanonicalEncoder::new();
+    bad_encoder.text(&"x".repeat(fss_core::MAX_CANONICAL_TEXT_BYTES + 1));
+    if !bad_encoder.has_error() {
+        return Err("expected bad_encoder to have an error".into());
+    }
+
+    let res = manifest.encode_canonical_checked(&mut bad_encoder);
+    match res {
+        Err(PricingManifestError::Contract(_)) => Ok(()),
+        Ok(()) => Err(
+            "encode_canonical_checked must fail closed on encoder error, but returned Ok(())"
+                .into(),
+        ),
+        Err(other) => Err(format!("expected Contract error, got {other:?}").into()),
+    }
+}
