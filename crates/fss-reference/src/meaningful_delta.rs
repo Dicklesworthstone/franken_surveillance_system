@@ -46,6 +46,60 @@ const fn premise_state_invalidated(prior: KnowledgeState, current: KnowledgeStat
     }
 }
 
+/// What the result frame says about an effect cell that the basis carried as `KSTATE-008`
+/// `indeterminate` (registries/AGENT_CONTRACTS.md, "Knowledge states").
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum IndeterminateEffectSuccessor {
+    /// A retained terminal outcome resolved the effect uncertainty.
+    Resolved,
+    /// The consequential outcome is still unproved. `coverage_gap` additionally reports the cell
+    /// as lost coverage because its new state withholds or fails to establish the outcome.
+    Unresolved { coverage_gap: bool },
+}
+
+/// Classifies the result cell of an effect that was `Indeterminate` in the basis.
+///
+/// Only `KSTATE-001` `known` carrying the evidence an irreversible-effect premise needs (retained
+/// evidence roots and no contradicting roots, as in `KnowledgeCell::is_irreversible_effect_premise`)
+/// resolves the uncertainty. Every other state leaves the outcome unproved, so it is never flattened
+/// into a resolution or a terminal transition. The match is exhaustive so a new state must be
+/// classified here rather than silently resolving.
+fn indeterminate_effect_successor(current: &KnowledgeCell) -> IndeterminateEffectSuccessor {
+    let unresolved_gap = IndeterminateEffectSuccessor::Unresolved { coverage_gap: true };
+    let unresolved = IndeterminateEffectSuccessor::Unresolved {
+        coverage_gap: false,
+    };
+    match current.knowledge_state {
+        // KSTATE-001: resolved only by a proved terminal outcome; a `known` claim without evidence
+        // roots, or with contradicting roots, does not establish what happened.
+        KnowledgeState::Known => {
+            if !current.evidence.is_empty() && current.contradictions.is_empty() {
+                IndeterminateEffectSuccessor::Resolved
+            } else {
+                unresolved_gap
+            }
+        }
+        // KSTATE-002: an estimate of the outcome is not proof; still unresolved, but the estimate
+        // is explicit uncertainty rather than a coverage gap.
+        KnowledgeState::Estimated => unresolved,
+        // KSTATE-003: the evidence does not establish the outcome; unresolved and a gap.
+        KnowledgeState::Unknown => unresolved_gap,
+        // KSTATE-004: incompatible evidence about the outcome; unresolved and a gap.
+        KnowledgeState::Conflicted => unresolved_gap,
+        // KSTATE-005: only an older anchor spoke to the outcome; unresolved and a gap.
+        KnowledgeState::Stale => unresolved_gap,
+        // KSTATE-006: the domain could not have established the outcome; unresolved and a gap.
+        KnowledgeState::NotObservable => unresolved_gap,
+        // KSTATE-007: the outcome is withheld by the projection, not proved; unresolved and a gap.
+        KnowledgeState::Redacted => unresolved_gap,
+        // KSTATE-008: still indeterminate (not reached from the set difference, kept exhaustive).
+        KnowledgeState::Indeterminate => unresolved_gap,
+        // KSTATE-009: says the proposition has no meaning in scope, which neither proves nor
+        // negates an outcome that may already have happened; unresolved, but not a coverage gap.
+        KnowledgeState::NotApplicable => unresolved,
+    }
+}
+
 /// Classifies every decision-relevant change between two exact reference publications.
 ///
 /// Terminal transitions, coverage loss, contradictions, plan invalidation, obligation changes,
@@ -225,8 +279,43 @@ pub fn classify_reference_meaningful_delta(
     for added in result_indeterminate.difference(&basis_indeterminate) {
         effect_uncertainty_changes.push(format!("effect uncertainty added: {added}"));
     }
-    for resolved in basis_indeterminate.difference(&result_indeterminate) {
-        effect_uncertainty_changes.push(format!("effect uncertainty resolved: {resolved}"));
+    let mut effect_resolved = false;
+    for claim_id in basis_indeterminate.difference(&result_indeterminate) {
+        match result_frame
+            .knowledge_cells
+            .iter()
+            .find(|candidate| candidate.claim_id == *claim_id)
+        {
+            Some(current) => match indeterminate_effect_successor(current) {
+                IndeterminateEffectSuccessor::Resolved => {
+                    effect_resolved = true;
+                    effect_uncertainty_changes.push(format!(
+                        "effect uncertainty resolved: {claim_id} became known with retained outcome evidence"
+                    ));
+                }
+                IndeterminateEffectSuccessor::Unresolved { coverage_gap } => {
+                    let state = current.knowledge_state.as_str();
+                    effect_uncertainty_changes.push(format!(
+                        "effect uncertainty remains: indeterminate effect {claim_id} became {state} without a proved outcome"
+                    ));
+                    if coverage_gap {
+                        classes.insert(MeaningfulDeltaClass::CoverageLoss);
+                        coverage_changes.push(format!(
+                            "unproved effect {claim_id} degraded from indeterminate to {state}"
+                        ));
+                    }
+                }
+            },
+            None => {
+                effect_uncertainty_changes.push(format!(
+                    "effect uncertainty remains: indeterminate effect {claim_id} disappeared from the result frame without a proved outcome"
+                ));
+                classes.insert(MeaningfulDeltaClass::CoverageLoss);
+                coverage_changes.push(format!(
+                    "unproved effect {claim_id} disappeared from the result frame while indeterminate"
+                ));
+            }
+        }
     }
     if !effect_uncertainty_changes.is_empty() {
         classes.insert(MeaningfulDeltaClass::EffectUncertainty);
@@ -263,12 +352,12 @@ pub fn classify_reference_meaningful_delta(
                             )
                     })
         });
-    let effect_terminalized = basis_indeterminate
-        .difference(&result_indeterminate)
-        .next()
-        .is_some()
+    // A basis-indeterminate effect is terminal only when it resolved above; its other successors
+    // are classified there and must not be re-read as terminal here.
+    let effect_terminalized = effect_resolved
         || result_frame.knowledge_cells.iter().any(|cell| {
             cell.claim_id.starts_with("claim:effect:")
+                && !basis_indeterminate.contains(cell.claim_id.as_str())
                 && (cell.knowledge_state == KnowledgeState::Known
                     || matches!(
                         cell.hypothesis,

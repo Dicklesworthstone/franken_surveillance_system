@@ -23,6 +23,8 @@ struct Variant {
     include_affordance: bool,
     obligations: Vec<ObligationId>,
     effect_state: Option<KnowledgeState>,
+    effect_evidence: bool,
+    effect_contradicted: bool,
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
 }
@@ -41,6 +43,8 @@ impl Variant {
             include_affordance: true,
             obligations: Vec::new(),
             effect_state: None,
+            effect_evidence: true,
+            effect_contradicted: false,
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
         })
@@ -135,8 +139,18 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             knowledge_state: effect_state,
             provenance: ProvenanceClass::Observed,
             hypothesis: None,
-            evidence: vec![ContentDigest::sha256(b"effect-outcome")],
-            contradictions: Vec::new(),
+            evidence: if variant.effect_evidence {
+                vec![ContentDigest::sha256(b"effect-outcome")]
+            } else {
+                Vec::new()
+            },
+            contradictions: if variant.effect_contradicted
+                || effect_state == KnowledgeState::Conflicted
+            {
+                vec![ContentDigest::sha256(b"effect-contradiction")]
+            } else {
+                Vec::new()
+            },
             valid_until: None,
         });
     }
@@ -330,7 +344,7 @@ fn effect_terminalization_preserves_uncertainty_transition() -> Result<(), Box<d
         delta
             .effect_uncertainty_changes
             .iter()
-            .any(|change| change.contains("resolved"))
+            .any(|change| change.starts_with("effect uncertainty resolved: "))
     );
     delta.validate()?;
     Ok(())
@@ -489,5 +503,291 @@ fn every_state_that_cannot_authorize_an_irreversible_effect_invalidates_a_known_
         );
         delta.validate()?;
     }
+    Ok(())
+}
+
+const EFFECT_CLAIM: &str = "claim:effect:meaningful-delta:outcome";
+
+/// Compares a basis whose effect cell is `Indeterminate` with a result whose effect cell is
+/// `successor` (`None` removes the cell), with the result cell further shaped by `configure`.
+fn indeterminate_effect_delta(
+    successor: Option<KnowledgeState>,
+    configure: fn(&mut Variant),
+) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>> {
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.effect_state = Some(KnowledgeState::Indeterminate);
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = basis_variant.clone();
+    result_variant.sequence = 2;
+    result_variant.effect_state = successor;
+    configure(&mut result_variant);
+    let result = publication(&result_variant)?;
+    Ok(classify_reference_meaningful_delta(&basis, &result)?)
+}
+
+const fn keep_effect_evidence(_: &mut Variant) {}
+
+/// Asserts the delta keeps the basis-indeterminate effect unresolved: continued effect
+/// uncertainty, never a resolution or terminal transition, and coverage loss exactly when the
+/// successor withholds or fails to establish the outcome.
+fn assert_effect_unresolved(
+    delta: &fss_core::MeaningfulDelta,
+    expected_change: &str,
+    expected_coverage_change: Option<&str>,
+) -> Result<(), Box<dyn Error>> {
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::EffectUncertainty),
+        "{expected_change}: effect uncertainty must stay reported: {:?}",
+        delta.classes
+    );
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{expected_change}: an unproved effect is not a terminal transition: {:?}",
+        delta.classes
+    );
+    assert!(
+        !delta
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change.contains("resolved")),
+        "{expected_change}: an unproved effect must not be reported as resolved: {:?}",
+        delta.effect_uncertainty_changes
+    );
+    assert!(
+        delta
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change == expected_change),
+        "missing {expected_change:?} in {:?}",
+        delta.effect_uncertainty_changes
+    );
+    match expected_coverage_change {
+        Some(coverage_change) => {
+            assert!(
+                delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+                "{expected_change}: a degraded unproved effect is coverage loss: {:?}",
+                delta.classes
+            );
+            assert!(
+                delta
+                    .coverage_changes
+                    .iter()
+                    .any(|change| change == coverage_change),
+                "missing {coverage_change:?} in {:?}",
+                delta.coverage_changes
+            );
+        }
+        None => assert!(
+            !delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+            "{expected_change}: a non-degraded successor is not coverage loss: {:?}",
+            delta.coverage_changes
+        ),
+    }
+    assert_eq!(delta.priority, DeltaPriority::Critical);
+    assert!(delta.is_non_coalescible());
+    delta.validate()?;
+    Ok(())
+}
+
+fn became(state: KnowledgeState) -> String {
+    format!(
+        "effect uncertainty remains: indeterminate effect {EFFECT_CLAIM} became {} without a proved outcome",
+        state.as_str()
+    )
+}
+
+fn degraded_to(state: KnowledgeState) -> String {
+    format!(
+        "unproved effect {EFFECT_CLAIM} degraded from indeterminate to {}",
+        state.as_str()
+    )
+}
+
+fn assert_degraded_successor_unresolved(state: KnowledgeState) -> Result<(), Box<dyn Error>> {
+    let delta = indeterminate_effect_delta(Some(state), keep_effect_evidence)?;
+    assert_effect_unresolved(&delta, &became(state), Some(&degraded_to(state)))
+}
+
+fn assert_non_degraded_successor_unresolved(state: KnowledgeState) -> Result<(), Box<dyn Error>> {
+    let delta = indeterminate_effect_delta(Some(state), keep_effect_evidence)?;
+    assert_effect_unresolved(&delta, &became(state), None)
+}
+
+#[test]
+fn indeterminate_effect_becoming_estimated_stays_unresolved() -> Result<(), Box<dyn Error>> {
+    assert_non_degraded_successor_unresolved(KnowledgeState::Estimated)
+}
+
+#[test]
+fn indeterminate_effect_becoming_unknown_stays_unresolved() -> Result<(), Box<dyn Error>> {
+    assert_degraded_successor_unresolved(KnowledgeState::Unknown)
+}
+
+#[test]
+fn indeterminate_effect_becoming_conflicted_stays_unresolved() -> Result<(), Box<dyn Error>> {
+    assert_degraded_successor_unresolved(KnowledgeState::Conflicted)
+}
+
+#[test]
+fn indeterminate_effect_becoming_stale_stays_unresolved() -> Result<(), Box<dyn Error>> {
+    assert_degraded_successor_unresolved(KnowledgeState::Stale)
+}
+
+#[test]
+fn indeterminate_effect_becoming_not_observable_stays_unresolved() -> Result<(), Box<dyn Error>> {
+    assert_degraded_successor_unresolved(KnowledgeState::NotObservable)
+}
+
+#[test]
+fn indeterminate_effect_becoming_redacted_stays_unresolved() -> Result<(), Box<dyn Error>> {
+    assert_degraded_successor_unresolved(KnowledgeState::Redacted)
+}
+
+#[test]
+fn indeterminate_effect_becoming_not_applicable_stays_unresolved() -> Result<(), Box<dyn Error>> {
+    assert_non_degraded_successor_unresolved(KnowledgeState::NotApplicable)
+}
+
+#[test]
+fn indeterminate_effect_becoming_known_without_evidence_stays_unresolved()
+-> Result<(), Box<dyn Error>> {
+    let delta = indeterminate_effect_delta(Some(KnowledgeState::Known), |variant| {
+        variant.effect_evidence = false;
+    })?;
+    assert_effect_unresolved(
+        &delta,
+        &became(KnowledgeState::Known),
+        Some(&degraded_to(KnowledgeState::Known)),
+    )
+}
+
+#[test]
+fn indeterminate_effect_becoming_contradicted_known_stays_unresolved() -> Result<(), Box<dyn Error>>
+{
+    let delta = indeterminate_effect_delta(Some(KnowledgeState::Known), |variant| {
+        variant.effect_contradicted = true;
+    })?;
+    assert_effect_unresolved(
+        &delta,
+        &became(KnowledgeState::Known),
+        Some(&degraded_to(KnowledgeState::Known)),
+    )
+}
+
+#[test]
+fn removed_indeterminate_effect_is_coverage_loss_not_resolution() -> Result<(), Box<dyn Error>> {
+    let delta = indeterminate_effect_delta(None, keep_effect_evidence)?;
+    let expected_change = format!(
+        "effect uncertainty remains: indeterminate effect {EFFECT_CLAIM} disappeared from the result frame without a proved outcome"
+    );
+    let expected_coverage = format!(
+        "unproved effect {EFFECT_CLAIM} disappeared from the result frame while indeterminate"
+    );
+    assert_effect_unresolved(&delta, &expected_change, Some(&expected_coverage))
+}
+
+#[test]
+fn indeterminate_effect_that_stays_indeterminate_is_neither_resolved_nor_terminal()
+-> Result<(), Box<dyn Error>> {
+    let delta =
+        indeterminate_effect_delta(Some(KnowledgeState::Indeterminate), keep_effect_evidence)?;
+
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition)
+    );
+    assert!(delta.effect_uncertainty_changes.is_empty());
+    // The still-indeterminate cell stays a degraded epistemic cell (fss-mfea7).
+    assert!(delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss));
+    assert!(delta.coverage_changes.iter().any(|change| {
+        change.contains("epistemic cell degraded") && change.contains(EFFECT_CLAIM)
+    }));
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn estimated_and_not_applicable_stay_out_of_the_degraded_epistemic_set()
+-> Result<(), Box<dyn Error>> {
+    for state in [KnowledgeState::Estimated, KnowledgeState::NotApplicable] {
+        let delta = known_premise_delta(state)?;
+
+        assert!(
+            !delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+            "{} premise must not be reported as coverage loss: {:?}",
+            state.as_str(),
+            delta.coverage_changes
+        );
+        assert!(
+            !delta
+                .coverage_changes
+                .iter()
+                .any(|change| change.contains("epistemic cell degraded")),
+            "{} premise must not be listed as a degraded epistemic cell: {:?}",
+            state.as_str(),
+            delta.coverage_changes
+        );
+        // Leaving the degraded set does not hide the downgrade: it is an invalidated premise.
+        assert!(premise_invalidated(&delta, state));
+        delta.validate()?;
+    }
+    Ok(())
+}
+
+fn estimated_premise_delta(
+    state: KnowledgeState,
+) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>> {
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.premise_state = KnowledgeState::Estimated;
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = basis_variant.clone();
+    result_variant.sequence = 2;
+    result_variant.premise_state = state;
+    let result = publication(&result_variant)?;
+    Ok(classify_reference_meaningful_delta(&basis, &result)?)
+}
+
+#[test]
+fn estimated_premise_becoming_redacted_is_an_invalidated_assumption() -> Result<(), Box<dyn Error>>
+{
+    let delta = estimated_premise_delta(KnowledgeState::Redacted)?;
+
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::PlanInvalidation)
+    );
+    assert!(
+        delta
+            .invalidated_assumptions
+            .contains(&"estimated premise claim:premise became redacted".to_owned()),
+        "Estimated->Redacted premise must be invalidated: {:?}",
+        delta.invalidated_assumptions
+    );
+    assert!(delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss));
+    assert_eq!(delta.priority, DeltaPriority::Critical);
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn estimated_premise_staying_estimated_is_not_invalidated() -> Result<(), Box<dyn Error>> {
+    let delta = estimated_premise_delta(KnowledgeState::Estimated)?;
+
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::PlanInvalidation),
+        "Estimated->Estimated must not invalidate the premise: {:?}",
+        delta.invalidated_assumptions
+    );
+    assert!(delta.invalidated_assumptions.is_empty());
+    assert!(!delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss));
+    delta.validate()?;
     Ok(())
 }
