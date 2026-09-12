@@ -1,0 +1,82 @@
+{
+  "schema": "fss.knowledge_states.v1",
+  "asOf": "2026-08-31",
+  "semanticProtocol": "fss/1",
+  "constitutionalDocument": "AGENT_COGNITION_AND_CONTROL.md",
+  "humanContracts": "registries/AGENT_CONTRACTS.md",
+  "registryDigest": "sha256:2a3f43a243d4b99a16362777765a036841320a0f356457fd3bce84030f2a9f03",
+  "knowledgeStates": [
+    {
+      "id": "KSTATE-001",
+      "state": "known",
+      "meaning": "The proposition is established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition.",
+      "may_support_planning": "yes",
+      "may_authorize_irreversible_effect": "yes, subject to capability and policy",
+      "explicit_assumptions_required": "no"
+    },
+    {
+      "id": "KSTATE-002",
+      "state": "estimated",
+      "meaning": "The proposition is supported by a declared derivation or model with explicit uncertainty and operating-envelope limits.",
+      "may_support_planning": "yes",
+      "may_authorize_irreversible_effect": "no",
+      "explicit_assumptions_required": "yes"
+    },
+    {
+      "id": "KSTATE-003",
+      "state": "unknown",
+      "meaning": "The authorized evidence acquired so far does not establish the proposition.",
+      "may_support_planning": "yes, as an explicit branch or open variable",
+      "may_authorize_irreversible_effect": "no",
+      "explicit_assumptions_required": "yes"
+    },
+    {
+      "id": "KSTATE-004",
+      "state": "conflicted",
+      "meaning": "Material admissible evidence supports incompatible propositions or generations.",
+      "may_support_planning": "yes, only as competing branches",
+      "may_authorize_irreversible_effect": "no",
+      "explicit_assumptions_required": "yes"
+    },
+    {
+      "id": "KSTATE-005",
+      "state": "stale",
+      "meaning": "The proposition was valid only at an older anchor or generation and has not been revalidated.",
+      "may_support_planning": "yes, only as a revalidation candidate",
+      "may_authorize_irreversible_effect": "no",
+      "explicit_assumptions_required": "yes"
+    },
+    {
+      "id": "KSTATE-006",
+      "state": "not_observable",
+      "meaning": "The declared sensor/authorization/model domain could not have established the proposition for the requested interval.",
+      "may_support_planning": "yes, as a protected residual possibility",
+      "may_authorize_irreversible_effect": "no",
+      "explicit_assumptions_required": "yes"
+    },
+    {
+      "id": "KSTATE-007",
+      "state": "redacted",
+      "meaning": "The proposition or its evidence exists but is intentionally withheld by the current privacy/capability projection.",
+      "may_support_planning": "yes, only through non-leaking abstract constraints",
+      "may_authorize_irreversible_effect": "no",
+      "explicit_assumptions_required": "yes"
+    },
+    {
+      "id": "KSTATE-008",
+      "state": "indeterminate",
+      "meaning": "A consequential external outcome may have occurred but is not yet proved or safely negated.",
+      "may_support_planning": "yes, only in reconciliation branches",
+      "may_authorize_irreversible_effect": "no",
+      "explicit_assumptions_required": "yes"
+    },
+    {
+      "id": "KSTATE-009",
+      "state": "not_applicable",
+      "meaning": "The proposition has no meaning for the named object, scope, or lifecycle state.",
+      "may_support_planning": "no",
+      "may_authorize_irreversible_effect": "no",
+      "explicit_assumptions_required": "no"
+    }
+  ]
+}

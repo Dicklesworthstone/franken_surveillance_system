@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 import capability_registry_checker
 import dependency_audit
 import frozen_registry_checker
+import knowledge_state_checker
 import slo_validate
 
 
@@ -824,6 +825,11 @@ def main() -> int:
     capability_registry_result = capability_registry_checker.validate_capability_registry(ROOT)
     if not capability_registry_result.passed:
         for err in capability_registry_result.errors:
+            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
+
+    knowledge_state_registry_result = knowledge_state_checker.validate_knowledge_state_registry(ROOT)
+    if not knowledge_state_registry_result.passed:
+        for err in knowledge_state_registry_result.errors:
             fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
 
 
