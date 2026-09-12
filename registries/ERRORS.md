@@ -89,6 +89,30 @@ operation states rather than generic errors.
 | `ERR-LEDGER-ORACLE-ENCODING-001` | canonical encoding of a digest input exceeded its encoder bound | reject input; repair the oversized field |
 | `ERR-LEDGER-ORACLE-READ-BEYOND-HEAD-001` | anchor-pinned read requested a sequence beyond the committed head | wait for commit or read at a committed anchor |
 | `ERR-LEDGER-ORACLE-READ-ANCHOR-MISMATCH-001` | anchor-pinned read named an anchor that is not committed in this history | resnapshot from a committed anchor of this lineage |
+| `ERR-PUBLICATION-LOCAL-INVALID-CONFIG-001` | local publication limits are zero, inconsistent, or above a format maximum | repair configuration; do not retry unchanged |
+| `ERR-PUBLICATION-LOCAL-SLOT-INVALID-001` | publication slot name is empty, too long, or outside the slot grammar | reject input; choose a registered slot name |
+| `ERR-PUBLICATION-LOCAL-BOUND-001` | manifest child count or directory entry count exceeds the configured bound | reject input; split the manifest or repair the layout |
+| `ERR-PUBLICATION-LOCAL-CAPACITY-001` | configured root or tombstone capacity of the local publisher is exhausted | archive or rotate before publishing |
+| `ERR-PUBLICATION-LOCAL-CORRUPT-REFERENCE-001` | a referenced object failed digest verification; root not visible | repair or restage the named object, then retry idempotently |
+| `ERR-PUBLICATION-LOCAL-TOMBSTONED-REFERENCE-001` | a referenced object carries a durable tombstone; root not visible | reject input; tombstoned objects are never republished |
+| `ERR-PUBLICATION-LOCAL-UNAVAILABLE-001` | custody of a referenced object could not be determined; root not visible | reopen to reconcile storage, then retry idempotently |
+| `ERR-PUBLICATION-LOCAL-SLOT-CONFLICT-001` | slot already holds a different visible root | reject input; publish the new root under a new slot |
+| `ERR-PUBLICATION-LOCAL-BROKEN-ROOT-001` | slot holds a root record that failed reopen verification | repair or quarantine the broken record; never overwrite it |
+| `ERR-PUBLICATION-LOCAL-ORPHAN-TEMP-001` | an orphaned temporary record from an interrupted publication occupies the path | discard classified orphans, then retry idempotently |
+| `ERR-PUBLICATION-LOCAL-MANIFEST-MISMATCH-001` | manifest root does not match its canonical body or its staged read-back | reject input; rebuild the manifest canonically |
+| `ERR-PUBLICATION-LOCAL-SPOOL-001` | the staging spool refused an object stage, verify, or read | follow the nested spool failure; no root was made visible |
+| `ERR-PUBLICATION-LOCAL-IO-001` | a publication filesystem operation failed before the root rename | bounded retry after repairing storage; nothing is visible |
+| `ERR-PUBLICATION-LOCAL-LOCKED-001` | another owner holds the exclusive publication lock | wait for the owner to close; never share the root |
+| `ERR-PUBLICATION-LOCAL-LAYOUT-001` | a publication directory or record path has the wrong file type or is occupied unexpectedly | repair the layout; nothing is overwritten |
+| `ERR-PUBLICATION-LOCAL-INDETERMINATE-001` | root was renamed into place but its directory fsync failed; durability unknown | reopen to reconcile before any retry |
+| `ERR-PUBLICATION-LOCAL-INJECTED-CRASH-001` | a fault-injection cut point fired and the instance behaves as a dead process | reopen to reconcile |
+| `ERR-PUBLICATION-LOCAL-CANCELLED-001` | publication was cancelled before the root rename; nothing is visible | retry idempotently when resumed |
+| `ERR-PUBLICATION-LOCAL-POISONED-001` | publisher observed a crash or indeterminate outcome and refuses further work | reopen to reconcile |
+| `ERR-PUBLICATION-LOCAL-DELETION-AUTHORITY-001` | tombstone record lacks a deletion authority witness | supply a verified deletion authority witness |
+| `ERR-PUBLICATION-LOCAL-TOMBSTONE-CONFLICT-001` | a different tombstone record is already durable for the object | reject input; tombstones are immutable |
+| `ERR-PUBLICATION-LOCAL-TOMBSTONE-REACHABLE-001` | object is reachable from a visible root and cannot be tombstoned locally | run deletion closure through its owner; no silent unpublish |
+| `ERR-PUBLICATION-LOCAL-CORRUPT-TOMBSTONE-001` | a durable tombstone record failed verification on open | repair the tombstone store; open fails closed |
+| `ERR-PUBLICATION-LOCAL-ENCODING-001` | canonical encoding of a publication record exceeded its encoder bound | reject input; repair the oversized field |
 
 ## Subordinate dependency audit diagnostic registry (DEP-AUD)
 
