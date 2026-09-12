@@ -15,8 +15,8 @@ use fss_core::{
 };
 use fss_ledger::{
     CorruptionKind, DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, Journal,
-    JournalError, RepairError, apply, doctor, doctor_path, plan, plan_with_cut,
-    quarantine_path_for,
+    JournalError, MAX_QUARANTINE_TEMP_ATTEMPTS, RepairError, apply, doctor, doctor_path, plan,
+    plan_with_cut, quarantine_path_for, quarantine_temp_path_for,
 };
 
 static COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -538,6 +538,210 @@ fn setup_journal_with_foreign_tail(
     raw.sync_all()?;
 
     Ok((committed_len, root))
+}
+
+/// Creates a fresh, test-owned scratch directory without shared process-global counters.
+fn fresh_dir(label: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let dir = std::env::temp_dir().join(format!("fss-ledger-vddm8-{}-{label}", std::process::id()));
+    match fs::remove_dir_all(&dir) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// Returns the `{hex}` stem shared by the quarantine sidecar and its staging temp files.
+fn quarantine_stem(qpath: &std::path::Path) -> Result<String, Box<dyn Error>> {
+    let name = qpath
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("quarantine path has no UTF-8 file name")?;
+    Ok(name
+        .strip_suffix(".quarantine")
+        .ok_or("quarantine path lacks .quarantine suffix")?
+        .to_owned())
+}
+
+/// fss-vddm8: two independent repairers must not depend on shared process state.
+///
+/// Repairer A runs first. Repairer B then works in a directory where a crashed earlier process
+/// with our PID left stale staging files for every attempt number that any process-global counter
+/// could plausibly have reached. B's staging must start from its own first attempt, succeed, and
+/// leave files it did not create untouched.
+#[test]
+fn test_independent_repairers_do_not_share_process_attempt_state() -> Result<(), Box<dyn Error>> {
+    let dir_a = fresh_dir("independent-a")?;
+    let dir_b = fresh_dir("independent-b")?;
+    let foreign = b"FOREIGN_TAIL_VDDM8_INDEPENDENT";
+
+    // Repairer A.
+    let path_a = dir_a.join("a.journal");
+    setup_journal_with_foreign_tail(&path_a, foreign)?;
+    let report_a = doctor_path(&path_a)?;
+    let receipt_a = apply(&plan(&path_a, &report_a)?)?;
+    assert_eq!(fs::read(receipt_a.quarantine_path())?, foreign);
+
+    // Repairer B, independent journal and directory, identical foreign bytes (same digest).
+    let path_b = dir_b.join("b.journal");
+    setup_journal_with_foreign_tail(&path_b, foreign)?;
+    let report_b = doctor_path(&path_b)?;
+    let plan_b = plan(&path_b, &report_b)?;
+    let qpath_b = quarantine_path_for(
+        plan_b.journal_path(),
+        report_b.foreign_digest().ok_or("foreign digest")?,
+    );
+    let stem = quarantine_stem(&qpath_b)?;
+    let pid = std::process::id();
+    let stale: Vec<PathBuf> = (1..=256_u32)
+        .map(|k| dir_b.join(format!("{stem}.tmp.{pid}.{k}")))
+        .collect();
+    for path in &stale {
+        fs::write(path, b"stale-leftover-not-owned-by-this-repair")?;
+    }
+
+    let receipt_b = apply(&plan_b)?;
+    assert_eq!(receipt_b.quarantine_path(), &qpath_b);
+    assert_eq!(fs::read(&qpath_b)?, foreign);
+    assert_eq!(fs::metadata(&path_b)?.len(), report_b.committed_len());
+    for path in &stale {
+        assert_eq!(
+            fs::read(path)?,
+            b"stale-leftover-not-owned-by-this-repair",
+            "repair must never remove or overwrite a staging file it did not create: {}",
+            path.display()
+        );
+    }
+    let leftover_temps = fs::read_dir(&dir_b)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+        .count();
+    assert_eq!(
+        leftover_temps,
+        stale.len(),
+        "a successful repair must not leave its own staging file behind"
+    );
+
+    fs::remove_dir_all(&dir_a)?;
+    fs::remove_dir_all(&dir_b)?;
+    Ok(())
+}
+
+/// fss-vddm8: staging retries are bounded and exhaustion is a typed, non-destructive error.
+#[test]
+fn test_quarantine_staging_retry_is_bounded_and_typed() -> Result<(), Box<dyn Error>> {
+    let dir = fresh_dir("exhausted")?;
+    let foreign = b"FOREIGN_TAIL_VDDM8_EXHAUSTED";
+    let path = dir.join("x.journal");
+    let (committed_len, _) = setup_journal_with_foreign_tail(&path, foreign)?;
+    let report = doctor_path(&path)?;
+    let sealed = plan(&path, &report)?;
+    let digest = report.foreign_digest().ok_or("foreign digest")?;
+    let qpath = quarantine_path_for(sealed.journal_path(), digest);
+    let stem = quarantine_stem(&qpath)?;
+    let parent = sealed.journal_path().parent().ok_or("journal parent")?;
+    assert_eq!(
+        quarantine_temp_path_for(sealed.journal_path(), digest, 7),
+        parent.join(format!("{stem}.tmp.{}.7", std::process::id())),
+        "staging names are a pure function of journal, digest, pid, and per-call attempt"
+    );
+
+    let occupied: Vec<PathBuf> = (0..MAX_QUARANTINE_TEMP_ATTEMPTS)
+        .map(|attempt| quarantine_temp_path_for(sealed.journal_path(), digest, attempt))
+        .collect();
+    for held in &occupied {
+        fs::write(held, b"held-by-someone-else")?;
+    }
+
+    match apply(&sealed) {
+        Err(RepairError::QuarantineTempExhausted {
+            directory,
+            attempts,
+        }) => {
+            assert_eq!(attempts, MAX_QUARANTINE_TEMP_ATTEMPTS);
+            assert_eq!(directory.as_path(), parent);
+        }
+        other => return Err(format!("expected QuarantineTempExhausted, got {other:?}").into()),
+    }
+    assert_eq!(
+        fs::metadata(&path)?.len(),
+        committed_len + foreign.len() as u64,
+        "exhaustion must leave the journal untouched"
+    );
+    assert!(!qpath.exists(), "no sidecar may be published on exhaustion");
+    for held in &occupied {
+        assert_eq!(fs::read(held)?, b"held-by-someone-else");
+    }
+
+    // Releasing one name lets the very same sealed plan complete.
+    let last = occupied.last().ok_or("no staging names")?;
+    fs::remove_file(last)?;
+    let receipt = apply(&sealed)?;
+    assert_eq!(fs::read(receipt.quarantine_path())?, foreign);
+    assert_eq!(fs::metadata(&path)?.len(), committed_len);
+
+    fs::remove_dir_all(&dir)?;
+    Ok(())
+}
+
+/// fss-vddm8: concurrent repairs within one process stay correct without shared counters.
+///
+/// Several independent journals in one directory carry identical foreign tails, so every repairer
+/// stages and publishes the same digest-named sidecar at the same time.
+#[test]
+fn test_concurrent_in_process_repairs_share_directory_and_digest() -> Result<(), Box<dyn Error>> {
+    const REPAIRERS: usize = 4;
+    let dir = fresh_dir("concurrent")?;
+    let foreign = b"FOREIGN_TAIL_VDDM8_CONCURRENT";
+    let mut prepared = Vec::with_capacity(REPAIRERS);
+    for index in 0..REPAIRERS {
+        let path = dir.join(format!("j{index}.journal"));
+        let (committed_len, _) = setup_journal_with_foreign_tail(&path, foreign)?;
+        let report = doctor_path(&path)?;
+        let sealed = plan(&path, &report)?;
+        prepared.push((path, committed_len, sealed));
+    }
+
+    let barrier = std::sync::Barrier::new(REPAIRERS);
+    let outcomes = std::thread::scope(|scope| {
+        let handles: Vec<_> = prepared
+            .iter()
+            .map(|(_, _, sealed)| {
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    barrier.wait();
+                    apply(sealed)
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(std::thread::ScopedJoinHandle::join)
+            .collect::<Vec<_>>()
+    });
+
+    let mut sidecar: Option<PathBuf> = None;
+    for (outcome, (path, committed_len, _)) in outcomes.into_iter().zip(&prepared) {
+        let receipt = outcome.map_err(|_| "repair thread panicked")??;
+        assert_eq!(fs::metadata(path)?.len(), *committed_len);
+        assert_eq!(fs::read(receipt.quarantine_path())?, foreign);
+        match &sidecar {
+            None => sidecar = Some(receipt.quarantine_path().to_path_buf()),
+            Some(existing) => assert_eq!(existing.as_path(), receipt.quarantine_path()),
+        }
+    }
+    let leftover_temps = fs::read_dir(&dir)?
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
+        .count();
+    assert_eq!(
+        leftover_temps, 0,
+        "no staging file may survive a successful repair"
+    );
+
+    fs::remove_dir_all(&dir)?;
+    Ok(())
 }
 
 /// Adversarial Finding 2: Cut offset past EOF is rejected rather than extending file.

@@ -30,9 +30,9 @@ pub use error::{
 pub use journal::{AppendReconciliation, IncompleteTailPolicy, Journal};
 pub use recovery::{JournalRecord, RecoveryReport, inspect, recover_bytes};
 pub use repair::{
-    DoctorReport, ForeignRange, JournalDoctorReport, RepairDoctorReport, RepairError, RepairPlan,
-    RepairReceipt, SealedRepairPlan, apply, doctor, doctor_path, plan, plan_with_cut,
-    quarantine_path_for,
+    DoctorReport, ForeignRange, JournalDoctorReport, MAX_QUARANTINE_TEMP_ATTEMPTS,
+    RepairDoctorReport, RepairError, RepairPlan, RepairReceipt, SealedRepairPlan, apply, doctor,
+    doctor_path, plan, plan_with_cut, quarantine_path_for, quarantine_temp_path_for,
 };
 
 /// Maximum payload accepted by one reference-journal record.
