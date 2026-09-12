@@ -167,7 +167,7 @@ const JOURNAL_FAULT_AFTER: [AppendPhase; 3] = [
 const JOURNAL_OP_COUNT: u64 = 4;
 
 /// Calls that change the file system, or the ledger file. Every such `N` is swept.
-const MUTATING_CALLS: [&str; 14] = [
+const MUTATING_CALLS: [&str; 15] = [
     "create_dir_all",
     "open_lock",
     "create_dir",
@@ -175,6 +175,7 @@ const MUTATING_CALLS: [&str; 14] = [
     "write",
     "sync_file",
     "rename",
+    "hard_link",
     "remove_file",
     "sync_directory",
     "ledger_open",
@@ -434,6 +435,11 @@ impl SpoolIo for CrashIo {
         self.call("rename", &shown, |host| host.rename(from, to))
     }
 
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        let shown = format!("{}->{}", self.relative(from), self.relative(to));
+        self.call("hard_link", &shown, |host| host.hard_link(from, to))
+    }
+
     fn remove_file(&self, path: &Path) -> io::Result<()> {
         self.at("remove_file", path, |host| host.remove_file(path))
     }
@@ -629,6 +635,7 @@ struct Expected {
     admitted: BTreeSet<ContentDigest>,
     root_temp_created: bool,
     root_renamed: bool,
+    root_temp_removed: bool,
     root_directory_synced: bool,
     body_written: bool,
     commit_written: bool,
@@ -651,11 +658,11 @@ impl Expected {
                         expected.root_temp_created = true;
                     }
                 }
-                "rename" => {
+                "rename" | "hard_link" => {
                     let (from, to) = op
                         .path
                         .split_once("->")
-                        .ok_or_else(|| format!("malformed rename {:?}", op.path))?;
+                        .ok_or_else(|| format!("malformed rename/hard_link {:?}", op.path))?;
                     if let Some(name) = from.strip_prefix(&staging) {
                         expected.orphans.remove(name);
                     }
@@ -666,6 +673,14 @@ impl Expected {
                     }
                     if to == root_record {
                         expected.root_renamed = true;
+                        if op.call == "rename" {
+                            expected.root_temp_removed = true;
+                        }
+                    }
+                }
+                "remove_file" => {
+                    if op.path == root_temp {
+                        expected.root_temp_removed = true;
                     }
                 }
                 "sync_directory" => {
@@ -682,7 +697,7 @@ impl Expected {
     }
 
     const fn root_temp_orphaned(&self) -> bool {
-        self.root_temp_created && !self.root_renamed
+        self.root_temp_created && !self.root_temp_removed
     }
 
     const fn incomplete_tail(&self) -> bool {
@@ -1585,7 +1600,11 @@ fn process_death_sweep_over_spool_publisher_and_ledger() -> TestResult {
         "expected exactly 2 torn-tail steps marked Indeterminate"
     );
     assert!(
-        outcome_counts.get(&TestOutcome::Crashed).copied().unwrap_or_default() > 0,
+        outcome_counts
+            .get(&TestOutcome::Crashed)
+            .copied()
+            .unwrap_or_default()
+            > 0,
         "expected crashed steps marked Crashed"
     );
     assert_eq!(

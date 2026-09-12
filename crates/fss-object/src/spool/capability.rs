@@ -49,11 +49,13 @@ pub enum SpoolIoCall {
     RemoveFile,
     /// Fsyncing a directory.
     SyncDirectory,
+    /// Creating a hard link.
+    HardLink,
 }
 
 impl SpoolIoCall {
     /// Every call kind, in declaration order.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 18] = [
         Self::CreateDirAll,
         Self::Metadata,
         Self::SymlinkMetadata,
@@ -71,6 +73,7 @@ impl SpoolIoCall {
         Self::Rename,
         Self::RemoveFile,
         Self::SyncDirectory,
+        Self::HardLink,
     ];
 
     const fn index(self) -> usize {
@@ -98,6 +101,7 @@ impl fmt::Display for SpoolIoCall {
             Self::Rename => "rename",
             Self::RemoveFile => "remove_file",
             Self::SyncDirectory => "sync_directory",
+            Self::HardLink => "hard_link",
         })
     }
 }
@@ -141,6 +145,10 @@ pub trait SpoolIo: fmt::Debug + Send + Sync {
     fn remove_file(&self, path: &Path) -> io::Result<()>;
     /// Fsyncs a directory so entries created or renamed in it are durable.
     fn sync_directory(&self, path: &Path) -> io::Result<()>;
+    /// Creates a hard link `to` pointing to `from`. Fails with `AlreadyExists` if `to` exists.
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::hard_link(from, to)
+    }
 }
 
 /// The host filesystem. [`StagingSpool::open`](super::StagingSpool::open) uses it.
@@ -221,6 +229,10 @@ impl SpoolIo for HostSpoolIo {
 
     fn sync_directory(&self, path: &Path) -> io::Result<()> {
         File::open(path)?.sync_all()
+    }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        fs::hard_link(from, to)
     }
 }
 
@@ -505,5 +517,9 @@ impl SpoolIo for FaultInjectingSpoolIo {
 
     fn sync_directory(&self, path: &Path) -> io::Result<()> {
         self.intercept(SpoolIoCall::SyncDirectory, |host| host.sync_directory(path))
+    }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.intercept(SpoolIoCall::HardLink, |host| host.hard_link(from, to))
     }
 }

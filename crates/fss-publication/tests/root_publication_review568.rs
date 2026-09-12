@@ -5,6 +5,7 @@ use std::error::Error;
 use std::fs::{self, DirEntry, File, FileType, Metadata, ReadDir, TryLockError};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
@@ -297,6 +298,11 @@ impl SpoolIo for RecordingIo {
         self.record(format!("sync_directory:{}", path.display()));
         self.inner.sync_directory(path)
     }
+
+    fn hard_link(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.record(format!("hard_link:{}->{}", from.display(), to.display()));
+        self.inner.hard_link(from, to)
+    }
 }
 
 /// Finding 4: Missing Parent Directory Fsync on Temporary File Creation.
@@ -324,13 +330,17 @@ fn test_write_temp_must_sync_parent_directory_after_file_creation() -> TestResul
         .iter()
         .position(|c| c.starts_with("create_new:") && c.contains("roots") && c.contains(".tmp"))
         .ok_or("expected create_new on roots .tmp file")?;
-    let rename_idx = recorded
+    let commit_idx = recorded
         .iter()
-        .position(|c| c.starts_with("rename:") && c.contains("roots") && c.contains(".tmp->"))
-        .ok_or("expected rename from roots .tmp file")?;
+        .position(|c| {
+            (c.starts_with("rename:") || c.starts_with("hard_link:"))
+                && c.contains("roots")
+                && c.contains(".tmp")
+        })
+        .ok_or("expected rename or hard_link from roots .tmp file")?;
 
-    // Assert that a sync_directory on roots directory occurred between temp create_new and rename
-    let sync_dir_between = recorded[temp_create_idx..rename_idx]
+    // Assert that a sync_directory on roots directory occurred between temp create_new and commit
+    let sync_dir_between = recorded[temp_create_idx..commit_idx]
         .iter()
         .any(|c| c.starts_with("sync_directory:") && c.contains("roots"));
 
@@ -379,3 +389,158 @@ fn test_publish_fails_with_invalid_layout_if_unindexed_file_exists_at_target_pat
 
     Ok(())
 }
+
+/// IO implementation that simulates a concurrent creator writing a file at `target_path`
+/// during the TOCTOU window between pre-commit inspection and the commit point.
+#[derive(Debug)]
+struct ToctouConflictIo {
+    inner: HostSpoolIo,
+    target_path: PathBuf,
+    conflict_bytes: Vec<u8>,
+    conflict_created: AtomicBool,
+}
+
+impl ToctouConflictIo {
+    fn new(target_path: PathBuf, conflict_bytes: Vec<u8>) -> Self {
+        Self {
+            inner: HostSpoolIo,
+            target_path,
+            conflict_bytes,
+            conflict_created: AtomicBool::new(false),
+        }
+    }
+}
+
+impl SpoolIo for ToctouConflictIo {
+    fn create_dir_all(&self, path: &Path) -> io::Result<()> {
+        self.inner.create_dir_all(path)
+    }
+
+    fn metadata(&self, path: &Path) -> io::Result<Metadata> {
+        self.inner.metadata(path)
+    }
+
+    fn symlink_metadata(&self, path: &Path) -> io::Result<Metadata> {
+        let res = self.inner.symlink_metadata(path);
+        if path == self.target_path
+            && res.as_ref().err().map(|e| e.kind()) == Some(io::ErrorKind::NotFound)
+        {
+            // Inject conflicting file directly onto the host filesystem right after
+            // the publisher verified that target_path was NotFound!
+            fs::write(&self.target_path, &self.conflict_bytes)?;
+            self.conflict_created.store(true, Ordering::SeqCst);
+        }
+        res
+    }
+
+    fn open_lock(&self, path: &Path) -> io::Result<File> {
+        self.inner.open_lock(path)
+    }
+
+    fn try_lock(&self, file: &File) -> Result<(), TryLockError> {
+        self.inner.try_lock(file)
+    }
+
+    fn create_dir(&self, path: &Path) -> io::Result<()> {
+        self.inner.create_dir(path)
+    }
+
+    fn read_dir(&self, path: &Path) -> io::Result<ReadDir> {
+        self.inner.read_dir(path)
+    }
+
+    fn next_dir_entry(&self, entries: &mut ReadDir) -> Option<io::Result<DirEntry>> {
+        self.inner.next_dir_entry(entries)
+    }
+
+    fn entry_file_type(&self, entry: &DirEntry) -> io::Result<FileType> {
+        self.inner.entry_file_type(entry)
+    }
+
+    fn create_new(&self, path: &Path) -> io::Result<File> {
+        self.inner.create_new(path)
+    }
+
+    fn write(&self, file: &mut File, bytes: &[u8]) -> io::Result<usize> {
+        self.inner.write(file, bytes)
+    }
+
+    fn sync_file(&self, file: &File) -> io::Result<()> {
+        self.inner.sync_file(file)
+    }
+
+    fn open_read(&self, path: &Path) -> io::Result<File> {
+        self.inner.open_read(path)
+    }
+
+    fn read_bounded(&self, file: &mut File, limit: u64) -> io::Result<Vec<u8>> {
+        self.inner.read_bounded(file, limit)
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.inner.rename(from, to)
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.inner.remove_file(path)
+    }
+
+    fn sync_directory(&self, path: &Path) -> io::Result<()> {
+        self.inner.sync_directory(path)
+    }
+}
+
+/// Finding 5: A target file created between inspection and commit (TOCTOU window)
+/// must be refused with InvalidLayout and never clobbered.
+#[test]
+fn test_target_created_in_toctou_window_is_refused_and_never_clobbered() -> TestResult {
+    let root = fresh_root("test_target_created_in_toctou_window_is_refused_and_never_clobbered")?;
+    let limits = test_limits();
+    let slot = SlotName::parse("slot-toctou")?;
+    let target_path = root.join("roots").join(format!("{slot}.root"));
+    let conflict_payload = b"concurrent_racing_process_data".to_vec();
+
+    let io = Arc::new(ToctouConflictIo::new(
+        target_path.clone(),
+        conflict_payload.clone(),
+    ));
+
+    let mut publisher = LocalRootPublisher::open_with_io(&root, limits, io.clone())?;
+    let leaf = publisher.stage_object(b"payload")?;
+    let manifest = ObjectManifest::new("clip", [leaf], None)?;
+
+    let res = publisher.publish(&slot, &manifest);
+    assert!(
+        io.conflict_created.load(Ordering::SeqCst),
+        "the TOCTOU race injection must have triggered"
+    );
+
+    match res {
+        Err(LocalPublicationError::InvalidLayout { path }) => {
+            assert_eq!(path, target_path);
+        }
+        other => {
+            return Err(format!("expected InvalidLayout error, got {other:?}").into());
+        }
+    }
+
+    // The target file created in the TOCTOU window must NEVER be clobbered
+    let disk_content = fs::read(&target_path)?;
+    assert_eq!(
+        disk_content, conflict_payload,
+        "concurrent target file must retain its original contents and never be clobbered"
+    );
+
+    // The publisher must not be poisoned by a clean refusal
+    assert!(!publisher.is_poisoned());
+
+    // Temporary record must have been cleaned up
+    let temp_path = root.join("roots").join(format!("{slot}.root.tmp"));
+    assert!(
+        !temp_path.exists(),
+        "temporary record must be cleaned up on refusal"
+    );
+
+    Ok(())
+}
+

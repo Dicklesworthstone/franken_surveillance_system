@@ -910,12 +910,19 @@ impl LocalRootPublisher {
             }
         }
 
-        // 5. Commit point: the rename makes the root visible.
-        let renamed = match self.take_io_fault(IoFaultPoint::RootRename) {
+        // 5. Commit point: the hard link makes the root visible atomically without clobbering.
+        // If a file was created at target_path between inspection and commit (TOCTOU race),
+        // hard_link fails with io::ErrorKind::AlreadyExists and never clobbers target_path.
+        let linked = match self.take_io_fault(IoFaultPoint::RootRename) {
             Some(kind) => Err(io::Error::from(kind)),
-            None => self.io.rename(&temp_path, &target_path),
+            None => self.io.hard_link(&temp_path, &target_path),
         };
-        if let Err(error) = renamed {
+        if let Err(error) = linked {
+            if error.kind() == io::ErrorKind::AlreadyExists {
+                let original = LocalPublicationError::InvalidLayout { path: target_path };
+                let cleanup = self.remove_temp(&temp_relative, &temp_path);
+                return Err(Self::fail_with_cleanup(original, cleanup));
+            }
             return Err(self.roll_back_failed_rename(
                 slot,
                 (&temp_relative, &temp_path),
@@ -923,6 +930,13 @@ impl LocalRootPublisher {
                 &record,
                 error.kind(),
             ));
+        }
+
+        // The target is now atomically visible. Remove the temporary link.
+        if let Err(error) = self.io.remove_file(&temp_path) {
+            if error.kind() != io::ErrorKind::NotFound {
+                self.orphan_temps.insert(temp_relative.to_path_buf());
+            }
         }
         self.staged.remove(slot);
         transitions.push(PublicationTransition::RootRenamed);
