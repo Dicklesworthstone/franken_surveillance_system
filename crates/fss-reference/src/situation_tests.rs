@@ -3,14 +3,15 @@ use std::error::Error;
 use std::fs;
 
 use fss_core::{
-    AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContractBasis,
-    ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, HandoffId, IdempotencyKey,
-    KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
-    SensorId, SessionId, TimestampNs,
+    AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContentDigest, ContractBasis,
+    ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, EventState, HandoffId,
+    IdempotencyKey, KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId,
+    ProbabilityInterval, SensorId, SessionId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
 
+use crate::situation::physical_knowledge_state;
 use crate::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
     ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
@@ -454,4 +455,117 @@ fn stale_previous_anchor_is_rejected() -> Result<(), Box<dyn Error>> {
 
     harness.cleanup();
     Ok(())
+}
+
+#[test]
+fn physical_knowledge_state_maps_every_event_state_explicitly() {
+    let support = [ContentDigest::sha256(b"supporting-witness")];
+    let contra = [ContentDigest::sha256(b"contradicting-witness")];
+    let none: [ContentDigest; 0] = [];
+    let cases: [(
+        EventState,
+        &[ContentDigest],
+        &[ContentDigest],
+        KnowledgeState,
+    ); 16] = [
+        // A candidate with no retained witness is not supported, so it cannot be estimated.
+        (
+            EventState::Hypothesized,
+            &none,
+            &none,
+            KnowledgeState::Unknown,
+        ),
+        (
+            EventState::Hypothesized,
+            &support,
+            &none,
+            KnowledgeState::Unknown,
+        ),
+        (
+            EventState::Witnessed,
+            &support,
+            &none,
+            KnowledgeState::Estimated,
+        ),
+        (
+            EventState::Corroborated,
+            &support,
+            &none,
+            KnowledgeState::Known,
+        ),
+        // Post-corroboration lifecycle stages are policy/effect/resolution progress, not physical
+        // evidence: estimated only while retained support exists, never upgraded to known.
+        (
+            EventState::Adjudicated,
+            &support,
+            &none,
+            KnowledgeState::Estimated,
+        ),
+        (
+            EventState::Adjudicated,
+            &none,
+            &none,
+            KnowledgeState::Unknown,
+        ),
+        (
+            EventState::Adjudicated,
+            &none,
+            &contra,
+            KnowledgeState::Unknown,
+        ),
+        (
+            EventState::AlertDelivered,
+            &support,
+            &none,
+            KnowledgeState::Estimated,
+        ),
+        (
+            EventState::AlertDelivered,
+            &none,
+            &none,
+            KnowledgeState::Unknown,
+        ),
+        (
+            EventState::Resolved,
+            &support,
+            &none,
+            KnowledgeState::Estimated,
+        ),
+        (EventState::Resolved, &none, &none, KnowledgeState::Unknown),
+        (
+            EventState::Indeterminate,
+            &support,
+            &contra,
+            KnowledgeState::Conflicted,
+        ),
+        (
+            EventState::Indeterminate,
+            &support,
+            &none,
+            KnowledgeState::Indeterminate,
+        ),
+        (
+            EventState::Indeterminate,
+            &none,
+            &none,
+            KnowledgeState::Indeterminate,
+        ),
+        (
+            EventState::Rejected,
+            &support,
+            &contra,
+            KnowledgeState::Unknown,
+        ),
+        (EventState::Rejected, &none, &none, KnowledgeState::Unknown),
+    ];
+    for (state, supporting, contradicting, expected) in cases {
+        assert_eq!(
+            physical_knowledge_state(state, supporting, contradicting),
+            expected,
+            "event state {} with {} supporting and {} contradicting roots",
+            state.as_str(),
+            supporting.len(),
+            contradicting.len()
+        );
+    }
 }

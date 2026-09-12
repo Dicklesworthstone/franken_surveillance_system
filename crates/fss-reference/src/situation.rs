@@ -156,19 +156,8 @@ pub fn compile_reference_situation(
         state_basis: None,
     };
     let mut knowledge_cells = vec![policy_cell];
-    let physical_state = match request.decision.event.state {
-        EventState::Corroborated => KnowledgeState::Known,
-        EventState::Witnessed => KnowledgeState::Estimated,
-        EventState::Rejected => KnowledgeState::Unknown,
-        EventState::Indeterminate => {
-            if !supporting.is_empty() && !contradicting.is_empty() {
-                KnowledgeState::Conflicted
-            } else {
-                KnowledgeState::Indeterminate
-            }
-        }
-        _ => KnowledgeState::Estimated,
-    };
+    let physical_state =
+        physical_knowledge_state(request.decision.event.state, &supporting, &contradicting);
     knowledge_cells.push(KnowledgeCell {
         claim_id: physical_claim_id.clone(),
         statement: physical_statement(request.decision.event.state).to_owned(),
@@ -1121,6 +1110,53 @@ fn reconciliation_basis_for(
 ) -> Option<KnowledgeStateBasis> {
     (state == KnowledgeState::Indeterminate)
         .then(|| KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(root)))
+}
+
+/// Maps an event lifecycle state onto the knowledge state of the physical-presence claim.
+///
+/// The match is exhaustive on purpose: a new `EventState` must choose its knowledge state here
+/// instead of inheriting one. Lifecycle stages after corroboration record policy, delivery, or
+/// resolution progress; those are dispositions and effect outcomes, not physical evidence, so
+/// they never upgrade the physical proposition (`docs/AGENT_OPERATING_MODEL.md` §6). `estimated`
+/// (KSTATE-002) requires a supporting derivation, so a stage with no retained supporting roots is
+/// `unknown` (KSTATE-003) rather than estimated.
+pub(crate) fn physical_knowledge_state(
+    state: EventState,
+    supporting: &[ContentDigest],
+    contradicting: &[ContentDigest],
+) -> KnowledgeState {
+    let supported_estimate = if supporting.is_empty() {
+        KnowledgeState::Unknown
+    } else {
+        KnowledgeState::Estimated
+    };
+    match state {
+        // Detector/rule candidate with no retained observation witness: nothing yet supports the
+        // proposition, so it is unknown; support edges without a witness transition do not count.
+        EventState::Hypothesized => KnowledgeState::Unknown,
+        // One retained observation witness without independent corroboration.
+        EventState::Witnessed => KnowledgeState::Estimated,
+        // Independent failure domains (or an explicit exception proof) establish presence.
+        EventState::Corroborated => KnowledgeState::Known,
+        // Policy selected a disposition. Adjudication is also reachable through an urgent
+        // single-sensor exception or policy reconciliation from indeterminate, so it cannot imply
+        // corroboration: at most estimated from retained support.
+        EventState::Adjudicated => supported_estimate,
+        // A durable delivery receipt proves the alert effect, not the physical event.
+        EventState::AlertDelivered => supported_estimate,
+        // Resolution is a disposition; it neither confirms nor refutes physical presence.
+        EventState::Resolved => supported_estimate,
+        // Unresolved: conflicted when retained evidence points both ways, else indeterminate.
+        EventState::Indeterminate => {
+            if !supporting.is_empty() && !contradicting.is_empty() {
+                KnowledgeState::Conflicted
+            } else {
+                KnowledgeState::Indeterminate
+            }
+        }
+        // Rejection refutes the candidate but does not certify physical absence.
+        EventState::Rejected => KnowledgeState::Unknown,
+    }
 }
 
 fn physical_statement(state: EventState) -> &'static str {
