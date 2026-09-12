@@ -973,13 +973,21 @@ pub struct SituationCapsule {
 }
 
 impl SituationCapsule {
-    /// Validates the capsule and computes its decision fingerprint.
+    /// Validates the capsule, including every knowledge cell in its frame.
+    ///
+    /// A cell refused by [`KnowledgeCell::validate`] refuses the whole capsule with that cell's
+    /// typed error, so it can never reach the decision fingerprint or a context pack.
     pub fn validate(&self) -> Result<(), ContractError> {
         if self.anchor != self.frame.anchor
             || self.anchor != self.frame.world_envelope.anchor
             || self.frame.objective_id != self.frame.world_envelope.objective_id
         {
             return Err(ContractError::StaleAnchor);
+        }
+        // Every carried cell must hold the typed basis its state names (KSTATE-005/007/008);
+        // a capsule is never a way around the per-cell refusal.
+        for cell in &self.frame.knowledge_cells {
+            cell.validate()?;
         }
         self.frame.world_envelope.validate()?;
         for affordance in &self.affordances {

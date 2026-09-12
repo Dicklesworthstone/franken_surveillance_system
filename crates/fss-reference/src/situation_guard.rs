@@ -86,7 +86,7 @@ pub fn compile_reference_situation_with_operation_receipt(
     let outcome_is_absent = request.alert_outcome.is_none();
     let capabilities = request.available_capabilities.clone();
     let mut situation = crate::situation::compile_reference_situation(request, authority)?;
-    annotate_operation_receipt(&mut situation, operation_receipt);
+    annotate_operation_receipt(&mut situation, operation_receipt)?;
 
     if outcome_is_absent && operation_receipt.state != EffectState::Prepared {
         replace_commit_with_status(
@@ -214,7 +214,7 @@ fn validate_operation_receipt(
 fn annotate_operation_receipt(
     situation: &mut ReferenceSituation,
     operation_receipt: &OperationReceipt,
-) {
+) -> Result<(), ReferenceError> {
     let digest: ContentDigest = operation_receipt.receipt_digest();
     let operation_id = operation_receipt.intent.operation_id.as_str();
     situation.proof_roots.insert(digest);
@@ -223,24 +223,28 @@ fn annotate_operation_receipt(
         .frame
         .evidence_handles
         .insert(format!("fss://proof/{digest}"));
-    situation.capsule.frame.knowledge_cells.push(KnowledgeCell {
-        claim_id: format!("claim:effect:{operation_id}:local-state"),
-        statement: format!(
-            "The exact local effect journal receipt records state {}.",
-            operation_receipt.state.as_str()
-        ),
-        knowledge_state: KnowledgeState::Known,
-        provenance: ProvenanceClass::Derived,
-        hypothesis: None,
-        evidence: vec![digest],
-        contradictions: Vec::new(),
-        valid_until: None,
-        state_basis: None,
-    });
+    situation.capsule.frame.knowledge_cells.push(
+        KnowledgeCell {
+            claim_id: format!("claim:effect:{operation_id}:local-state"),
+            statement: format!(
+                "The exact local effect journal receipt records state {}.",
+                operation_receipt.state.as_str()
+            ),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        }
+        .validated()?,
+    );
     situation.capsule.frame.now.push(format!(
         "Local operation {operation_id} is {}.",
         operation_receipt.state.as_str()
     ));
+    Ok(())
 }
 
 fn replace_commit_with_status(

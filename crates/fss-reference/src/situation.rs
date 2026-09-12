@@ -154,21 +154,25 @@ pub fn compile_reference_situation(
         contradictions: Vec::new(),
         valid_until: None,
         state_basis: None,
-    };
+    }
+    .validated()?;
     let mut knowledge_cells = vec![policy_cell];
     let physical_state =
         physical_knowledge_state(request.decision.event.state, &supporting, &contradicting);
-    knowledge_cells.push(KnowledgeCell {
-        claim_id: physical_claim_id.clone(),
-        statement: physical_statement(request.decision.event.state).to_owned(),
-        knowledge_state: physical_state,
-        provenance: ProvenanceClass::Derived,
-        hypothesis: Some(policy_hypothesis(request.decision.event.state)),
-        evidence: supporting.clone(),
-        contradictions: contradicting.clone(),
-        valid_until: None,
-        state_basis: reconciliation_basis_for(physical_state, event_revision_digest),
-    });
+    knowledge_cells.push(
+        KnowledgeCell {
+            claim_id: physical_claim_id.clone(),
+            statement: physical_statement(request.decision.event.state).to_owned(),
+            knowledge_state: physical_state,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: Some(policy_hypothesis(request.decision.event.state)),
+            evidence: supporting.clone(),
+            contradictions: contradicting.clone(),
+            valid_until: None,
+            state_basis: reconciliation_basis_for(physical_state, event_revision_digest),
+        }
+        .validated()?,
+    );
 
     let mut coverage_proof_root = None;
     let (absence_certified, absence_non_pass_reason, absence_cell) = if request.decision.event.state
@@ -220,17 +224,20 @@ pub fn compile_reference_situation(
                 (
                     true,
                     None,
-                    Some(KnowledgeCell {
-                        claim_id: absence_claim_id.clone(),
-                        statement,
-                        knowledge_state: KnowledgeState::Known,
-                        provenance: ProvenanceClass::Derived,
-                        hypothesis: Some(HypothesisDisposition::Refuted),
-                        evidence: vec![event_revision_digest, witness.witness_digest()],
-                        contradictions: Vec::new(),
-                        valid_until: None,
-                        state_basis: None,
-                    }),
+                    Some(
+                        KnowledgeCell {
+                            claim_id: absence_claim_id.clone(),
+                            statement,
+                            knowledge_state: KnowledgeState::Known,
+                            provenance: ProvenanceClass::Derived,
+                            hypothesis: Some(HypothesisDisposition::Refuted),
+                            evidence: vec![event_revision_digest, witness.witness_digest()],
+                            contradictions: Vec::new(),
+                            valid_until: None,
+                            state_basis: None,
+                        }
+                        .validated()?,
+                    ),
                 )
             } else {
                 let reason = if !matches_generation {
@@ -290,17 +297,20 @@ pub fn compile_reference_situation(
                 (
                     false,
                     Some(reason),
-                    Some(KnowledgeCell {
-                        claim_id: absence_claim_id.clone(),
-                        statement,
-                        knowledge_state: KnowledgeState::Unknown,
-                        provenance: ProvenanceClass::Derived,
-                        hypothesis: None,
-                        evidence: vec![event_revision_digest],
-                        contradictions: Vec::new(),
-                        valid_until: None,
-                        state_basis: None,
-                    }),
+                    Some(
+                        KnowledgeCell {
+                            claim_id: absence_claim_id.clone(),
+                            statement,
+                            knowledge_state: KnowledgeState::Unknown,
+                            provenance: ProvenanceClass::Derived,
+                            hypothesis: None,
+                            evidence: vec![event_revision_digest],
+                            contradictions: Vec::new(),
+                            valid_until: None,
+                            state_basis: None,
+                        }
+                        .validated()?,
+                    ),
                 )
             }
         } else {
@@ -310,17 +320,20 @@ pub fn compile_reference_situation(
             (
                 false,
                 Some(reason),
-                Some(KnowledgeCell {
-                    claim_id: absence_claim_id.clone(),
-                    statement: "Physical absence is not certified because no complete continuous CoverageWitness is present in this reference projection.".to_owned(),
-                    knowledge_state: KnowledgeState::Unknown,
-                    provenance: ProvenanceClass::Derived,
-                    hypothesis: None,
-                    evidence: vec![event_revision_digest],
-                    contradictions: Vec::new(),
-                    valid_until: None,
-                    state_basis: None,
-                }),
+                Some(
+                    KnowledgeCell {
+                        claim_id: absence_claim_id.clone(),
+                        statement: "Physical absence is not certified because no complete continuous CoverageWitness is present in this reference projection.".to_owned(),
+                        knowledge_state: KnowledgeState::Unknown,
+                        provenance: ProvenanceClass::Derived,
+                        hypothesis: None,
+                        evidence: vec![event_revision_digest],
+                        contradictions: Vec::new(),
+                        valid_until: None,
+                        state_basis: None,
+                    }
+                    .validated()?,
+                ),
             )
         }
     } else {
@@ -358,20 +371,23 @@ pub fn compile_reference_situation(
             ),
             _ => return Err(ReferenceError::InvalidSpec("situation_effect_state")),
         };
-        knowledge_cells.push(KnowledgeCell {
-            claim_id: format!(
-                "claim:effect:{}:outcome",
-                operation.intent.operation_id.as_str()
-            ),
-            statement: statement.to_owned(),
-            knowledge_state,
-            provenance: ProvenanceClass::Observed,
-            hypothesis: None,
-            evidence: operation.result_digest.into_iter().collect(),
-            contradictions: Vec::new(),
-            valid_until: None,
-            state_basis: reconciliation_basis_for(knowledge_state, operation.receipt_digest()),
-        });
+        knowledge_cells.push(
+            KnowledgeCell {
+                claim_id: format!(
+                    "claim:effect:{}:outcome",
+                    operation.intent.operation_id.as_str()
+                ),
+                statement: statement.to_owned(),
+                knowledge_state,
+                provenance: ProvenanceClass::Observed,
+                hypothesis: None,
+                evidence: operation.result_digest.into_iter().collect(),
+                contradictions: Vec::new(),
+                valid_until: None,
+                state_basis: reconciliation_basis_for(knowledge_state, operation.receipt_digest()),
+            }
+            .validated()?,
+        );
     }
 
     let (world_envelope, mut unknown, mut at_risk) = compile_worlds(WorldCompilationParams {

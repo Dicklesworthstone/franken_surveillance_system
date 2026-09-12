@@ -507,3 +507,82 @@ fn duplicate_not_applicable_cells_leave_a_redundancy_record() -> Result<(), Box<
     );
     Ok(())
 }
+
+/// A cell whose state names a typed basis, deliberately built without that basis.
+fn basisless_cell(knowledge_state: KnowledgeState) -> KnowledgeCell {
+    KnowledgeCell {
+        claim_id: format!("claim:basisless:{}", knowledge_state.as_str()),
+        statement: format!(
+            "A {} proposition carried without its typed basis.",
+            knowledge_state.as_str()
+        ),
+        knowledge_state,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![ContentDigest::sha256(b"basisless-evidence")],
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: None,
+    }
+}
+
+/// Asserts that a frame carrying `refused` is rejected with exactly `expected` by
+/// `SituationCapsule::validate`, `ReferenceSituation::verify`, `project_reference_situation`, and
+/// `ReferenceSituationPublication::verify`, so the cell never reaches a fingerprint or pack.
+fn assert_every_capsule_entry_point_refuses(
+    refused: &KnowledgeCell,
+    expected: &ContractError,
+) -> Result<(), Box<dyn Error>> {
+    assert_eq!(refused.validate().as_ref(), Err(expected));
+
+    let mut reference = situation(false)?;
+    reference
+        .capsule
+        .frame
+        .knowledge_cells
+        .push(refused.clone());
+    assert_eq!(reference.capsule.validate().as_ref(), Err(expected));
+    assert!(
+        matches!(reference.verify(), Err(ReferenceError::Contract(ref error)) if error == expected),
+        "ReferenceSituation::verify must refuse with {expected:?}"
+    );
+    assert!(
+        matches!(
+            project_reference_situation(reference, &spec(10_000)),
+            Err(ReferenceError::Contract(ref error)) if error == expected
+        ),
+        "project_reference_situation must refuse with {expected:?}"
+    );
+
+    let mut publication = project_reference_situation(situation(false)?, &spec(10_000))?;
+    publication.verify()?;
+    publication
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .push(refused.clone());
+    assert!(
+        matches!(publication.verify(), Err(ReferenceError::Contract(ref error)) if error == expected),
+        "ReferenceSituationPublication::verify must refuse with {expected:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn indeterminate_cell_without_reconciliation_basis_is_refused_at_every_capsule_entry_point()
+-> Result<(), Box<dyn Error>> {
+    assert_every_capsule_entry_point_refuses(
+        &basisless_cell(KnowledgeState::Indeterminate),
+        &ContractError::ReconciliationBasisRequired,
+    )
+}
+
+#[test]
+fn redacted_cell_without_marker_is_refused_at_every_capsule_entry_point()
+-> Result<(), Box<dyn Error>> {
+    assert_every_capsule_entry_point_refuses(
+        &basisless_cell(KnowledgeState::Redacted),
+        &ContractError::RedactionMarkerRequired,
+    )
+}
