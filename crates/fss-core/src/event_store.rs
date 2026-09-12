@@ -750,11 +750,14 @@ impl EventRevisionStore {
     }
 
     /// Returns true if any contradictions are active for the specified event.
+    ///
+    /// A contradiction retired by a terminal disposition (refuted, resolved, superseded) stays in
+    /// [`Self::contradictions_for_event`] but no longer counts here; see [`Contradiction::is_active`].
     #[must_use]
     pub fn has_contradiction(&self, event_id: &EventId) -> bool {
         self.contradictions
             .get(event_id)
-            .is_some_and(|c| !c.is_empty())
+            .is_some_and(|c| c.iter().any(Contradiction::is_active))
     }
 
     /// Appends a genesis event revision (revision 1) to the store.

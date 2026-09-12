@@ -110,6 +110,20 @@ fn sample_contradiction(
     claim_id: &str,
     worlds: &[&str],
 ) -> Result<Contradiction, Box<dyn Error>> {
+    sample_contradiction_with_disposition(
+        contradiction_id,
+        claim_id,
+        worlds,
+        HypothesisDisposition::Live,
+    )
+}
+
+fn sample_contradiction_with_disposition(
+    contradiction_id: &str,
+    claim_id: &str,
+    worlds: &[&str],
+    disposition: HypothesisDisposition,
+) -> Result<Contradiction, Box<dyn Error>> {
     let mut unresolved_worlds = BTreeSet::new();
     for w in worlds {
         unresolved_worlds.insert((*w).to_string());
@@ -132,7 +146,7 @@ fn sample_contradiction(
         created_at: TimestampNs(1_006_000_000),
         knowledge_state: KnowledgeState::Conflicted,
         provenance: ProvenanceClass::Derived,
-        disposition: HypothesisDisposition::Live,
+        disposition,
         outcome: RuntimeOutcome::Indeterminate,
     };
     Contradiction::new(params).map_err(|e| Box::new(e) as Box<dyn Error>)
@@ -1438,6 +1452,73 @@ fn test_every_entry_tag_round_trips_through_canonical_decode() -> TestResult {
             decoded.canonical_bytes(),
             bytes,
             "tag {tag} re-encoding must reproduce the input bytes"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn has_contradiction_counts_only_active_contradictions() -> TestResult {
+    let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-retired-contradictions"));
+    let ev_id = EventId::parse("evt_retired_contra")?;
+    store.append_genesis(
+        store.current_anchor().clone(),
+        sample_genesis("evt_retired_contra")?,
+        "domain.gamma",
+        TimestampNs(1_000),
+    )?;
+
+    // Every terminal disposition retires the contradiction: it stays recorded but is not active.
+    let retired = [
+        HypothesisDisposition::Refuted,
+        HypothesisDisposition::Resolved,
+        HypothesisDisposition::Superseded,
+    ];
+    for (index, disposition) in retired.into_iter().enumerate() {
+        let contradiction = sample_contradiction_with_disposition(
+            &format!("contra_retired_{index}"),
+            "evt_retired_contra",
+            &["world.loiter"],
+            disposition,
+        )?;
+        store.record_contradiction(
+            store.current_anchor().clone(),
+            ev_id.clone(),
+            contradiction,
+            TimestampNs(2_000 + i128::try_from(index)?),
+        )?;
+        assert!(
+            !store.has_contradiction(&ev_id),
+            "a {disposition:?} contradiction must not count as active"
+        );
+    }
+    assert_eq!(store.contradictions_for_event(&ev_id).len(), retired.len());
+
+    // Any non-terminal disposition keeps the event contradicted.
+    for (index, disposition) in [
+        HypothesisDisposition::Disfavored,
+        HypothesisDisposition::Supported,
+        HypothesisDisposition::Live,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut probe = store.clone();
+        let contradiction = sample_contradiction_with_disposition(
+            &format!("contra_active_{index}"),
+            "evt_retired_contra",
+            &["world.transit"],
+            disposition,
+        )?;
+        probe.record_contradiction(
+            probe.current_anchor().clone(),
+            ev_id.clone(),
+            contradiction,
+            TimestampNs(3_000 + i128::try_from(index)?),
+        )?;
+        assert!(
+            probe.has_contradiction(&ev_id),
+            "a {disposition:?} contradiction must count as active"
         );
     }
     Ok(())
