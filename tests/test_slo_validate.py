@@ -18,6 +18,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -505,6 +506,198 @@ slo_ids = [""]
             self.assertGreater(len(cp.errors), 0, "check-policy must record an error when slo_valid is False")
         finally:
             slo_validate.validate_slos = orig_validate
+
+
+class HotConsequentialOperationCostTests(unittest.TestCase):
+    """FSS-198 / fss-x4a.26.18: Tests for mandatory hot and consequential operation cost rows."""
+
+    MANDATORY_HOT_PATHS = (
+        "COST-SPOOL-INGEST-001",
+        "COST-SPOOL-VERIFY-001",
+        "COST-SPOOL-DISCARD-001",
+        "COST-ROOT-PUBLISH-001",
+        "COST-LEDGER-APPEND-001",
+        "COST-LEDGER-REPLAY-001",
+        "COST-MODEL-IMPORT-001",
+        "COST-DURABLE-DECODE-001",
+    )
+
+    REQUIRED_DIMENSIONS = (
+        "latency_ms",
+        "cpu_millis",
+        "bytes",
+        "storage_operations",
+        "network_bytes",
+        "model_calls",
+        "tokens",
+        "accelerator_millis",
+        "energy_millijoules",
+        "privacy_exposure",
+        "operator_attention_seconds",
+    )
+
+    def test_live_repo_has_all_mandatory_hot_paths_registered(self) -> None:
+        """Every hot/consequential path must exist in architecture/operation_cost_registry.toml with cost_vector and baseline_reference."""
+        costs_data = tomllib.loads(COSTS_PATH.read_text(encoding="utf-8"))
+        operations = {op.get("id"): op for op in costs_data.get("operation", [])}
+
+        for path_id in self.MANDATORY_HOT_PATHS:
+            self.assertIn(
+                path_id,
+                operations,
+                f"Mandatory hot/consequential path '{path_id}' is missing from architecture/operation_cost_registry.toml",
+            )
+            op = operations[path_id]
+
+            # Verify full cost vector
+            self.assertIn(
+                "cost_vector",
+                op,
+                f"Mandatory hot path '{path_id}' lacks 'cost_vector'",
+            )
+            cv = op["cost_vector"]
+            self.assertIsInstance(cv, dict, f"cost_vector in '{path_id}' must be a dictionary")
+            for dim in self.REQUIRED_DIMENSIONS:
+                self.assertIn(
+                    dim,
+                    cv,
+                    f"cost_vector in '{path_id}' lacks required dimension '{dim}'",
+                )
+                val = cv[dim]
+                self.assertTrue(
+                    isinstance(val, (int, float)) and val >= 0,
+                    f"Dimension '{dim}' in '{path_id}' must be non-negative number, got {val}",
+                )
+
+            # Verify reproducible baseline reference
+            self.assertIn(
+                "baseline_reference",
+                op,
+                f"Mandatory hot path '{path_id}' lacks 'baseline_reference'",
+            )
+            baseline = op["baseline_reference"]
+            self.assertIsInstance(baseline, str, f"baseline_reference in '{path_id}' must be a string")
+            self.assertTrue(bool(baseline.strip()), f"baseline_reference in '{path_id}' must not be empty")
+            baseline_path = ROOT / baseline
+            self.assertTrue(
+                baseline_path.is_file(),
+                f"baseline_reference '{baseline}' in '{path_id}' must resolve to an existing file on disk",
+            )
+
+    def test_planted_missing_hot_path_fails_closed(self) -> None:
+        """Removing a mandatory hot path must cause slo_validate to fail closed with SLO-VAL-015."""
+        original_text = COSTS_PATH.read_text(encoding="utf-8")
+        blocks = original_text.split("[[operation]]")
+        header = blocks[0]
+        op_blocks = [b for b in blocks[1:] if 'id = "COST-SPOOL-INGEST-001"' not in b]
+        planted_text = header + "".join("[[operation]]" + b for b in op_blocks)
+
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Checker must fail closed when a mandatory hot path is missing")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-015", codes, "Missing hot path must emit diagnostic code SLO-VAL-015")
+
+
+    def test_planted_missing_cost_vector_fails_closed(self) -> None:
+        """A hot path missing cost_vector must cause slo_validate to fail closed with SLO-VAL-016."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "ingest or stage one spool object"
+unit = "spool_object"
+slo_ids = ["SLO-INGEST-001"]
+baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Checker must fail closed when a hot path lacks cost_vector")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-016", codes, "Missing cost_vector must emit diagnostic code SLO-VAL-016")
+
+    def test_planted_nonexistent_baseline_reference_fails_closed(self) -> None:
+        """A hot path with nonexistent baseline_reference must cause slo_validate to fail closed with SLO-VAL-016."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "ingest or stage one spool object"
+unit = "spool_object"
+slo_ids = ["SLO-INGEST-001"]
+baseline_reference = "crates/fss-object/tests/nonexistent_contract_file.rs"
+cost_vector = { latency_ms = 5, cpu_millis = 2, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Checker must fail closed when baseline_reference file does not exist")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-016", codes, "Nonexistent baseline_reference must emit diagnostic code SLO-VAL-016")
+
+    def test_planted_incomplete_cost_vector_fails_closed(self) -> None:
+        """A hot path with incomplete cost_vector dimensions must fail closed with SLO-VAL-016."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "ingest or stage one spool object"
+unit = "spool_object"
+slo_ids = ["SLO-INGEST-001"]
+baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
+cost_vector = { latency_ms = 5, cpu_millis = 2 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Checker must fail closed when cost_vector lacks required dimensions")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-016", codes, "Incomplete cost_vector must emit diagnostic code SLO-VAL-016")
+
+    def test_planted_negative_cost_vector_value_fails_closed(self) -> None:
+        """A hot path with negative cost_vector dimension must fail closed with SLO-VAL-016."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "ingest or stage one spool object"
+unit = "spool_object"
+slo_ids = ["SLO-INGEST-001"]
+baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
+cost_vector = { latency_ms = -5, cpu_millis = 2, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Checker must fail closed when cost_vector has negative dimension")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-016", codes, "Negative cost_vector value must emit diagnostic code SLO-VAL-016")
 
 
 if __name__ == "__main__":

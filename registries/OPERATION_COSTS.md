@@ -37,5 +37,13 @@ Machine source: `architecture/operation_cost_registry.toml`.
 | `COST-EXPLAIN-001` | explanation | resolve decision, collect provenance, compute minimal support subgraph, retain contradictions and omissions, shape view, emit expansion handles | evidence edges, decision nodes, counterfactuals, tokens |
 | `COST-HANDOFF-001` | handoff | freeze workspace, select minimum sufficient state, apply recipient projection, materialize children, verify closure and expiry, publish root, accept and rebase | cases, plans, obligations, evidence handles, tokens, object bytes |
 | `COST-ACCRETE-001` | learning proposal | freeze episode basis, collect outcome attribution, compare prediction to result, classify applicability, extract candidate, collect counterexamples and harm, run trauma guard, run held out validation, decide promote reject expire, publish advisory proposal and receipt | episodes, evidence edges, counterexamples, historical candidates, fixtures, validation runs, tokens, model calls, operator review seconds |
+| `COST-SPOOL-INGEST-001` | segment | verify magic, allocate slot, write payload, compute checksum, sync durability | payload bytes, alignment padding, header overhead |
+| `COST-SPOOL-VERIFY-001` | spool entry | read header, verify magic, verify version, read payload, compute checksum, compare checksum | payload bytes, checksum algorithm, disk reads |
+| `COST-SPOOL-DISCARD-001` | spool entry | locate slot, invalidate header, update free list, sync durability | slot count, reclaimed bytes |
+| `COST-ROOT-PUBLISH-001` | manifest | verify children durable, compute root digest, write manifest temp, sync manifest, atomic rename, sync parent dir | children count, manifest bytes, fsync barriers |
+| `COST-LEDGER-APPEND-001` | delta batch | verify anchor, validate sequence, compute delta digest, append record, sync tail, notify subscribers | delta count, batch bytes, subscriber count |
+| `COST-LEDGER-REPLAY-001` | delta batch | read anchor, verify chain, decode delta batch, apply transition, rebuild projections | batch count, total bytes, projection work |
+| `COST-DURABLE-DECODE-001` | durable frame | read header, verify magic, check version range, read length, verify limits, compute checksum, compare checksum, emit payload | frame bytes, checksum placement, endianness conversion |
+
 
 No SLO is accepted until its cost row can derive the denominator and identify all mandatory work. Provider pricing belongs in dated manifests, not these semantic rows.

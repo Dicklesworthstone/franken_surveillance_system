@@ -65,7 +65,8 @@ APPROVED_TARGET_PATTERNS = [
 
 # Known allowed keys in [[operation]] tables
 KNOWN_OPERATION_KEYS = frozenset({
-    "id", "name", "unit", "semantic_steps", "variable_costs", "slo_ids", "status", "notes"
+    "id", "name", "unit", "semantic_steps", "variable_costs", "slo_ids", "status", "notes",
+    "cost_vector", "baseline_reference",
 })
 
 # Diagnostic codes
@@ -83,6 +84,57 @@ CODE_MALFORMED_TABLE = "SLO-VAL-011"
 CODE_TARGET_CLAIM_PROMOTION = "SLO-VAL-012"
 CODE_AMBIGUOUS_TARGET_UNIT = "SLO-VAL-013"
 CODE_TOMBSTONE_REFERENCED_AS_ACTIVE = "SLO-VAL-014"
+CODE_HOT_PATH_MISSING_COST_ROW = "SLO-VAL-015"
+CODE_MISSING_COST_VECTOR_OR_BASELINE = "SLO-VAL-016"
+
+MANDATORY_HOT_PATHS: dict[str, dict[str, str]] = {
+    "COST-SPOOL-INGEST-001": {
+        "name": "spool ingest",
+        "baseline": "crates/fss-object/tests/staging_spool_contract.rs",
+    },
+    "COST-SPOOL-VERIFY-001": {
+        "name": "spool verify",
+        "baseline": "crates/fss-object/tests/staging_spool_contract.rs",
+    },
+    "COST-SPOOL-DISCARD-001": {
+        "name": "spool discard",
+        "baseline": "crates/fss-object/tests/staging_spool_contract.rs",
+    },
+    "COST-ROOT-PUBLISH-001": {
+        "name": "root publication",
+        "baseline": "crates/fss-publication/tests/root_publication_review568.rs",
+    },
+    "COST-LEDGER-APPEND-001": {
+        "name": "ledger append",
+        "baseline": "crates/fss-ledger/tests/ledger_oracle_contract.rs",
+    },
+    "COST-LEDGER-REPLAY-001": {
+        "name": "ledger replay",
+        "baseline": "crates/fss-ledger/tests/ledger_oracle_contract.rs",
+    },
+    "COST-MODEL-IMPORT-001": {
+        "name": "model package import",
+        "baseline": "crates/fss-object/tests/model_package_contract.rs",
+    },
+    "COST-DURABLE-DECODE-001": {
+        "name": "durable-format decode",
+        "baseline": "crates/fss-core/tests/durable_format_contract.rs",
+    },
+}
+
+REQUIRED_COST_VECTOR_DIMENSIONS: tuple[str, ...] = (
+    "latency_ms",
+    "cpu_millis",
+    "bytes",
+    "storage_operations",
+    "network_bytes",
+    "model_calls",
+    "tokens",
+    "accelerator_millis",
+    "energy_millijoules",
+    "privacy_exposure",
+    "operator_attention_seconds",
+)
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     CODE_INVALID_SLO_ID: {
@@ -141,6 +193,14 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "trigger": "Active operation links directly to a tombstoned SLO rather than its canonical successor",
         "remediation": "Update operation slo_ids to reference the canonical successor SLO directly",
     },
+    CODE_HOT_PATH_MISSING_COST_ROW: {
+        "trigger": "A mandatory hot or consequential path exists in code but lacks an operation-cost row in architecture/operation_cost_registry.toml",
+        "remediation": "Add [[operation]] table for the missing hot path with a full cost_vector and reproducible baseline_reference",
+    },
+    CODE_MISSING_COST_VECTOR_OR_BASELINE: {
+        "trigger": "An operation cost row for a hot or consequential path lacks a complete cost vector or valid baseline reference",
+        "remediation": "Provide an explicit cost_vector table with all 11 dimensions and a valid baseline_reference resolving to an existing test file",
+    },
 }
 
 
@@ -171,7 +231,7 @@ def sanitize_path(p: Path | str, root: Path = ROOT) -> str:
         p_obj = Path(p) if isinstance(p, str) else p
         rel = p_obj.resolve().relative_to(root.resolve()).as_posix()
         return rel
-    except Exception:
+    except (ValueError, OSError):
         return s
 
 
@@ -493,7 +553,7 @@ def parse_slos(
                                 try:
                                     content = curr.read_text(encoding="utf-8")
                                     receipt_json = json.loads(content)
-                                except Exception as exc:
+                                except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
                                     findings.append(SloFinding(
                                         severity="error",
                                         code=CODE_ACHIEVED_WITHOUT_PROOF_ROOT,
@@ -635,7 +695,7 @@ def validate_cost_references(
     
     try:
         cost_data = tomllib.loads(costs_path.read_text(encoding="utf-8"))
-    except Exception as exc:
+    except (tomllib.TOMLDecodeError, OSError) as exc:
         findings.append(SloFinding(
             severity="error",
             code=CODE_MALFORMED_TABLE,
@@ -788,6 +848,102 @@ def validate_cost_references(
                     "is_tombstone": False,
                     "status": slo_info.status,
                 })
+
+        # FSS-198: Hot and consequential path cost vector and baseline reference validation
+        is_mandatory_hot_path = cost_id in MANDATORY_HOT_PATHS
+        has_cost_vector = "cost_vector" in op
+        has_baseline = "baseline_reference" in op
+
+        if is_mandatory_hot_path or has_cost_vector or has_baseline:
+            # 1. Cost vector validation
+            if not has_cost_vector:
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                    path=path_str,
+                    message=f"Mandatory hot/consequential path '{cost_id}' lacks 'cost_vector' table",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
+            elif not isinstance(op["cost_vector"], dict):
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                    path=path_str,
+                    message=f"Operation '{cost_id}' 'cost_vector' must be a table/dictionary",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
+            else:
+                cv = op["cost_vector"]
+                missing_dims = [dim for dim in REQUIRED_COST_VECTOR_DIMENSIONS if dim not in cv]
+                if missing_dims:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' 'cost_vector' lacks required dimension(s): {missing_dims}",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                        params={"cost_id": cost_id, "missing_dimensions": missing_dims},
+                    ))
+                else:
+                    for dim in REQUIRED_COST_VECTOR_DIMENSIONS:
+                        val = cv[dim]
+                        if not isinstance(val, (int, float)) or isinstance(val, bool) or val < 0:
+                            findings.append(SloFinding(
+                                severity="error",
+                                code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                                path=path_str,
+                                message=f"Operation '{cost_id}' dimension '{dim}' must be non-negative numeric value, got {val}",
+                                remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                                params={"cost_id": cost_id, "dimension": dim, "value": val},
+                            ))
+
+            # 2. Baseline reference validation
+            if not has_baseline:
+                findings.append(SloFinding(
+                    severity="error",
+                    code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                    path=path_str,
+                    message=f"Mandatory hot/consequential path '{cost_id}' lacks 'baseline_reference'",
+                    remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                    params={"cost_id": cost_id},
+                ))
+            else:
+                base_ref = op["baseline_reference"]
+                if not isinstance(base_ref, str) or not base_ref.strip():
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' 'baseline_reference' must be a non-empty string",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                        params={"cost_id": cost_id},
+                    ))
+                else:
+                    file_part = base_ref.split(":")[0].strip()
+                    ref_file = root / file_part
+                    if not ref_file.is_file():
+                        findings.append(SloFinding(
+                            severity="error",
+                            code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                            path=path_str,
+                            message=f"Operation '{cost_id}' baseline reference '{base_ref}' does not exist on disk as a file",
+                            remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                            params={"cost_id": cost_id, "baseline_reference": base_ref, "file": file_part},
+                        ))
+
+    # Check that every mandatory hot/consequential path is present
+    for hot_id, hot_info in MANDATORY_HOT_PATHS.items():
+        if hot_id.lower() not in seen_op_ids:
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_HOT_PATH_MISSING_COST_ROW,
+                path=path_str,
+                message=f"Mandatory hot/consequential path '{hot_id}' ({hot_info['name']}) lacks an operation-cost row in {path_str}",
+                remediation=DIAGNOSTIC_REGISTRY[CODE_HOT_PATH_MISSING_COST_ROW]["remediation"],
+                params={"cost_id": hot_id, "name": hot_info["name"]},
+            ))
 
     return resolutions
 

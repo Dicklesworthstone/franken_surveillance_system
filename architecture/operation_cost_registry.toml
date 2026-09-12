@@ -189,6 +189,9 @@ semantic_steps = ["verify_source", "lower_ir", "canonicalize_tensors", "static_a
 variable_costs = ["operators", "tensor_bytes", "corpus_examples", "oracle_runs"]
 slo_ids = ["SLO-MODEL-001"]
 status = "model_required"
+baseline_reference = "crates/fss-object/tests/model_package_contract.rs"
+cost_vector = { latency_ms = 1500, cpu_millis = 1200, bytes = 104857600, storage_operations = 64, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 25000, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+
 
 [[operation]]
 id = "COST-QUERY-001"
@@ -297,3 +300,81 @@ semantic_steps = ["freeze_episode_basis", "collect_outcome_attribution", "compar
 variable_costs = ["episodes", "evidence_edges", "counterexamples", "historical_candidates", "fixtures", "validation_runs", "tokens", "model_calls", "operator_review_seconds"]
 slo_ids = ["SLO-AGENT-ACCRETION-001"]
 status = "model_required"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "stage raw payload into staging spool"
+unit = "segment"
+semantic_steps = ["verify_magic", "allocate_slot", "write_payload", "compute_checksum", "sync_durability"]
+variable_costs = ["payload_bytes", "alignment_padding", "header_overhead"]
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
+cost_vector = { latency_ms = 5, cpu_millis = 2, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+
+[[operation]]
+id = "COST-SPOOL-VERIFY-001"
+name = "verify checksum and structure of staged spool entry"
+unit = "spool_entry"
+semantic_steps = ["read_header", "verify_magic", "verify_version", "read_payload", "compute_checksum", "compare_checksum"]
+variable_costs = ["payload_bytes", "checksum_algorithm", "disk_reads"]
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
+cost_vector = { latency_ms = 2, cpu_millis = 1, bytes = 65536, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 5, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+
+[[operation]]
+id = "COST-SPOOL-DISCARD-001"
+name = "discard or reclaim staged spool entry"
+unit = "spool_entry"
+semantic_steps = ["locate_slot", "invalidate_header", "update_free_list", "sync_durability"]
+variable_costs = ["slot_count", "reclaimed_bytes"]
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
+cost_vector = { latency_ms = 1, cpu_millis = 1, bytes = 4096, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 2, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+
+[[operation]]
+id = "COST-ROOT-PUBLISH-001"
+name = "publish root manifest root-last with durable seal"
+unit = "manifest"
+semantic_steps = ["verify_children_durable", "compute_root_digest", "write_manifest_temp", "sync_manifest", "atomic_rename", "sync_parent_dir"]
+variable_costs = ["children_count", "manifest_bytes", "fsync_barriers"]
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+baseline_reference = "crates/fss-publication/tests/root_publication_review568.rs"
+cost_vector = { latency_ms = 10, cpu_millis = 4, bytes = 16384, storage_operations = 4, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 20, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+
+[[operation]]
+id = "COST-LEDGER-APPEND-001"
+name = "append delta batch to local authority ledger"
+unit = "delta_batch"
+semantic_steps = ["verify_anchor", "validate_sequence", "compute_delta_digest", "append_record", "sync_tail", "notify_subscribers"]
+variable_costs = ["delta_count", "batch_bytes", "subscriber_count"]
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+baseline_reference = "crates/fss-ledger/tests/ledger_oracle_contract.rs"
+cost_vector = { latency_ms = 5, cpu_millis = 2, bytes = 8192, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+
+[[operation]]
+id = "COST-LEDGER-REPLAY-001"
+name = "replay local authority ledger from anchor to tip"
+unit = "delta_batch"
+semantic_steps = ["read_anchor", "verify_chain", "decode_delta_batch", "apply_transition", "rebuild_projections"]
+variable_costs = ["batch_count", "total_bytes", "projection_work"]
+slo_ids = ["SLO-RECOVERY-001"]
+status = "model_required"
+baseline_reference = "crates/fss-ledger/tests/ledger_oracle_contract.rs"
+cost_vector = { latency_ms = 50, cpu_millis = 40, bytes = 1048576, storage_operations = 16, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 100, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+
+[[operation]]
+id = "COST-DURABLE-DECODE-001"
+name = "decode and verify durable format frame"
+unit = "durable_frame"
+semantic_steps = ["read_header", "verify_magic", "check_version_range", "read_length", "verify_limits", "compute_checksum", "compare_checksum", "emit_payload"]
+variable_costs = ["frame_bytes", "checksum_placement", "endianness_conversion"]
+slo_ids = ["SLO-INGEST-001"]
+status = "model_required"
+baseline_reference = "crates/fss-core/tests/durable_format_contract.rs"
+cost_vector = { latency_ms = 1, cpu_millis = 1, bytes = 65536, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 2, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+
