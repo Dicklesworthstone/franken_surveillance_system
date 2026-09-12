@@ -6,7 +6,19 @@
 //! <root>/LOCK                         exclusive owner lock, held for the spool's lifetime
 //! <root>/objects/<64 hex>             one enveloped object per SHA-256 payload digest
 //! <root>/staging/<64 hex>.<n>.tmp     in-flight writes, never readable as objects
+//! <root>/verified/<64 hex>            empty durable verification hold for one object
 //! ```
+//!
+//! # Verification holds
+//!
+//! [`StagingSpool::verify`] places a durable, empty hold file named by the object digest before it
+//! reports [`SpoolObjectState::Verified`], and nothing removes it. `Verified` itself stays a
+//! per-session state (a reopen admits every object as `Staged` again), but a held object may back
+//! a publication decision, so [`StagingSpool::discard_staged`] refuses it in every later session.
+//! A hold whose object is gone is indexed as [`CorruptionKind::Vanished`]. A spool written before
+//! holds existed has no `verified/` directory: nothing on disk says which of its objects were
+//! verified, so the first open records a hold for every admitted object (building the directory
+//! as `verified.tmp` and renaming it into place), and none of them can be discarded.
 //!
 //! # Publication lattice
 //!
@@ -55,7 +67,9 @@ use crate::{ObjectError, VerifiedObjectCatalog};
 
 pub use capability::{FaultInjectingSpoolIo, HostSpoolIo, SpoolFaultPlan, SpoolIo, SpoolIoCall};
 pub use error::{CorruptionKind, SpoolError, SpoolIoOperation, SpoolLimitViolation, StagePhase};
-pub use format::{SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC};
+pub use format::{
+    SPOOL_OBJECT_FORMAT_VERSION, SPOOL_OBJECT_HEADER_LEN, SPOOL_OBJECT_MAGIC, encode_spool_object,
+};
 
 /// Directory under the spool root holding enveloped objects.
 pub const SPOOL_OBJECTS_DIR: &str = "objects";
@@ -63,6 +77,11 @@ pub const SPOOL_OBJECTS_DIR: &str = "objects";
 pub const SPOOL_STAGING_DIR: &str = "staging";
 /// Lock file under the spool root.
 pub const SPOOL_LOCK_FILE: &str = "LOCK";
+/// Directory under the spool root holding durable verification holds.
+pub const SPOOL_HOLDS_DIR: &str = "verified";
+/// Directory under the spool root in which holds are recorded for a spool written before holds
+/// existed, renamed onto [`SPOOL_HOLDS_DIR`] once complete.
+pub const SPOOL_HOLDS_MIGRATION_DIR: &str = "verified.tmp";
 /// Upper bound on distinct staging names tried for one digest.
 pub const MAX_STAGING_NAME_ATTEMPTS: u32 = 16;
 /// Consecutive [`io::ErrorKind::Interrupted`] write attempts at one buffer offset after which a
@@ -95,7 +114,7 @@ pub struct SpoolLimits {
     pub max_total_bytes: u64,
     /// Maximum payload bytes for one object; at most [`crate::MAX_OBJECT_BYTES`].
     pub max_object_bytes: usize,
-    /// Maximum entries listed from the objects or staging directory on open.
+    /// Maximum entries listed from the objects, staging, or holds directory on open.
     pub max_scan_entries: usize,
 }
 
@@ -154,7 +173,8 @@ impl Default for SpoolLimits {
 pub enum SpoolObjectState {
     /// Bytes were digest-checked on ingest (or rehashed on reopen) and are in place on disk.
     Staged,
-    /// A later explicit re-read rehashed the exact bytes in this spool session.
+    /// A later explicit re-read rehashed the exact bytes in this spool session, and the object's
+    /// durable verification hold is in place.
     Verified,
     /// The bytes under this name cannot be trusted; every read fails closed.
     Corrupt(CorruptionKind),
@@ -252,11 +272,38 @@ pub struct DiscardReceipt {
     pub released_bytes: u64,
 }
 
+/// Whether an object carries a durable verification hold.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Hold {
+    /// No hold exists on disk.
+    None,
+    /// A hold may exist on disk but was not confirmed durable.
+    Unconfirmed,
+    /// A hold is durable on disk.
+    Durable,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct IndexedObject {
     state: SpoolObjectState,
     /// Bytes this entry contributes to `index_bytes`, released exactly when it is discarded.
     charged: u64,
+    /// Durable verification hold; any hold that is not `None` refuses discard.
+    hold: Hold,
+}
+
+/// Why an object removal did not complete.
+enum RemovalFailure {
+    /// The entry is still present or was never touched; nothing changed.
+    Settled(SpoolError),
+    /// Whether the removal took effect is unknown.
+    Indeterminate(SpoolError),
+}
+
+/// A failed read of one indexed object, keeping the observed length of a corrupt file.
+enum ReadOutcome {
+    Corrupt { kind: CorruptionKind, file_len: u64 },
+    Spool(SpoolError),
 }
 
 enum ReadFailure {
@@ -277,6 +324,7 @@ pub struct StagingSpool {
     root: PathBuf,
     objects_dir: PathBuf,
     staging_dir: PathBuf,
+    holds_dir: PathBuf,
     _lock: File,
     limits: SpoolLimits,
     index: BTreeMap<ContentDigest, IndexedObject>,
@@ -319,8 +367,24 @@ impl StagingSpool {
         let lock = acquire_lock(io.as_ref(), &root)?;
         let objects_dir = root.join(SPOOL_OBJECTS_DIR);
         let staging_dir = root.join(SPOOL_STAGING_DIR);
-        ensure_subdirectory(io.as_ref(), &objects_dir)?;
+        let holds_dir = root.join(SPOOL_HOLDS_DIR);
+        let fresh = ensure_subdirectory(io.as_ref(), &objects_dir)?;
         ensure_subdirectory(io.as_ref(), &staging_dir)?;
+        // A spool whose objects directory this open created cannot hold unheld verified objects,
+        // so its holds directory is created directly. Any other spool without one predates holds.
+        let legacy = if fresh {
+            ensure_subdirectory(io.as_ref(), &holds_dir)?;
+            false
+        } else {
+            match io.symlink_metadata(&holds_dir) {
+                Ok(metadata) if metadata.file_type().is_dir() => false,
+                Ok(_) => return Err(SpoolError::InvalidLayout { path: holds_dir }),
+                Err(error) if error.kind() == io::ErrorKind::NotFound => true,
+                Err(error) => {
+                    return Err(io_error(SpoolIoOperation::Inspect, &holds_dir, &error));
+                }
+            }
+        };
         io.sync_directory(&root)
             .map_err(|error| io_error(SpoolIoOperation::SyncDirectory, &root, &error))?;
 
@@ -329,6 +393,7 @@ impl StagingSpool {
             root,
             objects_dir,
             staging_dir,
+            holds_dir,
             _lock: lock,
             limits,
             index: BTreeMap::new(),
@@ -339,7 +404,8 @@ impl StagingSpool {
             injected_crash: None,
             poisoned: false,
         };
-        spool.recover()?;
+        spool.recover(legacy)?;
+        spool.check_recovered_capacity()?;
         Ok(spool)
     }
 
@@ -462,7 +528,7 @@ impl StagingSpool {
             Err(error) => return Err(io_error(SpoolIoOperation::Inspect, &target, &error)),
         }
 
-        let encoded = format::encode_object(declared, payload);
+        let encoded = encode_spool_object(declared, payload)?;
         let (staging_name, staging_path, mut file) = self.create_staging_file(declared)?;
         let write_result = self.write_staging(&mut file, &staging_path, &encoded);
         drop(file);
@@ -535,6 +601,7 @@ impl StagingSpool {
             IndexedObject {
                 state: SpoolObjectState::Staged,
                 charged: payload_len,
+                hold: Hold::None,
             },
         );
         self.index_bytes = next_index_bytes;
@@ -551,14 +618,31 @@ impl StagingSpool {
         self.stage(ContentDigest::sha256(payload), payload)
     }
 
-    /// Re-reads and rehashes one object from disk and marks it `Verified`.
+    /// Re-reads and rehashes one object from disk, places its durable verification hold, and
+    /// marks it `Verified`.
     ///
-    /// A verification failure marks the object `Corrupt` for the rest of this session.
+    /// A verification failure marks the object `Corrupt` for the rest of this session. If the
+    /// bytes verify but the hold cannot be confirmed durable, the object stays `Staged` and
+    /// [`SpoolError::HoldIndeterminate`] is returned; the object is then treated as held, and a
+    /// later `verify` retries the hold.
     pub fn verify(&mut self, digest: ContentDigest) -> Result<SpoolObjectState, SpoolError> {
         self.require_live()?;
-        let result = self.load_indexed(digest);
-        self.record_outcome(digest, &result);
-        result?;
+        self.load_indexed_recording(digest)?;
+        let entry = *self.index.get(&digest).ok_or(SpoolError::Missing(digest))?;
+        if entry.hold != Hold::Durable {
+            let confirmed = self.place_hold(digest);
+            if let Some(entry) = self.index.get_mut(&digest) {
+                entry.hold = if confirmed.is_ok() {
+                    Hold::Durable
+                } else {
+                    Hold::Unconfirmed
+                };
+            }
+            confirmed?;
+        }
+        if let Some(entry) = self.index.get_mut(&digest) {
+            entry.state = SpoolObjectState::Verified;
+        }
         self.state(digest).ok_or(SpoolError::Missing(digest))
     }
 
@@ -575,6 +659,12 @@ impl StagingSpool {
     ///
     /// Foreign entries and anything not classified as an orphan are never touched. An orphan
     /// whose file type changed since open fails closed with [`SpoolError::InvalidLayout`].
+    ///
+    /// Every removal released from the quota is fsynced before this returns, including when a
+    /// later orphan fails: a settled failure leaves the remaining orphans charged and listed. A
+    /// removal whose effect cannot be observed, or a failed staging-directory fsync after
+    /// removals, returns [`SpoolError::DiscardIndeterminate`] and poisons this instance, so a
+    /// retry can never report an empty success for removals that may not be durable.
     pub fn discard_orphaned_staging(&mut self) -> Result<DiscardReceipt, SpoolError> {
         self.require_live()?;
         let names: Vec<OsString> = self.orphans.keys().cloned().collect();
@@ -582,38 +672,100 @@ impl StagingSpool {
             removed: 0,
             released_bytes: 0,
         };
+        let mut failure = None;
         for name in names {
             let path = self.staging_dir.join(&name);
-            match self.io.symlink_metadata(&path) {
-                Ok(metadata) if metadata.file_type().is_file() => {
-                    match self.io.remove_file(&path) {
-                        Ok(()) => {}
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                        Err(error) => {
-                            return Err(io_error(SpoolIoOperation::RemoveStaging, &path, &error));
-                        }
-                    }
+            match self.remove_orphan_file(&path) {
+                Ok(()) => {}
+                Err(RemovalFailure::Settled(error)) => {
+                    failure = Some(error);
+                    break;
                 }
-                Ok(_) => return Err(SpoolError::InvalidLayout { path }),
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(io_error(SpoolIoOperation::Inspect, &path, &error)),
+                Err(RemovalFailure::Indeterminate(error)) => {
+                    self.poisoned = true;
+                    return Err(error);
+                }
             }
             if let Some(orphan) = self.orphans.remove(&name) {
-                self.orphan_bytes = self
+                let released = self
                     .orphan_bytes
                     .checked_sub(orphan.bytes)
-                    .ok_or(SpoolError::AccountingOverflow)?;
+                    .and_then(|left| {
+                        receipt
+                            .released_bytes
+                            .checked_add(orphan.bytes)
+                            .map(|total| (left, total))
+                    });
+                let Some((left, total)) = released else {
+                    self.poisoned = true;
+                    return Err(SpoolError::AccountingOverflow);
+                };
+                self.orphan_bytes = left;
+                receipt.released_bytes = total;
                 receipt.removed += 1;
-                receipt.released_bytes = receipt
-                    .released_bytes
-                    .checked_add(orphan.bytes)
-                    .ok_or(SpoolError::AccountingOverflow)?;
             }
         }
-        self.io.sync_directory(&self.staging_dir).map_err(|error| {
-            io_error(SpoolIoOperation::SyncDirectory, &self.staging_dir, &error)
-        })?;
-        Ok(receipt)
+        if (failure.is_none() || receipt.removed > 0)
+            && let Err(error) = self.io.sync_directory(&self.staging_dir)
+        {
+            self.poisoned = true;
+            return Err(SpoolError::DiscardIndeterminate {
+                path: self.staging_dir.clone(),
+                operation: SpoolIoOperation::SyncDirectory,
+                kind: error.kind(),
+            });
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(receipt),
+        }
+    }
+
+    /// Removes one orphaned staging file, classifying a failure as settled or indeterminate.
+    fn remove_orphan_file(&self, path: &Path) -> Result<(), RemovalFailure> {
+        match self.io.symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => {
+                return Err(RemovalFailure::Settled(SpoolError::InvalidLayout {
+                    path: path.to_path_buf(),
+                }));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => {
+                return Err(RemovalFailure::Settled(io_error(
+                    SpoolIoOperation::Inspect,
+                    path,
+                    &error,
+                )));
+            }
+        }
+        self.remove_confirmed(path, SpoolIoOperation::RemoveStaging)
+    }
+
+    /// Removes `path`. A reported failure counts as a removal only if the name is then observed
+    /// free, as a settled failure only if it is observed still present, and otherwise as
+    /// indeterminate.
+    fn remove_confirmed(
+        &self,
+        path: &Path,
+        operation: SpoolIoOperation,
+    ) -> Result<(), RemovalFailure> {
+        let error = match self.io.remove_file(path) {
+            Ok(()) => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => error,
+        };
+        match self.io.symlink_metadata(path) {
+            Err(probe) if probe.kind() == io::ErrorKind::NotFound => Ok(()),
+            Ok(_) => Err(RemovalFailure::Settled(io_error(operation, path, &error))),
+            Err(probe) => Err(RemovalFailure::Indeterminate(
+                SpoolError::DiscardIndeterminate {
+                    path: path.to_path_buf(),
+                    operation,
+                    kind: probe.kind(),
+                },
+            )),
+        }
     }
 
     /// Removes one `Staged` object and releases exactly the quota it was charged.
@@ -621,13 +773,16 @@ impl StagingSpool {
     /// This is the rollback step for a caller whose multi-object ingest failed part way: it
     /// removes one object that caller staged and never verified. A `Verified` object may already
     /// back a publication decision and a `Corrupt` one is evidence of tampering, so both are
-    /// refused with [`SpoolError::NotDiscardable`] and left untouched.
+    /// refused with [`SpoolError::NotDiscardable`] and left untouched. An object that carries a
+    /// verification hold (it was verified in an earlier session, or its spool predates holds) is
+    /// refused with [`SpoolError::VerificationHeld`] for the same reason.
     ///
     /// If the removal fails while the object name is still occupied, the object stays indexed and
     /// charged and [`SpoolError::Io`] with [`SpoolIoOperation::RemoveObject`] is returned. If the
-    /// removal succeeds but the directory fsync fails, the object is gone from this session's
-    /// index but a crash could restore it, and a reopen would then admit it as `Staged` again;
-    /// that outcome is [`SpoolError::DiscardNotDurable`].
+    /// removal's effect cannot be observed, [`SpoolError::DiscardIndeterminate`] is returned. If
+    /// the removal succeeds but the directory fsync fails, a crash could restore the object and a
+    /// reopen would admit it as `Staged` again; that outcome is [`SpoolError::DiscardNotDurable`].
+    /// Both uncertain outcomes poison this instance, which must be reopened to reconcile.
     pub fn discard_staged(&mut self, digest: ContentDigest) -> Result<u64, SpoolError> {
         self.require_live()?;
         let entry = *self.index.get(&digest).ok_or(SpoolError::Missing(digest))?;
@@ -637,29 +792,66 @@ impl StagingSpool {
                 state: entry.state,
             });
         }
+        if entry.hold != Hold::None {
+            return Err(SpoolError::VerificationHeld { digest });
+        }
         let next_index_bytes = self
             .index_bytes
             .checked_sub(entry.charged)
             .ok_or(SpoolError::AccountingOverflow)?;
         let path = self.object_path(digest);
-        if let Err(error) = self.io.remove_file(&path)
-            && error.kind() != io::ErrorKind::NotFound
-        {
-            // The removal reported failure; only a confirmed-free name counts as removed.
-            match self.io.symlink_metadata(&path) {
-                Err(probe) if probe.kind() == io::ErrorKind::NotFound => {}
-                _ => return Err(io_error(SpoolIoOperation::RemoveObject, &path, &error)),
+        match self.remove_confirmed(&path, SpoolIoOperation::RemoveObject) {
+            Ok(()) => {}
+            Err(RemovalFailure::Settled(error)) => return Err(error),
+            Err(RemovalFailure::Indeterminate(error)) => {
+                self.poisoned = true;
+                return Err(error);
             }
         }
         self.index.remove(&digest);
         self.index_bytes = next_index_bytes;
-        self.io.sync_directory(&self.objects_dir).map_err(|error| {
-            SpoolError::DiscardNotDurable {
+        if let Err(error) = self.io.sync_directory(&self.objects_dir) {
+            self.poisoned = true;
+            return Err(SpoolError::DiscardNotDurable {
                 digest,
                 kind: error.kind(),
-            }
-        })?;
+            });
+        }
         Ok(entry.charged)
+    }
+
+    /// Creates and fsyncs the durable verification hold for one object.
+    ///
+    /// An existing hold is kept: holds are only ever added. Any failure is
+    /// [`SpoolError::HoldIndeterminate`], because the hold file may exist whatever was reported.
+    fn place_hold(&self, digest: ContentDigest) -> Result<(), SpoolError> {
+        let path = self.holds_dir.join(digest_hex(digest));
+        let unconfirmed = |error: io::Error| SpoolError::HoldIndeterminate {
+            digest,
+            kind: error.kind(),
+        };
+        match self.io.create_new(&path) {
+            Ok(file) => self.io.sync_file(&file).map_err(unconfirmed)?,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(unconfirmed(error)),
+        }
+        self.io.sync_directory(&self.holds_dir).map_err(unconfirmed)
+    }
+
+    /// Fails closed when what recovery found exceeds the configured bounds.
+    fn check_recovered_capacity(&self) -> Result<(), SpoolError> {
+        let occupied_bytes = self.occupied_bytes()?;
+        if self.index.len() > self.limits.max_objects
+            || occupied_bytes > self.limits.max_total_bytes
+        {
+            return Err(SpoolError::RecoveredOverCapacity {
+                objects: self.index.len(),
+                max_objects: self.limits.max_objects,
+                occupied_bytes,
+                max_total_bytes: self.limits.max_total_bytes,
+            });
+        }
+        Ok(())
     }
 
     /// Arms a one-shot crash point for the next `stage` call.
@@ -786,9 +978,7 @@ impl StagingSpool {
         digest: ContentDigest,
         payload: &[u8],
     ) -> Result<StageReceipt, SpoolError> {
-        let result = self.load_indexed(digest);
-        self.record_corruption(digest, &result);
-        let stored = result?;
+        let stored = self.load_indexed_recording(digest)?;
         if stored != payload {
             return Err(SpoolError::DigestCollision(digest));
         }
@@ -800,27 +990,53 @@ impl StagingSpool {
         })
     }
 
-    fn record_outcome(&mut self, digest: ContentDigest, result: &Result<Vec<u8>, SpoolError>) {
-        if result.is_ok()
-            && let Some(entry) = self.index.get_mut(&digest)
-        {
-            entry.state = SpoolObjectState::Verified;
+    /// Loads one indexed object and records corruption it reveals for the rest of the session.
+    ///
+    /// A newly corrupt object is recharged at the file length observed on disk, exactly as a
+    /// reopen would charge it, so accounting never drifts across reopen.
+    fn load_indexed_recording(&mut self, digest: ContentDigest) -> Result<Vec<u8>, SpoolError> {
+        let (kind, file_len) = match self.load_indexed_classified(digest) {
+            Ok(payload) => return Ok(payload),
+            Err(ReadOutcome::Spool(error)) => return Err(error),
+            Err(ReadOutcome::Corrupt { kind, file_len }) => (kind, file_len),
+        };
+        if let Some(entry) = self.index.get(&digest).copied() {
+            let recharged = self
+                .index_bytes
+                .checked_sub(entry.charged)
+                .and_then(|rest| rest.checked_add(file_len));
+            let Some(recharged) = recharged else {
+                self.poisoned = true;
+                return Err(SpoolError::AccountingOverflow);
+            };
+            self.index_bytes = recharged;
+            self.index.insert(
+                digest,
+                IndexedObject {
+                    state: SpoolObjectState::Corrupt(kind),
+                    charged: file_len,
+                    hold: entry.hold,
+                },
+            );
         }
-        self.record_corruption(digest, result);
-    }
-
-    fn record_corruption(&mut self, digest: ContentDigest, result: &Result<Vec<u8>, SpoolError>) {
-        if let Err(SpoolError::Corrupt { kind, .. }) = result
-            && let Some(entry) = self.index.get_mut(&digest)
-        {
-            entry.state = SpoolObjectState::Corrupt(*kind);
-        }
+        Err(SpoolError::Corrupt { digest, kind })
     }
 
     fn load_indexed(&self, digest: ContentDigest) -> Result<Vec<u8>, SpoolError> {
-        let entry = self.index.get(&digest).ok_or(SpoolError::Missing(digest))?;
+        self.load_indexed_classified(digest)
+            .map_err(|outcome| match outcome {
+                ReadOutcome::Spool(error) => error,
+                ReadOutcome::Corrupt { kind, .. } => SpoolError::Corrupt { digest, kind },
+            })
+    }
+
+    fn load_indexed_classified(&self, digest: ContentDigest) -> Result<Vec<u8>, ReadOutcome> {
+        let entry = self
+            .index
+            .get(&digest)
+            .ok_or(ReadOutcome::Spool(SpoolError::Missing(digest)))?;
         if let SpoolObjectState::Corrupt(kind) = entry.state {
-            return Err(SpoolError::Corrupt { digest, kind });
+            return Err(ReadOutcome::Spool(SpoolError::Corrupt { digest, kind }));
         }
         let path = self.object_path(digest);
         read_object_file(
@@ -830,12 +1046,12 @@ impl StagingSpool {
             self.limits.max_object_bytes,
         )
         .map_err(|failure| match failure {
-            ReadFailure::Corrupt { kind, .. } => SpoolError::Corrupt { digest, kind },
-            ReadFailure::Io { operation, kind } => SpoolError::Io {
+            ReadFailure::Corrupt { kind, file_len } => ReadOutcome::Corrupt { kind, file_len },
+            ReadFailure::Io { operation, kind } => ReadOutcome::Spool(SpoolError::Io {
                 operation,
                 path,
                 kind,
-            },
+            }),
         })
     }
 
@@ -867,9 +1083,14 @@ impl StagingSpool {
         })
     }
 
-    fn recover(&mut self) -> Result<(), SpoolError> {
+    fn recover(&mut self, legacy: bool) -> Result<(), SpoolError> {
         for (name, _) in scan_directory(self.io.as_ref(), &self.root, ROOT_SCAN_BOUND)? {
-            if name == SPOOL_OBJECTS_DIR || name == SPOOL_STAGING_DIR || name == SPOOL_LOCK_FILE {
+            if name == SPOOL_OBJECTS_DIR
+                || name == SPOOL_STAGING_DIR
+                || name == SPOOL_LOCK_FILE
+                || name == SPOOL_HOLDS_DIR
+                || (legacy && name == SPOOL_HOLDS_MIGRATION_DIR)
+            {
                 continue;
             }
             self.recovery.foreign.push(ForeignEntry {
@@ -969,9 +1190,90 @@ impl StagingSpool {
                 IndexedObject {
                     state,
                     charged: charged_bytes,
+                    hold: Hold::None,
                 },
             );
         }
+        if legacy {
+            self.migrate_holds()?;
+        }
+        self.recover_holds()
+    }
+
+    /// Records a hold for every admitted object of a spool written before holds existed.
+    ///
+    /// The holds are built in [`SPOOL_HOLDS_MIGRATION_DIR`] and renamed onto
+    /// [`SPOOL_HOLDS_DIR`] only once complete and fsynced, so a crash part way leaves the spool
+    /// still without holds and the next open resumes. Any failure fails the open.
+    fn migrate_holds(&self) -> Result<(), SpoolError> {
+        let staging = self.root.join(SPOOL_HOLDS_MIGRATION_DIR);
+        ensure_subdirectory(self.io.as_ref(), &staging)?;
+        let migrate_error = |path: &Path, error: &io::Error| SpoolError::Io {
+            operation: SpoolIoOperation::MigrateHolds,
+            path: path.to_path_buf(),
+            kind: error.kind(),
+        };
+        for digest in &self.recovery.admitted {
+            let path = staging.join(digest_hex(*digest));
+            match self.io.create_new(&path) {
+                Ok(file) => self
+                    .io
+                    .sync_file(&file)
+                    .map_err(|error| migrate_error(&path, &error))?,
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => return Err(migrate_error(&path, &error)),
+            }
+        }
+        self.io
+            .sync_directory(&staging)
+            .map_err(|error| migrate_error(&staging, &error))?;
+        self.io
+            .rename(&staging, &self.holds_dir)
+            .map_err(|error| migrate_error(&self.holds_dir, &error))?;
+        self.io
+            .sync_directory(&self.root)
+            .map_err(|error| migrate_error(&self.root, &error))
+    }
+
+    /// Applies every durable hold. A hold whose object is not indexed is indexed as vanished.
+    fn recover_holds(&mut self) -> Result<(), SpoolError> {
+        let entries = scan_directory(
+            self.io.as_ref(),
+            &self.holds_dir,
+            self.limits.max_scan_entries,
+        )?;
+        for (name, file_type) in entries {
+            let relative = Path::new(SPOOL_HOLDS_DIR).join(&name);
+            let Some(digest) = parse_object_name(&name) else {
+                self.recovery.foreign.push(ForeignEntry {
+                    path: relative,
+                    reason: ForeignReason::UnrecognizedName,
+                });
+                continue;
+            };
+            // A validly named hold of the wrong file type still protects its object.
+            if !file_type.is_file() {
+                self.recovery.foreign.push(ForeignEntry {
+                    path: relative,
+                    reason: ForeignReason::NotRegularFile,
+                });
+            }
+            if let Some(entry) = self.index.get_mut(&digest) {
+                entry.hold = Hold::Durable;
+                continue;
+            }
+            let kind = CorruptionKind::Vanished;
+            self.recovery.corrupt.push(CorruptObject { digest, kind });
+            self.index.insert(
+                digest,
+                IndexedObject {
+                    state: SpoolObjectState::Corrupt(kind),
+                    charged: 0,
+                    hold: Hold::Durable,
+                },
+            );
+        }
+        self.recovery.corrupt.sort_by_key(|corrupt| corrupt.digest);
         Ok(())
     }
 }
@@ -1031,12 +1333,13 @@ fn acquire_lock(io: &dyn SpoolIo, root: &Path) -> Result<File, SpoolError> {
     }
 }
 
-fn ensure_subdirectory(io: &dyn SpoolIo, path: &Path) -> Result<(), SpoolError> {
-    match io.create_dir(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+/// Creates `path` if missing and checks it is a real directory. Returns whether it was created.
+fn ensure_subdirectory(io: &dyn SpoolIo, path: &Path) -> Result<bool, SpoolError> {
+    let created = match io.create_dir(path) {
+        Ok(()) => true,
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => false,
         Err(error) => return Err(io_error(SpoolIoOperation::CreateDirectory, path, &error)),
-    }
+    };
     let metadata = io
         .symlink_metadata(path)
         .map_err(|error| io_error(SpoolIoOperation::Inspect, path, &error))?;
@@ -1045,7 +1348,7 @@ fn ensure_subdirectory(io: &dyn SpoolIo, path: &Path) -> Result<(), SpoolError> 
             path: path.to_path_buf(),
         });
     }
-    Ok(())
+    Ok(created)
 }
 
 fn scan_directory(

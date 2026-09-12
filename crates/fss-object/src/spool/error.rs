@@ -142,6 +142,10 @@ pub enum SpoolIoOperation {
     SyncStaging,
     /// Removing a discarded staged object.
     RemoveObject,
+    /// Creating or fsyncing the durable verification hold of one object.
+    PlaceHold,
+    /// Recording holds for every object of a spool written before holds existed.
+    MigrateHolds,
 }
 
 impl fmt::Display for SpoolIoOperation {
@@ -160,6 +164,8 @@ impl fmt::Display for SpoolIoOperation {
             Self::RemoveStaging => "remove_staging",
             Self::SyncStaging => "sync_staging",
             Self::RemoveObject => "remove_object",
+            Self::PlaceHold => "place_hold",
+            Self::MigrateHolds => "migrate_holds",
         })
     }
 }
@@ -323,11 +329,51 @@ pub enum SpoolError {
         state: SpoolObjectState,
     },
     /// A discarded object was removed, but the directory fsync failed, so a crash could restore
-    /// it and a reopen would admit it as `Staged` again.
+    /// it and a reopen would admit it as `Staged` again. This instance is poisoned and must be
+    /// reopened to reconcile.
     DiscardNotDurable {
         /// Object digest.
         digest: ContentDigest,
         /// I/O failure kind of the directory fsync.
+        kind: io::ErrorKind,
+    },
+    /// The spool found on open holds more than its configured bounds admit. Nothing is admitted;
+    /// reopen it under bounds that cover what is on disk.
+    RecoveredOverCapacity {
+        /// Indexed objects found, including corrupt ones.
+        objects: usize,
+        /// Configured object-count bound.
+        max_objects: usize,
+        /// Charged bytes found: objects, corrupt entries, and orphaned staging files.
+        occupied_bytes: u64,
+        /// Configured byte quota.
+        max_total_bytes: u64,
+    },
+    /// A removal reported failure and its entry could not be observed afterwards, or the directory
+    /// fsync after completed removals failed: whether the removal took effect, or survives a crash,
+    /// is unknown. This instance is poisoned and must be reopened to reconcile.
+    DiscardIndeterminate {
+        /// Removed entry, or the directory whose fsync failed.
+        path: PathBuf,
+        /// Operation whose outcome is unknown.
+        operation: SpoolIoOperation,
+        /// I/O failure kind.
+        kind: io::ErrorKind,
+    },
+    /// The object carries a durable verification hold, or may carry one: it was verified in this
+    /// or an earlier session, or belongs to a spool written before holds existed, so it may back a
+    /// publication decision. It is never discarded and was left untouched.
+    VerificationHeld {
+        /// Object digest.
+        digest: ContentDigest,
+    },
+    /// The object's bytes verified, but its durable verification hold could not be confirmed. It
+    /// is not promoted to `Verified`; this instance treats it as held and refuses to discard it
+    /// until a later `verify` confirms the hold or a reopen observes the disk.
+    HoldIndeterminate {
+        /// Object digest.
+        digest: ContentDigest,
+        /// I/O failure kind.
         kind: io::ErrorKind,
     },
     /// A filesystem operation failed.
@@ -437,6 +483,33 @@ impl fmt::Display for SpoolError {
             Self::DiscardNotDurable { digest, kind } => write!(
                 formatter,
                 "discard of {digest} is not durable: directory fsync failed: {kind}"
+            ),
+            Self::RecoveredOverCapacity {
+                objects,
+                max_objects,
+                occupied_bytes,
+                max_total_bytes,
+            } => write!(
+                formatter,
+                "spool on disk holds {objects} objects (bound {max_objects}) and \
+                 {occupied_bytes} bytes (quota {max_total_bytes})"
+            ),
+            Self::DiscardIndeterminate {
+                path,
+                operation,
+                kind,
+            } => write!(
+                formatter,
+                "discard is indeterminate after {operation} failed at {}: {kind}",
+                path.display()
+            ),
+            Self::VerificationHeld { digest } => write!(
+                formatter,
+                "object {digest} carries a verification hold and is never discarded"
+            ),
+            Self::HoldIndeterminate { digest, kind } => write!(
+                formatter,
+                "verification hold for {digest} could not be confirmed: {kind}"
             ),
             Self::Io {
                 operation,

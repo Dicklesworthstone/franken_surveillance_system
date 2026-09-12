@@ -7,10 +7,10 @@
 //! lets a reader distinguish truncation, trailing bytes, a foreign file, a misnamed file, and a
 //! payload digest mismatch as separate typed failures.
 
-use fss_core::ContentDigest;
 use fss_core::durable::{DurableError, DurableFormat};
+use fss_core::{ContentDigest, DigestAlgorithm};
 
-use super::CorruptionKind;
+use super::{CorruptionKind, SpoolError};
 
 /// Magic prefix of every spooled object file.
 pub const SPOOL_OBJECT_MAGIC: [u8; 8] = *b"FSSSPOOL";
@@ -29,12 +29,31 @@ pub fn spool_durable_format(max_payload: usize) -> DurableFormat {
     )
 }
 
-/// Encodes one payload under its already-verified SHA-256 identity.
-pub(crate) fn encode_object(digest: ContentDigest, payload: &[u8]) -> Vec<u8> {
-    let format = spool_durable_format(payload.len());
-    format
+/// Encodes one payload as the exact envelope the spool writes for it.
+///
+/// The spool keys objects by SHA-256 of the payload, so `digest` must be a SHA-256 digest and the
+/// payload must hash to it; anything else is a typed error, never an empty or mislabeled envelope.
+pub fn encode_spool_object(digest: ContentDigest, payload: &[u8]) -> Result<Vec<u8>, SpoolError> {
+    if digest.algorithm() != DigestAlgorithm::Sha256 {
+        return Err(SpoolError::UnsupportedAlgorithm(digest.algorithm()));
+    }
+    let computed = ContentDigest::sha256(payload);
+    if computed != digest {
+        return Err(SpoolError::DigestMismatch {
+            declared: digest,
+            computed,
+        });
+    }
+    spool_durable_format(payload.len())
         .encode_with_checksum(payload, digest)
-        .unwrap_or_default()
+        .map_err(|error| match error {
+            DurableError::OverLimitLength { limit, actual } => SpoolError::ObjectTooLarge {
+                length: actual,
+                maximum: limit,
+            },
+            // The format is built for exactly this payload length; no other encode error exists.
+            _ => SpoolError::AccountingOverflow,
+        })
 }
 
 /// Verifies one complete envelope against the digest its file name claims.
