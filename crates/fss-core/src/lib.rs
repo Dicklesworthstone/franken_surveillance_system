@@ -30,6 +30,7 @@ pub mod pricing;
 mod projection;
 pub mod region;
 pub mod sensor_capsule;
+pub mod temporal_verifier;
 pub mod test_event;
 mod time;
 
@@ -148,4 +149,5 @@ pub use sensor_capsule::{
 pub use acquisition::*;
 pub use pricing::*;
 pub use region::*;
+pub use temporal_verifier::*;
 pub use test_event::*;
