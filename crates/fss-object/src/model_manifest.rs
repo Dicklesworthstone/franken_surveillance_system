@@ -80,6 +80,27 @@ pub const MAX_UPSTREAM_REVISION_LEN: usize = 128;
 /// Maximum JSON nesting depth accepted by the manifest JSON decoder.
 const MAX_JSON_DEPTH: usize = 16;
 
+/// Floating alias refused wherever a model, supersedes, or calibration generation is named.
+pub const LATEST_ALIAS: &str = "latest";
+
+/// Rejects any identifier that names [`LATEST_ALIAS`] in any letter case and at any position.
+///
+/// The test is a case-insensitive substring match, so `latest`, `LATEST`, `Latest:v1`,
+/// `model:latest:v1`, `model:detector:latest`, and `latest.weights` are all refused with
+/// [`ModelManifestError::LatestNotResolvable`]. Model weights are only ever resolved through an
+/// explicit immutable generation.
+pub fn reject_latest_alias(value: &str) -> Result<(), ModelManifestError> {
+    let alias = LATEST_ALIAS.as_bytes();
+    if value
+        .as_bytes()
+        .windows(alias.len())
+        .any(|window| window.eq_ignore_ascii_case(alias))
+    {
+        return Err(ModelManifestError::LatestNotResolvable);
+    }
+    Ok(())
+}
+
 const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
 
 /// Typed decode and validation errors for model manifest operations.
@@ -94,8 +115,8 @@ pub enum ModelManifestError {
     },
     /// Unknown or unsupported encoding format version.
     UnknownVersion {
-        /// Decoded version number.
-        version: u16,
+        /// Decoded version number, exactly as it appears in the envelope.
+        version: u32,
     },
     /// Trailing unparsed bytes remaining after complete decode.
     TrailingBytes {
@@ -478,7 +499,28 @@ impl ModelLicenseRecord {
     }
 
     /// Canonical binary encoding for the license record.
-    pub fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+    ///
+    /// The record is validated first, so every count written is within its declared bound. An
+    /// out-of-bound record is refused with a typed error; a count is never clamped or defaulted.
+    pub fn encode_canonical(
+        &self,
+        encoder: &mut CanonicalEncoder,
+    ) -> Result<(), ModelManifestError> {
+        self.validate()?;
+        let restriction_count = u32::try_from(self.restrictions.len()).map_err(|_| {
+            ModelManifestError::OverLimitLength {
+                field: "license.restrictions",
+                limit: MAX_RESTRICTIONS_COUNT,
+                actual: self.restrictions.len(),
+            }
+        })?;
+        let artifact_count = u32::try_from(self.artifact_digests.len()).map_err(|_| {
+            ModelManifestError::OverLimitLength {
+                field: "license.artifact_digests",
+                limit: MAX_ARTIFACT_DIGESTS_COUNT,
+                actual: self.artifact_digests.len(),
+            }
+        })?;
         encoder.text(&self.spdx_or_identity);
         match &self.text_digest {
             Some(d) => {
@@ -488,13 +530,11 @@ impl ModelLicenseRecord {
             None => encoder.bool(false),
         }
         encoder.bool(self.use_approved);
-        let restriction_count = u32::try_from(self.restrictions.len()).unwrap_or(u32::MAX);
         encoder.u32(restriction_count);
         for r in &self.restrictions {
             encoder.text(r);
         }
         encoder.text(&self.source_identity);
-        let artifact_count = u32::try_from(self.artifact_digests.len()).unwrap_or(u32::MAX);
         encoder.u32(artifact_count);
         for d in &self.artifact_digests {
             encoder.digest(*d);
@@ -506,6 +546,7 @@ impl ModelLicenseRecord {
             }
             None => encoder.bool(false),
         }
+        Ok(())
     }
 
     /// Decodes a license record from a canonical binary decoder.
@@ -583,32 +624,125 @@ impl ModelLicenseRecord {
 }
 
 /// Canonical, content-addressed model manifest v1.
+///
+/// A manifest is immutable once constructed: its fields are private, so no caller can rebind the
+/// weights, calibration, license, or supersedes pointer of an existing generation in place.
+///
+/// ```compile_fail,E0616
+/// fn mutate_in_place(manifest: &mut fss_object::ModelManifestV1, other: &fss_object::ModelManifestV1) {
+///     manifest.weights_digest = other.weights_digest;
+/// }
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ModelManifestV1 {
     /// Unique model family or architecture identity (e.g. `MOD-RFDETR-001`).
-    pub model_id: ModelId,
+    model_id: ModelId,
     /// Immutable package generation identifier (e.g. `model:rfdetr:fp16:v1`).
-    pub generation: ModelGeneration,
+    generation: ModelGeneration,
     /// Exact content digest of immutable model weight tensors.
-    pub weights_digest: ContentDigest,
+    weights_digest: ContentDigest,
     /// Stable input tensor or schema identity.
-    pub input_schema: SchemaId,
+    input_schema: SchemaId,
     /// Stable output prediction or schema identity.
-    pub output_schema: SchemaId,
+    output_schema: SchemaId,
     /// Required sensor calibration generation.
-    pub calibration_generation: CalibrationGeneration,
+    calibration_generation: CalibrationGeneration,
     /// License, approval, and supply-chain provenance record.
-    pub license: ModelLicenseRecord,
+    license: ModelLicenseRecord,
     /// Generation identifier superseded by this manifest revision, if any.
-    pub supersedes_generation: Option<ModelGeneration>,
+    supersedes_generation: Option<ModelGeneration>,
 }
 
 impl ModelManifestV1 {
     /// Schema identity constant.
     pub const SCHEMA: &'static str = MODEL_MANIFEST_SCHEMA;
 
+    /// Constructs and validates a root manifest generation that supersedes nothing.
+    ///
+    /// Later revisions are built only through [`Self::create_successor`], which binds the
+    /// superseded generation. A manifest value is never modified after construction; a different
+    /// manifest that reuses an existing generation is a custody conflict detected by the
+    /// importer, not an in-place edit.
+    pub fn new(
+        model_id: ModelId,
+        generation: ModelGeneration,
+        weights_digest: ContentDigest,
+        input_schema: SchemaId,
+        output_schema: SchemaId,
+        calibration_generation: CalibrationGeneration,
+        license: ModelLicenseRecord,
+    ) -> Result<Self, ModelManifestError> {
+        let manifest = Self {
+            model_id,
+            generation,
+            weights_digest,
+            input_schema,
+            output_schema,
+            calibration_generation,
+            license,
+            supersedes_generation: None,
+        };
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
+    /// Model family or architecture identity.
+    #[must_use]
+    pub const fn model_id(&self) -> &ModelId {
+        &self.model_id
+    }
+
+    /// Immutable package generation identifier.
+    #[must_use]
+    pub const fn generation(&self) -> &ModelGeneration {
+        &self.generation
+    }
+
+    /// Exact content digest of the model weight tensors.
+    #[must_use]
+    pub const fn weights_digest(&self) -> ContentDigest {
+        self.weights_digest
+    }
+
+    /// Input tensor or schema identity.
+    #[must_use]
+    pub const fn input_schema(&self) -> &SchemaId {
+        &self.input_schema
+    }
+
+    /// Output prediction or schema identity.
+    #[must_use]
+    pub const fn output_schema(&self) -> &SchemaId {
+        &self.output_schema
+    }
+
+    /// Required sensor calibration generation.
+    #[must_use]
+    pub const fn calibration_generation(&self) -> &CalibrationGeneration {
+        &self.calibration_generation
+    }
+
+    /// License, approval, and supply-chain provenance record.
+    #[must_use]
+    pub const fn license(&self) -> &ModelLicenseRecord {
+        &self.license
+    }
+
+    /// Generation superseded by this revision, if any.
+    #[must_use]
+    pub const fn supersedes_generation(&self) -> Option<&ModelGeneration> {
+        self.supersedes_generation.as_ref()
+    }
+
     /// Validates all fields and bounds on the model manifest.
+    ///
+    /// No generation, supersedes pointer, or calibration generation may name [`LATEST_ALIAS`].
     pub fn validate(&self) -> Result<(), ModelManifestError> {
+        reject_latest_alias(self.generation.as_str())?;
+        reject_latest_alias(self.calibration_generation.as_str())?;
+        if let Some(sup) = &self.supersedes_generation {
+            reject_latest_alias(sup.as_str())?;
+        }
         if self.generation.len() < MIN_MODEL_GENERATION_LEN {
             return Err(ModelManifestError::UnderLimitLength {
                 field: "generation",
@@ -714,18 +848,12 @@ impl ModelManifestV1 {
 
     /// Resolves an immutable model generation from a query string.
     ///
-    /// Rejects any request for `"latest"`, `"LATEST"`, or variant alias strings with
-    /// [`ModelManifestError::LatestNotResolvable`].
+    /// Any request naming [`LATEST_ALIAS`] in any case or position is rejected with
+    /// [`ModelManifestError::LatestNotResolvable`] (see [`reject_latest_alias`]). The request is
+    /// never trimmed or otherwise normalized: it must already be the exact generation spelling.
     pub fn resolve_generation(requested: &str) -> Result<ModelGeneration, ModelManifestError> {
-        let trimmed = requested.trim();
-        if trimmed.eq_ignore_ascii_case("latest")
-            || trimmed.starts_with("latest:")
-            || trimmed.ends_with(":latest")
-            || trimmed == "latest.weights"
-        {
-            return Err(ModelManifestError::LatestNotResolvable);
-        }
-        ModelGeneration::parse(trimmed).map_err(ModelManifestError::Contract)
+        reject_latest_alias(requested)?;
+        ModelGeneration::parse(requested).map_err(ModelManifestError::Contract)
     }
 
     /// Creates a successor manifest with an advanced generation superseding `self`.
@@ -756,14 +884,16 @@ impl ModelManifestV1 {
     }
 
     /// Computes the content identity digest of this canonical model manifest.
-    #[must_use]
-    pub fn manifest_digest(&self) -> ContentDigest {
-        ContentDigest::sha256(&self.to_canonical_bytes())
+    pub fn manifest_digest(&self) -> Result<ContentDigest, ModelManifestError> {
+        Ok(ContentDigest::sha256(&self.to_canonical_bytes()?))
     }
 
     /// Serializes this manifest into the versioned binary canonical envelope (`FSMN` v1).
-    #[must_use]
-    pub fn to_canonical_bytes(&self) -> Vec<u8> {
+    ///
+    /// The manifest is validated first and every encoder failure is returned typed; the envelope
+    /// is never emitted with a clamped count or an empty body.
+    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, ModelManifestError> {
+        self.validate()?;
         let mut out = Vec::with_capacity(1024);
         out.extend_from_slice(&MODEL_MANIFEST_MAGIC);
         out.extend_from_slice(&u32::from(MODEL_MANIFEST_VERSION_1).to_be_bytes());
@@ -777,7 +907,7 @@ impl ModelManifestV1 {
         self.input_schema.encode_canonical(&mut encoder);
         self.output_schema.encode_canonical(&mut encoder);
         self.calibration_generation.encode_canonical(&mut encoder);
-        self.license.encode_canonical(&mut encoder);
+        self.license.encode_canonical(&mut encoder)?;
 
         match &self.supersedes_generation {
             Some(sup) => {
@@ -787,8 +917,8 @@ impl ModelManifestV1 {
             None => encoder.bool(false),
         }
 
-        out.extend_from_slice(&encoder.finish());
-        out
+        out.extend_from_slice(&encoder.finish_checked()?);
+        Ok(out)
     }
 
     /// Deserializes a manifest from its versioned binary canonical envelope (`FSMN` v1).
@@ -806,10 +936,8 @@ impl ModelManifestV1 {
             });
         }
 
-        let version_u32 = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
-        let version = u16::try_from(version_u32)
-            .map_err(|_| ModelManifestError::UnknownVersion { version: u16::MAX })?;
-        if version != MODEL_MANIFEST_VERSION_1 {
+        let version = u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]);
+        if version != u32::from(MODEL_MANIFEST_VERSION_1) {
             return Err(ModelManifestError::UnknownVersion { version });
         }
 
@@ -854,10 +982,18 @@ impl ModelManifestV1 {
             supersedes_generation,
         };
         manifest.validate()?;
+        if manifest.to_canonical_bytes()? != bytes {
+            return Err(ModelManifestError::NonCanonicalEncoding {
+                detail: "binary manifest does not re-encode to identical bytes".to_string(),
+            });
+        }
         Ok(manifest)
     }
 
     /// Emits a deterministic canonical JSON string projection with alphabetically sorted keys.
+    ///
+    /// Every property is always present; an absent optional value is written as `null`, never
+    /// omitted, so the projection has exactly one spelling per manifest.
     #[must_use]
     pub fn to_canonical_json(&self) -> String {
         let mut out = String::with_capacity(1024);
@@ -951,6 +1087,12 @@ impl ModelManifestV1 {
     }
 
     /// Parses a model manifest from canonical JSON with strict schema adherence.
+    ///
+    /// Every property is required, including `supersedesGeneration`, `license.textDigest`, and
+    /// `license.upstreamRevision`, whose absent value is the explicit `null`. The input must be
+    /// byte-identical to [`Self::to_canonical_json`] of the decoded manifest (sorted keys, no
+    /// insignificant whitespace, canonical escapes), so every accepted document round-trips
+    /// bit-identically and no alias spelling is admitted.
     pub fn from_canonical_json(json_str: &str) -> Result<Self, ModelManifestError> {
         let mut parser = JsonParser::new(json_str);
         let root = parser.parse_value(0)?;
@@ -1063,6 +1205,10 @@ impl ModelManifestV1 {
         let license = license.ok_or_else(|| ModelManifestError::JsonError {
             detail: "missing required 'license' property".to_string(),
         })?;
+        let supersedes_generation =
+            supersedes_generation.ok_or_else(|| ModelManifestError::JsonError {
+                detail: "missing required 'supersedesGeneration' property".to_string(),
+            })?;
 
         let manifest = Self {
             model_id,
@@ -1072,9 +1218,14 @@ impl ModelManifestV1 {
             output_schema,
             calibration_generation,
             license,
-            supersedes_generation: supersedes_generation.unwrap_or(None),
+            supersedes_generation,
         };
         manifest.validate()?;
+        if manifest.to_canonical_json() != json_str {
+            return Err(ModelManifestError::NonCanonicalEncoding {
+                detail: "json manifest is not in canonical form".to_string(),
+            });
+        }
         Ok(manifest)
     }
 }
@@ -1167,7 +1318,9 @@ fn parse_license_json(val: &JsonValue) -> Result<ModelLicenseRecord, ModelManife
         spdx_or_identity: spdx_or_identity.ok_or_else(|| ModelManifestError::JsonError {
             detail: "missing required 'spdxOrIdentity' in license".to_string(),
         })?,
-        text_digest: text_digest.unwrap_or(None),
+        text_digest: text_digest.ok_or_else(|| ModelManifestError::JsonError {
+            detail: "missing required 'textDigest' in license".to_string(),
+        })?,
         use_approved: use_approved.ok_or_else(|| ModelManifestError::JsonError {
             detail: "missing required 'useApproved' in license".to_string(),
         })?,
@@ -1180,7 +1333,9 @@ fn parse_license_json(val: &JsonValue) -> Result<ModelLicenseRecord, ModelManife
         artifact_digests: artifact_digests.ok_or_else(|| ModelManifestError::JsonError {
             detail: "missing required 'artifactDigests' in license".to_string(),
         })?,
-        upstream_revision: upstream_revision.unwrap_or(None),
+        upstream_revision: upstream_revision.ok_or_else(|| ModelManifestError::JsonError {
+            detail: "missing required 'upstreamRevision' in license".to_string(),
+        })?,
     };
     record.validate()?;
     Ok(record)

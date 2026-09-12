@@ -7,6 +7,8 @@ use std::path::PathBuf;
 
 use fss_core::{ContentDigest, DigestAlgorithm};
 
+use super::SpoolObjectState;
+
 /// Why the bytes held under one object name cannot be trusted as that object.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CorruptionKind {
@@ -138,6 +140,8 @@ pub enum SpoolIoOperation {
     RemoveStaging,
     /// Fsyncing a written staging file.
     SyncStaging,
+    /// Removing a discarded staged object.
+    RemoveObject,
 }
 
 impl fmt::Display for SpoolIoOperation {
@@ -155,6 +159,7 @@ impl fmt::Display for SpoolIoOperation {
             Self::SyncDirectory => "sync_directory",
             Self::RemoveStaging => "remove_staging",
             Self::SyncStaging => "sync_staging",
+            Self::RemoveObject => "remove_object",
         })
     }
 }
@@ -310,6 +315,21 @@ pub enum SpoolError {
     Poisoned,
     /// Byte accounting would overflow `u64`.
     AccountingOverflow,
+    /// Only a `Staged` object can be discarded; this one was left untouched.
+    NotDiscardable {
+        /// Object digest.
+        digest: ContentDigest,
+        /// State that forbids the discard.
+        state: SpoolObjectState,
+    },
+    /// A discarded object was removed, but the directory fsync failed, so a crash could restore
+    /// it and a reopen would admit it as `Staged` again.
+    DiscardNotDurable {
+        /// Object digest.
+        digest: ContentDigest,
+        /// I/O failure kind of the directory fsync.
+        kind: io::ErrorKind,
+    },
     /// A filesystem operation failed.
     Io {
         /// Failed operation.
@@ -410,6 +430,14 @@ impl fmt::Display for SpoolError {
                 formatter.write_str("spool instance is poisoned; reopen to reconcile")
             }
             Self::AccountingOverflow => formatter.write_str("spool byte accounting overflow"),
+            Self::NotDiscardable { digest, state } => write!(
+                formatter,
+                "object {digest} is {state:?}; only staged objects can be discarded"
+            ),
+            Self::DiscardNotDurable { digest, kind } => write!(
+                formatter,
+                "discard of {digest} is not durable: directory fsync failed: {kind}"
+            ),
             Self::Io {
                 operation,
                 path,

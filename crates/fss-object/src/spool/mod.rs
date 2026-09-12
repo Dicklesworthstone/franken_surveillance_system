@@ -255,6 +255,8 @@ pub struct DiscardReceipt {
 #[derive(Clone, Copy, Debug)]
 struct IndexedObject {
     state: SpoolObjectState,
+    /// Bytes this entry contributes to `index_bytes`, released exactly when it is discarded.
+    charged: u64,
 }
 
 enum ReadFailure {
@@ -369,6 +371,11 @@ impl StagingSpool {
     #[must_use]
     pub fn object_count(&self) -> usize {
         self.index.len()
+    }
+
+    /// Digests of every indexed object, including corrupt ones, in ascending digest order.
+    pub fn digests(&self) -> impl Iterator<Item = ContentDigest> + '_ {
+        self.index.keys().copied()
     }
 
     /// Bytes charged against the quota: indexed objects plus orphaned staging files.
@@ -527,6 +534,7 @@ impl StagingSpool {
             declared,
             IndexedObject {
                 state: SpoolObjectState::Staged,
+                charged: payload_len,
             },
         );
         self.index_bytes = next_index_bytes;
@@ -606,6 +614,52 @@ impl StagingSpool {
             io_error(SpoolIoOperation::SyncDirectory, &self.staging_dir, &error)
         })?;
         Ok(receipt)
+    }
+
+    /// Removes one `Staged` object and releases exactly the quota it was charged.
+    ///
+    /// This is the rollback step for a caller whose multi-object ingest failed part way: it
+    /// removes one object that caller staged and never verified. A `Verified` object may already
+    /// back a publication decision and a `Corrupt` one is evidence of tampering, so both are
+    /// refused with [`SpoolError::NotDiscardable`] and left untouched.
+    ///
+    /// If the removal fails while the object name is still occupied, the object stays indexed and
+    /// charged and [`SpoolError::Io`] with [`SpoolIoOperation::RemoveObject`] is returned. If the
+    /// removal succeeds but the directory fsync fails, the object is gone from this session's
+    /// index but a crash could restore it, and a reopen would then admit it as `Staged` again;
+    /// that outcome is [`SpoolError::DiscardNotDurable`].
+    pub fn discard_staged(&mut self, digest: ContentDigest) -> Result<u64, SpoolError> {
+        self.require_live()?;
+        let entry = *self.index.get(&digest).ok_or(SpoolError::Missing(digest))?;
+        if entry.state != SpoolObjectState::Staged {
+            return Err(SpoolError::NotDiscardable {
+                digest,
+                state: entry.state,
+            });
+        }
+        let next_index_bytes = self
+            .index_bytes
+            .checked_sub(entry.charged)
+            .ok_or(SpoolError::AccountingOverflow)?;
+        let path = self.object_path(digest);
+        if let Err(error) = self.io.remove_file(&path)
+            && error.kind() != io::ErrorKind::NotFound
+        {
+            // The removal reported failure; only a confirmed-free name counts as removed.
+            match self.io.symlink_metadata(&path) {
+                Err(probe) if probe.kind() == io::ErrorKind::NotFound => {}
+                _ => return Err(io_error(SpoolIoOperation::RemoveObject, &path, &error)),
+            }
+        }
+        self.index.remove(&digest);
+        self.index_bytes = next_index_bytes;
+        self.io.sync_directory(&self.objects_dir).map_err(|error| {
+            SpoolError::DiscardNotDurable {
+                digest,
+                kind: error.kind(),
+            }
+        })?;
+        Ok(entry.charged)
     }
 
     /// Arms a one-shot crash point for the next `stage` call.
@@ -910,7 +964,13 @@ impl StagingSpool {
                 .index_bytes
                 .checked_add(charged_bytes)
                 .ok_or(SpoolError::AccountingOverflow)?;
-            self.index.insert(digest, IndexedObject { state });
+            self.index.insert(
+                digest,
+                IndexedObject {
+                    state,
+                    charged: charged_bytes,
+                },
+            );
         }
         Ok(())
     }
