@@ -45,4 +45,6 @@ Registry of canonical-digest domain tags used for domain separation in determini
 | `SCHEMA-DOMAIN-NEGATIVE-EVIDENCE-SCENARIO-LOG-001` | `fss.negative_evidence.scenario_log.v1` | Negative evidence evaluation | authority/negative-evidence | structured scenario log domain tag; binds NEG ID, digests, tuple, outcome, and proof hash |
 | `SCHEMA-DOMAIN-TENSOR-001` | `fss.tensor.v1` | Pure-Rust model tensor | authority/tensor | canonical tensor content digest domain; binds dtype, shape, contiguous elements, and generation |
 | `SCHEMA-DOMAIN-MODEL-IR-001` | `fss.model_ir.v1` | Pure-Rust model operator IR | authority/model-ir | canonical operator IR graph content digest domain; binds version, closed operator set, typed attributes, and topology |
+| `SCHEMA-DOMAIN-NEGATIVE-EVIDENCE-ENTRY-001` | `fss.negative_evidence.entry.v1` | Negative evidence evaluation | authority/negative-evidence | negative evidence entry canonical digest domain; binds stable ID, setup, results, decision, and witness |
+| `SCHEMA-DOMAIN-NEGATIVE-EVIDENCE-LEDGER-001` | `fss.negative_evidence.ledger.v1` | Negative evidence evaluation | authority/negative-evidence | negative evidence ledger canonical digest domain; trailing checksum domain tag over header and entries |
 

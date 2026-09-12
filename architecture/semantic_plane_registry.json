@@ -65,6 +65,7 @@
     "crates/fss-core/src/identity.rs": "authority",
     "crates/fss-core/src/ids.rs": "support",
     "crates/fss-core/src/lib.rs": "support",
+    "crates/fss-core/src/negative_evidence.rs": "authority",
     "crates/fss-core/src/outcome.rs": "support",
     "crates/fss-core/src/pricing.rs": "support",
     "crates/fss-core/src/projection.rs": "cognition",
