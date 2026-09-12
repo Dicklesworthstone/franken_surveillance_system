@@ -15,12 +15,14 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use fss_core::effect::{
-    EffectIntent, EffectJournal, EffectReconciliationRecord, EffectSchemaError, MAX_DETAIL_LEN,
-    MAX_EFFECT_CLASS_LEN, MAX_ERROR_CODE_LEN, MAX_TERMINAL_PREDICATE_LEN, PreparedEffect,
-    ProviderFailureReceipt, ProviderObservationReceipt, ReconciliationOutcome,
+    EffectAuthority, EffectIntent, EffectJournal, EffectReconciliationRecord, EffectSchemaError,
+    MAX_DETAIL_LEN, MAX_EFFECT_CLASS_LEN, MAX_ERROR_CODE_LEN, MAX_TERMINAL_PREDICATE_LEN,
+    OperationReceipt, PreparedEffect, ProviderFailureReceipt, ProviderObservationReceipt,
+    ReceiptLookupStatus, ReconciliationOutcome,
 };
 use fss_core::{
-    ContentDigest, ContractError, IdempotencyKey, ObligationId, OperationId, TimestampNs,
+    CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, EffectState, IdempotencyKey,
+    ObligationId, OperationId, TimestampNs,
 };
 
 fn sample_intent() -> Result<EffectIntent, Box<dyn Error>> {
@@ -48,32 +50,66 @@ fn sample_prepared() -> Result<PreparedEffect, Box<dyn Error>> {
     )?)
 }
 
-fn sample_observation_receipt() -> ProviderObservationReceipt {
+fn sample_observation_receipt() -> Result<ProviderObservationReceipt, Box<dyn Error>> {
     let nonce = ContentDigest::sha256(b"provider-secret-nonce-12345");
     let msg_digest = ContentDigest::sha256(b"alert-message-payload");
-    ProviderObservationReceipt::new(nonce, msg_digest)
+    let prep_digest = ContentDigest::sha256(b"prepared-effect-sample-digest");
+    let idem_key = IdempotencyKey::parse("idem:alert:2026-09-12:001")?;
+    Ok(ProviderObservationReceipt::new(
+        nonce,
+        msg_digest,
+        prep_digest,
+        idem_key,
+    ))
 }
 
 fn sample_failure_receipt() -> Result<ProviderFailureReceipt, Box<dyn Error>> {
     let nonce = ContentDigest::sha256(b"provider-secret-nonce-99999");
     let msg_digest = ContentDigest::sha256(b"alert-message-payload");
+    let prep_digest = ContentDigest::sha256(b"prepared-effect-sample-digest");
+    let idem_key = IdempotencyKey::parse("idem:alert:2026-09-12:001")?;
     Ok(ProviderFailureReceipt::new(
         nonce,
         msg_digest,
+        prep_digest,
+        idem_key,
         "rate_limited",
     )?)
 }
 
 fn sample_reconciliation_verified() -> Result<EffectReconciliationRecord, Box<dyn Error>> {
     let op_id = OperationId::parse("op:alert:dispatch:01")?;
+    let idem_key = IdempotencyKey::parse("idem:alert:2026-09-12:001")?;
+    let prep_digest = ContentDigest::sha256(b"prepared-effect-sample-digest");
     let evidence = ContentDigest::sha256(b"external-delivery-log");
     Ok(EffectReconciliationRecord::new(
         op_id,
+        idem_key,
+        prep_digest,
         ReconciliationOutcome::Verified,
         Some(evidence),
         TimestampNs(1_700_000_001_000_000_000),
         Some("verified against provider delivery log".to_string()),
     )?)
+}
+
+fn sample_operation_receipt() -> Result<OperationReceipt, Box<dyn Error>> {
+    let intent = sample_intent()?;
+    let authority = EffectAuthority::new(
+        "principal:operator:sec-ops",
+        "cap:alert:dispatch",
+        Some(42),
+    )?;
+    Ok(OperationReceipt {
+        intent,
+        state: EffectState::Prepared,
+        authority,
+        prepared_at: TimestampNs(1_700_000_000_000_000_000),
+        committed_at: None,
+        updated_at: TimestampNs(1_700_000_000_000_000_000),
+        result_digest: None,
+        error_code: None,
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -104,7 +140,7 @@ fn test_prepared_effect_binary_round_trip() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_provider_observation_receipt_binary_round_trip() -> Result<(), Box<dyn Error>> {
-    let original = sample_observation_receipt();
+    let original = sample_observation_receipt()?;
     let bytes1 = original.to_canonical_bytes()?;
     let decoded = ProviderObservationReceipt::from_canonical_bytes(&bytes1)?;
     assert_eq!(original, decoded);
@@ -163,7 +199,7 @@ fn test_prepared_effect_json_round_trip() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_provider_observation_receipt_json_round_trip() -> Result<(), Box<dyn Error>> {
-    let original = sample_observation_receipt();
+    let original = sample_observation_receipt()?;
     let json1 = original.to_canonical_json();
     let decoded = ProviderObservationReceipt::from_json(&json1)?;
     assert_eq!(original, decoded);
@@ -200,7 +236,7 @@ fn test_reconciliation_record_json_round_trip() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn test_receipts_verified_by_lookup_never_recomputable() -> Result<(), Box<dyn Error>> {
-    let obs = sample_observation_receipt();
+    let obs = sample_observation_receipt()?;
     let fail = sample_failure_receipt()?;
 
     // Build mock provider lookup tables representing issued nonces
@@ -231,7 +267,12 @@ fn test_receipts_verified_by_lookup_never_recomputable() -> Result<(), Box<dyn E
 
     // Fabricated receipt with same message digest but fabricated nonce fails
     let fake_nonce = ContentDigest::sha256(b"fabricated-attacker-nonce");
-    let forged_obs = ProviderObservationReceipt::new(fake_nonce, obs.message_digest);
+    let forged_obs = ProviderObservationReceipt::new(
+        fake_nonce,
+        obs.message_digest,
+        obs.prepared_effect_digest,
+        obs.idempotency_key.clone(),
+    );
     assert!(
         forged_obs.verify_lookup(&issued_obs).is_err(),
         "forged nonce must fail lookup verification"
@@ -247,11 +288,15 @@ fn test_receipts_verified_by_lookup_never_recomputable() -> Result<(), Box<dyn E
 #[test]
 fn test_reconciliation_outcome_invariants() -> Result<(), Box<dyn Error>> {
     let op_id = OperationId::parse("op:test:01")?;
+    let idem_key = IdempotencyKey::parse("idem:test:01")?;
+    let prep_digest = ContentDigest::sha256(b"prep");
     let evidence = ContentDigest::sha256(b"proof-evidence");
 
     // Verified REQUIRES evidence
     let verified_no_evidence = EffectReconciliationRecord::new(
         op_id.clone(),
+        idem_key.clone(),
+        prep_digest,
         ReconciliationOutcome::Verified,
         None,
         TimestampNs(100),
@@ -271,6 +316,8 @@ fn test_reconciliation_outcome_invariants() -> Result<(), Box<dyn Error>> {
     // Verified with evidence succeeds
     let verified_ok = EffectReconciliationRecord::new(
         op_id.clone(),
+        idem_key.clone(),
+        prep_digest,
         ReconciliationOutcome::Verified,
         Some(evidence),
         TimestampNs(100),
@@ -281,6 +328,8 @@ fn test_reconciliation_outcome_invariants() -> Result<(), Box<dyn Error>> {
     // Failed REQUIRES detail/reason
     let failed_no_detail = EffectReconciliationRecord::new(
         op_id.clone(),
+        idem_key.clone(),
+        prep_digest,
         ReconciliationOutcome::Failed,
         None,
         TimestampNs(100),
@@ -300,6 +349,8 @@ fn test_reconciliation_outcome_invariants() -> Result<(), Box<dyn Error>> {
     // Failed with detail succeeds
     let failed_ok = EffectReconciliationRecord::new(
         op_id.clone(),
+        idem_key.clone(),
+        prep_digest,
         ReconciliationOutcome::Failed,
         None,
         TimestampNs(100),
@@ -310,6 +361,8 @@ fn test_reconciliation_outcome_invariants() -> Result<(), Box<dyn Error>> {
     // Indeterminate cannot carry verified evidence
     let indeterminate_with_evidence = EffectReconciliationRecord::new(
         op_id.clone(),
+        idem_key.clone(),
+        prep_digest,
         ReconciliationOutcome::Indeterminate,
         Some(evidence),
         TimestampNs(100),
@@ -326,9 +379,32 @@ fn test_reconciliation_outcome_invariants() -> Result<(), Box<dyn Error>> {
         "Indeterminate outcome carrying evidence must fail"
     );
 
-    // Delivered succeeds with or without observation evidence
+    // Delivered REQUIRES evidence witness (Finding 1: transport acceptance is not terminal success)
+    let delivered_no_evidence = EffectReconciliationRecord::new(
+        op_id.clone(),
+        idem_key.clone(),
+        prep_digest,
+        ReconciliationOutcome::Delivered,
+        None,
+        TimestampNs(100),
+        None,
+    );
+    assert!(
+        matches!(
+            delivered_no_evidence,
+            Err(EffectSchemaError::InvalidOutcome {
+                outcome: "delivered",
+                ..
+            })
+        ),
+        "Delivered without evidence witness must fail"
+    );
+
+    // Delivered with evidence succeeds
     let delivered_ok = EffectReconciliationRecord::new(
         op_id,
+        idem_key,
+        prep_digest,
         ReconciliationOutcome::Delivered,
         Some(evidence),
         TimestampNs(100),
@@ -462,9 +538,11 @@ fn test_terminal_predicate_length_bounds() -> Result<(), Box<dyn Error>> {
 fn test_failure_error_code_length_bounds() -> Result<(), Box<dyn Error>> {
     let nonce = ContentDigest::sha256(b"n");
     let msg = ContentDigest::sha256(b"m");
+    let prep = ContentDigest::sha256(b"p");
+    let idem = IdempotencyKey::parse("idem:test:bounds")?;
 
     // Empty fails
-    let err_empty = ProviderFailureReceipt::new(nonce, msg, "");
+    let err_empty = ProviderFailureReceipt::new(nonce, msg, prep, idem.clone(), "");
     assert!(matches!(
         err_empty,
         Err(EffectSchemaError::MissingField { field: "errorCode" })
@@ -472,12 +550,12 @@ fn test_failure_error_code_length_bounds() -> Result<(), Box<dyn Error>> {
 
     // Exactly at bound (MAX_ERROR_CODE_LEN)
     let at_bound = "e".repeat(MAX_ERROR_CODE_LEN);
-    let ok = ProviderFailureReceipt::new(nonce, msg, at_bound);
+    let ok = ProviderFailureReceipt::new(nonce, msg, prep, idem.clone(), at_bound);
     assert!(ok.is_ok(), "errorCode at bound must succeed");
 
     // Bound + 1 strictly fails
     let over_bound = "e".repeat(MAX_ERROR_CODE_LEN + 1);
-    let err_over = ProviderFailureReceipt::new(nonce, msg, over_bound);
+    let err_over = ProviderFailureReceipt::new(nonce, msg, prep, idem, over_bound);
     assert!(
         matches!(
             err_over,
@@ -496,12 +574,16 @@ fn test_failure_error_code_length_bounds() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_reconciliation_detail_length_bounds() -> Result<(), Box<dyn Error>> {
     let op_id = OperationId::parse("op:test:reconcile")?;
+    let idem_key = IdempotencyKey::parse("idem:test:bounds")?;
+    let prep = ContentDigest::sha256(b"p");
     let evidence = ContentDigest::sha256(b"e");
 
     // Exactly at bound (MAX_DETAIL_LEN)
     let at_bound = "d".repeat(MAX_DETAIL_LEN);
     let ok = EffectReconciliationRecord::new(
         op_id.clone(),
+        idem_key.clone(),
+        prep,
         ReconciliationOutcome::Verified,
         Some(evidence),
         TimestampNs(1),
@@ -513,6 +595,8 @@ fn test_reconciliation_detail_length_bounds() -> Result<(), Box<dyn Error>> {
     let over_bound = "d".repeat(MAX_DETAIL_LEN + 1);
     let err_over = EffectReconciliationRecord::new(
         op_id,
+        idem_key,
+        prep,
         ReconciliationOutcome::Verified,
         Some(evidence),
         TimestampNs(1),
@@ -592,5 +676,326 @@ fn test_typed_decode_errors_binary_truncated_rejected() -> Result<(), Box<dyn Er
     let truncated = &bytes[..bytes.len() - 5];
     let res = PreparedEffect::from_canonical_bytes(truncated);
     assert!(res.is_err(), "Truncated binary envelope must fail decoding");
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Review 562 Failing Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn test_review_562_finding_1_indeterminate_requires_detail_and_no_naked_delivered()
+-> Result<(), Box<dyn Error>> {
+    let op_id = OperationId::parse("op:test:01")?;
+    let idem_key = IdempotencyKey::parse("idem:test:01")?;
+    let prep_digest = ContentDigest::sha256(b"prep");
+    // Indeterminate without detail must fail closed
+    let res_indet = EffectReconciliationRecord::new(
+        op_id.clone(),
+        idem_key.clone(),
+        prep_digest,
+        ReconciliationOutcome::Indeterminate,
+        None,
+        TimestampNs(100),
+        None,
+    );
+    assert!(
+        res_indet.is_err(),
+        "Indeterminate outcome must require detail"
+    );
+
+    // Delivered without evidence must not be a terminal verified outcome
+    let res_deliv = EffectReconciliationRecord::new(
+        op_id,
+        idem_key,
+        prep_digest,
+        ReconciliationOutcome::Delivered,
+        None,
+        TimestampNs(100),
+        None,
+    );
+    assert!(
+        res_deliv.is_err(),
+        "Delivered without evidence witness must not construct reconciliation record"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_review_562_finding_1_indeterminate_to_failed_transition_permitted()
+-> Result<(), Box<dyn Error>> {
+    assert!(
+        EffectState::Indeterminate.can_transition_to(EffectState::Failed),
+        "Indeterminate state must legally transition to Failed upon reconciliation"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_review_562_finding_2_receipts_bind_prepared_effect_and_idempotency_key()
+-> Result<(), Box<dyn Error>> {
+    let obs = sample_observation_receipt()?;
+    let obs_json = obs.to_canonical_json();
+    assert!(
+        obs_json.contains("\"preparedEffectDigest\""),
+        "ProviderObservationReceipt must bind preparedEffectDigest"
+    );
+    assert!(
+        obs_json.contains("\"idempotencyKey\""),
+        "ProviderObservationReceipt must bind idempotencyKey"
+    );
+
+    let fail_receipt = sample_failure_receipt()?;
+    let fail_json = fail_receipt.to_canonical_json();
+    assert!(
+        fail_json.contains("\"preparedEffectDigest\""),
+        "ProviderFailureReceipt must bind preparedEffectDigest"
+    );
+    assert!(
+        fail_json.contains("\"idempotencyKey\""),
+        "ProviderFailureReceipt must bind idempotencyKey"
+    );
+
+    let rec_record = sample_reconciliation_verified()?;
+    let rec_json = rec_record.to_canonical_json();
+    assert!(
+        rec_json.contains("\"preparedEffectDigest\""),
+        "EffectReconciliationRecord must bind preparedEffectDigest"
+    );
+    assert!(
+        rec_json.contains("\"idempotencyKey\""),
+        "EffectReconciliationRecord must bind idempotencyKey"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_review_562_finding_3_operation_receipt_schema_authority_fields_present()
+-> Result<(), Box<dyn Error>> {
+    let receipt = sample_operation_receipt()?;
+    let json = receipt.to_canonical_json();
+    assert!(
+        json.contains("\"authority\""),
+        "OperationReceipt must include required authority object"
+    );
+    assert!(
+        json.contains("\"principal\""),
+        "OperationReceipt authority must include principal"
+    );
+    assert!(
+        json.contains("\"capability\""),
+        "OperationReceipt authority must include capability"
+    );
+
+    // Also test roundtrip from_json
+    let parsed = OperationReceipt::from_json(&json)?;
+    assert_eq!(receipt, parsed, "OperationReceipt must roundtrip through canonical JSON");
+    Ok(())
+}
+
+#[test]
+fn test_review_562_finding_3_prepare_effect_requires_explicit_authority()
+-> Result<(), Box<dyn Error>> {
+    let mut journal = EffectJournal::new();
+    let prepared = sample_prepared()?;
+    let authority = EffectAuthority::new("principal:operator:sec-ops", "cap:alert:dispatch", Some(101))?;
+    let receipt = journal.prepare_effect(prepared.clone(), authority.clone())?;
+    assert_eq!(receipt.authority, authority);
+    assert_eq!(receipt.intent, prepared.intent);
+    assert_eq!(receipt.state, EffectState::Prepared);
+    Ok(())
+}
+
+#[test]
+fn test_review_562_finding_4_decode_canonical_enforces_bounds_and_invariants()
+-> Result<(), Box<dyn Error>> {
+    // Malformed binary payload for EffectReconciliationRecord: Verified with evidence_digest = None
+    let mut enc = CanonicalEncoder::new();
+    enc.text("fss.effect_reconciliation.v1");
+    OperationId::parse("op:test:01")?.encode_canonical(&mut enc);
+    IdempotencyKey::parse("idem:test:01")?.encode_canonical(&mut enc);
+    ContentDigest::sha256(b"prep").encode_canonical(&mut enc);
+    ReconciliationOutcome::Verified.encode_canonical(&mut enc);
+    enc.bool(false); // evidence_digest = None (invalid for Verified)
+    TimestampNs(100).encode_canonical(&mut enc);
+    enc.bool(false); // detail = None
+    let bytes = enc.finish();
+
+    let res = EffectReconciliationRecord::from_canonical_bytes(&bytes);
+    assert!(
+        res.is_err(),
+        "decode_canonical must reject Verified outcome without evidence digest"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_review_562_finding_5_reconciliation_from_json_accepts_omitted_optional_properties()
+-> Result<(), Box<dyn Error>> {
+    let json_minimal = r#"{
+        "schema": "fss.effect_reconciliation.v1",
+        "operationId": "op:test:01",
+        "idempotencyKey": "idem:test:01",
+        "preparedEffectDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "outcome": "failed",
+        "reconciledAt": 1000,
+        "detail": "failure reason"
+    }"#;
+    let res = EffectReconciliationRecord::from_json(json_minimal);
+    assert!(
+        res.is_ok(),
+        "from_json must accept JSON omitting optional property evidenceDigest"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_review_562_finding_5_reconciliation_rejects_empty_string_detail()
+-> Result<(), Box<dyn Error>> {
+    let op_id = OperationId::parse("op:test:01")?;
+    let idem_key = IdempotencyKey::parse("idem:test:01")?;
+    let prep_digest = ContentDigest::sha256(b"prep");
+    let evidence = ContentDigest::sha256(b"evidence");
+    let res = EffectReconciliationRecord::new(
+        op_id,
+        idem_key,
+        prep_digest,
+        ReconciliationOutcome::Verified,
+        Some(evidence),
+        TimestampNs(100),
+        Some("".to_string()),
+    );
+    assert!(
+        res.is_err(),
+        "Empty string detail must violate minLength: 1"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_review_562_finding_6_terminal_proof_and_failure_proof_domain_separation()
+-> Result<(), Box<dyn Error>> {
+    let intent = sample_intent()?;
+    let predicate_or_err = "failed_timeout";
+    let term_proof = intent.terminal_proof(predicate_or_err);
+    let fail_proof = intent.failure_proof(predicate_or_err);
+    assert_ne!(
+        term_proof, fail_proof,
+        "Terminal success proof and failure proof must have domain separation"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_review_562_finding_7_serialized_receipts_validate_against_disk_schemas()
+-> Result<(), Box<dyn Error>> {
+    let rec_schema = include_str!("../../../schemas/effect_reconciliation.v1.json");
+    let obs_schema = include_str!("../../../schemas/provider_observation_receipt.v1.json");
+    let fail_schema = include_str!("../../../schemas/provider_failure_receipt.v1.json");
+    let op_schema = include_str!("../../../schemas/operation_receipt.v1.json");
+
+    // All schemas must mandate idempotencyKey and preparedEffectDigest
+    assert!(rec_schema.contains("\"idempotencyKey\""), "rec_schema must define idempotencyKey");
+    assert!(rec_schema.contains("\"preparedEffectDigest\""), "rec_schema must define preparedEffectDigest");
+    assert!(obs_schema.contains("\"idempotencyKey\""), "obs_schema must define idempotencyKey");
+    assert!(obs_schema.contains("\"preparedEffectDigest\""), "obs_schema must define preparedEffectDigest");
+    assert!(fail_schema.contains("\"idempotencyKey\""), "fail_schema must define idempotencyKey");
+    assert!(fail_schema.contains("\"preparedEffectDigest\""), "fail_schema must define preparedEffectDigest");
+
+    // Operation receipt must require authority
+    assert!(op_schema.contains("\"authority\""), "op_schema must define authority");
+    assert!(op_schema.contains("\"principal\""), "op_schema must define principal");
+    assert!(op_schema.contains("\"capability\""), "op_schema must define capability");
+
+    // Serialized instances must contain the bound keys
+    let rec_json = sample_reconciliation_verified()?.to_canonical_json();
+    assert!(rec_json.contains("\"idempotencyKey\""));
+    assert!(rec_json.contains("\"preparedEffectDigest\""));
+
+    let obs_json = sample_observation_receipt()?.to_canonical_json();
+    assert!(obs_json.contains("\"idempotencyKey\""));
+    assert!(obs_json.contains("\"preparedEffectDigest\""));
+
+    let fail_json = sample_failure_receipt()?.to_canonical_json();
+    assert!(fail_json.contains("\"idempotencyKey\""));
+    assert!(fail_json.contains("\"preparedEffectDigest\""));
+
+    let op_json = sample_operation_receipt()?.to_canonical_json();
+    assert!(op_json.contains("\"authority\""));
+
+    // Deserialization of minimal instance with omitted optional properties works
+    let minimal_rec = r#"{
+        "schema": "fss.effect_reconciliation.v1",
+        "operationId": "op:test:01",
+        "idempotencyKey": "idem:test:01",
+        "preparedEffectDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "outcome": "failed",
+        "reconciledAt": 1000,
+        "detail": "failure reason"
+    }"#;
+    let decoded_rec = EffectReconciliationRecord::from_json(minimal_rec)?;
+    assert_eq!(decoded_rec.evidence_digest, None);
+    assert_eq!(decoded_rec.detail.as_deref(), Some("failure reason"));
+
+    // Unknown fields must fail closed (closed schemas)
+    let unknown_field = r#"{
+        "schema": "fss.effect_reconciliation.v1",
+        "operationId": "op:test:01",
+        "idempotencyKey": "idem:test:01",
+        "preparedEffectDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "outcome": "failed",
+        "reconciledAt": 1000,
+        "detail": "failure reason",
+        "attackerField": "injected"
+    }"#;
+    assert!(
+        EffectReconciliationRecord::from_json(unknown_field).is_err(),
+        "from_json must reject unknown injected fields"
+    );
+
+    Ok(())
+}
+
+struct MockIndeterminateLookup;
+
+impl fss_core::effect::ProviderReceiptLookup for MockIndeterminateLookup {
+    fn contains_observation(
+        &self,
+        _nonce: &ContentDigest,
+        _message_digest: &ContentDigest,
+    ) -> ReceiptLookupStatus {
+        ReceiptLookupStatus::Indeterminate
+    }
+}
+
+impl fss_core::effect::ProviderFailureLookup for MockIndeterminateLookup {
+    fn contains_failure(
+        &self,
+        _nonce: &ContentDigest,
+        _message_digest: &ContentDigest,
+        _error_code: &str,
+    ) -> ReceiptLookupStatus {
+        ReceiptLookupStatus::Indeterminate
+    }
+}
+
+#[test]
+fn test_review_562_finding_1_three_valued_lookup_status() -> Result<(), Box<dyn Error>> {
+    let obs = sample_observation_receipt()?;
+    let fail = sample_failure_receipt()?;
+    let mock = MockIndeterminateLookup;
+
+    let obs_err = obs.verify_lookup(&mock);
+    assert!(
+        matches!(obs_err, Err(EffectSchemaError::IndeterminateLookup { .. })),
+        "Indeterminate lookup must yield IndeterminateLookup error, not UnverifiedReceipt"
+    );
+
+    let fail_err = fail.verify_lookup(&mock);
+    assert!(
+        matches!(fail_err, Err(EffectSchemaError::IndeterminateLookup { .. })),
+        "Indeterminate failure lookup must yield IndeterminateLookup error, not UnverifiedReceipt"
+    );
+
     Ok(())
 }

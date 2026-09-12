@@ -6,7 +6,9 @@
   "additionalProperties": false,
   "required": [
     "errorCode",
+    "idempotencyKey",
     "messageDigest",
+    "preparedEffectDigest",
     "providerNonce",
     "schema"
   ],
@@ -14,10 +16,19 @@
     "schema": {
       "const": "fss.provider_failure_receipt.v1"
     },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
     "providerNonce": {
       "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
     },
     "messageDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
+    },
+    "preparedEffectDigest": {
       "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
     },
     "errorCode": {

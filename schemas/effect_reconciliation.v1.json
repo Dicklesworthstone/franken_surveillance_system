@@ -5,8 +5,10 @@
   "type": "object",
   "additionalProperties": false,
   "required": [
+    "idempotencyKey",
     "operationId",
     "outcome",
+    "preparedEffectDigest",
     "reconciledAt",
     "schema"
   ],
@@ -19,6 +21,15 @@
       "minLength": 1,
       "maxLength": 128,
       "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9_.:-]+$"
+    },
+    "preparedEffectDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
     },
     "outcome": {
       "enum": [

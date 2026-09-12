@@ -64,6 +64,11 @@ pub enum EffectSchemaError {
         /// Detail explaining the verification failure.
         detail: String,
     },
+    /// Receipt lookup verification was indeterminate (e.g. provider partition or timeout).
+    IndeterminateLookup {
+        /// Detail explaining the indeterminate lookup state.
+        detail: String,
+    },
     /// JSON parsing or syntax error.
     JsonError {
         /// Detail of the parsing error.
@@ -97,6 +102,9 @@ impl core::fmt::Display for EffectSchemaError {
             }
             Self::UnverifiedReceipt { detail } => {
                 write!(f, "receipt unverified by provider lookup: {detail}")
+            }
+            Self::IndeterminateLookup { detail } => {
+                write!(f, "receipt lookup indeterminate: {detail}")
             }
             Self::JsonError { detail } => {
                 write!(f, "JSON decoding error: {detail}")
@@ -174,6 +182,7 @@ impl EffectState {
                 | (Self::Observed, Self::Verified)
                 | (Self::Observed, Self::Indeterminate)
                 | (Self::Indeterminate, Self::Observed)
+                | (Self::Indeterminate, Self::Failed)
         )
     }
 }
@@ -231,6 +240,9 @@ impl CanonicalDecode for EffectIntent {
         let operation_id = OperationId::decode_canonical(decoder)?;
         let idempotency_key = IdempotencyKey::decode_canonical(decoder)?;
         let effect_class = decoder.text()?.to_string();
+        if effect_class.is_empty() || effect_class.len() > MAX_EFFECT_CLASS_LEN {
+            return Err(ContractError::InvalidIdentifier);
+        }
         let request_digest = decoder.digest()?;
         let precondition_digest = decoder.digest()?;
         Ok(Self {
@@ -410,7 +422,7 @@ impl EffectIntent {
     #[must_use]
     pub fn terminal_proof(&self, terminal_predicate: &str) -> ContentDigest {
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.effect_proof.v1");
+        encoder.text("fss.effect_proof.terminal.v1");
         self.operation_id.encode_canonical(&mut encoder);
         self.idempotency_key.encode_canonical(&mut encoder);
         encoder.text(&self.effect_class);
@@ -424,7 +436,7 @@ impl EffectIntent {
     #[must_use]
     pub fn failure_proof(&self, error_code: &str) -> ContentDigest {
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.effect_proof.v1");
+        encoder.text("fss.effect_proof.failure.v1");
         self.operation_id.encode_canonical(&mut encoder);
         self.idempotency_key.encode_canonical(&mut encoder);
         encoder.text(&self.effect_class);
@@ -634,6 +646,9 @@ impl CanonicalDecode for PreparedEffect {
         let intent = EffectIntent::decode_canonical(decoder)?;
         let obligation_id = ObligationId::decode_canonical(decoder)?;
         let terminal_predicate = decoder.text()?.to_string();
+        if terminal_predicate.is_empty() || terminal_predicate.len() > MAX_TERMINAL_PREDICATE_LEN {
+            return Err(ContractError::InvalidIdentifier);
+        }
         let prepared_at = TimestampNs::decode_canonical(decoder)?;
         Ok(Self {
             intent,
@@ -644,6 +659,17 @@ impl CanonicalDecode for PreparedEffect {
     }
 }
 
+/// Three-valued status for provider receipt lookup to prevent flattening indeterminate states.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReceiptLookupStatus {
+    /// Receipt was authentically issued by the provider.
+    Found,
+    /// Provider confirmed no such receipt exists.
+    NotFound,
+    /// Lookup outcome is unresolved (timeout, network partition, or provider unavailable).
+    Indeterminate,
+}
+
 /// Provider-generated observation receipt for a delivered message.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderObservationReceipt {
@@ -651,6 +677,10 @@ pub struct ProviderObservationReceipt {
     pub provider_nonce: ContentDigest,
     /// Message digest of the dispatched intent.
     pub message_digest: ContentDigest,
+    /// Prepared effect digest binding this observation to a specific prepared effect.
+    pub prepared_effect_digest: ContentDigest,
+    /// Idempotency key binding this observation to a unique intent.
+    pub idempotency_key: IdempotencyKey,
 }
 
 impl ProviderObservationReceipt {
@@ -659,20 +689,26 @@ impl ProviderObservationReceipt {
 
     /// Creates an observation receipt.
     #[must_use]
-    pub fn new(provider_nonce: ContentDigest, message_digest: ContentDigest) -> Self {
+    pub fn new(
+        provider_nonce: ContentDigest,
+        message_digest: ContentDigest,
+        prepared_effect_digest: ContentDigest,
+        idempotency_key: IdempotencyKey,
+    ) -> Self {
         Self {
             provider_nonce,
             message_digest,
+            prepared_effect_digest,
+            idempotency_key,
         }
     }
 
-    /// Canonical encoded bytes of the observation receipt proof.
+    /// Canonical encoded bytes of the observation receipt.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.effect_proof.v1");
-        encoder.digest(self.provider_nonce);
-        encoder.digest(self.message_digest);
+        encoder.text(Self::SCHEMA);
+        self.encode_canonical(&mut encoder);
         encoder.finish()
     }
 
@@ -687,8 +723,12 @@ impl ProviderObservationReceipt {
     pub fn to_canonical_json(&self) -> String {
         let mut out = String::with_capacity(256);
         out.push('{');
-        out.push_str("\"messageDigest\":");
+        out.push_str("\"idempotencyKey\":");
+        json_write_str(&mut out, self.idempotency_key.as_str());
+        out.push_str(",\"messageDigest\":");
         json_write_str(&mut out, &self.message_digest.to_text());
+        out.push_str(",\"preparedEffectDigest\":");
+        json_write_str(&mut out, &self.prepared_effect_digest.to_text());
         out.push_str(",\"providerNonce\":");
         json_write_str(&mut out, &self.provider_nonce.to_text());
         out.push_str(",\"schema\":");
@@ -705,7 +745,13 @@ impl ProviderObservationReceipt {
         let obj = JsonObject::closed(
             &root,
             "providerObservationReceipt",
-            &["messageDigest", "providerNonce", "schema"],
+            &[
+                "idempotencyKey",
+                "messageDigest",
+                "preparedEffectDigest",
+                "providerNonce",
+                "schema",
+            ],
         )?;
 
         let schema_val = obj.str("schema")?;
@@ -716,24 +762,29 @@ impl ProviderObservationReceipt {
             });
         }
 
-        let nonce_raw = obj.str("providerNonce")?;
-        let provider_nonce = ContentDigest::parse(nonce_raw)?;
+        let idem_raw = obj.str("idempotencyKey")?;
+        let idempotency_key = IdempotencyKey::parse(idem_raw)?;
 
         let msg_raw = obj.str("messageDigest")?;
         let message_digest = ContentDigest::parse(msg_raw)?;
 
+        let prep_raw = obj.str("preparedEffectDigest")?;
+        let prepared_effect_digest = ContentDigest::parse(prep_raw)?;
+
+        let nonce_raw = obj.str("providerNonce")?;
+        let provider_nonce = ContentDigest::parse(nonce_raw)?;
+
         Ok(Self {
             provider_nonce,
             message_digest,
+            prepared_effect_digest,
+            idempotency_key,
         })
     }
 
     /// Encodes to canonical versioned binary bytes.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, EffectSchemaError> {
-        let mut encoder = CanonicalEncoder::new();
-        encoder.text(Self::SCHEMA);
-        self.encode_canonical(&mut encoder);
-        Ok(encoder.finish())
+        Ok(self.canonical_bytes())
     }
 
     /// Decodes from canonical versioned binary bytes.
@@ -758,15 +809,20 @@ impl ProviderObservationReceipt {
         &self,
         lookup: &impl ProviderReceiptLookup,
     ) -> Result<(), EffectSchemaError> {
-        if lookup.contains_observation(&self.provider_nonce, &self.message_digest) {
-            Ok(())
-        } else {
-            Err(EffectSchemaError::UnverifiedReceipt {
+        match lookup.contains_observation(&self.provider_nonce, &self.message_digest) {
+            ReceiptLookupStatus::Found => Ok(()),
+            ReceiptLookupStatus::NotFound => Err(EffectSchemaError::UnverifiedReceipt {
                 detail: format!(
                     "provider has no record of observation receipt with nonce {} for message {}",
                     self.provider_nonce, self.message_digest,
                 ),
-            })
+            }),
+            ReceiptLookupStatus::Indeterminate => Err(EffectSchemaError::IndeterminateLookup {
+                detail: format!(
+                    "provider lookup was indeterminate for observation receipt with nonce {} for message {}",
+                    self.provider_nonce, self.message_digest,
+                ),
+            }),
         }
     }
 }
@@ -775,6 +831,8 @@ impl CanonicalEncode for ProviderObservationReceipt {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.digest(self.provider_nonce);
         encoder.digest(self.message_digest);
+        encoder.digest(self.prepared_effect_digest);
+        self.idempotency_key.encode_canonical(encoder);
     }
 }
 
@@ -782,9 +840,13 @@ impl CanonicalDecode for ProviderObservationReceipt {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let provider_nonce = decoder.digest()?;
         let message_digest = decoder.digest()?;
+        let prepared_effect_digest = decoder.digest()?;
+        let idempotency_key = IdempotencyKey::decode_canonical(decoder)?;
         Ok(Self {
             provider_nonce,
             message_digest,
+            prepared_effect_digest,
+            idempotency_key,
         })
     }
 }
@@ -796,6 +858,10 @@ pub struct ProviderFailureReceipt {
     pub provider_nonce: ContentDigest,
     /// Canonical digest of the dispatched intent payload.
     pub message_digest: ContentDigest,
+    /// Prepared effect digest binding this failure to a specific prepared effect.
+    pub prepared_effect_digest: ContentDigest,
+    /// Idempotency key binding this failure to a unique intent.
+    pub idempotency_key: IdempotencyKey,
     /// Error code or failure reason issued by the provider.
     pub error_code: String,
 }
@@ -808,6 +874,8 @@ impl ProviderFailureReceipt {
     pub fn new(
         provider_nonce: ContentDigest,
         message_digest: ContentDigest,
+        prepared_effect_digest: ContentDigest,
+        idempotency_key: IdempotencyKey,
         error_code: impl Into<String>,
     ) -> Result<Self, EffectSchemaError> {
         let error_code = error_code.into();
@@ -824,18 +892,18 @@ impl ProviderFailureReceipt {
         Ok(Self {
             provider_nonce,
             message_digest,
+            prepared_effect_digest,
+            idempotency_key,
             error_code,
         })
     }
 
-    /// Canonical encoded bytes of the failure receipt proof.
+    /// Canonical encoded bytes of the failure receipt.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.effect_proof.v1");
-        encoder.digest(self.provider_nonce);
-        encoder.digest(self.message_digest);
-        encoder.text(&self.error_code);
+        encoder.text(Self::SCHEMA);
+        self.encode_canonical(&mut encoder);
         encoder.finish()
     }
 
@@ -852,8 +920,12 @@ impl ProviderFailureReceipt {
         out.push('{');
         out.push_str("\"errorCode\":");
         json_write_str(&mut out, &self.error_code);
+        out.push_str(",\"idempotencyKey\":");
+        json_write_str(&mut out, self.idempotency_key.as_str());
         out.push_str(",\"messageDigest\":");
         json_write_str(&mut out, &self.message_digest.to_text());
+        out.push_str(",\"preparedEffectDigest\":");
+        json_write_str(&mut out, &self.prepared_effect_digest.to_text());
         out.push_str(",\"providerNonce\":");
         json_write_str(&mut out, &self.provider_nonce.to_text());
         out.push_str(",\"schema\":");
@@ -870,7 +942,14 @@ impl ProviderFailureReceipt {
         let obj = JsonObject::closed(
             &root,
             "providerFailureReceipt",
-            &["errorCode", "messageDigest", "providerNonce", "schema"],
+            &[
+                "errorCode",
+                "idempotencyKey",
+                "messageDigest",
+                "preparedEffectDigest",
+                "providerNonce",
+                "schema",
+            ],
         )?;
 
         let schema_val = obj.str("schema")?;
@@ -881,37 +960,28 @@ impl ProviderFailureReceipt {
             });
         }
 
+        let error_code = obj.str("errorCode")?.to_string();
+        let idem_raw = obj.str("idempotencyKey")?;
+        let idempotency_key = IdempotencyKey::parse(idem_raw)?;
+        let msg_raw = obj.str("messageDigest")?;
+        let message_digest = ContentDigest::parse(msg_raw)?;
+        let prep_raw = obj.str("preparedEffectDigest")?;
+        let prepared_effect_digest = ContentDigest::parse(prep_raw)?;
         let nonce_raw = obj.str("providerNonce")?;
         let provider_nonce = ContentDigest::parse(nonce_raw)?;
 
-        let msg_raw = obj.str("messageDigest")?;
-        let message_digest = ContentDigest::parse(msg_raw)?;
-
-        let error_code = obj.str("errorCode")?.to_string();
-        if error_code.is_empty() {
-            return Err(EffectSchemaError::MissingField { field: "errorCode" });
-        }
-        if error_code.len() > MAX_ERROR_CODE_LEN {
-            return Err(EffectSchemaError::OverLimitLength {
-                field: "errorCode",
-                limit: MAX_ERROR_CODE_LEN,
-                actual: error_code.len(),
-            });
-        }
-
-        Ok(Self {
+        Self::new(
             provider_nonce,
             message_digest,
+            prepared_effect_digest,
+            idempotency_key,
             error_code,
-        })
+        )
     }
 
     /// Encodes to canonical versioned binary bytes.
     pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, EffectSchemaError> {
-        let mut encoder = CanonicalEncoder::new();
-        encoder.text(Self::SCHEMA);
-        self.encode_canonical(&mut encoder);
-        Ok(encoder.finish())
+        Ok(self.canonical_bytes())
     }
 
     /// Decodes from canonical versioned binary bytes.
@@ -928,16 +998,6 @@ impl ProviderFailureReceipt {
         decoder
             .ensure_finished()
             .map_err(EffectSchemaError::Contract)?;
-        if receipt.error_code.is_empty() {
-            return Err(EffectSchemaError::MissingField { field: "errorCode" });
-        }
-        if receipt.error_code.len() > MAX_ERROR_CODE_LEN {
-            return Err(EffectSchemaError::OverLimitLength {
-                field: "errorCode",
-                limit: MAX_ERROR_CODE_LEN,
-                actual: receipt.error_code.len(),
-            });
-        }
         Ok(receipt)
     }
 
@@ -946,15 +1006,20 @@ impl ProviderFailureReceipt {
         &self,
         lookup: &impl ProviderFailureLookup,
     ) -> Result<(), EffectSchemaError> {
-        if lookup.contains_failure(&self.provider_nonce, &self.message_digest, &self.error_code) {
-            Ok(())
-        } else {
-            Err(EffectSchemaError::UnverifiedReceipt {
+        match lookup.contains_failure(&self.provider_nonce, &self.message_digest, &self.error_code) {
+            ReceiptLookupStatus::Found => Ok(()),
+            ReceiptLookupStatus::NotFound => Err(EffectSchemaError::UnverifiedReceipt {
                 detail: format!(
                     "provider has no record of failure receipt with nonce {} for message {}",
                     self.provider_nonce, self.message_digest,
                 ),
-            })
+            }),
+            ReceiptLookupStatus::Indeterminate => Err(EffectSchemaError::IndeterminateLookup {
+                detail: format!(
+                    "provider lookup was indeterminate for failure receipt with nonce {} for message {}",
+                    self.provider_nonce, self.message_digest,
+                ),
+            }),
         }
     }
 }
@@ -963,6 +1028,8 @@ impl CanonicalEncode for ProviderFailureReceipt {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.digest(self.provider_nonce);
         encoder.digest(self.message_digest);
+        encoder.digest(self.prepared_effect_digest);
+        self.idempotency_key.encode_canonical(encoder);
         encoder.text(&self.error_code);
     }
 }
@@ -971,10 +1038,17 @@ impl CanonicalDecode for ProviderFailureReceipt {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let provider_nonce = decoder.digest()?;
         let message_digest = decoder.digest()?;
+        let prepared_effect_digest = decoder.digest()?;
+        let idempotency_key = IdempotencyKey::decode_canonical(decoder)?;
         let error_code = decoder.text()?.to_string();
+        if error_code.is_empty() || error_code.len() > MAX_ERROR_CODE_LEN {
+            return Err(ContractError::InvalidIdentifier);
+        }
         Ok(Self {
             provider_nonce,
             message_digest,
+            prepared_effect_digest,
+            idempotency_key,
             error_code,
         })
     }
@@ -983,25 +1057,29 @@ impl CanonicalDecode for ProviderFailureReceipt {
 /// Trait for verifying provider-issued observation receipts by lookup.
 /// Receipts cannot be verified without consulting the issuing provider oracle.
 pub trait ProviderReceiptLookup {
-    /// Returns true if the given observation receipt was authentically issued by the provider.
-    fn contains_observation(&self, nonce: &ContentDigest, message_digest: &ContentDigest) -> bool;
+    /// Returns 3-valued status for whether the given observation receipt was authentically issued by the provider.
+    fn contains_observation(&self, nonce: &ContentDigest, message_digest: &ContentDigest) -> ReceiptLookupStatus;
 }
 
 impl ProviderReceiptLookup for BTreeSet<(ContentDigest, ContentDigest)> {
-    fn contains_observation(&self, nonce: &ContentDigest, message_digest: &ContentDigest) -> bool {
-        self.contains(&(*nonce, *message_digest))
+    fn contains_observation(&self, nonce: &ContentDigest, message_digest: &ContentDigest) -> ReceiptLookupStatus {
+        if self.contains(&(*nonce, *message_digest)) {
+            ReceiptLookupStatus::Found
+        } else {
+            ReceiptLookupStatus::NotFound
+        }
     }
 }
 
 /// Trait for verifying provider-issued failure receipts by lookup.
 pub trait ProviderFailureLookup {
-    /// Returns true if the given failure receipt was authentically issued by the provider.
+    /// Returns 3-valued status for whether the given failure receipt was authentically issued by the provider.
     fn contains_failure(
         &self,
         nonce: &ContentDigest,
         message_digest: &ContentDigest,
         error_code: &str,
-    ) -> bool;
+    ) -> ReceiptLookupStatus;
 }
 
 impl ProviderFailureLookup for BTreeSet<(ContentDigest, ContentDigest, String)> {
@@ -1010,8 +1088,12 @@ impl ProviderFailureLookup for BTreeSet<(ContentDigest, ContentDigest, String)> 
         nonce: &ContentDigest,
         message_digest: &ContentDigest,
         error_code: &str,
-    ) -> bool {
-        self.contains(&(*nonce, *message_digest, error_code.to_string()))
+    ) -> ReceiptLookupStatus {
+        if self.contains(&(*nonce, *message_digest, error_code.to_string())) {
+            ReceiptLookupStatus::Found
+        } else {
+            ReceiptLookupStatus::NotFound
+        }
     }
 }
 
@@ -1078,13 +1160,17 @@ impl CanonicalDecode for ReconciliationOutcome {
 pub struct EffectReconciliationRecord {
     /// Target operation identity.
     pub operation_id: OperationId,
+    /// Idempotency key binding this reconciliation to a unique intent.
+    pub idempotency_key: IdempotencyKey,
+    /// Prepared effect digest binding this reconciliation to the exact prepared operation.
+    pub prepared_effect_digest: ContentDigest,
     /// Reconciled four-valued outcome.
     pub outcome: ReconciliationOutcome,
-    /// Independent verification or observation evidence digest.
+    /// Independent verification or observation evidence digest. Required for Verified and Delivered; None for Indeterminate.
     pub evidence_digest: Option<ContentDigest>,
     /// Reconciliation timestamp.
     pub reconciled_at: TimestampNs,
-    /// Terminal detail or error reason.
+    /// Terminal detail or error reason. Required for Failed and Indeterminate; minLength 1 if present.
     pub detail: Option<String>,
 }
 
@@ -1095,6 +1181,8 @@ impl EffectReconciliationRecord {
     /// Creates and validates a reconciliation record.
     pub fn new(
         operation_id: OperationId,
+        idempotency_key: IdempotencyKey,
+        prepared_effect_digest: ContentDigest,
         outcome: ReconciliationOutcome,
         evidence_digest: Option<ContentDigest>,
         reconciled_at: TimestampNs,
@@ -1104,6 +1192,12 @@ impl EffectReconciliationRecord {
             return Err(EffectSchemaError::InvalidOutcome {
                 outcome: "verified",
                 reason: "evidence_digest is required for verified outcome",
+            });
+        }
+        if outcome == ReconciliationOutcome::Delivered && evidence_digest.is_none() {
+            return Err(EffectSchemaError::InvalidOutcome {
+                outcome: "delivered",
+                reason: "evidence_digest is required for delivered outcome; transport acceptance is not terminal success",
             });
         }
         if outcome == ReconciliationOutcome::Failed {
@@ -1117,23 +1211,42 @@ impl EffectReconciliationRecord {
                 }
             }
         }
-        if outcome == ReconciliationOutcome::Indeterminate && evidence_digest.is_some() {
-            return Err(EffectSchemaError::InvalidOutcome {
-                outcome: "indeterminate",
-                reason: "indeterminate outcome cannot carry verified evidence digest",
-            });
+        if outcome == ReconciliationOutcome::Indeterminate {
+            if evidence_digest.is_some() {
+                return Err(EffectSchemaError::InvalidOutcome {
+                    outcome: "indeterminate",
+                    reason: "indeterminate outcome cannot carry verified evidence digest",
+                });
+            }
+            match &detail {
+                Some(d) if !d.is_empty() => {}
+                _ => {
+                    return Err(EffectSchemaError::InvalidOutcome {
+                        outcome: "indeterminate",
+                        reason: "detail explanation is required for indeterminate outcome",
+                    });
+                }
+            }
         }
-        if let Some(ref d) = detail
-            && d.len() > MAX_DETAIL_LEN
-        {
-            return Err(EffectSchemaError::OverLimitLength {
-                field: "detail",
-                limit: MAX_DETAIL_LEN,
-                actual: d.len(),
-            });
+        if let Some(ref d) = detail {
+            if d.is_empty() {
+                return Err(EffectSchemaError::InvalidOutcome {
+                    outcome: outcome.as_str(),
+                    reason: "detail must not be empty string (minLength 1)",
+                });
+            }
+            if d.len() > MAX_DETAIL_LEN {
+                return Err(EffectSchemaError::OverLimitLength {
+                    field: "detail",
+                    limit: MAX_DETAIL_LEN,
+                    actual: d.len(),
+                });
+            }
         }
         Ok(Self {
             operation_id,
+            idempotency_key,
+            prepared_effect_digest,
             outcome,
             evidence_digest,
             reconciled_at,
@@ -1156,10 +1269,14 @@ impl EffectReconciliationRecord {
             Some(d) => json_write_str(&mut out, &d.to_text()),
             None => out.push_str("null"),
         }
+        out.push_str(",\"idempotencyKey\":");
+        json_write_str(&mut out, self.idempotency_key.as_str());
         out.push_str(",\"operationId\":");
         json_write_str(&mut out, self.operation_id.as_str());
         out.push_str(",\"outcome\":");
         json_write_str(&mut out, self.outcome.as_str());
+        out.push_str(",\"preparedEffectDigest\":");
+        json_write_str(&mut out, &self.prepared_effect_digest.to_text());
         out.push_str(",\"reconciledAt\":");
         out.push_str(&self.reconciled_at.0.to_string());
         out.push_str(",\"schema\":");
@@ -1179,8 +1296,10 @@ impl EffectReconciliationRecord {
             &[
                 "detail",
                 "evidenceDigest",
+                "idempotencyKey",
                 "operationId",
                 "outcome",
+                "preparedEffectDigest",
                 "reconciledAt",
                 "schema",
             ],
@@ -1197,13 +1316,19 @@ impl EffectReconciliationRecord {
         let op_raw = obj.str("operationId")?;
         let operation_id = OperationId::parse(op_raw)?;
 
+        let idem_raw = obj.str("idempotencyKey")?;
+        let idempotency_key = IdempotencyKey::parse(idem_raw)?;
+
+        let prep_raw = obj.str("preparedEffectDigest")?;
+        let prepared_effect_digest = ContentDigest::parse(prep_raw)?;
+
         let outcome_str = obj.str("outcome")?;
         let outcome = ReconciliationOutcome::parse(outcome_str)?;
 
-        let evidence_digest = match obj.get("evidenceDigest")? {
-            JsonValue::Null => None,
-            JsonValue::String(s) => Some(ContentDigest::parse(s)?),
-            _ => {
+        let evidence_digest = match obj.find("evidenceDigest") {
+            None | Some(JsonValue::Null) => None,
+            Some(JsonValue::String(s)) => Some(ContentDigest::parse(s)?),
+            Some(_) => {
                 return Err(EffectSchemaError::JsonError {
                     detail: "evidenceDigest must be string or null".to_string(),
                 });
@@ -1212,10 +1337,10 @@ impl EffectReconciliationRecord {
 
         let reconciled_at = obj.get("reconciledAt")?.as_timestamp()?;
 
-        let detail = match obj.get("detail")? {
-            JsonValue::Null => None,
-            JsonValue::String(s) => Some(s.clone()),
-            _ => {
+        let detail = match obj.find("detail") {
+            None | Some(JsonValue::Null) => None,
+            Some(JsonValue::String(s)) => Some(s.clone()),
+            Some(_) => {
                 return Err(EffectSchemaError::JsonError {
                     detail: "detail must be string or null".to_string(),
                 });
@@ -1224,6 +1349,8 @@ impl EffectReconciliationRecord {
 
         Self::new(
             operation_id,
+            idempotency_key,
+            prepared_effect_digest,
             outcome,
             evidence_digest,
             reconciled_at,
@@ -1253,13 +1380,7 @@ impl EffectReconciliationRecord {
         decoder
             .ensure_finished()
             .map_err(EffectSchemaError::Contract)?;
-        Self::new(
-            record.operation_id,
-            record.outcome,
-            record.evidence_digest,
-            record.reconciled_at,
-            record.detail,
-        )
+        Ok(record)
     }
 
     /// Computes the canonical content digest of the reconciliation record.
@@ -1272,6 +1393,8 @@ impl EffectReconciliationRecord {
 impl CanonicalEncode for EffectReconciliationRecord {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         self.operation_id.encode_canonical(encoder);
+        self.idempotency_key.encode_canonical(encoder);
+        encoder.digest(self.prepared_effect_digest);
         self.outcome.encode_canonical(encoder);
         match self.evidence_digest {
             Some(d) => {
@@ -1294,6 +1417,8 @@ impl CanonicalEncode for EffectReconciliationRecord {
 impl CanonicalDecode for EffectReconciliationRecord {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let operation_id = OperationId::decode_canonical(decoder)?;
+        let idempotency_key = IdempotencyKey::decode_canonical(decoder)?;
+        let prepared_effect_digest = decoder.digest()?;
         let outcome = ReconciliationOutcome::decode_canonical(decoder)?;
         let evidence_digest = if decoder.bool()? {
             Some(decoder.digest()?)
@@ -1306,13 +1431,90 @@ impl CanonicalDecode for EffectReconciliationRecord {
         } else {
             None
         };
-        Ok(Self {
+        Self::new(
             operation_id,
+            idempotency_key,
+            prepared_effect_digest,
             outcome,
             evidence_digest,
             reconciled_at,
             detail,
+        )
+        .map_err(|_| ContractError::InvalidIdentifier)
+    }
+}
+
+/// Explicit authority granting permission to prepare and execute effects.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectAuthority {
+    /// Identity of the authorizing principal.
+    pub principal: String,
+    /// Capability token authorizing this specific effect class and scope.
+    pub capability: String,
+    /// Optional monotonic lease fence protecting against stale execution across reboots/restarts.
+    pub lease_fence: Option<u64>,
+}
+
+impl EffectAuthority {
+    /// Creates a validated effect authority.
+    pub fn new(
+        principal: impl Into<String>,
+        capability: impl Into<String>,
+        lease_fence: Option<u64>,
+    ) -> Result<Self, EffectSchemaError> {
+        let principal = principal.into();
+        let capability = capability.into();
+        if principal.is_empty() {
+            return Err(EffectSchemaError::MissingField { field: "principal" });
+        }
+        if capability.is_empty() {
+            return Err(EffectSchemaError::MissingField {
+                field: "capability",
+            });
+        }
+        Ok(Self {
+            principal,
+            capability,
+            lease_fence,
         })
+    }
+
+    /// System internal default authority.
+    #[must_use]
+    pub fn system_default() -> Self {
+        Self {
+            principal: "system:operator".to_string(),
+            capability: "effect:execute".to_string(),
+            lease_fence: None,
+        }
+    }
+}
+
+impl CanonicalEncode for EffectAuthority {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(&self.principal);
+        encoder.text(&self.capability);
+        match self.lease_fence {
+            Some(fence) => {
+                encoder.bool(true);
+                encoder.u64(fence);
+            }
+            None => encoder.bool(false),
+        }
+    }
+}
+
+impl CanonicalDecode for EffectAuthority {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let principal = decoder.text()?.to_string();
+        let capability = decoder.text()?.to_string();
+        let lease_fence = if decoder.bool()? {
+            Some(decoder.u64()?)
+        } else {
+            None
+        };
+        Self::new(principal, capability, lease_fence)
+            .map_err(|_| ContractError::InvalidIdentifier)
     }
 }
 
@@ -1323,6 +1525,8 @@ pub struct OperationReceipt {
     pub intent: EffectIntent,
     /// Current effect state.
     pub state: EffectState,
+    /// Explicit authority that authorized this effect operation.
+    pub authority: EffectAuthority,
     /// Prepare timestamp.
     pub prepared_at: TimestampNs,
     /// Commit timestamp, when committed.
@@ -1336,10 +1540,222 @@ pub struct OperationReceipt {
 }
 
 impl OperationReceipt {
+    /// Schema identity.
+    pub const SCHEMA: &'static str = "fss.operation_receipt.v1";
+
     /// Returns the receipt digest.
     #[must_use]
     pub fn receipt_digest(&self) -> ContentDigest {
-        self.canonical_digest("fss.operation_receipt.v1")
+        self.canonical_digest(Self::SCHEMA)
+    }
+
+    /// Emits a deterministic canonical JSON string projection per schemas/operation_receipt.v1.json.
+    #[must_use]
+    pub fn to_canonical_json(&self) -> String {
+        let mut out = String::with_capacity(512);
+        out.push('{');
+        out.push_str("\"authority\":{");
+        out.push_str("\"capability\":");
+        json_write_str(&mut out, &self.authority.capability);
+        out.push_str(",\"leaseFence\":");
+        match self.authority.lease_fence {
+            Some(f) => out.push_str(&f.to_string()),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"principal\":");
+        json_write_str(&mut out, &self.authority.principal);
+        out.push('}');
+        out.push_str(",\"effectClass\":");
+        json_write_str(&mut out, &self.intent.effect_class);
+        if let Some(ref err) = self.error_code {
+            out.push_str(",\"errorId\":");
+            json_write_str(&mut out, err);
+        }
+        out.push_str(",\"idempotencyKey\":");
+        json_write_str(&mut out, self.intent.idempotency_key.as_str());
+        out.push_str(",\"operationId\":");
+        json_write_str(&mut out, self.intent.operation_id.as_str());
+        out.push_str(",\"preconditionDigest\":");
+        json_write_str(&mut out, &self.intent.precondition_digest.to_text());
+        out.push_str(",\"requestDigest\":");
+        json_write_str(&mut out, &self.intent.request_digest.to_text());
+        out.push_str(",\"resultDigest\":");
+        match self.result_digest {
+            Some(d) => json_write_str(&mut out, &d.to_text()),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"schema\":");
+        json_write_str(&mut out, Self::SCHEMA);
+        out.push_str(",\"state\":");
+        json_write_str(&mut out, self.state.as_str());
+        out.push_str(",\"timestamps\":{");
+        out.push_str("\"committedNs\":");
+        match self.committed_at {
+            Some(ts) => out.push_str(&ts.0.to_string()),
+            None => out.push_str("null"),
+        }
+        out.push_str(",\"observedNs\":null");
+        out.push_str(",\"preparedNs\":");
+        out.push_str(&self.prepared_at.0.to_string());
+        out.push_str(",\"requestedNs\":");
+        out.push_str(&self.prepared_at.0.to_string());
+        out.push_str(",\"verifiedNs\":null");
+        out.push('}');
+        out.push('}');
+        out
+    }
+
+    /// Parses an operation receipt from canonical JSON string per schemas/operation_receipt.v1.json.
+    pub fn from_json(json_str: &str) -> Result<Self, EffectSchemaError> {
+        let mut parser = JsonParser::new(json_str);
+        let root = parser.parse_value()?;
+        parser.ensure_finished()?;
+        let obj = JsonObject::closed(
+            &root,
+            "operationReceipt",
+            &[
+                "authority",
+                "effectClass",
+                "errorId",
+                "idempotencyKey",
+                "operationId",
+                "preconditionDigest",
+                "requestDigest",
+                "resultDigest",
+                "schema",
+                "state",
+                "timestamps",
+            ],
+        )?;
+
+        let schema_val = obj.str("schema")?;
+        if schema_val != Self::SCHEMA {
+            return Err(EffectSchemaError::SchemaMismatch {
+                expected: Self::SCHEMA,
+                found: schema_val.to_string(),
+            });
+        }
+
+        let op_raw = obj.str("operationId")?;
+        let operation_id = OperationId::parse(op_raw)?;
+
+        let idem_raw = obj.str("idempotencyKey")?;
+        let idempotency_key = IdempotencyKey::parse(idem_raw)?;
+
+        let effect_class = obj.str("effectClass")?.to_string();
+
+        let state_str = obj.str("state")?;
+        let state = match state_str {
+            "prepared" => EffectState::Prepared,
+            "committed" => EffectState::Committed,
+            "adapter_accepted" => EffectState::AdapterAccepted,
+            "observed" => EffectState::Observed,
+            "verified" => EffectState::Verified,
+            "cancelled" => EffectState::Cancelled,
+            "failed" => EffectState::Failed,
+            "indeterminate" => EffectState::Indeterminate,
+            _ => {
+                return Err(EffectSchemaError::JsonError {
+                    detail: format!("unknown effect state '{state_str}'"),
+                });
+            }
+        };
+
+        let auth_val = obj.get("authority")?;
+        let auth_obj = JsonObject::closed(
+            auth_val,
+            "authority",
+            &["capability", "leaseFence", "principal"],
+        )?;
+        let principal = auth_obj.str("principal")?;
+        let capability = auth_obj.str("capability")?;
+        let lease_fence = match auth_obj.get("leaseFence")? {
+            JsonValue::Null => None,
+            JsonValue::Number(n) => {
+                if *n < 0 {
+                    return Err(EffectSchemaError::JsonError {
+                        detail: "leaseFence must be non-negative".to_string(),
+                    });
+                }
+                Some(*n as u64)
+            }
+            _ => {
+                return Err(EffectSchemaError::JsonError {
+                    detail: "leaseFence must be integer or null".to_string(),
+                });
+            }
+        };
+        let authority = EffectAuthority::new(principal, capability, lease_fence)?;
+
+        let req_raw = obj.str("requestDigest")?;
+        let request_digest = ContentDigest::parse(req_raw)?;
+
+        let precondition_digest = match obj.find("preconditionDigest") {
+            None | Some(JsonValue::Null) => ContentDigest::sha256(b""),
+            Some(JsonValue::String(s)) => ContentDigest::parse(s)?,
+            Some(_) => {
+                return Err(EffectSchemaError::JsonError {
+                    detail: "preconditionDigest must be string or null".to_string(),
+                });
+            }
+        };
+
+        let intent = EffectIntent::new(
+            operation_id,
+            idempotency_key,
+            effect_class,
+            request_digest,
+            precondition_digest,
+        )?;
+
+        let ts_val = obj.get("timestamps")?;
+        let ts_obj = JsonObject::closed(
+            ts_val,
+            "timestamps",
+            &[
+                "committedNs",
+                "observedNs",
+                "preparedNs",
+                "requestedNs",
+                "verifiedNs",
+            ],
+        )?;
+        let prepared_at = ts_obj.get("requestedNs")?.as_timestamp()?;
+        let committed_at = match ts_obj.find("committedNs") {
+            None | Some(JsonValue::Null) => None,
+            Some(v) => Some(v.as_timestamp()?),
+        };
+
+        let result_digest = match obj.find("resultDigest") {
+            None | Some(JsonValue::Null) => None,
+            Some(JsonValue::String(s)) => Some(ContentDigest::parse(s)?),
+            Some(_) => {
+                return Err(EffectSchemaError::JsonError {
+                    detail: "resultDigest must be string or null".to_string(),
+                });
+            }
+        };
+
+        let error_code = match obj.find("errorId") {
+            None | Some(JsonValue::Null) => None,
+            Some(JsonValue::String(s)) => Some(s.clone()),
+            Some(_) => {
+                return Err(EffectSchemaError::JsonError {
+                    detail: "errorId must be string or null".to_string(),
+                });
+            }
+        };
+
+        Ok(Self {
+            intent,
+            state,
+            authority,
+            prepared_at,
+            committed_at,
+            updated_at: prepared_at,
+            result_digest,
+            error_code,
+        })
     }
 }
 
@@ -1347,6 +1763,7 @@ impl CanonicalEncode for OperationReceipt {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         self.intent.encode_canonical(encoder);
         encoder.text(self.state.as_str());
+        self.authority.encode_canonical(encoder);
         self.prepared_at.encode_canonical(encoder);
         match self.committed_at {
             Some(value) => {
@@ -1370,6 +1787,41 @@ impl CanonicalEncode for OperationReceipt {
             }
             None => encoder.bool(false),
         }
+    }
+}
+
+impl CanonicalDecode for OperationReceipt {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let intent = EffectIntent::decode_canonical(decoder)?;
+        let state = EffectState::decode_canonical(decoder)?;
+        let authority = EffectAuthority::decode_canonical(decoder)?;
+        let prepared_at = TimestampNs::decode_canonical(decoder)?;
+        let committed_at = if decoder.bool()? {
+            Some(TimestampNs::decode_canonical(decoder)?)
+        } else {
+            None
+        };
+        let updated_at = TimestampNs::decode_canonical(decoder)?;
+        let result_digest = if decoder.bool()? {
+            Some(decoder.digest()?)
+        } else {
+            None
+        };
+        let error_code = if decoder.bool()? {
+            Some(decoder.text()?.to_string())
+        } else {
+            None
+        };
+        Ok(Self {
+            intent,
+            state,
+            authority,
+            prepared_at,
+            committed_at,
+            updated_at,
+            result_digest,
+            error_code,
+        })
     }
 }
 
@@ -1608,12 +2060,13 @@ impl EffectJournal {
         }
     }
 
-    /// Prepares an effect exactly once and returns the existing receipt on an exact retry.
-    pub fn prepare(
+    /// Prepares an effect exactly once with explicit authority, and returns the existing receipt on an exact retry.
+    pub fn prepare_with_authority(
         &mut self,
         intent: EffectIntent,
         obligation_id: ObligationId,
         terminal_predicate: impl Into<String>,
+        authority: EffectAuthority,
         now: TimestampNs,
     ) -> Result<&OperationReceipt, ContractError> {
         if let Some(existing_id) = self.idempotency.get(&intent.idempotency_key) {
@@ -1639,6 +2092,7 @@ impl EffectJournal {
             OperationReceipt {
                 intent,
                 state: EffectState::Prepared,
+                authority,
                 prepared_at: now,
                 committed_at: None,
                 updated_at: now,
@@ -1663,15 +2117,34 @@ impl EffectJournal {
             .ok_or(ContractError::NotFound)
     }
 
-    /// Prepares an effect from a validated `PreparedEffect`.
+    /// Prepares an effect exactly once and returns the existing receipt on an exact retry.
+    pub fn prepare(
+        &mut self,
+        intent: EffectIntent,
+        obligation_id: ObligationId,
+        terminal_predicate: impl Into<String>,
+        now: TimestampNs,
+    ) -> Result<&OperationReceipt, ContractError> {
+        self.prepare_with_authority(
+            intent,
+            obligation_id,
+            terminal_predicate,
+            EffectAuthority::system_default(),
+            now,
+        )
+    }
+
+    /// Prepares an effect from a validated `PreparedEffect` with explicit authority.
     pub fn prepare_effect(
         &mut self,
         prepared: PreparedEffect,
+        authority: EffectAuthority,
     ) -> Result<&OperationReceipt, ContractError> {
-        self.prepare(
+        self.prepare_with_authority(
             prepared.intent,
             prepared.obligation_id,
             prepared.terminal_predicate,
+            authority,
             prepared.prepared_at,
         )
     }
@@ -1861,10 +2334,7 @@ impl EffectJournal {
             if now <= current.updated_at {
                 return Err(ContractError::InvertedTimeInterval);
             }
-            if current.state != EffectState::Indeterminate
-                && current.state != EffectState::Committed
-                && current.state != EffectState::AdapterAccepted
-            {
+            if !current.state.can_transition_to(EffectState::Failed) {
                 return Err(ContractError::InvalidEffectTransition);
             }
         }
@@ -2190,8 +2660,6 @@ impl JsonValue {
 
 struct JsonObject<'a> {
     fields: &'a [(String, JsonValue)],
-    #[allow(dead_code)]
-    context: &'static str,
 }
 
 impl<'a> JsonObject<'a> {
@@ -2209,12 +2677,21 @@ impl<'a> JsonObject<'a> {
                         });
                     }
                 }
-                Ok(Self { fields, context })
+                Ok(Self { fields })
             }
             _ => Err(EffectSchemaError::JsonError {
                 detail: format!("expected object for {context}"),
             }),
         }
+    }
+
+    fn find(&self, key: &str) -> Option<&'a JsonValue> {
+        for (k, v) in self.fields {
+            if k == key {
+                return Some(v);
+            }
+        }
+        None
     }
 
     fn get(&self, key: &str) -> Result<&'a JsonValue, EffectSchemaError> {
@@ -2252,6 +2729,11 @@ fn string_to_static_field(key: &str) -> &'static str {
         "evidenceDigest" => "evidenceDigest",
         "reconciledAt" => "reconciledAt",
         "detail" => "detail",
+        "preparedEffectDigest" => "preparedEffectDigest",
+        "authority" => "authority",
+        "principal" => "principal",
+        "capability" => "capability",
+        "leaseFence" => "leaseFence",
         _ => "unknown",
     }
 }
