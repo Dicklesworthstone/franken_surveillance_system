@@ -107,14 +107,15 @@ pub use extrinsics::{
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use meaningful_delta::classify_reference_meaningful_delta;
 pub use model::{
-    CorroboratedModelFinding, CorroborationStatus, MAX_CORROBORATION_SOURCES,
-    MAX_DETECTIONS_PER_OUTPUT, MAX_EMBEDDING_DIM, MAX_FAULT_REASON_LEN, MAX_INPUT_PAYLOAD_BYTES,
-    MAX_MODEL_GENERATION_BYTES, MockAbstentionReason, MockDetection, MockEmbedding,
-    MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
+    ADR_0004_ID, ADR_0004_TITLE, CorroboratedModelFinding, CorroborationStatus,
+    MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT, MAX_EMBEDDING_DIM, MAX_FAULT_REASON_LEN,
+    MAX_INPUT_PAYLOAD_BYTES, MAX_MODEL_GENERATION_BYTES, MockAbstentionReason, MockDetection,
+    MockEmbedding, MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
     MockModelOutcome, MockModelOutput, MockModelResult, MockModelScript, MockModelSpec,
-    MockOutputDigestRequest, MockSemanticLabel, compare_model_embeddings, compare_model_scores,
-    compute_output_digest, encode_coord_to_basis_point, evaluate_corroboration, execute_mock_model,
-    fuse_model_embeddings, fuse_model_scores, is_latest_generation,
+    MockOutputDigestRequest, MockSemanticLabel, ModelGenerationDescriptor,
+    compare_model_embeddings, compare_model_scores, compute_output_digest,
+    encode_coord_to_basis_point, evaluate_corroboration, execute_mock_model, fuse_model_embeddings,
+    fuse_model_scores, is_latest_generation,
 };
 pub use outcome::{
     ALERT_OUTCOME_FAMILY, ReferenceAlertOutcome, ReferenceAlertOutcomeReceipt,

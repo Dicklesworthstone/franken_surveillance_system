@@ -29,24 +29,41 @@ pub const MAX_CORROBORATION_SOURCES: usize = 32;
 /// Maximum dimension length for an embedding vector.
 pub const MAX_EMBEDDING_DIM: usize = 4096;
 
+/// Normative ADR-0004 identifier.
+pub const ADR_0004_ID: &str = "ADR-0004";
+
+/// Normative ADR-0004 title.
+pub const ADR_0004_TITLE: &str = "Models are immutable qualified generations, not mutable names";
+
 /// Returns true if the generation identifier attempts to reference a mutable "latest" alias,
 /// strictly forbidden by ADR-0004 and AGENTS.md.
 #[inline]
 #[must_use]
 pub fn is_latest_generation(generation: &str) -> bool {
     let trimmed = generation.trim();
-    trimmed.eq_ignore_ascii_case("latest")
-        || trimmed.starts_with("latest:")
-        || trimmed.ends_with(":latest")
-        || trimmed == "latest.weights"
+    if trimmed.is_empty() {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "latest" || lower == "latest.weights" {
+        return true;
+    }
+    lower
+        .split(|c: char| !c.is_alphanumeric())
+        .any(|token| token == "latest")
 }
 
 /// Encodes a normalized coordinate [0.0, 1.0] into a deterministic discrete basis point [0, 10_000]
 /// using IEEE 754 half-away-from-zero rounding to eliminate float truncation drift (INV-004).
+///
+/// Fails closed if `coord` is NaN or non-finite.
 #[inline]
-#[must_use]
-pub fn encode_coord_to_basis_point(coord: f64) -> u64 {
-    (coord.clamp(0.0, 1.0) * 10_000.0).round() as u64
+pub fn encode_coord_to_basis_point(coord: f64) -> Result<u64, MockModelError> {
+    if !coord.is_finite() {
+        return Err(MockModelError::InvalidCoordinate);
+    }
+    let clamped = coord.clamp(0.0, 1.0);
+    Ok((clamped * 10_000.0).round() as u64)
 }
 
 /// Coarse model-facing label. This is derived cognition, not canonical event truth.
@@ -94,23 +111,90 @@ pub enum MockModelScript {
     },
 }
 
+/// Normative ADR-0004 model generation descriptor binding the 9 mandatory facets.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ModelGenerationDescriptor {
+    /// Exact weights content digest.
+    pub weights_digest: ContentDigest,
+    /// Upstream source revision (commit sha or tag).
+    pub source_revision: String,
+    /// Applicable license expression (e.g. "Apache-2.0").
+    pub license: String,
+    /// Target runtime environment (e.g. "pure-rust-v1").
+    pub runtime: String,
+    /// Target accelerator (e.g. "cpu", "cuda", "simd").
+    pub accelerator: String,
+    /// Canonical preprocessing pipeline identifier.
+    pub preprocessing: String,
+    /// Output schema identifier.
+    pub output_schema: String,
+    /// Maximum resource envelope in bytes.
+    pub resource_envelope_bytes: usize,
+    /// Qualification bundle digest.
+    pub qualification_bundle: ContentDigest,
+}
+
+impl ModelGenerationDescriptor {
+    /// Constructs a descriptor for an immutable model generation with deterministic defaults.
+    #[must_use]
+    pub fn for_generation(generation: &str) -> Self {
+        let weights_digest = ContentDigest::sha256(format!("weights:{generation}").as_bytes());
+        let qual_digest = ContentDigest::sha256(format!("qual:{generation}").as_bytes());
+        Self {
+            weights_digest,
+            source_revision: format!("git:{generation}"),
+            license: "Apache-2.0".to_string(),
+            runtime: "fss.reference.mock_runtime.v1".to_string(),
+            accelerator: "cpu".to_string(),
+            preprocessing: "fss.mock_preproc.v1".to_string(),
+            output_schema: "fss.mock_model_output.v1".to_string(),
+            resource_envelope_bytes: 16 * 1024 * 1024,
+            qualification_bundle: qual_digest,
+        }
+    }
+}
+
 /// Immutable model generation/specification used by the reference executor.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MockModelSpec {
-    /// Stable model generation identity.
-    pub generation_id: String,
-    /// Frozen deterministic behavior.
-    pub script: MockModelScript,
+    generation_id: String,
+    script: MockModelScript,
+    descriptor: ModelGenerationDescriptor,
 }
 
 impl MockModelSpec {
-    /// Constructs one bounded scripted model generation.
+    /// Constructs one bounded scripted model generation with default ADR-0004 descriptor.
     pub fn new(
         generation_id: impl Into<String>,
         script: MockModelScript,
     ) -> Result<Self, ReferenceError> {
         let generation_id = generation_id.into();
-        if generation_id.is_empty() || generation_id.len() > MAX_MODEL_GENERATION_BYTES {
+        let trimmed = generation_id.trim();
+        if trimmed.is_empty() || generation_id.len() > MAX_MODEL_GENERATION_BYTES {
+            return Err(ReferenceError::InvalidSpec("model_generation_id"));
+        }
+        if is_latest_generation(&generation_id) {
+            return Err(ReferenceError::InvalidSpec(
+                "model_generation_latest_prohibited",
+            ));
+        }
+        let descriptor = ModelGenerationDescriptor::for_generation(trimmed);
+        Ok(Self {
+            generation_id,
+            script,
+            descriptor,
+        })
+    }
+
+    /// Constructs one bounded scripted model generation with an explicit ADR-0004 descriptor.
+    pub fn with_descriptor(
+        generation_id: impl Into<String>,
+        script: MockModelScript,
+        descriptor: ModelGenerationDescriptor,
+    ) -> Result<Self, ReferenceError> {
+        let generation_id = generation_id.into();
+        let trimmed = generation_id.trim();
+        if trimmed.is_empty() || generation_id.len() > MAX_MODEL_GENERATION_BYTES {
             return Err(ReferenceError::InvalidSpec("model_generation_id"));
         }
         if is_latest_generation(&generation_id) {
@@ -121,16 +205,44 @@ impl MockModelSpec {
         Ok(Self {
             generation_id,
             script,
+            descriptor,
         })
     }
 
-    /// Content identity of the complete scripted model specification.
+    /// Stable model generation identity.
+    #[must_use]
+    pub fn generation_id(&self) -> &str {
+        &self.generation_id
+    }
+
+    /// Frozen deterministic behavior.
+    #[must_use]
+    pub fn script(&self) -> &MockModelScript {
+        &self.script
+    }
+
+    /// Normative ADR-0004 model generation descriptor.
+    #[must_use]
+    pub fn descriptor(&self) -> &ModelGenerationDescriptor {
+        &self.descriptor
+    }
+
+    /// Content identity of the complete scripted model specification binding all ADR-0004 facets.
     #[must_use]
     pub fn spec_digest(&self) -> ContentDigest {
         let mut encoder = CanonicalEncoder::new();
         encoder.text("fss.mock_model_spec.v1");
         encoder.text(&self.generation_id);
         encode_script(&self.script, &mut encoder);
+        encoder.digest(self.descriptor.weights_digest);
+        encoder.text(&self.descriptor.source_revision);
+        encoder.text(&self.descriptor.license);
+        encoder.text(&self.descriptor.runtime);
+        encoder.text(&self.descriptor.accelerator);
+        encoder.text(&self.descriptor.preprocessing);
+        encoder.text(&self.descriptor.output_schema);
+        encoder.u64(self.descriptor.resource_envelope_bytes as u64);
+        encoder.digest(self.descriptor.qualification_bundle);
         ContentDigest::sha256(&encoder.finish())
     }
 }
@@ -221,7 +333,7 @@ pub fn execute_mock_model(
     capture: &ReferenceCapture,
     objects: &mut InMemoryObjectStore,
 ) -> Result<MockModelResult, ReferenceError> {
-    let outcome = match &spec.script {
+    let outcome = match spec.script() {
         MockModelScript::Fixed { label, probability } => MockModelOutcome::Finding {
             label: *label,
             probability: *probability,
@@ -245,7 +357,7 @@ pub fn execute_mock_model(
         .map(|packet| packet.sensor_id.clone())
         .ok_or(ReferenceError::InvalidSpec("capture_has_no_packets"))?;
     let result = MockModelResult {
-        generation_id: spec.generation_id.clone(),
+        generation_id: spec.generation_id().to_string(),
         sensor_id,
         model_spec_digest: spec.spec_digest(),
         input_capture_root: capture.receipt.capture_root,
@@ -279,14 +391,14 @@ fn encode_script(script: &MockModelScript, encoder: &mut CanonicalEncoder) {
 // FSS-020 Deterministic Mock Model Executor
 // =========================================================================
 
-/// One deterministic detection finding emitted by the mock model.
+/// Coarse-grained semantic label from model inference.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MockDetection {
-    /// Semantic classification label.
+    /// Derived semantic label.
     pub label: MockSemanticLabel,
-    /// Bounded conservative probability interval.
+    /// Probability interval for the detection.
     pub probability: ProbabilityInterval,
-    /// Normalised bounding box `[x_min, y_min, x_max, y_max]` in `[0.0, 1.0]`.
+    /// Bounding box normalized coordinates: `[x1, y1, x2, y2]`.
     pub bounding_box: [f64; 4],
 }
 
@@ -351,10 +463,10 @@ impl CanonicalEncode for MockModelOutput {
         for det in &self.detections {
             encoder.u8(det.label.tag());
             det.probability.encode_canonical(encoder);
-            encoder.u64(encode_coord_to_basis_point(det.bounding_box[0]));
-            encoder.u64(encode_coord_to_basis_point(det.bounding_box[1]));
-            encoder.u64(encode_coord_to_basis_point(det.bounding_box[2]));
-            encoder.u64(encode_coord_to_basis_point(det.bounding_box[3]));
+            for &coord in &det.bounding_box {
+                let bp = encode_coord_to_basis_point(coord).unwrap_or_default();
+                encoder.u64(bp);
+            }
         }
         encoder.u64(self.virtual_latency_ns);
     }
@@ -535,6 +647,7 @@ impl MockModelFaultSchedule {
 #[derive(Clone, Debug, PartialEq)]
 pub struct MockModelExecutor {
     generation: ModelGeneration,
+    prior_generation: Option<ModelGeneration>,
     seed: u64,
     nominal_latency_ns: u64,
     virtual_timeout_ns: u64,
@@ -561,6 +674,7 @@ impl MockModelExecutor {
         }
         Ok(Self {
             generation,
+            prior_generation: None,
             seed,
             nominal_latency_ns,
             virtual_timeout_ns,
@@ -579,6 +693,46 @@ impl MockModelExecutor {
     #[must_use]
     pub const fn generation(&self) -> &ModelGeneration {
         &self.generation
+    }
+
+    /// Atomically activates a new model generation, retaining the prior generation for rollback (ADR-0004).
+    pub fn activate_generation(
+        &mut self,
+        new_generation: ModelGeneration,
+    ) -> Result<(), MockModelError> {
+        if is_latest_generation(new_generation.as_str()) {
+            return Err(MockModelError::LatestGenerationProhibited {
+                generation: new_generation.into_inner(),
+            });
+        }
+        if new_generation == self.generation {
+            return Ok(());
+        }
+        self.prior_generation = Some(self.generation.clone());
+        self.generation = new_generation;
+        Ok(())
+    }
+
+    /// Rolls back to the retained prior generation (ADR-0004).
+    pub fn rollback_generation(&mut self) -> Result<ModelGeneration, MockModelError> {
+        let prior = self
+            .prior_generation
+            .take()
+            .ok_or(MockModelError::NoPriorGenerationForRollback)?;
+        let rolled_back_from = std::mem::replace(&mut self.generation, prior);
+        Ok(rolled_back_from)
+    }
+
+    /// Returns the currently active model generation.
+    #[must_use]
+    pub fn current_generation(&self) -> &ModelGeneration {
+        &self.generation
+    }
+
+    /// Returns the prior generation retained for rollback, if any.
+    #[must_use]
+    pub fn prior_generation(&self) -> Option<&ModelGeneration> {
+        self.prior_generation.as_ref()
     }
 
     /// Executes inference over a raw frame payload using the explicit virtual clock authority.
@@ -608,6 +762,14 @@ impl MockModelExecutor {
         capsule
             .verify()
             .map_err(|e| MockModelError::InvalidCapsule(format!("{e:?}")))?;
+        if let Some(ref dev_gen) = capsule.device_identity.model_generation
+            && dev_gen != &self.generation
+        {
+            return Err(MockModelError::CrossGenerationScoreMixing {
+                expected: self.generation.clone(),
+                actual: dev_gen.clone(),
+            });
+        }
         let input_digest = capsule.integrity.metadata_digest;
         self.execute_internal(
             input_digest,
@@ -838,10 +1000,10 @@ pub fn compute_output_digest(
     for det in req.detections {
         encoder.u8(det.label.tag());
         det.probability.encode_canonical(&mut encoder);
-        encoder.u64(encode_coord_to_basis_point(det.bounding_box[0]));
-        encoder.u64(encode_coord_to_basis_point(det.bounding_box[1]));
-        encoder.u64(encode_coord_to_basis_point(det.bounding_box[2]));
-        encoder.u64(encode_coord_to_basis_point(det.bounding_box[3]));
+        for &coord in &det.bounding_box {
+            let bp = encode_coord_to_basis_point(coord)?;
+            encoder.u64(bp);
+        }
     }
     encoder.u64(req.virtual_latency_ns);
     Ok(ContentDigest::sha256(&encoder.finish()))
@@ -885,6 +1047,12 @@ pub fn fuse_model_scores(
             actual: generation_b.clone(),
         });
     }
+    if score_a.probability.calibration_generation != score_b.probability.calibration_generation {
+        return Err(MockModelError::CrossCalibrationScoreMixing {
+            expected: score_a.probability.calibration_generation,
+            actual: score_b.probability.calibration_generation,
+        });
+    }
     let fused_lower = score_a.probability.lower.max(score_b.probability.lower);
     let fused_upper = score_a.probability.upper.min(score_b.probability.upper);
     if fused_lower > fused_upper {
@@ -895,8 +1063,12 @@ pub fn fuse_model_scores(
             upper_micro,
         });
     }
-    ProbabilityInterval::new(fused_lower, fused_upper)
-        .map_err(|_| MockModelError::InvalidProbabilityScore)
+    match score_a.probability.calibration_generation {
+        Some(calib) => ProbabilityInterval::with_calibration(fused_lower, fused_upper, calib)
+            .map_err(|_| MockModelError::InvalidProbabilityScore),
+        None => ProbabilityInterval::new(fused_lower, fused_upper)
+            .map_err(|_| MockModelError::InvalidProbabilityScore),
+    }
 }
 
 /// Bounded deterministic model embedding carrying an immutable generation identity (INV-013).
@@ -925,10 +1097,15 @@ impl MockEmbedding {
                 max: MAX_EMBEDDING_DIM,
             });
         }
+        let mut norm_sq = 0.0_f64;
         for &val in &vector {
             if !val.is_finite() {
                 return Err(MockModelError::InvalidEmbeddingNorm);
             }
+            norm_sq += val * val;
+        }
+        if norm_sq <= 0.0 || !norm_sq.is_finite() {
+            return Err(MockModelError::InvalidEmbeddingNorm);
         }
         Ok(Self { generation, vector })
     }
@@ -1028,6 +1205,8 @@ pub struct CorroboratedModelFinding {
     pub contributing_input_digests: Vec<ContentDigest>,
     /// Fused conservative probability interval.
     pub fused_probability: ProbabilityInterval,
+    /// Spatial bounding box intersection of corroborated detections.
+    pub bounding_box: [f64; 4],
     /// Corroboration status witness.
     pub corroboration: CorroborationStatus,
 }
@@ -1040,7 +1219,9 @@ pub struct CorroboratedModelFinding {
 /// 3. Model generations must match (cross-generation mixing prohibited).
 /// 4. Detections count bounded by [`MAX_DETECTIONS_PER_OUTPUT`].
 /// 5. Contributing sensors must be distinct and actually observe the candidate label.
-/// 6. Contradictory disjoint intervals are rejected with typed errors, never silently clamped.
+/// 6. Spatial bounding boxes must overlap; disjoint bounding boxes fail closed.
+/// 7. Calibration generations must match and be preserved in the fused probability.
+/// 8. Contradictory disjoint intervals are rejected with typed errors, never silently clamped.
 pub fn evaluate_corroboration(
     outputs: &[MockModelOutput],
 ) -> Result<CorroboratedModelFinding, MockModelError> {
@@ -1076,69 +1257,171 @@ pub fn evaluate_corroboration(
         }
     }
 
-    // Candidate detection: must not fabricate from empty detections
-    let first_detection = first
-        .detections
-        .first()
-        .ok_or(MockModelError::NoDetectionsToCorroborate)?;
-    let common_label = first_detection.label;
-
-    // Collect distinct sensors that actually detected common_label
-    let mut matching_sensors = BTreeSet::new();
-    let mut contributing_input_digests = Vec::new();
-    let mut fused_lower = 0.0_f64;
-    let mut fused_upper = 1.0_f64;
-
+    let mut candidate_labels = Vec::new();
     for out in outputs {
-        if let Some(det) = out.detections.iter().find(|d| d.label == common_label)
-            && matching_sensors.insert(out.sensor_id.clone())
-        {
-            contributing_input_digests.push(out.input_digest);
-            fused_lower = fused_lower.max(det.probability.lower);
-            fused_upper = fused_upper.min(det.probability.upper);
+        for det in &out.detections {
+            if !candidate_labels.contains(&det.label) {
+                candidate_labels.push(det.label);
+            }
         }
     }
+    if candidate_labels.is_empty() {
+        return Err(MockModelError::NoDetectionsToCorroborate);
+    }
+    candidate_labels.sort_by_key(|lbl| match lbl {
+        MockSemanticLabel::PersonLike => 0,
+        MockSemanticLabel::AnimalLike => 1,
+        MockSemanticLabel::TamperLike => 2,
+        MockSemanticLabel::Unknown => 3,
+    });
 
-    // Crucial: Must have at least 2 distinct sensors that observed common_label
-    if matching_sensors.len() < 2 {
-        if matching_sensors.len() == 1 {
-            let sensor_id = matching_sensors
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| first.sensor_id.clone());
-            return Err(MockModelError::UncorroboratedSingleSensor { sensor_id });
+    let mut last_disjoint_spatial = None;
+    let mut last_single_sensor = None;
+
+    for candidate_label in candidate_labels {
+        let mut matching_sensors = BTreeSet::new();
+        let mut contributing_input_digests = Vec::new();
+        let mut contributing_outputs = Vec::new();
+        let mut fused_lower = 0.0_f64;
+        let mut fused_upper = 1.0_f64;
+        let mut expected_calibration: Option<Option<ContentDigest>> = None;
+        let mut bbox_intersection: Option<[f64; 4]> = None;
+        let mut calibration_error = None;
+        let mut spatial_disjoint = false;
+
+        for out in outputs {
+            if let Some(det) = out.detections.iter().find(|d| d.label == candidate_label) {
+                for &coord in &det.bounding_box {
+                    if !coord.is_finite() {
+                        return Err(MockModelError::InvalidCoordinate);
+                    }
+                }
+
+                if matching_sensors.insert(out.sensor_id.clone()) {
+                    contributing_input_digests.push(out.input_digest);
+                    contributing_outputs.push(out);
+                    fused_lower = fused_lower.max(det.probability.lower);
+                    fused_upper = fused_upper.min(det.probability.upper);
+
+                    match expected_calibration {
+                        None => {
+                            expected_calibration = Some(det.probability.calibration_generation);
+                        }
+                        Some(expected) => {
+                            if det.probability.calibration_generation != expected {
+                                calibration_error =
+                                    Some(MockModelError::CrossCalibrationScoreMixing {
+                                        expected,
+                                        actual: det.probability.calibration_generation,
+                                    });
+                                break;
+                            }
+                        }
+                    }
+
+                    let [bx1, by1, bx2, by2] = det.bounding_box;
+                    match bbox_intersection {
+                        None => {
+                            bbox_intersection = Some([bx1, by1, bx2, by2]);
+                        }
+                        Some([ix1, iy1, ix2, iy2]) => {
+                            let nx1 = ix1.max(bx1);
+                            let ny1 = iy1.max(by1);
+                            let nx2 = ix2.min(bx2);
+                            let ny2 = iy2.min(by2);
+                            if nx1 > nx2 || ny1 > ny2 {
+                                spatial_disjoint = true;
+                                break;
+                            }
+                            bbox_intersection = Some([nx1, ny1, nx2, ny2]);
+                        }
+                    }
+                }
+            }
         }
-        return Err(MockModelError::InsufficientSourcesForCorroboration {
-            count: matching_sensors.len(),
-            min_required: 2,
+
+        if let Some(err) = calibration_error {
+            return Err(err);
+        }
+
+        if spatial_disjoint {
+            last_disjoint_spatial = Some(candidate_label);
+            continue;
+        }
+
+        if matching_sensors.len() < 2 {
+            if matching_sensors.len() == 1
+                && let Some(sensor_id) = matching_sensors.into_iter().next()
+            {
+                last_single_sensor = Some(sensor_id);
+            }
+            continue;
+        }
+
+        if fused_lower > fused_upper {
+            let lower_micro = (fused_lower * 1_000_000.0).round() as u64;
+            let upper_micro = (fused_upper * 1_000_000.0).round() as u64;
+            return Err(MockModelError::ContradictoryProbabilityIntervals {
+                lower_micro,
+                upper_micro,
+            });
+        }
+
+        let calib_opt = expected_calibration.flatten();
+        let fused_probability = match calib_opt {
+            Some(calib) => ProbabilityInterval::with_calibration(fused_lower, fused_upper, calib)
+                .map_err(|_| MockModelError::InvalidProbabilityScore)?,
+            None => ProbabilityInterval::new(fused_lower, fused_upper)
+                .map_err(|_| MockModelError::InvalidProbabilityScore)?,
+        };
+
+        let bounding_box = bbox_intersection.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+
+        let mut contributing_gens = BTreeSet::new();
+        for out in contributing_outputs {
+            contributing_gens.insert(out.generation.as_str().to_string());
+            match &out.corroboration {
+                CorroborationStatus::UncorroboratedSingleSource {
+                    model_generation, ..
+                } => {
+                    contributing_gens.insert(model_generation.clone());
+                }
+                CorroborationStatus::Corroborated {
+                    contributing_generations,
+                    ..
+                } => {
+                    for g in contributing_generations {
+                        contributing_gens.insert(g.clone());
+                    }
+                }
+            }
+        }
+        let contributing_generations: Vec<String> = contributing_gens.into_iter().collect();
+        let contributing_sensors: Vec<SensorId> = matching_sensors.into_iter().collect();
+
+        return Ok(CorroboratedModelFinding {
+            label: candidate_label,
+            generation: first.generation.clone(),
+            contributing_sensors: contributing_sensors.clone(),
+            contributing_input_digests,
+            fused_probability,
+            bounding_box,
+            corroboration: CorroborationStatus::Corroborated {
+                contributing_sensors,
+                contributing_generations,
+            },
         });
     }
 
-    // Disjoint / contradictory intervals: report typed contradiction error, never silently clamp
-    if fused_lower > fused_upper {
-        let lower_micro = (fused_lower * 1_000_000.0).round() as u64;
-        let upper_micro = (fused_upper * 1_000_000.0).round() as u64;
-        return Err(MockModelError::ContradictoryProbabilityIntervals {
-            lower_micro,
-            upper_micro,
-        });
+    if let Some(label) = last_disjoint_spatial {
+        return Err(MockModelError::DisjointSpatialCorroboration { label });
     }
-
-    let fused_probability = ProbabilityInterval::new(fused_lower, fused_upper)
-        .map_err(|_| MockModelError::InvalidProbabilityScore)?;
-
-    let contributing_sensors: Vec<SensorId> = matching_sensors.into_iter().collect();
-
-    Ok(CorroboratedModelFinding {
-        label: common_label,
-        generation: first.generation.clone(),
-        contributing_sensors: contributing_sensors.clone(),
-        contributing_input_digests,
-        fused_probability,
-        corroboration: CorroborationStatus::Corroborated {
-            contributing_sensors,
-            contributing_generations: vec![first.generation.as_str().to_string()],
-        },
+    if let Some(sensor_id) = last_single_sensor {
+        return Err(MockModelError::UncorroboratedSingleSensor { sensor_id });
+    }
+    Err(MockModelError::InsufficientSourcesForCorroboration {
+        count: 0,
+        min_required: 2,
     })
 }
 
@@ -1174,6 +1457,13 @@ pub enum MockModelError {
         expected: ModelGeneration,
         /// Actual incompatible model generation.
         actual: ModelGeneration,
+    },
+    /// Attempt to mix scores calibrated under different calibration generations (ADR-0004).
+    CrossCalibrationScoreMixing {
+        /// Expected calibration generation digest.
+        expected: Option<ContentDigest>,
+        /// Actual incompatible calibration generation digest.
+        actual: Option<ContentDigest>,
     },
     /// Insufficient sources to evaluate corroboration (minimum 2 required).
     InsufficientSourcesForCorroboration {
@@ -1214,6 +1504,13 @@ pub enum MockModelError {
     InvalidCapsule(String),
     /// Invalid probability score.
     InvalidProbabilityScore,
+    /// Bounding box coordinate is non-finite (NaN or Inf).
+    InvalidCoordinate,
+    /// Spatial bounding boxes do not intersect across corroborating sensors.
+    DisjointSpatialCorroboration {
+        /// The candidate semantic label whose bounding boxes did not intersect.
+        label: MockSemanticLabel,
+    },
     /// Error from virtual clock authority.
     ClockError(String),
     /// Reference error.
@@ -1223,6 +1520,8 @@ pub enum MockModelError {
         /// The rejected generation identifier.
         generation: String,
     },
+    /// No prior model generation retained for rollback.
+    NoPriorGenerationForRollback,
     /// Prohibited attempt to mix or compare embeddings across different model generations (INV-013).
     CrossGenerationEmbeddingMixing {
         /// Expected model generation.
@@ -1272,6 +1571,12 @@ impl fmt::Display for MockModelError {
                     "prohibited cross-generation score mixing: expected {expected}, got {actual}"
                 )
             }
+            Self::CrossCalibrationScoreMixing { expected, actual } => {
+                write!(
+                    f,
+                    "prohibited cross-calibration score mixing: expected {expected:?}, got {actual:?}"
+                )
+            }
             Self::InsufficientSourcesForCorroboration {
                 count,
                 min_required,
@@ -1304,6 +1609,15 @@ impl fmt::Display for MockModelError {
             }
             Self::InvalidCapsule(reason) => write!(f, "invalid sensor capsule: {reason}"),
             Self::InvalidProbabilityScore => write!(f, "invalid probability score"),
+            Self::InvalidCoordinate => {
+                write!(f, "bounding box coordinate is non-finite (NaN or Inf)")
+            }
+            Self::DisjointSpatialCorroboration { label } => {
+                write!(
+                    f,
+                    "spatial bounding boxes for label {label:?} do not intersect across corroborating sensors"
+                )
+            }
             Self::ClockError(reason) => write!(f, "clock error: {reason}"),
             Self::Reference(reason) => write!(f, "reference error: {reason}"),
             Self::LatestGenerationProhibited { generation } => {
@@ -1311,6 +1625,9 @@ impl fmt::Display for MockModelError {
                     f,
                     "mutable 'latest' model generation alias is strictly prohibited by ADR-0004: '{generation}'"
                 )
+            }
+            Self::NoPriorGenerationForRollback => {
+                write!(f, "no prior model generation retained for rollback")
             }
             Self::CrossGenerationEmbeddingMixing { expected, actual } => {
                 write!(

@@ -11,13 +11,14 @@ use fss_core::{
     SourceCustody, TimestampNs,
 };
 use fss_reference::{
-    CorroborationStatus, MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT, MAX_EMBEDDING_DIM,
-    MAX_FAULT_REASON_LEN, MAX_INPUT_PAYLOAD_BYTES, MAX_MODEL_GENERATION_BYTES, MockDetection,
-    MockEmbedding, MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
+    ADR_0004_ID, ADR_0004_TITLE, CorroboratedModelFinding, CorroborationStatus,
+    MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT, MAX_EMBEDDING_DIM, MAX_FAULT_REASON_LEN,
+    MAX_INPUT_PAYLOAD_BYTES, MAX_MODEL_GENERATION_BYTES, MockDetection, MockEmbedding,
+    MockExecutorOutcome, MockModelError, MockModelExecutor, MockModelFaultSchedule,
     MockModelOutput, MockModelScript, MockModelSpec, MockOutputDigestRequest, MockSemanticLabel,
-    ReferenceError, VirtualClock, compare_model_embeddings, compare_model_scores,
-    compute_output_digest, encode_coord_to_basis_point, evaluate_corroboration,
-    fuse_model_embeddings, fuse_model_scores, is_latest_generation,
+    ModelGenerationDescriptor, ReferenceError, VirtualClock, compare_model_embeddings,
+    compare_model_scores, compute_output_digest, encode_coord_to_basis_point,
+    evaluate_corroboration, fuse_model_embeddings, fuse_model_scores, is_latest_generation,
 };
 
 fn sample_capsule(
@@ -728,19 +729,21 @@ fn test_bounding_box_rounding_eliminates_float_truncation_drift() {
     let coord: f64 = 0.043;
     let basis_pt = encode_coord_to_basis_point(coord);
     assert_eq!(
-        basis_pt, 430,
-        "Truncation drift: 0.043 * 10000.0 rounded basis point must evaluate to 430, got {basis_pt}"
+        basis_pt,
+        Ok(430),
+        "Truncation drift: 0.043 * 10000.0 rounded basis point must evaluate to 430, got {basis_pt:?}"
     );
 
     let coord2: f64 = 0.051;
     let basis_pt2 = encode_coord_to_basis_point(coord2);
     assert_eq!(
-        basis_pt2, 510,
-        "Truncation drift: 0.051 * 10000.0 rounded basis point must evaluate to 510, got {basis_pt2}"
+        basis_pt2,
+        Ok(510),
+        "Truncation drift: 0.051 * 10000.0 rounded basis point must evaluate to 510, got {basis_pt2:?}"
     );
 
-    assert_eq!(encode_coord_to_basis_point(0.0), 0);
-    assert_eq!(encode_coord_to_basis_point(1.0), 10_000);
+    assert_eq!(encode_coord_to_basis_point(0.0), Ok(0));
+    assert_eq!(encode_coord_to_basis_point(1.0), Ok(10_000));
 }
 
 #[test]
@@ -1228,6 +1231,393 @@ fn test_anti_latest_generation_prohibitions() -> Result<(), Box<dyn Error>> {
             generation: "model:v1:latest".to_string(),
         })
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_latest_aliases_slip_through() -> Result<(), Box<dyn Error>> {
+    // 1. Case-insensitive prefixes and suffixes
+    assert!(
+        is_latest_generation("LATEST:v1"),
+        "LATEST:v1 must be rejected"
+    );
+    assert!(
+        is_latest_generation("model:LATEST"),
+        "model:LATEST must be rejected"
+    );
+    assert!(
+        is_latest_generation("LATEST.weights"),
+        "LATEST.weights must be rejected"
+    );
+
+    // 2. Infix and hyphenated aliases
+    assert!(
+        is_latest_generation("model:latest:fp16"),
+        "model:latest:fp16 must be rejected"
+    );
+    assert!(
+        is_latest_generation("v-latest"),
+        "v-latest must be rejected"
+    );
+    assert!(
+        is_latest_generation("model-latest"),
+        "model-latest must be rejected"
+    );
+    assert!(
+        is_latest_generation("gen:v-latest"),
+        "gen:v-latest must be rejected"
+    );
+    assert!(
+        is_latest_generation("v_latest"),
+        "v_latest must be rejected"
+    );
+
+    // 3. Whitespace-only string rejected by MockModelSpec::new
+    let script = MockModelScript::Fixed {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.8, 0.9)?,
+    };
+    assert!(
+        MockModelSpec::new("   ", script).is_err(),
+        "Whitespace-only generation ID must be rejected"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_zero_norm_embedding_admitted() -> Result<(), Box<dyn Error>> {
+    let gen_embed = ModelGeneration::parse("model:embed:v1")?;
+    let zero_vec = vec![0.0, 0.0, 0.0];
+    let res = MockEmbedding::new(gen_embed.clone(), zero_vec);
+    assert_eq!(
+        res,
+        Err(MockModelError::InvalidEmbeddingNorm),
+        "MockEmbedding::new must reject zero-norm vectors on construction"
+    );
+
+    let zero_vec_signed = vec![0.0, -0.0];
+    let res2 = MockEmbedding::new(gen_embed, zero_vec_signed);
+    assert_eq!(
+        res2,
+        Err(MockModelError::InvalidEmbeddingNorm),
+        "MockEmbedding::new must reject signed zero vectors on construction"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_executor_ignores_capsule_model_generation() -> Result<(), Box<dyn Error>> {
+    let mut capsule = sample_capsule("cap:001", "sensor:cam-1", 1, 1_000_000, 2_000_000)?;
+    capsule.device_identity.model_generation = Some(ModelGeneration::parse("model:edge:v1")?);
+    capsule.seal_metadata_digest()?;
+
+    let executor = MockModelExecutor::new(ModelGeneration::parse("model:cloud:v2")?, 42)?;
+    let mut clock = VirtualClock::new(1, TimestampNs(10_000_000));
+
+    let res = executor.execute_capsule(&capsule, &mut clock);
+    assert!(
+        matches!(res, Err(MockModelError::CrossGenerationScoreMixing { .. })),
+        "MockModelExecutor must reject capsule whose device model_generation conflicts with executor generation"
+    );
+
+    // Matching model generation succeeds
+    let mut matching_capsule = sample_capsule("cap:002", "sensor:cam-1", 2, 1_000_000, 2_000_000)?;
+    matching_capsule.device_identity.model_generation =
+        Some(ModelGeneration::parse("model:cloud:v2")?);
+    matching_capsule.seal_metadata_digest()?;
+    let res_match = executor.execute_capsule(&matching_capsule, &mut clock);
+    assert!(res_match.is_ok(), "Matching model generation must succeed");
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_calibration_generation_dropped_during_fusion() -> Result<(), Box<dyn Error>> {
+    let gen_det = ModelGeneration::parse("model:detector:v1")?;
+    let calib_a = ContentDigest::sha256(b"gen:calib:indoor:v1");
+    let calib_b = ContentDigest::sha256(b"gen:calib:outdoor:v2");
+
+    let det_a = MockDetection {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::with_calibration(0.60, 0.90, calib_a)?,
+        bounding_box: [0.1, 0.1, 0.5, 0.5],
+    };
+    let det_b = MockDetection {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::with_calibration(0.70, 0.85, calib_b)?,
+        bounding_box: [0.1, 0.1, 0.5, 0.5],
+    };
+
+    // 1. Mixing different calibration generations must fail closed
+    let res_mix = fuse_model_scores(&det_a, &gen_det, &det_b, &gen_det);
+    assert!(
+        matches!(
+            res_mix,
+            Err(MockModelError::CrossCalibrationScoreMixing { .. })
+        ),
+        "Cross-calibration mixing must be rejected"
+    );
+
+    // 2. Fusing identical calibration must preserve calibration generation
+    let det_c = MockDetection {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::with_calibration(0.70, 0.85, calib_a)?,
+        bounding_box: [0.1, 0.1, 0.5, 0.5],
+    };
+    let fused = fuse_model_scores(&det_a, &gen_det, &det_c, &gen_det)?;
+    assert_eq!(
+        fused.calibration_generation,
+        Some(calib_a),
+        "Fused probability must preserve calibration generation"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_nan_bounding_box_silently_encoded() -> Result<(), Box<dyn Error>> {
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_id = SensorId::parse("sensor:cam-1")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    assert_eq!(
+        encode_coord_to_basis_point(f64::NAN),
+        Err(MockModelError::InvalidCoordinate)
+    );
+    assert_eq!(
+        encode_coord_to_basis_point(f64::INFINITY),
+        Err(MockModelError::InvalidCoordinate)
+    );
+
+    let nan_det = MockDetection {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.5, 0.9)?,
+        bounding_box: [f64::NAN, 0.1, 0.5, 0.5],
+    };
+
+    let req = MockOutputDigestRequest {
+        generation: &generation,
+        sensor_id: &sensor_id,
+        input_digest: &ContentDigest::sha256(b"in"),
+        capture_interval: &interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        corroboration: &CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_id.clone(),
+            model_generation: generation.as_str().to_string(),
+        },
+        detections: std::slice::from_ref(&nan_det),
+        virtual_latency_ns: 10_000_000,
+    };
+
+    assert_eq!(
+        compute_output_digest(&req),
+        Err(MockModelError::InvalidCoordinate),
+        "NaN bounding box coordinate must produce InvalidCoordinate, not silent zero basis point"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_corroboration_misses_shared_label() -> Result<(), Box<dyn Error>> {
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_1 = SensorId::parse("sensor:cam-1")?;
+    let sensor_2 = SensorId::parse("sensor:cam-2")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let out_1 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out1"),
+        generation: generation.clone(),
+        sensor_id: sensor_1.clone(),
+        input_digest: ContentDigest::sha256(b"in1"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![
+            MockDetection {
+                label: MockSemanticLabel::Unknown,
+                probability: ProbabilityInterval::new(0.5, 0.6)?,
+                bounding_box: [0.0, 0.0, 0.1, 0.1],
+            },
+            MockDetection {
+                label: MockSemanticLabel::PersonLike,
+                probability: ProbabilityInterval::new(0.8, 0.9)?,
+                bounding_box: [0.1, 0.1, 0.5, 0.5],
+            },
+        ],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let out_2 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out2"),
+        generation: generation.clone(),
+        sensor_id: sensor_2.clone(),
+        input_digest: ContentDigest::sha256(b"in2"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![MockDetection {
+            label: MockSemanticLabel::PersonLike,
+            probability: ProbabilityInterval::new(0.85, 0.95)?,
+            bounding_box: [0.2, 0.2, 0.6, 0.6],
+        }],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_2,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let res: CorroboratedModelFinding = evaluate_corroboration(&[out_1, out_2])?;
+    assert_eq!(res.label, MockSemanticLabel::PersonLike);
+    assert_eq!(res.bounding_box, [0.2, 0.2, 0.5, 0.5]);
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_corroboration_spatial_disjoint() -> Result<(), Box<dyn Error>> {
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_1 = SensorId::parse("sensor:cam-1")?;
+    let sensor_2 = SensorId::parse("sensor:cam-2")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let out_1 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out1"),
+        generation: generation.clone(),
+        sensor_id: sensor_1.clone(),
+        input_digest: ContentDigest::sha256(b"in1"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![MockDetection {
+            label: MockSemanticLabel::PersonLike,
+            probability: ProbabilityInterval::new(0.8, 0.9)?,
+            bounding_box: [0.0, 0.0, 0.2, 0.2],
+        }],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let out_2 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out2"),
+        generation: generation.clone(),
+        sensor_id: sensor_2.clone(),
+        input_digest: ContentDigest::sha256(b"in2"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![MockDetection {
+            label: MockSemanticLabel::PersonLike,
+            probability: ProbabilityInterval::new(0.85, 0.95)?,
+            bounding_box: [0.8, 0.8, 1.0, 1.0],
+        }],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_2,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let res = evaluate_corroboration(&[out_1, out_2]);
+    assert_eq!(
+        res,
+        Err(MockModelError::DisjointSpatialCorroboration {
+            label: MockSemanticLabel::PersonLike
+        }),
+        "Disjoint bounding boxes must fail closed with DisjointSpatialCorroboration"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_adr_0004_normative_facets_and_atomic_activation_rollback() -> Result<(), Box<dyn Error>> {
+    // 1. ADR constants
+    assert_eq!(ADR_0004_ID, "ADR-0004");
+    assert_eq!(
+        ADR_0004_TITLE,
+        "Models are immutable qualified generations, not mutable names"
+    );
+
+    // 2. ModelGenerationDescriptor binds all 9 normative facets
+    let default_desc = ModelGenerationDescriptor::for_generation("model:yolo26:v1");
+    assert_eq!(
+        default_desc.weights_digest,
+        ContentDigest::sha256(b"weights:model:yolo26:v1")
+    );
+    assert_eq!(default_desc.source_revision, "git:model:yolo26:v1");
+    assert_eq!(default_desc.license, "Apache-2.0");
+    assert_eq!(default_desc.runtime, "fss.reference.mock_runtime.v1");
+    assert_eq!(default_desc.accelerator, "cpu");
+    assert_eq!(default_desc.preprocessing, "fss.mock_preproc.v1");
+    assert_eq!(default_desc.output_schema, "fss.mock_model_output.v1");
+    assert_eq!(default_desc.resource_envelope_bytes, 16 * 1024 * 1024);
+    assert_eq!(
+        default_desc.qualification_bundle,
+        ContentDigest::sha256(b"qual:model:yolo26:v1")
+    );
+
+    // 3. MockModelSpec binds descriptor and affects spec_digest
+    let script = MockModelScript::Fixed {
+        label: MockSemanticLabel::PersonLike,
+        probability: ProbabilityInterval::new(0.8, 0.9)?,
+    };
+    let spec1 = MockModelSpec::new("model:yolo26:v1", script.clone())?;
+    assert_eq!(spec1.generation_id(), "model:yolo26:v1");
+    assert_eq!(spec1.descriptor(), &default_desc);
+
+    let mut custom_desc = default_desc.clone();
+    custom_desc.weights_digest = ContentDigest::sha256(b"custom_weights");
+    let spec2 = MockModelSpec::with_descriptor("model:yolo26:v1", script, custom_desc)?;
+    assert_ne!(
+        spec1.spec_digest(),
+        spec2.spec_digest(),
+        "Different descriptors must yield distinct spec digests"
+    );
+
+    // 4. MockModelExecutor atomic activation and rollback
+    let gen_v1 = ModelGeneration::parse("model:detector:v1")?;
+    let gen_v2 = ModelGeneration::parse("model:detector:v2")?;
+    let mut executor = MockModelExecutor::new(gen_v1.clone(), 42)?;
+    assert_eq!(executor.current_generation(), &gen_v1);
+    assert!(executor.prior_generation().is_none());
+
+    // Rollback without prior fails closed
+    assert_eq!(
+        executor.rollback_generation(),
+        Err(MockModelError::NoPriorGenerationForRollback)
+    );
+
+    // Activate v2
+    executor.activate_generation(gen_v2.clone())?;
+    assert_eq!(executor.current_generation(), &gen_v2);
+    assert_eq!(executor.prior_generation(), Some(&gen_v1));
+
+    // Activation rejects "latest"
+    let gen_latest = ModelGeneration::parse("model:latest:v3")?;
+    assert!(matches!(
+        executor.activate_generation(gen_latest),
+        Err(MockModelError::LatestGenerationProhibited { .. })
+    ));
+    assert_eq!(executor.current_generation(), &gen_v2);
+
+    // Rollback to v1
+    let rolled_back = executor.rollback_generation()?;
+    assert_eq!(rolled_back, gen_v2);
+    assert_eq!(executor.current_generation(), &gen_v1);
+    assert!(executor.prior_generation().is_none());
 
     Ok(())
 }
