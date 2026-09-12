@@ -9,15 +9,22 @@ use std::collections::BTreeSet;
 use std::error::Error;
 
 use fss_core::{
-    ActionAffordance, AffordanceClass, BudgetVector, Completeness, CompressionTransformKind,
-    ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, KnowledgeCell,
-    KnowledgeState, LedgerAnchor, MissionId, ObligationId, PossibleWorld, PrincipalId,
-    ProvenanceClass, ResourcePressure, SessionId, SituationCapsule, SituationFrame, TimestampNs,
-    WorldEnvelope,
+    ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
+    CompressionTransformKind, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
+    ContractError, EventId, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
+    PossibleWorld, PrincipalId, ProbabilityInterval, ProvenanceClass, ResourcePressure,
+    SemanticContextPack, SemanticContextPackPublishParams, SensorId, SessionId, SituationCapsule,
+    SituationFrame, TimestampNs, WorldEnvelope,
 };
+use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
+use fss_object::{InMemoryObjectStore, ObjectLimits};
 use fss_reference::{
-    RedundancyRecord, ReferenceError, ReferenceProjectionSpec, ReferenceSituation,
-    project_reference_situation,
+    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, RedundancyRecord,
+    ReferenceError, ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyDecision,
+    ReferenceProjectionSpec, ReferenceSituation, ReferenceSituationRequest, VirtualCameraSpec,
+    compile_reference_situation, compile_reference_situation_publication,
+    evaluate_unknown_presence, execute_mock_model, project_reference_situation,
+    publish_reference_event, run_reference_capture,
 };
 
 fn test_basis() -> ContractBasis {
@@ -535,14 +542,25 @@ fn test_inv092_planted_negative_verify_rejects_omitted_critical_item() -> Result
         consequence_severity: 5,
         protected: true,
     };
+    let protected_world2 = PossibleWorld {
+        world_id: "world:inv092:other_protected".to_owned(),
+        description: "Second protected world to preserve world class in context pack.".to_owned(),
+        claim_ids: BTreeSet::from(["claim:planted2".to_owned()]),
+        evidence: vec![evidence_digest],
+        consequence_severity: 4,
+        protected: true,
+    };
 
     let envelope = WorldEnvelope {
         envelope_id: "envelope:inv092:planted".to_owned(),
         objective_id: "objective:inv092:planted".to_owned(),
         anchor: anchor.clone(),
-        nominal_claim_ids: BTreeSet::from(["claim:planted".to_owned()]),
+        nominal_claim_ids: BTreeSet::from([
+            "claim:planted".to_owned(),
+            "claim:planted2".to_owned(),
+        ]),
         certified_core_claim_ids: BTreeSet::new(),
-        alternatives: vec![protected_world],
+        alternatives: vec![protected_world, protected_world2],
         adversarial_residuals: Vec::new(),
         common_invariants: BTreeSet::from(["invariant:planted".to_owned()]),
         coverage_boundary_handles: BTreeSet::from(["fss://coverage/planted".to_owned()]),
@@ -609,16 +627,46 @@ fn test_inv092_planted_negative_verify_rejects_omitted_critical_item() -> Result
         Err(ReferenceError::Contract(ContractError::BudgetExhausted))
     ));
 
-    // Planted negative 2: Mutate publication to omit the required protected world from context_pack.items
-    let mut missing_critical = publication;
-    missing_critical
+    // Planted negative 2: Publish a validly encoded and verified context pack that omits
+    // the required critical protected world item from context_pack.items:
+    let omitted_items: Vec<_> = publication
         .context_pack
         .items
-        .retain(|item| item.item_id != "context:world:world:inv092:planted");
+        .iter()
+        .filter(|item| item.item_id != "context:world:world:inv092:planted")
+        .cloned()
+        .collect();
 
-    // Must fail closed (DigestMismatch from pack verification or EvidenceRequired from missing required item):
+    let tampered_pack = SemanticContextPack::publish(SemanticContextPackPublishParams {
+        pack_id: publication.context_pack.pack_id.clone(),
+        contract_basis: publication.context_pack.contract_basis.clone(),
+        mission_id: publication.context_pack.mission_id.clone(),
+        session_id: publication.context_pack.session_id.clone(),
+        view_id: publication.context_pack.view_id.clone(),
+        anchor: publication.context_pack.anchor.clone(),
+        situation_fingerprint: publication.context_pack.situation_fingerprint,
+        items: omitted_items,
+        compression_receipt_id: publication.context_pack.compression_receipt_id.clone(),
+        continuation: publication.context_pack.continuation.clone(),
+        created_at: publication.context_pack.created_at,
+    })?;
+    assert!(tampered_pack.verify().is_ok());
+
+    let mut bad_receipt = publication.compression_receipt.clone();
+    bad_receipt.output_digest = tampered_pack.pack_digest;
+    bad_receipt.actual_tokens = tampered_pack.token_count;
+    bad_receipt.actual_bytes = tampered_pack.encoded_bytes();
+
+    let mut missing_critical = publication;
+    missing_critical.context_pack = tampered_pack;
+    missing_critical.compression_receipt = bad_receipt;
+
+    // Must fail closed specifically at the INV-092 required item subset check with EvidenceRequired:
     let verify_res2 = missing_critical.verify();
-    assert!(verify_res2.is_err());
+    assert!(matches!(
+        verify_res2,
+        Err(ReferenceError::Contract(ContractError::EvidenceRequired))
+    ));
 
     Ok(())
 }
@@ -719,7 +767,7 @@ fn test_contradiction_dedup_must_not_drop_independent_sensor_evidence() -> Resul
         .items
         .iter()
         .find(|item| item.kind == "contradiction")
-        .expect("contradiction item missing");
+        .ok_or("contradiction item missing")?;
 
     assert!(
         contra_item.basis.contains(&evidence_cam2.to_string()),
@@ -1005,5 +1053,181 @@ fn test_spec_validation_rejects_reserved_token_incursion() -> Result<(), Box<dyn
         res.is_err(),
         "ReferenceProjectionSpec::validate() must reject target_tokens (90) that exceeds unreserved budget (20)"
     );
+    Ok(())
+}
+
+struct TestHarness {
+    path: std::path::PathBuf,
+    objects: InMemoryObjectStore,
+    authority: DurableReferenceLedger,
+}
+
+impl TestHarness {
+    fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+        let path = std::env::temp_dir().join(format!(
+            "fss-ref-inv092-pipe-{}-{name}.journal",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        Ok(Self {
+            authority: DurableReferenceLedger::open(
+                &path,
+                format!("site:inv092:{name}"),
+                IncompleteTailPolicy::Reject,
+            )?,
+            objects: InMemoryObjectStore::new(ObjectLimits::new(2048, 32 * 1024 * 1024)),
+            path,
+        })
+    }
+
+    fn observation(
+        &mut self,
+        test_name: &str,
+        lane: &str,
+        seed: u64,
+        failure_domain: &str,
+        label: MockSemanticLabel,
+    ) -> Result<ReferenceModelObservation, Box<dyn Error>> {
+        let spec = VirtualCameraSpec {
+            capture_id: CapsuleId::parse(format!("capture:inv092:{test_name}:{lane}"))?,
+            sensor_id: SensorId::parse(format!("sensor:inv092:{test_name}:{lane}"))?,
+            seed,
+            packet_count: 3,
+            packet_bytes: 32,
+            start_ns: i128::from(seed) * 10_000,
+            period_ns: 1_000_000,
+            uncertainty_ns: 100,
+        };
+        let capture = run_reference_capture(
+            &spec,
+            &DeliveryPlan::identity(spec.packet_count)?,
+            &mut self.objects,
+            &mut self.authority,
+        )?;
+        let model = MockModelSpec::new(
+            format!("mock:inv092:{test_name}:{lane}:v1"),
+            MockModelScript::Fixed {
+                label,
+                probability: ProbabilityInterval::new(0.9, 1.0)?,
+            },
+        )?;
+        let result = execute_mock_model(&model, &capture, &mut self.objects)?;
+        let first = capture
+            .source_packets
+            .first()
+            .ok_or(ReferenceError::InvalidSpec("source_packet_count"))?;
+        let last = capture
+            .source_packets
+            .last()
+            .ok_or(ReferenceError::InvalidSpec("source_packet_count"))?;
+        Ok(ReferenceModelObservation::new(
+            result,
+            failure_domain,
+            CaptureInterval::new(first.capture.earliest, last.capture.latest)?,
+        )?)
+    }
+
+    fn publish_corroborated_decision(
+        &mut self,
+        name: &str,
+    ) -> Result<(ReferencePolicyDecision, ReferenceEventReceipt), Box<dyn Error>> {
+        let obs_a = self.observation(
+            name,
+            "lane_alpha",
+            70,
+            "power:alpha",
+            MockSemanticLabel::PersonLike,
+        )?;
+        let obs_b = self.observation(
+            name,
+            "lane_beta",
+            71,
+            "power:beta",
+            MockSemanticLabel::PersonLike,
+        )?;
+        let decision = evaluate_unknown_presence(
+            EventId::parse(format!("event:inv092:{name}"))?,
+            vec![obs_a, obs_b],
+        )?;
+        let receipt = publish_reference_event(&decision, &mut self.objects, &mut self.authority)?;
+        Ok((decision, receipt))
+    }
+}
+
+impl Drop for TestHarness {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[test]
+fn test_inv092_pipeline_compilation_and_budget_enforcement() -> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("pipeline")?;
+    let (decision, receipt) = harness.publish_corroborated_decision("pipeline")?;
+
+    let req = ReferenceSituationRequest {
+        mission_id: MissionId::parse("mission:inv092:pipeline")?,
+        session_id: SessionId::parse("session:inv092:pipeline")?,
+        principal_id: PrincipalId::parse("principal:inv092:pipeline")?,
+        objective_id: "objective:inv092:pipeline".to_owned(),
+        revision: 1,
+        contract_basis: test_basis(),
+        previous_anchor: None,
+        decision: &decision,
+        event_receipt: &receipt,
+        alert_plan: None,
+        alert_outcome: None,
+        coverage_witness: None,
+        available_capabilities: BTreeSet::from(["capability:alert.prepare".to_owned()]),
+        created_at: TimestampNs(1_000_000),
+    };
+
+    // 1. Full compilation through the canonical reference situation pipeline:
+    let situation = compile_reference_situation(req.clone(), &harness.authority)?;
+    assert_eq!(
+        situation.verify()?,
+        situation.capsule.decision_fingerprint()
+    );
+
+    // 2. Publication with ample budget compiles, validates, and preserves critical items:
+    let publ = compile_reference_situation_publication(
+        req.clone(),
+        &harness.authority,
+        &test_spec(10_000)?,
+    )?;
+    assert_eq!(publ.verify()?, publ.publication_digest);
+
+    // Protected world must be present in context_pack.items:
+    let has_world = publ
+        .context_pack
+        .items
+        .iter()
+        .any(|item| item.kind == "protected_world");
+    assert!(has_world, "Protected world item missing from context pack!");
+    assert!(publ.compression_receipt.critical_preservation.is_lossless());
+
+    // 3. Constrained budget must fail closed with BudgetExhausted, never silently drop critical items:
+    let tiny_spec = ReferenceProjectionSpec {
+        view_id: "AVIEW-INV092-TINY".to_owned(),
+        available_resources: BudgetVector::builder()
+            .latency_ms(1_000)
+            .tokens(10)
+            .bytes(100_000)
+            .build()?,
+        reserved_resources: BudgetVector::builder()
+            .latency_ms(10)
+            .tokens(1)
+            .bytes(100)
+            .build()?,
+        pressure: ResourcePressure::Nominal,
+        degraded_dimensions: BTreeSet::new(),
+        target_tokens: 5,
+    };
+    let tiny_err = compile_reference_situation_publication(req, &harness.authority, &tiny_spec);
+    assert!(matches!(
+        tiny_err,
+        Err(ReferenceError::Contract(ContractError::BudgetExhausted))
+    ));
+
     Ok(())
 }
