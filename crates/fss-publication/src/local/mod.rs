@@ -45,18 +45,23 @@
 //! `orphaned_temps`. Nothing found on open is deleted implicitly.
 //!
 //! Filesystem access is scoped by the root path passed to `open`, matching `fss-object`'s spool
-//! and `fss-ledger`'s journal. No `Cx` capability is threaded yet.
+//! and `fss-ledger`'s journal. No `Cx` capability is threaded yet. Every filesystem call the
+//! publisher makes, and every call its owned spool makes, goes through one
+//! [`fss_object::SpoolIo`] capability; [`LocalRootPublisher::open`] uses
+//! [`fss_object::HostSpoolIo`], which performs exactly the host `std::fs` call.
 //!
 //! # Fault injection
 //!
-//! Two test seams exist, and neither is reachable through [`LocalRootPublisher::open`].
+//! Three test seams exist, and none is reachable through [`LocalRootPublisher::open`].
 //! [`LocalRootPublisher::inject_crash_at`] arms a crash at a [`PublishCutPoint`]: the call returns
 //! [`LocalPublicationError::InjectedCrash`] and the instance behaves as a dead process.
 //! [`LocalRootPublisher::open_with_injected_io_fault`] is the only way to arm an
 //! [`InjectedIoFault`]: the root rename or the roots-directory fsync after it returns the
 //! configured [`io::ErrorKind`] instead of touching the filesystem, and the publisher then takes
 //! exactly the error path a real failure of that operation takes. The fault is one-shot, and no
-//! method arms one on an already open instance.
+//! method arms one on an already open instance. [`LocalRootPublisher::open_with_io`] replaces
+//! the host capability for the publisher and its spool together, so a test can count, fail, or
+//! interrupt every filesystem call of open, staging, publication, and recovery in one order.
 
 mod error;
 mod record;
@@ -64,14 +69,15 @@ mod record;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
-use std::fs::{self, File, OpenOptions, TryLockError};
-use std::io::{self, Read, Write};
+use std::fs::{self, File, TryLockError};
+use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use fss_core::{CanonicalEncode, ContentDigest, TombstoneRecord};
 use fss_object::{
-    MAX_MANIFEST_CHILDREN, ObjectManifest, SpoolError, SpoolLimits, SpoolObjectState,
-    SpoolRecoveryReport, StagingSpool, VerifiedObjectCatalog,
+    HostSpoolIo, MAX_MANIFEST_CHILDREN, ObjectManifest, SpoolError, SpoolIo, SpoolLimits,
+    SpoolObjectState, SpoolRecoveryReport, StagingSpool, VerifiedObjectCatalog,
 };
 
 pub use error::{
@@ -489,6 +495,7 @@ struct RootEntry {
 /// Exclusive owner of one root-last local publication directory.
 #[derive(Debug)]
 pub struct LocalRootPublisher {
+    io: Arc<dyn SpoolIo>,
     root: PathBuf,
     roots_dir: PathBuf,
     tombstones_dir: PathBuf,
@@ -516,26 +523,52 @@ impl LocalRootPublisher {
         root: impl AsRef<Path>,
         limits: LocalPublicationLimits,
     ) -> Result<Self, LocalPublicationError> {
+        Self::open_through(root.as_ref(), limits, Arc::new(HostSpoolIo))
+    }
+
+    /// Test-only constructor: [`Self::open`] with every filesystem call routed through `io`.
+    ///
+    /// The same capability is handed to the owned [`StagingSpool`], so one `io` value observes
+    /// every call of open, recovery, staging, publication, tombstoning, and cleanup, in the order
+    /// they are made. [`Self::open`] passes [`HostSpoolIo`], which performs exactly the host
+    /// `std::fs` call. Use it to count, fail, or interrupt filesystem calls in failure-path tests,
+    /// never in production configuration.
+    pub fn open_with_io(
+        root: impl AsRef<Path>,
+        limits: LocalPublicationLimits,
+        io: Arc<dyn SpoolIo>,
+    ) -> Result<Self, LocalPublicationError> {
+        Self::open_through(root.as_ref(), limits, io)
+    }
+
+    fn open_through(
+        root: &Path,
+        limits: LocalPublicationLimits,
+        io: Arc<dyn SpoolIo>,
+    ) -> Result<Self, LocalPublicationError> {
         let limits = limits.validate()?;
-        let root = root.as_ref().to_path_buf();
-        fs::create_dir_all(&root)
+        let root = root.to_path_buf();
+        io.create_dir_all(&root)
             .map_err(|error| io_error(LocalIoOperation::CreateDirectory, &root, &error))?;
-        let metadata = fs::symlink_metadata(&root)
+        let metadata = io
+            .symlink_metadata(&root)
             .map_err(|error| io_error(LocalIoOperation::Inspect, &root, &error))?;
         if !metadata.file_type().is_dir() {
             return Err(LocalPublicationError::InvalidLayout { path: root });
         }
-        let lock = acquire_lock(&root)?;
+        let lock = acquire_lock(io.as_ref(), &root)?;
         let roots_dir = root.join(LOCAL_ROOTS_DIR);
         let tombstones_dir = root.join(LOCAL_TOMBSTONES_DIR);
-        ensure_subdirectory(&roots_dir)?;
-        ensure_subdirectory(&tombstones_dir)?;
-        let spool = StagingSpool::open(root.join(LOCAL_SPOOL_DIR), limits.spool)
-            .map_err(LocalPublicationError::Spool)?;
-        sync_directory(&root)
+        ensure_subdirectory(io.as_ref(), &roots_dir)?;
+        ensure_subdirectory(io.as_ref(), &tombstones_dir)?;
+        let spool =
+            StagingSpool::open_with_io(root.join(LOCAL_SPOOL_DIR), limits.spool, Arc::clone(&io))
+                .map_err(LocalPublicationError::Spool)?;
+        io.sync_directory(&root)
             .map_err(|error| io_error(LocalIoOperation::SyncDirectory, &root, &error))?;
 
         let mut publisher = Self {
+            io,
             root,
             roots_dir,
             tombstones_dir,
@@ -750,7 +783,7 @@ impl LocalRootPublisher {
             self.remove_temp(&temp_relative, &temp_path)?;
             return Err(error);
         }
-        match fs::symlink_metadata(&target_path) {
+        match self.io.symlink_metadata(&target_path) {
             Ok(_) => {
                 self.remove_temp(&temp_relative, &temp_path)?;
                 return Err(LocalPublicationError::InvalidLayout { path: target_path });
@@ -765,7 +798,7 @@ impl LocalRootPublisher {
         // 5. Commit point: the rename makes the root visible.
         let renamed = match self.take_io_fault(IoFaultPoint::RootRename) {
             Some(kind) => Err(io::Error::from(kind)),
-            None => fs::rename(&temp_path, &target_path),
+            None => self.io.rename(&temp_path, &target_path),
         };
         if let Err(error) = renamed {
             self.remove_temp(&temp_relative, &temp_path)?;
@@ -792,7 +825,7 @@ impl LocalRootPublisher {
         // 6. The directory fsync makes the rename durable.
         let synced = match self.take_io_fault(IoFaultPoint::RootDirectorySync) {
             Some(kind) => Err(io::Error::from(kind)),
-            None => sync_directory(&self.roots_dir),
+            None => self.io.sync_directory(&self.roots_dir),
         };
         if let Err(error) = synced {
             self.poisoned = true;
@@ -874,11 +907,11 @@ impl LocalRootPublisher {
         let temp_path = self.root.join(&temp_relative);
         let target_path = self.tombstones_dir.join(&name);
         self.write_temp(&temp_relative, &temp_path, &bytes)?;
-        if let Err(error) = fs::rename(&temp_path, &target_path) {
+        if let Err(error) = self.io.rename(&temp_path, &target_path) {
             self.remove_temp(&temp_relative, &temp_path)?;
             return Err(io_error(LocalIoOperation::Rename, &target_path, &error));
         }
-        if let Err(error) = sync_directory(&self.tombstones_dir) {
+        if let Err(error) = self.io.sync_directory(&self.tombstones_dir) {
             self.poisoned = true;
             return Err(LocalPublicationError::Indeterminate {
                 path: target_path,
@@ -896,9 +929,10 @@ impl LocalRootPublisher {
         let mut removed = 0;
         for relative in self.orphan_temps.clone() {
             let path = self.root.join(&relative);
-            match fs::symlink_metadata(&path) {
+            match self.io.symlink_metadata(&path) {
                 Ok(metadata) if metadata.file_type().is_file() => {
-                    fs::remove_file(&path)
+                    self.io
+                        .remove_file(&path)
                         .map_err(|error| io_error(LocalIoOperation::RemoveTemp, &path, &error))?;
                     removed += 1;
                 }
@@ -909,7 +943,8 @@ impl LocalRootPublisher {
             self.orphan_temps.remove(&relative);
         }
         for directory in [&self.roots_dir, &self.tombstones_dir] {
-            sync_directory(directory)
+            self.io
+                .sync_directory(directory)
                 .map_err(|error| io_error(LocalIoOperation::SyncDirectory, directory, &error))?;
         }
         Ok(removed)
@@ -950,7 +985,7 @@ impl LocalRootPublisher {
             _ => return Err(LocalPublicationError::BrokenSlot { slot: slot.clone() }),
         };
         let path = self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
-        match read_bounded(&path, MAX_ROOT_RECORD_BYTES)? {
+        match read_bounded(self.io.as_ref(), &path, MAX_ROOT_RECORD_BYTES)? {
             Some(bytes) if ContentDigest::sha256(&bytes) == record_digest => Ok(()),
             _ => Err(LocalPublicationError::BrokenSlot { slot: slot.clone() }),
         }
@@ -1122,7 +1157,7 @@ impl LocalRootPublisher {
         path: &Path,
         bytes: &[u8],
     ) -> Result<(), LocalPublicationError> {
-        let mut file = match OpenOptions::new().create_new(true).write(true).open(path) {
+        let mut file = match self.io.create_new(path) {
             Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
                 return Err(LocalPublicationError::OrphanedTemp {
@@ -1131,14 +1166,15 @@ impl LocalRootPublisher {
             }
             Err(error) => return Err(io_error(LocalIoOperation::CreateTemp, path, &error)),
         };
-        let written = file.write_all(bytes).and_then(|()| file.sync_all());
+        let written =
+            write_all(self.io.as_ref(), &mut file, bytes).and_then(|()| self.io.sync_file(&file));
         drop(file);
         if let Err(error) = written {
             self.remove_temp(relative, path)?;
             return Err(io_error(LocalIoOperation::WriteTemp, path, &error));
         }
         let limit = bytes.len() as u64;
-        match read_bounded(path, limit) {
+        match read_bounded(self.io.as_ref(), path, limit) {
             Ok(Some(read_back)) if read_back == bytes => Ok(()),
             Ok(_) => {
                 self.remove_temp(relative, path)?;
@@ -1158,7 +1194,7 @@ impl LocalRootPublisher {
     /// Removes a temporary record this call created. If removal fails, the path is remembered
     /// as an orphan so it is never silently reused, and the removal failure is returned.
     fn remove_temp(&mut self, relative: &Path, path: &Path) -> Result<(), LocalPublicationError> {
-        match fs::remove_file(path) {
+        match self.io.remove_file(path) {
             Ok(()) => {}
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
@@ -1167,7 +1203,8 @@ impl LocalRootPublisher {
             }
         }
         let parent = path.parent().unwrap_or(&self.root).to_path_buf();
-        sync_directory(&parent)
+        self.io
+            .sync_directory(&parent)
             .map_err(|error| io_error(LocalIoOperation::SyncDirectory, &parent, &error))
     }
 
@@ -1192,7 +1229,7 @@ impl LocalRootPublisher {
             }
         })?;
         let path = self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
-        match read_bounded(&path, MAX_ROOT_RECORD_BYTES)? {
+        match read_bounded(self.io.as_ref(), &path, MAX_ROOT_RECORD_BYTES)? {
             Some(bytes) if ContentDigest::sha256(&bytes) == visible.record_digest => {}
             _ => return Err(LocalPublicationError::BrokenSlot { slot: slot.clone() }),
         }
@@ -1233,7 +1270,7 @@ impl LocalRootPublisher {
             ..LocalRecoveryReport::default()
         };
 
-        for (name, _) in scan_directory(&self.root, TOP_LEVEL_SCAN_BOUND)? {
+        for (name, _) in scan_directory(self.io.as_ref(), &self.root, TOP_LEVEL_SCAN_BOUND)? {
             let known = [
                 LOCAL_LOCK_FILE,
                 LOCAL_SPOOL_DIR,
@@ -1249,7 +1286,8 @@ impl LocalRootPublisher {
         self.recover_roots(&mut report)?;
 
         for directory in [&self.roots_dir, &self.tombstones_dir] {
-            sync_directory(directory)
+            self.io
+                .sync_directory(directory)
                 .map_err(|error| io_error(LocalIoOperation::SyncDirectory, directory, &error))?;
         }
         let mut referenced = BTreeSet::new();
@@ -1279,7 +1317,11 @@ impl LocalRootPublisher {
         &mut self,
         report: &mut LocalRecoveryReport,
     ) -> Result<(), LocalPublicationError> {
-        let entries = scan_directory(&self.tombstones_dir, self.limits.max_scan_entries)?;
+        let entries = scan_directory(
+            self.io.as_ref(),
+            &self.tombstones_dir,
+            self.limits.max_scan_entries,
+        )?;
         for (name, file_type) in entries {
             let relative = Path::new(LOCAL_TOMBSTONES_DIR).join(&name);
             let Some(text) = name.to_str() else {
@@ -1308,7 +1350,8 @@ impl LocalRootPublisher {
                 return Err(LocalPublicationError::CorruptTombstone { path: relative });
             }
             let path = self.tombstones_dir.join(&name);
-            let Some(bytes) = read_bounded(&path, MAX_TOMBSTONE_RECORD_BYTES)? else {
+            let Some(bytes) = read_bounded(self.io.as_ref(), &path, MAX_TOMBSTONE_RECORD_BYTES)?
+            else {
                 return Err(LocalPublicationError::CorruptTombstone { path: relative });
             };
             let record = match record::decode_tombstone_record(&bytes) {
@@ -1331,7 +1374,11 @@ impl LocalRootPublisher {
         &mut self,
         report: &mut LocalRecoveryReport,
     ) -> Result<(), LocalPublicationError> {
-        let entries = scan_directory(&self.roots_dir, self.limits.max_scan_entries)?;
+        let entries = scan_directory(
+            self.io.as_ref(),
+            &self.roots_dir,
+            self.limits.max_scan_entries,
+        )?;
         for (name, file_type) in entries {
             let relative = Path::new(LOCAL_ROOTS_DIR).join(&name);
             let Some(text) = name.to_str() else {
@@ -1385,7 +1432,7 @@ impl LocalRootPublisher {
         slot: &SlotName,
     ) -> Result<Result<RootEntry, BrokenRootReason>, LocalPublicationError> {
         let path = self.roots_dir.join(format!("{slot}{ROOT_RECORD_SUFFIX}"));
-        let Some(bytes) = read_bounded(&path, MAX_ROOT_RECORD_BYTES)? else {
+        let Some(bytes) = read_bounded(self.io.as_ref(), &path, MAX_ROOT_RECORD_BYTES)? else {
             return Ok(Err(BrokenRootReason::RecordTooLarge));
         };
         let decoded = match record::decode_root_record(&bytes) {
@@ -1459,9 +1506,9 @@ fn io_error(operation: LocalIoOperation, path: &Path, error: &io::Error) -> Loca
     }
 }
 
-fn acquire_lock(root: &Path) -> Result<File, LocalPublicationError> {
+fn acquire_lock(io: &dyn SpoolIo, root: &Path) -> Result<File, LocalPublicationError> {
     let path = root.join(LOCAL_LOCK_FILE);
-    match fs::symlink_metadata(&path) {
+    match io.symlink_metadata(&path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
             return Err(LocalPublicationError::InvalidLayout { path });
         }
@@ -1469,27 +1516,24 @@ fn acquire_lock(root: &Path) -> Result<File, LocalPublicationError> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(error) => return Err(io_error(LocalIoOperation::Inspect, &path, &error)),
     }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(&path)
+    let file = io
+        .open_lock(&path)
         .map_err(|error| io_error(LocalIoOperation::OpenLock, &path, &error))?;
-    match file.try_lock() {
+    match io.try_lock(&file) {
         Ok(()) => Ok(file),
         Err(TryLockError::WouldBlock) => Err(LocalPublicationError::Locked { path }),
         Err(TryLockError::Error(error)) => Err(io_error(LocalIoOperation::Lock, &path, &error)),
     }
 }
 
-fn ensure_subdirectory(path: &Path) -> Result<(), LocalPublicationError> {
-    match fs::create_dir(path) {
+fn ensure_subdirectory(io: &dyn SpoolIo, path: &Path) -> Result<(), LocalPublicationError> {
+    match io.create_dir(path) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
         Err(error) => return Err(io_error(LocalIoOperation::CreateDirectory, path, &error)),
     }
-    let metadata = fs::symlink_metadata(path)
+    let metadata = io
+        .symlink_metadata(path)
         .map_err(|error| io_error(LocalIoOperation::Inspect, path, &error))?;
     if !metadata.file_type().is_dir() {
         return Err(LocalPublicationError::InvalidLayout {
@@ -1499,18 +1543,37 @@ fn ensure_subdirectory(path: &Path) -> Result<(), LocalPublicationError> {
     Ok(())
 }
 
-fn sync_directory(path: &Path) -> io::Result<()> {
-    File::open(path)?.sync_all()
+/// Writes all of `bytes` through `io`, resuming after partial writes.
+///
+/// A write that accepts zero bytes is [`io::ErrorKind::WriteZero`]. Any error, including
+/// [`io::ErrorKind::Interrupted`], is returned rather than retried, as the spool's own staging
+/// write does, so the loop is bounded: every iteration advances by at least one byte.
+fn write_all(io: &dyn SpoolIo, file: &mut File, bytes: &[u8]) -> io::Result<()> {
+    let mut written = 0_usize;
+    while let Some(rest) = bytes.get(written..).filter(|rest| !rest.is_empty()) {
+        match io.write(file, rest)? {
+            0 => {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "failed to write whole buffer",
+                ));
+            }
+            accepted => written = written.saturating_add(accepted.min(rest.len())),
+        }
+    }
+    Ok(())
 }
 
 fn scan_directory(
+    io: &dyn SpoolIo,
     dir: &Path,
     bound: usize,
 ) -> Result<Vec<(OsString, fs::FileType)>, LocalPublicationError> {
-    let entries = fs::read_dir(dir)
+    let mut entries = io
+        .read_dir(dir)
         .map_err(|error| io_error(LocalIoOperation::ScanDirectory, dir, &error))?;
     let mut found = Vec::new();
-    for entry in entries {
+    while let Some(entry) = io.next_dir_entry(&mut entries) {
         let entry =
             entry.map_err(|error| io_error(LocalIoOperation::ScanDirectory, dir, &error))?;
         if found.len() >= bound {
@@ -1519,8 +1582,8 @@ fn scan_directory(
                 maximum: bound,
             });
         }
-        let file_type = entry
-            .file_type()
+        let file_type = io
+            .entry_file_type(&entry)
             .map_err(|error| io_error(LocalIoOperation::Inspect, &entry.path(), &error))?;
         found.push((entry.file_name(), file_type));
     }
@@ -1529,12 +1592,16 @@ fn scan_directory(
 }
 
 /// Reads at most `limit` bytes; `Ok(None)` means the file is longer than `limit`.
-fn read_bounded(path: &Path, limit: u64) -> Result<Option<Vec<u8>>, LocalPublicationError> {
-    let file =
-        File::open(path).map_err(|error| io_error(LocalIoOperation::ReadRecord, path, &error))?;
-    let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)
+fn read_bounded(
+    io: &dyn SpoolIo,
+    path: &Path,
+    limit: u64,
+) -> Result<Option<Vec<u8>>, LocalPublicationError> {
+    let mut file = io
+        .open_read(path)
+        .map_err(|error| io_error(LocalIoOperation::ReadRecord, path, &error))?;
+    let bytes = io
+        .read_bounded(&mut file, limit.saturating_add(1))
         .map_err(|error| io_error(LocalIoOperation::ReadRecord, path, &error))?;
     if bytes.len() as u64 > limit {
         return Ok(None);
