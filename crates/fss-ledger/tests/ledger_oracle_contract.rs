@@ -820,8 +820,7 @@ fn batch_capacity_admits_exactly_the_bound_and_rejects_bound_plus_one() -> TestR
     assert_eq!(oracle.batch_count(), 3);
     let full = oracle.fingerprint();
 
-    let fourth = oracle.prepare_batch(batch_id("4")?, vec![create("4", "4")?], [])?;
-    let error = expect_err(oracle.append(fourth))?;
+    let error = expect_err(oracle.prepare_batch(batch_id("4")?, vec![create("4", "4")?], []))?;
     assert_eq!(error, OracleError::CapacityExhausted { max_batches: 3 });
     assert_eq!(error.code(), "ERR-LEDGER-ORACLE-CAPACITY-001");
     assert_eq!(error.guidance(), OracleGuidance::ArchiveOrRotate);
@@ -1069,9 +1068,14 @@ fn random_history(seed: u64, length: u64) -> Result<Vec<EvidenceDeltaBatch>, Box
         for slot in chosen {
             let object_id = ObjectId::parse(format!("object:prop:{slot}"))?;
             let head = builder.view_at(builder.head_sequence())?;
-            let prior = match head.object(&object_id) {
-                ObjectRead::Present { revision, .. } => Some(revision.generation),
-                ObjectRead::AbsentAtAnchor { .. } => None,
+            let (prior, plane) = match head.object(&object_id) {
+                ObjectRead::Present { revision, .. } => (Some(revision.generation), revision.plane),
+                ObjectRead::AbsentAtAnchor { .. } => {
+                    let plane = *PLANES
+                        .get(usize::try_from(rng.below(3))?)
+                        .ok_or("plane index")?;
+                    (None, plane)
+                }
             };
             let new_generation = match prior {
                 Some(generation) => generation.checked_add(1).ok_or("generation overflow")?,
@@ -1080,9 +1084,6 @@ fn random_history(seed: u64, length: u64) -> Result<Vec<EvidenceDeltaBatch>, Box
             let family = FAMILIES
                 .get(usize::try_from(rng.below(3))?)
                 .ok_or("family index")?;
-            let plane = *PLANES
-                .get(usize::try_from(rng.below(3))?)
-                .ok_or("plane index")?;
             let salt = rng.next_u64();
             deltas.push(EvidenceDelta {
                 delta_id: format!("delta:{seed}:{step}:{slot}"),

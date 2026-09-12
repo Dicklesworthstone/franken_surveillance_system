@@ -51,6 +51,13 @@ pub enum DurableLedgerError {
         /// Content digest of the offered batch.
         offered_digest: ContentDigest,
     },
+    /// A journal record header sequence does not match the decoded batch commit sequence.
+    RecordSequenceMismatch {
+        /// Sequence recorded in the journal record header.
+        record_sequence: u64,
+        /// Commit sequence declared by the decoded batch new anchor.
+        batch_commit_sequence: u64,
+    },
 }
 
 impl DurableLedgerError {
@@ -60,7 +67,10 @@ impl DurableLedgerError {
         match self {
             Self::Journal(error) => error.stable_id(),
             Self::BatchIdConflict { .. } => Some(ERR_LEDGER_DURABLE_BATCH_ID_CONFLICT_001),
-            Self::Codec(_) | Self::Contract(_) | Self::UnexpectedRecordKind { .. } => None,
+            Self::Codec(_)
+            | Self::Contract(_)
+            | Self::UnexpectedRecordKind { .. }
+            | Self::RecordSequenceMismatch { .. } => None,
         }
     }
 }
@@ -74,6 +84,13 @@ impl fmt::Display for DurableLedgerError {
             Self::UnexpectedRecordKind { sequence, kind } => write!(
                 formatter,
                 "durable ledger record {sequence} has unsupported kind {kind}"
+            ),
+            Self::RecordSequenceMismatch {
+                record_sequence,
+                batch_commit_sequence,
+            } => write!(
+                formatter,
+                "durable ledger journal record sequence {record_sequence} does not match batch commit sequence {batch_commit_sequence}"
             ),
             Self::BatchIdConflict {
                 batch_id,
@@ -94,7 +111,9 @@ impl Error for DurableLedgerError {
             Self::Journal(error) => Some(error),
             Self::Codec(error) => Some(error),
             Self::Contract(error) => Some(error),
-            Self::UnexpectedRecordKind { .. } | Self::BatchIdConflict { .. } => None,
+            Self::UnexpectedRecordKind { .. }
+            | Self::BatchIdConflict { .. }
+            | Self::RecordSequenceMismatch { .. } => None,
         }
     }
 }
@@ -412,6 +431,12 @@ fn replay_report(
             });
         }
         let batch = decode_batch(record.payload())?;
+        if record.sequence() != batch.new_anchor.commit_sequence {
+            return Err(DurableLedgerError::RecordSequenceMismatch {
+                record_sequence: record.sequence(),
+                batch_commit_sequence: batch.new_anchor.commit_sequence,
+            });
+        }
         identities.check_not_reused(&batch)?;
         let batch_id = batch.batch_id.clone();
         let identity = CommittedIdentity::of(&batch);

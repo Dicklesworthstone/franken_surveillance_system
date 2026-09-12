@@ -27,7 +27,7 @@ use std::fmt;
 
 use fss_core::{
     BatchId, CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, EvidenceDelta,
-    EvidenceDeltaBatch, LedgerAnchor, LedgerSnapshot, ObjectId, ObjectRevision,
+    EvidenceDeltaBatch, LedgerAnchor, LedgerSnapshot, ObjectId, ObjectRevision, Plane,
 };
 
 /// Registered digest domain for the oracle's append-only history chain root.
@@ -238,6 +238,17 @@ pub enum OracleError {
     },
     /// Canonical encoding of a digest input failed its encoder bound.
     Encoding(ContractError),
+    /// A delta violates a canonical evidence contract.
+    Contract(ContractError),
+    /// A delta attempts to mutate an object's semantic plane across revisions.
+    PlaneConflict {
+        /// Object identity.
+        object_id: ObjectId,
+        /// Semantic plane committed at prior revision.
+        committed_plane: Plane,
+        /// Semantic plane attempted in this delta.
+        delta_plane: Plane,
+    },
 }
 
 impl OracleError {
@@ -263,6 +274,8 @@ impl OracleError {
             Self::StateRootMismatch { .. } => "ERR-LEDGER-ORACLE-STATE-ROOT-MISMATCH-001",
             Self::StaleStage { .. } => "ERR-LEDGER-ORACLE-STALE-STAGE-001",
             Self::Encoding(_) => "ERR-LEDGER-ORACLE-ENCODING-001",
+            Self::Contract(_) => "ERR-LEDGER-ORACLE-CONTRACT-001",
+            Self::PlaneConflict { .. } => "ERR-LEDGER-ORACLE-PLANE-CONFLICT-001",
         }
     }
 
@@ -287,7 +300,9 @@ impl OracleError {
             | Self::DuplicateObjectInBatch { .. }
             | Self::GenerationConflict { .. }
             | Self::StateRootMismatch { .. }
-            | Self::Encoding(_) => OracleGuidance::RejectInput,
+            | Self::Encoding(_)
+            | Self::Contract(_)
+            | Self::PlaneConflict { .. } => OracleGuidance::RejectInput,
         }
     }
 }
@@ -400,6 +415,15 @@ impl fmt::Display for OracleError {
                 "stage validated against sequence {staged_basis_sequence}; head is {head_sequence}"
             ),
             Self::Encoding(error) => write!(formatter, "canonical encoding failed: {error}"),
+            Self::Contract(error) => write!(formatter, "canonical contract violated: {error}"),
+            Self::PlaneConflict {
+                object_id,
+                committed_plane,
+                delta_plane,
+            } => write!(
+                formatter,
+                "object {object_id} committed plane {committed_plane:?}, delta claims {delta_plane:?}"
+            ),
         }
     }
 }
@@ -407,7 +431,7 @@ impl fmt::Display for OracleError {
 impl Error for OracleError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::Encoding(error) => Some(error),
+            Self::Encoding(error) | Self::Contract(error) => Some(error),
             _ => None,
         }
     }
@@ -550,7 +574,7 @@ impl OracleLimits {
 ///
 /// A stage is single-use and bound to the exact head (sequence and history root) it was validated
 /// against. Dropping it cancels the publication.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct StagedBatch {
     batch: EvidenceDeltaBatch,
     basis_sequence: u64,
@@ -567,10 +591,28 @@ impl StagedBatch {
         &self.batch
     }
 
+    /// Consumes the staged batch, returning the inner validated evidence delta batch.
+    #[must_use]
+    pub fn into_batch(self) -> EvidenceDeltaBatch {
+        self.batch
+    }
+
     /// Basis commit sequence the stage was validated against.
     #[must_use]
     pub const fn basis_sequence(&self) -> u64 {
         self.basis_sequence
+    }
+
+    /// Basis history root the stage was validated against.
+    #[must_use]
+    pub const fn basis_history_root(&self) -> ContentDigest {
+        self.basis_history_root
+    }
+
+    /// Revisions applied by this staged batch.
+    #[must_use]
+    pub fn changes(&self) -> &[(ObjectId, ObjectRevision)] {
+        &self.changes
     }
 
     /// History root the oracle will have if this stage commits.
@@ -796,6 +838,11 @@ impl LedgerOracle {
         mut deltas: Vec<EvidenceDelta>,
         child_roots: impl IntoIterator<Item = ContentDigest>,
     ) -> Result<EvidenceDeltaBatch, OracleError> {
+        if self.entries.len() >= self.limits.max_batches {
+            return Err(OracleError::CapacityExhausted {
+                max_batches: self.limits.max_batches,
+            });
+        }
         deltas.sort_by(|left, right| delta_order_key(left).cmp(&delta_order_key(right)));
         let mut children: Vec<ContentDigest> = child_roots.into_iter().collect();
         children.sort_unstable();
@@ -803,6 +850,7 @@ impl LedgerOracle {
         let basis_anchor = self.head_anchor().clone();
         check_counts(deltas.len(), children.len())?;
         check_texts(&deltas, &basis_anchor, &basis_anchor)?;
+        check_deltas(&deltas)?;
         let (next_objects, _) = apply_deltas(&self.head_objects, &deltas, self.limits.max_objects)?;
         let mut new_anchor = basis_anchor.clone();
         new_anchor.commit_sequence = basis_anchor
@@ -822,6 +870,31 @@ impl LedgerOracle {
         Ok(batch)
     }
 
+    /// Checks whether `staged` is still valid against the current head without consuming it.
+    pub fn check_stage(&self, staged: &StagedBatch) -> Result<(), OracleError> {
+        let head_sequence = self.head_sequence();
+        if staged.basis_sequence != head_sequence
+            || staged.basis_history_root != self.head_history_root()
+        {
+            return Err(OracleError::StaleStage {
+                staged_basis_sequence: staged.basis_sequence,
+                head_sequence,
+            });
+        }
+        if self.entries.len() >= self.limits.max_batches {
+            return Err(OracleError::CapacityExhausted {
+                max_batches: self.limits.max_batches,
+            });
+        }
+        if staged.next_objects.len() > self.limits.max_objects {
+            return Err(OracleError::ObjectCapacityExhausted {
+                max_objects: self.limits.max_objects,
+                required: staged.next_objects.len(),
+            });
+        }
+        Ok(())
+    }
+
     /// Validates `batch` completely against the head and returns a private stage.
     ///
     /// Checks run in a fixed order: per-batch bounds, canonical ordering, batch digest, identity
@@ -830,6 +903,7 @@ impl LedgerOracle {
     pub fn stage(&self, batch: EvidenceDeltaBatch) -> Result<StagedBatch, OracleError> {
         check_counts(batch.deltas.len(), batch.children.len())?;
         check_texts(&batch.deltas, &batch.basis_anchor, &batch.new_anchor)?;
+        check_deltas(&batch.deltas)?;
         if !is_canonically_ordered(&batch) {
             return Err(OracleError::NonCanonicalOrdering {
                 batch_id: batch.batch_id,
@@ -1153,6 +1227,18 @@ fn check_texts(
     Ok(())
 }
 
+fn check_deltas(deltas: &[EvidenceDelta]) -> Result<(), OracleError> {
+    for delta in deltas {
+        if delta.delta_id.is_empty() || delta.family.is_empty() {
+            return Err(OracleError::Contract(ContractError::InvalidIdentifier));
+        }
+        if delta.validity.earliest > delta.validity.latest {
+            return Err(OracleError::Contract(ContractError::InvertedTimeInterval));
+        }
+    }
+    Ok(())
+}
+
 fn check_successor(
     basis: &LedgerAnchor,
     successor: &LedgerAnchor,
@@ -1200,9 +1286,8 @@ fn apply_deltas(
                 object_id: delta.object_id.clone(),
             });
         }
-        let committed_generation = basis
-            .get(&delta.object_id)
-            .map(|revision| revision.generation);
+        let committed_revision = basis.get(&delta.object_id);
+        let committed_generation = committed_revision.map(|revision| revision.generation);
         let follows = match committed_generation {
             Some(generation) => {
                 delta.prior_generation == Some(generation)
@@ -1216,6 +1301,15 @@ fn apply_deltas(
                 committed_generation,
                 prior_generation: delta.prior_generation,
                 new_generation: delta.new_generation,
+            });
+        }
+        if let Some(existing) = committed_revision
+            && delta.plane != existing.plane
+        {
+            return Err(OracleError::PlaneConflict {
+                object_id: delta.object_id.clone(),
+                committed_plane: existing.plane,
+                delta_plane: delta.plane,
             });
         }
         let revision = ObjectRevision {
