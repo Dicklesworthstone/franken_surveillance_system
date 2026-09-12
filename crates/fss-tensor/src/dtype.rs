@@ -238,7 +238,7 @@ pub trait TensorScalar: Copy + 'static {
         arr[..len].to_vec()
     }
 
-    /// Decodes the scalar from native-endian bytes without unsafe code.
+    /// Decodes the scalar from native-endian bytes using only safe byte conversion.
     fn from_ne_bytes(bytes: &[u8]) -> Result<Self, TensorError>;
 }
 
