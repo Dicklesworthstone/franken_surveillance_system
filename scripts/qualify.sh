@@ -115,16 +115,20 @@ policy_lane() {
   run dependency-dag-checker-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_dependency_dag_checker.py
   run claim-proof-bundle-checker python3 scripts/claim_proof_bundle_checker.py
   run claim-proof-bundle-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_claim_proof_bundle_checker.py
+  run unsafe-prohibition-checker python3 scripts/unsafe_prohibition_checker.py
+  run unsafe-prohibition-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_unsafe_prohibition_checker.py
   run release-artifact-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_release_artifacts.py
   run diff-check git diff --check
   run shell-syntax bash -n scripts/qualify.sh scripts/release_qualify.sh scripts/publish_to_github.sh
   run python-syntax env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 -m py_compile \
     scripts/check-policy.py scripts/dependency_audit.py scripts/manifest_audit.py scripts/stable_id_audit.py \
     scripts/schema_validate.py scripts/slo_validate.py scripts/architecture_registry_consistency.py \
-    scripts/dependency_dag_checker.py scripts/claim_proof_bundle_checker.py scripts/generate-manifest.py scripts/release_artifacts.py \
+    scripts/dependency_dag_checker.py scripts/claim_proof_bundle_checker.py scripts/unsafe_prohibition_checker.py \
+    scripts/generate-manifest.py scripts/release_artifacts.py \
     tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py \
     tests/test_schema_validate.py tests/test_slo_validate.py tests/test_slo_operation_cost_consistency.py \
-    tests/test_architecture_registry_consistency.py tests/test_dependency_dag_checker.py tests/test_claim_proof_bundle_checker.py
+    tests/test_architecture_registry_consistency.py tests/test_dependency_dag_checker.py \
+    tests/test_claim_proof_bundle_checker.py tests/test_unsafe_prohibition_checker.py
 }
 
 docs_lane() {
