@@ -3,14 +3,15 @@
 #![forbid(unsafe_code)]
 
 use fss_core::belief::{
-    BeliefError, BeliefInterval, Contradiction, ContradictionParams, MAX_CONFLICTING_EVIDENCE,
-    MAX_CONTRADICTION_ID_LEN, MAX_FAILURE_DOMAINS, MAX_STATEMENT_LEN, MAX_UNRESOLVED_WORLDS,
-    MICRO_DENOMINATOR, MIN_CONFLICTING_EVIDENCE, MIN_FAILURE_DOMAINS, MIN_UNRESOLVED_WORLDS,
+    BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction, ContradictionParams,
+    MAX_CONFLICTING_EVIDENCE, MAX_CONTRADICTION_ID_LEN, MAX_FAILURE_DOMAINS, MAX_STATEMENT_LEN,
+    MAX_UNRESOLVED_WORLDS, MICRO_DENOMINATOR, MIN_CONFLICTING_EVIDENCE, MIN_FAILURE_DOMAINS,
+    MIN_UNRESOLVED_WORLDS,
 };
 use fss_core::{
     CalibrationGeneration, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-    ContentDigest, HypothesisDisposition, KnowledgeState, ProvenanceClass, RuntimeOutcome,
-    TimestampNs,
+    ContentDigest, ContractError, HypothesisDisposition, KnowledgeState, ProvenanceClass,
+    RuntimeOutcome, TimestampNs,
 };
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -491,6 +492,442 @@ fn test_contradiction_canonical_roundtrip() -> TestResult {
     assert_eq!(
         original.contradiction_digest(),
         decoded.contradiction_digest()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_1_inverted_float_near_micro_boundary_fails_closed() {
+    let lower = 0.5000004;
+    let upper = 0.5000001;
+    assert!(lower > upper);
+    let res = BeliefInterval::from_f64(lower, upper);
+    assert!(
+        matches!(res, Err(BeliefError::InvertedInterval { .. })),
+        "Inverted float input must fail closed with InvertedInterval, got: {res:?}"
+    );
+}
+
+#[test]
+fn test_finding_2_canonical_decode_rejects_duplicate_and_unsorted_domains()
+-> Result<(), Box<dyn Error>> {
+    let valid = sample_contradiction_params()?;
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(CONTRADICTION_DOMAIN);
+    encoder.text(&valid.contradiction_id);
+    // 2 evidence digests
+    encoder.u64(2);
+    for d in &valid.conflicting_evidence {
+        encoder.digest(*d);
+    }
+    // Non-canonical duplicate domains: count=3, ["domain:a", "domain:a", "domain:b"]
+    encoder.u64(3);
+    encoder.text("domain:a");
+    encoder.text("domain:a");
+    encoder.text("domain:b");
+    // Remainder of valid fields...
+    encoder.u64(valid.unresolved_worlds.len() as u64);
+    for w in &valid.unresolved_worlds {
+        encoder.text(w);
+    }
+    encoder.bool(false);
+    encoder.text(&valid.statement);
+    encoder.bool(false);
+    valid.created_at.encode_canonical(&mut encoder);
+    encoder.text(valid.knowledge_state.as_str());
+    encoder.u8(1);
+    encoder.u8(1);
+    encoder.u8(1);
+
+    let bytes = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let res = Contradiction::decode_canonical(&mut decoder);
+    assert_eq!(
+        res.err(),
+        Some(ContractError::NonCanonicalOrdering),
+        "Canonical decode must reject duplicate elements in set with NonCanonicalOrdering"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_2_canonical_decode_rejects_unsorted_domains() -> Result<(), Box<dyn Error>> {
+    let valid = sample_contradiction_params()?;
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(CONTRADICTION_DOMAIN);
+    encoder.text(&valid.contradiction_id);
+    encoder.u64(2);
+    for d in &valid.conflicting_evidence {
+        encoder.digest(*d);
+    }
+    // Unsorted failure domains: ["domain:z", "domain:a"]
+    encoder.u64(2);
+    encoder.text("domain:z");
+    encoder.text("domain:a");
+    encoder.u64(valid.unresolved_worlds.len() as u64);
+    for w in &valid.unresolved_worlds {
+        encoder.text(w);
+    }
+    encoder.bool(false);
+    encoder.text(&valid.statement);
+    encoder.bool(false);
+    valid.created_at.encode_canonical(&mut encoder);
+    encoder.text(valid.knowledge_state.as_str());
+    encoder.u8(1);
+    encoder.u8(1);
+    encoder.u8(1);
+
+    let bytes = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let res = Contradiction::decode_canonical(&mut decoder);
+    assert_eq!(
+        res.err(),
+        Some(ContractError::NonCanonicalOrdering),
+        "Canonical decode must reject unsorted elements in set with NonCanonicalOrdering"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_2_canonical_decode_rejects_duplicate_evidence() -> Result<(), Box<dyn Error>> {
+    let valid = sample_contradiction_params()?;
+    let d = ContentDigest::sha256(b"same-evidence");
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(CONTRADICTION_DOMAIN);
+    encoder.text(&valid.contradiction_id);
+    // Duplicate evidence digests: [d, d]
+    encoder.u64(2);
+    encoder.digest(d);
+    encoder.digest(d);
+    encoder.u64(valid.failure_domains.len() as u64);
+    for dom in &valid.failure_domains {
+        encoder.text(dom);
+    }
+    encoder.u64(valid.unresolved_worlds.len() as u64);
+    for w in &valid.unresolved_worlds {
+        encoder.text(w);
+    }
+    encoder.bool(false);
+    encoder.text(&valid.statement);
+    encoder.bool(false);
+    valid.created_at.encode_canonical(&mut encoder);
+    encoder.text(valid.knowledge_state.as_str());
+    encoder.u8(1);
+    encoder.u8(1);
+    encoder.u8(1);
+
+    let bytes = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let res = Contradiction::decode_canonical(&mut decoder);
+    assert_eq!(
+        res.err(),
+        Some(ContractError::NonCanonicalOrdering),
+        "Canonical decode must reject duplicate evidence with NonCanonicalOrdering"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_5_evidence_under_min_fails_with_evidence_error_not_invalid_identifier()
+-> Result<(), Box<dyn Error>> {
+    let valid = sample_contradiction_params()?;
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(CONTRADICTION_DOMAIN);
+    encoder.text(&valid.contradiction_id);
+    // Under min: exactly 1 evidence digest (< MIN_CONFLICTING_EVIDENCE = 2)
+    encoder.u64(1);
+    encoder.digest(ContentDigest::sha256(b"only-one"));
+    encoder.u64(valid.failure_domains.len() as u64);
+    for d in &valid.failure_domains {
+        encoder.text(d);
+    }
+    encoder.u64(valid.unresolved_worlds.len() as u64);
+    for w in &valid.unresolved_worlds {
+        encoder.text(w);
+    }
+    encoder.bool(false);
+    encoder.text(&valid.statement);
+    encoder.bool(false);
+    valid.created_at.encode_canonical(&mut encoder);
+    encoder.text(valid.knowledge_state.as_str());
+    encoder.u8(1);
+    encoder.u8(1);
+    encoder.u8(1);
+
+    let bytes = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let res = Contradiction::decode_canonical(&mut decoder);
+    assert_eq!(
+        res.err(),
+        Some(ContractError::EvidenceRequired),
+        "Stream with evidence_count = 1 must reject with EvidenceRequired, not InvalidIdentifier"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_3_known_supported_contradiction_is_active() -> Result<(), Box<dyn Error>> {
+    let mut params = sample_contradiction_params()?;
+    params.knowledge_state = KnowledgeState::Known;
+    params.disposition = HypothesisDisposition::Supported;
+    params.outcome = RuntimeOutcome::Ok;
+    let contra = Contradiction::new(params)?;
+    assert!(
+        contra.is_active(),
+        "A known, supported physical contradiction must be active!"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_4_intersect_uncalibrated_does_not_launder_calibration() -> Result<(), Box<dyn Error>>
+{
+    let cal = test_calibration()?;
+    let calibrated = BeliefInterval::with_calibration(200_000, 800_000, cal)?;
+    let uncalibrated = BeliefInterval::new(600_000, 700_000)?;
+    let fused = calibrated.intersect(&uncalibrated)?;
+    assert_eq!(
+        fused.calibration_generation(),
+        None,
+        "Fusing with uncalibrated evidence must not launder uncalibrated bounds into a calibration generation"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_2_canonical_decode_rejects_unsorted_evidence() -> Result<(), Box<dyn Error>> {
+    let valid = sample_contradiction_params()?;
+    let d1 = ContentDigest::sha256(b"z-evidence");
+    let d2 = ContentDigest::sha256(b"a-evidence");
+    let (greater, lesser) = if d1 > d2 { (d1, d2) } else { (d2, d1) };
+
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(CONTRADICTION_DOMAIN);
+    encoder.text(&valid.contradiction_id);
+    // Unsorted evidence: greater, then lesser
+    encoder.u64(2);
+    encoder.digest(greater);
+    encoder.digest(lesser);
+    encoder.u64(valid.failure_domains.len() as u64);
+    for dom in &valid.failure_domains {
+        encoder.text(dom);
+    }
+    encoder.u64(valid.unresolved_worlds.len() as u64);
+    for w in &valid.unresolved_worlds {
+        encoder.text(w);
+    }
+    encoder.bool(false);
+    encoder.text(&valid.statement);
+    encoder.bool(false);
+    valid.created_at.encode_canonical(&mut encoder);
+    encoder.text(valid.knowledge_state.as_str());
+    encoder.u8(1);
+    encoder.u8(1);
+    encoder.u8(1);
+
+    let bytes = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let res = Contradiction::decode_canonical(&mut decoder);
+    assert_eq!(
+        res.err(),
+        Some(ContractError::NonCanonicalOrdering),
+        "Canonical decode must reject unsorted evidence with NonCanonicalOrdering"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_2_canonical_decode_rejects_duplicate_and_unsorted_worlds()
+-> Result<(), Box<dyn Error>> {
+    let valid = sample_contradiction_params()?;
+
+    // Duplicate worlds
+    let mut enc_dup = CanonicalEncoder::new();
+    enc_dup.text(CONTRADICTION_DOMAIN);
+    enc_dup.text(&valid.contradiction_id);
+    enc_dup.u64(valid.conflicting_evidence.len() as u64);
+    for d in &valid.conflicting_evidence {
+        enc_dup.digest(*d);
+    }
+    enc_dup.u64(valid.failure_domains.len() as u64);
+    for dom in &valid.failure_domains {
+        enc_dup.text(dom);
+    }
+    enc_dup.u64(2);
+    enc_dup.text("world:same");
+    enc_dup.text("world:same");
+    enc_dup.bool(false);
+    enc_dup.text(&valid.statement);
+    enc_dup.bool(false);
+    valid.created_at.encode_canonical(&mut enc_dup);
+    enc_dup.text(valid.knowledge_state.as_str());
+    enc_dup.u8(1);
+    enc_dup.u8(1);
+    enc_dup.u8(1);
+
+    let bytes_dup = enc_dup.finish();
+    let mut dec_dup = CanonicalDecoder::new(&bytes_dup);
+    assert_eq!(
+        Contradiction::decode_canonical(&mut dec_dup).err(),
+        Some(ContractError::NonCanonicalOrdering),
+        "Canonical decode must reject duplicate worlds with NonCanonicalOrdering"
+    );
+
+    // Unsorted worlds
+    let mut enc_unsorted = CanonicalEncoder::new();
+    enc_unsorted.text(CONTRADICTION_DOMAIN);
+    enc_unsorted.text(&valid.contradiction_id);
+    enc_unsorted.u64(valid.conflicting_evidence.len() as u64);
+    for d in &valid.conflicting_evidence {
+        enc_unsorted.digest(*d);
+    }
+    enc_unsorted.u64(valid.failure_domains.len() as u64);
+    for dom in &valid.failure_domains {
+        enc_unsorted.text(dom);
+    }
+    enc_unsorted.u64(2);
+    enc_unsorted.text("world:z");
+    enc_unsorted.text("world:a");
+    enc_unsorted.bool(false);
+    enc_unsorted.text(&valid.statement);
+    enc_unsorted.bool(false);
+    valid.created_at.encode_canonical(&mut enc_unsorted);
+    enc_unsorted.text(valid.knowledge_state.as_str());
+    enc_unsorted.u8(1);
+    enc_unsorted.u8(1);
+    enc_unsorted.u8(1);
+
+    let bytes_unsorted = enc_unsorted.finish();
+    let mut dec_unsorted = CanonicalDecoder::new(&bytes_unsorted);
+    assert_eq!(
+        Contradiction::decode_canonical(&mut dec_unsorted).err(),
+        Some(ContractError::NonCanonicalOrdering),
+        "Canonical decode must reject unsorted worlds with NonCanonicalOrdering"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_3_terminal_disposition_contradiction_is_inactive() -> Result<(), Box<dyn Error>> {
+    let mut params = sample_contradiction_params()?;
+    params.knowledge_state = KnowledgeState::Conflicted;
+
+    // Refuted is inactive even with Conflicted knowledge state
+    params.disposition = HypothesisDisposition::Refuted;
+    let contra_refuted = Contradiction::new(params.clone())?;
+    assert!(
+        !contra_refuted.is_active(),
+        "Refuted contradiction must be inactive"
+    );
+
+    // Resolved is inactive
+    params.disposition = HypothesisDisposition::Resolved;
+    let contra_resolved = Contradiction::new(params.clone())?;
+    assert!(
+        !contra_resolved.is_active(),
+        "Resolved contradiction must be inactive"
+    );
+
+    // Superseded is inactive
+    params.disposition = HypothesisDisposition::Superseded;
+    let contra_superseded = Contradiction::new(params.clone())?;
+    assert!(
+        !contra_superseded.is_active(),
+        "Superseded contradiction must be inactive"
+    );
+
+    // Indeterminate knowledge state with outcome Ok is active
+    params.knowledge_state = KnowledgeState::Indeterminate;
+    params.disposition = HypothesisDisposition::Live;
+    params.outcome = RuntimeOutcome::Ok;
+    let contra_indet = Contradiction::new(params)?;
+    assert!(
+        contra_indet.is_active(),
+        "Indeterminate knowledge state contradiction must be active"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_finding_4_span_uncalibrated_does_not_launder_calibration() -> Result<(), Box<dyn Error>> {
+    let cal = test_calibration()?;
+    let calibrated = BeliefInterval::with_calibration(200_000, 800_000, cal)?;
+    let uncalibrated = BeliefInterval::new(600_000, 700_000)?;
+    let spanned = calibrated.span(&uncalibrated)?;
+    assert_eq!(
+        spanned.calibration_generation(),
+        None,
+        "Spanning with uncalibrated evidence must not launder uncalibrated bounds into a calibration generation"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_5_decode_bounds_and_error_variants() -> Result<(), Box<dyn Error>> {
+    let valid = sample_contradiction_params()?;
+
+    // Domains under min (< 2) returns CorroborationRequired
+    let mut enc_dom = CanonicalEncoder::new();
+    enc_dom.text(CONTRADICTION_DOMAIN);
+    enc_dom.text(&valid.contradiction_id);
+    enc_dom.u64(valid.conflicting_evidence.len() as u64);
+    for d in &valid.conflicting_evidence {
+        enc_dom.digest(*d);
+    }
+    enc_dom.u64(1);
+    enc_dom.text("domain:only_one");
+    enc_dom.u64(valid.unresolved_worlds.len() as u64);
+    for w in &valid.unresolved_worlds {
+        enc_dom.text(w);
+    }
+    enc_dom.bool(false);
+    enc_dom.text(&valid.statement);
+    enc_dom.bool(false);
+    valid.created_at.encode_canonical(&mut enc_dom);
+    enc_dom.text(valid.knowledge_state.as_str());
+    enc_dom.u8(1);
+    enc_dom.u8(1);
+    enc_dom.u8(1);
+
+    let bytes_dom = enc_dom.finish();
+    let mut dec_dom = CanonicalDecoder::new(&bytes_dom);
+    assert_eq!(
+        Contradiction::decode_canonical(&mut dec_dom).err(),
+        Some(ContractError::CorroborationRequired),
+        "Domains under min must reject with CorroborationRequired"
+    );
+
+    // Worlds under min (< 1) returns InvalidIdentifier
+    let mut enc_world = CanonicalEncoder::new();
+    enc_world.text(CONTRADICTION_DOMAIN);
+    enc_world.text(&valid.contradiction_id);
+    enc_world.u64(valid.conflicting_evidence.len() as u64);
+    for d in &valid.conflicting_evidence {
+        enc_world.digest(*d);
+    }
+    enc_world.u64(valid.failure_domains.len() as u64);
+    for dom in &valid.failure_domains {
+        enc_world.text(dom);
+    }
+    enc_world.u64(0);
+    enc_world.bool(false);
+    enc_world.text(&valid.statement);
+    enc_world.bool(false);
+    valid.created_at.encode_canonical(&mut enc_world);
+    enc_world.text(valid.knowledge_state.as_str());
+    enc_world.u8(1);
+    enc_world.u8(1);
+    enc_world.u8(1);
+
+    let bytes_world = enc_world.finish();
+    let mut dec_world = CanonicalDecoder::new(&bytes_world);
+    assert_eq!(
+        Contradiction::decode_canonical(&mut dec_world).err(),
+        Some(ContractError::InvalidIdentifier),
+        "Worlds under min must reject with InvalidIdentifier"
     );
 
     Ok(())

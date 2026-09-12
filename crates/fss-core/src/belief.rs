@@ -256,6 +256,32 @@ impl From<ContractError> for BeliefError {
     }
 }
 
+impl From<BeliefError> for ContractError {
+    fn from(err: BeliefError) -> Self {
+        match err {
+            BeliefError::InsufficientEvidenceRoots { .. } => Self::EvidenceRequired,
+            BeliefError::InsufficientFailureDomains { .. } => Self::CorroborationRequired,
+            BeliefError::OverLimitLength { field, .. } => match field {
+                "conflicting_evidence" => Self::EvidenceRequired,
+                "failure_domains" | "failure_domains[]" => Self::CorroborationRequired,
+                _ => Self::InvalidIdentifier,
+            },
+            BeliefError::EmptyField { .. } => Self::InvalidIdentifier,
+            BeliefError::EmptyUnresolvedWorlds => Self::InvalidIdentifier,
+            BeliefError::InvertedInterval { .. } | BeliefError::InvalidProbability(_) => {
+                Self::InvalidProbabilityInterval
+            }
+            BeliefError::DisjointIntervals { .. } => Self::InvalidProbabilityInterval,
+            BeliefError::CalibrationMismatch { .. } => Self::GenerationConflict,
+            BeliefError::OutOfRange { .. } => Self::InvalidIdentifier,
+            BeliefError::NonCanonicalEncoding { .. }
+            | BeliefError::TrailingBytes { .. }
+            | BeliefError::Truncated { .. } => Self::NonCanonicalOrdering,
+            BeliefError::Contract(c) => c,
+        }
+    }
+}
+
 /// Exact integer fixed-point belief interval $[L, U] \subseteq [0, 1]$ in micro-probabilities.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BeliefInterval {
@@ -450,6 +476,22 @@ impl BeliefInterval {
             upper_micro: MICRO_DENOMINATOR - self.lower_micro,
             calibration_generation: self.calibration_generation.clone(),
         }
+    }
+
+    /// Parse from canonical serialized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ContractError> {
+        let mut decoder = CanonicalDecoder::new(bytes);
+        let val = Self::decode_canonical(&mut decoder)?;
+        decoder.ensure_finished()?;
+        Ok(val)
+    }
+
+    /// Serialize to canonical bytes.
+    #[must_use]
+    pub fn to_canonical_bytes(&self) -> Vec<u8> {
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        encoder.finish()
     }
 
     /// Computes the canonical content digest for this belief interval.
@@ -752,9 +794,37 @@ impl Contradiction {
     /// Returns true if this contradiction actively constrains reasoning or action.
     #[must_use]
     pub fn is_active(&self) -> bool {
+        if matches!(
+            self.disposition,
+            HypothesisDisposition::Refuted
+                | HypothesisDisposition::Resolved
+                | HypothesisDisposition::Superseded
+        ) {
+            return false;
+        }
+
         self.knowledge_state == KnowledgeState::Conflicted
+            || self.knowledge_state == KnowledgeState::Known
+            || self.knowledge_state == KnowledgeState::Indeterminate
             || self.disposition == HypothesisDisposition::Live
+            || self.disposition == HypothesisDisposition::Supported
             || self.outcome == RuntimeOutcome::Indeterminate
+    }
+
+    /// Parse from canonical serialized bytes.
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ContractError> {
+        let mut decoder = CanonicalDecoder::new(bytes);
+        let val = Self::decode_canonical(&mut decoder)?;
+        decoder.ensure_finished()?;
+        Ok(val)
+    }
+
+    /// Serialize to canonical bytes.
+    #[must_use]
+    pub fn to_canonical_bytes(&self) -> Vec<u8> {
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        encoder.finish()
     }
 
     /// Computes canonical content digest for this contradiction.
@@ -824,31 +894,61 @@ impl CanonicalDecode for Contradiction {
         }
         let contradiction_id = decoder.text()?.to_string();
 
-        let evidence_count = decoder.u64()? as usize;
-        if evidence_count > MAX_CONFLICTING_EVIDENCE {
-            return Err(ContractError::NonCanonicalOrdering);
+        let raw_evidence_count = decoder.u64()?;
+        if raw_evidence_count < MIN_CONFLICTING_EVIDENCE as u64
+            || raw_evidence_count > MAX_CONFLICTING_EVIDENCE as u64
+        {
+            return Err(ContractError::EvidenceRequired);
         }
+        let evidence_count =
+            usize::try_from(raw_evidence_count).map_err(|_| ContractError::EvidenceRequired)?;
         let mut conflicting_evidence = BTreeSet::new();
+        let mut prev_digest: Option<ContentDigest> = None;
         for _ in 0..evidence_count {
-            conflicting_evidence.insert(decoder.digest()?);
+            let digest = decoder.digest()?;
+            if prev_digest.as_ref().is_some_and(|prev| prev >= &digest) {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            prev_digest = Some(digest);
+            conflicting_evidence.insert(digest);
         }
 
-        let domains_count = decoder.u64()? as usize;
-        if domains_count > MAX_FAILURE_DOMAINS {
-            return Err(ContractError::NonCanonicalOrdering);
+        let raw_domains_count = decoder.u64()?;
+        if raw_domains_count < MIN_FAILURE_DOMAINS as u64
+            || raw_domains_count > MAX_FAILURE_DOMAINS as u64
+        {
+            return Err(ContractError::CorroborationRequired);
         }
+        let domains_count =
+            usize::try_from(raw_domains_count).map_err(|_| ContractError::CorroborationRequired)?;
         let mut failure_domains = BTreeSet::new();
+        let mut prev_domain: Option<String> = None;
         for _ in 0..domains_count {
-            failure_domains.insert(decoder.text()?.to_string());
+            let domain = decoder.text()?.to_string();
+            if prev_domain.as_ref().is_some_and(|prev| prev >= &domain) {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            prev_domain = Some(domain.clone());
+            failure_domains.insert(domain);
         }
 
-        let worlds_count = decoder.u64()? as usize;
-        if worlds_count > MAX_UNRESOLVED_WORLDS {
-            return Err(ContractError::NonCanonicalOrdering);
+        let raw_worlds_count = decoder.u64()?;
+        if raw_worlds_count < MIN_UNRESOLVED_WORLDS as u64
+            || raw_worlds_count > MAX_UNRESOLVED_WORLDS as u64
+        {
+            return Err(ContractError::InvalidIdentifier);
         }
+        let worlds_count =
+            usize::try_from(raw_worlds_count).map_err(|_| ContractError::InvalidIdentifier)?;
         let mut unresolved_worlds = BTreeSet::new();
+        let mut prev_world: Option<String> = None;
         for _ in 0..worlds_count {
-            unresolved_worlds.insert(decoder.text()?.to_string());
+            let world = decoder.text()?.to_string();
+            if prev_world.as_ref().is_some_and(|prev| prev >= &world) {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            prev_world = Some(world.clone());
+            unresolved_worlds.insert(world);
         }
 
         let has_claim = decoder.bool()?;
@@ -889,9 +989,7 @@ impl CanonicalDecode for Contradiction {
             outcome,
         };
 
-        contradiction
-            .verify()
-            .map_err(|_| ContractError::InvalidIdentifier)?;
+        contradiction.verify()?;
         Ok(contradiction)
     }
 }
@@ -907,7 +1005,7 @@ fn convert_f64_pair_to_micros(lower: f64, upper: f64) -> Result<(u64, u64), Beli
     }
     let lower_micro = (lower * (MICRO_DENOMINATOR as f64)).round() as u64;
     let upper_micro = (upper * (MICRO_DENOMINATOR as f64)).round() as u64;
-    if lower_micro > upper_micro {
+    if lower > upper || lower_micro > upper_micro {
         return Err(BeliefError::InvertedInterval {
             lower_micro,
             upper_micro,
@@ -931,9 +1029,7 @@ fn reconcile_calibrations(
                 })
             }
         }
-        (Some(c1), None) => Ok(Some(c1.clone())),
-        (None, Some(c2)) => Ok(Some(c2.clone())),
-        (None, None) => Ok(None),
+        _ => Ok(None),
     }
 }
 
