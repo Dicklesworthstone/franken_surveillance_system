@@ -358,10 +358,10 @@ impl ReferenceHydrationCatalog {
                 receipt,
             };
             response.validate_for(request, &descriptor)?;
-            if let Some(cursor) = &request.continuation {
-                if let Some(record) = self.issued_cursors.get_mut(&cursor.cursor_digest) {
-                    record.consumed = true;
-                }
+            if let Some(cursor) = &request.continuation
+                && let Some(record) = self.issued_cursors.get_mut(&cursor.cursor_digest)
+            {
+                record.consumed = true;
             }
             if let Some(cursor) = &continuation {
                 let next_ordinal =
@@ -373,12 +373,11 @@ impl ReferenceHydrationCatalog {
                     self.prune_consumed_cursors();
                 }
                 if self.issued_cursors.len() >= self.limits.max_issued_cursors {
-                    if let Some(prior_cursor) = &request.continuation {
-                        if let Some(record) =
+                    if let Some(prior_cursor) = &request.continuation
+                        && let Some(record) =
                             self.issued_cursors.get_mut(&prior_cursor.cursor_digest)
-                        {
-                            record.consumed = false;
-                        }
+                    {
+                        record.consumed = false;
                     }
                     return Err(HydrationError::CapacityExceeded);
                 }
@@ -508,14 +507,14 @@ fn invalidators(
         format!("retention:until:{}", descriptor.retention_until.0),
         format!("privacy-class:{}", descriptor.privacy_class),
     ]);
-    if let Some(delivered) = delivered {
-        if delivered != requested {
-            values.insert(format!(
-                "explicit-downgrade:{}-to-{}",
-                requested.as_str(),
-                delivered.as_str()
-            ));
-        }
+    if let Some(delivered) = delivered
+        && delivered != requested
+    {
+        values.insert(format!(
+            "explicit-downgrade:{}-to-{}",
+            requested.as_str(),
+            delivered.as_str()
+        ));
     }
     values
 }
