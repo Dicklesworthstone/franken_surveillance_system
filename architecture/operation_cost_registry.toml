@@ -190,7 +190,8 @@ variable_costs = ["operators", "tensor_bytes", "corpus_examples", "oracle_runs"]
 slo_ids = ["SLO-MODEL-001"]
 status = "model_required"
 baseline_reference = "crates/fss-object/tests/model_package_contract.rs"
-cost_vector = { latency_ms = 1500, cpu_millis = 1200, bytes = 104857600, storage_operations = 64, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 25000, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+cost_vector = { latency_ms = 1500.0, cpu_millis = 1200.0, bytes = 104857600, storage_operations = 64, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 25000.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for reference workload: 100 MiB model package import (source signature verification + IR lowering + tensor canonicalization + static analysis). Latency bound 1500ms reflects tensor parsing and analysis on single core."
 
 
 [[operation]]
@@ -305,34 +306,37 @@ status = "model_required"
 id = "COST-SPOOL-INGEST-001"
 name = "stage raw payload into staging spool"
 unit = "segment"
-semantic_steps = ["verify_magic", "allocate_slot", "write_payload", "compute_checksum", "sync_durability"]
-variable_costs = ["payload_bytes", "alignment_padding", "header_overhead"]
+semantic_steps = ["open_staging_temp", "write_payload", "fsync_temp", "read_back_verify_digest", "atomic_rename_object", "fsync_objects_dir", "index_staged_object"]
+variable_costs = ["payload_bytes", "digest_bytes", "fsync_barriers", "directory_syncs"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
 baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
-cost_vector = { latency_ms = 5, cpu_millis = 2, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+cost_vector = { latency_ms = 5.0, cpu_millis = 2.0, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 10.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for reference workload: 64 KiB segment ingest via HostSpoolIo (write temp + fsync + read-back SHA-256 + atomic rename + parent dir fsync). Latency bound 5ms reflects two storage barriers on reference NVMe."
 
 [[operation]]
 id = "COST-SPOOL-VERIFY-001"
 name = "verify checksum and structure of staged spool entry"
 unit = "spool_entry"
-semantic_steps = ["read_header", "verify_magic", "verify_version", "read_payload", "compute_checksum", "compare_checksum"]
-variable_costs = ["payload_bytes", "checksum_algorithm", "disk_reads"]
+semantic_steps = ["read_object_file", "recompute_payload_digest", "compare_object_digest", "write_hold_temp", "fsync_hold", "atomic_rename_hold", "fsync_verified_dir", "transition_verified_state"]
+variable_costs = ["object_bytes", "rehash_time", "fsync_barriers", "hold_state_entries"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
 baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
-cost_vector = { latency_ms = 2, cpu_millis = 1, bytes = 65536, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 5, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+cost_vector = { latency_ms = 2.0, cpu_millis = 1.0, bytes = 65536, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 5.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for reference workload: 64 KiB staged segment verification (read + SHA-256 compare + write verified hold + fsync + directory sync). Latency bound 2ms reflects one hold barrier and stream hash."
 
 [[operation]]
 id = "COST-SPOOL-DISCARD-001"
 name = "discard or reclaim staged spool entry"
 unit = "spool_entry"
-semantic_steps = ["locate_slot", "invalidate_header", "update_free_list", "sync_durability"]
-variable_costs = ["slot_count", "reclaimed_bytes"]
+semantic_steps = ["check_verification_hold", "unlink_object_file", "fsync_objects_dir", "unindex_staged_object"]
+variable_costs = ["hold_index_lookups", "unlink_operations", "fsync_barriers"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
 baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
-cost_vector = { latency_ms = 1, cpu_millis = 1, bytes = 4096, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 2, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 4096, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 2.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for reference workload: single unverified 4 KiB staged segment discard (hold check + unlink + objects dir fsync). Latency bound 1ms reflects single unlink barrier."
 
 [[operation]]
 id = "COST-ROOT-PUBLISH-001"
@@ -343,7 +347,8 @@ variable_costs = ["children_count", "manifest_bytes", "fsync_barriers"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
 baseline_reference = "crates/fss-publication/tests/root_publication_review568.rs"
-cost_vector = { latency_ms = 10, cpu_millis = 4, bytes = 16384, storage_operations = 4, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 20, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+cost_vector = { latency_ms = 10.0, cpu_millis = 4.0, bytes = 16384, storage_operations = 4, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 20.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for reference workload: 16 KiB root publication manifest with 16 verified child objects (compute digest + write temp + fsync + atomic rename + parent dir fsync). Latency bound 10ms reflects dual barrier."
 
 [[operation]]
 id = "COST-LEDGER-APPEND-001"
@@ -354,7 +359,8 @@ variable_costs = ["delta_count", "batch_bytes", "subscriber_count"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
 baseline_reference = "crates/fss-ledger/tests/ledger_oracle_contract.rs"
-cost_vector = { latency_ms = 5, cpu_millis = 2, bytes = 8192, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+cost_vector = { latency_ms = 5.0, cpu_millis = 2.0, bytes = 8192, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 10.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for reference workload: 8 KiB delta batch append (anchor verification + sequence check + digest append + tail sync). Latency bound 5ms reflects single append sync barrier."
 
 [[operation]]
 id = "COST-LEDGER-REPLAY-001"
@@ -365,7 +371,8 @@ variable_costs = ["batch_count", "total_bytes", "projection_work"]
 slo_ids = ["SLO-RECOVERY-001"]
 status = "model_required"
 baseline_reference = "crates/fss-ledger/tests/ledger_oracle_contract.rs"
-cost_vector = { latency_ms = 50, cpu_millis = 40, bytes = 1048576, storage_operations = 16, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 100, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+cost_vector = { latency_ms = 50.0, cpu_millis = 40.0, bytes = 1048576, storage_operations = 16, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 100.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for reference workload: 1 MiB ledger segment replay (anchor scan + cryptographic chain verification + delta batch decode + projection rebuild). Latency bound 50ms reflects sequential read and batch decode."
 
 [[operation]]
 id = "COST-DURABLE-DECODE-001"
@@ -376,5 +383,18 @@ variable_costs = ["frame_bytes", "checksum_placement", "endianness_conversion"]
 slo_ids = ["SLO-INGEST-001"]
 status = "model_required"
 baseline_reference = "crates/fss-core/tests/durable_format_contract.rs"
-cost_vector = { latency_ms = 1, cpu_millis = 1, bytes = 65536, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 2, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 65536, storage_operations = 1, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 2.0, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for reference workload: 64 KiB durable format frame decode (header magic/version check + limit enforcement + checksum validation). Latency bound 1ms reflects in-memory decode and checksum."
+
+[[operation]]
+id = "COST-PRICING-LOOKUP-001"
+name = "lookup and evaluate dated provider pricing cost"
+unit = "rate_lookup"
+semantic_steps = ["validate_timestamp_ns", "check_validity_window", "match_provider_and_tier", "resolve_operation_rate", "compute_pico_currency", "emit_provenance_receipt"]
+variable_costs = ["rate_table_entries", "currency_conversions", "provenance_chain_depth"]
+slo_ids = ["SLO-COST-002"]
+status = "model_required"
+baseline_reference = "crates/fss-core/tests/pricing_manifest_contract.rs"
+cost_vector = { latency_ms = 0.05, cpu_millis = 0.02, bytes = 1024, storage_operations = 0, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0.0, energy_millijoules = 0.1, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+notes = "Analytical model bound under status 'model_required' for reference workload: in-memory provider pricing lookup and pico-currency evaluation under ProviderPricingManifest v1 (validity window check + binary search rate tier + currency conversion). Latency bound 0.05ms reflects in-memory lookup."
 

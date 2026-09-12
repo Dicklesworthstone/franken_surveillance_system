@@ -11,7 +11,7 @@ Enforces that:
 7. Missing mandatory files fail closed with ERR-CONSISTENCY-MISSING-FILE-001.
 8. Malformed/corrupt files fail closed with ERR-CONSISTENCY-CORRUPT-FILE-001.
 9. Live repository passes with 0 errors and complete consistency across all 116 invariants, 27 algorithms,
-   13 publication primitives, 47 imports, 14 operations, 8 views, 15 lanes, 40 costs, and 71 schemas.
+   13 publication primitives, 47 imports, 14 operations, 8 views, 15 lanes, 41 costs, and 71 schemas.
 10. CLI exits with code 0 and emits compliant text, JSON, and report formats.
 11. Adversarial review remediation tests (review-529):
     - CRITICAL fail-closed on unreadable or empty stable-ID index (stops immediately, zero dangling errors)
@@ -93,7 +93,7 @@ class TestLiveRepoConsistency(unittest.TestCase):
         self.assertEqual(summary["agent_operations_count"], 14)
         self.assertEqual(summary["agent_views_count"], 8)
         self.assertEqual(summary["qualification_lanes_count"], 15)
-        self.assertEqual(summary["costs_count"], 40)
+        self.assertEqual(summary["costs_count"], 41)
         self.assertEqual(summary["schemas_count"], 71)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)

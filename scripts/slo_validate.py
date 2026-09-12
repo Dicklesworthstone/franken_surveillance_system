@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -29,6 +30,7 @@ DEFAULT_COSTS_TOML = ROOT / "architecture/operation_cost_registry.toml"
 DEFAULT_CLAIMS_MD = ROOT / "registries/CLAIMS.md"
 
 SLO_ID_REGEX = re.compile(r"^SLO-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}$")
+COST_ID_REGEX = re.compile(r"^COST-[A-Z0-9]+(?:-[A-Z0-9]+)*-[0-9]{3}$")
 TOMBSTONE_REGEX = re.compile(r"tombstone:\s*superseded\s*by\s*`((?:SLO)-[A-Z0-9-]+)`", re.IGNORECASE)
 
 VALID_STATUSES = frozenset({"target", "tombstone", "achieved"})
@@ -120,6 +122,14 @@ MANDATORY_HOT_PATHS: dict[str, dict[str, str]] = {
         "name": "durable-format decode",
         "baseline": "crates/fss-core/tests/durable_format_contract.rs",
     },
+    "COST-PRICING-LOOKUP-001": {
+        "name": "provider pricing lookup",
+        "baseline": "crates/fss-core/tests/pricing_manifest_contract.rs",
+    },
+}
+
+MANDATORY_HOT_PATHS_LOWER: dict[str, tuple[str, dict[str, str]]] = {
+    k.lower(): (k, v) for k, v in MANDATORY_HOT_PATHS.items()
 }
 
 REQUIRED_COST_VECTOR_DIMENSIONS: tuple[str, ...] = (
@@ -694,14 +704,15 @@ def validate_cost_references(
         return []
     
     try:
-        cost_data = tomllib.loads(costs_path.read_text(encoding="utf-8"))
-    except (tomllib.TOMLDecodeError, OSError) as exc:
+        cost_text = costs_path.read_text(encoding="utf-8")
+        cost_data = tomllib.loads(cost_text)
+    except (tomllib.TOMLDecodeError, OSError, UnicodeDecodeError) as exc:
         findings.append(SloFinding(
             severity="error",
             code=CODE_MALFORMED_TABLE,
             path=path_str,
             message=f"Failed to parse operation_cost_registry.toml: {exc}",
-            remediation="Correct TOML syntax in architecture/operation_cost_registry.toml",
+            remediation="Correct TOML syntax and UTF-8 encoding in architecture/operation_cost_registry.toml",
             params={"error": str(exc)},
         ))
         return []
@@ -720,6 +731,17 @@ def validate_cost_references(
 
     seen_op_ids: dict[str, str] = {}
     for op in operations:
+        if not isinstance(op, dict):
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MALFORMED_TABLE,
+                path=path_str,
+                message=f"Operation table entry is not a table/dict: {op!r}",
+                remediation="Ensure every [[operation]] table is a valid dictionary/table",
+                params={"operation": str(op)},
+            ))
+            continue
+
         cost_id = op.get("id", "UNKNOWN_COST")
 
         # F6: Duplicate and case-colliding operation IDs are errors
@@ -736,6 +758,17 @@ def validate_cost_references(
 
         cost_id = cost_id.strip()
         lower_cost_id = cost_id.lower()
+
+        if not COST_ID_REGEX.match(cost_id):
+            findings.append(SloFinding(
+                severity="error",
+                code=CODE_MALFORMED_TABLE,
+                path=path_str,
+                message=f"Operation ID '{cost_id}' does not match canonical format COST-*-NNN",
+                remediation="Ensure operation ID matches uppercase format COST-*-NNN",
+                params={"cost_id": cost_id},
+            ))
+
         if lower_cost_id in seen_op_ids:
             findings.append(SloFinding(
                 severity="error",
@@ -850,7 +883,9 @@ def validate_cost_references(
                 })
 
         # FSS-198: Hot and consequential path cost vector and baseline reference validation
-        is_mandatory_hot_path = cost_id in MANDATORY_HOT_PATHS
+        is_mandatory_hot_path = (
+            cost_id in MANDATORY_HOT_PATHS or lower_cost_id in MANDATORY_HOT_PATHS_LOWER
+        )
         has_cost_vector = "cost_vector" in op
         has_baseline = "baseline_reference" in op
 
@@ -876,7 +911,17 @@ def validate_cost_references(
                 ))
             else:
                 cv = op["cost_vector"]
-                missing_dims = [dim for dim in REQUIRED_COST_VECTOR_DIMENSIONS if dim not in cv]
+                extra_dims = sorted(set(cv.keys()) - set(REQUIRED_COST_VECTOR_DIMENSIONS))
+                if extra_dims:
+                    findings.append(SloFinding(
+                        severity="error",
+                        code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                        path=path_str,
+                        message=f"Operation '{cost_id}' 'cost_vector' contains extraneous dimension(s): {extra_dims}",
+                        remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                        params={"cost_id": cost_id, "extraneous_dimensions": extra_dims},
+                    ))
+                missing_dims = sorted(set(REQUIRED_COST_VECTOR_DIMENSIONS) - set(cv.keys()))
                 if missing_dims:
                     findings.append(SloFinding(
                         severity="error",
@@ -886,15 +931,21 @@ def validate_cost_references(
                         remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
                         params={"cost_id": cost_id, "missing_dimensions": missing_dims},
                     ))
-                else:
-                    for dim in REQUIRED_COST_VECTOR_DIMENSIONS:
+                for dim in REQUIRED_COST_VECTOR_DIMENSIONS:
+                    if dim in cv:
                         val = cv[dim]
-                        if not isinstance(val, (int, float)) or isinstance(val, bool) or val < 0:
+                        if (
+                            not isinstance(val, (int, float))
+                            or isinstance(val, bool)
+                            or math.isnan(val)
+                            or math.isinf(val)
+                            or val < 0
+                        ):
                             findings.append(SloFinding(
                                 severity="error",
                                 code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
                                 path=path_str,
-                                message=f"Operation '{cost_id}' dimension '{dim}' must be non-negative numeric value, got {val}",
+                                message=f"Operation '{cost_id}' dimension '{dim}' must be non-negative finite numeric value, got {val}",
                                 remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
                                 params={"cost_id": cost_id, "dimension": dim, "value": val},
                             ))
@@ -923,7 +974,23 @@ def validate_cost_references(
                 else:
                     file_part = base_ref.split(":")[0].strip()
                     ref_file = root / file_part
-                    if not ref_file.is_file():
+                    if not (
+                        file_part.endswith(".rs")
+                        and (
+                            file_part.startswith("tests/")
+                            or file_part.startswith("benches/")
+                            or file_part.startswith("crates/")
+                        )
+                    ):
+                        findings.append(SloFinding(
+                            severity="error",
+                            code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                            path=path_str,
+                            message=f"Operation '{cost_id}' baseline reference '{base_ref}' must be a Rust test/benchmark file (.rs) under tests/, benches/, or crates/",
+                            remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                            params={"cost_id": cost_id, "baseline_reference": base_ref, "file": file_part},
+                        ))
+                    elif not ref_file.is_file():
                         findings.append(SloFinding(
                             severity="error",
                             code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
@@ -932,10 +999,33 @@ def validate_cost_references(
                             remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
                             params={"cost_id": cost_id, "baseline_reference": base_ref, "file": file_part},
                         ))
+                    else:
+                        content = ref_file.read_text(encoding="utf-8", errors="replace")
+                        has_test_markers = any(
+                            marker in content
+                            for marker in (
+                                "#[test]",
+                                "#[tokio::test]",
+                                "#[asupersync::test]",
+                                "fn test_",
+                                "assert!",
+                                "assert_eq!",
+                            )
+                        )
+                        if not has_test_markers:
+                            findings.append(SloFinding(
+                                severity="error",
+                                code=CODE_MISSING_COST_VECTOR_OR_BASELINE,
+                                path=path_str,
+                                message=f"Operation '{cost_id}' baseline reference '{base_ref}' contains no test routines or assertions",
+                                remediation=DIAGNOSTIC_REGISTRY[CODE_MISSING_COST_VECTOR_OR_BASELINE]["remediation"],
+                                params={"cost_id": cost_id, "baseline_reference": base_ref, "file": file_part},
+                            ))
 
     # Check that every mandatory hot/consequential path is present
+    seen_exact_ids = set(seen_op_ids.values())
     for hot_id, hot_info in MANDATORY_HOT_PATHS.items():
-        if hot_id.lower() not in seen_op_ids:
+        if hot_id not in seen_exact_ids:
             findings.append(SloFinding(
                 severity="error",
                 code=CODE_HOT_PATH_MISSING_COST_ROW,

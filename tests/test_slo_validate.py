@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import math
 import subprocess
 import sys
 import tempfile
@@ -520,6 +521,7 @@ class HotConsequentialOperationCostTests(unittest.TestCase):
         "COST-LEDGER-REPLAY-001",
         "COST-MODEL-IMPORT-001",
         "COST-DURABLE-DECODE-001",
+        "COST-PRICING-LOOKUP-001",
     )
 
     REQUIRED_DIMENSIONS = (
@@ -698,6 +700,209 @@ cost_vector = { latency_ms = -5, cpu_millis = 2, bytes = 65536, storage_operatio
             self.assertFalse(is_valid, "Checker must fail closed when cost_vector has negative dimension")
             codes = [f.code for f in findings]
             self.assertIn("SLO-VAL-016", codes, "Negative cost_vector value must emit diagnostic code SLO-VAL-016")
+
+    def test_planted_case_folding_hot_path_cannot_bypass_validation(self) -> None:
+        """A lowercase hot path ID must not bypass cost_vector and baseline validation (F2)."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "cost-spool-ingest-001"
+name = "ingest or stage one spool object"
+unit = "segment"
+slo_ids = ["SLO-INGEST-001"]
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Lowercase hot path ID must fail closed and not bypass validation")
+            codes = [f.code for f in findings]
+            self.assertTrue(
+                "SLO-VAL-015" in codes or "SLO-VAL-016" in codes or "SLO-VAL-011" in codes,
+                f"Expected fail-closed diagnostic for lowercase hot path bypass, got {codes}",
+            )
+
+    def test_planted_non_code_baseline_reference_fails_closed(self) -> None:
+        """Baseline reference pointing to README.md or Cargo.toml must fail closed with SLO-VAL-016 (F3)."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "stage raw payload into staging spool"
+unit = "segment"
+slo_ids = ["SLO-INGEST-001"]
+baseline_reference = "README.md"
+cost_vector = { latency_ms = 5, cpu_millis = 2, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Non-code baseline reference (README.md) must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-016", codes)
+
+    def test_planted_empty_or_non_test_baseline_reference_fails_closed(self) -> None:
+        """Baseline reference pointing to an empty or non-test .rs file must fail closed with SLO-VAL-016 (F3)."""
+        with tempfile.TemporaryDirectory() as td:
+            empty_rs = ROOT / "crates" / "fss-core" / "tests" / "_temp_empty_test_baseline.rs"
+            try:
+                empty_rs.write_text("// no tests here\n", encoding="utf-8")
+                planted_costs = Path(td) / "operation_cost_registry.toml"
+                planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "stage raw payload into staging spool"
+unit = "segment"
+slo_ids = ["SLO-INGEST-001"]
+baseline_reference = "crates/fss-core/tests/_temp_empty_test_baseline.rs"
+cost_vector = { latency_ms = 5, cpu_millis = 2, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+                planted_costs.write_text(planted_text, encoding="utf-8")
+
+                is_valid, findings, _ = slo_validate.validate_slos(
+                    root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+                )
+                self.assertFalse(is_valid, "Empty/non-test baseline reference must fail closed")
+                codes = [f.code for f in findings]
+                self.assertIn("SLO-VAL-016", codes)
+            finally:
+                if empty_rs.exists():
+                    empty_rs.unlink()
+
+    def test_spool_operations_match_rust_staging_spool_mechanics(self) -> None:
+        """Spool operations must reflect pure-Rust StagingSpool file/hold mechanics, not slab allocators (F5)."""
+        costs_data = tomllib.loads(COSTS_PATH.read_text(encoding="utf-8"))
+        operations = {op.get("id"): op for op in costs_data.get("operation", [])}
+
+        spool_ops = ["COST-SPOOL-INGEST-001", "COST-SPOOL-VERIFY-001", "COST-SPOOL-DISCARD-001"]
+        prohibited_terms = {"allocate_slot", "update_free_list", "invalidate_header", "slot_count"}
+
+        for op_id in spool_ops:
+            self.assertIn(op_id, operations, f"Spool operation {op_id} must be registered")
+            op = operations[op_id]
+            steps = set(op.get("semantic_steps", []))
+            vars = set(op.get("variable_costs", []))
+            all_terms = steps | vars
+            found_prohibited = all_terms & prohibited_terms
+            self.assertEqual(
+                found_prohibited,
+                set(),
+                f"Spool operation {op_id} contains fabricated slab terms: {found_prohibited}",
+            )
+
+    def test_planted_nan_cost_vector_value_fails_closed(self) -> None:
+        """A hot path with NaN cost_vector dimension must fail closed with SLO-VAL-016 (F6)."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "stage raw payload into staging spool"
+unit = "segment"
+slo_ids = ["SLO-INGEST-001"]
+baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
+cost_vector = { latency_ms = nan, cpu_millis = 2, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Checker must fail closed when cost_vector has NaN dimension")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-016", codes, "NaN cost_vector value must emit diagnostic code SLO-VAL-016")
+
+    def test_planted_inf_cost_vector_value_fails_closed(self) -> None:
+        """A hot path with inf cost_vector dimension must fail closed with SLO-VAL-016 (F6)."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "stage raw payload into staging spool"
+unit = "segment"
+slo_ids = ["SLO-INGEST-001"]
+baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
+cost_vector = { latency_ms = inf, cpu_millis = 2, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Checker must fail closed when cost_vector has inf dimension")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-016", codes, "inf cost_vector value must emit diagnostic code SLO-VAL-016")
+
+    def test_planted_non_dict_operation_entry_fails_closed(self) -> None:
+        """Non-dict element in operation list must emit SLO-VAL-011 without crashing (F7)."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+operation = ["invalid_string_entry"]
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Non-dict operation item must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-011", codes)
+
+    def test_planted_non_utf8_cost_registry_fails_closed(self) -> None:
+        """Non-UTF-8 cost registry file must fail closed with SLO-VAL-011 without unhandled crash (F7)."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_costs.write_bytes(b"\xff\xfe\x00\x01\x80\x81invalid")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Non-UTF-8 cost registry must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-011", codes)
+
+    def test_planted_extraneous_cost_vector_dimension_fails_closed(self) -> None:
+        """Cost vector with extraneous/typoed dimensions must fail closed with SLO-VAL-016 (F8)."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            planted_text = """schema = "fss.operation_cost_registry.v2"
+as_of = "2026-08-31"
+
+[[operation]]
+id = "COST-SPOOL-INGEST-001"
+name = "stage raw payload into staging spool"
+unit = "segment"
+slo_ids = ["SLO-INGEST-001"]
+baseline_reference = "crates/fss-object/tests/staging_spool_contract.rs"
+cost_vector = { latency_ms = 5, cpu_millis = 2, bytes = 65536, storage_operations = 2, network_bytes = 0, model_calls = 0, tokens = 0, accelerator_millis = 0, energy_millijoules = 10, privacy_exposure = 0.0, operator_attention_seconds = 0.0, extraneous_typo_key = 99 }
+"""
+            planted_costs.write_text(planted_text, encoding="utf-8")
+
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Extraneous cost_vector dimension must fail closed")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-016", codes, "Extraneous dimension must emit SLO-VAL-016")
+
 
 
 if __name__ == "__main__":
