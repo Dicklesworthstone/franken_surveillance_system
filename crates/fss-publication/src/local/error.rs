@@ -163,6 +163,8 @@ pub enum ReferenceRole {
     ManifestBody,
     /// The deletion authority witness of a tombstone record.
     DeletionWitness,
+    /// An object reached through a child that is itself the root of a visible slot.
+    Descendant,
 }
 
 /// Why a referenced object blocks publication.

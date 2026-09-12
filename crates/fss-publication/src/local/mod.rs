@@ -20,8 +20,9 @@
 //!
 //! # Protocol
 //!
-//! 1. Prove every direct child (including metadata) is not tombstoned and is `Verified` in the
-//!    spool: its bytes were fsynced before indexing and were re-read and rehashed from disk now.
+//! 1. Prove every direct child (including metadata), and every descendant reached through a child
+//!    that is itself a visible root, is not tombstoned and is `Verified` in the spool: its bytes
+//!    were fsynced before indexing and were re-read and rehashed from disk now.
 //! 2. Stage and verify the canonical manifest body in the spool, then re-read and decode it.
 //! 3. Write the root record to `<slot>.root.tmp`, fsync it, and read it back.
 //! 4. Re-prove every reference immediately before the commit point.
@@ -30,8 +31,9 @@
 //!
 //! A crash or cancellation at any cut point before step 5 leaves nothing visible. Cancellation is
 //! never consulted after the rename. Manifest descent is bottom-up as in
-//! [`fss_object::InMemoryObjectStore`]: a child is an opaque leaf unless it is itself the root of
-//! another visible slot.
+//! [`fss_object::InMemoryObjectStore`]: a child that is itself the root of a visible slot is
+//! descended into, transitively, for verification, closure counts, and tombstone reachability;
+//! any other child is an opaque leaf whose bytes are never trial-parsed as a manifest.
 //!
 //! # Reopen
 //!
@@ -43,6 +45,17 @@
 //!
 //! Filesystem access is scoped by the root path passed to `open`, matching `fss-object`'s spool
 //! and `fss-ledger`'s journal. No `Cx` capability is threaded yet.
+//!
+//! # Fault injection
+//!
+//! Two test seams exist, and neither is reachable through [`LocalRootPublisher::open`].
+//! [`LocalRootPublisher::inject_crash_at`] arms a crash at a [`PublishCutPoint`]: the call returns
+//! [`LocalPublicationError::InjectedCrash`] and the instance behaves as a dead process.
+//! [`LocalRootPublisher::open_with_injected_io_fault`] is the only way to arm an
+//! [`InjectedIoFault`]: the root rename or the roots-directory fsync after it returns the
+//! configured [`io::ErrorKind`] instead of touching the filesystem, and the publisher then takes
+//! exactly the error path a real failure of that operation takes. The fault is one-shot, and no
+//! method arms one on an already open instance.
 
 mod error;
 mod record;
@@ -185,6 +198,40 @@ impl fmt::Display for PublishCutPoint {
             Self::AfterRootTempWrite => "after_root_temp_write",
             Self::AfterRootRename => "after_root_rename",
         })
+    }
+}
+
+/// Filesystem operation of the root commit at which [`InjectedIoFault`] returns an error.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum IoFaultPoint {
+    /// The rename of `<slot>.root.tmp` to `<slot>.root`. The rename is not performed, so nothing
+    /// becomes visible; the publisher removes the temporary record and returns
+    /// [`LocalPublicationError::Io`] with [`LocalIoOperation::Rename`].
+    RootRename,
+    /// The roots-directory fsync after the rename. The rename has been performed, so the root is
+    /// `Visible` but never `Durable`; the publisher is poisoned and returns
+    /// [`LocalPublicationError::Indeterminate`].
+    RootDirectorySync,
+}
+
+/// A one-shot I/O error for one root-commit operation, for failure-path tests only.
+///
+/// It can be armed only by [`LocalRootPublisher::open_with_injected_io_fault`]. It fires on the
+/// first publish call that reaches its [`IoFaultPoint`] and is then disarmed; publish calls that
+/// fail or return earlier leave it armed.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct InjectedIoFault {
+    /// Operation that fails.
+    pub point: IoFaultPoint,
+    /// Error kind the failed operation reports.
+    pub kind: io::ErrorKind,
+}
+
+impl InjectedIoFault {
+    /// A fault that makes the operation at `point` fail with `kind`.
+    #[must_use]
+    pub const fn new(point: IoFaultPoint, kind: io::ErrorKind) -> Self {
+        Self { point, kind }
     }
 }
 
@@ -434,7 +481,8 @@ pub enum TombstoneOutcome {
 #[derive(Clone, Debug)]
 struct RootEntry {
     visible: VisibleRoot,
-    closure: BTreeSet<ContentDigest>,
+    /// Direct children of the root's manifest, including metadata.
+    children: Vec<ContentDigest>,
 }
 
 /// Exclusive owner of one root-last local publication directory.
@@ -452,6 +500,7 @@ pub struct LocalRootPublisher {
     tombstones: BTreeMap<ContentDigest, TombstoneRecord>,
     recovery: LocalRecoveryReport,
     injected_crash: Option<PublishCutPoint>,
+    injected_io_fault: Option<InjectedIoFault>,
     poisoned: bool,
 }
 
@@ -498,9 +547,27 @@ impl LocalRootPublisher {
             tombstones: BTreeMap::new(),
             recovery: LocalRecoveryReport::default(),
             injected_crash: None,
+            injected_io_fault: None,
             poisoned: false,
         };
         publisher.recover()?;
+        Ok(publisher)
+    }
+
+    /// Test-only constructor: [`Self::open`], then arms one [`InjectedIoFault`].
+    ///
+    /// This is the only way to arm an I/O fault; [`Self::open`] never does, and no method arms
+    /// one later. The fault makes the root rename or the roots-directory fsync of the first
+    /// publish call that reaches it fail with the configured error kind, without performing that
+    /// operation, and the publisher then follows the same error path as a real failure. Use it to
+    /// test failure paths, never in production configuration.
+    pub fn open_with_injected_io_fault(
+        root: impl AsRef<Path>,
+        limits: LocalPublicationLimits,
+        fault: InjectedIoFault,
+    ) -> Result<Self, LocalPublicationError> {
+        let mut publisher = Self::open(root, limits)?;
+        publisher.injected_io_fault = Some(fault);
         Ok(publisher)
     }
 
@@ -684,14 +751,16 @@ impl LocalRootPublisher {
         }
 
         // 5. Commit point: the rename makes the root visible.
-        if let Err(error) = fs::rename(&temp_path, &target_path) {
+        let renamed = match self.take_io_fault(IoFaultPoint::RootRename) {
+            Some(kind) => Err(io::Error::from(kind)),
+            None => fs::rename(&temp_path, &target_path),
+        };
+        if let Err(error) = renamed {
             self.remove_temp(&temp_relative, &temp_path)?;
             return Err(io_error(LocalIoOperation::Rename, &target_path, &error));
         }
         transitions.push(PublicationTransition::RootRenamed);
-        let mut closure: BTreeSet<ContentDigest> = manifest.children().iter().copied().collect();
-        closure.insert(root);
-        let closure_object_count = closure.len();
+        let closure_object_count = self.closure(root, manifest.children()).len();
         let record_digest = ContentDigest::sha256(&record);
         self.visible.insert(
             slot.clone(),
@@ -703,13 +772,17 @@ impl LocalRootPublisher {
                     child_count,
                     state: LocalPublicationState::Visible,
                 },
-                closure,
+                children: manifest.children().to_vec(),
             },
         );
         self.cut(PublishCutPoint::AfterRootRename, cancel, None)?;
 
         // 6. The directory fsync makes the rename durable.
-        if let Err(error) = sync_directory(&self.roots_dir) {
+        let synced = match self.take_io_fault(IoFaultPoint::RootDirectorySync) {
+            Some(kind) => Err(io::Error::from(kind)),
+            None => sync_directory(&self.roots_dir),
+        };
+        if let Err(error) = synced {
             self.poisoned = true;
             return Err(LocalPublicationError::Indeterminate {
                 path: target_path,
@@ -761,11 +834,10 @@ impl LocalRootPublisher {
                 reason: error.into(),
             }
         })?;
-        if let Some(entry) = self
-            .visible
-            .values()
-            .find(|entry| entry.closure.contains(&object))
-        {
+        if let Some(entry) = self.visible.values().find(|entry| {
+            self.closure(entry.visible.root, &entry.children)
+                .contains(&object)
+        }) {
             return Err(LocalPublicationError::TombstoneBlockedByVisibleRoot {
                 object,
                 slot: entry.visible.slot.clone(),
@@ -847,6 +919,38 @@ impl LocalRootPublisher {
         Ok(())
     }
 
+    /// Disarms and returns the injected error kind if the armed fault is at `point`.
+    fn take_io_fault(&mut self, point: IoFaultPoint) -> Option<io::ErrorKind> {
+        match self.injected_io_fault {
+            Some(fault) if fault.point == point => {
+                self.injected_io_fault = None;
+                Some(fault.kind)
+            }
+            _ => None,
+        }
+    }
+
+    /// Every object reachable from `root`: the root, its direct `children`, and, transitively, the
+    /// children of any reached object that is itself the root of a visible slot. Any other object
+    /// is an opaque leaf, exactly as in `fss_object::InMemoryObjectStore::verify_closure`.
+    fn closure(&self, root: ContentDigest, children: &[ContentDigest]) -> BTreeSet<ContentDigest> {
+        let manifests: BTreeMap<ContentDigest, &[ContentDigest]> = self
+            .visible
+            .values()
+            .map(|entry| (entry.visible.root, entry.children.as_slice()))
+            .collect();
+        let mut seen = BTreeSet::from([root]);
+        let mut pending = children.to_vec();
+        while let Some(digest) = pending.pop() {
+            if seen.insert(digest)
+                && let Some(grandchildren) = manifests.get(&digest)
+            {
+                pending.extend_from_slice(grandchildren);
+            }
+        }
+        seen
+    }
+
     fn spool_error(&mut self, error: SpoolError) -> LocalPublicationError {
         if matches!(
             error,
@@ -909,6 +1013,26 @@ impl LocalRootPublisher {
                 }
             })?;
         }
+        let direct: BTreeSet<ContentDigest> = manifest.children().iter().copied().collect();
+        for descendant in self.closure(root, manifest.children()) {
+            if descendant == root || direct.contains(&descendant) {
+                continue;
+            }
+            if self.tombstones.contains_key(&descendant) {
+                return Err(LocalPublicationError::ReferenceBlocked {
+                    object: descendant,
+                    role: ReferenceRole::Descendant,
+                    reason: BlockReason::Tombstoned,
+                });
+            }
+            self.spool.require_verified(descendant).map_err(|error| {
+                LocalPublicationError::ReferenceBlocked {
+                    object: descendant,
+                    role: ReferenceRole::Descendant,
+                    reason: error.into(),
+                }
+            })?;
+        }
         Ok(())
     }
 
@@ -922,17 +1046,36 @@ impl LocalRootPublisher {
             .map_err(LocalPublicationError::Encoding)?;
         self.spool
             .stage(root, &body)
-            .map_err(|error| self.spool_error(error))?;
+            .map_err(|error| self.manifest_body_error(root, error))?;
         self.spool
             .verify(root)
-            .map_err(|error| self.spool_error(error))?;
+            .map_err(|error| self.manifest_body_error(root, error))?;
         let read_back = self
             .spool
             .read(root)
-            .map_err(|error| self.spool_error(error))?;
+            .map_err(|error| self.manifest_body_error(root, error))?;
         match ObjectManifest::from_canonical_bytes(&read_back) {
             Ok(decoded) if &decoded == manifest => Ok(()),
             _ => Err(LocalPublicationError::ManifestMismatch { root }),
+        }
+    }
+
+    /// Classifies a spool failure on the manifest body: corrupt stored bytes under the root are a
+    /// blocked [`ReferenceRole::ManifestBody`] reference, as on the idempotent republish path.
+    fn manifest_body_error(
+        &mut self,
+        root: ContentDigest,
+        error: SpoolError,
+    ) -> LocalPublicationError {
+        match error {
+            SpoolError::Corrupt { digest, .. } if digest == root => {
+                LocalPublicationError::ReferenceBlocked {
+                    object: root,
+                    role: ReferenceRole::ManifestBody,
+                    reason: BlockReason::Corrupt,
+                }
+            }
+            other => self.spool_error(other),
         }
     }
 
@@ -997,7 +1140,10 @@ impl LocalRootPublisher {
         manifest: &ObjectManifest,
     ) -> Result<LocalPublicationReceipt, LocalPublicationError> {
         let (visible, closure_object_count) = match self.visible.get(slot) {
-            Some(entry) => (entry.visible.clone(), entry.closure.len()),
+            Some(entry) => (
+                entry.visible.clone(),
+                self.closure(entry.visible.root, &entry.children).len(),
+            ),
             None => return Err(LocalPublicationError::BrokenSlot { slot: slot.clone() }),
         };
         self.require_references(manifest)?;
@@ -1070,9 +1216,11 @@ impl LocalRootPublisher {
                 .map_err(|error| io_error(LocalIoOperation::SyncDirectory, directory, &error))?;
         }
         let mut referenced = BTreeSet::new();
+        for entry in self.visible.values() {
+            referenced.extend(self.closure(entry.visible.root, &entry.children));
+        }
         for entry in self.visible.values_mut() {
             entry.visible.state = LocalPublicationState::Durable;
-            referenced.extend(entry.closure.iter().copied());
             report.roots.push(entry.visible.clone());
         }
         let spool_objects = report
@@ -1253,8 +1401,6 @@ impl LocalRootPublisher {
                 }));
             }
         }
-        let mut closure: BTreeSet<ContentDigest> = manifest.children().iter().copied().collect();
-        closure.insert(root);
         Ok(Ok(RootEntry {
             visible: VisibleRoot {
                 slot: slot.clone(),
@@ -1263,7 +1409,7 @@ impl LocalRootPublisher {
                 child_count,
                 state: LocalPublicationState::Visible,
             },
-            closure,
+            children: manifest.children().to_vec(),
         }))
     }
 }
