@@ -4,8 +4,8 @@
 use std::error::Error;
 
 use fss_core::{
-    CalibrationGeneration, CaptureInterval, DeviceGeneration, DeviceId, FirmwareGeneration,
-    TimestampNs,
+    CalibrationGeneration, CanonicalEncode, CaptureInterval, ContentDigest, DeviceGeneration,
+    DeviceId, FirmwareGeneration, TimestampNs,
 };
 use fss_reference::{
     CalibrationSample, CameraIntrinsics, DistortionModel, ExtrinsicsCertificateBuilder,
@@ -835,9 +835,11 @@ fn test_extrinsics_lifecycle_invalidation_on_contradiction() -> Result<(), Box<d
     })?;
 
     let mut lifecycle = ExtrinsicsLifecycle::new();
-    assert_eq!(lifecycle.state(), &ExtrinsicsLifecycleState::Uncalibrated);
-
-    lifecycle.activate_certificate(cert, target_cert.intrinsics.clone())?;
+    lifecycle.activate_certificate(
+        cert,
+        &target_cert,
+        TimestampNs(1_700_005_000_000_000_000),
+    )?;
     assert!(lifecycle.is_active());
 
     // 1. Verify a consistent observation passes verification

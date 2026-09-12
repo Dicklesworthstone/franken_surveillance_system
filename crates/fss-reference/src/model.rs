@@ -26,6 +26,21 @@ pub const MAX_DETECTIONS_PER_OUTPUT: usize = 64;
 /// Maximum distinct sources permitted in a single corroboration evaluation.
 pub const MAX_CORROBORATION_SOURCES: usize = 32;
 
+/// Maximum dimension length for an embedding vector.
+pub const MAX_EMBEDDING_DIM: usize = 4096;
+
+/// Returns true if the generation identifier attempts to reference a mutable "latest" alias,
+/// strictly forbidden by ADR-0004 and AGENTS.md.
+#[inline]
+#[must_use]
+pub fn is_latest_generation(generation: &str) -> bool {
+    let trimmed = generation.trim();
+    trimmed.eq_ignore_ascii_case("latest")
+        || trimmed.starts_with("latest:")
+        || trimmed.ends_with(":latest")
+        || trimmed == "latest.weights"
+}
+
 /// Encodes a normalized coordinate [0.0, 1.0] into a deterministic discrete basis point [0, 10_000]
 /// using IEEE 754 half-away-from-zero rounding to eliminate float truncation drift (INV-004).
 #[inline]
@@ -97,6 +112,9 @@ impl MockModelSpec {
         let generation_id = generation_id.into();
         if generation_id.is_empty() || generation_id.len() > MAX_MODEL_GENERATION_BYTES {
             return Err(ReferenceError::InvalidSpec("model_generation_id"));
+        }
+        if is_latest_generation(&generation_id) {
+            return Err(ReferenceError::InvalidSpec("model_generation_latest_prohibited"));
         }
         Ok(Self {
             generation_id,
@@ -534,6 +552,11 @@ impl MockModelExecutor {
         nominal_latency_ns: u64,
         virtual_timeout_ns: u64,
     ) -> Result<Self, MockModelError> {
+        if is_latest_generation(generation.as_str()) {
+            return Err(MockModelError::LatestGenerationProhibited {
+                generation: generation.into_inner(),
+            });
+        }
         Ok(Self {
             generation,
             seed,
@@ -842,6 +865,152 @@ pub fn compare_model_scores(
     mid_a
         .partial_cmp(&mid_b)
         .ok_or(MockModelError::InvalidProbabilityScore)
+}
+
+/// Fuses two detection scores from the same model generation.
+///
+/// Under AGENTS.md, INV-013, and ADR-0004, mixing scores across different model generations
+/// is strictly prohibited and returns [`MockModelError::CrossGenerationScoreMixing`].
+pub fn fuse_model_scores(
+    score_a: &MockDetection,
+    generation_a: &ModelGeneration,
+    score_b: &MockDetection,
+    generation_b: &ModelGeneration,
+) -> Result<ProbabilityInterval, MockModelError> {
+    if generation_a != generation_b {
+        return Err(MockModelError::CrossGenerationScoreMixing {
+            expected: generation_a.clone(),
+            actual: generation_b.clone(),
+        });
+    }
+    let fused_lower = score_a.probability.lower.max(score_b.probability.lower);
+    let fused_upper = score_a.probability.upper.min(score_b.probability.upper);
+    if fused_lower > fused_upper {
+        let lower_micro = (fused_lower * 1_000_000.0).round() as u64;
+        let upper_micro = (fused_upper * 1_000_000.0).round() as u64;
+        return Err(MockModelError::ContradictoryProbabilityIntervals {
+            lower_micro,
+            upper_micro,
+        });
+    }
+    ProbabilityInterval::new(fused_lower, fused_upper)
+        .map_err(|_| MockModelError::InvalidProbabilityScore)
+}
+
+/// Bounded deterministic model embedding carrying an immutable generation identity (INV-013).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MockEmbedding {
+    /// Immutable model generation that produced this embedding.
+    pub generation: ModelGeneration,
+    /// Vector dimensions.
+    pub vector: Vec<f64>,
+}
+
+impl MockEmbedding {
+    /// Constructs a new mock embedding bound to a specific immutable model generation.
+    pub fn new(generation: ModelGeneration, vector: Vec<f64>) -> Result<Self, MockModelError> {
+        if is_latest_generation(generation.as_str()) {
+            return Err(MockModelError::LatestGenerationProhibited {
+                generation: generation.into_inner(),
+            });
+        }
+        if vector.is_empty() {
+            return Err(MockModelError::EmptyEmbeddingVector);
+        }
+        if vector.len() > MAX_EMBEDDING_DIM {
+            return Err(MockModelError::EmbeddingDimensionTooLarge {
+                actual: vector.len(),
+                max: MAX_EMBEDDING_DIM,
+            });
+        }
+        for &val in &vector {
+            if !val.is_finite() {
+                return Err(MockModelError::InvalidEmbeddingNorm);
+            }
+        }
+        Ok(Self { generation, vector })
+    }
+
+    /// Returns the embedding dimension.
+    #[must_use]
+    pub fn dim(&self) -> usize {
+        self.vector.len()
+    }
+}
+
+/// Compares two model embeddings using cosine similarity, strictly enforcing generation compatibility.
+///
+/// Under AGENTS.md, INV-013, and ADR-0004, embeddings from different model generations cannot
+/// share a metric space or be compared without an explicit qualified cross-generation transform.
+pub fn compare_model_embeddings(
+    a: &MockEmbedding,
+    b: &MockEmbedding,
+) -> Result<f64, MockModelError> {
+    if a.generation != b.generation {
+        return Err(MockModelError::CrossGenerationEmbeddingMixing {
+            expected: a.generation.clone(),
+            actual: b.generation.clone(),
+        });
+    }
+    if a.vector.len() != b.vector.len() {
+        return Err(MockModelError::EmbeddingDimensionMismatch {
+            expected: a.vector.len(),
+            actual: b.vector.len(),
+        });
+    }
+    let mut dot = 0.0_f64;
+    let mut norm_a_sq = 0.0_f64;
+    let mut norm_b_sq = 0.0_f64;
+    for (va, vb) in a.vector.iter().zip(b.vector.iter()) {
+        dot += va * vb;
+        norm_a_sq += va * va;
+        norm_b_sq += vb * vb;
+    }
+    if norm_a_sq <= 0.0 || norm_b_sq <= 0.0 || !dot.is_finite() {
+        return Err(MockModelError::InvalidEmbeddingNorm);
+    }
+    let cos = dot / (norm_a_sq.sqrt() * norm_b_sq.sqrt());
+    Ok(cos.clamp(-1.0, 1.0))
+}
+
+/// Fuses two model embeddings from the same model generation via normalized mean.
+///
+/// Under AGENTS.md, INV-013, and ADR-0004, fusing embeddings from different model generations
+/// is strictly prohibited.
+pub fn fuse_model_embeddings(
+    a: &MockEmbedding,
+    b: &MockEmbedding,
+) -> Result<MockEmbedding, MockModelError> {
+    if a.generation != b.generation {
+        return Err(MockModelError::CrossGenerationEmbeddingMixing {
+            expected: a.generation.clone(),
+            actual: b.generation.clone(),
+        });
+    }
+    if a.vector.len() != b.vector.len() {
+        return Err(MockModelError::EmbeddingDimensionMismatch {
+            expected: a.vector.len(),
+            actual: b.vector.len(),
+        });
+    }
+    let mut fused = Vec::with_capacity(a.vector.len());
+    let mut norm_sq = 0.0_f64;
+    for (va, vb) in a.vector.iter().zip(b.vector.iter()) {
+        let val = (va + vb) / 2.0;
+        norm_sq += val * val;
+        fused.push(val);
+    }
+    if norm_sq <= 0.0 || !norm_sq.is_finite() {
+        return Err(MockModelError::InvalidEmbeddingNorm);
+    }
+    let norm = norm_sq.sqrt();
+    for v in &mut fused {
+        *v /= norm;
+    }
+    Ok(MockEmbedding {
+        generation: a.generation.clone(),
+        vector: fused,
+    })
 }
 
 /// A multi-camera corroborated model finding.

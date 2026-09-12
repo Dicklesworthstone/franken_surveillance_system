@@ -891,7 +891,10 @@ fn test_finding_f2_collinear_samples_along_diagonal_rejected() -> Result<(), Box
 
     match res {
         Err(CalibrationError::DegenerateEvidence { .. }) => Ok(()),
-        Ok(_) => Err("CRITICAL: validate_non_degenerate_evidence accepted collinear points along diagonal!".into()),
+        Ok(_) => Err(
+            "CRITICAL: validate_non_degenerate_evidence accepted collinear points along diagonal!"
+                .into(),
+        ),
         Err(other) => Err(format!("unexpected error: {:?}", other).into()),
     }
 }
@@ -899,7 +902,8 @@ fn test_finding_f2_collinear_samples_along_diagonal_rejected() -> Result<(), Box
 #[test]
 fn test_finding_f2_samples_with_non_positive_depth_rejected() -> Result<(), Box<dyn Error>> {
     let intrinsics = sample_intrinsics_brown_conrady();
-    let mut samples = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+    let mut samples =
+        generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
     // Set one point behind camera
     samples[0] = CalibrationSample::new(
         samples[0].point_id,
@@ -926,13 +930,16 @@ fn test_finding_f2_samples_with_non_positive_depth_rejected() -> Result<(), Box<
 
     match res {
         Err(CalibrationError::DegenerateEvidence { .. }) => Ok(()),
-        Ok(_) => Err("CRITICAL: validate_non_degenerate_evidence accepted point with Z <= 0!".into()),
+        Ok(_) => {
+            Err("CRITICAL: validate_non_degenerate_evidence accepted point with Z <= 0!".into())
+        }
         Err(other) => Err(format!("unexpected error: {:?}", other).into()),
     }
 }
 
 #[test]
-fn test_finding_f5_verify_observation_rejects_expired_sample_timestamp() -> Result<(), Box<dyn Error>> {
+fn test_finding_f5_verify_observation_rejects_expired_sample_timestamp()
+-> Result<(), Box<dyn Error>> {
     let intrinsics = sample_intrinsics_brown_conrady();
     let samples = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
 
@@ -966,13 +973,17 @@ fn test_finding_f5_verify_observation_rejects_expired_sample_timestamp() -> Resu
     let res = lifecycle.verify_observation(&expired_sample, 100_000_000);
     match res {
         Err(CalibrationError::StaleCertificatePastValidity { .. }) => Ok(()),
-        Ok(_) => Err("CRITICAL: verify_observation verified a sample captured past certificate validity!".into()),
+        Ok(_) => Err(
+            "CRITICAL: verify_observation verified a sample captured past certificate validity!"
+                .into(),
+        ),
         Err(other) => Err(format!("unexpected error: {:?}", other).into()),
     }
 }
 
 #[test]
-fn test_finding_f6_certificate_canonical_bytes_digest_matches_certificate_digest() -> Result<(), Box<dyn Error>> {
+fn test_finding_f6_certificate_canonical_bytes_digest_matches_certificate_digest()
+-> Result<(), Box<dyn Error>> {
     let intrinsics = sample_intrinsics_brown_conrady();
     let samples = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
 
@@ -995,15 +1006,15 @@ fn test_finding_f6_certificate_canonical_bytes_digest_matches_certificate_digest
     let computed_digest = ContentDigest::sha256(&canonical_bytes);
 
     assert_eq!(
-        computed_digest,
-        cert.certificate_digest,
+        computed_digest, cert.certificate_digest,
         "CRITICAL: cert.certificate_digest does not match ContentDigest::sha256(&cert.canonical_bytes()!)"
     );
     Ok(())
 }
 
 #[test]
-fn test_finding_f7_unconstrained_residual_mean_exceeding_max_rejected() -> Result<(), Box<dyn Error>> {
+fn test_finding_f7_unconstrained_residual_mean_exceeding_max_rejected() -> Result<(), Box<dyn Error>>
+{
     let intrinsics = sample_intrinsics_brown_conrady();
     let samples = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
 
@@ -1083,8 +1094,9 @@ fn test_finding_f7_max_reprojection_tolerance_at_exact_bound() -> Result<(), Box
         .evidence(samples)?
         .build();
 
-    assert!(res.is_ok(), "Exact bound MAX_REPROJECTION_TOLERANCE_UPX must succeed");
+    assert!(
+        res.is_ok(),
+        "Exact bound MAX_REPROJECTION_TOLERANCE_UPX must succeed"
+    );
     Ok(())
 }
-
-

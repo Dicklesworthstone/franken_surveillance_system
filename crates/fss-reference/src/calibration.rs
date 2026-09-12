@@ -448,19 +448,15 @@ impl CameraIntrinsics {
                     .mul_checked(y)
                     .and_then(|yy| yy.mul_checked(Fixed64::from_integer(2)))?;
 
-                let dx = p1
-                    .mul_checked(xy2)
-                    .and_then(|a| {
-                        let inner = r2.add_checked(x2_2)?;
-                        let b = p2.mul_checked(inner)?;
-                        a.add_checked(b)
-                    })?;
-                let dy = p1
-                    .mul_checked(r2.add_checked(y2_2)?)
-                    .and_then(|a| {
-                        let b = p2.mul_checked(xy2)?;
-                        a.add_checked(b)
-                    })?;
+                let dx = p1.mul_checked(xy2).and_then(|a| {
+                    let inner = r2.add_checked(x2_2)?;
+                    let b = p2.mul_checked(inner)?;
+                    a.add_checked(b)
+                })?;
+                let dy = p1.mul_checked(r2.add_checked(y2_2)?).and_then(|a| {
+                    let b = p2.mul_checked(xy2)?;
+                    a.add_checked(b)
+                })?;
 
                 let xd = x.mul_checked(radial).and_then(|xr| xr.add_checked(dx))?;
                 let yd = y.mul_checked(radial).and_then(|yr| yr.add_checked(dy))?;
@@ -1101,7 +1097,8 @@ fn validate_non_degenerate_evidence(
     // If all points are within 10mm perpendicular distance of line Pa-Pb, they are collinear:
     if max_perp_d2 < 100 {
         return Err(CalibrationError::DegenerateEvidence {
-            reason: "sample points are collinear in 3D: perpendicular deviation from line < 10mm".to_string(),
+            reason: "sample points are collinear in 3D: perpendicular deviation from line < 10mm"
+                .to_string(),
         });
     }
 
@@ -1126,7 +1123,8 @@ fn validate_non_degenerate_evidence(
     const MIN_2D_SPREAD_UPX2: i128 = 100_000_000_000_000;
     if max_2d_d2 < MIN_2D_SPREAD_UPX2 {
         return Err(CalibrationError::DegenerateEvidence {
-            reason: "sample observations have insufficient 2D pixel spread (< 10 pixels)".to_string(),
+            reason: "sample observations have insufficient 2D pixel spread (< 10 pixels)"
+                .to_string(),
         });
     }
 

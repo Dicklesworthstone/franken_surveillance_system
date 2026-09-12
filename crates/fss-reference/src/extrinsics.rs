@@ -18,6 +18,7 @@
 //! - Contradiction detection against active certificates triggering automatic invalidation
 //! - Rigorous bounds tested at bound and bound+1
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use fss_core::{
@@ -166,8 +167,12 @@ impl RigidTransform3D {
             - r[0][1] * (r[1][0] * r[2][2] - r[1][2] * r[2][0])
             + r[0][2] * (r[1][0] * r[2][1] - r[1][1] * r[2][0]);
 
-        if (det - 1.0).abs() > 0.05 {
-            let det_upx = (det * (MICRO_UNIT_SCALE as f64)).round() as i64;
+        if !det.is_finite() || (det - 1.0).abs() > 0.05 {
+            let det_upx = if det.is_finite() {
+                (det * (MICRO_UNIT_SCALE as f64)).round() as i64
+            } else {
+                0
+            };
             return Err(ExtrinsicsError::NonOrthogonalRotation { det_upx });
         }
 
@@ -176,8 +181,12 @@ impl RigidTransform3D {
             for j in 0..3 {
                 let dot = r[i][0] * r[j][0] + r[i][1] * r[j][1] + r[i][2] * r[j][2];
                 let expected = if i == j { 1.0 } else { 0.0 };
-                if (dot - expected).abs() > 0.05 {
-                    let det_upx = (det * (MICRO_UNIT_SCALE as f64)).round() as i64;
+                if !dot.is_finite() || (dot - expected).abs() > 0.05 {
+                    let det_upx = if det.is_finite() {
+                        (det * (MICRO_UNIT_SCALE as f64)).round() as i64
+                    } else {
+                        0
+                    };
                     return Err(ExtrinsicsError::NonOrthogonalRotation { det_upx });
                 }
             }
@@ -308,7 +317,7 @@ impl RigidTransform3D {
                     .checked_mul(tz)
                     .and_then(|b| a.checked_add(b))
             })
-            .map(|val| Fixed64(-val.0))
+            .and_then(|val| val.0.checked_neg().map(Fixed64))
             .ok_or(ExtrinsicsError::ArithmeticOverflow)?;
 
         let inv_ty = inv_rotation[1][0]
@@ -323,7 +332,7 @@ impl RigidTransform3D {
                     .checked_mul(tz)
                     .and_then(|b| a.checked_add(b))
             })
-            .map(|val| Fixed64(-val.0))
+            .and_then(|val| val.0.checked_neg().map(Fixed64))
             .ok_or(ExtrinsicsError::ArithmeticOverflow)?;
 
         let inv_tz = inv_rotation[2][0]
@@ -338,7 +347,7 @@ impl RigidTransform3D {
                     .checked_mul(tz)
                     .and_then(|b| a.checked_add(b))
             })
-            .map(|val| Fixed64(-val.0))
+            .and_then(|val| val.0.checked_neg().map(Fixed64))
             .ok_or(ExtrinsicsError::ArithmeticOverflow)?;
 
         Ok(Self {
@@ -444,16 +453,16 @@ impl ExtrinsicsCorrespondence {
         let mut encoder = CanonicalEncoder::new();
         encoder.u64(correspondence_id);
         encoder.u64(feature_id);
-        encoder.u32(source_point_mm[0] as u32);
-        encoder.u32(source_point_mm[1] as u32);
-        encoder.u32(source_point_mm[2] as u32);
-        encoder.u32(target_point_mm[0] as u32);
-        encoder.u32(target_point_mm[1] as u32);
-        encoder.u32(target_point_mm[2] as u32);
-        encoder.u64(source_pixel_upx.0 as u64);
-        encoder.u64(source_pixel_upx.1 as u64);
-        encoder.u64(target_pixel_upx.0 as u64);
-        encoder.u64(target_pixel_upx.1 as u64);
+        encoder.i128(source_point_mm[0] as i128);
+        encoder.i128(source_point_mm[1] as i128);
+        encoder.i128(source_point_mm[2] as i128);
+        encoder.i128(target_point_mm[0] as i128);
+        encoder.i128(target_point_mm[1] as i128);
+        encoder.i128(target_point_mm[2] as i128);
+        encoder.i128(source_pixel_upx.0 as i128);
+        encoder.i128(source_pixel_upx.1 as i128);
+        encoder.i128(target_pixel_upx.0 as i128);
+        encoder.i128(target_pixel_upx.1 as i128);
         encoder.i128(capture_time.0);
 
         let bytes = encoder
@@ -478,16 +487,16 @@ impl CanonicalEncode for ExtrinsicsCorrespondence {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.u64(self.correspondence_id);
         encoder.u64(self.feature_id);
-        encoder.u32(self.source_point_mm[0] as u32);
-        encoder.u32(self.source_point_mm[1] as u32);
-        encoder.u32(self.source_point_mm[2] as u32);
-        encoder.u32(self.target_point_mm[0] as u32);
-        encoder.u32(self.target_point_mm[1] as u32);
-        encoder.u32(self.target_point_mm[2] as u32);
-        encoder.u64(self.source_pixel_upx.0 as u64);
-        encoder.u64(self.source_pixel_upx.1 as u64);
-        encoder.u64(self.target_pixel_upx.0 as u64);
-        encoder.u64(self.target_pixel_upx.1 as u64);
+        encoder.i128(self.source_point_mm[0] as i128);
+        encoder.i128(self.source_point_mm[1] as i128);
+        encoder.i128(self.source_point_mm[2] as i128);
+        encoder.i128(self.target_point_mm[0] as i128);
+        encoder.i128(self.target_point_mm[1] as i128);
+        encoder.i128(self.target_point_mm[2] as i128);
+        encoder.i128(self.source_pixel_upx.0 as i128);
+        encoder.i128(self.source_pixel_upx.1 as i128);
+        encoder.i128(self.target_pixel_upx.0 as i128);
+        encoder.i128(self.target_pixel_upx.1 as i128);
         encoder.i128(self.capture_time.0);
         encoder.bytes(&self.digest.bytes());
     }
@@ -621,6 +630,18 @@ impl ExtrinsicsCertificate {
                 actual: target_cert.device_generation.clone(),
             });
         }
+        if self.source_firmware_generation != source_cert.firmware_generation {
+            return Err(ExtrinsicsError::SourceFirmwareGenerationMismatch {
+                expected: self.source_firmware_generation.clone(),
+                actual: source_cert.firmware_generation.clone(),
+            });
+        }
+        if self.target_firmware_generation != target_cert.firmware_generation {
+            return Err(ExtrinsicsError::TargetFirmwareGenerationMismatch {
+                expected: self.target_firmware_generation.clone(),
+                actual: target_cert.firmware_generation.clone(),
+            });
+        }
         Ok(())
     }
 
@@ -642,6 +663,21 @@ impl ExtrinsicsCertificate {
                 "transformed 3D point is on or behind the target camera optical plane (Z <= 0)"
                     .to_string(),
             ));
+        }
+
+        // Validate 3D landmark deviation does not contradict estimated rigid pose
+        let dx3 = p_target[0] - (corr.target_point_mm[0] as f64);
+        let dy3 = p_target[1] - (corr.target_point_mm[1] as f64);
+        let dz3 = p_target[2] - (corr.target_point_mm[2] as f64);
+        let dist_3d_mm = (dx3 * dx3 + dy3 * dy3 + dz3 * dz3).sqrt();
+        let max_allowed_3d_mm =
+            ((self.residual.alignment_3d_rmse_umm as f64) / 1000.0).max(100.0) * 3.0;
+        if dist_3d_mm > max_allowed_3d_mm {
+            return Err(ExtrinsicsError::ContradictedExtrinsics {
+                correspondence_id: corr.correspondence_id,
+                observed_error_upx: (dist_3d_mm * (MICRO_UNIT_SCALE as f64)).round() as u64,
+                tolerance_upx: (max_allowed_3d_mm * (MICRO_UNIT_SCALE as f64)).round() as u64,
+            });
         }
 
         let proj = target_intrinsics
@@ -948,32 +984,8 @@ impl ExtrinsicsCertificateBuilder {
         }
         let evidence_root = ContentDigest::sha256(&evidence_bytes);
 
-        // 6. Seal certificate digest
-        let mut cert_encoder = CanonicalEncoder::new();
-        cert_encoder.text(&self.certificate_id);
-        cert_encoder.text(source_camera.as_str());
-        cert_encoder.text(target_camera.as_str());
-        cert_encoder.text(source_device_generation.as_str());
-        cert_encoder.text(target_device_generation.as_str());
-        cert_encoder.text(source_firmware_generation.as_str());
-        cert_encoder.text(target_firmware_generation.as_str());
-        cert_encoder.bytes(&source_intrinsics_digest.bytes());
-        cert_encoder.bytes(&target_intrinsics_digest.bytes());
-        cert_encoder.text(source_calibration_generation.as_str());
-        cert_encoder.text(target_calibration_generation.as_str());
-        cert_encoder.text(calibration_generation.as_str());
-        transform.encode_canonical(&mut cert_encoder);
-        residual.encode_canonical(&mut cert_encoder);
-        cert_encoder.i128(validity.earliest.0);
-        cert_encoder.i128(validity.latest.0);
-        cert_encoder.bytes(&evidence_root.bytes());
-
-        let bytes = cert_encoder
-            .finish_checked()
-            .map_err(ExtrinsicsError::Contract)?;
-        let certificate_digest = ContentDigest::sha256(&bytes);
-
-        Ok(ExtrinsicsCertificate {
+        // 6. Seal certificate digest directly over canonical binary representation
+        let mut cert = ExtrinsicsCertificate {
             certificate_id: self.certificate_id,
             source_camera,
             target_camera,
@@ -991,8 +1003,13 @@ impl ExtrinsicsCertificateBuilder {
             validity,
             evidence,
             evidence_root,
-            certificate_digest,
-        })
+            certificate_digest: ContentDigest::sha256(b"placeholder"),
+        };
+
+        let bytes = cert.canonical_bytes()?;
+        cert.certificate_digest = ContentDigest::sha256(&bytes);
+
+        Ok(cert)
     }
 }
 
@@ -1007,41 +1024,169 @@ fn validate_non_degenerate_correspondences(
         });
     }
 
-    let mut min_sx = i32::MAX;
-    let mut max_sx = i32::MIN;
-    let mut min_sy = i32::MAX;
-    let mut max_sy = i32::MIN;
-    let mut min_sz = i32::MAX;
-    let mut max_sz = i32::MIN;
-
+    // 1. Enforce strictly positive depth Z > 0 for all points in both frames
     for c in evidence {
-        min_sx = min_sx.min(c.source_point_mm[0]);
-        max_sx = max_sx.max(c.source_point_mm[0]);
-        min_sy = min_sy.min(c.source_point_mm[1]);
-        max_sy = max_sy.max(c.source_point_mm[1]);
-        min_sz = min_sz.min(c.source_point_mm[2]);
-        max_sz = max_sz.max(c.source_point_mm[2]);
+        if c.source_point_mm[2] <= 0 {
+            return Err(ExtrinsicsError::DegenerateCorrespondences {
+                reason: format!(
+                    "source correspondence point {} has non-positive depth Z = {} mm (Z > 0 required)",
+                    c.correspondence_id, c.source_point_mm[2]
+                ),
+            });
+        }
+        if c.target_point_mm[2] <= 0 {
+            return Err(ExtrinsicsError::DegenerateCorrespondences {
+                reason: format!(
+                    "target correspondence point {} has non-positive depth Z = {} mm (Z > 0 required)",
+                    c.correspondence_id, c.target_point_mm[2]
+                ),
+            });
+        }
     }
 
-    let spread_sx = (max_sx - min_sx).unsigned_abs();
-    let spread_sy = (max_sy - min_sy).unsigned_abs();
-    let spread_sz = (max_sz - min_sz).unsigned_abs();
-
-    let mut non_zero_axes = 0;
-    if spread_sx >= (MIN_SPATIAL_SPREAD_MM as u32) {
-        non_zero_axes += 1;
+    // 2. Enforce minimum distinct 3D points in source and target frames (>= 8)
+    let mut distinct_src = BTreeSet::new();
+    let mut distinct_tgt = BTreeSet::new();
+    for c in evidence {
+        distinct_src.insert(c.source_point_mm);
+        distinct_tgt.insert(c.target_point_mm);
     }
-    if spread_sy >= (MIN_SPATIAL_SPREAD_MM as u32) {
-        non_zero_axes += 1;
-    }
-    if spread_sz >= (MIN_SPATIAL_SPREAD_MM as u32) {
-        non_zero_axes += 1;
-    }
-
-    if non_zero_axes < 2 {
+    if distinct_src.len() < MIN_EXTRINSICS_CORRESPONDENCES {
         return Err(ExtrinsicsError::DegenerateCorrespondences {
             reason: format!(
-                "degenerate source points: points are collinear or lack spatial spread (spreads: dx={spread_sx}mm, dy={spread_sy}mm, dz={spread_sz}mm)"
+                "insufficient distinct source 3D points: {} distinct points provided, minimum {} required",
+                distinct_src.len(),
+                MIN_EXTRINSICS_CORRESPONDENCES
+            ),
+        });
+    }
+    if distinct_tgt.len() < MIN_EXTRINSICS_CORRESPONDENCES {
+        return Err(ExtrinsicsError::DegenerateCorrespondences {
+            reason: format!(
+                "insufficient distinct target 3D points: {} distinct points provided, minimum {} required",
+                distinct_tgt.len(),
+                MIN_EXTRINSICS_CORRESPONDENCES
+            ),
+        });
+    }
+
+    // 3. Check 3D non-collinearity of source points using cross products
+    let mut max_src_d2 = 0i128;
+    let mut idx_src_a = 0;
+    let mut idx_src_b = 0;
+    for i in 0..evidence.len() {
+        for j in (i + 1)..evidence.len() {
+            let dx = (evidence[i].source_point_mm[0] - evidence[j].source_point_mm[0]) as i128;
+            let dy = (evidence[i].source_point_mm[1] - evidence[j].source_point_mm[1]) as i128;
+            let dz = (evidence[i].source_point_mm[2] - evidence[j].source_point_mm[2]) as i128;
+            let d2 = dx * dx + dy * dy + dz * dz;
+            if d2 > max_src_d2 {
+                max_src_d2 = d2;
+                idx_src_a = i;
+                idx_src_b = j;
+            }
+        }
+    }
+
+    let min_spread_sq: i128 = (MIN_SPATIAL_SPREAD_MM as i128) * (MIN_SPATIAL_SPREAD_MM as i128);
+
+    // Minimum 3D span: 10mm (10^2 = 100 mm^2)
+    if max_src_d2 < min_spread_sq {
+        return Err(ExtrinsicsError::DegenerateCorrespondences {
+            reason: format!(
+                "source correspondence points have insufficient 3D spatial spread (< {}mm)",
+                MIN_SPATIAL_SPREAD_MM
+            ),
+        });
+    }
+
+    let p_src_a = evidence[idx_src_a].source_point_mm;
+    let p_src_b = evidence[idx_src_b].source_point_mm;
+    let vx = (p_src_b[0] - p_src_a[0]) as i128;
+    let vy = (p_src_b[1] - p_src_a[1]) as i128;
+    let vz = (p_src_b[2] - p_src_a[2]) as i128;
+
+    let mut max_src_perp_d2 = 0i128;
+    for c in evidence {
+        let ux = (c.source_point_mm[0] - p_src_a[0]) as i128;
+        let uy = (c.source_point_mm[1] - p_src_a[1]) as i128;
+        let uz = (c.source_point_mm[2] - p_src_a[2]) as i128;
+
+        let wx = uy * vz - uz * vy;
+        let wy = uz * vx - ux * vz;
+        let wz = ux * vy - uy * vx;
+
+        let cross_sq = wx * wx + wy * wy + wz * wz;
+        let perp_d2 = cross_sq / max_src_d2;
+        if perp_d2 > max_src_perp_d2 {
+            max_src_perp_d2 = perp_d2;
+        }
+    }
+
+    if max_src_perp_d2 < min_spread_sq {
+        return Err(ExtrinsicsError::DegenerateCorrespondences {
+            reason: format!(
+                "source correspondence points are collinear in 3D: perpendicular deviation from line < {}mm",
+                MIN_SPATIAL_SPREAD_MM
+            ),
+        });
+    }
+
+    // 4. Check 3D non-collinearity of target points using cross products
+    let mut max_tgt_d2 = 0i128;
+    let mut idx_tgt_a = 0;
+    let mut idx_tgt_b = 0;
+    for i in 0..evidence.len() {
+        for j in (i + 1)..evidence.len() {
+            let dx = (evidence[i].target_point_mm[0] - evidence[j].target_point_mm[0]) as i128;
+            let dy = (evidence[i].target_point_mm[1] - evidence[j].target_point_mm[1]) as i128;
+            let dz = (evidence[i].target_point_mm[2] - evidence[j].target_point_mm[2]) as i128;
+            let d2 = dx * dx + dy * dy + dz * dz;
+            if d2 > max_tgt_d2 {
+                max_tgt_d2 = d2;
+                idx_tgt_a = i;
+                idx_tgt_b = j;
+            }
+        }
+    }
+
+    if max_tgt_d2 < min_spread_sq {
+        return Err(ExtrinsicsError::DegenerateCorrespondences {
+            reason: format!(
+                "target correspondence points have insufficient 3D spatial spread (< {}mm)",
+                MIN_SPATIAL_SPREAD_MM
+            ),
+        });
+    }
+
+    let p_tgt_a = evidence[idx_tgt_a].target_point_mm;
+    let p_tgt_b = evidence[idx_tgt_b].target_point_mm;
+    let tvx = (p_tgt_b[0] - p_tgt_a[0]) as i128;
+    let tvy = (p_tgt_b[1] - p_tgt_a[1]) as i128;
+    let tvz = (p_tgt_b[2] - p_tgt_a[2]) as i128;
+
+    let mut max_tgt_perp_d2 = 0i128;
+    for c in evidence {
+        let tux = (c.target_point_mm[0] - p_tgt_a[0]) as i128;
+        let tuy = (c.target_point_mm[1] - p_tgt_a[1]) as i128;
+        let tuz = (c.target_point_mm[2] - p_tgt_a[2]) as i128;
+
+        let twx = tuy * tvz - tuz * tvy;
+        let twy = tuz * tvx - tux * tvz;
+        let twz = tux * tvy - tuy * tvx;
+
+        let cross_sq = twx * twx + twy * twy + twz * twz;
+        let perp_d2 = cross_sq / max_tgt_d2;
+        if perp_d2 > max_tgt_perp_d2 {
+            max_tgt_perp_d2 = perp_d2;
+        }
+    }
+
+    if max_tgt_perp_d2 < min_spread_sq {
+        return Err(ExtrinsicsError::DegenerateCorrespondences {
+            reason: format!(
+                "target correspondence points are collinear in 3D: perpendicular deviation from line < {}mm",
+                MIN_SPATIAL_SPREAD_MM
             ),
         });
     }
@@ -1112,7 +1257,45 @@ pub fn solve_extrinsics(
         });
     }
 
-    // 2. Invariant: Correspondence count bounds
+    // 2. Invariant: Tolerance must not exceed system maximum bound
+    if request.max_reprojection_tolerance_upx > MAX_EXTRINSICS_REPROJECTION_TOLERANCE_UPX {
+        return Err(ExtrinsicsError::ResidualExceedsTolerance {
+            actual_rmse_upx: request.max_reprojection_tolerance_upx,
+            max_allowed_upx: MAX_EXTRINSICS_REPROJECTION_TOLERANCE_UPX,
+        });
+    }
+
+    // 3. Invariant: Request validity must fall within source and target intrinsics certificate validity
+    if request.validity.earliest.0 < request.source_certificate.validity.earliest.0
+        || request.validity.latest.0 > request.source_certificate.validity.latest.0
+    {
+        return Err(ExtrinsicsError::StaleCertificatePastValidity {
+            requested: request.validity.earliest,
+            valid_until: request.source_certificate.validity.latest,
+        });
+    }
+    if request.validity.earliest.0 < request.target_certificate.validity.earliest.0
+        || request.validity.latest.0 > request.target_certificate.validity.latest.0
+    {
+        return Err(ExtrinsicsError::StaleCertificatePastValidity {
+            requested: request.validity.earliest,
+            valid_until: request.target_certificate.validity.latest,
+        });
+    }
+
+    // 4. Invariant: All correspondence capture timestamps must fall within request validity
+    for c in &request.correspondences {
+        if c.capture_time.0 < request.validity.earliest.0
+            || c.capture_time.0 > request.validity.latest.0
+        {
+            return Err(ExtrinsicsError::StaleCertificatePastValidity {
+                requested: c.capture_time,
+                valid_until: request.validity.latest,
+            });
+        }
+    }
+
+    // 5. Invariant: Correspondence count bounds
     let count = request.correspondences.len();
     if count < MIN_EXTRINSICS_CORRESPONDENCES {
         return Err(ExtrinsicsError::InsufficientCorrespondences {
@@ -1127,7 +1310,7 @@ pub fn solve_extrinsics(
         });
     }
 
-    // 3. Invariant: Non-degenerate spatial distribution
+    // 6. Invariant: Non-degenerate spatial distribution
     validate_non_degenerate_correspondences(&request.correspondences)?;
 
     // 4. Compute centroids of source and target 3D points
@@ -1307,14 +1490,10 @@ pub fn solve_extrinsics(
     let alignment_3d_rmse_umm = (sum_3d_dist_sq_umm / n).sqrt().round() as u64;
 
     // 12. Enforce tolerance bounds
-    let eff_tolerance = request
-        .max_reprojection_tolerance_upx
-        .min(MAX_EXTRINSICS_REPROJECTION_TOLERANCE_UPX);
-
-    if rmse_upx > eff_tolerance {
+    if rmse_upx > request.max_reprojection_tolerance_upx {
         return Err(ExtrinsicsError::ResidualExceedsTolerance {
             actual_rmse_upx: rmse_upx,
-            max_allowed_upx: eff_tolerance,
+            max_allowed_upx: request.max_reprojection_tolerance_upx,
         });
     }
 
@@ -1538,13 +1717,29 @@ impl ExtrinsicsLifecycle {
         matches!(self.state, ExtrinsicsLifecycleState::Active(_, _))
     }
 
-    /// Activates a verified extrinsics certificate with target camera intrinsics.
+    /// Activates a verified extrinsics certificate with target camera intrinsics certificate at the current time.
     pub fn activate_certificate(
         &mut self,
         certificate: ExtrinsicsCertificate,
-        target_intrinsics: CameraIntrinsics,
+        target_certificate: &IntrinsicsCertificate,
+        now: TimestampNs,
     ) -> Result<(), ExtrinsicsError> {
-        self.state = ExtrinsicsLifecycleState::Active(Box::new(certificate), target_intrinsics);
+        certificate.validate_at_time(now)?;
+        target_certificate
+            .validate_at_time(now)
+            .map_err(ExtrinsicsError::IntrinsicsError)?;
+
+        if certificate.target_intrinsics_digest != target_certificate.certificate_digest {
+            return Err(ExtrinsicsError::TargetIntrinsicsDigestMismatch {
+                expected: certificate.target_intrinsics_digest,
+                actual: target_certificate.certificate_digest,
+            });
+        }
+
+        self.state = ExtrinsicsLifecycleState::Active(
+            Box::new(certificate),
+            target_certificate.intrinsics.clone(),
+        );
         Ok(())
     }
 
@@ -1561,6 +1756,16 @@ impl ExtrinsicsLifecycle {
                 "no active extrinsics certificate installed".to_string(),
             )),
         }
+    }
+
+    /// Returns a reference to the active certificate after verifying it is valid at `query_time`.
+    pub fn active_certificate_at(
+        &self,
+        query_time: TimestampNs,
+    ) -> Result<&ExtrinsicsCertificate, ExtrinsicsError> {
+        let cert = self.active_certificate()?;
+        cert.validate_at_time(query_time)?;
+        Ok(cert)
     }
 
     /// Verifies a runtime cross-camera observation against the active certificate.
@@ -1586,6 +1791,9 @@ impl ExtrinsicsLifecycle {
                 ));
             }
         };
+
+        // Enforce observation capture timestamp is within certificate validity window
+        cert.validate_at_time(corr.capture_time)?;
 
         if let Err(contradiction) = cert.verify_not_contradicted(corr, &intrinsics, tolerance_upx) {
             self.state = ExtrinsicsLifecycleState::Invalidated {
@@ -1669,6 +1877,20 @@ pub enum ExtrinsicsError {
         expected: DeviceGeneration,
         /// Actual generation.
         actual: DeviceGeneration,
+    },
+    /// Source camera firmware generation does not match certificate binding.
+    SourceFirmwareGenerationMismatch {
+        /// Expected generation.
+        expected: FirmwareGeneration,
+        /// Actual generation.
+        actual: FirmwareGeneration,
+    },
+    /// Target camera firmware generation does not match certificate binding.
+    TargetFirmwareGenerationMismatch {
+        /// Expected generation.
+        expected: FirmwareGeneration,
+        /// Actual generation.
+        actual: FirmwareGeneration,
     },
     /// Source intrinsics digest does not match certificate binding.
     SourceIntrinsicsDigestMismatch {
@@ -1794,6 +2016,18 @@ impl fmt::Display for ExtrinsicsError {
                 write!(
                     f,
                     "target device generation mismatch: expected {expected}, actual {actual}"
+                )
+            }
+            Self::SourceFirmwareGenerationMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "source firmware generation mismatch: expected {expected}, actual {actual}"
+                )
+            }
+            Self::TargetFirmwareGenerationMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "target firmware generation mismatch: expected {expected}, actual {actual}"
                 )
             }
             Self::SourceIntrinsicsDigestMismatch { expected, actual } => {
