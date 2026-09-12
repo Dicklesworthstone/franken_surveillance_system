@@ -4,11 +4,12 @@
 use std::error::Error;
 
 use fss_core::{
-    ArchiveMonthlyUsage, CaptureInterval, ContentDigest, CostClass, DatedPriceRate,
-    MAX_CURRENCY_LEN, MAX_MAPPINGS_COUNT, MAX_PROVIDER_ID_LEN, MAX_RATES_COUNT, MAX_SOURCE_LEN,
-    MAX_TIER_LEN, OperationCostMapping, PROVIDER_PRICING_MANIFEST_DOMAIN, PriceLookupError,
-    PricingManifestError, PricingProvenance, PricingUnit, ProvenanceClass, ProviderPricingManifest,
-    TimestampNs,
+    ArchiveMonthlyCost, ArchiveMonthlyUsage, CanonicalEncode, CanonicalEncoder, CaptureInterval,
+    ContentDigest, CostClass, DatedPriceRate, MAX_CURRENCY_LEN, MAX_MAPPINGS_COUNT,
+    MAX_PROVIDER_ID_LEN, MAX_RATES_COUNT, MAX_SOURCE_LEN, MAX_TIER_LEN, OperationCostMapping,
+    PROVIDER_PRICING_MANIFEST_DOMAIN, PROVIDER_PRICING_MANIFEST_MAGIC,
+    PROVIDER_PRICING_MANIFEST_VERSION_1, PriceLookupError, PricingManifestError, PricingProvenance,
+    PricingUnit, ProvenanceClass, ProviderPricingManifest, TimestampNs,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -581,9 +582,8 @@ fn ac4_exact_r2_cost_calculation_with_free_tier() -> TestResult {
         return Err("total cost mismatch".into());
     }
 
-    let diff = (cost.total_currency_f64() - 9.45).abs();
-    if diff > 1e-9 {
-        return Err("f64 total display drift".into());
+    if cost.total_currency_string() != "9.450000000000" {
+        return Err("formatted total currency string mismatch".into());
     }
 
     Ok(())
@@ -638,9 +638,8 @@ fn ac4_exact_b2_cost_calculation() -> TestResult {
         return Err("B2 total cost mismatch".into());
     }
 
-    let diff = (cost.total_currency_f64() - 43.75).abs();
-    if diff > 1e-9 {
-        return Err("f64 B2 total display drift".into());
+    if cost.total_currency_string() != "43.750000000000" {
+        return Err("formatted B2 total currency string mismatch".into());
     }
 
     Ok(())
@@ -1085,4 +1084,330 @@ fn test_g3_operation_mappings_bound_enforced_at_bound_and_bound_plus_one() -> Te
     }
 
     Ok(())
+}
+
+#[test]
+fn test_finding1_manifest_digest_collision_boundary_shift() -> TestResult {
+    let window = test_validity_window(100, 200)?;
+    let prov = PricingProvenance {
+        source: "https://example.com/pricing".to_string(),
+        retrieved_at: test_timestamp(150),
+        validity_window: window,
+        retrieval_witness: None,
+        provenance_class: ProvenanceClass::Observed,
+    };
+    // Boundary shift: "aws-s3" + "standard" vs "aws" + "-s3standard"
+    let m_a = ProviderPricingManifest::new(
+        "aws-s3".into(),
+        "standard".into(),
+        "USD".into(),
+        prov.clone(),
+        None,
+        vec![],
+        vec![],
+    )?;
+    let m_b = ProviderPricingManifest::new(
+        "aws".into(),
+        "-s3standard".into(),
+        "USD".into(),
+        prov,
+        None,
+        vec![],
+        vec![],
+    )?;
+    if m_a.manifest_digest()? == m_b.manifest_digest()? {
+        return Err(
+            "boundary shift between provider_id and tier must not produce colliding digests".into(),
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_finding2_per_byte_month_storage_cost_calculation() -> TestResult {
+    let m = sample_r2_manifest(None)?;
+    let byte_rate = DatedPriceRate {
+        cost_class: CostClass::Storage,
+        operation_name: None,
+        unit: PricingUnit::PerByteMonth,
+        rate_pico_currency: 15, // 15 pico-USD / byte-month = $0.015 / GB-month
+        free_tier_allowance: None,
+        minimum_billable_unit: None,
+    };
+    let manifest = ProviderPricingManifest::new(
+        m.provider_id().to_string(),
+        m.pricing_tier().to_string(),
+        "USD".to_string(),
+        m.provenance().clone(),
+        None,
+        vec![byte_rate],
+        vec![],
+    )?;
+    let usage = ArchiveMonthlyUsage {
+        retained_gb_months: 100,
+        class_a_operations: 0,
+        class_b_operations: 0,
+        egress_gb: 0,
+    };
+    let cost =
+        manifest.calculate_archive_monthly_cost(&usage, m.provenance().validity_window.earliest)?;
+    // 100 GB = 100 * 10^9 bytes. Total pico-USD should be 100 * 10^9 * 15 = 1_500_000_000_000 ($1.50)
+    if cost.storage_pico_currency != 1_500_000_000_000 {
+        return Err(format!(
+            "storage cost underbilled by 10^9: expected 1_500_000_000_000, got {}",
+            cost.storage_pico_currency
+        )
+        .into());
+    }
+
+    // Incompatible unit test: CostClass::Storage with PerJoule
+    let bad_rate = DatedPriceRate {
+        cost_class: CostClass::Storage,
+        operation_name: None,
+        unit: PricingUnit::PerJoule,
+        rate_pico_currency: 100,
+        free_tier_allowance: None,
+        minimum_billable_unit: None,
+    };
+    let bad_manifest = ProviderPricingManifest::new(
+        m.provider_id().to_string(),
+        m.pricing_tier().to_string(),
+        "USD".to_string(),
+        m.provenance().clone(),
+        None,
+        vec![bad_rate],
+        vec![],
+    );
+    match bad_manifest {
+        Err(PricingManifestError::IncompatibleUnit {
+            cost_class: CostClass::Storage,
+            unit: PricingUnit::PerJoule,
+        }) => Ok(()),
+        _ => Err("expected IncompatibleUnit error for Storage with PerJoule".into()),
+    }
+}
+
+#[test]
+fn test_finding3_no_float_precision_loss_above_9007_usd() -> TestResult {
+    let pico: u128 = 10_000_000_000_000_001; // > 2^53 pico-units ($10,000.000000000001)
+    let formatted = ArchiveMonthlyCost::format_pico_currency(pico);
+    if formatted != "10000.000000000001" {
+        return Err(format!("expected '10000.000000000001', got {formatted}").into());
+    }
+    Ok(())
+}
+
+#[test]
+fn test_finding4_retrieval_date_and_source_validation() -> TestResult {
+    let window = test_validity_window(100, 200)?;
+
+    // 1. Zero retrieval timestamp
+    let prov_zero = PricingProvenance {
+        source: "https://example.com".to_string(),
+        retrieved_at: TimestampNs(0),
+        validity_window: window,
+        retrieval_witness: None,
+        provenance_class: ProvenanceClass::Observed,
+    };
+    if prov_zero.validate().is_ok() {
+        return Err("retrieved_at == 0 must be rejected".into());
+    }
+
+    // 2. Negative retrieval timestamp
+    let prov_neg = PricingProvenance {
+        source: "https://example.com".to_string(),
+        retrieved_at: TimestampNs(-1),
+        validity_window: window,
+        retrieval_witness: None,
+        provenance_class: ProvenanceClass::Observed,
+    };
+    if prov_neg.validate().is_ok() {
+        return Err("negative retrieved_at must be rejected".into());
+    }
+
+    // 3. Retrieval date after validity window latest
+    let prov_post_expiry = PricingProvenance {
+        source: "https://example.com".to_string(),
+        retrieved_at: TimestampNs(201),
+        validity_window: window,
+        retrieval_witness: None,
+        provenance_class: ProvenanceClass::Observed,
+    };
+    if prov_post_expiry.validate().is_ok() {
+        return Err("retrieved_at after validity_window.latest must be rejected".into());
+    }
+
+    // 4. Blank / whitespace source
+    let prov_blank = PricingProvenance {
+        source: "   ".to_string(),
+        retrieved_at: TimestampNs(150),
+        validity_window: window,
+        retrieval_witness: None,
+        provenance_class: ProvenanceClass::Observed,
+    };
+    if prov_blank.validate().is_ok() {
+        return Err("whitespace-only source must be rejected".into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_finding5_calculate_operation_cost_applies_surcharge() -> TestResult {
+    let manifest = sample_r2_manifest(None)?;
+    // Manifest already has PutObject mapped to ClassAOperations.
+    // Add an operation-specific override for PutObject with a surcharge: 9_000_000_000_000 pico-USD / 1M ops
+    let surcharge_rate = DatedPriceRate {
+        cost_class: CostClass::ClassAOperations,
+        operation_name: Some("PutObject".to_string()),
+        unit: PricingUnit::PerMillionOperations,
+        rate_pico_currency: 9_000_000_000_000, // $9.00 / 1M ops (vs default $4.50)
+        free_tier_allowance: None,
+        minimum_billable_unit: None,
+    };
+    let mut rates = manifest.rates().to_vec();
+    rates.push(surcharge_rate);
+
+    let manifest_with_override = ProviderPricingManifest::new(
+        manifest.provider_id().to_string(),
+        manifest.pricing_tier().to_string(),
+        manifest.currency().to_string(),
+        manifest.provenance().clone(),
+        None,
+        rates,
+        manifest.operation_mappings().to_vec(),
+    )?;
+
+    let query_time = manifest.provenance().validity_window.earliest;
+    // Calculate 1_000_000 PutObject operations: should use the override ($9.00 = 9_000_000_000_000)
+    let op_cost =
+        manifest_with_override.calculate_operation_cost("PutObject", 1_000_000, query_time)?;
+    if op_cost != 9_000_000_000_000 {
+        return Err(format!(
+            "operation override not applied: expected 9_000_000_000_000, got {op_cost}"
+        )
+        .into());
+    }
+
+    // For an un-overridden ClassA operation like CreateMultipartUpload, generic rate ($4.50) should be applied.
+    // 2_000_000 ops - 1_000_000 free tier = 1_000_000 billable @ $4.50 / 1M = 4_500_000_000_000.
+    let generic_cost = manifest_with_override.calculate_operation_cost(
+        "CreateMultipartUpload",
+        2_000_000,
+        query_time,
+    )?;
+    if generic_cost != 4_500_000_000_000 {
+        return Err(format!(
+            "generic rate not applied for non-overridden operation: expected 4_500_000_000_000, got {generic_cost}"
+        )
+        .into());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_finding6_monthly_archive_near_expiry_fails_closed() -> TestResult {
+    let m = sample_r2_manifest(None)?;
+    let at_time = m.provenance().validity_window.latest;
+    let usage = ArchiveMonthlyUsage {
+        retained_gb_months: 100,
+        class_a_operations: 1000,
+        class_b_operations: 1000,
+        egress_gb: 10,
+    };
+    let res = m.calculate_archive_monthly_cost(&usage, at_time);
+    match res {
+        Err(PriceLookupError::Stale { .. }) => Ok(()),
+        other => Err(format!(
+            "monthly calculation at expiry instant must fail closed with Stale, got {other:?}"
+        )
+        .into()),
+    }
+}
+
+#[test]
+fn test_finding7_decode_rejects_unsorted_rates_stream() -> TestResult {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.bytes(&PROVIDER_PRICING_MANIFEST_MAGIC);
+    encoder.text(PROVIDER_PRICING_MANIFEST_DOMAIN);
+    encoder.u32(PROVIDER_PRICING_MANIFEST_VERSION_1);
+    encoder.text("provider");
+    encoder.text("standard");
+    encoder.text("USD");
+    encoder.text("https://example.com");
+    TimestampNs(100).encode_canonical(&mut encoder);
+    CaptureInterval::new_checked(TimestampNs(100), TimestampNs(200))?
+        .encode_canonical(&mut encoder);
+    encoder.tag(0); // witness None
+    encoder.tag(1); // Observed
+    encoder.tag(0); // supersedes None
+
+    // Rates: count = 2, but unsorted: ClassB (tag 3) before ClassA (tag 2)
+    encoder.u32(2);
+    // Rate B
+    encoder.tag(3); // CostClass::ClassBOperations
+    encoder.tag(0); // operation_name None
+    encoder.tag(5); // PerMillionOperations
+    encoder.bytes(&100u128.to_be_bytes());
+    encoder.tag(0);
+    encoder.tag(0);
+    // Rate A
+    encoder.tag(2); // CostClass::ClassAOperations
+    encoder.tag(0); // operation_name None
+    encoder.tag(5); // PerMillionOperations
+    encoder.bytes(&200u128.to_be_bytes());
+    encoder.tag(0);
+    encoder.tag(0);
+
+    // Mappings: count = 0
+    encoder.u32(0);
+
+    let malformed_bytes = encoder.finish();
+    match ProviderPricingManifest::decode(&malformed_bytes) {
+        Err(PricingManifestError::NonCanonicalOrder { field: "rates" }) => Ok(()),
+        other => Err(format!(
+            "expected NonCanonicalOrder for unsorted rates stream, got {other:?}"
+        )
+        .into()),
+    }
+}
+
+#[test]
+fn test_finding8_decode_returns_rich_error_variants() -> TestResult {
+    let manifest = sample_r2_manifest(None)?;
+    let mut encoded = manifest.encode()?;
+
+    // Bad magic (offset 8..12 following the 8-byte length prefix)
+    encoded[8..12].copy_from_slice(b"XXXX");
+    match ProviderPricingManifest::decode(&encoded) {
+        Err(PricingManifestError::BadMagic { expected, actual }) => {
+            if expected != PROVIDER_PRICING_MANIFEST_MAGIC || actual != *b"XXXX" {
+                return Err("unexpected BadMagic values".into());
+            }
+        }
+        other => return Err(format!("expected BadMagic, got {other:?}").into()),
+    }
+
+    // Unsupported version
+    let mut encoder = CanonicalEncoder::new();
+    encoder.bytes(&PROVIDER_PRICING_MANIFEST_MAGIC);
+    encoder.text(PROVIDER_PRICING_MANIFEST_DOMAIN);
+    encoder.u32(99); // version 99
+    encoder.text("provider");
+    encoder.text("tier");
+    encoder.text("USD");
+    encoder.text("https://example.com");
+    TimestampNs(100).encode_canonical(&mut encoder);
+    CaptureInterval::new_checked(TimestampNs(100), TimestampNs(200))?
+        .encode_canonical(&mut encoder);
+    encoder.tag(0);
+    encoder.tag(1);
+    encoder.tag(0);
+    encoder.u32(0);
+    encoder.u32(0);
+    match ProviderPricingManifest::decode(&encoder.finish()) {
+        Err(PricingManifestError::UnsupportedVersion { actual: 99 }) => Ok(()),
+        other => Err(format!("expected UnsupportedVersion(99), got {other:?}").into()),
+    }
 }

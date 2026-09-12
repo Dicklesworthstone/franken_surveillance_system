@@ -20,7 +20,7 @@ use std::error::Error;
 
 use crate::{
     CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CaptureInterval,
-    ContentDigest, ContractError, DigestAlgorithm, ProvenanceClass, Sha256Hasher, TimestampNs,
+    ContentDigest, ContractError, ProvenanceClass, TimestampNs,
 };
 
 /// Canonical digest domain tag for dated provider-pricing manifests.
@@ -73,6 +73,12 @@ pub const PICO_DENOMINATOR: u128 = 1_000_000_000_000;
 
 /// Number of gigabytes per terabyte in decimal storage metrics (1 TB = 1,000 GB).
 pub const GB_PER_TB: u64 = 1_000;
+
+/// Number of bytes per gigabyte in decimal storage metrics (1 GB = 1,000,000,000 bytes).
+pub const BYTES_PER_GB: u64 = 1_000_000_000;
+
+/// Standard billing month duration in nanoseconds (30 days = 30 * 86,400 * 10^9 ns).
+pub const MONTH_DURATION_NS: i128 = 30 * 86_400 * 1_000_000_000;
 
 /// Floating alias refused wherever a provider, tier, or source is named.
 pub const LATEST_ALIAS: &str = "latest";
@@ -252,7 +258,10 @@ pub struct PricingProvenance {
 impl PricingProvenance {
     /// Validates all constraints and bounds on the provenance record.
     pub fn validate(&self) -> Result<(), PricingManifestError> {
-        if self.source.len() < MIN_SOURCE_LEN || self.source.len() > MAX_SOURCE_LEN {
+        if self.source.trim().is_empty()
+            || self.source.len() < MIN_SOURCE_LEN
+            || self.source.len() > MAX_SOURCE_LEN
+        {
             return Err(PricingManifestError::StringLengthOutOfBounds {
                 field: "source",
                 length: self.source.len(),
@@ -261,10 +270,20 @@ impl PricingProvenance {
             });
         }
         reject_latest_alias(&self.source, "source")?;
+        if self.retrieved_at.0 <= 0 {
+            return Err(PricingManifestError::InvalidRetrievalTimestamp {
+                reason: "retrieved_at must be positive (UNIX epoch > 0)",
+            });
+        }
         if self.validity_window.earliest > self.validity_window.latest {
             return Err(PricingManifestError::InvertedValidityWindow {
                 earliest: self.validity_window.earliest,
                 latest: self.validity_window.latest,
+            });
+        }
+        if self.retrieved_at > self.validity_window.latest {
+            return Err(PricingManifestError::InvalidRetrievalTimestamp {
+                reason: "retrieved_at occurs after validity_window.latest",
             });
         }
         Ok(())
@@ -317,8 +336,38 @@ pub struct DatedPriceRate {
 }
 
 impl DatedPriceRate {
+    /// Returns whether the specified pricing unit is compatible with the cost class.
+    #[must_use]
+    pub const fn is_unit_compatible(cost_class: CostClass, unit: PricingUnit) -> bool {
+        match cost_class {
+            CostClass::Storage => matches!(
+                unit,
+                PricingUnit::PerByteMonth | PricingUnit::PerGibMonth | PricingUnit::PerTbMonth
+            ),
+            CostClass::ClassAOperations | CostClass::ClassBOperations => matches!(
+                unit,
+                PricingUnit::PerOperation | PricingUnit::PerMillionOperations
+            ),
+            CostClass::Egress | CostClass::DataRetrieval => {
+                matches!(unit, PricingUnit::PerByte | PricingUnit::PerGib)
+            }
+            CostClass::LocalCompute => matches!(
+                unit,
+                PricingUnit::PerOperation
+                    | PricingUnit::PerMillionOperations
+                    | PricingUnit::PerJoule
+            ),
+        }
+    }
+
     /// Validates rate fields and bounds.
     pub fn validate(&self) -> Result<(), PricingManifestError> {
+        if !Self::is_unit_compatible(self.cost_class, self.unit) {
+            return Err(PricingManifestError::IncompatibleUnit {
+                cost_class: self.cost_class,
+                unit: self.unit,
+            });
+        }
         if let Some(op) = &self.operation_name {
             if op.len() < MIN_OPERATION_LEN || op.len() > MAX_OPERATION_LEN {
                 return Err(PricingManifestError::StringLengthOutOfBounds {
@@ -399,34 +448,62 @@ pub struct ArchiveMonthlyCost {
 }
 
 impl ArchiveMonthlyCost {
-    /// Total cost in major currency units as f64 (for logging/display only).
+    /// Formats pico-currency value as a decimal major currency string with 12 decimal places
+    /// without any floating-point arithmetic or precision loss.
     #[must_use]
-    pub fn total_currency_f64(&self) -> f64 {
-        (self.total_pico_currency as f64) / (PICO_DENOMINATOR as f64)
+    pub fn format_pico_currency(pico: u128) -> String {
+        let whole = pico / PICO_DENOMINATOR;
+        let frac = pico % PICO_DENOMINATOR;
+        if frac == 0 {
+            format!("{whole}.0")
+        } else {
+            let mut s = format!("{whole}.{frac:012}");
+            // Trim trailing zeros but keep at least 1 decimal place (or trim unnecessary zeros)
+            while s.ends_with('0') && s.len() > 3 && &s[s.len() - 2..s.len() - 1] != "." {
+                s.pop();
+            }
+            s
+        }
     }
 
-    /// Storage cost in major currency units as f64.
+    /// Formats the total monthly cost as a decimal currency string.
     #[must_use]
-    pub fn storage_currency_f64(&self) -> f64 {
-        (self.storage_pico_currency as f64) / (PICO_DENOMINATOR as f64)
+    pub fn total_currency_string(&self) -> String {
+        let whole = self.total_pico_currency / PICO_DENOMINATOR;
+        let frac = self.total_pico_currency % PICO_DENOMINATOR;
+        format!("{whole}.{frac:012}")
     }
 
-    /// Class A cost in major currency units as f64.
+    /// Formats the storage cost as a decimal currency string.
     #[must_use]
-    pub fn class_a_currency_f64(&self) -> f64 {
-        (self.class_a_pico_currency as f64) / (PICO_DENOMINATOR as f64)
+    pub fn storage_currency_string(&self) -> String {
+        let whole = self.storage_pico_currency / PICO_DENOMINATOR;
+        let frac = self.storage_pico_currency % PICO_DENOMINATOR;
+        format!("{whole}.{frac:012}")
     }
 
-    /// Class B cost in major currency units as f64.
+    /// Formats the Class A cost as a decimal currency string.
     #[must_use]
-    pub fn class_b_currency_f64(&self) -> f64 {
-        (self.class_b_pico_currency as f64) / (PICO_DENOMINATOR as f64)
+    pub fn class_a_currency_string(&self) -> String {
+        let whole = self.class_a_pico_currency / PICO_DENOMINATOR;
+        let frac = self.class_a_pico_currency % PICO_DENOMINATOR;
+        format!("{whole}.{frac:012}")
     }
 
-    /// Egress cost in major currency units as f64.
+    /// Formats the Class B cost as a decimal currency string.
     #[must_use]
-    pub fn egress_currency_f64(&self) -> f64 {
-        (self.egress_pico_currency as f64) / (PICO_DENOMINATOR as f64)
+    pub fn class_b_currency_string(&self) -> String {
+        let whole = self.class_b_pico_currency / PICO_DENOMINATOR;
+        let frac = self.class_b_pico_currency % PICO_DENOMINATOR;
+        format!("{whole}.{frac:012}")
+    }
+
+    /// Formats the egress cost as a decimal currency string.
+    #[must_use]
+    pub fn egress_currency_string(&self) -> String {
+        let whole = self.egress_pico_currency / PICO_DENOMINATOR;
+        let frac = self.egress_pico_currency % PICO_DENOMINATOR;
+        format!("{whole}.{frac:012}")
     }
 }
 
@@ -781,17 +858,18 @@ impl ProviderPricingManifest {
         Ok((mapping, rate))
     }
 
-    /// Calculates cost in pico-currency for a given cost class and quantity at `at_time`.
+    /// Calculates the cost in pico-currency for a given rate and quantity.
     ///
-    /// Accounts for unit conversions, minimum billable units, and free tier allowances.
-    pub fn calculate_cost(
+    /// Quantity must be provided in the rate's native unit:
+    /// - Bytes for [`PricingUnit::PerByteMonth`] and [`PricingUnit::PerByte`]
+    /// - Gigabytes for [`PricingUnit::PerGibMonth`], [`PricingUnit::PerTbMonth`], and [`PricingUnit::PerGib`]
+    /// - Operations for [`PricingUnit::PerOperation`] and [`PricingUnit::PerMillionOperations`]
+    /// - Joules for [`PricingUnit::PerJoule`]
+    pub fn calculate_cost_for_rate(
         &self,
-        cost_class: CostClass,
+        rate: &DatedPriceRate,
         quantity: u64,
-        at_time: TimestampNs,
     ) -> Result<u128, PriceLookupError> {
-        let rate = self.lookup_rate(cost_class, at_time)?;
-
         let billable_quantity = if let Some(free) = rate.free_tier_allowance {
             quantity.saturating_sub(free)
         } else {
@@ -837,27 +915,103 @@ impl ProviderPricingManifest {
         }
     }
 
+    /// Calculates cost in pico-currency for a given cost class and quantity at `at_time`.
+    pub fn calculate_cost(
+        &self,
+        cost_class: CostClass,
+        quantity: u64,
+        at_time: TimestampNs,
+    ) -> Result<u128, PriceLookupError> {
+        let rate = self.lookup_rate(cost_class, at_time)?;
+        self.calculate_cost_for_rate(rate, quantity)
+    }
+
+    /// Calculates cost in pico-currency for a specific provider operation at `at_time`.
+    pub fn calculate_operation_cost(
+        &self,
+        operation: &str,
+        quantity: u64,
+        at_time: TimestampNs,
+    ) -> Result<u128, PriceLookupError> {
+        let (_mapping, rate) = self.lookup_operation_rate(operation, at_time)?;
+        self.calculate_cost_for_rate(rate, quantity)
+    }
+
     /// Computes the complete archive monthly cost breakdown for the given usage.
+    ///
+    /// Requires the entire 30-day projected billing month `[at_time, at_time + MONTH_DURATION_NS]`
+    /// to fall within the manifest's validity window.
     pub fn calculate_archive_monthly_cost(
         &self,
         usage: &ArchiveMonthlyUsage,
         at_time: TimestampNs,
     ) -> Result<ArchiveMonthlyCost, PriceLookupError> {
         self.check_validity(at_time)?;
+        let month_end = TimestampNs(
+            at_time
+                .0
+                .checked_add(MONTH_DURATION_NS)
+                .ok_or(PriceLookupError::ArithmeticOverflow)?,
+        );
+        self.check_validity(month_end)?;
 
-        let storage_cost =
-            self.calculate_cost(CostClass::Storage, usage.retained_gb_months, at_time)?;
-        let class_a_cost = self.calculate_cost(
-            CostClass::ClassAOperations,
-            usage.class_a_operations,
-            at_time,
-        )?;
-        let class_b_cost = self.calculate_cost(
-            CostClass::ClassBOperations,
-            usage.class_b_operations,
-            at_time,
-        )?;
-        let egress_cost = self.calculate_cost(CostClass::Egress, usage.egress_gb, at_time)?;
+        let storage_cost = if usage.retained_gb_months == 0 {
+            0
+        } else {
+            let storage_rate = self.lookup_rate(CostClass::Storage, at_time)?;
+            let storage_quantity = match storage_rate.unit {
+                PricingUnit::PerByteMonth => usage
+                    .retained_gb_months
+                    .checked_mul(BYTES_PER_GB)
+                    .ok_or(PriceLookupError::ArithmeticOverflow)?,
+                PricingUnit::PerGibMonth | PricingUnit::PerTbMonth => usage.retained_gb_months,
+                _ => {
+                    return Err(PriceLookupError::CostClassNotFound {
+                        cost_class: CostClass::Storage,
+                    });
+                }
+            };
+            self.calculate_cost_for_rate(storage_rate, storage_quantity)?
+        };
+
+        let class_a_cost = if usage.class_a_operations == 0 {
+            0
+        } else {
+            self.calculate_cost(
+                CostClass::ClassAOperations,
+                usage.class_a_operations,
+                at_time,
+            )?
+        };
+
+        let class_b_cost = if usage.class_b_operations == 0 {
+            0
+        } else {
+            self.calculate_cost(
+                CostClass::ClassBOperations,
+                usage.class_b_operations,
+                at_time,
+            )?
+        };
+
+        let egress_cost = if usage.egress_gb == 0 {
+            0
+        } else {
+            let egress_rate = self.lookup_rate(CostClass::Egress, at_time)?;
+            let egress_quantity = match egress_rate.unit {
+                PricingUnit::PerByte => usage
+                    .egress_gb
+                    .checked_mul(BYTES_PER_GB)
+                    .ok_or(PriceLookupError::ArithmeticOverflow)?,
+                PricingUnit::PerGib => usage.egress_gb,
+                _ => {
+                    return Err(PriceLookupError::CostClassNotFound {
+                        cost_class: CostClass::Egress,
+                    });
+                }
+            };
+            self.calculate_cost_for_rate(egress_rate, egress_quantity)?
+        };
 
         let total = storage_cost
             .checked_add(class_a_cost)
@@ -878,101 +1032,9 @@ impl ProviderPricingManifest {
 
     /// Computes the cryptographic manifest digest over exact canonical bytes.
     fn compute_manifest_digest(&self) -> Result<ContentDigest, PricingManifestError> {
-        if self.rates.len() > MAX_RATES_COUNT {
-            return Err(PricingManifestError::OverLimit {
-                field: "rates",
-                count: self.rates.len(),
-                max: MAX_RATES_COUNT,
-            });
-        }
-        if self.operation_mappings.len() > MAX_MAPPINGS_COUNT {
-            return Err(PricingManifestError::OverLimit {
-                field: "operation_mappings",
-                count: self.operation_mappings.len(),
-                max: MAX_MAPPINGS_COUNT,
-            });
-        }
-
-        let mut hasher = Sha256Hasher::new();
-        hasher.update(PROVIDER_PRICING_MANIFEST_DOMAIN.as_bytes());
-        hasher.update(&PROVIDER_PRICING_MANIFEST_MAGIC);
-        hasher.update(&self.manifest_version.to_be_bytes());
-        hasher.update(self.provider_id.as_bytes());
-        hasher.update(self.pricing_tier.as_bytes());
-        hasher.update(self.currency.as_bytes());
-        hasher.update(self.provenance.source.as_bytes());
-        hasher.update(&self.provenance.retrieved_at.0.to_be_bytes());
-        hasher.update(&self.provenance.validity_window.earliest.0.to_be_bytes());
-        hasher.update(&self.provenance.validity_window.latest.0.to_be_bytes());
-
-        if let Some(witness) = self.provenance.retrieval_witness {
-            hasher.update(&[1]);
-            hasher.update(&witness.bytes());
-        } else {
-            hasher.update(&[0]);
-        }
-        hasher.update(&[provenance_class_to_u8(self.provenance.provenance_class)]);
-
-        if let Some(supersedes) = self.supersedes_manifest {
-            hasher.update(&[1]);
-            hasher.update(&supersedes.bytes());
-        } else {
-            hasher.update(&[0]);
-        }
-
-        let rates_count = match u32::try_from(self.rates.len()) {
-            Ok(count) => count,
-            Err(_) => {
-                return Err(PricingManifestError::OverLimit {
-                    field: "rates",
-                    count: self.rates.len(),
-                    max: MAX_RATES_COUNT,
-                });
-            }
-        };
-        hasher.update(&rates_count.to_be_bytes());
-        for r in &self.rates {
-            hasher.update(&[r.cost_class.as_u8()]);
-            if let Some(op) = &r.operation_name {
-                hasher.update(&[1]);
-                hasher.update(op.as_bytes());
-            } else {
-                hasher.update(&[0]);
-            }
-            hasher.update(&[r.unit.as_u8()]);
-            hasher.update(&r.rate_pico_currency.to_be_bytes());
-            if let Some(free) = r.free_tier_allowance {
-                hasher.update(&[1]);
-                hasher.update(&free.to_be_bytes());
-            } else {
-                hasher.update(&[0]);
-            }
-            if let Some(min_u) = r.minimum_billable_unit {
-                hasher.update(&[1]);
-                hasher.update(&min_u.to_be_bytes());
-            } else {
-                hasher.update(&[0]);
-            }
-        }
-
-        let mappings_count = match u32::try_from(self.operation_mappings.len()) {
-            Ok(count) => count,
-            Err(_) => {
-                return Err(PricingManifestError::OverLimit {
-                    field: "operation_mappings",
-                    count: self.operation_mappings.len(),
-                    max: MAX_MAPPINGS_COUNT,
-                });
-            }
-        };
-        hasher.update(&mappings_count.to_be_bytes());
-        for m in &self.operation_mappings {
-            hasher.update(m.provider_operation.as_bytes());
-            hasher.update(&[m.cost_class.as_u8()]);
-        }
-
-        let bytes = hasher.finalize().map_err(PricingManifestError::Contract)?;
-        Ok(ContentDigest::new(DigestAlgorithm::Sha256, bytes))
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical_checked(&mut encoder)?;
+        Ok(ContentDigest::sha256(&encoder.finish()))
     }
 
     /// Encodes into a canonical byte envelope, returning typed [`PricingManifestError::OverLimit`] if bounds are exceeded.
@@ -983,11 +1045,14 @@ impl ProviderPricingManifest {
         Ok(encoder.finish())
     }
 
-    /// Decodes from a canonical byte envelope, verifying canonical sort and bound invariants.
+    /// Decodes from a canonical byte envelope, returning rich typed [`PricingManifestError`].
     pub fn decode(bytes: &[u8]) -> Result<Self, PricingManifestError> {
         let mut decoder = CanonicalDecoder::new(bytes);
-        let manifest = Self::decode_canonical(&mut decoder)?;
-        decoder.ensure_finished()?;
+        let manifest = Self::decode_canonical_detailed(&mut decoder)?;
+        decoder
+            .ensure_finished()
+            .map_err(PricingManifestError::Contract)?;
+        manifest.validate()?;
         Ok(manifest)
     }
 
@@ -1093,79 +1158,105 @@ impl ProviderPricingManifest {
 
         Ok(())
     }
-}
 
-impl CanonicalEncode for ProviderPricingManifest {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        let _ = self.encode_canonical_checked(encoder);
-    }
-}
-
-impl CanonicalDecode for ProviderPricingManifest {
-    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let magic_bytes = decoder.bytes()?;
-        if magic_bytes != PROVIDER_PRICING_MANIFEST_MAGIC.as_slice() {
-            return Err(ContractError::InvalidDigest);
+    /// Internal canonical decoder returning rich typed [`PricingManifestError`].
+    pub fn decode_canonical_detailed(
+        decoder: &mut CanonicalDecoder<'_>,
+    ) -> Result<Self, PricingManifestError> {
+        let magic_bytes = decoder.bytes().map_err(PricingManifestError::Contract)?;
+        if magic_bytes.len() != 4 || magic_bytes != PROVIDER_PRICING_MANIFEST_MAGIC.as_slice() {
+            let mut actual = [0u8; 4];
+            let len = magic_bytes.len().min(4);
+            actual[..len].copy_from_slice(&magic_bytes[..len]);
+            return Err(PricingManifestError::BadMagic {
+                expected: PROVIDER_PRICING_MANIFEST_MAGIC,
+                actual,
+            });
         }
 
-        let domain = decoder.text()?;
+        let domain = decoder.text().map_err(PricingManifestError::Contract)?;
         if domain != PROVIDER_PRICING_MANIFEST_DOMAIN {
-            return Err(ContractError::InvalidIdentifier);
+            return Err(PricingManifestError::Contract(
+                ContractError::InvalidIdentifier,
+            ));
         }
 
-        let manifest_version = decoder.u32()?;
+        let manifest_version = decoder.u32().map_err(PricingManifestError::Contract)?;
         if manifest_version != PROVIDER_PRICING_MANIFEST_VERSION_1 {
-            return Err(ContractError::InvalidIdentifier);
+            return Err(PricingManifestError::UnsupportedVersion {
+                actual: manifest_version,
+            });
         }
 
-        let provider_id = decoder.text()?.to_string();
+        let provider_id = decoder
+            .text()
+            .map_err(PricingManifestError::Contract)?
+            .to_string();
         if provider_id.len() < MIN_PROVIDER_ID_LEN || provider_id.len() > MAX_PROVIDER_ID_LEN {
-            return Err(ContractError::InvalidIdentifier);
+            return Err(PricingManifestError::StringLengthOutOfBounds {
+                field: "provider_id",
+                length: provider_id.len(),
+                min: MIN_PROVIDER_ID_LEN,
+                max: MAX_PROVIDER_ID_LEN,
+            });
         }
-        if reject_latest_alias(&provider_id, "provider_id").is_err() {
-            return Err(ContractError::InvalidIdentifier);
-        }
+        reject_latest_alias(&provider_id, "provider_id")?;
 
-        let pricing_tier = decoder.text()?.to_string();
+        let pricing_tier = decoder
+            .text()
+            .map_err(PricingManifestError::Contract)?
+            .to_string();
         if pricing_tier.len() < MIN_TIER_LEN || pricing_tier.len() > MAX_TIER_LEN {
-            return Err(ContractError::InvalidIdentifier);
+            return Err(PricingManifestError::StringLengthOutOfBounds {
+                field: "pricing_tier",
+                length: pricing_tier.len(),
+                min: MIN_TIER_LEN,
+                max: MAX_TIER_LEN,
+            });
         }
-        if reject_latest_alias(&pricing_tier, "pricing_tier").is_err() {
-            return Err(ContractError::InvalidIdentifier);
-        }
+        reject_latest_alias(&pricing_tier, "pricing_tier")?;
 
-        let currency = decoder.text()?.to_string();
+        let currency = decoder
+            .text()
+            .map_err(PricingManifestError::Contract)?
+            .to_string();
         if currency.len() < MIN_CURRENCY_LEN || currency.len() > MAX_CURRENCY_LEN {
-            return Err(ContractError::InvalidIdentifier);
+            return Err(PricingManifestError::StringLengthOutOfBounds {
+                field: "currency",
+                length: currency.len(),
+                min: MIN_CURRENCY_LEN,
+                max: MAX_CURRENCY_LEN,
+            });
         }
         if !currency.chars().all(|c| c.is_ascii_uppercase()) {
-            return Err(ContractError::InvalidIdentifier);
+            return Err(PricingManifestError::CurrencyCodeInvalid { code: currency });
         }
 
         // Provenance
-        let source = decoder.text()?.to_string();
-        if source.len() < MIN_SOURCE_LEN || source.len() > MAX_SOURCE_LEN {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if reject_latest_alias(&source, "source").is_err() {
-            return Err(ContractError::InvalidIdentifier);
-        }
-
-        let retrieved_at = TimestampNs::decode_canonical(decoder)?;
-        let validity_window = CaptureInterval::decode_canonical(decoder)?;
-        if validity_window.earliest > validity_window.latest {
-            return Err(ContractError::InvertedTimeInterval);
-        }
-
-        let witness_tag = decoder.tag()?;
+        let source = decoder
+            .text()
+            .map_err(PricingManifestError::Contract)?
+            .to_string();
+        let retrieved_at =
+            TimestampNs::decode_canonical(decoder).map_err(PricingManifestError::Contract)?;
+        let validity_window =
+            CaptureInterval::decode_canonical(decoder).map_err(PricingManifestError::Contract)?;
+        let witness_tag = decoder.tag().map_err(PricingManifestError::Contract)?;
         let retrieval_witness = match witness_tag {
             0 => None,
-            1 => Some(ContentDigest::decode_canonical(decoder)?),
-            _ => return Err(ContractError::InvalidDigest),
+            1 => Some(
+                ContentDigest::decode_canonical(decoder).map_err(PricingManifestError::Contract)?,
+            ),
+            other => {
+                return Err(PricingManifestError::InvalidTag {
+                    field: "retrieval_witness",
+                    tag: other,
+                });
+            }
         };
-
-        let prov_tag = decoder.tag()?;
-        let provenance_class = provenance_class_from_u8(prov_tag)?;
+        let prov_tag = decoder.tag().map_err(PricingManifestError::Contract)?;
+        let provenance_class =
+            provenance_class_from_u8(prov_tag).map_err(PricingManifestError::Contract)?;
 
         let provenance = PricingProvenance {
             source,
@@ -1174,107 +1265,155 @@ impl CanonicalDecode for ProviderPricingManifest {
             retrieval_witness,
             provenance_class,
         };
+        provenance.validate()?;
 
         // Supersedes
-        let supersedes_tag = decoder.tag()?;
+        let supersedes_tag = decoder.tag().map_err(PricingManifestError::Contract)?;
         let supersedes_manifest = match supersedes_tag {
             0 => None,
-            1 => Some(ContentDigest::decode_canonical(decoder)?),
-            _ => return Err(ContractError::InvalidDigest),
+            1 => Some(
+                ContentDigest::decode_canonical(decoder).map_err(PricingManifestError::Contract)?,
+            ),
+            other => {
+                return Err(PricingManifestError::InvalidTag {
+                    field: "supersedes_manifest",
+                    tag: other,
+                });
+            }
         };
 
         // Rates
-        let rates_count = decoder.u32()? as usize;
+        let rates_count = decoder.u32().map_err(PricingManifestError::Contract)? as usize;
         if rates_count > MAX_RATES_COUNT {
-            return Err(ContractError::InvalidIdentifier);
+            return Err(PricingManifestError::OverLimit {
+                field: "rates",
+                count: rates_count,
+                max: MAX_RATES_COUNT,
+            });
         }
 
         let mut rates = Vec::with_capacity(rates_count);
         for _ in 0..rates_count {
-            let cc_tag = decoder.tag()?;
-            let cost_class =
-                CostClass::from_u8(cc_tag).map_err(|_| ContractError::InvalidIdentifier)?;
+            let cc_tag = decoder.tag().map_err(PricingManifestError::Contract)?;
+            let cost_class = CostClass::from_u8(cc_tag)?;
 
-            let op_tag = decoder.tag()?;
+            let op_tag = decoder.tag().map_err(PricingManifestError::Contract)?;
             let operation_name = match op_tag {
                 0 => None,
                 1 => {
-                    let op = decoder.text()?.to_string();
+                    let op = decoder
+                        .text()
+                        .map_err(PricingManifestError::Contract)?
+                        .to_string();
                     if op.len() < MIN_OPERATION_LEN || op.len() > MAX_OPERATION_LEN {
-                        return Err(ContractError::InvalidIdentifier);
+                        return Err(PricingManifestError::StringLengthOutOfBounds {
+                            field: "operation_name",
+                            length: op.len(),
+                            min: MIN_OPERATION_LEN,
+                            max: MAX_OPERATION_LEN,
+                        });
                     }
-                    if reject_latest_alias(&op, "operation_name").is_err() {
-                        return Err(ContractError::InvalidIdentifier);
-                    }
+                    reject_latest_alias(&op, "operation_name")?;
                     Some(op)
                 }
-                _ => return Err(ContractError::InvalidIdentifier),
+                other => {
+                    return Err(PricingManifestError::InvalidTag {
+                        field: "operation_name_tag",
+                        tag: other,
+                    });
+                }
             };
 
-            let unit_tag = decoder.tag()?;
-            let unit =
-                PricingUnit::from_u8(unit_tag).map_err(|_| ContractError::InvalidIdentifier)?;
+            let unit_tag = decoder.tag().map_err(PricingManifestError::Contract)?;
+            let unit = PricingUnit::from_u8(unit_tag)?;
 
-            let rate_bytes = decoder.bytes()?;
+            let rate_bytes = decoder.bytes().map_err(PricingManifestError::Contract)?;
             let rate_slice: [u8; 16] = rate_bytes
                 .try_into()
-                .map_err(|_| ContractError::InvalidDigest)?;
+                .map_err(|_| PricingManifestError::Contract(ContractError::InvalidIdentifier))?;
             let rate_pico_currency = u128::from_be_bytes(rate_slice);
 
-            let free_tag = decoder.tag()?;
+            let free_tag = decoder.tag().map_err(PricingManifestError::Contract)?;
             let free_tier_allowance = match free_tag {
                 0 => None,
-                1 => Some(decoder.u64()?),
-                _ => return Err(ContractError::InvalidIdentifier),
+                1 => Some(decoder.u64().map_err(PricingManifestError::Contract)?),
+                other => {
+                    return Err(PricingManifestError::InvalidTag {
+                        field: "free_tier_allowance_tag",
+                        tag: other,
+                    });
+                }
             };
 
-            let min_u_tag = decoder.tag()?;
+            let min_u_tag = decoder.tag().map_err(PricingManifestError::Contract)?;
             let minimum_billable_unit = match min_u_tag {
                 0 => None,
-                1 => Some(decoder.u64()?),
-                _ => return Err(ContractError::InvalidIdentifier),
+                1 => Some(decoder.u64().map_err(PricingManifestError::Contract)?),
+                other => {
+                    return Err(PricingManifestError::InvalidTag {
+                        field: "minimum_billable_unit_tag",
+                        tag: other,
+                    });
+                }
             };
 
-            rates.push(DatedPriceRate {
+            let rate = DatedPriceRate {
                 cost_class,
                 operation_name,
                 unit,
                 rate_pico_currency,
                 free_tier_allowance,
                 minimum_billable_unit,
-            });
+            };
+            rate.validate()?;
+            rates.push(rate);
         }
 
         // Verify strictly canonical order and no duplicate rates
         for window in rates.windows(2) {
             let key_a = window[0].canonical_key();
             let key_b = window[1].canonical_key();
-            if key_a >= key_b {
-                return Err(ContractError::NonCanonicalOrdering);
+            if key_a > key_b {
+                return Err(PricingManifestError::NonCanonicalOrder { field: "rates" });
+            }
+            if key_a == key_b {
+                return Err(PricingManifestError::DuplicateRate {
+                    cost_class: window[0].cost_class,
+                    operation_name: window[0].operation_name.clone(),
+                });
             }
         }
 
         // Operation mappings
-        let mappings_count = decoder.u32()? as usize;
+        let mappings_count = decoder.u32().map_err(PricingManifestError::Contract)? as usize;
         if mappings_count > MAX_MAPPINGS_COUNT {
-            return Err(ContractError::InvalidIdentifier);
+            return Err(PricingManifestError::OverLimit {
+                field: "operation_mappings",
+                count: mappings_count,
+                max: MAX_MAPPINGS_COUNT,
+            });
         }
 
         let mut operation_mappings = Vec::with_capacity(mappings_count);
         for _ in 0..mappings_count {
-            let provider_operation = decoder.text()?.to_string();
+            let provider_operation = decoder
+                .text()
+                .map_err(PricingManifestError::Contract)?
+                .to_string();
             if provider_operation.len() < MIN_OPERATION_LEN
                 || provider_operation.len() > MAX_OPERATION_LEN
             {
-                return Err(ContractError::InvalidIdentifier);
+                return Err(PricingManifestError::StringLengthOutOfBounds {
+                    field: "provider_operation",
+                    length: provider_operation.len(),
+                    min: MIN_OPERATION_LEN,
+                    max: MAX_OPERATION_LEN,
+                });
             }
-            if reject_latest_alias(&provider_operation, "provider_operation").is_err() {
-                return Err(ContractError::InvalidIdentifier);
-            }
+            reject_latest_alias(&provider_operation, "provider_operation")?;
 
-            let cc_tag = decoder.tag()?;
-            let cost_class =
-                CostClass::from_u8(cc_tag).map_err(|_| ContractError::InvalidIdentifier)?;
+            let cc_tag = decoder.tag().map_err(PricingManifestError::Contract)?;
+            let cost_class = CostClass::from_u8(cc_tag)?;
 
             operation_mappings.push(OperationCostMapping {
                 provider_operation,
@@ -1284,8 +1423,15 @@ impl CanonicalDecode for ProviderPricingManifest {
 
         // Verify strictly canonical order and no duplicate mappings
         for window in operation_mappings.windows(2) {
-            if window[0].provider_operation >= window[1].provider_operation {
-                return Err(ContractError::NonCanonicalOrdering);
+            if window[0].provider_operation > window[1].provider_operation {
+                return Err(PricingManifestError::NonCanonicalOrder {
+                    field: "operation_mappings",
+                });
+            }
+            if window[0].provider_operation == window[1].provider_operation {
+                return Err(PricingManifestError::DuplicateOperationMapping {
+                    operation: window[0].provider_operation.clone(),
+                });
             }
         }
 
@@ -1301,10 +1447,29 @@ impl CanonicalDecode for ProviderPricingManifest {
             manifest_digest: ContentDigest::sha256(&[]),
         };
 
-        manifest.manifest_digest = manifest
-            .compute_manifest_digest()
-            .map_err(|_| ContractError::InvalidDigest)?;
+        manifest.manifest_digest = manifest.compute_manifest_digest()?;
         Ok(manifest)
+    }
+}
+
+impl CanonicalEncode for ProviderPricingManifest {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        let _ = self.encode_canonical_checked(encoder);
+    }
+}
+
+impl CanonicalDecode for ProviderPricingManifest {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        Self::decode_canonical_detailed(decoder).map_err(|err| match err {
+            PricingManifestError::Contract(c) => c,
+            PricingManifestError::BadMagic { .. } => ContractError::InvalidDigest,
+            PricingManifestError::UnsupportedVersion { .. } => ContractError::InvalidIdentifier,
+            PricingManifestError::InvertedValidityWindow { .. } => {
+                ContractError::InvertedTimeInterval
+            }
+            PricingManifestError::NonCanonicalOrder { .. } => ContractError::NonCanonicalOrdering,
+            _ => ContractError::InvalidIdentifier,
+        })
     }
 }
 
@@ -1468,6 +1633,18 @@ pub enum PricingManifestError {
         /// Tag byte encountered.
         tag: u8,
     },
+    /// Rate unit is incompatible with target cost class.
+    IncompatibleUnit {
+        /// Cost class.
+        cost_class: CostClass,
+        /// Unit specified.
+        unit: PricingUnit,
+    },
+    /// Invalid retrieval timestamp.
+    InvalidRetrievalTimestamp {
+        /// Reason for invalidity.
+        reason: &'static str,
+    },
     /// Canonical contract error.
     Contract(ContractError),
 }
@@ -1539,6 +1716,15 @@ impl fmt::Display for PricingManifestError {
             }
             Self::InvalidTag { field, tag } => {
                 write!(f, "pricing manifest invalid tag {tag} for field '{field}'")
+            }
+            Self::IncompatibleUnit { cost_class, unit } => {
+                write!(
+                    f,
+                    "pricing unit '{unit:?}' is incompatible with cost class '{cost_class}'"
+                )
+            }
+            Self::InvalidRetrievalTimestamp { reason } => {
+                write!(f, "pricing manifest invalid retrieval timestamp: {reason}")
             }
             Self::Contract(err) => write!(f, "pricing manifest contract error: {err}"),
         }
