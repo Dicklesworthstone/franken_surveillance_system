@@ -29,6 +29,7 @@ import slo_validate
 
 SLOS_PATH = ROOT / "registries/SLOS.md"
 COSTS_PATH = ROOT / "architecture/operation_cost_registry.toml"
+COSTS_MD_PATH = ROOT / "registries/OPERATION_COSTS.md"
 
 
 class SloValidateCleanRepoTests(unittest.TestCase):
@@ -1314,6 +1315,201 @@ cost_vector = { latency_ms = 1.0, cpu_millis = 1.0, bytes = 1024, storage_operat
                 content = ref_file.read_text(encoding="utf-8", errors="replace")
                 has_fn = bool(re.search(r"\b(?:async\s+)?fn\s+" + re.escape(fn_name) + r"\b", content))
                 self.assertTrue(has_fn, f"{cid} test fn '{fn_name}' not found in '{file_part}'")
+
+    def test_planted_conforming_renumbered_cost_id_emits_val_021(self) -> None:
+        """A conforming but renumbered operation ID (e.g. COST-ACQUIRE-002) must fail closed with SLO-VAL-021."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            mutated_costs = COSTS_PATH.read_text(encoding="utf-8").replace('id = "COST-ACQUIRE-001"', 'id = "COST-ACQUIRE-002"')
+            planted_costs.write_text(mutated_costs, encoding="utf-8")
+            planted_md = Path(td) / "OPERATION_COSTS.md"
+            mutated_md = COSTS_MD_PATH.read_text(encoding="utf-8").replace("`COST-ACQUIRE-001`", "`COST-ACQUIRE-002`")
+            planted_md.write_text(mutated_md, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=planted_md
+            )
+            self.assertFalse(is_valid, "Renumbered operation ID passed validation!")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-021", codes)
+
+    def test_planted_missing_unit_fails_closed(self) -> None:
+        """Operation row missing 'unit' must fail closed with SLO-VAL-011."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            mutated = COSTS_PATH.read_text(encoding="utf-8").replace('unit = "segment"\n', '')
+            planted_costs.write_text(mutated, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=COSTS_MD_PATH
+            )
+            self.assertFalse(is_valid, "Operation without unit was accepted!")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-011", codes)
+
+    def test_planted_unit_mirror_mismatch_emits_val_019(self) -> None:
+        """Disagreement between TOML unit and Markdown Unit must fail closed with SLO-VAL-019."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            mutated = COSTS_PATH.read_text(encoding="utf-8").replace('unit = "segment"', 'unit = "bogus_unit"')
+            planted_costs.write_text(mutated, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=COSTS_MD_PATH
+            )
+            self.assertFalse(is_valid, "Mismatched unit passed validation!")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-019", codes)
+
+    def test_planted_semantic_steps_mirror_mismatch_emits_val_019(self) -> None:
+        """Disagreement between TOML semantic_steps and Markdown Mandatory semantic work must emit SLO-VAL-019."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            mutated = COSTS_PATH.read_text(encoding="utf-8").replace('"adapter_receive"', '"altered_step"')
+            planted_costs.write_text(mutated, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=COSTS_MD_PATH
+            )
+            self.assertFalse(is_valid, "Mismatched semantic_steps passed validation!")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-019", codes)
+
+    def test_planted_variable_costs_mirror_mismatch_emits_val_019(self) -> None:
+        """Disagreement between TOML variable_costs and Markdown Key variables must emit SLO-VAL-019."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            mutated = COSTS_PATH.read_text(encoding="utf-8").replace('"source_bytes"', '"altered_var"')
+            planted_costs.write_text(mutated, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=COSTS_MD_PATH
+            )
+            self.assertFalse(is_valid, "Mismatched variable_costs passed validation!")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-019", codes)
+
+    def test_planted_measured_status_with_arbitrary_file_fails_val_020(self) -> None:
+        """Operation with status 'measured' and measurement_artifact pointing outside qualification-artifacts must fail closed with SLO-VAL-020."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            mutated = COSTS_PATH.read_text(encoding="utf-8").replace(
+                'status = "model_required"',
+                'status = "measured"\nmeasurement_artifact = "Cargo.toml"',
+                1
+            )
+            planted_costs.write_text(mutated, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=COSTS_MD_PATH
+            )
+            self.assertFalse(is_valid, "Arbitrary non-qualification file accepted as measurement artifact!")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-020", codes)
+
+    def test_planted_measured_status_with_empty_artifact_fails_val_020(self) -> None:
+        """Operation with status 'measured' and empty (0-byte) measurement artifact must fail closed with SLO-VAL-020."""
+        with tempfile.TemporaryDirectory() as td:
+            empty_art = ROOT / "qualification-artifacts" / "test_empty_receipt.json"
+            try:
+                empty_art.write_text("", encoding="utf-8")
+                planted_costs = Path(td) / "operation_cost_registry.toml"
+                mutated = COSTS_PATH.read_text(encoding="utf-8").replace(
+                    'status = "model_required"',
+                    'status = "measured"\nmeasurement_artifact = "qualification-artifacts/test_empty_receipt.json"',
+                    1
+                )
+                planted_costs.write_text(mutated, encoding="utf-8")
+                is_valid, findings, _ = slo_validate.validate_slos(
+                    root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=COSTS_MD_PATH
+                )
+                self.assertFalse(is_valid, "0-byte measurement artifact accepted!")
+                codes = [f.code for f in findings]
+                self.assertIn("SLO-VAL-020", codes)
+            finally:
+                if empty_art.exists():
+                    empty_art.unlink()
+
+    def test_planted_commented_out_test_fn_fails_closed_val_018(self) -> None:
+        """Proof reference pointing to a commented-out test fn must fail closed with SLO-VAL-018."""
+        with tempfile.TemporaryDirectory() as td:
+            dummy_test = ROOT / "crates/fss-core/tests/comment_masked_test.rs"
+            try:
+                dummy_test.write_text("// fn test_comment_masked_symbol() {}\n/* fn test_comment_masked_symbol() {} */\n", encoding="utf-8")
+                planted_costs = Path(td) / "operation_cost_registry.toml"
+                mutated = COSTS_PATH.read_text(encoding="utf-8").replace(
+                    'proof_reference = "crates/fss-core/tests/acquisition_lifecycle_contract.rs::test_happy_path_lifecycle_and_streaming_invariants"',
+                    'proof_reference = "crates/fss-core/tests/comment_masked_test.rs::test_comment_masked_symbol"'
+                )
+                planted_costs.write_text(mutated, encoding="utf-8")
+                is_valid, findings, _ = slo_validate.validate_slos(
+                    root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=COSTS_MD_PATH
+                )
+                self.assertFalse(is_valid, "Commented-out test function accepted as valid proof reference!")
+                codes = [f.code for f in findings]
+                self.assertIn("SLO-VAL-018", codes)
+            finally:
+                if dummy_test.exists():
+                    dummy_test.unlink()
+
+    def test_planted_non_crate_proof_owner_fails_closed_val_017(self) -> None:
+        """Proof owner pointing to non-crate directory must fail closed with SLO-VAL-017."""
+        for bad_owner in [".", "scripts"]:
+            with tempfile.TemporaryDirectory() as td:
+                planted_costs = Path(td) / "operation_cost_registry.toml"
+                mutated = COSTS_PATH.read_text(encoding="utf-8").replace(
+                    'proof_owner = "crates/fss-core"',
+                    f'proof_owner = "{bad_owner}"',
+                    1
+                )
+                planted_costs.write_text(mutated, encoding="utf-8")
+                is_valid, findings, _ = slo_validate.validate_slos(
+                    root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=COSTS_MD_PATH
+                )
+                self.assertFalse(is_valid, f"Non-crate proof_owner '{bad_owner}' was accepted!")
+                codes = [f.code for f in findings]
+                self.assertIn("SLO-VAL-017", codes)
+
+    def test_planted_drift_table_mirror_mismatch_emits_val_019(self) -> None:
+        """Disagreement between TOML drift table and Markdown drift table must emit SLO-VAL-019."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_md = Path(td) / "OPERATION_COSTS.md"
+            mutated_md = COSTS_MD_PATH.read_text(encoding="utf-8").replace(
+                '`crates/fss-media` |',
+                '`crates/fss-cognition` |',
+                1
+            )
+            planted_md.write_text(mutated_md, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=COSTS_PATH, costs_md_path=planted_md
+            )
+            self.assertFalse(is_valid, "Drift table mirror mismatch passed validation!")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-019", codes)
+
+    def test_custom_costs_path_still_validates_mirror_when_costs_md_not_passed(self) -> None:
+        """Supplying custom costs_path without costs_md_path must still validate against registries/OPERATION_COSTS.md."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            mutated = COSTS_PATH.read_text(encoding="utf-8").replace(
+                'proof_owner = "crates/fss-core"',
+                'proof_owner = "crates/fss-ledger"',
+                1
+            )
+            planted_costs.write_text(mutated, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
+            )
+            self.assertFalse(is_valid, "Custom cost path bypassed mirror validation!")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-019", codes)
+
+    def test_planted_cost_registry_digest_mismatch_emits_val_022(self) -> None:
+        """Operation cost registry mutation without generation bump or freeze digest update must emit SLO-VAL-022."""
+        with tempfile.TemporaryDirectory() as td:
+            planted_costs = Path(td) / "operation_cost_registry.toml"
+            mutated = COSTS_PATH.read_text(encoding="utf-8").replace('latency_ms = 10.0', 'latency_ms = 99.0', 1)
+            planted_costs.write_text(mutated, encoding="utf-8")
+            is_valid, findings, _ = slo_validate.validate_slos(
+                root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs, costs_md_path=COSTS_MD_PATH
+            )
+            self.assertFalse(is_valid, "Mutated registry without digest update passed validation!")
+            codes = [f.code for f in findings]
+            self.assertIn("SLO-VAL-022", codes)
 
 
 if __name__ == "__main__":

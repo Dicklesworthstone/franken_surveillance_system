@@ -1,5 +1,7 @@
 schema = "fss.operation_cost_registry.v2"
 as_of = "2026-08-31"
+generation = "gen:fss1:operation-cost-v1"
+registry_digest = "sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe527ccf83b9"
 
 [[operation]]
 id = "COST-ACQUIRE-001"

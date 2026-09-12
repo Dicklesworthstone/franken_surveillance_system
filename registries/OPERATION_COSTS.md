@@ -1,6 +1,8 @@
 # Operation cost registry
 
 Machine source: `architecture/operation_cost_registry.toml`.
+Generation: `gen:fss1:operation-cost-v1`.
+Registry digest: `sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe527ccf83b9`.
 
 | Cost ID | Unit | Mandatory semantic work | Key variables | Proof owner | Proof reference |
 |---|---|---|---|---|---|

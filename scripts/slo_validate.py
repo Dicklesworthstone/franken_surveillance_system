@@ -93,6 +93,30 @@ CODE_PROOF_REFERENCE_NOT_FOUND = "SLO-VAL-018"
 CODE_OWNER_MIRROR_DISAGREEMENT = "SLO-VAL-019"
 CODE_MEASURED_WITHOUT_ARTIFACT = "SLO-VAL-020"
 CODE_DUPLICATE_OR_RENUMBERED_COST_ID = "SLO-VAL-021"
+CODE_FREEZE_DIGEST_MISMATCH = "SLO-VAL-022"
+
+BASELINE_OPERATION_COST_GENERATION = "gen:fss1:operation-cost-v1"
+EXPECTED_OPERATION_COST_FREEZE_DIGESTS: dict[str, str] = {
+    "gen:fss1:operation-cost-v1": "sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe527ccf83b9",
+}
+
+CANONICAL_COST_OPERATIONS: frozenset[str] = frozenset({
+    "COST-ACQUIRE-001", "COST-RTSP-001", "COST-PARSE-001", "COST-DECODE-001",
+    "COST-PROXY-001", "COST-QUALITY-001", "COST-DETECT-001", "COST-TRACK-001",
+    "COST-ASSOC-001", "COST-ANALYZE-001", "COST-GRAPH-001", "COST-SEARCH-001",
+    "COST-EVENT-001", "COST-ALERT-001", "COST-ARCHIVE-001", "COST-ATP-001",
+    "COST-RETRIEVE-001", "COST-DELETE-001", "COST-CALIBRATE-001", "COST-TWIN-001",
+    "COST-MODEL-IMPORT-001", "COST-QUERY-001", "COST-CHECKPOINT-001", "COST-RELEASE-001",
+    "COST-ORIENT-001", "COST-FOLLOW-001", "COST-CONTEXT-001", "COST-INVESTIGATE-001",
+    "COST-AFFORDANCE-001", "COST-AGENT-PLAN-001", "COST-EXPLAIN-001", "COST-HANDOFF-001",
+    "COST-ACCRETE-001", "COST-SPOOL-INGEST-001", "COST-SPOOL-VERIFY-001",
+    "COST-SPOOL-DISCARD-001", "COST-ROOT-PUBLISH-001", "COST-LEDGER-APPEND-001",
+    "COST-LEDGER-REPLAY-001", "COST-DURABLE-DECODE-001", "COST-PRICING-LOOKUP-001",
+})
+
+CANONICAL_DRIFT_IDS: frozenset[str] = frozenset({
+    f"DRIFT-{i:03d}" for i in range(1, 20)
+})
 
 MANDATORY_HOT_PATHS: dict[str, dict[str, str]] = {
     "COST-SPOOL-INGEST-001": {
@@ -236,7 +260,114 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "trigger": "Operation cost ID is duplicated, case-colliding, malformed, or renumbered",
         "remediation": "Ensure all operation IDs are unique, match canonical COST-*-NNN naming, and preserve stable IDs without renumbering",
     },
+    CODE_FREEZE_DIGEST_MISMATCH: {
+        "trigger": "Operation cost registry generation or freeze digest diverged from pinned canonical baseline",
+        "remediation": "Update registry generation and pinned freeze digest according to registered migration procedures",
+    },
 }
+
+
+def canonicalize_value(val: Any) -> Any:
+    """Recursively canonicalizes dicts and lists for deterministic JSON serialization."""
+    if isinstance(val, dict):
+        return {k: canonicalize_value(v) for k, v in sorted(val.items())}
+    if isinstance(val, list):
+        return [canonicalize_value(item) for item in val]
+    return val
+
+
+def compute_canonical_cost_registry_digest(data: dict[str, Any]) -> str:
+    """Computes SHA-256 digest of canonically serialized operation cost registry data.
+    Binds schema, as_of, generation, sorted operations, and sorted drift tables,
+    strictly excluding the registry_digest field itself to prevent self-referential digests."""
+    raw_ops = data.get("operation", [])
+    raw_drifts = data.get("drift", [])
+
+    canonical_payload = {
+        "as_of": str(data.get("as_of", "")).strip(),
+        "drift": [canonicalize_value(r) for r in sorted(raw_drifts, key=lambda r: str(r.get("id", "")))],
+        "generation": str(data.get("generation", "")).strip(),
+        "operation": [canonicalize_value(r) for r in sorted(raw_ops, key=lambda r: str(r.get("id", "")))],
+        "schema": str(data.get("schema", "")).strip(),
+    }
+    canonical_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}"
+
+
+def load_tombstone_set(root: Path) -> set[str]:
+    """Loads tombstoned stable IDs from architecture/stable_id_resolution.json."""
+    tombstones: set[str] = set()
+    res_path = root / "architecture/stable_id_resolution.json"
+    if res_path.is_file():
+        try:
+            data = json.loads(res_path.read_text(encoding="utf-8"))
+            for res in data.get("resolutions", []):
+                if res.get("status") in ("tombstone", "tombstoned", "superseded"):
+                    if "legacyId" in res:
+                        tombstones.add(str(res["legacyId"]).strip())
+                    if "canonicalId" in res:
+                        tombstones.add(str(res["canonicalId"]).strip())
+        except Exception:
+            pass
+    return tombstones
+
+
+def strip_rust_comments_and_strings(source: str) -> str:
+    """Strips Rust line comments (//), block comments (/* ... */ with nesting),
+    and string literals (including raw strings) to prevent commented-out or
+    string-embedded function declarations from matching symbol resolution."""
+    chars: list[str] = []
+    i = 0
+    n = len(source)
+    while i < n:
+        if source[i:i+2] == "//":
+            i += 2
+            while i < n and source[i] != "\n":
+                i += 1
+            continue
+        if source[i:i+2] == "/*":
+            depth = 1
+            i += 2
+            while i < n and depth > 0:
+                if source[i:i+2] == "/*":
+                    depth += 1
+                    i += 2
+                elif source[i:i+2] == "*/":
+                    depth -= 1
+                    i += 2
+                else:
+                    if source[i] == "\n":
+                        chars.append("\n")
+                    i += 1
+            continue
+        if source[i] == "r" and (i + 1 < n) and (source[i+1] == '"' or source[i+1] == "#"):
+            j = i + 1
+            hashes = 0
+            while j < n and source[j] == "#":
+                hashes += 1
+                j += 1
+            if j < n and source[j] == '"':
+                closing = '"' + ("#" * hashes)
+                k = source.find(closing, j + 1)
+                if k != -1:
+                    i = k + len(closing)
+                    chars.append('""')
+                    continue
+        if source[i] == '"':
+            i += 1
+            while i < n:
+                if source[i] == "\\":
+                    i += 2
+                elif source[i] == '"':
+                    i += 1
+                    break
+                else:
+                    i += 1
+            chars.append('""')
+            continue
+        chars.append(source[i])
+        i += 1
+    return "".join(chars)
 
 
 @dataclass(frozen=True)
