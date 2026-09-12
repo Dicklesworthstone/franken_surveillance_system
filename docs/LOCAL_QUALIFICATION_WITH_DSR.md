@@ -177,12 +177,16 @@ The repository’s semantic entry points are:
 ```bash
 ./scripts/qualify.sh --lane policy
 ./scripts/qualify.sh --lane rust
-./scripts/qualify.sh --lane full --receipt-dir qualification-artifacts/local
+./scripts/qualify.sh --lane full --receipt-dir "qualification-artifacts/local/full-$(date -u +%Y%m%dT%H%M%SZ)"
 
 dsr build --repo franken_surveillance_system --version vX.Y.Z --resume
 dsr release --repo franken_surveillance_system --version vX.Y.Z --draft
 dsr release verify --repo franken_surveillance_system --version vX.Y.Z
 ```
+
+Each run needs its own receipt directory: without `--receipt-dir` the qualifier creates a unique
+`qualification-artifacts/local/<stamp>-<lane>-<pid>` directory, and an explicit directory that already
+holds another run's `commands.jsonl` is refused (exit 4) rather than overwritten.
 
 Exact DSR command forms may evolve; the invariants above do not.
 

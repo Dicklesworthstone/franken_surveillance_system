@@ -38,13 +38,16 @@ import time
 print(time.time_ns())
 PY
 )"
+# Every run owns a fresh directory and an exclusively created commands.jsonl: same-second runs of
+# the same lane get distinct directories, and an explicit directory that already holds another
+# run's log is refused (exit 4) instead of truncated.
 if [[ -z "$RECEIPT_DIR" ]]; then
   stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-  RECEIPT_DIR="$ROOT/qualification-artifacts/local/${stamp}-${LANE}"
+  RECEIPT_DIR="$(python3 "$ROOT/scripts/qualification_receipt.py" prepare-run-dir --unique "$ROOT/qualification-artifacts/local/${stamp}-${LANE}")" || exit $?
+else
+  RECEIPT_DIR="$(python3 "$ROOT/scripts/qualification_receipt.py" prepare-run-dir --exact "$RECEIPT_DIR")" || exit $?
 fi
-mkdir -p "$RECEIPT_DIR"
 records="$RECEIPT_DIR/commands.jsonl"
-: > "$records"
 final_status="passed"
 
 append_record() {
@@ -238,7 +241,7 @@ policy_lane() {
     scripts/check-policy.py scripts/dependency_audit.py scripts/manifest_audit.py scripts/stable_id_audit.py \
     scripts/schema_validate.py scripts/slo_validate.py scripts/architecture_registry_consistency.py \
     scripts/dependency_dag_checker.py scripts/claim_proof_bundle_checker.py scripts/unsafe_prohibition_checker.py \
-    scripts/dependency_closure_scanner.py scripts/semantic_plane_checker.py \
+    scripts/dependency_closure_scanner.py scripts/semantic_plane_checker.py scripts/qualification_receipt.py \
     scripts/standards_first_adapter_checker.py \
     scripts/generate-manifest.py scripts/release_artifacts.py \
     tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py \
@@ -326,86 +329,24 @@ PY
   [[ -n "$manifest_root" ]] || manifest_root="unavailable"
 
   if ((WRITE_RECEIPT)); then
-    python3 - "$RECEIPT_DIR/qualification-receipt.json" "$records" "$LANE" "$source_commit" "$source_tree" "$sibling_digest" "$host_digest" "$toolchain" "$target" "$started_ns" "$finished_ns" "$final_status" "$manifest_root" <<'PY'
-import hashlib
-import json
-import os
-import pathlib
-import sys
-import tempfile
-(
-    output_path, records_path, lane, source_commit, source_tree, sibling_digest, host_digest,
-    toolchain, target, started, finished, status, manifest_root
-) = sys.argv[1:]
-lane_ids = {
-    "policy": "QL-POLICY-001", "docs": "QL-POLICY-001", "rust": "QL-RUST-001",
-    "full": "QL-RUST-001", "lab": "QL-LAB-001", "adapter": "QL-ADAPTER-001",
-    "media": "QL-MEDIA-001", "archive": "QL-ARCHIVE-001", "model": "QL-MODEL-001",
-    "geometry": "QL-GEOMETRY-001", "threat": "QL-THREAT-001", "agent": "QL-AGENT-001",
-    "privacy": "QL-PRIVACY-001", "release-preflight": "QL-RELEASE-001", "release": "QL-RELEASE-001",
-}
-commands=[]
-records_file = pathlib.Path(records_path)
-if records_file.exists():
-    for line in records_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row=json.loads(line)
-            commands.append({"argv": row["argv"], "status": row["status"], "outputDigest": row["outputDigest"]})
-        except (json.JSONDecodeError, ValueError, KeyError):
-            commands.append({
-                "argv": ["corrupt_record"],
-                "status": "failed",
-                "outputDigest": "sha256:" + hashlib.sha256(line.encode("utf-8")).hexdigest(),
-            })
-            status = "failed"
-if not commands:
-    commands=[{"argv":["scripts/qualify.sh","--lane",lane],"status":"failed","outputDigest":"sha256:"+hashlib.sha256(b"no-command-record").hexdigest()}]
-lock=pathlib.Path("Cargo.lock")
-receipt={
-    "schema":"fss.release_qualification_receipt.v1",
-    "receiptId":f"local:{lane}:{source_commit.split(':',1)[-1][:16]}",
-    "laneId":lane_ids[lane],
-    "sourceCommit":source_commit,
-    "sourceTree":source_tree,
-    "siblingClosureDigest":sibling_digest,
-    "cargoLockDigest":"sha256:"+hashlib.sha256(lock.read_bytes()).hexdigest() if lock.exists() else None,
-    "toolchain":toolchain[:256],
-    "hostIdentity":host_digest,
-    "target":target[:256],
-    "features":[],
-    "commands":commands,
-    "artifactManifestDigest":manifest_root if manifest_root.startswith("sha256:") else None,
-    "startedAt":{"earliestNs":int(started),"latestNs":int(started),"clockBasis":"host-realtime"},
-    "finishedAt":{"earliestNs":int(finished),"latestNs":int(finished),"clockBasis":"host-realtime"},
-    "status":status,
-}
-target_path = pathlib.Path(output_path).resolve()
-target_path.parent.mkdir(parents=True, exist_ok=True)
-descriptor, temp_name = tempfile.mkstemp(prefix=f".{target_path.name}.tmp.", dir=target_path.parent)
-temp_file = pathlib.Path(temp_name)
-try:
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(receipt, indent=2) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(temp_file, 0o644)
-    os.replace(temp_file, target_path)
-    dir_fd = os.open(target_path.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
-finally:
-    if temp_file.exists():
-        try:
-            temp_file.unlink()
-        except OSError:
-            pass
-PY
-    printf 'qualification receipt: %s\n' "$RECEIPT_DIR/qualification-receipt.json" >&2
+    local receipt_path="$RECEIPT_DIR/qualification-receipt.json" receipt_status writer_rc
+    receipt_status="$(python3 "$ROOT/scripts/qualification_receipt.py" finalize \
+      --output "$receipt_path" --records "$records" --lane "$LANE" \
+      --source-commit "$source_commit" --source-tree "$source_tree" \
+      --sibling-digest "$sibling_digest" --host-digest "$host_digest" \
+      --toolchain "$toolchain" --target "$target" \
+      --started-ns "$started_ns" --finished-ns "$finished_ns" \
+      --status "$final_status" --manifest-root "$manifest_root" \
+      --cargo-lock "$ROOT/Cargo.lock")"
+    writer_rc=$?
+    if ((writer_rc == 0)) && [[ -f "$receipt_path" ]]; then
+      printf 'qualification receipt: %s\n' "$receipt_path" >&2
+      # A malformed command record downgrades the receipt; the run must not exit 0 behind it.
+      [[ "$receipt_status" == passed ]] || ((rc != 0)) || rc=1
+    else
+      printf 'qualification receipt NOT written (writer exit %s): %s\n' "$writer_rc" "$receipt_path" >&2
+      ((rc != 0)) || rc=1
+    fi
   fi
   exit "$rc"
 }

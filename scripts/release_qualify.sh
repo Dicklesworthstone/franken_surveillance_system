@@ -90,9 +90,13 @@ build_release() {
   release_context
   bash scripts/qualify.sh --lane rust
   rm -rf "$STAGE_DIR" "$ARTIFACT_DIR" "$RECEIPT_DIR"
-  mkdir -p "$STAGE_DIR" "$ARTIFACT_DIR" "$RECEIPT_DIR"
+  mkdir -p "$STAGE_DIR" "$ARTIFACT_DIR"
+  python3 scripts/qualification_receipt.py mkdirs "$RECEIPT_DIR"
 
-  rustup run "$TOOLCHAIN" cargo metadata --locked --offline --format-version 1 > "$RECEIPT_DIR/cargo-metadata.json"
+  # Receipt outputs are captured atomically: build.json binds their digests, so a crash or a
+  # failing command must never leave a partial file that a later verify/package step reads.
+  python3 scripts/qualification_receipt.py capture --output "$RECEIPT_DIR/cargo-metadata.json" -- \
+    rustup run "$TOOLCHAIN" cargo metadata --locked --offline --format-version 1
   rustup run "$TOOLCHAIN" cargo build --release --workspace --locked --offline --target "$TARGET"
 
   local executable="fss"
@@ -113,12 +117,18 @@ build_release() {
   cp docs/GRAPH_ALGORITHM_ATLAS.md docs/ATP_ARCHIVE_AND_REPLICATION.md "$STAGE_DIR/docs/"
   cp docs/LOCAL_QUALIFICATION_WITH_DSR.md docs/PLAN_ERRATA.md "$STAGE_DIR/docs/"
 
-  "$STAGE_DIR/$(basename "$source")" --help > "$RECEIPT_DIR/smoke-help.txt" 2>&1
-  "$STAGE_DIR/$(basename "$source")" capabilities --json > "$RECEIPT_DIR/capabilities.json"
-  python3 scripts/manifest_audit.py > "$RECEIPT_DIR/repository-manifest-audit.txt"
+  python3 scripts/qualification_receipt.py capture --merge-stderr --output "$RECEIPT_DIR/smoke-help.txt" -- \
+    "$STAGE_DIR/$(basename "$source")" --help
+  python3 scripts/qualification_receipt.py capture --output "$RECEIPT_DIR/capabilities.json" -- \
+    "$STAGE_DIR/$(basename "$source")" capabilities --json
+  python3 scripts/qualification_receipt.py capture --output "$RECEIPT_DIR/repository-manifest-audit.txt" -- \
+    python3 scripts/manifest_audit.py
   python3 - "$RECEIPT_DIR/build.json" <<'PY'
-import hashlib, json, os, subprocess, sys, tempfile
+import hashlib, json, os, subprocess, sys
 from pathlib import Path
+
+sys.path.insert(0, "scripts")
+from qualification_receipt import write_json_atomic
 
 def digest(path: str) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -147,28 +157,7 @@ receipt = {
     "capabilitiesSha256": digest(os.path.join(os.environ["RECEIPT_DIR"], "capabilities.json")),
     "claimBoundary": "design_skeleton",
 }
-target_path = Path(sys.argv[1]).resolve()
-target_path.parent.mkdir(parents=True, exist_ok=True)
-descriptor, temp_name = tempfile.mkstemp(prefix=f".{target_path.name}.tmp.", dir=target_path.parent)
-temp_file = Path(temp_name)
-try:
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
-    os.chmod(temp_file, 0o644)
-    os.replace(temp_file, target_path)
-    dir_fd = os.open(target_path.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
-finally:
-    if temp_file.exists():
-        try:
-            temp_file.unlink()
-        except OSError:
-            pass
+write_json_atomic(sys.argv[1], receipt, sort_keys=True)
 PY
 }
 

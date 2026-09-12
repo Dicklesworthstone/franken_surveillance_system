@@ -38,7 +38,6 @@ import json
 import os
 import re
 import sys
-import tempfile
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +47,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import architecture_registry_consistency  # noqa: F401  (policy-lane import contract)
+from qualification_receipt import write_qualification_receipt  # noqa: F401  (the one atomic receipt writer)
 import schema_validate
 import stable_id_audit
 
@@ -1019,36 +1019,6 @@ def inspect_qualification_receipt(receipt_path: Path, root: Path) -> tuple[list[
             f"Qualification receipt '{path_str}' schema {data.get('schema')!r} is not '{QUALIFICATION_RECEIPT_SCHEMA}'",
         )], None
     return _verify_receipt_payload(data, path_str, cited=False, expected_claim_id=None, claim_level=None)
-
-
-def write_qualification_receipt(output_path: Path | str, receipt: dict[str, Any]) -> Path:
-    """Atomically writes a qualification receipt to disk:
-    writes to a temporary file in the same directory, fsyncs, and renames into place.
-    """
-    target = Path(output_path).resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    prefix = f".{target.name}.tmp."
-    descriptor, temp_name = tempfile.mkstemp(prefix=prefix, dir=target.parent)
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(json.dumps(receipt, indent=2) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temp_path, 0o644)
-        os.replace(temp_path, target)
-        dir_fd = os.open(target.parent, os.O_RDONLY)
-        try:
-            os.fsync(dir_fd)
-        finally:
-            os.close(dir_fd)
-    finally:
-        if temp_path.exists():
-            try:
-                temp_path.unlink()
-            except OSError:
-                pass
-    return target
 
 
 _DELIMITER_CELL_RE = re.compile(r"^:?-+:?$")
