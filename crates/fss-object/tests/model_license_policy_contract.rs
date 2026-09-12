@@ -11,7 +11,7 @@ use fss_object::{
     MAX_POLICY_KNOWN_TERMS_COUNT, MAX_POLICY_NAME_LEN, MAX_PROFILE_NAME_LEN, ModelId,
     ModelLicenseDecision, ModelLicensePolicy, ModelLicensePolicyError, ModelLicenseRecord,
     ModelManifestV1, ModelPackage, ModelPackageArtifact, ModelPackageError, ModelPackageImporter,
-    ModelPackageLimits, ModelUseProfile, SpoolLimits, StagingSpool,
+    ModelPackageLimits, ModelUseProfile, RestrictionCategory, SpoolLimits, StagingSpool,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -828,5 +828,237 @@ fn test_check_manifest_decision_receipt() -> TestResult {
     assert_eq!(decision.verified_restrictions_count(), 1);
     assert_ne!(decision.decision_digest(), ContentDigest::sha256(b""));
 
+    Ok(())
+}
+
+#[test]
+fn test_registered_known_term_cannot_bypass_surveillance_refusal() -> TestResult {
+    let mut policy =
+        ModelLicensePolicy::default_for_profile(ModelUseProfile::SurveillanceMonitoring);
+    let custom_term = "strictly_no_surveillance_allowed";
+    policy.register_known_term(custom_term)?;
+
+    let lic = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec![custom_term.to_string()],
+        Some(ContentDigest::sha256(b"text")),
+    );
+    assert!(
+        policy.check_license(&lic).is_err(),
+        "custom restrictive terms must not become permissive upon registration"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_default_importer_rejects_expired_license() -> TestResult {
+    let dir = temp_dir("default_importer_rejects_expired")?;
+    let spool = sample_spool(&dir)?;
+    let mut importer = ModelPackageImporter::new(spool, ModelPackageLimits::default())?;
+
+    let lic = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec!["valid_until:1000".to_string()], // Expired in 1970
+        None,
+    );
+    let package = sample_package_with_license(lic)?;
+
+    let res = importer.import_package(&package, GENERATION);
+    assert!(
+        res.is_err(),
+        "default importer must fail closed on packages with explicit expiry restrictions"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_openrail_refused_for_surveillance_monitoring() -> TestResult {
+    let policy = ModelLicensePolicy::default_for_profile(ModelUseProfile::SurveillanceMonitoring);
+    let lic = sample_license_record(
+        "OpenRAIL-M",
+        true,
+        vec![],
+        Some(ContentDigest::sha256(b"text")),
+    );
+    assert!(
+        policy.check_license(&lic).is_err(),
+        "OpenRAIL-M must be refused for SurveillanceMonitoring profile"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_hyphen_and_case_restriction_bypass() -> TestResult {
+    let mut policy = ModelLicensePolicy::default_for_profile(ModelUseProfile::CommercialProduction);
+    policy.register_known_term("no-commercial-use")?;
+
+    let lic = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec!["no-commercial-use".to_string()],
+        Some(ContentDigest::sha256(b"text")),
+    );
+    assert!(
+        policy.check_license(&lic).is_err(),
+        "delimiter and case variations must not bypass profile restrictions"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_spdx_disjunction_of_allowed_licenses() -> TestResult {
+    let policy = ModelLicensePolicy::default_for_profile(ModelUseProfile::InternalEvaluation);
+    let lic = sample_license_record(
+        "MIT OR Apache-2.0",
+        true,
+        vec![],
+        Some(ContentDigest::sha256(b"text")),
+    );
+    assert!(
+        policy.check_license(&lic).is_ok(),
+        "SPDX disjunction of admitted licenses must be accepted"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_spdx_conjunction_with_incompatible_license() -> TestResult {
+    let policy = ModelLicensePolicy::default_for_profile(ModelUseProfile::CommercialProduction);
+    let lic = sample_license_record(
+        "Apache-2.0 AND CC-BY-NC-4.0",
+        true,
+        vec![],
+        Some(ContentDigest::sha256(b"text")),
+    );
+    assert!(
+        policy.check_license(&lic).is_err(),
+        "SPDX conjunction with non-commercial license must be refused in commercial production"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_custom_profile_checks_restrictions() -> TestResult {
+    let custom_profile = ModelUseProfile::parse("custom_surveillance")?;
+    let policy = ModelLicensePolicy::new("custom-policy", custom_profile)?;
+
+    let lic = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec!["no_surveillance".to_string()],
+        Some(ContentDigest::sha256(b"text")),
+    );
+    assert!(
+        policy.check_license(&lic).is_err(),
+        "custom profiles must not bypass restriction checks"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_decision_digest_binds_manifest_identity() -> TestResult {
+    let policy = ModelLicensePolicy::default_for_profile(ModelUseProfile::InternalEvaluation);
+    let lic = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec![],
+        Some(ContentDigest::sha256(b"text")),
+    );
+    let manifest_a = sample_manifest_with_license(lic.clone())?;
+    let dec_a = policy.check_manifest(&manifest_a)?;
+    let dec_b = policy.check_license(&lic)?;
+    assert_ne!(
+        dec_a.decision_digest(),
+        dec_b.decision_digest(),
+        "manifest decision digest must bind manifest identity"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_expiry_boundary_conditions() -> TestResult {
+    let mut policy = ModelLicensePolicy::default_for_profile(ModelUseProfile::InternalEvaluation);
+    policy.set_evaluation_time(Some(TimestampNs(1_000)));
+
+    // Expiry exactly at evaluation time must be refused (valid until lapsed)
+    let lic_boundary = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec!["valid_until:1000".to_string()],
+        None,
+    );
+    assert!(
+        policy.check_license(&lic_boundary).is_err(),
+        "license expiring at evaluated_at must be refused"
+    );
+
+    // Negative timestamps (pre-epoch)
+    let lic_negative = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec!["valid_until:-500".to_string()],
+        None,
+    );
+    assert!(
+        policy.check_license(&lic_negative).is_err(),
+        "license expired at negative timestamp must be refused"
+    );
+
+    // Valid future timestamp
+    let lic_valid = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec!["valid_until:2000".to_string()],
+        None,
+    );
+    assert!(
+        policy.check_license(&lic_valid).is_ok(),
+        "license valid in the future must be accepted"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_import_receipt_retains_decision_digest() -> TestResult {
+    let dir = temp_dir("receipt_decision")?;
+    let spool = sample_spool(&dir)?;
+    let mut importer = ModelPackageImporter::new(spool, ModelPackageLimits::default())?;
+    let lic = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec![],
+        Some(ContentDigest::sha256(b"text")),
+    );
+    let package = sample_package_with_license(lic)?;
+
+    let receipt = importer.import_package(&package, GENERATION)?;
+    assert_ne!(
+        receipt.license_decision_digest,
+        ContentDigest::sha256(b""),
+        "import receipt must retain non-empty license decision digest"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_register_known_term_with_explicit_category() -> TestResult {
+    let mut policy = ModelLicensePolicy::default_for_profile(ModelUseProfile::CommercialProduction);
+    policy.register_known_term_with_category(
+        "custom_research_clause",
+        RestrictionCategory::NonCommercial,
+    )?;
+
+    let lic = sample_license_record(
+        "Apache-2.0",
+        true,
+        vec!["custom_research_clause".to_string()],
+        Some(ContentDigest::sha256(b"text")),
+    );
+    assert!(
+        policy.check_license(&lic).is_err(),
+        "explicit NonCommercial category must be refused in commercial production"
+    );
     Ok(())
 }

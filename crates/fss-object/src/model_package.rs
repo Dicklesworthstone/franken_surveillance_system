@@ -33,7 +33,7 @@ use std::io;
 use std::iter;
 use std::path::{Component, Path, PathBuf};
 
-use fss_core::{ContentDigest, ContractError, DigestAlgorithm, ModelGeneration};
+use fss_core::{ContentDigest, ContractError, DigestAlgorithm, ModelGeneration, TimestampNs};
 
 use crate::model_license_policy::{ModelLicensePolicy, ModelLicensePolicyError, ModelUseProfile};
 use crate::model_manifest::{
@@ -846,6 +846,8 @@ pub struct ImportReceipt {
     pub staged_artifacts: Vec<ContentDigest>,
     /// Total bytes staged.
     pub total_staged_bytes: u64,
+    /// Content digest of the model license qualification decision receipt.
+    pub license_decision_digest: ContentDigest,
 }
 
 /// Receipt returned upon successful package verification.
@@ -968,6 +970,18 @@ impl ModelPackageImporter {
         &self.license_policy
     }
 
+    /// Sets the evaluation timestamp on the active license policy.
+    pub fn set_evaluation_time(&mut self, time: Option<TimestampNs>) {
+        self.license_policy.set_evaluation_time(time);
+    }
+
+    /// Sets the evaluation timestamp on the active license policy via builder pattern.
+    #[must_use]
+    pub fn with_evaluation_time(mut self, time: Option<TimestampNs>) -> Self {
+        self.license_policy.set_evaluation_time(time);
+        self
+    }
+
     /// Read-only access to the underlying staging spool.
     #[must_use]
     pub fn spool(&self) -> &StagingSpool {
@@ -1051,7 +1065,7 @@ impl ModelPackageImporter {
         }
         package.validate(&self.limits)?;
         package.verify_contents()?;
-        self.license_policy.check_manifest(&package.manifest)?;
+        let decision = self.license_policy.check_manifest(&package.manifest)?;
         let manifest_digest = ContentDigest::sha256(&package.manifest_bytes);
         let total_staged_bytes = package.total_bytes()?;
 
@@ -1105,6 +1119,7 @@ impl ModelPackageImporter {
             },
             staged_artifacts: package.artifacts.keys().copied().collect(),
             total_staged_bytes,
+            license_decision_digest: decision.decision_digest(),
         })
     }
 
