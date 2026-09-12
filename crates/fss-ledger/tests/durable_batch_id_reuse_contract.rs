@@ -294,16 +294,25 @@ fn batch_id_reuse_is_rejected_after_reconciled_indeterminate_append() -> TestRes
 
 /// Replay applies the same identity check: a durable prefix that already reuses a batch ID (as a
 /// pre-fix writer could produce) fails to open with the typed error, and the file is untouched.
+///
+/// Core `ReferenceLedger` rejects batch-ID reuse with `ContractError::IdempotencyConflict`, while
+/// `DurableReferenceLedger` rejects it with `DurableLedgerError::BatchIdConflict`. Because core
+/// now rejects batch-ID reuse on append, the fixture writes the pre-fix reusing prefix directly
+/// at the raw journal layer.
 #[test]
 fn replay_rejects_durable_prefix_that_reuses_a_batch_id() -> TestResult {
     let path = journal_path("replay_rejects_reuse")?;
-    // `fss_core::ReferenceLedger` does not index identities, so it can build the offending prefix.
     let mut core = ReferenceLedger::new(SITE);
     let first = core.prepare_batch(batch_id("1")?, vec![create("1", "a")?], [])?;
     core.append(first.clone())?;
     let reuse = core.prepare_batch(first.batch_id.clone(), vec![create("r", "r")?], [])?;
-    core.append(reuse.clone())?;
+    // Core correctly rejects appending the reused batch ID with IdempotencyConflict:
+    assert_eq!(
+        core.append(reuse.clone()),
+        Err(ContractError::IdempotencyConflict)
+    );
 
+    // Simulate a pre-fix journal containing batch-ID reuse by appending directly at the journal layer:
     let mut journal = Journal::open(&path, IncompleteTailPolicy::Reject)?;
     journal.append(EVIDENCE_BATCH_RECORD_KIND, &encode_batch(&first)?)?;
     journal.append(EVIDENCE_BATCH_RECORD_KIND, &encode_batch(&reuse)?)?;
