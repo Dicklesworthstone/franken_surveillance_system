@@ -7,7 +7,7 @@ use fss_packet::{
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-const KEY: StreamKey = StreamKey { generation: 1, ssrc: 7 };
+const KEY: StreamKey = StreamKey { ingress: 1, generation: 1, ssrc: 7 };
 
 fn packet(sequence: u16, timestamp: u32, marker: bool, payload: &[u8]) -> Vec<u8> {
     let mut bytes = vec![0x80, 96 | if marker { 128 } else { 0 }];

@@ -35,13 +35,18 @@ Malformed suffixes cannot publish a valid prefix as a successful compound.
 
 ## Sequence and timing
 
-`SequenceTracker` validates the owner epoch, negotiated SSRC, and payload type
+`SequenceTracker` validates the owner ingress, epoch, negotiated SSRC, and payload type
 before mutation. Two sequential packets establish the baseline. A fixed 128-bit
 window suppresses duplicates and recovers reordered positions across sequence
 wrap; missing positions and received/unique counts remain separate. Two
 consecutive discontinuous packets latch `RestartRequired`: reopening requires a
 strictly newer owner epoch, rather than silently resetting prior coverage.
 This is sequence admission, not authentication or a live coverage certificate.
+`StreamKey.ingress` is a nonzero owner-issued process-local handle resolved from
+canonical FSS stream identity, not another durable ID. Distinct logical streams
+must have distinct ingress handles even when SSRC and generation coincide.
+Restart retains this logical ingress and advances its epoch. All-zero sender NTP
+reports are refused as unavailable, rather than mapped to an invented time.
 
 `JitterEstimator` implements the RFC 3550 integer recurrence in arrival order,
 including accepted duplicates/reordered timestamps. Supplied monotonic arrival

@@ -2,9 +2,13 @@ use std::fmt;
 
 use crate::RtpPacket;
 
-/// Owner-assigned stream epoch plus the negotiated SSRC; not sender authentication.
+/// Owner-issued ingress binding, stream epoch, and SSRC; not sender authentication.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StreamKey {
+    /// Nonzero owner-issued handle for this logical ingress, never derived from SSRC.
+    /// Resolve it from the canonical FSS stream identity; do not reuse across live streams.
+    /// This process-local binding is not a new durable identity or an authority token.
+    pub ingress: u128,
     /// Nonzero epoch. A reconnect, source restart, or clock reset requires a new epoch.
     pub generation: u64,
     /// Negotiated synchronization source, including zero when legitimately negotiated.
@@ -28,7 +32,7 @@ pub enum ContinuityError {
     ClockReversed,
     /// A timestamp difference cannot be unambiguously unwrapped.
     ClockAmbiguous,
-    /// No sender report has been received for this epoch.
+    /// No usable nonzero sender-clock report is available for this epoch.
     NoSenderReport,
 }
 
@@ -113,7 +117,7 @@ pub struct SequenceTracker {
 impl SequenceTracker {
     /// Start a new owner-bound sequence epoch without trusting the first packet.
     pub fn new(key: StreamKey, payload_type: u8) -> Result<Self, ContinuityError> {
-        if key.generation == 0 || payload_type > 127 {
+        if key.ingress == 0 || key.generation == 0 || payload_type > 127 {
             return Err(ContinuityError::Configuration);
         }
         Ok(Self {
@@ -155,6 +159,9 @@ impl SequenceTracker {
 
     /// Reopen with a strictly newer owner epoch, preserving no old continuity claims.
     pub fn restart(&self, key: StreamKey, payload_type: u8) -> Result<Self, ContinuityError> {
+        if key.ingress != self.key.ingress {
+            return Err(ContinuityError::StreamMismatch);
+        }
         if key.generation <= self.key.generation {
             return Err(ContinuityError::GenerationRequired);
         }

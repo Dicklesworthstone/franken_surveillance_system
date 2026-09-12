@@ -73,13 +73,16 @@ impl SenderReportClock {
         uncertainty_ns: u64,
         max_distance_ticks: u32,
     ) -> Result<Self, ContinuityError> {
-        if key.generation == 0 || rate == 0 || rate > 1_000_000_000
+        if key.ingress == 0 || key.generation == 0 || rate == 0 || rate > 1_000_000_000
             || max_distance_ticks == 0 || max_distance_ticks >= 0x8000_0000
         {
             return Err(ContinuityError::Configuration);
         }
         if report.ssrc != key.ssrc {
             return Err(ContinuityError::StreamMismatch);
+        }
+        if report.ntp.seconds == 0 && report.ntp.fraction == 0 {
+            return Err(ContinuityError::NoSenderReport);
         }
         Ok(Self { key, rate, report, received_ns, uncertainty_ns, max_distance_ticks })
     }

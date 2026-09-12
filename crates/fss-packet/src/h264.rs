@@ -219,7 +219,7 @@ pub struct H264Depacketizer {
 impl H264Depacketizer {
     /// Open a bounded derivative receiver; the caller separately owns source custody/authority.
     pub fn new(key: StreamKey, payload_type: u8, mode: H264Mode, limits: H264Limits) -> Result<Self, H264Failure> {
-        if key.generation == 0 || payload_type > 127
+        if key.ingress == 0 || key.generation == 0 || payload_type > 127
             || !(1..=16 * 1_024 * 1_024).contains(&limits.max_nal_bytes)
             || !(1..=256).contains(&limits.max_packet_nals)
             || !(2..=4_096).contains(&limits.max_fragment_packets)

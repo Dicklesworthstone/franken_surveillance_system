@@ -8,7 +8,7 @@ use fss_packet::{
 };
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
-const KEY: StreamKey = StreamKey { generation: 1, ssrc: 7 };
+const KEY: StreamKey = StreamKey { ingress: 1, generation: 1, ssrc: 7 };
 
 fn observe(tracker: &mut SequenceTracker, sequence: u16) -> Result<SequenceObservation, Box<dyn std::error::Error>> {
     let [hi, lo] = sequence.to_be_bytes();
@@ -49,7 +49,6 @@ fn wrap_reorder_and_duplicates_do_not_fabricate_recovered_loss() -> TestResult {
     assert_eq!(duplicate.class, SequenceClass::Duplicate);
     assert!(!duplicate.is_unique());
     assert_eq!(duplicate.stats.unique, 3);
-    assert_eq!(duplicate.stats.received, 4);
     assert_eq!(duplicate.stats.received, 4);
     assert_eq!(duplicate.stats.missing, 1);
     let late = observe(&mut tracker, 0)?;
