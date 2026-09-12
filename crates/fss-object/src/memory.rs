@@ -97,6 +97,12 @@ impl InMemoryObjectStore {
     ///
     /// All quota arithmetic and allocation for the candidate byte vector happen before map or
     /// accounting mutation. Restaging identical bytes is idempotent and consumes no new quota.
+    ///
+    /// When different bytes are already stored under the digest, the stored copy is rehashed
+    /// first: if it no longer matches its content identity it is corrupt and the result is
+    /// [`ObjectError::Corrupt`], exactly as `verify` and `read_verified` classify it. Only a
+    /// stored copy that still hashes to the digest while differing from `bytes` is a
+    /// [`ObjectError::DigestCollision`]. Neither case overwrites or re-accounts the stored copy.
     pub fn stage(&mut self, bytes: &[u8]) -> Result<ContentDigest, ObjectError> {
         if bytes.len() > crate::MAX_OBJECT_BYTES {
             return Err(ObjectError::ObjectTooLarge {
@@ -109,8 +115,15 @@ impl InMemoryObjectStore {
             if existing.state == ObjectState::Tombstoned {
                 return Err(ObjectError::Tombstoned(digest));
             }
-            if existing.bytes.as_deref() == Some(bytes) {
+            let stored = existing
+                .bytes
+                .as_deref()
+                .ok_or(ObjectError::Corrupt(digest))?;
+            if stored == bytes {
                 return Ok(digest);
+            }
+            if ContentDigest::sha256(stored) != digest {
+                return Err(ObjectError::Corrupt(digest));
             }
             return Err(ObjectError::DigestCollision(digest));
         }
@@ -217,7 +230,9 @@ impl InMemoryObjectStore {
     /// `ObjectManifest` does not trigger closure descent unless it was explicitly published.
     ///
     /// The manifest object is staged and verified before its root enters `visible_manifests`.
-    /// Re-publication of the same canonical manifest is idempotent.
+    /// Re-publication of the same canonical manifest is idempotent. Re-publication over a stored
+    /// manifest body whose bytes no longer match the root fails with [`ObjectError::Corrupt`];
+    /// [`ObjectError::DigestCollision`] is reserved for distinct content under the same root.
     /// On any failure during staging, verification, collision check, or closure verification,
     /// any newly staged object and allocated quota are rolled back cleanly, and any pre-existing
     /// object state (such as [`ObjectState::Staged`]) is preserved and restored.

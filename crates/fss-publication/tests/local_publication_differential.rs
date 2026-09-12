@@ -12,7 +12,6 @@
 //! |----|-----------------|------------------|-----------------|
 //! | M1 | `Published` into a new slot for a root already visible elsewhere | `AlreadyPublished` | the oracle is content-addressed and has no slots: a root is visible or not |
 //! | M2 | `SlotConflict` for a different root in an occupied slot | the root's content verdict: `Published`, or `AlreadyPublished` when already visible | the oracle has no slots; a root it accepts this way is tracked as oracle-only until a local slot holds it |
-//! | M3 | corrupt manifest body: `ReferenceBlocked { Corrupt }` | `DigestCollision(root)` | the oracle's `stage` compares its corrupted stored bytes with the canonical body and reports a collision rather than corruption (oracle classification, reported as a divergence) |
 //! | M4 | `Visible` and `Durable` | visible (a single state) | the oracle has no directory fsync; in a fault-free run every local root must be `Durable` |
 //! | M5 | tombstoning an object reachable from a visible root is refused | the tombstone is applied and every reaching manifest is unpublished | deleting a visible closure belongs to the local deletion-closure owner, never to a silent unpublish |
 //! | M6 | tombstoning an object absent from the spool is recorded | `Missing` | a local tombstone is a durable, custody-independent record; an oracle tombstone is a state of a stored object |
@@ -166,9 +165,7 @@ fn classify_local_publish(
 
 fn classify_memory_publish(
     result: &Result<fss_object::PublicationReceipt, ObjectError>,
-    root: ContentDigest,
     visible_before: bool,
-    corrupted: &BTreeSet<ContentDigest>,
 ) -> (Verdict, Option<Counts>) {
     match result {
         Ok(receipt) => (
@@ -188,12 +185,6 @@ fn classify_memory_publish(
         Err(ObjectError::NotVerified(_)) => (Verdict::Blocked(Block::NotVerified), None),
         Err(ObjectError::Corrupt(_)) => (Verdict::Blocked(Block::Corrupt), None),
         Err(ObjectError::Tombstoned(_)) => (Verdict::Blocked(Block::Tombstoned), None),
-        // M3: the oracle reports a corrupted stored manifest body as a digest collision.
-        Err(ObjectError::DigestCollision(digest))
-            if *digest == root && corrupted.contains(digest) =>
-        {
-            (Verdict::Blocked(Block::Corrupt), None)
-        }
         Err(error) => (Verdict::Unexpected(format!("in-memory {error}")), None),
     }
 }
@@ -304,12 +295,8 @@ impl Harness {
         let local_result = self.local.publish(slot_name, manifest);
         let memory_result = self.memory.publish_manifest(manifest.clone());
         let (local, local_counts) = classify_local_publish(&local_result);
-        let (memory, memory_counts) = classify_memory_publish(
-            &memory_result,
-            root,
-            visible_in_memory_before,
-            &self.corrupted,
-        );
+        let (memory, memory_counts) =
+            classify_memory_publish(&memory_result, visible_in_memory_before);
         let step = PublishStep {
             local,
             memory,
@@ -719,9 +706,9 @@ fn differential_conflicting_root_for_a_slot_follows_mapping_m2() -> TestResult {
 }
 
 #[test]
-fn mapping_m3_corrupt_manifest_body_is_a_collision_in_the_oracle() -> TestResult {
+fn differential_corrupt_manifest_body_blocks_both_as_corruption() -> TestResult {
     let mut h = Harness::open(&fresh_root(
-        "mapping_m3_corrupt_manifest_body_is_a_collision_in_the_oracle",
+        "differential_corrupt_manifest_body_blocks_both_as_corruption",
     )?)?;
     let first = h.stage(b"clip-segment-0001")?;
     let second = h.stage(b"clip-segment-0002")?;
@@ -731,10 +718,10 @@ fn mapping_m3_corrupt_manifest_body_is_a_collision_in_the_oracle() -> TestResult
     h.publish(&slot_name, &manifest)?;
     h.corrupt(root)?;
 
-    // The exact raw outcomes behind M3.
+    // The exact raw outcomes: both classify the corrupt manifest body as corruption.
     assert_eq!(
         h.memory.publish_manifest(manifest.clone()),
-        Err(ObjectError::DigestCollision(root))
+        Err(ObjectError::Corrupt(root))
     );
     assert_eq!(
         h.local.publish(&slot_name, &manifest).err(),
