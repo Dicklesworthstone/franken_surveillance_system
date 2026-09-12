@@ -367,3 +367,117 @@ fn test_unknown_knowledge_cell_explicit_branch_and_hard_gate() -> Result<(), Box
 
     Ok(())
 }
+
+#[test]
+fn test_conflicted_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Conflicted;
+
+    // 1. Exact normative stable ID
+    assert_eq!(state.id(), "KSTATE-004");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(state.as_str(), "conflicted");
+    assert_eq!(format!("{state}"), "conflicted");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        state.meaning(),
+        "Material admissible evidence supports incompatible propositions or generations."
+    );
+
+    // 4. May support planning: yes, only as competing branches
+    assert!(state.may_support_planning());
+    assert_eq!(
+        state.planning_support_description(),
+        "yes, only as competing branches"
+    );
+
+    // 5. May authorize irreversible effect: no (hard constitutional gate)
+    assert!(!state.may_authorize_irreversible_effect());
+    assert_eq!(state.irreversible_effect_description(), "no");
+
+    // 6. Explicit assumptions required: yes
+    assert!(state.explicit_assumptions_required());
+
+    Ok(())
+}
+
+#[test]
+fn test_conflicted_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = KnowledgeState::from_id("KSTATE-004")?;
+    assert_eq!(from_id, KnowledgeState::Conflicted);
+
+    // Parse from schema name
+    let from_name = KnowledgeState::from_name("conflicted")?;
+    assert_eq!(from_name, KnowledgeState::Conflicted);
+
+    // Parse via FromStr
+    let from_str_name = KnowledgeState::from_str("conflicted")?;
+    assert_eq!(from_str_name, KnowledgeState::Conflicted);
+
+    let from_str_id = KnowledgeState::from_str("KSTATE-004")?;
+    assert_eq!(from_str_id, KnowledgeState::Conflicted);
+
+    Ok(())
+}
+
+#[test]
+fn test_conflicted_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Conflicted;
+
+    let mut encoder = CanonicalEncoder::new();
+    state.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = KnowledgeState::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, state);
+    assert_eq!(decoded.id(), "KSTATE-004");
+    assert_eq!(decoded.as_str(), "conflicted");
+
+    Ok(())
+}
+
+#[test]
+fn test_conflicted_knowledge_cell_competing_branches_and_hard_gate() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let evidence_a = ContentDigest::sha256(b"camera_sensor_evidence_claims_car");
+    let evidence_b = ContentDigest::sha256(b"radar_sensor_evidence_claims_truck");
+
+    // Construct a cell with KnowledgeState::Conflicted
+    let cell = KnowledgeCell {
+        claim_id: "claim:vehicle:classification:001".to_string(),
+        statement: "Conflicting classification between camera and radar models".to_string(),
+        knowledge_state: KnowledgeState::Conflicted,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![evidence_a],
+        contradictions: vec![evidence_b],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+    };
+
+    // Properties on KnowledgeCell
+    assert!(cell.is_conflicted());
+    assert!(!cell.is_unknown());
+    assert!(!cell.is_estimated());
+    assert!(cell.requires_explicit_assumptions());
+    assert!(cell.may_support_planning());
+
+    // Constitutional Hard Gate: Conflicted CANNOT be used as an irreversible-effect premise,
+    // even if contradictory evidence list were cleared or validity is current.
+    assert!(
+        !cell.is_irreversible_effect_premise(now),
+        "Conflicted knowledge state must NEVER authorize irreversible effects"
+    );
+
+    let mut without_contradictions = cell;
+    without_contradictions.contradictions.clear();
+    assert!(
+        !without_contradictions.is_irreversible_effect_premise(now),
+        "Conflicted state cannot authorize irreversible effect even if contradictions are empty"
+    );
+
+    Ok(())
+}

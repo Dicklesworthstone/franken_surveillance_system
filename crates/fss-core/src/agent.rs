@@ -191,6 +191,12 @@ impl KnowledgeCell {
         self.knowledge_state == KnowledgeState::Unknown
     }
 
+    /// Returns whether this knowledge cell is a conflicted proposition.
+    #[must_use]
+    pub fn is_conflicted(&self) -> bool {
+        self.knowledge_state == KnowledgeState::Conflicted
+    }
+
     /// Returns whether this cell requires explicit assumptions to be used in planning.
     #[must_use]
     pub fn requires_explicit_assumptions(&self) -> bool {
