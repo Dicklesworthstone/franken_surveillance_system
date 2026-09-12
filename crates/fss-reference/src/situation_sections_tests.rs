@@ -34,7 +34,7 @@ fn situation(long_optional_why: bool) -> Result<ReferenceSituation, ContractErro
     situation_with_cells(long_optional_why, Vec::new())
 }
 
-fn situation_with_cells(
+pub(crate) fn situation_with_cells(
     long_optional_why: bool,
     extra_cells: Vec<KnowledgeCell>,
 ) -> Result<ReferenceSituation, ContractError> {
@@ -527,13 +527,20 @@ fn basisless_cell(knowledge_state: KnowledgeState) -> KnowledgeCell {
 }
 
 /// Asserts that a frame carrying `refused` is rejected with exactly `expected` by
-/// `SituationCapsule::validate`, `ReferenceSituation::verify`, `project_reference_situation`, and
-/// `ReferenceSituationPublication::verify`, so the cell never reaches a fingerprint or pack.
+/// `SituationCapsule::validate`, `SituationCapsule::decision_fingerprint`,
+/// `ReferenceSituation::verify`, `ReferenceSituationPublication::required_context_item_ids`,
+/// `project_reference_situation`, `ReferenceSituationPublication::verify`, and
+/// `ReferenceSituationPublication::computed_digest`, so the cell never reaches a fingerprint, a
+/// candidate set, or a pack.
+///
+/// When `refused` withholds its statement, no refusal (in `Debug` or `Display` form) and no
+/// partial output carrying the refused cell may contain that statement.
 fn assert_every_capsule_entry_point_refuses(
     refused: &KnowledgeCell,
     expected: &ContractError,
 ) -> Result<(), Box<dyn Error>> {
-    assert_eq!(refused.validate().as_ref(), Err(expected));
+    let cell_refusal = refused.validate();
+    assert_eq!(cell_refusal.as_ref(), Err(expected));
 
     let mut reference = situation(false)?;
     reference
@@ -541,16 +548,27 @@ fn assert_every_capsule_entry_point_refuses(
         .frame
         .knowledge_cells
         .push(refused.clone());
-    assert_eq!(reference.capsule.validate().as_ref(), Err(expected));
+    let capsule_refusal = reference.capsule.validate();
+    assert_eq!(capsule_refusal.as_ref(), Err(expected));
+    let fingerprint = reference.capsule.decision_fingerprint();
+    assert_eq!(
+        fingerprint.as_ref().err(),
+        Some(expected),
+        "SituationCapsule::decision_fingerprint must refuse with {expected:?}"
+    );
+    let verified = reference.verify();
     assert!(
-        matches!(reference.verify(), Err(ReferenceError::Contract(ref error)) if error == expected),
+        matches!(verified, Err(ReferenceError::Contract(ref error)) if error == expected),
         "ReferenceSituation::verify must refuse with {expected:?}"
     );
+    let required = ReferenceSituationPublication::required_context_item_ids(&reference);
     assert!(
-        matches!(
-            project_reference_situation(reference, &spec(10_000)),
-            Err(ReferenceError::Contract(ref error)) if error == expected
-        ),
+        matches!(required, Err(ReferenceError::Contract(ref error)) if error == expected),
+        "ReferenceSituationPublication::required_context_item_ids must refuse with {expected:?}"
+    );
+    let projected = project_reference_situation(reference.clone(), &spec(10_000));
+    assert!(
+        matches!(projected, Err(ReferenceError::Contract(ref error)) if error == expected),
         "project_reference_situation must refuse with {expected:?}"
     );
 
@@ -562,10 +580,50 @@ fn assert_every_capsule_entry_point_refuses(
         .frame
         .knowledge_cells
         .push(refused.clone());
+    let published = publication.verify();
     assert!(
-        matches!(publication.verify(), Err(ReferenceError::Contract(ref error)) if error == expected),
+        matches!(published, Err(ReferenceError::Contract(ref error)) if error == expected),
         "ReferenceSituationPublication::verify must refuse with {expected:?}"
     );
+    let publication_digest = publication.computed_digest();
+    assert!(
+        matches!(publication_digest, Err(ReferenceError::Contract(ref error)) if error == expected),
+        "ReferenceSituationPublication::computed_digest must refuse with {expected:?}"
+    );
+
+    if refused.withholds_statement() {
+        let mut outputs = vec![
+            format!("{cell_refusal:?}"),
+            format!("{capsule_refusal:?}"),
+            format!("{fingerprint:?}"),
+            format!("{verified:?}"),
+            format!("{required:?}"),
+            format!("{projected:?}"),
+            format!("{published:?}"),
+            format!("{publication_digest:?}"),
+            format!("{reference:?}"),
+            format!("{publication:?}"),
+        ];
+        outputs.extend(
+            [
+                verified.err(),
+                required.err(),
+                projected.err(),
+                published.err(),
+                publication_digest.err(),
+            ]
+            .into_iter()
+            .flatten()
+            .map(|error| error.to_string()),
+        );
+        for (index, output) in outputs.iter().enumerate() {
+            // The output itself is never printed: on failure it would carry the withheld text.
+            assert!(
+                !output.contains(refused.statement.as_str()),
+                "entry-point output #{index} disclosed the withheld statement"
+            );
+        }
+    }
     Ok(())
 }
 
@@ -597,7 +655,7 @@ fn stale_cell_without_basis_is_refused_at_every_capsule_entry_point() -> Result<
 }
 
 /// A valid redacted cell whose withheld statement is `secret`; evidence is shared across calls.
-fn withheld_cell(
+pub(crate) fn withheld_cell(
     claim_id: &str,
     secret: &str,
     contradictions: Vec<ContentDigest>,
@@ -732,17 +790,19 @@ fn misattached_redaction_cell(
 #[test]
 fn redaction_basis_on_known_cell_is_refused_at_every_capsule_entry_point()
 -> Result<(), Box<dyn Error>> {
-    assert_every_capsule_entry_point_refuses(
-        &misattached_redaction_cell(KnowledgeState::Known)?,
-        &ContractError::KnowledgeStateBasisMismatch,
-    )
+    let cell = misattached_redaction_cell(KnowledgeState::Known)?;
+    // The redaction basis withholds the statement even on a refused state, so the entry-point
+    // helper also checks that no refusal or partial output discloses it.
+    assert!(cell.withholds_statement());
+    assert_every_capsule_entry_point_refuses(&cell, &ContractError::KnowledgeStateBasisMismatch)
 }
 
 #[test]
 fn redaction_basis_on_stale_cell_is_refused_at_every_capsule_entry_point()
 -> Result<(), Box<dyn Error>> {
-    assert_every_capsule_entry_point_refuses(
-        &misattached_redaction_cell(KnowledgeState::Stale)?,
-        &ContractError::StaleBasisRequired,
-    )
+    let cell = misattached_redaction_cell(KnowledgeState::Stale)?;
+    // The redaction basis withholds the statement even on a refused state, so the entry-point
+    // helper also checks that no refusal or partial output discloses it.
+    assert!(cell.withholds_statement());
+    assert_every_capsule_entry_point_refuses(&cell, &ContractError::StaleBasisRequired)
 }

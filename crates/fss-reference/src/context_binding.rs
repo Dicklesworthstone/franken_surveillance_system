@@ -168,11 +168,13 @@ impl BoundReferenceSituationPublication {
     }
 
     /// Returns every semantic proof root required to resume without ambient descriptor state.
-    #[must_use]
-    pub fn proof_roots(&self) -> BTreeSet<ContentDigest> {
+    ///
+    /// Fails when the base situation capsule does not validate, since it then has no decision
+    /// fingerprint to root.
+    pub fn proof_roots(&self) -> Result<BTreeSet<ContentDigest>, ContractError> {
         let mut roots = self.publication.situation.proof_roots.clone();
         roots.insert(self.publication.publication_digest);
-        roots.insert(self.publication.situation.capsule.decision_fingerprint());
+        roots.insert(self.publication.situation.capsule.decision_fingerprint()?);
         roots.insert(self.publication.resource_state.state_digest());
         roots.insert(self.publication.control_envelope.control_digest());
         roots.insert(self.publication.context_pack.pack_digest);
@@ -191,7 +193,7 @@ impl BoundReferenceSituationPublication {
             roots.insert(binding.reference.ladder_policy_digest);
         }
         roots.insert(self.bound_publication_digest);
-        roots
+        Ok(roots)
     }
 
     fn validate_body(&self) -> Result<(), ReferenceContextBindingError> {
@@ -266,7 +268,7 @@ pub fn seal_bound_reference_publication_handoff(
             .clone(),
         anchor: publication.publication.situation.capsule.anchor.clone(),
         situation_capsule_root: publication_root,
-        child_roots: publication.proof_roots(),
+        child_roots: publication.proof_roots()?,
         contract_basis: publication
             .publication
             .situation

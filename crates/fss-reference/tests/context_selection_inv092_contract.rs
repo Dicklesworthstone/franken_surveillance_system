@@ -1232,7 +1232,7 @@ fn test_inv092_pipeline_compilation_and_budget_enforcement() -> Result<(), Box<d
     let situation = compile_reference_situation(req.clone(), &harness.authority)?;
     assert_eq!(
         situation.verify()?,
-        situation.capsule.decision_fingerprint()
+        situation.capsule.decision_fingerprint()?
     );
 
     // 2. Publication with ample budget compiles, validates, and preserves critical items:
