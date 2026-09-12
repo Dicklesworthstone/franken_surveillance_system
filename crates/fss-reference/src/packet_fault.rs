@@ -26,7 +26,7 @@ pub const MAX_DUPLICATE_COPIES: u32 = 8;
 /// Maximum total buffered packets in injector queue.
 pub const MAX_BUFFER_CAPACITY: usize = 256;
 
-/// Maximum pre-configured explicit schedule rules.
+/// Maximum pre-configured explicit schedule entries: rules and gaps combined.
 pub const MAX_SCHEDULE_RULES: usize = 4_096;
 
 /// Maximum sequence count spanned by one injected coverage gap.
@@ -102,9 +102,9 @@ pub enum PacketFaultError {
         /// Configured maximum capacity.
         capacity: usize,
     },
-    /// Explicit schedule rules count exceeds [`MAX_SCHEDULE_RULES`].
+    /// Explicit schedule entries (rules plus gaps) would exceed [`MAX_SCHEDULE_RULES`].
     ScheduleCapacityExceeded {
-        /// Current rules count.
+        /// Current combined rules-plus-gaps count.
         current: usize,
         /// Maximum allowed rules.
         max: usize,
@@ -185,9 +185,15 @@ impl fmt::Display for PacketFaultError {
 
 impl std::error::Error for PacketFaultError {}
 
-/// Deterministic, zero-ambient-state pseudorandom generator.
+/// Odd Weyl-sequence increment of SplitMix64 (the 64-bit golden ratio).
+const SPLITMIX64_GAMMA: u64 = 0x9e37_79b9_7f4a_7c15;
+
+/// Deterministic, zero-ambient-state pseudorandom generator (SplitMix64).
 ///
-/// Guaranteed never to degenerate into the zero fixed-point.
+/// The state is the seed itself and advances by an odd constant on every draw, so the state
+/// sequence has full period 2^64 and can never be stuck at any fixed point, including zero.
+/// Each draw passes the state through the SplitMix64 finalizer, which is a bijection on `u64`,
+/// so distinct seeds always produce distinct first draws and therefore distinct streams.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DeterministicFaultPrng {
     seed: u64,
@@ -199,28 +205,21 @@ impl DeterministicFaultPrng {
     /// Constructs a deterministic PRNG anchored at `seed`.
     #[must_use]
     pub const fn new(seed: u64) -> Self {
-        let mut state = if seed == 0 {
-            0xd1b5_4a32_d192_ed03_u64
-        } else {
-            seed ^ 0x9e37_79b9_7f4a_7c15_u64
-        };
-        if state == 0 {
-            state = 0xd1b5_4a32_d192_ed03_u64;
-        }
         Self {
             seed,
-            state,
+            state: seed,
             draw_count: 0,
         }
     }
 
     /// Advances the PRNG state and returns the next pseudo-random `u64`.
     pub fn next_u64(&mut self) -> u64 {
-        self.state ^= self.state << 13;
-        self.state ^= self.state >> 7;
-        self.state ^= self.state << 17;
+        self.state = self.state.wrapping_add(SPLITMIX64_GAMMA);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
         self.draw_count = self.draw_count.saturating_add(1);
-        self.state
+        z ^ (z >> 31)
     }
 
     /// Returns a pseudo-random integer in `[0, bound)`.
@@ -421,6 +420,26 @@ impl PacketFaultSchedule {
         self.buffer_capacity
     }
 
+    /// Returns the number of explicit schedule entries (rules plus gaps combined).
+    ///
+    /// This single count is bounded by [`MAX_SCHEDULE_RULES`].
+    #[must_use]
+    pub fn schedule_entry_count(&self) -> usize {
+        self.explicit_rules.len() + self.explicit_gaps.len()
+    }
+
+    /// Rejects a new rule or gap once rules and gaps together reach [`MAX_SCHEDULE_RULES`].
+    fn ensure_schedule_capacity(&self) -> Result<(), PacketFaultError> {
+        let current = self.schedule_entry_count();
+        if current >= MAX_SCHEDULE_RULES {
+            return Err(PacketFaultError::ScheduleCapacityExceeded {
+                current,
+                max: MAX_SCHEDULE_RULES,
+            });
+        }
+        Ok(())
+    }
+
     /// Adds an explicit packet drop rule.
     pub fn add_drop_rule(
         &mut self,
@@ -430,12 +449,7 @@ impl PacketFaultSchedule {
         if sequence == 0 {
             return Err(PacketFaultError::ZeroSequenceDisallowed);
         }
-        if self.explicit_rules.len() >= MAX_SCHEDULE_RULES {
-            return Err(PacketFaultError::ScheduleCapacityExceeded {
-                current: self.explicit_rules.len(),
-                max: MAX_SCHEDULE_RULES,
-            });
-        }
+        self.ensure_schedule_capacity()?;
         self.explicit_rules.insert(
             sequence,
             FaultRule::Drop {
@@ -460,12 +474,7 @@ impl PacketFaultSchedule {
                 max: MAX_DUPLICATE_COPIES,
             });
         }
-        if self.explicit_rules.len() >= MAX_SCHEDULE_RULES {
-            return Err(PacketFaultError::ScheduleCapacityExceeded {
-                current: self.explicit_rules.len(),
-                max: MAX_SCHEDULE_RULES,
-            });
-        }
+        self.ensure_schedule_capacity()?;
         self.explicit_rules
             .insert(sequence, FaultRule::Duplicate { copies });
         Ok(())
@@ -486,12 +495,7 @@ impl PacketFaultSchedule {
                 max: self.reorder_window,
             });
         }
-        if self.explicit_rules.len() >= MAX_SCHEDULE_RULES {
-            return Err(PacketFaultError::ScheduleCapacityExceeded {
-                current: self.explicit_rules.len(),
-                max: MAX_SCHEDULE_RULES,
-            });
-        }
+        self.ensure_schedule_capacity()?;
         self.explicit_rules
             .insert(sequence, FaultRule::Reorder { delay_steps });
         Ok(())
@@ -517,12 +521,7 @@ impl PacketFaultSchedule {
                 max: MAX_GAP_LENGTH,
             });
         }
-        if self.explicit_gaps.len() >= MAX_SCHEDULE_RULES {
-            return Err(PacketFaultError::ScheduleCapacityExceeded {
-                current: self.explicit_gaps.len(),
-                max: MAX_SCHEDULE_RULES,
-            });
-        }
+        self.ensure_schedule_capacity()?;
         self.explicit_gaps.push(ScheduledGap {
             start_sequence,
             end_sequence,
@@ -695,7 +694,12 @@ pub enum InjectedFaultEvidence {
         sequence: u64,
         /// Sensor id.
         sensor_id: SensorId,
-        /// Steps held in buffer.
+        /// Accepted pushes the packet was actually held across in the reorder buffer.
+        ///
+        /// Equals the scheduled delay for packets released by
+        /// [`PacketFaultInjector::push`]. Packets flushed by [`PacketFaultInjector::drain`] or
+        /// [`PacketFaultInjector::finish`] record the smaller number of steps they were held
+        /// before the stream ended.
         delay_steps: usize,
         /// Delivery index when emitted.
         emitted_at_delivery_index: u64,
@@ -827,7 +831,32 @@ impl CanonicalEncode for FaultInjectionJournal {
 struct DelayedItem<P> {
     packet: P,
     sequence: u64,
+    /// Delay assigned when the packet entered the reorder buffer.
+    scheduled_delay: usize,
+    /// Accepted pushes left before release; never exceeds `scheduled_delay`.
     remaining_delay: usize,
+}
+
+/// What an accepted push does with its incoming packet.
+enum PushDisposition {
+    /// Suppressed by a scheduled gap; carries the witness when this packet opens the gap.
+    Gap { witness: Option<InjectedGapWitness> },
+    /// Dropped by a loss rule.
+    Drop { reason: String },
+    /// Held in the reorder buffer for `delay_steps` accepted pushes.
+    Reorder { delay_steps: usize },
+    /// Delivered once plus `copies` duplicates.
+    Duplicate { copies: u32 },
+    /// Delivered unchanged.
+    Deliver,
+}
+
+/// A push that passed every check and can be committed without failure.
+struct PushPlan {
+    sequence: u64,
+    total_input_packets: u64,
+    prng: DeterministicFaultPrng,
+    disposition: PushDisposition,
 }
 
 /// Deterministic, bounded packet fault injector.
@@ -880,95 +909,194 @@ impl<P: SequencedPacket> PacketFaultInjector<P> {
     }
 
     /// Pushes one packet into the injector and returns items ready for immediate emission.
+    ///
+    /// The push is atomic. Every failure (zero sequence, runtime reorder-buffer capacity,
+    /// gap-witness construction, counter overflow) is detected before any injector state is
+    /// mutated. A rejected packet is therefore not counted as input, does not age held packets,
+    /// does not consume PRNG draws, and never displaces a packet already held for reordering;
+    /// the caller may [`Self::drain`] and retry it.
+    ///
+    /// Every accepted push ages each held packet by exactly one step, including a push whose
+    /// packet is suppressed by a scheduled gap, so no packet is held past its scheduled delay.
     pub fn push(&mut self, packet: P) -> Result<Vec<FaultStreamItem<P>>, PacketFaultError> {
+        let plan = self.plan_push(&packet)?;
+        Ok(self.commit_push(packet, plan))
+    }
+
+    /// Validates one push against every failure mode without mutating the injector.
+    fn plan_push(&self, packet: &P) -> Result<PushPlan, PacketFaultError> {
         let sequence = packet.sequence();
         if sequence == 0 {
             return Err(PacketFaultError::ZeroSequenceDisallowed);
         }
-
-        self.total_input_packets = self
+        let total_input_packets = self
             .total_input_packets
             .checked_add(1)
             .ok_or(PacketFaultError::ArithmeticOverflow)?;
 
-        let mut emitted = Vec::new();
-
-        // 1. Check if sequence is part of a scheduled gap
-        if let Some(gap) = self
+        // PRNG draws are taken from a copy and only committed with the rest of the push.
+        let mut prng = self.prng.clone();
+        let disposition = if let Some(gap) = self
             .schedule
             .explicit_gaps
             .iter()
             .find(|g| sequence >= g.start_sequence && sequence <= g.end_sequence)
         {
-            // If this is the start of the gap, emit the typed InjectedGapWitness
-            if !self.emitted_gap_starts.contains(&gap.start_sequence) {
-                self.emitted_gap_starts.push(gap.start_sequence);
-                let witness = InjectedGapWitness::new(
+            let witness = if self.emitted_gap_starts.contains(&gap.start_sequence) {
+                None
+            } else {
+                Some(InjectedGapWitness::new(
                     packet.sensor_id().clone(),
                     gap.start_sequence,
                     gap.end_sequence,
                     packet.capture_interval(),
                     gap.reason.clone(),
                     self.schedule.seed,
-                )?;
-                self.gap_witnesses.push(witness.clone());
-                self.fault_evidence
-                    .push(InjectedFaultEvidence::Gap(witness.clone()));
-                self.total_emitted_items = self
-                    .total_emitted_items
-                    .checked_add(1)
-                    .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                emitted.push(FaultStreamItem::InjectedGap(witness));
+                )?)
+            };
+            PushDisposition::Gap { witness }
+        } else {
+            match self.select_rule(sequence, &mut prng) {
+                Some(FaultRule::Drop { reason }) => PushDisposition::Drop { reason },
+                Some(FaultRule::Duplicate { copies }) => PushDisposition::Duplicate { copies },
+                Some(FaultRule::Reorder { delay_steps }) => {
+                    PushDisposition::Reorder { delay_steps }
+                }
+                None => PushDisposition::Deliver,
             }
-            // Packet in gap is dropped/suppressed
-            self.lost_sequences.push(sequence);
-            return Ok(emitted);
+        };
+
+        // Held packets whose countdown reaches zero on this push are released by it, which frees
+        // their slots before the incoming packet is admitted to the reorder buffer.
+        let matured = self
+            .reorder_buffer
+            .iter()
+            .filter(|delayed| delayed.remaining_delay <= 1)
+            .count();
+        if matches!(disposition, PushDisposition::Reorder { .. }) {
+            let still_delayed = self.reorder_buffer.len() - matured;
+            if still_delayed >= self.schedule.buffer_capacity {
+                return Err(PacketFaultError::BufferCapacityExceeded {
+                    current: still_delayed,
+                    capacity: self.schedule.buffer_capacity,
+                });
+            }
         }
 
-        // 2. Decrement countdown on currently delayed packets and collect those ready
-        let mut still_delayed = Vec::new();
-        let mut ready_from_delay = Vec::new();
+        let incoming_deliveries = match &disposition {
+            PushDisposition::Gap { .. }
+            | PushDisposition::Drop { .. }
+            | PushDisposition::Reorder { .. } => 0,
+            PushDisposition::Deliver => 1,
+            PushDisposition::Duplicate { copies } => u64::from(*copies) + 1,
+        };
+        let witness_items = u64::from(matches!(
+            disposition,
+            PushDisposition::Gap { witness: Some(_) }
+        ));
+        let deliveries = u64::try_from(matured)
+            .map_err(|_| PacketFaultError::ArithmeticOverflow)?
+            .checked_add(incoming_deliveries)
+            .ok_or(PacketFaultError::ArithmeticOverflow)?;
+        self.ensure_counter_headroom(deliveries, witness_items)?;
 
+        Ok(PushPlan {
+            sequence,
+            total_input_packets,
+            prng,
+            disposition,
+        })
+    }
+
+    /// Selects the fault rule for an incoming packet outside any scheduled gap.
+    fn select_rule(&self, sequence: u64, prng: &mut DeterministicFaultPrng) -> Option<FaultRule> {
+        if let Some(rule) = self.schedule.explicit_rules.get(&sequence) {
+            return Some(rule.clone());
+        }
+        let profile = self.schedule.stochastic_profile.as_ref()?;
+        if prng.check_rate_ppm(profile.loss_rate_ppm) {
+            Some(FaultRule::Drop {
+                reason: "stochastic_loss".to_owned(),
+            })
+        } else if profile.duplication_rate_ppm > 0
+            && profile.max_duplicates > 0
+            && prng.check_rate_ppm(profile.duplication_rate_ppm)
+        {
+            let count = (prng.next_bounded(u64::from(profile.max_duplicates)) as u32) + 1;
+            Some(FaultRule::Duplicate { copies: count })
+        } else if profile.reorder_rate_ppm > 0
+            && profile.max_reorder_delay > 0
+            && prng.check_rate_ppm(profile.reorder_rate_ppm)
+        {
+            let delay = (prng.next_bounded(profile.max_reorder_delay as u64) as usize) + 1;
+            Some(FaultRule::Reorder { delay_steps: delay })
+        } else {
+            None
+        }
+    }
+
+    /// Proves that `deliveries` packet deliveries plus `extra_items` other stream items fit in
+    /// every counter, so a commit that follows cannot overflow.
+    fn ensure_counter_headroom(
+        &self,
+        deliveries: u64,
+        extra_items: u64,
+    ) -> Result<(), PacketFaultError> {
+        let items = deliveries
+            .checked_add(extra_items)
+            .ok_or(PacketFaultError::ArithmeticOverflow)?;
+        let fits = self.delivery_counter.checked_add(deliveries).is_some()
+            && self
+                .total_delivered_packets
+                .checked_add(deliveries)
+                .is_some()
+            && self.total_emitted_items.checked_add(items).is_some();
+        if fits {
+            Ok(())
+        } else {
+            Err(PacketFaultError::ArithmeticOverflow)
+        }
+    }
+
+    /// Applies a validated push. Cannot fail: [`Self::plan_push`] proved counter headroom.
+    fn commit_push(&mut self, packet: P, plan: PushPlan) -> Vec<FaultStreamItem<P>> {
+        let PushPlan {
+            sequence,
+            total_input_packets,
+            prng,
+            disposition,
+        } = plan;
+        self.prng = prng;
+        self.total_input_packets = total_input_packets;
+
+        // Age every held packet by one step and collect those whose countdown reached zero.
+        let mut matured = Vec::new();
+        let mut still_delayed = Vec::with_capacity(self.reorder_buffer.len());
         for mut delayed in self.reorder_buffer.drain(..) {
             delayed.remaining_delay = delayed.remaining_delay.saturating_sub(1);
             if delayed.remaining_delay == 0 {
-                ready_from_delay.push(delayed);
+                matured.push(delayed);
             } else {
                 still_delayed.push(delayed);
             }
         }
         self.reorder_buffer = still_delayed;
 
-        // 3. Determine fault rule for this incoming packet
-        let rule = if let Some(r) = self.schedule.explicit_rules.get(&sequence) {
-            Some(r.clone())
-        } else if let Some(profile) = &self.schedule.stochastic_profile {
-            if self.prng.check_rate_ppm(profile.loss_rate_ppm) {
-                Some(FaultRule::Drop {
-                    reason: "stochastic_loss".to_owned(),
-                })
-            } else if profile.duplication_rate_ppm > 0
-                && profile.max_duplicates > 0
-                && self.prng.check_rate_ppm(profile.duplication_rate_ppm)
-            {
-                let count = (self.prng.next_bounded(u64::from(profile.max_duplicates)) as u32) + 1;
-                Some(FaultRule::Duplicate { copies: count })
-            } else if profile.reorder_rate_ppm > 0
-                && profile.max_reorder_delay > 0
-                && self.prng.check_rate_ppm(profile.reorder_rate_ppm)
-            {
-                let delay = (self.prng.next_bounded(profile.max_reorder_delay as u64) as usize) + 1;
-                Some(FaultRule::Reorder { delay_steps: delay })
-            } else {
-                None
+        let mut emitted = Vec::new();
+        match disposition {
+            PushDisposition::Gap { witness } => {
+                if let Some(witness) = witness {
+                    self.emitted_gap_starts.push(witness.start_sequence);
+                    self.gap_witnesses.push(witness.clone());
+                    self.fault_evidence
+                        .push(InjectedFaultEvidence::Gap(witness.clone()));
+                    self.total_emitted_items = self.total_emitted_items.saturating_add(1);
+                    emitted.push(FaultStreamItem::InjectedGap(witness));
+                }
+                // The suppressed packet is certified by its gap's witness.
+                self.lost_sequences.push(sequence);
             }
-        } else {
-            None
-        };
-
-        // 4. Execute rule on incoming packet
-        match rule {
-            Some(FaultRule::Drop { reason }) => {
+            PushDisposition::Drop { reason } => {
                 self.lost_sequences.push(sequence);
                 self.fault_evidence.push(InjectedFaultEvidence::Loss {
                     sequence,
@@ -976,148 +1104,81 @@ impl<P: SequencedPacket> PacketFaultInjector<P> {
                     reason,
                 });
             }
-            Some(FaultRule::Reorder { delay_steps }) => {
-                if self.reorder_buffer.len() >= self.schedule.buffer_capacity {
-                    return Err(PacketFaultError::BufferCapacityExceeded {
-                        current: self.reorder_buffer.len(),
-                        capacity: self.schedule.buffer_capacity,
-                    });
-                }
+            PushDisposition::Reorder { delay_steps } => {
                 self.reordered_sequences.push(sequence);
                 self.reorder_buffer.push(DelayedItem {
                     packet,
                     sequence,
+                    scheduled_delay: delay_steps,
                     remaining_delay: delay_steps,
                 });
             }
-            Some(FaultRule::Duplicate { copies }) => {
-                // Emit original
-                self.delivery_counter = self
-                    .delivery_counter
-                    .checked_add(1)
-                    .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                self.total_delivered_packets = self
-                    .total_delivered_packets
-                    .checked_add(1)
-                    .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                self.total_emitted_items = self
-                    .total_emitted_items
-                    .checked_add(1)
-                    .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                emitted.push(FaultStreamItem::Packet {
-                    packet: packet.clone(),
-                    delivery_index: self.delivery_counter,
-                    is_duplicate: false,
-                });
-
-                // Emit duplicates
+            PushDisposition::Duplicate { copies } => {
+                self.deliver(&mut emitted, packet.clone(), false);
                 self.duplicated_sequences.push(sequence);
-                for c in 1..=copies {
-                    self.delivery_counter = self
-                        .delivery_counter
-                        .checked_add(1)
-                        .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                    self.total_delivered_packets = self
-                        .total_delivered_packets
-                        .checked_add(1)
-                        .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                    self.total_emitted_items = self
-                        .total_emitted_items
-                        .checked_add(1)
-                        .ok_or(PacketFaultError::ArithmeticOverflow)?;
+                for copy_index in 1..=copies {
                     self.fault_evidence
                         .push(InjectedFaultEvidence::Duplication {
                             sequence,
                             sensor_id: packet.sensor_id().clone(),
-                            copy_index: c,
+                            copy_index,
                             total_copies: copies,
                         });
-                    emitted.push(FaultStreamItem::Packet {
-                        packet: packet.clone(),
-                        delivery_index: self.delivery_counter,
-                        is_duplicate: true,
-                    });
+                    self.deliver(&mut emitted, packet.clone(), true);
                 }
             }
-            None => {
-                // Normal delivery
-                self.delivery_counter = self
-                    .delivery_counter
-                    .checked_add(1)
-                    .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                self.total_delivered_packets = self
-                    .total_delivered_packets
-                    .checked_add(1)
-                    .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                self.total_emitted_items = self
-                    .total_emitted_items
-                    .checked_add(1)
-                    .ok_or(PacketFaultError::ArithmeticOverflow)?;
-                emitted.push(FaultStreamItem::Packet {
-                    packet,
-                    delivery_index: self.delivery_counter,
-                    is_duplicate: false,
-                });
-            }
+            PushDisposition::Deliver => self.deliver(&mut emitted, packet, false),
         }
 
-        // 5. Emit items released from delay buffer
-        for delayed in ready_from_delay {
-            self.delivery_counter = self
-                .delivery_counter
-                .checked_add(1)
-                .ok_or(PacketFaultError::ArithmeticOverflow)?;
-            self.total_delivered_packets = self
-                .total_delivered_packets
-                .checked_add(1)
-                .ok_or(PacketFaultError::ArithmeticOverflow)?;
-            self.total_emitted_items = self
-                .total_emitted_items
-                .checked_add(1)
-                .ok_or(PacketFaultError::ArithmeticOverflow)?;
-            self.fault_evidence.push(InjectedFaultEvidence::Reorder {
-                sequence: delayed.sequence,
-                sensor_id: delayed.packet.sensor_id().clone(),
-                delay_steps: 0,
-                emitted_at_delivery_index: self.delivery_counter,
-            });
-            emitted.push(FaultStreamItem::Packet {
-                packet: delayed.packet,
-                delivery_index: self.delivery_counter,
-                is_duplicate: false,
-            });
+        for delayed in matured {
+            self.release_delayed(&mut emitted, delayed);
         }
+        emitted
+    }
 
-        Ok(emitted)
+    /// Emits one packet delivery.
+    ///
+    /// The saturating increments never saturate: every caller first proves headroom with
+    /// [`Self::ensure_counter_headroom`].
+    fn deliver(&mut self, emitted: &mut Vec<FaultStreamItem<P>>, packet: P, is_duplicate: bool) {
+        self.delivery_counter = self.delivery_counter.saturating_add(1);
+        self.total_delivered_packets = self.total_delivered_packets.saturating_add(1);
+        self.total_emitted_items = self.total_emitted_items.saturating_add(1);
+        emitted.push(FaultStreamItem::Packet {
+            packet,
+            delivery_index: self.delivery_counter,
+            is_duplicate,
+        });
+    }
+
+    /// Emits one packet released from the reorder buffer with its real held delay.
+    fn release_delayed(&mut self, emitted: &mut Vec<FaultStreamItem<P>>, delayed: DelayedItem<P>) {
+        let delay_steps = delayed
+            .scheduled_delay
+            .saturating_sub(delayed.remaining_delay);
+        let sensor_id = delayed.packet.sensor_id().clone();
+        self.deliver(emitted, delayed.packet, false);
+        self.fault_evidence.push(InjectedFaultEvidence::Reorder {
+            sequence: delayed.sequence,
+            sensor_id,
+            delay_steps,
+            emitted_at_delivery_index: self.delivery_counter,
+        });
     }
 
     /// Drains any remaining delayed packets at stream termination.
+    ///
+    /// Atomic like [`Self::push`]: counter headroom is proven before the buffer is touched.
+    /// Each flushed packet's [`InjectedFaultEvidence::Reorder`] records the steps it was
+    /// actually held, which is less than its scheduled delay because the stream ended first.
     pub fn drain(&mut self) -> Result<Vec<FaultStreamItem<P>>, PacketFaultError> {
-        let mut drained = Vec::new();
-        for delayed in self.reorder_buffer.drain(..) {
-            self.delivery_counter = self
-                .delivery_counter
-                .checked_add(1)
-                .ok_or(PacketFaultError::ArithmeticOverflow)?;
-            self.total_delivered_packets = self
-                .total_delivered_packets
-                .checked_add(1)
-                .ok_or(PacketFaultError::ArithmeticOverflow)?;
-            self.total_emitted_items = self
-                .total_emitted_items
-                .checked_add(1)
-                .ok_or(PacketFaultError::ArithmeticOverflow)?;
-            self.fault_evidence.push(InjectedFaultEvidence::Reorder {
-                sequence: delayed.sequence,
-                sensor_id: delayed.packet.sensor_id().clone(),
-                delay_steps: 0,
-                emitted_at_delivery_index: self.delivery_counter,
-            });
-            drained.push(FaultStreamItem::Packet {
-                packet: delayed.packet,
-                delivery_index: self.delivery_counter,
-                is_duplicate: false,
-            });
+        let deliveries = u64::try_from(self.reorder_buffer.len())
+            .map_err(|_| PacketFaultError::ArithmeticOverflow)?;
+        self.ensure_counter_headroom(deliveries, 0)?;
+        let held = std::mem::take(&mut self.reorder_buffer);
+        let mut drained = Vec::with_capacity(held.len());
+        for delayed in held {
+            self.release_delayed(&mut drained, delayed);
         }
         Ok(drained)
     }
