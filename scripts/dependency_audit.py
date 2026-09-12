@@ -15,8 +15,9 @@ DEP-AUD-026 (fss-x4a.26.3, FSS-183) scans every build script (implicit ``build.r
 metadata) for network-capable constructs. It is a STATIC DENY-LIST, NOT A PROOF OF ABSENCE.
 DEP-AUD-027 requires ``scripts/qualify.sh`` and ``scripts/release_qualify.sh`` to export
 ``CARGO_NET_OFFLINE=true`` and ``RUSTUP_AUTO_INSTALL=0`` at top level and to pass ``--offline`` to every
-cargo invocation. That seals Cargo resolution and rustup toolchain fetching; it is not OS-level network
-isolation.
+cargo invocation, and forbids rustup commands that fetch toolchains (``rustup install``/``update``,
+``rustup toolchain install``, ``rustup run --install``, ...). That seals Cargo resolution and rustup
+toolchain fetching; it is not OS-level network isolation.
 DEP-AUD-028 (fss-tgwit) requires the ``rust_lane`` of ``scripts/qualify.sh`` to record a
 ``cargo test --workspace --doc`` step, because ``cargo test --all-targets`` never runs doctests.
 """
@@ -268,8 +269,8 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
         code="DEP-AUD-027",
         severity="error",
         owner="security-policy",
-        trigger="a qualification script (scripts/qualify.sh or scripts/release_qualify.sh) does not seal Cargo and rustup offline (missing top-level CARGO_NET_OFFLINE=true or RUSTUP_AUTO_INSTALL=0 export, an override, or a cargo invocation without --offline)",
-        remediation="export CARGO_NET_OFFLINE=true and RUSTUP_AUTO_INSTALL=0 at top level and pass --offline to every cargo invocation in scripts/qualify.sh and scripts/release_qualify.sh; this is Cargo/rustup sealing, not OS network isolation",
+        trigger="a qualification script (scripts/qualify.sh or scripts/release_qualify.sh) does not seal Cargo and rustup offline (missing top-level CARGO_NET_OFFLINE=true or RUSTUP_AUTO_INSTALL=0 export, an override, a cargo invocation without --offline, or a network-fetching rustup command such as rustup install/update, rustup toolchain install, or rustup run --install)",
+        remediation="export CARGO_NET_OFFLINE=true and RUSTUP_AUTO_INSTALL=0 at top level and pass --offline to every cargo invocation in scripts/qualify.sh and scripts/release_qualify.sh, and never install or update toolchains, components, or targets there; this is Cargo/rustup sealing, not OS network isolation",
     ),
     "DEP-AUD-028": DiagnosticDef(
         code="DEP-AUD-028",
@@ -1341,25 +1342,226 @@ def build_script_network_audit(
 
 
 _SHELL_CARGO_WORD = re.compile(r"(?<![\w.-])cargo(?![\w.-])")
-_SHELL_OFFLINE_FLAG = re.compile(r"(?<![\w-])--offline(?![\w-])")
 _SHELL_COMMAND_BREAK = re.compile(r"&&|\|\||;|\|")
 _SEALED_OFFLINE_EXPORT = re.compile(r"""^export\s+CARGO_NET_OFFLINE=(?:true|"true"|'true')\s*$""")
 _CARGO_NET_OFFLINE_WORD = re.compile(r"\bCARGO_NET_OFFLINE\b")
 _SEALED_AUTO_INSTALL_EXPORT = re.compile(r"""^export\s+RUSTUP_AUTO_INSTALL=(?:0|"0"|'0')\s*$""")
 _RUSTUP_AUTO_INSTALL_WORD = re.compile(r"\bRUSTUP_AUTO_INSTALL\b")
-_SHELL_RUSTUP_WORD = re.compile(r"(?<![\w.-])rustup(?![\w.-])")
 _RUST_LANE_OPEN = re.compile(r"^rust_lane\s*\(\s*\)\s*\{\s*$")
+_SHELL_OPERATORS = ("&&", "||", ";;", ";", "|", "&", "(", ")")
+_SHELL_C_SHELLS = frozenset({"bash", "sh", "dash", "ksh", "zsh"})
+# rustup subcommands that download toolchains, components, targets, or rustup itself.
+_RUSTUP_FETCHING_COMMANDS = frozenset(
+    {("install",), ("update",), ("toolchain", "install"), ("toolchain", "add"), ("component", "add"), ("target", "add"), ("self", "update")}
+)
+
+
+class _ShellSyntaxError(ValueError):
+    """An unterminated quote or command substitution on one logical shell line."""
+
+
+def _shell_quote_end(text: str, start: int) -> int:
+    """Index just past the quote closing the one at ``start`` (``\\`` escapes honoured inside ``"``)."""
+    quote = text[start]
+    i = start + 1
+    while i < len(text):
+        if quote == '"' and text[i] == "\\":
+            i += 2
+            continue
+        if text[i] == quote:
+            return i + 1
+        i += 1
+    raise _ShellSyntaxError(f"unterminated {quote}")
+
+
+def _shell_substitution(text: str, start: int, subs: list[str]) -> int:
+    """Record the body of the ``$(...)`` or backtick substitution at ``start``; return its end index."""
+    if text[start] == "`":
+        end = _shell_quote_end(text, start)
+        subs.append(text[start + 1 : end - 1])
+        return end
+    depth = 0
+    i = start + 1
+    while i < len(text):
+        char = text[i]
+        if char == "\\":
+            i += 2
+            continue
+        if char in "'\"`":
+            i = _shell_quote_end(text, i)
+            continue
+        if char == "(":
+            depth += 1
+        elif char == ")":
+            depth -= 1
+            if depth == 0:
+                subs.append(text[start + 2 : i])
+                return i + 1
+        i += 1
+    raise _ShellSyntaxError("unterminated $(")
+
+
+def _shell_double_quoted(text: str, start: int, word: list[str], subs: list[str]) -> int:
+    """Append the unquoted value of the ``"..."`` at ``start`` to ``word``; return its end index."""
+    i = start + 1
+    while i < len(text):
+        char = text[i]
+        if char == '"':
+            return i + 1
+        if char == "\\":
+            word.append(text[i + 1 : i + 2])
+            i += 2
+        elif char == "`" or text.startswith("$(", i):
+            end = _shell_substitution(text, i, subs)
+            word.append(text[i:end])
+            i = end
+        else:
+            word.append(char)
+            i += 1
+    raise _ShellSyntaxError('unterminated "')
+
+
+def _shell_split(text: str) -> tuple[list[list[str]], list[str], bool]:
+    """Split one logical shell line into simple commands of quote-removed words.
+
+    Quoted text stays inside its word, so ``printf 'cargo metadata missing'`` yields the single
+    argument ``cargo metadata missing``. ``$(...)`` and backtick bodies (bare or inside ``"..."``)
+    are returned separately for re-parsing, and an unquoted ``#`` at the start of a word begins a
+    comment. Returns (commands, substitution bodies, ended_in_comment). Raises _ShellSyntaxError on
+    an unterminated quote or substitution.
+    """
+    commands: list[list[str]] = [[]]
+    subs: list[str] = []
+    word: list[str] = []
+    started = False
+    i = 0
+    while i < len(text):
+        char = text[i]
+        if char in " \t":
+            if started:
+                commands[-1].append("".join(word))
+            word, started = [], False
+            i += 1
+        elif char == "#" and not started:
+            return [command for command in commands if command], subs, True
+        elif char == "\\":
+            word.append(text[i + 1 : i + 2])
+            started, i = True, i + 2
+        elif char == "'":
+            end = _shell_quote_end(text, i)
+            word.append(text[i + 1 : end - 1])
+            started, i = True, end
+        elif char == '"':
+            i = _shell_double_quoted(text, i, word, subs)
+            started = True
+        elif char == "`" or text.startswith("$(", i):
+            end = _shell_substitution(text, i, subs)
+            word.append(text[i:end])
+            started, i = True, end
+        else:
+            operator = next((op for op in _SHELL_OPERATORS if text.startswith(op, i)), "")
+            redirect = char == "&" and ((bool(word) and word[-1].endswith(("<", ">"))) or text.startswith(">", i + 1))
+            if operator and not redirect:
+                if started:
+                    commands[-1].append("".join(word))
+                word, started = [], False
+                commands.append([])
+                i += len(operator)
+            else:
+                word.append(char)
+                started, i = True, i + 1
+    if started:
+        commands[-1].append("".join(word))
+    return [command for command in commands if command], subs, False
+
+
+def _shell_ends_in_comment(text: str) -> bool:
+    """True when ``text`` ends inside an unquoted ``#`` comment, where a trailing ``\\`` is literal."""
+    try:
+        return _shell_split(text)[2]
+    except _ShellSyntaxError:
+        return False
+
+
+def _shell_c_argument(words: list[str], index: int) -> int | None:
+    """Index of the command string passed with ``-c`` (or a cluster such as ``-ec``) to the shell at ``index``."""
+    position = index + 1
+    while position < len(words) - 1:
+        flag = words[position]
+        if flag in ("-o", "+o", "-O", "+O"):
+            position += 2
+            continue
+        if flag == "--" or not flag.startswith(("-", "+")):
+            return None
+        if not flag.startswith("--") and "c" in flag[1:]:
+            return position + 1
+        position += 1
+    return None
+
+
+def _shell_simple_commands(text: str) -> list[list[str]]:
+    """Simple commands on one logical line, plus those in its ``$(...)``/backtick substitutions and in
+    the command strings given to ``bash|sh|dash|ksh|zsh -c`` and ``eval``, which are re-parsed instead
+    of being read as one quoted word. Raises _ShellSyntaxError."""
+    commands, subs, _ = _shell_split(text)
+    direct: list[list[str]] = []
+    nested: list[list[str]] = []
+    for words in commands:
+        for index, word in enumerate(words):
+            if word == "eval":
+                nested.extend(_shell_simple_commands(" ".join(words[index + 1 :])))
+                words = words[: index + 1]
+                break
+            if word.rsplit("/", 1)[-1] in _SHELL_C_SHELLS:
+                script_index = _shell_c_argument(words, index)
+                if script_index is not None:
+                    nested.extend(_shell_simple_commands(words[script_index]))
+                    words = words[:script_index] + words[script_index + 1 :]
+                    break
+        direct.append(words)
+    for body in subs:
+        nested.extend(_shell_simple_commands(body))
+    return direct + nested
+
+
+def _shell_fallback_commands(text: str) -> list[list[str]]:
+    """Conservative split for a line that cannot be tokenized: quotes and parentheses become blanks."""
+    crude = re.sub(r"[\"'`()]", " ", text)
+    return [segment.split() for segment in _SHELL_COMMAND_BREAK.split(crude) if segment.split()]
+
+
+def _shell_word_names(word: str, tool: str) -> bool:
+    """True for a word ``tool`` or ``.../tool`` (quotes already removed). A word holding whitespace is
+    quoted prose such as ``'cargo metadata receipt missing'``, never a command name."""
+    return word.rsplit("/", 1)[-1] == tool and not any(char.isspace() for char in word)
+
+
+def _rustup_fetching_form(args: list[str]) -> str | None:
+    """The network-fetching rustup form in ``args`` (the words after ``rustup``), or None."""
+    rest = list(args)
+    while rest and rest[0].startswith(("-", "+")):
+        rest.pop(0)
+    if tuple(rest[:1]) in _RUSTUP_FETCHING_COMMANDS:
+        return rest[0]
+    if tuple(rest[:2]) in _RUSTUP_FETCHING_COMMANDS:
+        return " ".join(rest[:2])
+    if rest[:1] == ["run"] and "--install" in rest:
+        return "run --install"
+    return None
 
 
 def _shell_logical_lines(script_text: str) -> list[tuple[int, str]]:
-    """Join ``\\``-continued lines; each entry is (first physical line number, joined text)."""
+    """Join ``\\``-continued lines; each entry is (first physical line number, joined text).
+
+    A trailing ``\\`` inside a ``#`` comment is literal in the shell, so it does not continue the line.
+    """
     logical: list[tuple[int, str]] = []
     pending: list[str] = []
     start = 1
     for number, raw_line in enumerate(script_text.splitlines(), 1):
         if not pending:
             start = number
-        if raw_line.endswith("\\"):
+        if raw_line.endswith("\\") and not _shell_ends_in_comment(" ".join([*pending, raw_line[:-1]])):
             pending.append(raw_line[:-1])
             continue
         pending.append(raw_line)
@@ -1381,13 +1583,22 @@ def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = RO
     - no unindented top-level ``export RUSTUP_AUTO_INSTALL=0`` textually before the first ``rustup``
       or cargo word, so rustup cannot fetch a missing toolchain;
     - any other non-comment line naming ``CARGO_NET_OFFLINE`` or ``RUSTUP_AUTO_INSTALL`` (unset,
-      override, ``env -u``, re-export);
-    - any shell word ``cargo`` (also ``/path/to/cargo``, inside quoted ``bash -c`` strings, and inside
-      heredoc bodies) whose own command segment (up to ``&&``/``||``/``;``/``|``) lacks ``--offline``.
-      There is no ``cargo fmt`` exemption: the script uses ``cargo --offline fmt``.
-    Full-line ``#`` comments are ignored and ``\\``-continued lines are joined. This seals Cargo's own
-    resolution and fetching only. It is NOT OS-level network isolation (no network namespace or
-    ``unshare -n``), it does not govern network use by non-cargo commands or by scripts that qualify.sh
+      override, ``env -u``, re-export), checked on the raw line text;
+    - any command word ``cargo`` (also ``/path/to/cargo``) whose own simple command (up to
+      ``&&``/``||``/``;``/``|``/``&``) lacks ``--offline``. There is no ``cargo fmt`` exemption: the
+      script uses ``cargo --offline fmt``;
+    - any rustup command that can fetch over the network: ``rustup install``/``update``,
+      ``rustup toolchain install|add``, ``rustup component add``, ``rustup target add``,
+      ``rustup self update``, or ``rustup run`` with ``--install`` anywhere in its command.
+    Lines are tokenized by ``_shell_split``: quoted text such as ``printf 'cargo metadata missing'``
+    and text after an unquoted ``#`` are not commands, while ``$(...)``/backtick bodies and the
+    command strings of ``bash|sh|dash|ksh|zsh -c`` and ``eval`` are re-parsed and checked. Command
+    strings handed to any other wrapper (``su -c``, ``ssh host '...'``, ``watch '...'``) are not
+    re-parsed. A line with an unterminated quote or substitution falls back to scanning every word.
+    Full-line ``#`` comments are ignored and ``\\``-continued lines are joined (not inside comments).
+    Heredoc bodies are scanned as ordinary lines. This seals Cargo's own resolution and fetching and
+    rustup's toolchain fetching only. It is NOT OS-level network isolation (no network namespace or
+    ``unshare -n``), it does not govern network use by other commands or by scripts that qualify.sh
     calls, and it inspects only this one file. Returns the number of cargo invocations checked.
     """
     rel = display_path(script, root)
@@ -1421,15 +1632,24 @@ def qualify_offline_audit(findings: list[Finding], script: Path, root: Path = RO
             add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: CARGO_NET_OFFLINE may be set only once, by the top-level `export CARGO_NET_OFFLINE=true`: {stripped[:160]}", root=root, params={"path": rel, "line": number})
         if _RUSTUP_AUTO_INSTALL_WORD.search(line):
             add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: RUSTUP_AUTO_INSTALL may be set only once, by the top-level `export RUSTUP_AUTO_INSTALL=0`: {stripped[:160]}", root=root, params={"path": rel, "line": number})
-        if first_rustup_line is None and _SHELL_RUSTUP_WORD.search(line):
-            first_rustup_line = number
-        for match in _SHELL_CARGO_WORD.finditer(line):
-            invocations += 1
-            if first_cargo_line is None:
-                first_cargo_line = number
-            segment = _SHELL_COMMAND_BREAK.split(line[match.end():], maxsplit=1)[0]
-            if not _SHELL_OFFLINE_FLAG.search(segment):
-                add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: cargo invocation lacks --offline: {stripped[:160]}", root=root, params={"path": rel, "line": number})
+        try:
+            commands = _shell_simple_commands(line)
+        except _ShellSyntaxError:
+            commands = _shell_fallback_commands(line)
+        for words in commands:
+            for index, word in enumerate(words):
+                if _shell_word_names(word, "rustup"):
+                    if first_rustup_line is None:
+                        first_rustup_line = number
+                    form = _rustup_fetching_form(words[index + 1 :])
+                    if form is not None:
+                        add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: `rustup {form}` can fetch a toolchain over the network; qualification may only use the installed pinned toolchain: {stripped[:160]}", root=root, params={"path": rel, "line": number})
+                elif _shell_word_names(word, "cargo"):
+                    invocations += 1
+                    if first_cargo_line is None:
+                        first_cargo_line = number
+                    if "--offline" not in words[index + 1 :]:
+                        add(findings, "error", "DEP-AUD-027", script, f"{rel}:{number}: cargo invocation lacks --offline: {stripped[:160]}", root=root, params={"path": rel, "line": number})
     if export_line is None or (first_cargo_line is not None and export_line > first_cargo_line):
         add(findings, "error", "DEP-AUD-027", script, f"{rel}: no unindented top-level `export CARGO_NET_OFFLINE=true` precedes the first cargo invocation", root=root, params={"path": rel, "line": export_line})
     first_tool_line = min((n for n in (first_cargo_line, first_rustup_line) if n is not None), default=None)

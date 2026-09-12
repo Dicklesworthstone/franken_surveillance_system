@@ -1336,5 +1336,134 @@ class ReleaseQualifyOfflineTests(unittest.TestCase):
         self.assertEqual(rc, 0)
 
 
+class QualifyShellQuotingAndRustupInstallTests(unittest.TestCase):
+    """fss-x4a.26.3 follow-up: DEP-AUD-027 rejects rustup commands that can fetch a toolchain over the
+    network, and its shell-line analysis ignores quoted text and `#` comments while still re-parsing
+    the command strings of `bash -c` / `sh -c`, `eval`, and `$(...)` substitutions."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.script = self.root / "scripts" / "qualify.sh"
+        self.script.parent.mkdir(parents=True)
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def audit(self, text: str) -> list:
+        self.script.write_text(text, encoding="utf-8")
+        findings: list = []
+        dependency_audit.qualify_offline_audit(findings, self.script, root=self.root)
+        return [f for f in findings if f.code == OFFLINE_CODE]
+
+    def assert_one_hit_at(self, extra: str, line: int) -> None:
+        hits = self.audit(SEALED_QUALIFY + extra)
+        self.assertEqual(len(hits), 1, hits)
+        self.assertIn(f"scripts/qualify.sh:{line}:", hits[0].message)
+        self.assertEqual(hits[0].params.get("line"), line)
+
+    def test_rustup_install_forms_fail_with_line(self) -> None:
+        for extra in (
+            'rustup run --install "$tc" cargo build --offline\n',
+            'rustup run "$tc" --install cargo build --offline\n',
+            'rustup toolchain install "$tc"\n',
+            'rustup toolchain add "$tc"\n',
+            'rustup install "$tc"\n',
+            "rustup update\n",
+            'rustup update "$tc"\n',
+            "rustup -v update\n",
+            '"$HOME/.cargo/bin/rustup" toolchain install "$tc"\n',
+            'run fetch bash -c \'rustup toolchain install "$tc"\'\n',
+            'test -n "$tc" && rustup install "$tc"\n',
+            'rustup toolchain \\\n  install "$tc"\n',
+        ):
+            with self.subTest(extra=extra):
+                self.assert_one_hit_at(extra, 13)
+                self.assertIn("rustup", self.audit(SEALED_QUALIFY + extra)[0].message)
+
+    def test_other_network_fetching_rustup_forms_fail(self) -> None:
+        for extra in ('rustup component add clippy --toolchain "$tc"\n', 'rustup target add "$target"\n', "rustup self update\n"):
+            with self.subTest(extra=extra):
+                self.assert_one_hit_at(extra, 13)
+
+    def test_rustup_install_words_in_quotes_or_comments_pass(self) -> None:
+        for extra in (
+            "printf '%s\\n' 'run rustup toolchain install to repair' >&2\n",
+            'echo "rustup update is forbidden here"\n',
+            "# rustup toolchain install nightly\n",
+            'rustup run "$tc" rustc -Vv # rustup update would fetch\n',
+        ):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.audit(SEALED_QUALIFY + extra), [])
+
+    def test_quoted_cargo_text_does_not_fail(self) -> None:
+        for extra in (
+            "printf 'cargo metadata receipt missing: %s\\n' \"$RECEIPT_DIR/cargo-metadata.json\" >&2\n",
+            'printf "cargo build failed: %s\\n" "$status" >&2\n',
+            "echo 'see cargo test --doc'\n",
+            'echo "cargo metadata receipt missing"\n',
+            "[ -f \"$d/x\" ] || { printf '%s\\n' 'cargo metadata missing' >&2; exit 7; }\n",
+        ):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.audit(SEALED_QUALIFY + extra), [])
+
+    def test_unquoted_cargo_after_quoted_string_still_fails(self) -> None:
+        for extra in (
+            "printf 'cargo is fine\\n'; rustup run \"$tc\" cargo build --locked\n",
+            'echo "cargo is fine" && cargo build --locked\n',
+            "printf '%s' 'cargo --offline' | cargo build --locked\n",
+        ):
+            with self.subTest(extra=extra):
+                self.assert_one_hit_at(extra, 13)
+
+    def test_cargo_inside_shell_c_strings_still_fails(self) -> None:
+        for extra in (
+            'run build bash -c "cargo build --locked"\n',
+            "run build sh -c 'cargo build --locked'\n",
+            'run build bash -ec "cd crates && cargo build --locked"\n',
+            'run build /bin/bash --norc -c "rustup run \\"$tc\\" cargo build --locked"\n',
+            'eval "cargo build --locked"\n',
+        ):
+            with self.subTest(extra=extra):
+                self.assert_one_hit_at(extra, 13)
+        self.assertEqual(self.audit(SEALED_QUALIFY + 'run build bash -c "cargo build --locked --offline"\n'), [])
+
+    def test_cargo_inside_command_substitution_still_fails(self) -> None:
+        for extra in (
+            'meta="$(rustup run "$tc" cargo metadata --locked)"\n',
+            "meta=`cargo metadata --locked`\n",
+            'echo "$(cargo metadata --locked)"\n',
+        ):
+            with self.subTest(extra=extra):
+                self.assert_one_hit_at(extra, 13)
+        self.assertEqual(self.audit(SEALED_QUALIFY + 'meta="$(rustup run "$tc" cargo metadata --locked --offline)"\n'), [])
+
+    def test_trailing_comment_text_does_not_fail(self) -> None:
+        for extra in ("echo done # cargo build without offline\n", "true;# cargo build\n"):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.audit(SEALED_QUALIFY + extra), [])
+
+    def test_hash_inside_a_word_is_not_a_comment(self) -> None:
+        self.assert_one_hit_at('echo "${#arr[@]}" a#b cargo build --locked\n', 13)
+
+    def test_comment_ending_in_backslash_does_not_hide_the_next_line(self) -> None:
+        self.assert_one_hit_at('# a comment is not continued by a trailing backslash \\\nrustup run "$tc" cargo build --locked\n', 14)
+
+    def test_unterminated_quote_falls_back_to_a_conservative_scan(self) -> None:
+        self.assert_one_hit_at("echo 'unbalanced cargo build --locked\n", 13)
+
+    def test_live_release_script_names_cargo_in_a_quoted_message(self) -> None:
+        text = (ROOT / "scripts" / "release_qualify.sh").read_text(encoding="utf-8")
+        self.assertIn("printf 'cargo metadata receipt missing: %s\\n'", text)
+        self.assertEqual(self.audit(text), [])
+
+    def test_live_qualification_scripts_pass(self) -> None:
+        for script in ("qualify.sh", "release_qualify.sh"):
+            with self.subTest(script=script):
+                findings: list = []
+                dependency_audit.qualify_offline_audit(findings, ROOT / "scripts" / script, root=ROOT)
+                self.assertEqual(findings, [])
+
+
 if __name__ == "__main__":
     unittest.main()

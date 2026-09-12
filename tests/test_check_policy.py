@@ -435,5 +435,35 @@ class CheckPolicyRustupAndReleaseSealTests(CheckPolicyFixtureCase):
         self.assertEqual(check_policy.errors, [])
 
 
+class CheckPolicyRustupInstallAndQuotingTests(CheckPolicyFixtureCase):
+    """fss-x4a.26.3 follow-up: check-policy's DEP-AUD-027 mirror rejects network-fetching rustup
+    commands with file:line and ignores quoted `cargo ...` text in messages."""
+
+    def write(self, name: str, text: str) -> None:
+        script = self.root / "scripts" / name
+        script.parent.mkdir(parents=True, exist_ok=True)
+        script.write_text(text, encoding="utf-8")
+
+    def test_rustup_install_forms_fail_with_line(self) -> None:
+        for extra in ('rustup run --install "$tc" cargo build --offline\n', 'rustup toolchain install "$tc"\n', 'rustup install "$tc"\n', "rustup update\n"):
+            with self.subTest(extra=extra):
+                check_policy.errors = []
+                self.write("qualify.sh", SEALED_QUALIFY_SH)
+                self.write("release_qualify.sh", SEALED_QUALIFY_SH + extra)
+                check_policy.qualify_offline_policy()
+                self.assertEqual(len(check_policy.errors), 1, check_policy.errors)
+                self.assertTrue(check_policy.errors[0].startswith("DEP-AUD-027"), check_policy.errors)
+                self.assertIn("scripts/release_qualify.sh:5:", check_policy.errors[0])
+
+    def test_quoted_cargo_text_passes_but_unquoted_cargo_after_it_fails(self) -> None:
+        self.write("qualify.sh", SEALED_QUALIFY_SH + "printf 'cargo metadata receipt missing: %s\\n' \"$f\" >&2 # cargo build\n")
+        self.write("release_qualify.sh", SEALED_QUALIFY_SH)
+        check_policy.qualify_offline_policy()
+        self.assertEqual(check_policy.errors, [])
+        self.write("release_qualify.sh", SEALED_QUALIFY_SH + "printf 'cargo ok\\n'; bash -c \"cargo build --locked\"\n")
+        check_policy.qualify_offline_policy()
+        self.assertTrue(any(err.startswith("DEP-AUD-027") and "scripts/release_qualify.sh:5:" in err for err in check_policy.errors), check_policy.errors)
+
+
 if __name__ == "__main__":
     unittest.main()
