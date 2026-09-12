@@ -481,3 +481,117 @@ fn test_conflicted_knowledge_cell_competing_branches_and_hard_gate() -> Result<(
 
     Ok(())
 }
+
+#[test]
+fn test_stale_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Stale;
+
+    // 1. Exact normative stable ID
+    assert_eq!(state.id(), "KSTATE-005");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(state.as_str(), "stale");
+    assert_eq!(format!("{state}"), "stale");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        state.meaning(),
+        "The proposition was valid only at an older anchor or generation and has not been revalidated."
+    );
+
+    // 4. May support planning: yes, only as a revalidation candidate
+    assert!(state.may_support_planning());
+    assert_eq!(
+        state.planning_support_description(),
+        "yes, only as a revalidation candidate"
+    );
+
+    // 5. May authorize irreversible effect: no (hard constitutional gate)
+    assert!(!state.may_authorize_irreversible_effect());
+    assert_eq!(state.irreversible_effect_description(), "no");
+
+    // 6. Explicit assumptions required: yes
+    assert!(state.explicit_assumptions_required());
+
+    Ok(())
+}
+
+#[test]
+fn test_stale_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = KnowledgeState::from_id("KSTATE-005")?;
+    assert_eq!(from_id, KnowledgeState::Stale);
+
+    // Parse from schema name
+    let from_name = KnowledgeState::from_name("stale")?;
+    assert_eq!(from_name, KnowledgeState::Stale);
+
+    // Parse via FromStr
+    let from_str_name = KnowledgeState::from_str("stale")?;
+    assert_eq!(from_str_name, KnowledgeState::Stale);
+
+    let from_str_id = KnowledgeState::from_str("KSTATE-005")?;
+    assert_eq!(from_str_id, KnowledgeState::Stale);
+
+    Ok(())
+}
+
+#[test]
+fn test_stale_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Stale;
+
+    let mut encoder = CanonicalEncoder::new();
+    state.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = KnowledgeState::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, state);
+    assert_eq!(decoded.id(), "KSTATE-005");
+    assert_eq!(decoded.as_str(), "stale");
+
+    Ok(())
+}
+
+#[test]
+fn test_stale_knowledge_cell_revalidation_and_hard_gate() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(2_000_000_000);
+    let evidence = ContentDigest::sha256(b"historical_perimeter_clear_assertion");
+
+    // Construct a cell with KnowledgeState::Stale
+    let cell = KnowledgeCell {
+        claim_id: "claim:perimeter:clear:001".to_string(),
+        statement: "Perimeter clear at older anchor timestamp".to_string(),
+        knowledge_state: KnowledgeState::Stale,
+        provenance: ProvenanceClass::Remembered,
+        hypothesis: None,
+        evidence: vec![evidence],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(1_500_000_000)), // expired
+    };
+
+    // Properties on KnowledgeCell
+    assert!(cell.is_stale());
+    assert!(!cell.is_conflicted());
+    assert!(!cell.is_unknown());
+    assert!(!cell.is_estimated());
+    assert!(cell.requires_explicit_assumptions());
+    assert!(cell.may_support_planning());
+
+    // Constitutional Hard Gate: Stale CANNOT be used as an irreversible-effect premise.
+    assert!(
+        !cell.is_irreversible_effect_premise(now),
+        "Stale knowledge state must NEVER authorize irreversible effects"
+    );
+
+    // Even if valid_until is artificially extended, Stale knowledge_state alone strictly denies effect premise
+    let mut extended_cell = cell;
+    extended_cell.valid_until = Some(TimestampNs(3_000_000_000));
+    assert!(
+        !extended_cell.is_irreversible_effect_premise(now),
+        "Stale knowledge state must NEVER authorize irreversible effects even if valid_until is in future"
+    );
+
+    Ok(())
+}

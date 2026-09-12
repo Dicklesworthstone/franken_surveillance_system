@@ -197,6 +197,12 @@ impl KnowledgeCell {
         self.knowledge_state == KnowledgeState::Conflicted
     }
 
+    /// Returns whether this knowledge cell is a stale proposition.
+    #[must_use]
+    pub fn is_stale(&self) -> bool {
+        self.knowledge_state == KnowledgeState::Stale
+    }
+
     /// Returns whether this cell requires explicit assumptions to be used in planning.
     #[must_use]
     pub fn requires_explicit_assumptions(&self) -> bool {
