@@ -82,33 +82,55 @@ impl RigidTransform3D {
         rotation: [[f64; 3]; 3],
         translation_mm: [f64; 3],
     ) -> Result<Self, ExtrinsicsError> {
+        for row in &rotation {
+            for &val in row {
+                if !val.is_finite() {
+                    return Err(ExtrinsicsError::InvalidTransform(
+                        "rotation matrix contains non-finite float (NaN or Inf)".to_string(),
+                    ));
+                }
+            }
+        }
+        for &val in &translation_mm {
+            if !val.is_finite() {
+                return Err(ExtrinsicsError::InvalidTransform(
+                    "translation vector contains non-finite float (NaN or Inf)".to_string(),
+                ));
+            }
+        }
+
         let r_fixed = [
             [
-                Fixed64::from_f64(rotation[0][0]),
-                Fixed64::from_f64(rotation[0][1]),
-                Fixed64::from_f64(rotation[0][2]),
+                Fixed64::from_f64(rotation[0][0])?,
+                Fixed64::from_f64(rotation[0][1])?,
+                Fixed64::from_f64(rotation[0][2])?,
             ],
             [
-                Fixed64::from_f64(rotation[1][0]),
-                Fixed64::from_f64(rotation[1][1]),
-                Fixed64::from_f64(rotation[1][2]),
+                Fixed64::from_f64(rotation[1][0])?,
+                Fixed64::from_f64(rotation[1][1])?,
+                Fixed64::from_f64(rotation[1][2])?,
             ],
             [
-                Fixed64::from_f64(rotation[2][0]),
-                Fixed64::from_f64(rotation[2][1]),
-                Fixed64::from_f64(rotation[2][2]),
+                Fixed64::from_f64(rotation[2][0])?,
+                Fixed64::from_f64(rotation[2][1])?,
+                Fixed64::from_f64(rotation[2][2])?,
             ],
         ];
         let t_fixed = [
-            Fixed64::from_f64(translation_mm[0]),
-            Fixed64::from_f64(translation_mm[1]),
-            Fixed64::from_f64(translation_mm[2]),
+            Fixed64::from_f64(translation_mm[0])?,
+            Fixed64::from_f64(translation_mm[1])?,
+            Fixed64::from_f64(translation_mm[2])?,
         ];
         let transform = Self {
             rotation: r_fixed,
             translation_mm: t_fixed,
         };
         transform.validate_orthogonality()?;
+        if transform.is_identity() {
+            return Err(ExtrinsicsError::InvalidTransform(
+                "default identity extrinsics transform is strictly prohibited".to_string(),
+            ));
+        }
         Ok(transform)
     }
 

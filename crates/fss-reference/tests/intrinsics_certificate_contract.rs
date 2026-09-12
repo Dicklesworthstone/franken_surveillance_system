@@ -4,8 +4,8 @@
 use std::error::Error;
 
 use fss_core::{
-    CalibrationGeneration, CaptureInterval, DeviceGeneration, DeviceId, FirmwareGeneration,
-    TimestampNs,
+    CalibrationGeneration, CaptureInterval, ContentDigest, DeviceGeneration, DeviceId,
+    FirmwareGeneration, TimestampNs,
 };
 use fss_reference::{
     CalibrationError, CalibrationLifecycle, CalibrationLifecycleState, CalibrationSample,
@@ -74,17 +74,17 @@ fn sample_intrinsics_brown_conrady() -> CameraIntrinsics {
     CameraIntrinsics {
         width_px: 1920,
         height_px: 1080,
-        fx: Fixed64::from_f64(1450.5),
-        fy: Fixed64::from_f64(1450.2),
-        cx: Fixed64::from_f64(960.25),
-        cy: Fixed64::from_f64(540.15),
-        skew: Fixed64::from_f64(0.0001),
+        fx: Fixed64::from_raw(1_450_500_000),
+        fy: Fixed64::from_raw(1_450_200_000),
+        cx: Fixed64::from_raw(960_250_000),
+        cy: Fixed64::from_raw(540_150_000),
+        skew: Fixed64::from_raw(100),
         distortion: DistortionModel::BrownConrady {
-            k1: Fixed64::from_f64(-0.12),
-            k2: Fixed64::from_f64(0.035),
-            p1: Fixed64::from_f64(0.001),
-            p2: Fixed64::from_f64(-0.0005),
-            k3: Fixed64::from_f64(0.005),
+            k1: Fixed64::from_raw(-120_000),
+            k2: Fixed64::from_raw(35_000),
+            p1: Fixed64::from_raw(1_000),
+            p2: Fixed64::from_raw(-500),
+            k3: Fixed64::from_raw(5_000),
         },
     }
 }
@@ -157,10 +157,10 @@ fn test_intrinsics_projection_pinhole_and_distortion_models() -> Result<(), Box<
     let pinhole = CameraIntrinsics {
         width_px: 1920,
         height_px: 1080,
-        fx: Fixed64::from_f64(1000.0),
-        fy: Fixed64::from_f64(1000.0),
-        cx: Fixed64::from_f64(960.0),
-        cy: Fixed64::from_f64(540.0),
+        fx: Fixed64::from_integer(1000),
+        fy: Fixed64::from_integer(1000),
+        cx: Fixed64::from_integer(960),
+        cy: Fixed64::from_integer(540),
         skew: Fixed64::from_raw(0),
         distortion: DistortionModel::None,
     };
@@ -177,9 +177,9 @@ fn test_intrinsics_projection_pinhole_and_distortion_models() -> Result<(), Box<
 
     // Test fixed-point projection matches
     let proj_fixed = pinhole.project_point_fixed([
-        Fixed64::from_f64(500.0),
-        Fixed64::from_f64(250.0),
-        Fixed64::from_f64(1000.0),
+        Fixed64::from_integer(500),
+        Fixed64::from_integer(250),
+        Fixed64::from_integer(1000),
     ])?;
     assert_eq!(proj_fixed[0].to_raw(), 1460 * 1_000_000);
     assert_eq!(proj_fixed[1].to_raw(), 790 * 1_000_000);
@@ -188,16 +188,16 @@ fn test_intrinsics_projection_pinhole_and_distortion_models() -> Result<(), Box<
     let fisheye = CameraIntrinsics {
         width_px: 1920,
         height_px: 1080,
-        fx: Fixed64::from_f64(600.0),
-        fy: Fixed64::from_f64(600.0),
-        cx: Fixed64::from_f64(960.0),
-        cy: Fixed64::from_f64(540.0),
+        fx: Fixed64::from_integer(600),
+        fy: Fixed64::from_integer(600),
+        cx: Fixed64::from_integer(960),
+        cy: Fixed64::from_integer(540),
         skew: Fixed64::from_raw(0),
         distortion: DistortionModel::KannalaBrandt {
-            k1: Fixed64::from_f64(0.05),
-            k2: Fixed64::from_f64(-0.01),
-            k3: Fixed64::from_f64(0.002),
-            k4: Fixed64::from_f64(-0.0001),
+            k1: Fixed64::from_raw(50_000),
+            k2: Fixed64::from_raw(-10_000),
+            k3: Fixed64::from_raw(2_000),
+            k4: Fixed64::from_raw(-100),
         },
     };
 
@@ -230,7 +230,7 @@ fn test_platform_stability_fixed_point_and_ieee754() -> Result<(), Box<dyn Error
 
     // IEEE 754 conversion roundtrips within micro-unit precision
     let f = 1450.123456;
-    let fixed_f = Fixed64::from_f64(f);
+    let fixed_f = Fixed64::from_f64(f)?;
     assert_eq!(fixed_f.to_raw(), 1_450_123_456);
     assert!((fixed_f.to_f64() - f).abs() < 1e-6);
 
@@ -246,8 +246,8 @@ fn test_rejection_of_default_identity_calibration() -> Result<(), Box<dyn Error>
     let identity_intrinsics = CameraIntrinsics {
         width_px: 1920,
         height_px: 1080,
-        fx: Fixed64::from_f64(1.0),
-        fy: Fixed64::from_f64(1.0),
+        fx: Fixed64::ONE,
+        fy: Fixed64::ONE,
         cx: Fixed64::from_raw(0),
         cy: Fixed64::from_raw(0),
         skew: Fixed64::from_raw(0),
@@ -781,3 +781,310 @@ fn test_end_to_end_calibration_lifecycle_workflow() -> Result<(), Box<dyn Error>
 
     Ok(())
 }
+
+// =============================================================================
+// ADVERSARIAL REVIEW-520 FAILING TESTS (F1-F8)
+// =============================================================================
+
+#[test]
+fn test_finding_f1_fixed64_from_f64_rejects_non_finite() {
+    assert_eq!(
+        Fixed64::from_f64(f64::NAN),
+        Err(CalibrationError::NonFiniteFloatingPoint),
+        "CRITICAL: Fixed64::from_f64 must return NonFiniteFloatingPoint on NaN"
+    );
+    assert_eq!(
+        Fixed64::from_f64(f64::INFINITY),
+        Err(CalibrationError::NonFiniteFloatingPoint),
+        "CRITICAL: Fixed64::from_f64 must return NonFiniteFloatingPoint on Infinity"
+    );
+    assert_eq!(
+        Fixed64::try_from_f64(f64::NAN),
+        Err(CalibrationError::NonFiniteFloatingPoint),
+    );
+    assert_eq!(
+        Fixed64::try_from_f64(f64::NEG_INFINITY),
+        Err(CalibrationError::NonFiniteFloatingPoint),
+    );
+}
+
+#[test]
+fn test_finding_f3_checked_arithmetic_typed_errors() {
+    // Division by zero returns DivideByZero
+    let div_zero = Fixed64::ONE.div_checked(Fixed64::ZERO);
+    assert_eq!(div_zero, Err(CalibrationError::DivideByZero));
+
+    // Multiplication overflow returns ArithmeticOverflow
+    let mul_overflow = Fixed64(i64::MAX).mul_checked(Fixed64(i64::MAX));
+    assert_eq!(mul_overflow, Err(CalibrationError::ArithmeticOverflow));
+}
+
+#[test]
+fn test_finding_f4_kannala_brandt_deterministic_fixed_point() -> Result<(), Box<dyn Error>> {
+    let fisheye = CameraIntrinsics {
+        width_px: 1920,
+        height_px: 1080,
+        fx: Fixed64::from_integer(600),
+        fy: Fixed64::from_integer(600),
+        cx: Fixed64::from_integer(960),
+        cy: Fixed64::from_integer(540),
+        skew: Fixed64::from_raw(0),
+        distortion: DistortionModel::KannalaBrandt {
+            k1: Fixed64::from_raw(50_000),
+            k2: Fixed64::from_raw(-10_000),
+            k3: Fixed64::from_raw(2_000),
+            k4: Fixed64::from_raw(-100),
+        },
+    };
+
+    let p1 = fisheye.project_point_fixed([
+        Fixed64::from_integer(400),
+        Fixed64::from_integer(300),
+        Fixed64::from_integer(1000),
+    ])?;
+    let p2 = fisheye.project_point_fixed([
+        Fixed64::from_integer(400),
+        Fixed64::from_integer(300),
+        Fixed64::from_integer(1000),
+    ])?;
+
+    // Must be bit-identical
+    assert_eq!(p1, p2);
+    assert_eq!(p1[0].to_raw(), p2[0].to_raw());
+    assert_eq!(p1[1].to_raw(), p2[1].to_raw());
+    assert!(p1[0].to_raw() > 960 * 1_000_000);
+    assert!(p1[1].to_raw() > 540 * 1_000_000);
+    Ok(())
+}
+
+#[test]
+fn test_finding_f2_collinear_samples_along_diagonal_rejected() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let mut collinear_samples = Vec::new();
+    // All 16 points lie along the exact 1D line: X = Y, Z = 1500 mm
+    for i in 0..MIN_CALIBRATION_SAMPLES {
+        let coord = (i as i32) * 20; // 0, 20, 40, ...
+        let s = CalibrationSample::new(
+            (i + 1) as u64,
+            [coord, coord, 1500],
+            (coord as i64 * 1_000_000, coord as i64 * 1_000_000),
+            0,
+            TimestampNs(1_000_000_000),
+        )?;
+        collinear_samples.push(s);
+    }
+
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    let res = IntrinsicsCertificateBuilder::new("cert:collinear:fail")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(collinear_samples)?
+        .build();
+
+    match res {
+        Err(CalibrationError::DegenerateEvidence { .. }) => Ok(()),
+        Ok(_) => Err("CRITICAL: validate_non_degenerate_evidence accepted collinear points along diagonal!".into()),
+        Err(other) => Err(format!("unexpected error: {:?}", other).into()),
+    }
+}
+
+#[test]
+fn test_finding_f2_samples_with_non_positive_depth_rejected() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let mut samples = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+    // Set one point behind camera
+    samples[0] = CalibrationSample::new(
+        samples[0].point_id,
+        [100, 100, -500],
+        samples[0].observed_pixel_upx,
+        samples[0].frame_index,
+        samples[0].capture_time,
+    )?;
+
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000_000_000))?;
+
+    let res = IntrinsicsCertificateBuilder::new("cert:depth:fail")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples)?
+        .build();
+
+    match res {
+        Err(CalibrationError::DegenerateEvidence { .. }) => Ok(()),
+        Ok(_) => Err("CRITICAL: validate_non_degenerate_evidence accepted point with Z <= 0!".into()),
+        Err(other) => Err(format!("unexpected error: {:?}", other).into()),
+    }
+}
+
+#[test]
+fn test_finding_f5_verify_observation_rejects_expired_sample_timestamp() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let samples = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000_000_000), TimestampNs(2_000_000_000))?;
+
+    let cert = IntrinsicsCertificateBuilder::new("cert:stale:obs")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples)?
+        .build()?;
+
+    let mut lifecycle = CalibrationLifecycle::new();
+    lifecycle.activate_certificate(cert)?;
+
+    // Observation timestamp 5,000,000,000 ns is long past validity (2,000,000,000 ns)
+    let expired_sample = CalibrationSample::new(
+        9999,
+        [100, 100, 1500],
+        (960_000_000, 540_000_000),
+        0,
+        TimestampNs(5_000_000_000),
+    )?;
+
+    let res = lifecycle.verify_observation(&expired_sample, 100_000_000);
+    match res {
+        Err(CalibrationError::StaleCertificatePastValidity { .. }) => Ok(()),
+        Ok(_) => Err("CRITICAL: verify_observation verified a sample captured past certificate validity!".into()),
+        Err(other) => Err(format!("unexpected error: {:?}", other).into()),
+    }
+}
+
+#[test]
+fn test_finding_f6_certificate_canonical_bytes_digest_matches_certificate_digest() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let samples = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    let cert = IntrinsicsCertificateBuilder::new("cert:digest:match")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(sample_residual())
+        .validity(validity)
+        .evidence(samples)?
+        .build()?;
+
+    let canonical_bytes = cert.canonical_bytes()?;
+    let computed_digest = ContentDigest::sha256(&canonical_bytes);
+
+    assert_eq!(
+        computed_digest,
+        cert.certificate_digest,
+        "CRITICAL: cert.certificate_digest does not match ContentDigest::sha256(&cert.canonical_bytes()!)"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_f7_unconstrained_residual_mean_exceeding_max_rejected() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let samples = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+
+    let mut invalid_residual = sample_residual();
+    invalid_residual.mean_reprojection_error_upx = 900_000;
+    invalid_residual.max_reprojection_error_upx = 800_000; // mean > max!
+
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    let res = IntrinsicsCertificateBuilder::new("cert:invalid:residual")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(invalid_residual)
+        .validity(validity)
+        .evidence(samples)?
+        .build();
+
+    match res {
+        Err(CalibrationError::InvalidIntrinsics(_)) => Ok(()),
+        Ok(_) => Err("CRITICAL: builder accepted residual with mean > max!".into()),
+        Err(other) => Err(format!("unexpected error: {:?}", other).into()),
+    }
+}
+
+#[test]
+fn test_finding_f8_identity_bypassed_by_zero_brown_conrady() -> Result<(), Box<dyn Error>> {
+    let zero_distortion_identity = CameraIntrinsics {
+        width_px: 1920,
+        height_px: 1080,
+        fx: Fixed64::ONE,
+        fy: Fixed64::ONE,
+        cx: Fixed64::ZERO,
+        cy: Fixed64::ZERO,
+        skew: Fixed64::ZERO,
+        distortion: DistortionModel::BrownConrady {
+            k1: Fixed64::ZERO,
+            k2: Fixed64::ZERO,
+            p1: Fixed64::ZERO,
+            p2: Fixed64::ZERO,
+            k3: Fixed64::ZERO,
+        },
+    };
+
+    assert!(
+        zero_distortion_identity.is_identity(),
+        "CRITICAL: is_identity returned false for identity intrinsics with all-zero BrownConrady parameters!"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_finding_f7_max_reprojection_tolerance_at_exact_bound() -> Result<(), Box<dyn Error>> {
+    let intrinsics = sample_intrinsics_brown_conrady();
+    let samples = generate_synthetic_samples(MIN_CALIBRATION_SAMPLES, &intrinsics, 1_000_000_000)?;
+
+    let mut at_bound_residual = sample_residual();
+    at_bound_residual.rmse_upx = MAX_REPROJECTION_TOLERANCE_UPX; // Exactly at bound
+    at_bound_residual.max_reprojection_error_upx = MAX_REPROJECTION_TOLERANCE_UPX;
+
+    let dev_id = DeviceId::parse("dev:camera:01")?;
+    let dev_gen = DeviceGeneration::parse("dev:gen:v1")?;
+    let fw_gen = FirmwareGeneration::parse("fw:gen:v1")?;
+    let cal_gen = CalibrationGeneration::parse("cal:gen:v1")?;
+    let validity = CaptureInterval::new(TimestampNs(1_000), TimestampNs(2_000))?;
+
+    let res = IntrinsicsCertificateBuilder::new("cert:at_bound")?
+        .device(dev_id, dev_gen, fw_gen)
+        .calibration_generation(cal_gen)
+        .intrinsics(intrinsics)
+        .residual(at_bound_residual)
+        .validity(validity)
+        .evidence(samples)?
+        .build();
+
+    assert!(res.is_ok(), "Exact bound MAX_REPROJECTION_TOLERANCE_UPX must succeed");
+    Ok(())
+}
+
+
