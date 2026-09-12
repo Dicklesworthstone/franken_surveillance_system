@@ -1695,18 +1695,37 @@ def _recorded_workspace_doctest_step(line: str) -> bool:
     ``--doc`` must precede any ``--`` (after it the flag goes to the test binary, not Cargo), and
     ``--no-run`` disqualifies the step because it would build without running the doctests.
     """
-    words = line.split()
+    try:
+        commands, _, _ = _shell_split(line)
+    except _ShellSyntaxError:
+        return False
+    if not commands:
+        return False
+    words = commands[0]
     if len(words) < 3 or words[0] != "run":
         return False
-    match = _SHELL_CARGO_WORD.search(line)
-    if match is None:
+    cmd = words[2:]
+    if not cmd:
         return False
-    segment = _SHELL_COMMAND_BREAK.split(line[match.end():], maxsplit=1)[0].split()
-    if "--" in segment:
-        segment = segment[: segment.index("--")]
-    if "test" not in segment:
+    if _shell_word_names(cmd[0], "rustup"):
+        i = 1
+        while i < len(cmd) and cmd[i].startswith("-"):
+            i += 1
+        if i >= len(cmd) or cmd[i] != "run":
+            return False
+        i += 1
+        if i >= len(cmd):
+            return False
+        i += 1
+        cmd = cmd[i:]
+    if not cmd or not _shell_word_names(cmd[0], "cargo"):
         return False
-    after = segment[segment.index("test") + 1 :]
+    cargo_args = cmd[1:]
+    if "--" in cargo_args:
+        cargo_args = cargo_args[: cargo_args.index("--")]
+    if "test" not in cargo_args:
+        return False
+    after = cargo_args[cargo_args.index("test") + 1 :]
     return "--doc" in after and "--workspace" in after and "--no-run" not in after
 
 

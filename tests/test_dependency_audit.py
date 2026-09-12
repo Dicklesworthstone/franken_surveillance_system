@@ -576,7 +576,7 @@ members = ["crates/crate-a"]
         self.assertEqual(report["errorCount"], 0)
         self.assertEqual(report["schema"], "fss.dependency_audit.v4")
         self.assertGreaterEqual(report["targetRootCount"], 20)
-        self.assertEqual(report["workspaceMemberCount"], 6)
+        self.assertEqual(report["workspaceMemberCount"], 8)
 
     def test_finding_1_undeclared_nested_crate_false_green(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -1197,6 +1197,15 @@ class QualifyDoctestTests(unittest.TestCase):
 
     def test_commented_doctest_step_does_not_count(self) -> None:
         self.assertTrue(self.audit(DOCTEST_QUALIFY.replace(DOCTEST_LINE, "  # " + DOCTEST_LINE.lstrip())))
+
+    def test_echo_doctest_step_does_not_count(self) -> None:
+        """fss-tgwit: 'run doctest echo cargo test --workspace --doc' must not satisfy the doctest requirement."""
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace(DOCTEST_LINE, "  run doctest echo cargo test --workspace --doc\n")))
+
+    def test_colon_comment_doctest_step_does_not_count(self) -> None:
+        """fss-tgwit: 'run doctest : # cargo test --workspace --doc' must not satisfy the doctest requirement."""
+        self.assertTrue(self.audit(DOCTEST_QUALIFY.replace(DOCTEST_LINE, "  run doctest : # cargo test --workspace --doc\n")))
+
 
     def test_unrecorded_doctest_command_does_not_count(self) -> None:
         self.assertTrue(self.audit(DOCTEST_QUALIFY.replace(DOCTEST_LINE, '  rustup run "$tc" cargo test --locked --offline --workspace --doc\n')))

@@ -428,6 +428,25 @@ class CheckPolicyDoctestStepTests(CheckPolicyFixtureCase):
         check_policy.qualify_doctest_policy()
         self.assertTrue(any(err.startswith("DEP-AUD-028") for err in check_policy.errors), check_policy.errors)
 
+    def test_qualify_doctest_policy_echo_and_colon_bypass_fails(self) -> None:
+        cases = [
+            '  run doctest echo cargo test --workspace --doc\n',
+            '  run doctest : # cargo test --workspace --doc\n',
+        ]
+        for line in cases:
+            with self.subTest(line=line):
+                check_policy.errors.clear()
+                script = self.root / "scripts" / "qualify.sh"
+                script.parent.mkdir(parents=True, exist_ok=True)
+                script.write_text(
+                    '#!/usr/bin/env bash\nexport CARGO_NET_OFFLINE=true\nrust_lane() {\n'
+                    + line + '}\n',
+                    encoding="utf-8",
+                )
+                check_policy.qualify_doctest_policy()
+                self.assertTrue(any(err.startswith("DEP-AUD-028") and "scripts/qualify.sh:3" in err for err in check_policy.errors), check_policy.errors)
+
+
     def test_live_qualify_doctest_policy_passes(self) -> None:
         check_policy.ROOT = ROOT
         check_policy.qualify_doctest_policy()
