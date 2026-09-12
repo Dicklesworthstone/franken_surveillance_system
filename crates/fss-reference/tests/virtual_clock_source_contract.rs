@@ -217,9 +217,10 @@ fn virtual_source_stepwise_emission_and_outcomes() -> Result<(), Box<dyn Error>>
             assert!(refusal.coverage_witness_required);
         }
         other => {
-            return Err(
-                format!("expected UnauthorizedOrNotObservable for packet 3, got {other:?}").into(),
-            );
+            return Err(format!(
+                "expected UnauthorizedOrNotObservable for packet 3, got {other:?}"
+            )
+            .into());
         }
     }
 
