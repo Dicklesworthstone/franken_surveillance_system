@@ -70,6 +70,7 @@ pub use delivery::{
     DeliveryContinuity, DeliveryDirective, DeliveryMutation, DeliveryPacket, DeliveryPlan,
     MAX_DELIVERY_DIRECTIVES,
 };
+pub use durable_effect::{DurableEffectError, DurableEffectJournal, EFFECT_TRANSITION_RECORD_KIND};
 pub use error::ReferenceError;
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use meaningful_delta::classify_reference_meaningful_delta;

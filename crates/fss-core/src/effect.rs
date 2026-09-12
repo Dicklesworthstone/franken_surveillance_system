@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    CanonicalEncode, CanonicalEncoder, ContentDigest, ContractError, IdempotencyKey, ObligationId,
-    OperationId, TimestampNs,
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, ContentDigest,
+    ContractError, IdempotencyKey, ObligationId, OperationId, TimestampNs,
 };
 
 /// Effect lifecycle. Transport acceptance is not terminal success.
@@ -51,6 +51,29 @@ impl EffectState {
     }
 }
 
+impl CanonicalEncode for EffectState {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for EffectState {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        match text {
+            "prepared" => Ok(Self::Prepared),
+            "committed" => Ok(Self::Committed),
+            "adapter_accepted" => Ok(Self::AdapterAccepted),
+            "observed" => Ok(Self::Observed),
+            "verified" => Ok(Self::Verified),
+            "cancelled" => Ok(Self::Cancelled),
+            "failed" => Ok(Self::Failed),
+            "indeterminate" => Ok(Self::Indeterminate),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
 /// Immutable effect intent prepared before crossing an external boundary.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EffectIntent {
@@ -73,6 +96,23 @@ impl CanonicalEncode for EffectIntent {
         encoder.text(&self.effect_class);
         encoder.digest(self.request_digest);
         encoder.digest(self.precondition_digest);
+    }
+}
+
+impl CanonicalDecode for EffectIntent {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let operation_id = OperationId::decode_canonical(decoder)?;
+        let idempotency_key = IdempotencyKey::decode_canonical(decoder)?;
+        let effect_class = decoder.text()?.to_string();
+        let request_digest = decoder.digest()?;
+        let precondition_digest = decoder.digest()?;
+        Ok(Self {
+            operation_id,
+            idempotency_key,
+            effect_class,
+            request_digest,
+            precondition_digest,
+        })
     }
 }
 
@@ -193,8 +233,194 @@ pub struct Obligation {
     pub proof_digest: Option<ContentDigest>,
 }
 
+/// Canonical transition record for durable journal replay.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EffectJournalTransition {
+    /// Effect preparation transition.
+    Prepare {
+        /// Prepared effect intent.
+        intent: EffectIntent,
+        /// Associated obligation id.
+        obligation_id: ObligationId,
+        /// Terminal predicate to be proven.
+        terminal_predicate: String,
+        /// Preparation timestamp.
+        now: TimestampNs,
+    },
+    /// General effect state transition.
+    Transition {
+        /// Target operation id.
+        operation_id: OperationId,
+        /// Next effect state.
+        next: EffectState,
+        /// Transition timestamp.
+        now: TimestampNs,
+        /// Optional observation or proof digest.
+        result_digest: Option<ContentDigest>,
+        /// Optional error code or reason.
+        error_code: Option<String>,
+    },
+    /// Verified reconciliation transition.
+    ReconcileVerified {
+        /// Target operation id.
+        operation_id: OperationId,
+        /// Independent proof digest.
+        proof_digest: ContentDigest,
+        /// Reconciliation timestamp.
+        now: TimestampNs,
+    },
+    /// Failed reconciliation transition.
+    ReconcileFailed {
+        /// Target operation id.
+        operation_id: OperationId,
+        /// Independent failure proof digest.
+        proof_digest: ContentDigest,
+        /// Reconciliation timestamp.
+        now: TimestampNs,
+        /// Terminal failure reason.
+        reason: String,
+    },
+}
+
+impl CanonicalEncode for EffectJournalTransition {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text("fss.effect_transition.v1");
+        match self {
+            Self::Prepare {
+                intent,
+                obligation_id,
+                terminal_predicate,
+                now,
+            } => {
+                encoder.u8(1);
+                intent.encode_canonical(encoder);
+                obligation_id.encode_canonical(encoder);
+                encoder.text(terminal_predicate);
+                now.encode_canonical(encoder);
+            }
+            Self::Transition {
+                operation_id,
+                next,
+                now,
+                result_digest,
+                error_code,
+            } => {
+                encoder.u8(2);
+                operation_id.encode_canonical(encoder);
+                next.encode_canonical(encoder);
+                now.encode_canonical(encoder);
+                match result_digest {
+                    Some(digest) => {
+                        encoder.bool(true);
+                        encoder.digest(*digest);
+                    }
+                    None => encoder.bool(false),
+                }
+                match error_code {
+                    Some(code) => {
+                        encoder.bool(true);
+                        encoder.text(code);
+                    }
+                    None => encoder.bool(false),
+                }
+            }
+            Self::ReconcileVerified {
+                operation_id,
+                proof_digest,
+                now,
+            } => {
+                encoder.u8(3);
+                operation_id.encode_canonical(encoder);
+                encoder.digest(*proof_digest);
+                now.encode_canonical(encoder);
+            }
+            Self::ReconcileFailed {
+                operation_id,
+                proof_digest,
+                now,
+                reason,
+            } => {
+                encoder.u8(4);
+                operation_id.encode_canonical(encoder);
+                encoder.digest(*proof_digest);
+                now.encode_canonical(encoder);
+                encoder.text(reason);
+            }
+        }
+    }
+}
+
+impl CanonicalDecode for EffectJournalTransition {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let magic = decoder.text()?;
+        if magic != "fss.effect_transition.v1" {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        let tag = decoder.tag()?;
+        match tag {
+            1 => {
+                let intent = EffectIntent::decode_canonical(decoder)?;
+                let obligation_id = ObligationId::decode_canonical(decoder)?;
+                let terminal_predicate = decoder.text()?.to_string();
+                let now = TimestampNs::decode_canonical(decoder)?;
+                Ok(Self::Prepare {
+                    intent,
+                    obligation_id,
+                    terminal_predicate,
+                    now,
+                })
+            }
+            2 => {
+                let operation_id = OperationId::decode_canonical(decoder)?;
+                let next = EffectState::decode_canonical(decoder)?;
+                let now = TimestampNs::decode_canonical(decoder)?;
+                let result_digest = if decoder.bool()? {
+                    Some(decoder.digest()?)
+                } else {
+                    None
+                };
+                let error_code = if decoder.bool()? {
+                    Some(decoder.text()?.to_string())
+                } else {
+                    None
+                };
+                Ok(Self::Transition {
+                    operation_id,
+                    next,
+                    now,
+                    result_digest,
+                    error_code,
+                })
+            }
+            3 => {
+                let operation_id = OperationId::decode_canonical(decoder)?;
+                let proof_digest = decoder.digest()?;
+                let now = TimestampNs::decode_canonical(decoder)?;
+                Ok(Self::ReconcileVerified {
+                    operation_id,
+                    proof_digest,
+                    now,
+                })
+            }
+            4 => {
+                let operation_id = OperationId::decode_canonical(decoder)?;
+                let proof_digest = decoder.digest()?;
+                let now = TimestampNs::decode_canonical(decoder)?;
+                let reason = decoder.text()?.to_string();
+                Ok(Self::ReconcileFailed {
+                    operation_id,
+                    proof_digest,
+                    now,
+                    reason,
+                })
+            }
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
 /// Deterministic in-memory effect and obligation journal.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EffectJournal {
     operations: BTreeMap<OperationId, OperationReceipt>,
     idempotency: BTreeMap<IdempotencyKey, OperationId>,
@@ -492,6 +718,64 @@ impl EffectJournal {
         self.obligations.values()
     }
 
+    /// Returns all operation receipts in canonical identity order.
+    pub fn operations(&self) -> impl Iterator<Item = &OperationReceipt> {
+        self.operations.values()
+    }
+
+    /// Replays a sequence of transitions from a durable log, reconstructing the exact in-memory state.
+    pub fn replay(
+        transitions: impl IntoIterator<Item = EffectJournalTransition>,
+    ) -> Result<Self, ContractError> {
+        let mut journal = Self::new();
+        for transition in transitions {
+            journal.apply_transition(transition)?;
+        }
+        Ok(journal)
+    }
+
+    /// Applies one transition to the journal, returning error on invariant failure.
+    pub fn apply_transition(
+        &mut self,
+        transition: EffectJournalTransition,
+    ) -> Result<(), ContractError> {
+        match transition {
+            EffectJournalTransition::Prepare {
+                intent,
+                obligation_id,
+                terminal_predicate,
+                now,
+            } => {
+                let _ = self.prepare(intent, obligation_id, terminal_predicate, now)?;
+            }
+            EffectJournalTransition::Transition {
+                operation_id,
+                next,
+                now,
+                result_digest,
+                error_code,
+            } => {
+                let _ = self.transition(&operation_id, next, now, result_digest, error_code)?;
+            }
+            EffectJournalTransition::ReconcileVerified {
+                operation_id,
+                proof_digest,
+                now,
+            } => {
+                let _ = self.reconcile_verified(&operation_id, proof_digest, now)?;
+            }
+            EffectJournalTransition::ReconcileFailed {
+                operation_id,
+                proof_digest,
+                now,
+                reason,
+            } => {
+                let _ = self.reconcile_failed(&operation_id, proof_digest, now, reason)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Computes a canonical journal root.
     #[must_use]
     pub fn journal_root(&self) -> ContentDigest {
@@ -741,6 +1025,71 @@ mod tests {
             Err(ContractError::InvertedTimeInterval)
         );
         assert_eq!(journal.operation(&operation_id), Some(&before));
+        Ok(())
+    }
+
+    #[test]
+    fn test_journal_transitions_codec_and_replay() -> Result<(), ContractError> {
+        let mut live = EffectJournal::new();
+        let effect = intent(b"replay-test")?;
+        let op = effect.operation_id.clone();
+        let obl = ObligationId::parse("obligation:replay:test")?;
+        let t1 = TimestampNs(10);
+        let t2 = TimestampNs(20);
+        let t3 = TimestampNs(30);
+        let t4 = TimestampNs(40);
+        let t5 = TimestampNs(50);
+
+        let tr1 = EffectJournalTransition::Prepare {
+            intent: effect.clone(),
+            obligation_id: obl.clone(),
+            terminal_predicate: "delivery_proved".to_string(),
+            now: t1,
+        };
+        let tr2 = EffectJournalTransition::Transition {
+            operation_id: op.clone(),
+            next: EffectState::Committed,
+            now: t2,
+            result_digest: None,
+            error_code: None,
+        };
+        let tr3 = EffectJournalTransition::Transition {
+            operation_id: op.clone(),
+            next: EffectState::AdapterAccepted,
+            now: t3,
+            result_digest: None,
+            error_code: None,
+        };
+        let obs_proof = ContentDigest::sha256(b"obs-proof");
+        let tr4 = EffectJournalTransition::Transition {
+            operation_id: op.clone(),
+            next: EffectState::Observed,
+            now: t4,
+            result_digest: Some(obs_proof),
+            error_code: None,
+        };
+        let tr5 = EffectJournalTransition::ReconcileVerified {
+            operation_id: op.clone(),
+            proof_digest: obs_proof,
+            now: t5,
+        };
+
+        let transitions = vec![tr1, tr2, tr3, tr4, tr5];
+        let mut decoded_transitions = Vec::new();
+        for tr in &transitions {
+            let bytes = tr.canonical_bytes();
+            let decoded = EffectJournalTransition::from_canonical_bytes(&bytes)?;
+            assert_eq!(&decoded, tr);
+            decoded_transitions.push(decoded);
+        }
+
+        for tr in &transitions {
+            live.apply_transition(tr.clone())?;
+        }
+
+        let replayed = EffectJournal::replay(decoded_transitions)?;
+        assert_eq!(replayed, live);
+        assert_eq!(replayed.journal_root(), live.journal_root());
         Ok(())
     }
 }

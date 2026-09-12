@@ -50,7 +50,8 @@ pub use contract::{
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};
 pub use effect::{
-    EffectIntent, EffectJournal, EffectState, Obligation, ObligationState, OperationReceipt,
+    EffectIntent, EffectJournal, EffectJournalTransition, EffectState, Obligation, ObligationState,
+    OperationReceipt,
 };
 pub use event::{EventEvidence, EventHypothesis, EventKind, EventState, ProbabilityInterval};
 pub use evidence::{
