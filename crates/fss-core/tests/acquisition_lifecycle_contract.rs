@@ -1020,16 +1020,10 @@ fn test_check_accept_silence_negative_deadline_wrapping() -> Result<(), Box<dyn 
     session.accept(sample_ack(&req), TimestampNs(1_005_000_000))?;
 
     let res = session.check_accept_silence(TimestampNs(-1), TimestampNs(1_000_000_000));
-    match res {
-        Err(AcquisitionError::AcceptSilenceTimeout { deadline_ns, .. }) => {
-            assert_ne!(
-                deadline_ns,
-                u64::MAX,
-                "Negative deadline_ns (-1) silently wrapped to u64::MAX via unchecked `as u64`"
-            );
-        }
-        other => return Err(format!("Expected timeout error, got {other:?}").into()),
-    }
+    assert!(matches!(
+        res,
+        Err(AcquisitionError::InvalidTimestamp { .. })
+    ));
     Ok(())
 }
 
@@ -1047,9 +1041,12 @@ fn test_check_accept_silence_elapsed_overflow_truncation() -> Result<(), Box<dyn
     let res = session.check_accept_silence(deadline, now);
     match res {
         Err(AcquisitionError::AcceptSilenceTimeout { elapsed_ns, .. }) => {
-            assert!(
-                elapsed_ns >= u64::MAX,
-                "Elapsed ns truncated high bits to {elapsed_ns} instead of saturating or erroring"
+            // Saturated value explanation: elapsed nanoseconds exceeding u64::MAX saturates
+            // to u64::MAX to prevent high-bit truncation/wrapping while recording silence timeout.
+            assert_eq!(
+                elapsed_ns,
+                u64::MAX,
+                "Elapsed ns saturated to u64::MAX on i128 overflow to avoid truncation"
             );
         }
         other => return Err(format!("Expected timeout error, got {other:?}").into()),

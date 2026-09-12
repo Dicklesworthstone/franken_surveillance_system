@@ -643,6 +643,11 @@ pub enum AcquisitionError {
         /// Detail of encoding defect.
         detail: String,
     },
+    /// Timestamp overflow or invalid negative value.
+    InvalidTimestamp {
+        /// Detail of timestamp violation.
+        detail: String,
+    },
     /// Underlying contract or validation error.
     Contract(ContractError),
 }
@@ -714,6 +719,7 @@ impl fmt::Display for AcquisitionError {
             Self::NonCanonicalEncoding { detail } => {
                 write!(f, "non-canonical encoding error: {detail}")
             }
+            Self::InvalidTimestamp { detail } => write!(f, "invalid timestamp: {detail}"),
             Self::Contract(err) => write!(f, "contract error: {err}"),
         }
     }
@@ -3124,8 +3130,15 @@ impl AcquisitionSession {
         deadline_ns: TimestampNs,
         now_ns: TimestampNs,
     ) -> Result<(), AcquisitionError> {
+        let deadline_u64 =
+            u64::try_from(deadline_ns.0).map_err(|_| AcquisitionError::InvalidTimestamp {
+                detail: format!(
+                    "deadline timestamp {} is negative or exceeds u64 bounds",
+                    deadline_ns.0
+                ),
+            })?;
+
         if self.state_kind() == AcquisitionStateKind::AdapterAccepted && now_ns > deadline_ns {
-            let deadline_u64 = u64::try_from(deadline_ns.0).unwrap_or(0);
             let elapsed_i128 = now_ns.0.saturating_sub(deadline_ns.0);
             let elapsed_ns = u64::try_from(elapsed_i128).unwrap_or(u64::MAX);
 
