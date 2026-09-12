@@ -933,8 +933,10 @@ impl LocalRootPublisher {
         }
 
         // The target is now atomically visible. Remove the temporary link.
-        if let Err(error) = self.io.remove_file(&temp_path) {
-            if error.kind() != io::ErrorKind::NotFound {
+        match self.io.remove_file(&temp_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(_) => {
                 self.orphan_temps.insert(temp_relative.to_path_buf());
             }
         }

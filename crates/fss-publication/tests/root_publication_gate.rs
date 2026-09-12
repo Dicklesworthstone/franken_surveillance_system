@@ -97,12 +97,13 @@ fn stage_fixture(publisher: &mut LocalRootPublisher) -> Result<ObjectManifest, B
 /// Occurrence numbers, per call kind, of the root-commit calls a fault run aims at.
 struct CommitCalls {
     /// The root rename of the publish call.
-    root_rename: u64,
+    /// The root hard link of the publish call.
+    root_commit: u64,
     /// The first `remove_file` after the publish call starts (the rollback of the root record).
     first_remove: u64,
-    /// The first `sync_directory` after the root rename.
+    /// The first `sync_directory` after the root commit.
     first_sync_after_rename: u64,
-    /// The first `create_new` after the root rename.
+    /// The first `create_new` after the root commit.
     first_create_after_rename: u64,
 }
 
@@ -113,25 +114,25 @@ fn probe_commit_calls(test_name: &str) -> Result<CommitCalls, Box<dyn Error>> {
     let mut publisher = LocalRootPublisher::open_with_io(&root, limits(), io.clone())?;
     let manifest = stage_fixture(&mut publisher)?;
     let removes_before = io.calls(SpoolIoCall::RemoveFile);
-    let renames_before = io.calls(SpoolIoCall::Rename);
+    let links_before = io.calls(SpoolIoCall::HardLink);
     publisher.publish(&slot()?, &manifest)?;
     assert_eq!(
         io.calls(SpoolIoCall::RemoveFile),
-        removes_before,
-        "a clean publish removes nothing"
+        removes_before + 1,
+        "a clean publish unlinks the temporary file after hard linking"
     );
-    let root_rename = io.calls(SpoolIoCall::Rename);
+    let root_commit = io.calls(SpoolIoCall::HardLink);
     assert!(
-        root_rename > renames_before,
-        "the root rename is the last rename of a publish call"
+        root_commit > links_before,
+        "the root hard_link is the commit point of a publish call"
     );
     Ok(CommitCalls {
-        root_rename,
+        root_commit,
         first_remove: removes_before + 1,
         // The roots-directory fsync is the last fsync of a clean publish and the first after
-        // its rename; a failed rename reaches the same occurrence with its next fsync.
+        // its commit; a failed commit reaches the same occurrence with its next fsync.
         first_sync_after_rename: io.calls(SpoolIoCall::SyncDirectory),
-        // A clean publish creates nothing after the rename.
+        // A clean publish creates nothing after the commit.
         first_create_after_rename: io.calls(SpoolIoCall::CreateNew) + 1,
     })
 }
@@ -250,7 +251,11 @@ fn applied_root_rename_with_failed_rollback_remove_is_indeterminate() -> TestRes
     let root = fresh_root(name)?;
     let journal = fresh_journal(name)?;
     let plan = SpoolFaultPlan::new()
-        .fail_after_applying(SpoolIoCall::Rename, calls.root_rename, io::ErrorKind::Other)
+        .fail_after_applying(
+            SpoolIoCall::HardLink,
+            calls.root_commit,
+            io::ErrorKind::Other,
+        )
         .fail(
             SpoolIoCall::RemoveFile,
             calls.first_remove,
@@ -296,7 +301,11 @@ fn applied_root_rename_with_unsynced_rollback_is_indeterminate() -> TestResult {
     let root = fresh_root(name)?;
     let journal = fresh_journal(name)?;
     let plan = SpoolFaultPlan::new()
-        .fail_after_applying(SpoolIoCall::Rename, calls.root_rename, io::ErrorKind::Other)
+        .fail_after_applying(
+            SpoolIoCall::HardLink,
+            calls.root_commit,
+            io::ErrorKind::Other,
+        )
         .fail(
             SpoolIoCall::SyncDirectory,
             calls.first_sync_after_rename,
@@ -332,7 +341,11 @@ fn indeterminate_root_whose_marker_cannot_be_recorded_reports_the_marker_failure
     let calls = probe_commit_calls(name)?;
     let root = fresh_root(name)?;
     let plan = SpoolFaultPlan::new()
-        .fail_after_applying(SpoolIoCall::Rename, calls.root_rename, io::ErrorKind::Other)
+        .fail_after_applying(
+            SpoolIoCall::HardLink,
+            calls.root_commit,
+            io::ErrorKind::Other,
+        )
         .fail(
             SpoolIoCall::RemoveFile,
             calls.first_remove,
@@ -373,8 +386,8 @@ fn applied_root_rename_with_durable_rollback_publishes_nothing() -> TestResult {
     let calls = probe_commit_calls(name)?;
     let root = fresh_root(name)?;
     let plan = SpoolFaultPlan::new().fail_after_applying(
-        SpoolIoCall::Rename,
-        calls.root_rename,
+        SpoolIoCall::HardLink,
+        calls.root_commit,
         io::ErrorKind::Other,
     );
     let (mut publisher, io) = open_faulted(&root, plan)?;

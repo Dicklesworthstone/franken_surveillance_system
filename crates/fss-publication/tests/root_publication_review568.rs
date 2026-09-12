@@ -543,4 +543,3 @@ fn test_target_created_in_toctou_window_is_refused_and_never_clobbered() -> Test
 
     Ok(())
 }
-
