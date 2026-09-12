@@ -33,4 +33,5 @@ Registry of canonical-digest domain tags used for domain separation in determini
 | `SCHEMA-DOMAIN-ACQUISITION-INDETERMINATE-001` | `fss.acquisition.indeterminate.v1` | Acquisition lifecycle | authority/acquisition | indeterminate acquisition witness domain tag; reason and unresolved obligations preserved |
 | `SCHEMA-DOMAIN-ACQUISITION-TRANSITION-001` | `fss.acquisition.transition_record.v1` | Acquisition lifecycle | authority/acquisition | transition audit record domain tag; from/to states and cryptographic witness digest preserved |
 | `SCHEMA-DOMAIN-REPLAY-BUNDLE-001` | `fss.replay_bundle.v1` | Replay bundle reader/writer | authority/replay | self-verifying canonical replay bundle domain tag; covers manifest root, generations, seed, fault schedule, ordered delta batch history, and verified object payloads |
+| `SCHEMA-DOMAIN-QUIESCENCE-PROOF-001` | `fss.quiescence_proof.v1` | Runtime region ownership tree | authority/region | quiescence proof domain tag; covers region ID, kind, parent ID, closed timestamp, task count, and obligation counts |
 

@@ -844,6 +844,7 @@ class TestSchemaConstitution(unittest.TestCase):
             "fss.investigation_state.v1",
             "fss.license_inventory.v1",
             "fss.model_execution_receipt.v1",
+            "fss.model_manifest.v1",
             "fss.model_package_manifest.v1",
             "fss.qualification_root.v2",
             "fss.release_build_receipt.v1",
@@ -862,7 +863,7 @@ class TestSchemaConstitution(unittest.TestCase):
         unreg_findings = [f for f in validator.findings if f.code == schema_validate.CODE_UNREGISTERED_IMPLEMENTED_SCHEMA]
         self.assertEqual(len(unreg_findings), 0)
         self.assertEqual(result["unregisteredImplementedCount"], 0)
-        self.assertEqual(result["digestDomainCount"], 28)
+        self.assertEqual(result["digestDomainCount"], 30)
 
         # Continuation cursor is verified implemented
         implemented_names = {s["name"] for s in result["schemas"] if s["status"] == "implemented"}
@@ -1350,7 +1351,7 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         )
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["unregisteredImplementedCount"], 0)
-        self.assertEqual(result["digestDomainCount"], 28)
+        self.assertEqual(result["digestDomainCount"], 30)
         self.assertEqual(result["implementedCount"], 23)
 
         unreg_findings = [

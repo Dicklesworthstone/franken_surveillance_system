@@ -19,6 +19,7 @@
 | `SCHEMA-EVIDENCE-DELTA-001` | `fss.evidence_delta_batch.v1` | `schemas/evidence_delta_batch.v1.json` | authority/version universe | basis/new anchors and ordered delta identities preserved |
 | `SCHEMA-TRANSFER-RECEIPT-001` | `fss.transfer_receipt.v1` | `schemas/transfer_receipt.v1.json` | transfer evidence | path, repair, closure, publication, and retrievability states remain distinct |
 | `SCHEMA-MODEL-PACKAGE-001` | `fss.model_package_manifest.v1` | `schemas/model_package_manifest.v1.json` | model authority/package | immutable package root; operator/tensor/preprocess/numeric/license identities preserved |
+| `SCHEMA-MODEL-MANIFEST-001` | `fss.model_manifest.v1` | `schemas/model_manifest.v1.json` | model authority/package | immutable model manifest root; model identity, generation, weights, schemas, calibration, and license/provenance preserved |
 | `SCHEMA-MODEL-RECEIPT-001` | `fss.model_execution_receipt.v1` | `schemas/model_execution_receipt.v1.json` | derived/model evidence | input/model/plan/backend/numeric/budget/outcome and output identities preserved |
 | `SCHEMA-RELEASE-BUILD-001` | `fss.release_build_receipt.v1` | `schemas/release_build_receipt.v1.json` | release custody | native target/toolchain/source/lock/manifest/smoke identities immutable |
 | `SCHEMA-RELEASE-STAGE-001` | `fss.release_stage_verification.v1` | `schemas/release_stage_verification.v1.json` | release custody | stage inventory and content digests preserved exactly |

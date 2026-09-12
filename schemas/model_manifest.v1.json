@@ -1,0 +1,125 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.dev/schemas/model_manifest.v1.json",
+  "title": "FSS Model Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "calibrationGeneration",
+    "generation",
+    "inputSchema",
+    "license",
+    "modelId",
+    "outputSchema",
+    "schema",
+    "weightsDigest"
+  ],
+  "properties": {
+    "calibrationGeneration": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,254}$",
+      "minLength": 8,
+      "maxLength": 255
+    },
+    "generation": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9:+._-]{7,254}$",
+      "minLength": 8,
+      "maxLength": 255
+    },
+    "inputSchema": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifactDigests",
+        "restrictions",
+        "sourceIdentity",
+        "spdxOrIdentity",
+        "useApproved"
+      ],
+      "properties": {
+        "artifactDigests": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "$ref": "sensor_capsule.v1.json#/$defs/digest"
+          }
+        },
+        "restrictions": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          }
+        },
+        "sourceIdentity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "spdxOrIdentity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "textDigest": {
+          "anyOf": [
+            {
+              "$ref": "sensor_capsule.v1.json#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "upstreamRevision": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 128
+        },
+        "useApproved": {
+          "type": "boolean"
+        }
+      }
+    },
+    "modelId": {
+      "type": "string",
+      "pattern": "^MOD-[A-Z0-9-]+$",
+      "minLength": 4,
+      "maxLength": 64
+    },
+    "outputSchema": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "schema": {
+      "const": "fss.model_manifest.v1"
+    },
+    "supersedesGeneration": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9:+._-]{7,254}$",
+          "minLength": 8,
+          "maxLength": 255
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "weightsDigest": {
+      "$ref": "sensor_capsule.v1.json#/$defs/digest"
+    }
+  }
+}
