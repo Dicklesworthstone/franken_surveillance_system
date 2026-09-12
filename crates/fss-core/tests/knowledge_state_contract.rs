@@ -922,3 +922,113 @@ fn test_indeterminate_knowledge_cell_reconciliation_and_hard_gate() -> Result<()
 
     Ok(())
 }
+
+#[test]
+fn test_not_applicable_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::NotApplicable;
+
+    // 1. Exact normative stable ID
+    assert_eq!(state.id(), "KSTATE-009");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(state.as_str(), "not_applicable");
+    assert_eq!(format!("{state}"), "not_applicable");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        state.meaning(),
+        "The proposition has no meaning for the named object, scope, or lifecycle state."
+    );
+
+    // 4. May support planning: no
+    assert!(!state.may_support_planning());
+    assert_eq!(state.planning_support_description(), "no");
+
+    // 5. May authorize irreversible effect: no (hard constitutional gate)
+    assert!(!state.may_authorize_irreversible_effect());
+    assert_eq!(state.irreversible_effect_description(), "no");
+
+    // 6. Explicit assumptions required: no
+    assert!(!state.explicit_assumptions_required());
+
+    Ok(())
+}
+
+#[test]
+fn test_not_applicable_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = KnowledgeState::from_id("KSTATE-009")?;
+    assert_eq!(from_id, KnowledgeState::NotApplicable);
+
+    // Parse from schema name
+    let from_name = KnowledgeState::from_name("not_applicable")?;
+    assert_eq!(from_name, KnowledgeState::NotApplicable);
+
+    // Parse via FromStr
+    let from_str_name = KnowledgeState::from_str("not_applicable")?;
+    assert_eq!(from_str_name, KnowledgeState::NotApplicable);
+
+    let from_str_id = KnowledgeState::from_str("KSTATE-009")?;
+    assert_eq!(from_str_id, KnowledgeState::NotApplicable);
+
+    Ok(())
+}
+
+#[test]
+fn test_not_applicable_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::NotApplicable;
+
+    let mut encoder = CanonicalEncoder::new();
+    state.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = KnowledgeState::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, state);
+    assert_eq!(decoded.id(), "KSTATE-009");
+    assert_eq!(decoded.as_str(), "not_applicable");
+
+    Ok(())
+}
+
+#[test]
+fn test_not_applicable_knowledge_cell_no_planning_and_hard_gate() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+
+    // Construct a cell with KnowledgeState::NotApplicable (e.g. flight battery status on stationary camera)
+    let cell = KnowledgeCell {
+        claim_id: "claim:camera:battery_temp:001".to_string(),
+        statement: "Battery temperature proposition on mains-powered fixed sensor".to_string(),
+        knowledge_state: KnowledgeState::NotApplicable,
+        provenance: ProvenanceClass::Policy,
+        hypothesis: None,
+        evidence: vec![],
+        contradictions: vec![],
+        valid_until: None,
+    };
+
+    // Properties on KnowledgeCell
+    assert!(cell.is_not_applicable());
+    assert!(!cell.is_indeterminate());
+    assert!(!cell.is_redacted());
+    assert!(!cell.is_not_observable());
+    assert!(!cell.is_stale());
+    assert!(!cell.is_conflicted());
+    assert!(!cell.is_unknown());
+    assert!(!cell.is_estimated());
+
+    // Explicit assumptions: NOT required for not_applicable
+    assert!(!cell.requires_explicit_assumptions());
+
+    // Planning support: Strictly FALSE for NotApplicable (the only state with may_support_planning == false)
+    assert!(!cell.may_support_planning());
+
+    // Constitutional Hard Gate: NotApplicable CANNOT be used as an irreversible-effect premise.
+    assert!(
+        !cell.is_irreversible_effect_premise(now),
+        "NotApplicable knowledge state must NEVER authorize irreversible effects"
+    );
+
+    Ok(())
+}
