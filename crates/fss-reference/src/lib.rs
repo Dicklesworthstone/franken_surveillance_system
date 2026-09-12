@@ -28,6 +28,7 @@ mod situation;
 mod situation_guard;
 mod situation_sections;
 mod source;
+pub mod time_tolerance;
 
 #[cfg(test)]
 mod alert_tests;
@@ -147,6 +148,13 @@ pub use situation_sections::{
 pub use source::{
     MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, VirtualSource,
     generate_source, generate_source_with_clock,
+};
+pub use time_tolerance::{
+    AssociationDecision, ClockSyncState, ERR_CLOCK_UNCERTAIN_001, EnforcementOutcome,
+    ExceedanceConsequence, FORMAL_010_THEOREM_TAG, OperationTimeTolerance, RequiredClockEvidence,
+    SourceTimeEvidence, SourceTimeEvidenceBuilder, SourceTimeEvidenceParams,
+    TimeSensitiveOperation, TimeToleranceError, TimeUncertaintyBudget, UncertaintySources,
+    evaluate_cross_camera_association,
 };
 
 pub(crate) use delivery::DeliveryTrace;
