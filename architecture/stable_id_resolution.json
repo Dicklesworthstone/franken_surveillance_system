@@ -59,6 +59,7 @@
       "title": "Agent legibility",
       "canonicalId": "GOAL-019",
       "disposition": "retained",
+      "status": "active",
       "titleDigest": "sha256:e71ef6c5223ee9ee0705c5d63f4f592bf4294109c68d78ea541e34433e1f34aa"
     },
     {
@@ -66,6 +67,7 @@
       "title": "Cognitive economy",
       "canonicalId": "GOAL-020",
       "disposition": "retained",
+      "status": "active",
       "titleDigest": "sha256:4da9b50b384d638cce45859ed2ded57c4186eb852e3181f55c72a75d3c5b812d"
     },
     {
@@ -73,6 +75,7 @@
       "title": "Agent epistemic ergonomics",
       "canonicalId": "GOAL-024",
       "disposition": "legacy-collision-remapped",
+      "status": "active",
       "titleDigest": "sha256:7a22003db08cc63dcb674bd8aff7ef74a42faf79f1838ccd395a93362aa1e11f"
     },
     {
@@ -80,6 +83,7 @@
       "title": "Agent accretion",
       "canonicalId": "GOAL-025",
       "disposition": "legacy-collision-remapped",
+      "status": "active",
       "titleDigest": "sha256:06fb6afacaab85e14cb58bfa55926026d51979cac711efb6976b3e80b2ae9477"
     },
     {
@@ -87,6 +91,7 @@
       "title": "Cold-start orientation",
       "canonicalId": "NS-9",
       "disposition": "retained",
+      "status": "active",
       "titleDigest": "sha256:8c4dac9e72a824ded6d74f60b80e44ed65ebbbcaf6a0ccb0d4d6b3477de8b91e"
     },
     {
@@ -94,6 +99,7 @@
       "title": "Ambiguous event under a hard budget",
       "canonicalId": "NS-10",
       "disposition": "retained",
+      "status": "active",
       "titleDigest": "sha256:245aab9c01b637f5b63c6b884bc419e9c2d933dc3abbe4281fc6d048914d9998"
     },
     {
@@ -101,6 +107,7 @@
       "title": "Cold resume after agent and host loss",
       "canonicalId": "NS-14",
       "disposition": "legacy-collision-remapped",
+      "status": "active",
       "titleDigest": "sha256:57c1dfc367ebd23f00602893d9b9bdc7044e462c05596462966c604795f00a42"
     },
     {
@@ -108,6 +115,7 @@
       "title": "Cheapest decisive observation",
       "canonicalId": "NS-15",
       "disposition": "legacy-collision-remapped",
+      "status": "active",
       "titleDigest": "sha256:ffba1895e857fb56e5b3c765837ef36dca2e98734b6fa9ae9cd331043cb7374c"
     }
   ]

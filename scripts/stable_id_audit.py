@@ -35,6 +35,7 @@ ERR_STALE_RESOLUTION = "ERR-STABLE-ID-STALE-RESOLUTION-001"
 ERR_CANONICAL_COLLISION = "ERR-STABLE-ID-CANONICAL-COLLISION-001"
 ERR_CENSUS_DRIFT = "ERR-STABLE-ID-CENSUS-DRIFT-001"
 ERR_SCHEMA_ERROR = "ERR-STABLE-ID-SCHEMA-ERROR-001"
+ERR_TOMBSTONE_REFERENCE = "ERR-STABLE-ID-TOMBSTONE-REFERENCE-001"
 
 
 class OccurrenceKind(str, Enum):
@@ -100,7 +101,7 @@ NORMATIVE_FAMILIES: dict[str, FamilyRule] = {
     "MODEL": FamilyRule("MODEL", (3,), hierarchical=True),
     "ALG": FamilyRule("ALG", (3,), hierarchical=True),
     "PUB": FamilyRule("PUB", (3,), hierarchical=True),
-    "DEC": FamilyRule("DEC", (3,), hierarchical=False),
+    "DEC": FamilyRule("DEC", (3,), hierarchical=True),
     "DEP": FamilyRule("DEP", (3,), hierarchical=True),
     "REL": FamilyRule("REL", (3,), hierarchical=True),
     "FMT": FamilyRule("FMT", (3,), hierarchical=False),
@@ -122,8 +123,40 @@ NORMATIVE_FAMILIES: dict[str, FamilyRule] = {
 }
 
 EXCLUDED_PROSE_PREFIXES = {
-    "UTF", "RFC", "ISO", "IEEE", "POSIX", "CVE", "GH", "PR", "W3C", "CI", "H"
+    "UTF", "RFC", "ISO", "IEEE", "POSIX", "CVE", "W3C"
 }
+
+
+def _strip_html_comments(text: str) -> str:
+    """Strips HTML comments while preserving newline count for accurate line numbering."""
+    def replacer(match: re.Match[str]) -> str:
+        return "\n" * match.group(0).count("\n")
+    return re.sub(r"<!--[\s\S]*?-->", replacer, text)
+
+
+def _normalize_key(token: str) -> tuple[str, int] | str:
+    """Normalizes numeric stable IDs so aliases like ADR-001 and ADR-0001 map to the same key."""
+    parts = token.rsplit("-", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        prefix = parts[0]
+        num = int(parts[1])
+        if prefix in NORMATIVE_FAMILIES:
+            return (NORMATIVE_FAMILIES[prefix].name, num)
+    return token
+
+
+def _canonical_id(token: str) -> str:
+    """Returns canonical string representation for an ID."""
+    parts = token.rsplit("-", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        prefix = parts[0]
+        num = int(parts[1])
+        if prefix == "ADR":
+            return f"ADR-{num:04d}"
+        if prefix == "NS":
+            return f"NS-{num}"
+    return token
+
 
 STABLE_ID_GRAMMAR = {
     "schema": GRAMMAR_SCHEMA,
@@ -281,7 +314,16 @@ class ParsedReference:
 def _extract_plan_definitions(plan_text: str, source_name: str = "plan.md") -> list[ParsedDefinition]:
     """Extracts goal and scenario definitions from plan text using strict headings."""
     definitions: list[ParsedDefinition] = []
-    for line_number, line in enumerate(plan_text.splitlines(), 1):
+    clean_text = _strip_html_comments(plan_text)
+    in_code_fence = False
+    for line_number, line in enumerate(clean_text.splitlines(), 1):
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+            continue
+        if in_code_fence:
+            continue
+
         match = GOAL_HEADING.match(line) or NS_HEADING.match(line)
         if match is not None:
             legacy_id = match.group("id")
@@ -296,6 +338,16 @@ def _extract_plan_definitions(plan_text: str, source_name: str = "plan.md") -> l
                     title_digest=_title_digest(legacy_id, title),
                 )
             )
+        else:
+            near_miss = re.match(r"^###\s+`(?P<id>[A-Za-z0-9_-]+)`\s+[—–-]\s*(?P<title>.+?)\s*$", line)
+            if near_miss:
+                cand = near_miss.group("id")
+                if cand.startswith("G") or "-" in cand or "_" in cand:
+                    validate_identifier_syntax(cand)
+            near_scenario = re.match(r"^###\s+Scenario\s+(?P<id>[A-Za-z0-9_-]+)\s+[—–-]\s*(?P<title>.+?)\s*$", line)
+            if near_scenario:
+                cand = near_scenario.group("id")
+                validate_identifier_syntax(cand)
     return definitions
 
 
@@ -307,15 +359,39 @@ def _extract_all_occurrences(
     references: list[ParsedReference] = []
     examples: list[str] = []
 
+    clean_text = _strip_html_comments(text)
     in_code_fence = False
 
-    for line_number, line in enumerate(text.splitlines(), 1):
+    for line_number, line in enumerate(clean_text.splitlines(), 1):
         stripped = line.strip()
         if stripped.startswith("```"):
             in_code_fence = not in_code_fence
             continue
 
         if in_code_fence:
+            def_match = (
+                HEADING_DEF_RE.match(line)
+                or TABLE_DEF_RE.match(line)
+                or LIST_DEF_RE.match(line)
+            )
+            if def_match:
+                candidate_id = def_match.group("id") or def_match.group("scenario_id")
+                if (
+                    candidate_id
+                    and not candidate_id.startswith("ID")
+                    and not candidate_id.startswith("---")
+                ):
+                    validate_identifier_syntax(candidate_id)
+                    title = def_match.group("title").strip().strip("`").strip()
+                    definitions.append(
+                        ParsedDefinition(
+                            legacy_id=candidate_id,
+                            title=title,
+                            line=line_number,
+                            source=source_name,
+                            title_digest=_title_digest(candidate_id, title),
+                        )
+                    )
             for m in ID_TOKEN_RE.finditer(line):
                 token = m.group(1)
                 prefix = token.split("-")[0]
@@ -335,7 +411,6 @@ def _extract_all_occurrences(
                 candidate_id
                 and not candidate_id.startswith("ID")
                 and not candidate_id.startswith("---")
-                and candidate_id.split("-")[0] not in EXCLUDED_PROSE_PREFIXES
             ):
                 validate_identifier_syntax(candidate_id)
                 title = def_match.group("title").strip().strip("`").strip()
@@ -353,7 +428,7 @@ def _extract_all_occurrences(
         for m in ID_TOKEN_RE.finditer(line):
             token = m.group(1)
             prefix = token.split("-")[0]
-            if prefix in EXCLUDED_PROSE_PREFIXES:
+            if prefix in EXCLUDED_PROSE_PREFIXES and prefix not in NORMATIVE_FAMILIES:
                 continue
             if token == defined_id:
                 continue
@@ -376,42 +451,58 @@ def _load_repository_definitions(root: Path) -> set[str]:
     reg_dir = root / "registries"
     if reg_dir.is_dir():
         for path in reg_dir.glob("*.md"):
-            for line in path.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+            clean = _strip_html_comments(path.read_text(encoding="utf-8-sig", errors="strict"))
+            for line in clean.splitlines():
                 m = TABLE_DEF_RE.match(line) or HEADING_DEF_RE.match(line) or LIST_DEF_RE.match(line)
                 if m:
                     cand = m.group("id") or m.group("scenario_id")
                     if cand and not cand.startswith("ID") and not cand.startswith("---"):
+                        validate_identifier_syntax(cand)
                         known.add(cand)
+                        known.add(_canonical_id(cand))
 
     adr_dir = root / "docs/adr"
     if adr_dir.is_dir():
         for path in adr_dir.glob("*.md"):
-            for line in path.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
+            clean = _strip_html_comments(path.read_text(encoding="utf-8-sig", errors="strict"))
+            for line in clean.splitlines():
                 m = HEADING_DEF_RE.match(line)
                 if m:
                     cand = m.group("id") or m.group("scenario_id")
                     if cand:
+                        validate_identifier_syntax(cand)
                         known.add(cand)
+                        known.add(_canonical_id(cand))
 
     arch_dir = root / "architecture"
     if arch_dir.is_dir():
         for path in arch_dir.glob("*.json"):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8-sig", errors="ignore"))
-                def walk(obj: Any) -> None:
-                    if isinstance(obj, dict):
-                        for k, v in obj.items():
-                            if k in ("id", "legacyId", "canonicalId", "gate") and isinstance(v, str):
+            data = _load_json(path)
+
+            def walk(obj: Any) -> None:
+                if isinstance(obj, dict):
+                    status = obj.get("status")
+                    if status in ("tombstone", "tombstoned", "superseded"):
+                        return
+                    for k, v in obj.items():
+                        if k in ("legacyId", "canonicalId") and isinstance(v, str):
+                            validate_identifier_syntax(v)
+                            known.add(v)
+                            known.add(_canonical_id(v))
+                        elif k in ("id", "gate") and isinstance(v, str):
+                            if ("-" in v or "_" in v) and any(c.isdigit() for c in v) and not v.startswith("DEP-CLASS-"):
+                                validate_identifier_syntax(v)
                                 known.add(v)
-                            walk(v)
-                    elif isinstance(obj, list):
-                        for item in obj:
-                            walk(item)
-                walk(data)
-            except Exception:
-                pass
+                                known.add(_canonical_id(v))
+                        walk(v)
+                elif isinstance(obj, list):
+                    for item in obj:
+                        walk(item)
+
+            walk(data)
 
     return known
+
 
 
 def audit(
@@ -420,7 +511,7 @@ def audit(
     corpus_paths: list[Path] | None = None,
 ) -> dict[str, Any]:
     """Executes the definition-aware, collision-free stable-ID census and audit."""
-    plan_text = plan_path.read_text(encoding="utf-8-sig")
+    plan_text = _strip_html_comments(plan_path.read_text(encoding="utf-8-sig"))
     resolution = _load_json(resolution_path)
     if resolution.get("schema") != "fss.stable_id_resolution.v1":
         raise AuditError(ERR_SCHEMA_ERROR, "unsupported stable-ID resolution schema")
@@ -432,6 +523,7 @@ def audit(
     by_occurrence: dict[tuple[str, str], dict[str, Any]] = {}
     canonical_from_resolution: set[str] = set()
     legacy_from_resolution: set[str] = set()
+    tombstoned_ids: set[str] = set()
 
     for index, row in enumerate(raw_resolutions):
         if not isinstance(row, dict):
@@ -440,6 +532,9 @@ def audit(
         title = row.get("title")
         canonical_id = row.get("canonicalId")
         digest = row.get("titleDigest")
+        status = row.get("status")
+        disposition = row.get("disposition")
+
         if not all(
             isinstance(value, str) and value
             for value in (legacy_id, title, canonical_id, digest)
@@ -465,20 +560,35 @@ def audit(
                 ERR_CANONICAL_COLLISION,
                 f"canonical ID reused in resolution table: {canonical_id}",
             )
-        canonical_from_resolution.add(canonical_id)
-        legacy_from_resolution.add(legacy_id)
+
+        is_tombstone = status in ("tombstone", "tombstoned", "superseded") or disposition in ("tombstone", "tombstoned", "superseded")
+        if is_tombstone:
+            tombstoned_ids.add(legacy_id)
+            tombstoned_ids.add(_canonical_id(legacy_id))
+            tombstoned_ids.add(canonical_id)
+            tombstoned_ids.add(_canonical_id(canonical_id))
+        else:
+            canonical_from_resolution.add(canonical_id)
+            canonical_from_resolution.add(_canonical_id(canonical_id))
+            legacy_from_resolution.add(legacy_id)
+            legacy_from_resolution.add(_canonical_id(legacy_id))
+
         by_occurrence[key] = row
 
     extracted = _extract_plan_definitions(plan_text, source_name=plan_path.name)
 
+    norm_counts: dict[tuple[str, int] | str, int] = {}
     legacy_counts: dict[str, int] = {}
     for d in extracted:
+        norm_key = _normalize_key(d.legacy_id)
+        norm_counts[norm_key] = norm_counts.get(norm_key, 0) + 1
         legacy_counts[d.legacy_id] = legacy_counts.get(d.legacy_id, 0) + 1
 
     definitions: list[ParsedDefinition] = []
     for d in extracted:
-        count = legacy_counts[d.legacy_id]
-        resolution_row = by_occurrence.get((d.legacy_id, d.title))
+        norm_key = _normalize_key(d.legacy_id)
+        count = norm_counts[norm_key]
+        resolution_row = by_occurrence.get((d.legacy_id, d.title)) or by_occurrence.get((_canonical_id(d.legacy_id), d.title))
         if count > 1 and resolution_row is None:
             raise AuditError(
                 ERR_COLLISION,
@@ -488,15 +598,17 @@ def audit(
             d.canonical_id = str(resolution_row["canonicalId"])
             d.title_digest = str(resolution_row["titleDigest"])
         else:
-            d.canonical_id = d.legacy_id
+            d.canonical_id = _canonical_id(d.legacy_id)
             d.title_digest = _title_digest(d.legacy_id, d.title)
         definitions.append(d)
 
-    used_resolution_keys = {
-        (d.legacy_id, d.title)
-        for d in definitions
-        if (d.legacy_id, d.title) in by_occurrence
-    }
+    used_resolution_keys = set()
+    for d in definitions:
+        if (d.legacy_id, d.title) in by_occurrence:
+            used_resolution_keys.add((d.legacy_id, d.title))
+        elif (_canonical_id(d.legacy_id), d.title) in by_occurrence:
+            used_resolution_keys.add((_canonical_id(d.legacy_id), d.title))
+
     unused = sorted(set(by_occurrence) - used_resolution_keys)
     if unused:
         rendered = ", ".join(f"{legacy}/{title}" for legacy, title in unused)
@@ -546,8 +658,15 @@ def audit(
         known_targets.update(_load_repository_definitions(ROOT))
     plan_defs, references, _ = _extract_all_occurrences(plan_text, source_name=plan_path.name)
     known_targets.update(d.legacy_id for d in plan_defs)
+    known_targets.update(_canonical_id(d.legacy_id) for d in plan_defs)
+
     for ref in references:
-        if ref.raw_id not in known_targets:
+        if ref.raw_id in tombstoned_ids or _canonical_id(ref.raw_id) in tombstoned_ids:
+            raise AuditError(
+                ERR_TOMBSTONE_REFERENCE,
+                f"reference to tombstoned/superseded identifier '{ref.raw_id}' at {ref.source}:{ref.line}",
+            )
+        if ref.raw_id not in known_targets and _canonical_id(ref.raw_id) not in known_targets:
             raise AuditError(
                 ERR_DANGLING_REFERENCE,
                 f"dangling reference to '{ref.raw_id}' at {ref.source}:{ref.line} (no active owner or historical mapping found)",
@@ -607,15 +726,53 @@ def census_markdown_sources(
     """Audits multiple markdown documents across the repository. Hook for check-policy.py."""
     resolution = _load_json(resolution_path)
     raw_resolutions = resolution.get("resolutions", [])
-    by_occurrence = {
-        (r["legacyId"], r["title"]): r
-        for r in raw_resolutions
-        if isinstance(r, dict) and "legacyId" in r and "title" in r
-    }
+    if not isinstance(raw_resolutions, list):
+        raise AuditError(ERR_SCHEMA_ERROR, "resolutions must be an array")
+
+    by_occurrence = {}
     valid_targets = _load_repository_definitions(ROOT)
+    tombstoned_ids: set[str] = set()
+
     for r in raw_resolutions:
-        valid_targets.add(r.get("canonicalId", ""))
-        valid_targets.add(r.get("legacyId", ""))
+        if not isinstance(r, dict):
+            raise AuditError(ERR_SCHEMA_ERROR, "resolution row is not an object")
+        legacy_id = r.get("legacyId")
+        title = r.get("title")
+        canonical_id = r.get("canonicalId")
+        digest = r.get("titleDigest")
+        status = r.get("status")
+        disposition = r.get("disposition")
+
+        if not legacy_id or not title:
+            raise AuditError(ERR_SCHEMA_ERROR, "resolution row missing legacyId or title")
+
+        validate_identifier_syntax(legacy_id)
+        if canonical_id:
+            validate_identifier_syntax(canonical_id)
+
+        expected_digest = _title_digest(legacy_id, title)
+        if digest is not None and digest != expected_digest:
+            raise AuditError(
+                ERR_FINGERPRINT_MISMATCH,
+                f"title fingerprint mismatch for {legacy_id} / '{title}': expected {expected_digest}, got {digest}",
+            )
+
+        by_occurrence[(legacy_id, title)] = r
+        by_occurrence[(_canonical_id(legacy_id), title)] = r
+
+        is_tombstone = status in ("tombstone", "tombstoned", "superseded") or disposition in ("tombstone", "tombstoned", "superseded")
+        if is_tombstone:
+            tombstoned_ids.add(legacy_id)
+            tombstoned_ids.add(_canonical_id(legacy_id))
+            if canonical_id:
+                tombstoned_ids.add(canonical_id)
+                tombstoned_ids.add(_canonical_id(canonical_id))
+        else:
+            if canonical_id:
+                valid_targets.add(canonical_id)
+                valid_targets.add(_canonical_id(canonical_id))
+            valid_targets.add(legacy_id)
+            valid_targets.add(_canonical_id(legacy_id))
 
     all_defs: list[ParsedDefinition] = []
     all_refs: list[ParsedReference] = []
@@ -623,24 +780,34 @@ def census_markdown_sources(
     for path in paths:
         if not path.is_file():
             continue
-        text = path.read_text(encoding="utf-8-sig", errors="ignore")
+        text = _strip_html_comments(path.read_text(encoding="utf-8-sig", errors="strict"))
         defs, refs, _ = _extract_all_occurrences(text, source_name=str(path))
         all_defs.extend(defs)
         all_refs.extend(refs)
 
-    def_counts: dict[str, int] = {}
+    def_counts: dict[tuple[str, int] | str, int] = {}
     for d in all_defs:
-        def_counts[d.legacy_id] = def_counts.get(d.legacy_id, 0) + 1
+        key = _normalize_key(d.legacy_id)
+        def_counts[key] = def_counts.get(key, 0) + 1
 
     for d in all_defs:
-        if def_counts[d.legacy_id] > 1 and (d.legacy_id, d.title) not in by_occurrence:
-            raise AuditError(
-                ERR_COLLISION,
-                f"unresolved collided stable definition {d.legacy_id} at {d.source}:{d.line}: {d.title}",
-            )
+        key = _normalize_key(d.legacy_id)
+        if def_counts[key] > 1:
+            res_row = by_occurrence.get((d.legacy_id, d.title)) or by_occurrence.get((_canonical_id(d.legacy_id), d.title))
+            if res_row is None:
+                raise AuditError(
+                    ERR_COLLISION,
+                    f"unresolved collided stable definition {d.legacy_id} at {d.source}:{d.line}: {d.title}",
+                )
 
     for ref in all_refs:
-        if ref.raw_id not in valid_targets and ref.raw_id not in {d.legacy_id for d in all_defs}:
+        if ref.raw_id in tombstoned_ids or _canonical_id(ref.raw_id) in tombstoned_ids:
+            raise AuditError(
+                ERR_TOMBSTONE_REFERENCE,
+                f"reference to tombstoned/superseded identifier '{ref.raw_id}' at {ref.source}:{ref.line}",
+            )
+        target_ids = valid_targets | {d.legacy_id for d in all_defs} | {_canonical_id(d.legacy_id) for d in all_defs}
+        if ref.raw_id not in target_ids and _canonical_id(ref.raw_id) not in target_ids:
             raise AuditError(
                 ERR_DANGLING_REFERENCE,
                 f"dangling reference to '{ref.raw_id}' at {ref.source}:{ref.line}",

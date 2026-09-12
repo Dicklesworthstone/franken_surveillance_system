@@ -463,6 +463,187 @@ def test_real_repository_audit() -> None:
     }
 
 
+def test_loophole_1_fenced_code_block_collision_and_extractor_consistency() -> None:
+    # 1. _extract_plan_definitions must not extract definitions from code blocks
+    plan_text = """```markdown
+### `GOAL-001` — Laundered In Code Fence
+```
+### `GOAL-001` — Legitimate Definition
+"""
+    defs = module._extract_plan_definitions(plan_text)
+    assert len(defs) == 1, f"Expected 1 definition, got {len(defs)}: code fences must not be parsed as definitions"
+
+    # 2. Conflicting definition in code block must not be laundered
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        doc1 = root / "doc1.md"
+        doc2 = root / "doc2.md"
+        doc1.write_text("### `INV-001` — First Meaning\n", encoding="utf-8")
+        doc2.write_text("```markdown\n### `INV-001` — Conflicting Laundered Meaning\n```\n", encoding="utf-8")
+        res_file = root / "resolution.json"
+        res_file.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": []}), encoding="utf-8")
+        try:
+            module.census_markdown_sources([doc1, doc2], res_file)
+        except module.AuditError as exc:
+            assert exc.error_id == module.ERR_COLLISION
+        else:
+            raise AssertionError("conflicting definition in code fence should be flagged as collision")
+
+
+def test_loophole_2_html_comments_multiline_and_single_line() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        doc = root / "doc.md"
+        # Multiline HTML comment containing deprecated definition should not cause collision
+        doc.write_text("""### `INV-001` — Active Definition
+<!--
+### `INV-001` — Deprecated Commented Out
+-->
+""", encoding="utf-8")
+        res_file = root / "resolution.json"
+        res_file.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": []}), encoding="utf-8")
+        report = module.census_markdown_sources([doc], res_file)
+        assert report["status"] == "passed"
+        assert report["totalDefinitions"] == 1
+
+        # Single-line comment should not extract references
+        doc2 = root / "doc2.md"
+        doc2.write_text("<!-- Reference to INV-999 in comment -->\n", encoding="utf-8")
+        report2 = module.census_markdown_sources([doc2], res_file)
+        assert report2["status"] == "passed"
+        assert report2["totalReferences"] == 0
+
+
+def test_loophole_3_width_aliasing_collision_and_resolution() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        doc1 = root / "doc1.md"
+        doc2 = root / "doc2.md"
+        # ADR-001 and ADR-0001 are the same entity (ADR #1)
+        doc1.write_text("### `ADR-001` — First Decision\n", encoding="utf-8")
+        doc2.write_text("### `ADR-0001` — Conflicting Decision\n", encoding="utf-8")
+        res_file = root / "resolution.json"
+        res_file.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": []}), encoding="utf-8")
+        try:
+            module.census_markdown_sources([doc1, doc2], res_file)
+        except module.AuditError as exc:
+            assert exc.error_id == module.ERR_COLLISION
+            assert "ADR-001" in str(exc) or "ADR-0001" in str(exc)
+        else:
+            raise AssertionError("ADR-001 and ADR-0001 must be recognized as colliding aliases")
+
+
+def test_loophole_4_prose_exclusion_not_masking_real_definitions_or_invalid_tokens() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        doc = root / "doc.md"
+        # Headings with prefix in EXCLUDED_PROSE_PREFIXES (e.g. CI) must not be silently skipped as definitions
+        doc.write_text("""### `CI-001` — First Meaning
+### `CI-001` — Colliding Second Meaning
+""", encoding="utf-8")
+        res_file = root / "resolution.json"
+        res_file.write_text(json.dumps({"schema": "fss.stable_id_resolution.v1", "resolutions": []}), encoding="utf-8")
+        try:
+            module.census_markdown_sources([doc], res_file)
+        except module.AuditError as exc:
+            # Must raise either unknown family (since CI is not normative) or collision, not silently pass
+            assert exc.error_id in (module.ERR_UNKNOWN_FAMILY, module.ERR_COLLISION)
+        else:
+            raise AssertionError("heading with prose-like prefix must not be silently ignored")
+
+
+def test_loophole_5_near_miss_and_registry_ingestion_validation() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        arch_dir = root / "architecture"
+        arch_dir.mkdir()
+        bad_json = arch_dir / "bad_reg.json"
+        # Invalid family in architecture JSON must be rejected on ingestion
+        bad_json.write_text(json.dumps({"id": "GOLA-001"}), encoding="utf-8")
+        try:
+            module._load_repository_definitions(root)
+        except module.AuditError as exc:
+            assert exc.error_id == module.ERR_UNKNOWN_FAMILY
+            assert "GOLA" in str(exc)
+        else:
+            raise AssertionError("invalid ID in architecture JSON must fail validation on ingestion")
+
+
+def test_loophole_6_tombstoned_id_reference_rejected() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        doc = root / "doc.md"
+        doc.write_text("Reference to tombstoned GOAL-099 should be rejected\n", encoding="utf-8")
+        res_file = root / "resolution.json"
+        res_file.write_text(
+            json.dumps({
+                "schema": "fss.stable_id_resolution.v1",
+                "resolutions": [
+                    {
+                        "legacyId": "GOAL-099",
+                        "title": "Obsolete Goal",
+                        "canonicalId": "GOAL-099",
+                        "disposition": "tombstone",
+                        "status": "tombstone",
+                        "titleDigest": module._title_digest("GOAL-099", "Obsolete Goal"),
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        try:
+            module.census_markdown_sources([doc], res_file)
+        except module.AuditError as exc:
+            assert exc.error_id in (module.ERR_TOMBSTONE_REFERENCE, module.ERR_DANGLING_REFERENCE)
+        else:
+            raise AssertionError("referencing a tombstoned ID must fail")
+
+
+def test_loophole_7_stale_fingerprint_in_census_markdown_sources() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        doc = root / "doc.md"
+        doc.write_text("### `GOAL-019` — Agent legibility\n", encoding="utf-8")
+        res_file = root / "resolution.json"
+        res_file.write_text(
+            json.dumps({
+                "schema": "fss.stable_id_resolution.v1",
+                "resolutions": [
+                    {
+                        "legacyId": "GOAL-019",
+                        "title": "Agent legibility",
+                        "canonicalId": "GOAL-019",
+                        "disposition": "retained",
+                        "titleDigest": "sha256:" + "0" * 64,  # Fabricated fingerprint!
+                    }
+                ],
+            }),
+            encoding="utf-8",
+        )
+        try:
+            module.census_markdown_sources([doc], res_file)
+        except module.AuditError as exc:
+            assert exc.error_id == module.ERR_FINGERPRINT_MISMATCH
+            assert "fingerprint mismatch" in str(exc)
+        else:
+            raise AssertionError("stale/fabricated fingerprint in resolution must be rejected in multi-file census")
+
+
+def test_loophole_8_corrupt_architecture_json_fails_closed() -> None:
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        arch_dir = root / "architecture"
+        arch_dir.mkdir()
+        bad_json = arch_dir / "corrupt.json"
+        bad_json.write_text('{"unclosed_json: ', encoding="utf-8")
+        try:
+            module._load_repository_definitions(root)
+        except module.AuditError as exc:
+            assert exc.error_id == module.ERR_SCHEMA_ERROR
+        else:
+            raise AssertionError("corrupt architecture JSON must fail closed with ERR_SCHEMA_ERROR")
+
+
 def main() -> None:
     test_baseline_duplicate_collision_and_resolution()
     test_unresolved_collision_rejected()
@@ -479,8 +660,17 @@ def main() -> None:
     test_census_markdown_sources_hook()
     test_cli_flags_and_jsonl()
     test_real_repository_audit()
+    test_loophole_1_fenced_code_block_collision_and_extractor_consistency()
+    test_loophole_2_html_comments_multiline_and_single_line()
+    test_loophole_3_width_aliasing_collision_and_resolution()
+    test_loophole_4_prose_exclusion_not_masking_real_definitions_or_invalid_tokens()
+    test_loophole_5_near_miss_and_registry_ingestion_validation()
+    test_loophole_6_tombstoned_id_reference_rejected()
+    test_loophole_7_stale_fingerprint_in_census_markdown_sources()
+    test_loophole_8_corrupt_architecture_json_fails_closed()
     print("all stable-ID audit tests passed")
 
 
 if __name__ == "__main__":
     main()
+
