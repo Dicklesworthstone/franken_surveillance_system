@@ -13,6 +13,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import capability_registry_checker
 import dependency_audit
 import frozen_registry_checker
 import slo_validate
@@ -818,6 +819,11 @@ def main() -> int:
     frozen_registry_result = frozen_registry_checker.validate_frozen_registry(ROOT)
     if not frozen_registry_result.passed:
         for err in frozen_registry_result.errors:
+            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
+
+    capability_registry_result = capability_registry_checker.validate_capability_registry(ROOT)
+    if not capability_registry_result.passed:
+        for err in capability_registry_result.errors:
             fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
 
 

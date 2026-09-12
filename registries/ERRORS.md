@@ -139,6 +139,12 @@ operation states rather than generic errors.
 | `ERR-FROZEN-TOMBSTONE-RESURRECTED-001` | tombstoned operation or resource was resurrected into active registry | allocate a new identifier; tombstoned entries remain permanently retired |
 | `ERR-FROZEN-DIGEST-MISMATCH-001` | frozen public registry digest does not match canonical encoding of sorted rows | recompute canonical freeze digest over sorted rows |
 | `ERR-FROZEN-UNREGISTERED-OP-001` | crosswalk or presentation surface references an unregistered operation | register operation in frozen registry or correct surface reference |
+| `ERR-CAPABILITY-REGISTRY-DRIFT-001` | capability registry row drift between architecture JSON and markdown | synchronize architecture/capabilities.json and registries/CAPABILITIES.md |
+| `ERR-CAPABILITY-UNKNOWN-PLANE-001` | capability specifies an unknown or unregistered semantic plane | assign a recognized semantic plane to the capability row |
+| `ERR-CAPABILITY-MISSING-DEFAULT-001` | capability row lacks a default role or default grant policy | declare an explicit default role or default denial in the capability row |
+| `ERR-CAPABILITY-STABLE-ID-REUSED-001` | capability stable identifier was reused or renumbered for a different entity | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-CAPABILITY-DIGEST-MISMATCH-001` | capability registry digest does not match canonical encoding of sorted rows | recompute canonical capability registry digest |
+| `ERR-CAPABILITY-CORRUPT-FILE-001` | capability registry or markdown documentation file is missing or corrupt | repair or restore capability registry file |
 
 
 ## Subordinate dependency audit diagnostic registry (DEP-AUD)
