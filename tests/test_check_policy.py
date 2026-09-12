@@ -335,5 +335,41 @@ class CheckPolicySerdeDurableBytesTests(CheckPolicyFixtureCase):
         self.assertEqual(check_policy.errors, [])
 
 
+class CheckPolicyOfflineBuildTests(CheckPolicyFixtureCase):
+    """fss-x4a.26.3: check-policy enforces DEP-AUD-026 (build-script network deny-list) and
+    DEP-AUD-027 (sealed-offline qualify.sh), not just build_scripts_may_not_use_network = true."""
+
+    def test_cargo_policy_build_script_network_fails(self) -> None:
+        (self.root / "Cargo.toml").write_text(
+            '[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n\n[workspace.lints.rust]\nunsafe_code = "forbid"\n',
+            encoding="utf-8",
+        )
+        make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
+        (self.root / "crates" / "crate-a" / "build.rs").write_text(
+            '#![forbid(unsafe_code)]\nfn main() { let _ = std::process::Command::new("curl"); }\n', encoding="utf-8"
+        )
+        check_policy.cargo_policy(make_clean_policy_dict())
+        self.assertTrue(any(err.startswith("DEP-AUD-026") and "build.rs:2" in err for err in check_policy.errors), check_policy.errors)
+
+    def test_qualify_offline_policy_missing_offline_fails(self) -> None:
+        script = self.root / "scripts" / "qualify.sh"
+        script.parent.mkdir(parents=True)
+        script.write_text(
+            '#!/usr/bin/env bash\nexport CARGO_NET_OFFLINE=true\nrun check rustup run "$tc" cargo check --locked --workspace\n',
+            encoding="utf-8",
+        )
+        check_policy.qualify_offline_policy()
+        self.assertTrue(any(err.startswith("DEP-AUD-027") and "scripts/qualify.sh:3" in err for err in check_policy.errors), check_policy.errors)
+
+    def test_qualify_offline_policy_missing_script_fails(self) -> None:
+        check_policy.qualify_offline_policy()
+        self.assertTrue(any(err.startswith("DEP-AUD-027") for err in check_policy.errors), check_policy.errors)
+
+    def test_live_qualify_offline_policy_passes(self) -> None:
+        check_policy.ROOT = ROOT
+        check_policy.qualify_offline_policy()
+        self.assertEqual(check_policy.errors, [])
+
+
 if __name__ == "__main__":
     unittest.main()

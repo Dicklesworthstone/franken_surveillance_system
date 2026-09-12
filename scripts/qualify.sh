@@ -2,6 +2,11 @@
 set -Eeuo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Sealed-offline qualification (fss-x4a.26.3, DEP-AUD-027): every cargo process started below,
+# including the `cargo metadata` cargo-fmt runs internally, inherits Cargo's offline mode, and
+# every cargo invocation also passes --offline. This seals Cargo resolution only; it is not
+# OS-level network isolation (no network namespace / `unshare -n` is used).
+export CARGO_NET_OFFLINE=true
 LANE="full"
 RECEIPT_DIR="${FSS_RECEIPT_DIR:-}"
 WRITE_RECEIPT=1
@@ -264,9 +269,9 @@ rust_lane() {
   toolchain="$(pinned_toolchain)"
   run rustup-present bash -c 'command -v rustup >/dev/null 2>&1'
   run rustc-version rustup run "$toolchain" rustc -Vv
-  run cargo-version rustup run "$toolchain" cargo -V
+  run cargo-version rustup run "$toolchain" cargo --offline -V
   run metadata rustup run "$toolchain" cargo metadata --locked --offline --format-version 1
-  run fmt rustup run "$toolchain" cargo fmt --all --check
+  run fmt rustup run "$toolchain" cargo --offline fmt --all --check
   run check rustup run "$toolchain" cargo check --locked --offline --workspace --all-targets
   run clippy rustup run "$toolchain" cargo clippy --locked --offline --workspace --all-targets -- -D warnings
   run test rustup run "$toolchain" cargo test --locked --offline --workspace --all-targets
