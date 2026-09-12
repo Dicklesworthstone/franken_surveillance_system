@@ -343,7 +343,9 @@ impl InMemoryObjectStore {
     /// Transitions a verified object to a permanent tombstone state.
     ///
     /// Keeps the tombstone record and content digest, but releases payload bytes and quota.
+    /// If the object was a published manifest root, it is removed from visible manifests.
     /// Fails with [`ObjectError::TombstoneDigestMismatch`] if the record payload digest does not match,
+    /// [`ObjectError::Missing`] or [`ObjectError::NotVerified`] if a present witness digest is unverified,
     /// [`ObjectError::Missing`] if the object is absent,
     /// [`ObjectError::NotVerified`] if the object is staged,
     /// or [`ObjectError::TombstoneConflict`] if a different tombstone record was already applied.
@@ -359,6 +361,9 @@ impl InMemoryObjectStore {
                 actual: record.payload_digest,
             });
         }
+        if let Some(witness) = record.witness_digest {
+            self.require_verified(witness)?;
+        }
         let object = self
             .objects
             .get_mut(&digest)
@@ -368,6 +373,7 @@ impl InMemoryObjectStore {
             ObjectState::Staged => Err(ObjectError::NotVerified(digest)),
             ObjectState::Tombstoned => {
                 if object.tombstone.as_ref() == Some(&record) {
+                    self.visible_manifests.remove(&digest);
                     Ok(())
                 } else {
                     Err(ObjectError::TombstoneConflict(digest))
@@ -379,6 +385,7 @@ impl InMemoryObjectStore {
                 object.state = ObjectState::Tombstoned;
                 object.tombstone = Some(record);
                 self.total_bytes = self.total_bytes.saturating_sub(released_bytes);
+                self.visible_manifests.remove(&digest);
                 Ok(())
             }
         }

@@ -258,3 +258,98 @@ fn tombstone_is_idempotent_for_identical_record_and_rejects_conflict() -> Result
 
     Ok(())
 }
+
+/// Positive: Tombstoning a published manifest root removes it from visible_manifests
+/// and unpublishes it from active manifest queries.
+#[test]
+fn tombstoning_manifest_root_unpublishes_manifest_and_drops_from_visible_manifests()
+-> Result<(), Box<dyn Error>> {
+    let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 4096));
+    let leaf = store.put_verified(b"leaf-payload")?;
+    let manifest = ObjectManifest::new("incident", [leaf], None)?;
+    let root = store.publish_manifest(manifest)?.root;
+
+    assert_eq!(store.published_manifest_count(), 1);
+
+    let record = sample_tombstone("obj-manifest-root", 1, root)?;
+    store.tombstone(root, record)?;
+
+    // published_manifest_count decrements to 0:
+    assert_eq!(store.published_manifest_count(), 0);
+
+    // Revoked root is not reported as an active published manifest with tombstoned closure:
+    assert!(
+        store
+            .published_manifests_with_tombstoned_closure()
+            .is_empty()
+    );
+
+    // published_manifest returns ManifestNotPublished:
+    assert!(matches!(
+        store.published_manifest(root),
+        Err(ObjectError::ManifestNotPublished(r)) if r == root
+    ));
+
+    Ok(())
+}
+
+/// Planted Negative: A tombstone record with an unverified or missing witness digest is refused.
+#[test]
+fn tombstone_with_unverified_witness_digest_is_refused() -> Result<(), Box<dyn Error>> {
+    let mut store = InMemoryObjectStore::new(ObjectLimits::new(16, 4096));
+    let digest = store.put_verified(b"data")?;
+
+    // Case 1: Missing witness
+    let unverified_witness = ContentDigest::sha256(b"missing-witness");
+    let record_missing = TombstoneRecord::new(
+        ObjectId::parse("obj-evidence-missing")?,
+        Generation::parse_positive(2)?,
+        Generation::parse_positive(1)?,
+        TombstoneReason::Deleted,
+        Some(unverified_witness),
+        digest,
+    )?;
+
+    let res_missing = store.tombstone(digest, record_missing);
+    assert!(matches!(
+        res_missing,
+        Err(ObjectError::Missing(w)) if w == unverified_witness
+    ));
+
+    // Case 2: Staged (not verified) witness
+    let staged_witness = store.stage(b"staged-witness-proof")?;
+    let record_staged = TombstoneRecord::new(
+        ObjectId::parse("obj-evidence-staged")?,
+        Generation::parse_positive(2)?,
+        Generation::parse_positive(1)?,
+        TombstoneReason::Deleted,
+        Some(staged_witness),
+        digest,
+    )?;
+
+    let res_staged = store.tombstone(digest, record_staged);
+    assert!(matches!(
+        res_staged,
+        Err(ObjectError::NotVerified(w)) if w == staged_witness
+    ));
+
+    // Target object remains Verified:
+    assert_eq!(store.state(digest), Some(ObjectState::Verified));
+
+    // Case 3: Verified witness succeeds
+    let verified_witness = store.put_verified(b"verified-witness-proof")?;
+    let record_valid = TombstoneRecord::new(
+        ObjectId::parse("obj-evidence-valid")?,
+        Generation::parse_positive(2)?,
+        Generation::parse_positive(1)?,
+        TombstoneReason::Deleted,
+        Some(verified_witness),
+        digest,
+    )?;
+
+    store.tombstone(digest, record_valid.clone())?;
+    assert_eq!(store.state(digest), Some(ObjectState::Tombstoned));
+    assert_eq!(store.tombstone_record(digest), Some(&record_valid));
+
+    Ok(())
+}
