@@ -215,6 +215,12 @@ impl KnowledgeCell {
         self.knowledge_state == KnowledgeState::Redacted
     }
 
+    /// Returns whether this knowledge cell is an indeterminate proposition.
+    #[must_use]
+    pub fn is_indeterminate(&self) -> bool {
+        self.knowledge_state == KnowledgeState::Indeterminate
+    }
+
     /// Returns whether this cell requires explicit assumptions to be used in planning.
     #[must_use]
     pub fn requires_explicit_assumptions(&self) -> bool {

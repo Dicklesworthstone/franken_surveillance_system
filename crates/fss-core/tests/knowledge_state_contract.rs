@@ -812,3 +812,113 @@ fn test_redacted_knowledge_cell_abstract_constraints_and_hard_gate() -> Result<(
 
     Ok(())
 }
+
+#[test]
+fn test_indeterminate_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Indeterminate;
+
+    // 1. Exact normative stable ID
+    assert_eq!(state.id(), "KSTATE-008");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(state.as_str(), "indeterminate");
+    assert_eq!(format!("{state}"), "indeterminate");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        state.meaning(),
+        "A consequential external outcome may have occurred but is not yet proved or safely negated."
+    );
+
+    // 4. May support planning: yes, only in reconciliation branches
+    assert!(state.may_support_planning());
+    assert_eq!(
+        state.planning_support_description(),
+        "yes, only in reconciliation branches"
+    );
+
+    // 5. May authorize irreversible effect: no (hard constitutional gate)
+    assert!(!state.may_authorize_irreversible_effect());
+    assert_eq!(state.irreversible_effect_description(), "no");
+
+    // 6. Explicit assumptions required: yes
+    assert!(state.explicit_assumptions_required());
+
+    Ok(())
+}
+
+#[test]
+fn test_indeterminate_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = KnowledgeState::from_id("KSTATE-008")?;
+    assert_eq!(from_id, KnowledgeState::Indeterminate);
+
+    // Parse from schema name
+    let from_name = KnowledgeState::from_name("indeterminate")?;
+    assert_eq!(from_name, KnowledgeState::Indeterminate);
+
+    // Parse via FromStr
+    let from_str_name = KnowledgeState::from_str("indeterminate")?;
+    assert_eq!(from_str_name, KnowledgeState::Indeterminate);
+
+    let from_str_id = KnowledgeState::from_str("KSTATE-008")?;
+    assert_eq!(from_str_id, KnowledgeState::Indeterminate);
+
+    Ok(())
+}
+
+#[test]
+fn test_indeterminate_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let state = KnowledgeState::Indeterminate;
+
+    let mut encoder = CanonicalEncoder::new();
+    state.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = KnowledgeState::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, state);
+    assert_eq!(decoded.id(), "KSTATE-008");
+    assert_eq!(decoded.as_str(), "indeterminate");
+
+    Ok(())
+}
+
+#[test]
+fn test_indeterminate_knowledge_cell_reconciliation_and_hard_gate() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let ambiguous_receipt = ContentDigest::sha256(b"inconclusive_actuator_acknowledgement");
+
+    // Construct a cell with KnowledgeState::Indeterminate
+    let cell = KnowledgeCell {
+        claim_id: "claim:gate:lock:001".to_string(),
+        statement: "Gate lock command sent but physical latch closure unverified due to timeout"
+            .to_string(),
+        knowledge_state: KnowledgeState::Indeterminate,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![ambiguous_receipt],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+    };
+
+    // Properties on KnowledgeCell
+    assert!(cell.is_indeterminate());
+    assert!(!cell.is_redacted());
+    assert!(!cell.is_not_observable());
+    assert!(!cell.is_stale());
+    assert!(!cell.is_conflicted());
+    assert!(!cell.is_unknown());
+    assert!(!cell.is_estimated());
+    assert!(cell.requires_explicit_assumptions());
+    assert!(cell.may_support_planning());
+
+    // Constitutional Hard Gate: Indeterminate CANNOT be used as an irreversible-effect premise.
+    assert!(
+        !cell.is_irreversible_effect_premise(now),
+        "Indeterminate knowledge state must NEVER authorize irreversible effects"
+    );
+
+    Ok(())
+}
