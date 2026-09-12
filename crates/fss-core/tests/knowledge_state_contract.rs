@@ -685,8 +685,10 @@ fn test_not_observable_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
 fn test_not_observable_knowledge_cell_protected_possibility_and_hard_gate()
 -> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
+    let coverage_gap_witness = ContentDigest::sha256(b"corridor_sensor_occlusion_coverage_witness");
 
-    // Construct a cell with KnowledgeState::NotObservable (e.g. sensor occluded or unpowered during interval)
+    // Non-empty evidence (the coverage witness bounding observability), no contradictions,
+    // and unexpired validity, so only the knowledge state can refuse the premise.
     let cell = KnowledgeCell {
         claim_id: "claim:corridor:motion:001".to_string(),
         statement: "Corridor unobserved due to sensor occlusion during requested interval"
@@ -694,11 +696,12 @@ fn test_not_observable_knowledge_cell_protected_possibility_and_hard_gate()
         knowledge_state: KnowledgeState::NotObservable,
         provenance: ProvenanceClass::Observed,
         hypothesis: None,
-        evidence: vec![],
+        evidence: vec![coverage_gap_witness],
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
-    };
+    }
+    .validated()?;
 
     // Properties on KnowledgeCell
     assert!(cell.is_not_observable());
@@ -713,6 +716,68 @@ fn test_not_observable_knowledge_cell_protected_possibility_and_hard_gate()
     assert!(
         !cell.is_irreversible_effect_premise(now),
         "NotObservable knowledge state must NEVER authorize irreversible effects"
+    );
+
+    // The identical fixture relabelled Known is a premise, so the refusal above came from the
+    // knowledge state alone rather than from missing evidence or expired validity.
+    let mut observed = cell;
+    observed.knowledge_state = KnowledgeState::Known;
+    assert!(observed.is_irreversible_effect_premise(now));
+
+    Ok(())
+}
+
+#[test]
+fn test_not_observable_is_distinct_from_unknown() -> Result<(), Box<dyn Error>> {
+    let not_observable = KnowledgeState::NotObservable;
+    let unknown = KnowledgeState::Unknown;
+
+    // Distinct registry rows.
+    assert_ne!(not_observable, unknown);
+    assert_ne!(not_observable.id(), unknown.id());
+    assert_ne!(not_observable.as_str(), unknown.as_str());
+    assert_ne!(not_observable.meaning(), unknown.meaning());
+    assert_eq!(
+        not_observable.planning_support_description(),
+        "yes, as a protected residual possibility"
+    );
+    assert_eq!(
+        unknown.planning_support_description(),
+        "yes, as an explicit branch or open variable"
+    );
+    assert_eq!(KnowledgeState::from_name("not_observable")?, not_observable);
+    assert_eq!(KnowledgeState::from_id("KSTATE-006")?, not_observable);
+
+    // Distinct canonical encodings; each decodes back to itself only.
+    let encode = |state: KnowledgeState| {
+        let mut encoder = CanonicalEncoder::new();
+        state.encode_canonical(&mut encoder);
+        encoder.finish()
+    };
+    let not_observable_bytes = encode(not_observable);
+    let unknown_bytes = encode(unknown);
+    assert_ne!(not_observable_bytes, unknown_bytes);
+    assert_eq!(
+        KnowledgeState::decode_canonical(&mut CanonicalDecoder::new(&not_observable_bytes))?,
+        not_observable
+    );
+    assert_eq!(
+        KnowledgeState::decode_canonical(&mut CanonicalDecoder::new(&unknown_bytes))?,
+        unknown
+    );
+
+    // The same claim in each state: disjoint predicates and distinct digests.
+    let not_observable_cell = gate_isolating_cell(not_observable)?;
+    let mut unknown_cell = not_observable_cell.clone();
+    unknown_cell.knowledge_state = unknown;
+    unknown_cell.validate()?;
+    assert!(not_observable_cell.is_not_observable());
+    assert!(!not_observable_cell.is_unknown());
+    assert!(unknown_cell.is_unknown());
+    assert!(!unknown_cell.is_not_observable());
+    assert_ne!(
+        not_observable_cell.cell_digest(),
+        unknown_cell.cell_digest()
     );
 
     Ok(())
