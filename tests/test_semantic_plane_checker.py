@@ -988,6 +988,82 @@ pub fn bridge_generic_result<T: Into<EffectIntent>>(m: ModelOutput) -> Result<T,
             self.assertIn("bridge_reverse_where", functions_flagged, f"bridge_reverse_where missing from {model_effect_findings}")
             self.assertIn("bridge_generic_result", functions_flagged, f"bridge_generic_result missing from {model_effect_findings}")
 
+    def test_path_qualified_and_use_renamed_where_clauses_fail_closed(self) -> None:
+        """Path-qualified where clauses (crate::, ::fss_core::, super::, self::) and use-renames must fail closed under NEG-003."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src = tmp_root / "crates/fss-cognition/src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "bridge.rs").write_text("""
+pub struct ModelOutput;
+pub struct EffectIntent;
+
+// 1. crate:: path in reverse where-clause
+pub fn bridge_crate_reverse<T>(m: ModelOutput) -> T where crate::effect::EffectIntent: From<T> {
+    unimplemented!()
+}
+
+// 2. ::fss_core:: path in reverse where-clause
+pub fn bridge_core_reverse<T>(m: ModelOutput) -> T where ::fss_core::effect::EffectIntent: From<T> {
+    unimplemented!()
+}
+
+// 3. super:: path in reverse where-clause
+pub fn bridge_super_reverse<T>(m: ModelOutput) -> T where super::effect::EffectIntent: From<T> {
+    unimplemented!()
+}
+
+// 4. self:: path in reverse where-clause
+pub fn bridge_self_reverse<T>(m: ModelOutput) -> T where self::effect::EffectIntent: From<T> {
+    unimplemented!()
+}
+
+// 5. use-rename in reverse where-clause
+use crate::effect::EffectIntent as CustomIntent;
+pub fn bridge_use_rename_reverse<T>(m: ModelOutput) -> T where CustomIntent: From<T> {
+    unimplemented!()
+}
+
+// 6. use-rename in forward where-clause
+pub fn bridge_use_rename_forward<T>(m: ModelOutput) -> T where T: Into<CustomIntent> {
+    unimplemented!()
+}
+
+// 7. use-rename in inline generic bound
+pub fn bridge_use_rename_inline<T: Into<CustomIntent>>(m: ModelOutput) -> T {
+    unimplemented!()
+}
+
+// 8. TryFrom with path qualification
+pub fn bridge_try_from_crate<T>(m: ModelOutput) -> T where crate::effect::EffectIntent: TryFrom<T> {
+    unimplemented!()
+}
+""", encoding="utf-8")
+            reg = tmp_root / "architecture"
+            reg.mkdir(parents=True, exist_ok=True)
+            (reg / "semantic_plane_registry.json").write_text(json.dumps({
+                "schema": "fss.semantic_plane_registry.v1",
+                "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                "registered_boundary_modules": [],
+                "module_declarations": {"crates/fss-cognition/src/bridge.rs": "cognition"},
+                "types": {
+                    "ModelOutput": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "cognition"},
+                    "EffectIntent": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "effect"}
+                }
+            }), encoding="utf-8")
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Path-qualified and use-renamed where clauses must fail closed under NEG-003")
+            model_effect_findings = [f for f in findings if f.code == ERR_MODEL_OUTPUT_REACHES_EFFECT]
+            functions_flagged = {f.params.get("function") for f in model_effect_findings}
+            self.assertIn("bridge_crate_reverse", functions_flagged)
+            self.assertIn("bridge_core_reverse", functions_flagged)
+            self.assertIn("bridge_super_reverse", functions_flagged)
+            self.assertIn("bridge_self_reverse", functions_flagged)
+            self.assertIn("bridge_use_rename_reverse", functions_flagged)
+            self.assertIn("bridge_use_rename_forward", functions_flagged)
+            self.assertIn("bridge_use_rename_inline", functions_flagged)
+            self.assertIn("bridge_try_from_crate", functions_flagged)
+
     def test_type_aliases_to_model_and_effect_types_fail_closed(self) -> None:
         """Type aliases to ModelOutput and EffectIntent (including pub type, chained, and tuple) must fail closed with ERR_MODEL_OUTPUT_REACHES_EFFECT."""
         with tempfile.TemporaryDirectory() as td:
