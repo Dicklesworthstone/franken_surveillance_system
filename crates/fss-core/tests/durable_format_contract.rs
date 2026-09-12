@@ -425,11 +425,7 @@ fn finding_6_u16_version_overflow_rejected_at_build() -> TestResult {
 
 #[test]
 fn finding_7_inverted_version_range_rejected_at_build() -> TestResult {
-    let err = expect_err(
-        DurableFormat::builder(b"TEST")
-            .version_range(5, 2)
-            .build(),
-    )?;
+    let err = expect_err(DurableFormat::builder(b"TEST").version_range(5, 2).build())?;
     assert!(err.is_invalid_format());
     Ok(())
 }

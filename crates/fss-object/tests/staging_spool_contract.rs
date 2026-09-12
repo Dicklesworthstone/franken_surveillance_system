@@ -1037,10 +1037,7 @@ fn test_name_digest_mismatch_takes_precedence_over_declared_length_limit() -> Te
 
     let spool = StagingSpool::open(&root, limits(4, 1024))?;
     let report = spool.recovery_report();
-    let corrupt = report
-        .corrupt
-        .iter()
-        .find(|c| c.digest == file_digest);
+    let corrupt = report.corrupt.iter().find(|c| c.digest == file_digest);
     match corrupt {
         Some(c) => match c.kind {
             CorruptionKind::NameDigestMismatch { recorded } => {
