@@ -5,10 +5,10 @@ use std::collections::BTreeSet;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder,
     Completeness, ContentDigest, ContractBasis, CoverageContinuity, CoverageStopReason,
-    CoverageWitness, EffectState, EventState, HandoffCapsule, HandoffId, HandoffPublishParams,
-    HypothesisDisposition, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObjectId,
-    ObligationId, PossibleWorld, PrincipalId, ProvenanceClass, SessionId, SituationCapsule,
-    SituationFrame, TimestampNs, WorldEnvelope,
+    CoverageWitness, EffectState, EventKind, EventState, HandoffCapsule, HandoffId,
+    HandoffPublishParams, HypothesisDisposition, KnowledgeCell, KnowledgeState, LedgerAnchor,
+    MissionId, ObjectId, ObligationId, PossibleWorld, PrincipalId, ProvenanceClass, SessionId,
+    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -183,15 +183,42 @@ pub fn compile_reference_situation(
         == EventState::Rejected
     {
         if let Some(witness) = coverage_witness {
-            let matches_anchor = witness.anchor.site_lineage == current_anchor.site_lineage
-                && witness.anchor.ledger_epoch == current_anchor.ledger_epoch;
+            let matches_anchor = witness.anchor == current_anchor;
             let matches_generation = witness.authorized_generation > 0
                 && witness.authorized_generation == witness.observed_generation
                 && witness.authorized_generation == current_anchor.policy_epoch;
-            let matches_domain = !witness.authorized_domain.is_empty()
+            let expected_predicate = match request.decision.event.kind {
+                EventKind::UnknownPresence => "no_unknown_person_present",
+                EventKind::PerimeterBreach => "no_perimeter_breach",
+                EventKind::CovertApproach => "no_covert_approach",
+                EventKind::SensorTamper => "no_sensor_tamper",
+                EventKind::BenignRoutine => "no_benign_routine",
+                EventKind::Unclassified => "no_unclassified_event",
+            };
+            let matches_predicate = witness.negative_predicate == expected_predicate;
+
+            let mut required_domains = BTreeSet::new();
+            for ev in &request.decision.event.evidence {
+                if !ev.failure_domain.is_empty() {
+                    required_domains.insert(ev.failure_domain.clone());
+                }
+            }
+            for zone in &request.decision.event.zone_ids {
+                if !zone.is_empty() {
+                    required_domains.insert(zone.clone());
+                }
+            }
+            let covers_event_domains = !required_domains.is_empty()
+                && required_domains.is_subset(&witness.authorized_domain);
+            let matches_domain = covers_event_domains
+                && !witness.authorized_domain.is_empty()
                 && witness.authorized_domain == witness.observed_domain;
 
-            if witness.certifies_absence() && matches_anchor && matches_generation && matches_domain
+            if witness.certifies_absence()
+                && matches_anchor
+                && matches_generation
+                && matches_predicate
+                && matches_domain
             {
                 coverage_proof_root = Some(witness.witness_digest());
                 let statement = format!(
@@ -222,8 +249,23 @@ pub fn compile_reference_situation(
                     )
                 } else if !matches_anchor {
                     format!(
-                        "coverage witness anchor epoch {} conflicts with current anchor epoch {}",
-                        witness.anchor.ledger_epoch, current_anchor.ledger_epoch
+                        "coverage witness anchor ({:?}, epoch {}, commit {}) conflicts with current anchor ({:?}, epoch {}, commit {})",
+                        witness.anchor.site_lineage,
+                        witness.anchor.ledger_epoch,
+                        witness.anchor.commit_sequence,
+                        current_anchor.site_lineage,
+                        current_anchor.ledger_epoch,
+                        current_anchor.commit_sequence,
+                    )
+                } else if !matches_predicate {
+                    format!(
+                        "coverage witness negative predicate '{}' does not match expected predicate '{expected_predicate}' for {:?}",
+                        witness.negative_predicate, request.decision.event.kind,
+                    )
+                } else if !covers_event_domains {
+                    format!(
+                        "coverage witness authorized domain {:?} does not cover required event domains {:?}",
+                        witness.authorized_domain, required_domains
                     )
                 } else if witness.continuity != CoverageContinuity::Continuous {
                     format!(
@@ -240,7 +282,7 @@ pub fn compile_reference_situation(
                         "coverage witness stop reason is {:?} (expected Complete) for domain {:?}",
                         witness.stop_reason, witness.authorized_domain
                     )
-                } else if !matches_domain {
+                } else if witness.authorized_domain != witness.observed_domain {
                     format!(
                         "coverage witness observed domain {:?} does not match authorized domain {:?}",
                         witness.observed_domain, witness.authorized_domain
@@ -357,20 +399,20 @@ pub fn compile_reference_situation(
         request.alert_outcome,
     ) {
         (ReferencePolicyAction::PrepareAlert, None, None) => {
-            affordances.push(project_affordance(
-                "affordance:alert:prepare",
-                "plan",
-                &format!("fss://event/{event_name}/alert"),
-                "Prepare an idempotent alert effect from the corroborated canonical event.",
-                AffordanceClass::Conditional,
-                alert_supported_worlds.clone(),
-                alert_unsafe_worlds.clone(),
-                Some(presence_world.clone()),
-                CAPABILITY_ALERT_PREPARE,
-                alert_prepare_cost()?,
-                true,
-                &request.available_capabilities,
-            ));
+            affordances.push(project_affordance(ProjectAffordanceSpec {
+                affordance_id: "affordance:alert:prepare",
+                operation: "plan",
+                target: &format!("fss://event/{event_name}/alert"),
+                rationale: "Prepare an idempotent alert effect from the corroborated canonical event.",
+                available_class: AffordanceClass::Conditional,
+                supported_worlds: alert_supported_worlds.clone(),
+                unsafe_worlds: alert_unsafe_worlds.clone(),
+                branch_predicate: Some(presence_world.clone()),
+                required_capability: CAPABILITY_ALERT_PREPARE,
+                cost: alert_prepare_cost()?,
+                reversible: true,
+                available_capabilities: &request.available_capabilities,
+            }));
         }
         (ReferencePolicyAction::PrepareAlert, Some(plan), None) => {
             obligations.push(plan.obligation_id.clone());
@@ -378,20 +420,20 @@ pub fn compile_reference_situation(
                 "Effect {} has a prepared terminal-proof obligation but no canonical outcome publication.",
                 plan.intent.operation_id.as_str()
             ));
-            affordances.push(project_affordance(
-                "affordance:alert:commit",
-                "commit",
-                &format!("fss://operation/{}", plan.intent.operation_id.as_str()),
-                "Commit the exact prepared alert intent; do not substitute a new request or idempotency key.",
-                AffordanceClass::Conditional,
-                alert_supported_worlds.clone(),
-                alert_unsafe_worlds.clone(),
-                Some(presence_world.clone()),
-                CAPABILITY_ALERT_COMMIT,
-                alert_commit_cost()?,
-                false,
-                &request.available_capabilities,
-            ));
+            affordances.push(project_affordance(ProjectAffordanceSpec {
+                affordance_id: "affordance:alert:commit",
+                operation: "commit",
+                target: &format!("fss://operation/{}", plan.intent.operation_id.as_str()),
+                rationale: "Commit the exact prepared alert intent; do not substitute a new request or idempotency key.",
+                available_class: AffordanceClass::Conditional,
+                supported_worlds: alert_supported_worlds.clone(),
+                unsafe_worlds: alert_unsafe_worlds.clone(),
+                branch_predicate: Some(presence_world.clone()),
+                required_capability: CAPABILITY_ALERT_COMMIT,
+                cost: alert_commit_cost()?,
+                reversible: false,
+                available_capabilities: &request.available_capabilities,
+            }));
         }
         (ReferencePolicyAction::PrepareAlert, Some(_), Some(outcome)) => {
             match outcome.outcome.operation_receipt.state {
@@ -407,89 +449,89 @@ pub fn compile_reference_situation(
                             .operation_id
                             .as_str()
                     ));
-                    affordances.push(project_affordance(
-                        "affordance:alert:reconcile",
-                        "investigate",
-                        &format!(
+                    affordances.push(project_affordance(ProjectAffordanceSpec {
+                        affordance_id: "affordance:alert:reconcile",
+                        operation: "investigate",
+                        target: &format!(
                             "fss://operation/{}/reconcile",
                             outcome.outcome.operation_receipt.intent.operation_id.as_str()
                         ),
-                        "Read independent provider state and reconcile the existing effect without resending it.",
-                        AffordanceClass::Probe,
-                        retained_worlds.clone(),
-                        BTreeSet::new(),
-                        None,
-                        CAPABILITY_EFFECT_RECONCILE,
-                        reconcile_cost()?,
-                        true,
-                        &request.available_capabilities,
-                    ));
+                        rationale: "Read independent provider state and reconcile the existing effect without resending it.",
+                        available_class: AffordanceClass::Probe,
+                        supported_worlds: retained_worlds.clone(),
+                        unsafe_worlds: BTreeSet::new(),
+                        branch_predicate: None,
+                        required_capability: CAPABILITY_EFFECT_RECONCILE,
+                        cost: reconcile_cost()?,
+                        reversible: true,
+                        available_capabilities: &request.available_capabilities,
+                    }));
                 }
                 EffectState::Failed => {
                     at_risk.push("The prior alert attempt is proved failed; a new effect requires a new witnessed plan and idempotency identity.".to_owned());
-                    affordances.push(project_affordance(
-                        "affordance:alert:replan",
-                        "plan",
-                        &format!("fss://event/{event_name}/alert"),
-                        "Prepare a new alert operation only after reviewing the retained failure proof.",
-                        AffordanceClass::Conditional,
-                        alert_supported_worlds.clone(),
-                        alert_unsafe_worlds.clone(),
-                        Some(presence_world.clone()),
-                        CAPABILITY_ALERT_PREPARE,
-                        alert_prepare_cost()?,
-                        true,
-                        &request.available_capabilities,
-                    ));
+                    affordances.push(project_affordance(ProjectAffordanceSpec {
+                        affordance_id: "affordance:alert:replan",
+                        operation: "plan",
+                        target: &format!("fss://event/{event_name}/alert"),
+                        rationale: "Prepare a new alert operation only after reviewing the retained failure proof.",
+                        available_class: AffordanceClass::Conditional,
+                        supported_worlds: alert_supported_worlds.clone(),
+                        unsafe_worlds: alert_unsafe_worlds.clone(),
+                        branch_predicate: Some(presence_world.clone()),
+                        required_capability: CAPABILITY_ALERT_PREPARE,
+                        cost: alert_prepare_cost()?,
+                        reversible: true,
+                        available_capabilities: &request.available_capabilities,
+                    }));
                 }
                 EffectState::Verified => {
-                    affordances.push(project_affordance(
-                        "affordance:event:monitor",
-                        "wait",
-                        &format!("fss://event/{event_name}"),
-                        "Wait for a meaningful evidence or effect-state delta; the alert obligation is terminal.",
-                        AffordanceClass::Wait,
-                        retained_worlds.clone(),
-                        BTreeSet::new(),
-                        None,
-                        CAPABILITY_SESSION_WAIT,
-                        wait_cost()?,
-                        true,
-                        &request.available_capabilities,
-                    ));
+                    affordances.push(project_affordance(ProjectAffordanceSpec {
+                        affordance_id: "affordance:event:monitor",
+                        operation: "wait",
+                        target: &format!("fss://event/{event_name}"),
+                        rationale: "Wait for a meaningful evidence or effect-state delta; the alert obligation is terminal.",
+                        available_class: AffordanceClass::Wait,
+                        supported_worlds: retained_worlds.clone(),
+                        unsafe_worlds: BTreeSet::new(),
+                        branch_predicate: None,
+                        required_capability: CAPABILITY_SESSION_WAIT,
+                        cost: wait_cost()?,
+                        reversible: true,
+                        available_capabilities: &request.available_capabilities,
+                    }));
                 }
                 _ => return Err(ReferenceError::InvalidSpec("situation_effect_state")),
             }
         }
         (ReferencePolicyAction::Hold, None, None) => {
-            affordances.push(project_affordance(
-                "affordance:event:investigate",
-                "investigate",
-                &format!("fss://event/{event_name}/evidence"),
-                "Acquire or inspect evidence that can distinguish the retained possible worlds.",
-                AffordanceClass::Probe,
-                retained_worlds.clone(),
-                BTreeSet::new(),
-                None,
-                CAPABILITY_EVIDENCE_QUERY,
-                investigate_cost()?,
-                true,
-                &request.available_capabilities,
-            ));
-            affordances.push(project_affordance(
-                "affordance:event:wait",
-                "wait",
-                &format!("fss://event/{event_name}"),
-                "Wait for a meaningful event or coverage delta while preserving every protected world.",
-                AffordanceClass::Wait,
-                retained_worlds.clone(),
-                BTreeSet::new(),
-                None,
-                CAPABILITY_SESSION_WAIT,
-                wait_cost()?,
-                true,
-                &request.available_capabilities,
-            ));
+            affordances.push(project_affordance(ProjectAffordanceSpec {
+                affordance_id: "affordance:event:investigate",
+                operation: "investigate",
+                target: &format!("fss://event/{event_name}/evidence"),
+                rationale: "Acquire or inspect evidence that can distinguish the retained possible worlds.",
+                available_class: AffordanceClass::Probe,
+                supported_worlds: retained_worlds.clone(),
+                unsafe_worlds: BTreeSet::new(),
+                branch_predicate: None,
+                required_capability: CAPABILITY_EVIDENCE_QUERY,
+                cost: investigate_cost()?,
+                reversible: true,
+                available_capabilities: &request.available_capabilities,
+            }));
+            affordances.push(project_affordance(ProjectAffordanceSpec {
+                affordance_id: "affordance:event:wait",
+                operation: "wait",
+                target: &format!("fss://event/{event_name}"),
+                rationale: "Wait for a meaningful event or coverage delta while preserving every protected world.",
+                available_class: AffordanceClass::Wait,
+                supported_worlds: retained_worlds.clone(),
+                unsafe_worlds: BTreeSet::new(),
+                branch_predicate: None,
+                required_capability: CAPABILITY_SESSION_WAIT,
+                cost: wait_cost()?,
+                reversible: true,
+                available_capabilities: &request.available_capabilities,
+            }));
             affordances.push(ActionAffordance {
                 affordance_id: "affordance:alert:prepare".to_owned(),
                 operation: "plan".to_owned(),
@@ -922,46 +964,52 @@ fn compile_worlds(params: WorldCompilationParams<'_>) -> (WorldEnvelope, Vec<Str
     )
 }
 
-#[allow(clippy::too_many_arguments)]
-fn project_affordance(
-    affordance_id: &str,
-    operation: &str,
-    target: &str,
-    rationale: &str,
+struct ProjectAffordanceSpec<'a> {
+    affordance_id: &'a str,
+    operation: &'a str,
+    target: &'a str,
+    rationale: &'a str,
     available_class: AffordanceClass,
     supported_worlds: BTreeSet<String>,
     unsafe_worlds: BTreeSet<String>,
     branch_predicate: Option<String>,
-    required_capability: &str,
+    required_capability: &'a str,
     cost: BudgetVector,
     reversible: bool,
-    available_capabilities: &BTreeSet<String>,
-) -> ActionAffordance {
-    let available = available_capabilities.contains(required_capability);
+    available_capabilities: &'a BTreeSet<String>,
+}
+
+fn project_affordance(spec: ProjectAffordanceSpec<'_>) -> ActionAffordance {
+    let available = spec
+        .available_capabilities
+        .contains(spec.required_capability);
     ActionAffordance {
-        affordance_id: affordance_id.to_owned(),
-        operation: operation.to_owned(),
-        target: target.to_owned(),
+        affordance_id: spec.affordance_id.to_owned(),
+        operation: spec.operation.to_owned(),
+        target: spec.target.to_owned(),
         rationale: if available {
-            rationale.to_owned()
+            spec.rationale.to_owned()
         } else {
-            format!("{rationale} Required capability {required_capability} is not delegated.")
+            format!(
+                "{} Required capability {} is not delegated.",
+                spec.rationale, spec.required_capability
+            )
         },
         class: if available {
-            available_class
+            spec.available_class
         } else {
             AffordanceClass::Unavailable
         },
         supported_worlds: if available {
-            supported_worlds
+            spec.supported_worlds
         } else {
             BTreeSet::new()
         },
-        unsafe_worlds,
-        required_capabilities: BTreeSet::from([required_capability.to_owned()]),
-        cost,
-        reversible,
-        branch_predicate,
+        unsafe_worlds: spec.unsafe_worlds,
+        required_capabilities: BTreeSet::from([spec.required_capability.to_owned()]),
+        cost: spec.cost,
+        reversible: spec.reversible,
+        branch_predicate: spec.branch_predicate,
     }
 }
 

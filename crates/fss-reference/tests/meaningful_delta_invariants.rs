@@ -50,6 +50,7 @@ struct Variant {
     mission_state: Option<MissionLifecycleState>,
     custom_cells: Vec<KnowledgeCell>,
     custom_revision: Option<u64>,
+    contract_basis: Option<ContractBasis>,
 }
 
 impl Variant {
@@ -75,6 +76,7 @@ impl Variant {
             mission_state: Some(MissionLifecycleState::Active),
             custom_cells: Vec::new(),
             custom_revision: None,
+            contract_basis: None,
         })
     }
 }
@@ -379,7 +381,7 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
     let capsule = SituationCapsule {
         capsule_id: format!("situation:meaningful-delta:{}", variant.sequence),
         revision,
-        contract_basis: test_basis(),
+        contract_basis: variant.contract_basis.clone().unwrap_or_else(test_basis),
         mission_id: MissionId::parse("mission:meaningful-delta")?,
         session_id: SessionId::parse("session:meaningful-delta")?,
         principal_id: PrincipalId::parse("principal:meaningful-delta")?,
@@ -1803,6 +1805,344 @@ fn test_inv056_rejected_event_with_valid_coverage_witness_certifies_absence()
     );
 
     situation.verify()?;
+    harness.cleanup();
+    Ok(())
+}
+
+/// DEFECT 1 & 4 TEST: A CoverageWitness for an unrelated domain must NOT certify absence
+/// for an event in power:alpha, and must NOT drop the protected absence-uncertified world.
+#[test]
+fn test_inv056_failing_wrong_domain_witness_must_not_certify_absence() -> Result<(), Box<dyn Error>>
+{
+    let mut harness = TestHarness::new("inv056-wrong-domain")?;
+    let (decision, receipt) = harness.publish_rejected_decision("inv056-wrong-domain")?;
+    let req = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+
+    let anchor = harness.authority.current().anchor.clone();
+    let current_epoch = anchor.policy_epoch;
+    // Witness is for "power:completely_unrelated_parking_lot", NOT "power:alpha"!
+    let witness = CoverageWitness {
+        anchor,
+        authorized_domain: BTreeSet::from(["power:completely_unrelated_parking_lot".to_owned()]),
+        observed_domain: BTreeSet::from(["power:completely_unrelated_parking_lot".to_owned()]),
+        excluded_domain: BTreeSet::new(),
+        continuity: CoverageContinuity::Continuous,
+        completeness: Completeness::Complete,
+        negative_predicate: "no_unknown_person_present".to_owned(),
+        stop_reason: CoverageStopReason::Complete,
+        authorized_generation: current_epoch,
+        observed_generation: current_epoch,
+    };
+
+    let mut req = req;
+    req.coverage_witness = Some(&witness);
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    let absence = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
+
+    assert_eq!(
+        absence.knowledge_state,
+        KnowledgeState::Unknown,
+        "A witness for an unrelated domain must NOT certify absence!"
+    );
+    assert!(
+        situation
+            .capsule
+            .frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|w| w.protected && w.world_id.ends_with(":absence-uncertified")),
+        "Protected absence-uncertified residual world MUST be retained when domain does not match event!"
+    );
+
+    harness.cleanup();
+    Ok(())
+}
+
+/// DEFECT 2 TEST: Concurrent budget pressure must NOT swallow CoverageLoss or coverage_changes.
+#[test]
+fn test_inv056_failing_coverage_gap_with_concurrent_budget_pressure_must_emit_coverage_loss()
+-> Result<(), Box<dyn Error>> {
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+    v1.coverage = BTreeSet::from([
+        "fss://coverage/alpha".to_owned(),
+        "fss://coverage/extra-zone".to_owned(),
+    ]);
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.coverage = BTreeSet::from(["fss://coverage/alpha".to_owned()]); // Missing extra-zone!
+    v2.pressure = ResourcePressure::Constrained; // Triggers BudgetPressure!
+
+    let pub1 = publication(&v1)?;
+    let pub2 = publication(&v2)?;
+    pub1.verify()?;
+    pub2.verify()?;
+
+    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+        "CoverageLoss must be emitted even when BudgetPressure is also present! Classes: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .coverage_changes
+            .iter()
+            .any(|c| c.contains("missing coverage for authorized domain identities")),
+        "coverage_changes must name missing domain identities even under budget pressure! Changes: {:?}",
+        delta.coverage_changes
+    );
+
+    Ok(())
+}
+
+/// DEFECT 2 TEST: Degraded epistemic cell with concurrent budget pressure must emit CoverageLoss and coverage_changes.
+#[test]
+fn test_inv056_failing_degraded_epistemic_cell_with_concurrent_budget_pressure_must_emit_coverage_loss()
+-> Result<(), Box<dyn Error>> {
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.premise_state = KnowledgeState::NotObservable; // Degraded epistemic cell!
+    v2.pressure = ResourcePressure::Constrained; // Concurrent BudgetPressure!
+
+    let pub1 = publication(&v1)?;
+    let pub2 = publication(&v2)?;
+    pub1.verify()?;
+    pub2.verify()?;
+
+    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+        "CoverageLoss must be emitted when epistemic cell is degraded even under budget pressure! Classes: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .coverage_changes
+            .iter()
+            .any(|c| c.contains("epistemic cell degraded")),
+        "coverage_changes must record degraded epistemic cell even under budget pressure! Changes: {:?}",
+        delta.coverage_changes
+    );
+
+    Ok(())
+}
+
+/// DEFECT 2 (DEAD CODE) TEST: Ontology generation mismatch must emit CoverageLoss and explain it in coverage_changes.
+#[test]
+fn test_inv056_failing_generation_mismatch_must_emit_coverage_loss_and_coverage_changes()
+-> Result<(), Box<dyn Error>> {
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    // Different ontology generation:
+    let mut basis2 = test_basis();
+    basis2.ontology_generation_id = "ontology:reference:v2".to_owned();
+    v2.contract_basis = Some(basis2);
+
+    let pub1 = publication(&v1)?;
+    let pub2 = publication(&v2)?;
+    pub1.verify()?;
+    pub2.verify()?;
+
+    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+        "Generation mismatch must emit CoverageLoss! Classes: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .coverage_changes
+            .iter()
+            .any(|c| c.contains("generation mismatch")),
+        "coverage_changes must record generation mismatch! Changes: {:?}",
+        delta.coverage_changes
+    );
+
+    Ok(())
+}
+
+/// DEFECT 4 TEST: A witness certifying a different predicate (e.g. no_vehicle_present)
+/// must NOT certify absence of unknown persons.
+#[test]
+fn test_inv056_failing_wrong_predicate_must_not_certify_person_absence()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("inv056-wrong-predicate")?;
+    let (decision, receipt) = harness.publish_rejected_decision("inv056-wrong-predicate")?;
+    let req = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+
+    let anchor = harness.authority.current().anchor.clone();
+    let current_epoch = anchor.policy_epoch;
+    let witness = CoverageWitness {
+        anchor,
+        authorized_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        observed_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        excluded_domain: BTreeSet::new(),
+        continuity: CoverageContinuity::Continuous,
+        completeness: Completeness::Complete,
+        // Predicate is for vehicles, NOT unknown person!
+        negative_predicate: "no_vehicle_present".to_owned(),
+        stop_reason: CoverageStopReason::Complete,
+        authorized_generation: current_epoch,
+        observed_generation: current_epoch,
+    };
+
+    let mut req = req;
+    req.coverage_witness = Some(&witness);
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    let absence = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
+
+    assert_eq!(
+        absence.knowledge_state,
+        KnowledgeState::Unknown,
+        "Witness with predicate 'no_vehicle_present' must not certify absence of unknown persons!"
+    );
+
+    harness.cleanup();
+    Ok(())
+}
+
+/// DEFECT 3 TEST: A witness with a stale authority anchor commit sequence must NOT certify absence.
+#[test]
+fn test_inv056_failing_stale_anchor_commit_sequence_must_not_certify_absence()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("inv056-stale-anchor")?;
+    let (decision, receipt) = harness.publish_rejected_decision("inv056-stale-anchor")?;
+    let req = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+
+    // Anchor with stale commit_sequence (0 instead of live sequence >= 1)
+    let mut stale_anchor = harness.authority.current().anchor.clone();
+    stale_anchor.commit_sequence = 0;
+    stale_anchor.state_root = ContentDigest::sha256(b"ancient-state-root");
+
+    let current_epoch = stale_anchor.policy_epoch;
+    let witness = CoverageWitness {
+        anchor: stale_anchor,
+        authorized_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        observed_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        excluded_domain: BTreeSet::new(),
+        continuity: CoverageContinuity::Continuous,
+        completeness: Completeness::Complete,
+        negative_predicate: "no_unknown_person_present".to_owned(),
+        stop_reason: CoverageStopReason::Complete,
+        authorized_generation: current_epoch,
+        observed_generation: current_epoch,
+    };
+
+    let mut req = req;
+    req.coverage_witness = Some(&witness);
+    let situation = compile_reference_situation(req, &harness.authority)?;
+
+    let absence = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
+
+    assert_eq!(
+        absence.knowledge_state,
+        KnowledgeState::Unknown,
+        "Witness with stale anchor commit sequence must not certify absence!"
+    );
+
+    harness.cleanup();
+    Ok(())
+}
+
+/// DEFECT 6 TEST: Planted-negative test driven fully through real producers:
+/// capture -> model -> policy -> ledger event -> compile situation -> project situation -> classify meaningful delta.
+#[test]
+fn test_inv056_failing_producer_driven_planted_negative_meaningful_delta()
+-> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("inv056-producer-driven")?;
+    let (decision, receipt) = harness.publish_rejected_decision("inv056-producer-driven")?;
+    let req1 = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+
+    // Situation 1: without coverage witness -> uncertified absence
+    let sit1 = compile_reference_situation(req1, &harness.authority)?;
+    let pub1 = project_reference_situation(sit1, &test_spec(20_000)?)?;
+
+    // Situation 2: with valid coverage witness -> certified absence
+    let anchor = harness.authority.current().anchor.clone();
+    let current_epoch = anchor.policy_epoch;
+    let witness = CoverageWitness {
+        anchor,
+        authorized_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        observed_domain: BTreeSet::from(["power:alpha".to_owned()]),
+        excluded_domain: BTreeSet::new(),
+        continuity: CoverageContinuity::Continuous,
+        completeness: Completeness::Complete,
+        negative_predicate: "no_unknown_person_present".to_owned(),
+        stop_reason: CoverageStopReason::Complete,
+        authorized_generation: current_epoch,
+        observed_generation: current_epoch,
+    };
+    let mut req2 = test_request(
+        &decision,
+        &receipt,
+        None,
+        BTreeSet::from(["capability:evidence.query".to_owned()]),
+    )?;
+    req2.revision = 2;
+    req2.coverage_witness = Some(&witness);
+    let sit2 = compile_reference_situation(req2, &harness.authority)?;
+    let pub2 = project_reference_situation(sit2, &test_spec(20_000)?)?;
+
+    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+    // Transition from uncertified to certified absence changes knowledge cell from Unknown to Known
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
+        "Transition to certified absence must emit MaterialState! Classes: {:?}",
+        delta.classes
+    );
+
     harness.cleanup();
     Ok(())
 }

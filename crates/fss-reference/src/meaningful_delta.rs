@@ -374,13 +374,7 @@ pub fn classify_reference_meaningful_delta(
         || !degraded_epistemic_cells.is_empty()
         || generation_mismatch
         || stale_revision;
-    let is_silence = classes.is_empty()
-        && !has_active_coverage_gap
-        && result.resource_state.pressure == ResourcePressure::Nominal
-        && result.resource_state.degraded_dimensions.is_empty();
-    if is_silence {
-        classes.insert(MeaningfulDeltaClass::NoMeaningfulChange);
-    } else if classes.is_empty() {
+    if has_active_coverage_gap {
         classes.insert(MeaningfulDeltaClass::CoverageLoss);
         if result_capsule.completeness != Completeness::Complete {
             coverage_changes.push(format!(
@@ -416,17 +410,25 @@ pub fn classify_reference_meaningful_delta(
                 result_capsule.revision, basis_capsule.revision
             ));
         }
+        sort_dedup(&mut coverage_changes);
     }
-    let selection_witness = comparison_witness(
+    let is_silence = classes.is_empty()
+        && !has_active_coverage_gap
+        && result.resource_state.pressure == ResourcePressure::Nominal
+        && result.resource_state.degraded_dimensions.is_empty();
+    if is_silence {
+        classes.insert(MeaningfulDeltaClass::NoMeaningfulChange);
+    }
+    let selection_witness = comparison_witness(ComparisonWitnessInputs {
         basis,
         result,
-        &classes,
-        &changed_cells,
-        &invalidated_assumptions,
-        &coverage_changes,
-        &obligation_changes,
-        &effect_uncertainty_changes,
-    );
+        classes: &classes,
+        changed_cells: &changed_cells,
+        invalidated_assumptions: &invalidated_assumptions,
+        coverage_changes: &coverage_changes,
+        obligation_changes: &obligation_changes,
+        effect_uncertainty_changes: &effect_uncertainty_changes,
+    });
     let identity = delta_identity(basis, result, selection_witness);
     let silence_certificate = if is_silence {
         Some(SilenceCertificate {
@@ -610,33 +612,34 @@ fn delta_priority(classes: &BTreeSet<MeaningfulDeltaClass>) -> DeltaPriority {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn comparison_witness(
-    basis: &ReferenceSituationPublication,
-    result: &ReferenceSituationPublication,
-    classes: &BTreeSet<MeaningfulDeltaClass>,
-    changed_cells: &[KnowledgeCell],
-    invalidated_assumptions: &[String],
-    coverage_changes: &[String],
-    obligation_changes: &[String],
-    effect_uncertainty_changes: &[String],
-) -> ContentDigest {
+struct ComparisonWitnessInputs<'a> {
+    basis: &'a ReferenceSituationPublication,
+    result: &'a ReferenceSituationPublication,
+    classes: &'a BTreeSet<MeaningfulDeltaClass>,
+    changed_cells: &'a [KnowledgeCell],
+    invalidated_assumptions: &'a [String],
+    coverage_changes: &'a [String],
+    obligation_changes: &'a [String],
+    effect_uncertainty_changes: &'a [String],
+}
+
+fn comparison_witness(inputs: ComparisonWitnessInputs<'_>) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_meaningful_delta_selection.v1");
-    encoder.digest(basis.publication_digest);
-    encoder.digest(result.publication_digest);
-    encoder.u64(classes.len() as u64);
-    for class in classes {
+    encoder.digest(inputs.basis.publication_digest);
+    encoder.digest(inputs.result.publication_digest);
+    encoder.u64(inputs.classes.len() as u64);
+    for class in inputs.classes {
         class.encode_canonical(&mut encoder);
     }
-    encoder.u64(changed_cells.len() as u64);
-    for cell in changed_cells {
+    encoder.u64(inputs.changed_cells.len() as u64);
+    for cell in inputs.changed_cells {
         encoder.digest(cell.cell_digest());
     }
-    encode_text(invalidated_assumptions, &mut encoder);
-    encode_text(coverage_changes, &mut encoder);
-    encode_text(obligation_changes, &mut encoder);
-    encode_text(effect_uncertainty_changes, &mut encoder);
+    encode_text(inputs.invalidated_assumptions, &mut encoder);
+    encode_text(inputs.coverage_changes, &mut encoder);
+    encode_text(inputs.obligation_changes, &mut encoder);
+    encode_text(inputs.effect_uncertainty_changes, &mut encoder);
     ContentDigest::sha256(&encoder.finish())
 }
 
