@@ -25,7 +25,11 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import os
+import shutil
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -48,6 +52,7 @@ from claim_proof_bundle_checker import (
     scan_markdown_claim_tables,
     verify_proof_bundle,
 )
+import claim_proof_bundle_checker as cpb
 
 
 class TestClaimProofBundlePositiveControls(unittest.TestCase):
@@ -141,6 +146,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             bundle_data = {
                 "schema": "fss.proof_bundle.v1",
                 "bundle_id": "BUNDLE-ART-001",
+                "claim_id": "INV-TEST-001",
                 "claim_class": "invariant",
                 "supported_level": "achieved",
                 "generation": "gen-2026-09-01",
@@ -152,7 +158,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
                 ],
                 "artifacts": [
                     {
-                        "path": str(art1_file),
+                        "path": "artifact1.bin",
                         "digest": art1_digest,
                     }
                 ],
@@ -180,6 +186,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
 
             bundle_data = {
                 "schema": "fss.proof_bundle.v1",
+                "claim_id": "SLO-001",
                 "claim_class": "slo",
                 "supported_level": "achieved",
                 "generation": "gen-active-01",
@@ -358,7 +365,7 @@ class TestPlantedNegativeDigestMismatch(unittest.TestCase):
                 "status": "passed",
                 "artifacts": [
                     {
-                        "path": str(art_file),
+                        "path": "actual_artifact.bin",
                         "digest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
                     }
                 ],
@@ -766,6 +773,746 @@ class TestCliEndToEndFailures(unittest.TestCase):
             self.assertIn(ERR_UNREADABLE_INPUT, result.stdout)
         finally:
             Path(f_path).unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------
+# Rework (review-606 findings F1-F7, orchestrator gate findings, fail-open scan)
+# ---------------------------------------------------------------------------
+
+SLO_EVIDENCE = ["operation_cost_row", "measurement_artifact", "environment_manifest"]
+ZERO_DIGEST = "sha256:" + "0" * 64
+FIXTURE_FILES = (
+    "architecture/claims.json",
+    "architecture/readiness_dimensions.json",
+    "architecture/stable_id_resolution.json",
+    "registries/CLAIMS.md",
+    "registries/SLOS.md",
+    "registries/QUALIFICATION_LANES.md",
+    "README.md",
+)
+_DROP = object()
+
+
+def _known_classes() -> dict[str, list[str]]:
+    known, _, findings = load_authoritative_claims(ROOT / "architecture/claims.json")
+    assert not findings, findings
+    return known
+
+
+def make_bundle(**overrides: object) -> dict:
+    """A fully valid SLO proof bundle; each negative test perturbs exactly one aspect."""
+    data: dict = {
+        "schema": "fss.proof_bundle.v1",
+        "bundle_id": "BUNDLE-TEST-001",
+        "claim_id": "SLO-TEST-001",
+        "claim_class": "slo",
+        "supported_level": "achieved",
+        "generation": "gen-2026-09-01",
+        "status": "passed",
+        "retained_evidence": list(SLO_EVIDENCE),
+    }
+    for key, value in overrides.items():
+        if value is _DROP:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    return data
+
+
+def seal(data: dict) -> dict:
+    """Binds the canonical content digest over everything except the digest field itself."""
+    sealed = {k: v for k, v in data.items() if k != "content_digest"}
+    sealed["content_digest"] = compute_bundle_digest(sealed)
+    return sealed
+
+
+def write_json(path: Path, data: object) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return path
+
+
+def verify(root: Path, data: dict, name: str = "b.bundle.json", **kwargs: object):
+    path = write_json(root / name, data)
+    kwargs.setdefault("known_classes", _known_classes())
+    return verify_proof_bundle(bundle_path=path, root=root, **kwargs)
+
+
+def claim_table(*rows: str) -> str:
+    return "| ID | Status | Proof root |\n|---|---|---|\n" + "".join(r + "\n" for r in rows)
+
+
+def scan(root: Path, text: str, name: str = "table.md") -> list:
+    md_file = root / name
+    md_file.write_text(text, encoding="utf-8")
+    return scan_markdown_claim_tables(md_file, root, _known_classes(), set())
+
+
+def build_fixture_root(tmp: Path) -> Path:
+    """A minimal copy of the real authority surfaces; it passes the audit unmodified."""
+    root = tmp / "repo"
+    for rel in FIXTURE_FILES:
+        (root / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / rel, root / rel)
+    return root
+
+
+def run_cli(*args: str) -> subprocess.CompletedProcess:
+    cmd = [sys.executable, str(ROOT / "scripts/claim_proof_bundle_checker.py"), *args]
+    return subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+
+
+def make_receipt(status: str = "passed", command_status: str = "passed") -> dict:
+    return {
+        "schema": "fss.release_qualification_receipt.v1",
+        "receiptId": "local:policy:0123456789abcdef",
+        "laneId": "QL-POLICY-001",
+        "sourceCommit": "git:0123456789abcdef",
+        "sourceTree": "git-tree:0123456789abcdef",
+        "siblingClosureDigest": "sha256:" + "1" * 64,
+        "cargoLockDigest": None,
+        "toolchain": "nightly-2026-09-01",
+        "hostIdentity": "sha256:" + "2" * 64,
+        "target": "Linux-x86_64",
+        "features": [],
+        "commands": [{"argv": ["python3", "x.py"], "status": command_status, "outputDigest": "sha256:" + "3" * 64}],
+        "artifactManifestDigest": None,
+        "startedAt": {"earliestNs": 1, "latestNs": 1, "clockBasis": "host-realtime"},
+        "finishedAt": {"earliestNs": 2, "latestNs": 2, "clockBasis": "host-realtime"},
+        "status": status,
+    }
+
+
+def codes(findings: list) -> list[str]:
+    return [f.code for f in findings]
+
+
+def error_codes(findings: list) -> list[str]:
+    return [f.code for f in findings if f.severity == "error"]
+
+
+class TestReworkHarnessControls(unittest.TestCase):
+    """The helpers produce inputs that pass, so every negative below isolates one defect."""
+
+    def test_helper_valid_bundle_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, findings, _ = verify(
+                Path(tmpdir), seal(make_bundle()), expected_claim_id="SLO-TEST-001", claim_level="achieved"
+            )
+            self.assertTrue(ok, [f.message for f in findings])
+
+    def test_fixture_root_passes_audit_and_cli(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            ok, findings, _ = audit_claim_proof_bundles(root)
+            self.assertTrue(ok, [f.message for f in findings])
+            result = run_cli("--root", str(root))
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+class TestReview606F1BundleDigest(unittest.TestCase):
+    """F1 (CRITICAL): the bundle content digest is mandatory and binds every other field."""
+
+    def test_f1_bundle_without_content_digest_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, findings, _ = verify(Path(tmpdir), make_bundle())
+            self.assertFalse(ok, "a proof bundle omitting its content digest must fail closed")
+            self.assertIn(ERR_BUNDLE_DIGEST_MISMATCH, codes(findings))
+
+    def test_f1_alternative_digest_fields_are_digested_payload(self) -> None:
+        for injected in ("digest", "bundle_digest", "bundleDigest"):
+            with self.subTest(field=injected), tempfile.TemporaryDirectory() as tmpdir:
+                data = seal(make_bundle())
+                data[injected] = "sha256:" + "a" * 64  # injected after sealing
+                ok, findings, _ = verify(Path(tmpdir), data)
+                self.assertFalse(ok, f"untracked '{injected}' field must not escape the content digest")
+                self.assertIn(ERR_BUNDLE_DIGEST_MISMATCH, codes(findings))
+
+    def test_f1_ambiguous_multiple_content_digests_fail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            data = seal(make_bundle())
+            data["contentDigest"] = ZERO_DIGEST
+            ok, findings, _ = verify(Path(tmpdir), data)
+            self.assertFalse(ok, "two competing content digest fields must fail closed")
+            self.assertIn(ERR_BUNDLE_DIGEST_MISMATCH, codes(findings))
+
+
+class TestReview606F2Artifacts(unittest.TestCase):
+    """F2 (CRITICAL): every declared artifact is contained, present, a regular file, and digest-bound."""
+
+    def test_f2_artifact_without_digest_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "present.bin").write_bytes(b"x")
+            for art, expected in (
+                ({"path": "nonexistent_file.bin"}, ERR_PROOF_BUNDLE_NOT_FOUND),
+                ({"path": "present.bin"}, ERR_BUNDLE_DIGEST_MISMATCH),
+            ):
+                with self.subTest(artifact=art):
+                    ok, findings, _ = verify(tmp, seal(make_bundle(artifacts=[art])))
+                    self.assertFalse(ok, "an artifact without a digest must fail closed")
+                    self.assertIn(expected, codes(findings))
+
+    def test_f2_directory_artifact_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "sub_dir").mkdir()
+            ok, findings, _ = verify(tmp, seal(make_bundle(artifacts=[{"path": "sub_dir", "digest": ZERO_DIGEST}])))
+            self.assertFalse(ok, "a directory artifact must fail closed")
+            self.assertIn(ERR_PROOF_BUNDLE_NOT_FOUND, codes(findings))
+
+    def test_f2_absolute_artifact_path_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            art = tmp / "a.bin"
+            art.write_bytes(b"payload")
+            data = seal(make_bundle(artifacts=[{"path": str(art), "digest": compute_sha256(b"payload")}]))
+            ok, findings, _ = verify(tmp, data)
+            self.assertFalse(ok, "absolute artifact paths must be refused")
+            self.assertIn(ERR_PROOF_BUNDLE_NOT_FOUND, codes(findings))
+
+    def test_f2_traversal_artifact_path_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = tmp / "root"
+            (root / "sub").mkdir(parents=True)
+            (tmp / "outside.bin").write_bytes(b"outside")
+            data = seal(make_bundle(artifacts=[{"path": "sub/../../outside.bin", "digest": compute_sha256(b"outside")}]))
+            ok, findings, _ = verify(root, data)
+            self.assertFalse(ok, "'..' artifact paths must be refused")
+            self.assertIn(ERR_PROOF_BUNDLE_NOT_FOUND, codes(findings))
+
+    def test_f2_symlink_escape_artifact_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = tmp / "root"
+            root.mkdir()
+            (tmp / "outside.bin").write_bytes(b"outside")
+            (root / "link.bin").symlink_to(tmp / "outside.bin")
+            data = seal(make_bundle(artifacts=[{"path": "link.bin", "digest": compute_sha256(b"outside")}]))
+            ok, findings, _ = verify(root, data)
+            self.assertFalse(ok, "an artifact resolving outside the root must be refused")
+            self.assertIn(ERR_PROOF_BUNDLE_NOT_FOUND, codes(findings))
+
+    def test_f2_evidence_bundle_uri_hint_objects_are_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "obj.bin").write_bytes(b"object bytes")
+            obj = {"digest": ZERO_DIGEST, "role": "frame", "sizeBytes": 12, "retentionState": "local", "uriHint": "obj.bin"}
+            ok, findings, _ = verify(tmp, seal(make_bundle(objects=[obj])))
+            self.assertFalse(ok, "canonical evidence-bundle objects (uriHint) must be digest-checked")
+            self.assertIn(ERR_BUNDLE_DIGEST_MISMATCH, codes(findings))
+
+    def test_f2_objects_not_hidden_behind_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "good.bin").write_bytes(b"good")
+            (tmp / "bad.bin").write_bytes(b"bad")
+            data = seal(make_bundle(
+                artifacts=[{"path": "good.bin", "digest": compute_sha256(b"good")}],
+                objects=[{"digest": ZERO_DIGEST, "role": "r", "sizeBytes": 3, "retentionState": "local", "uriHint": "bad.bin"}],
+            ))
+            ok, findings, _ = verify(tmp, data)
+            self.assertFalse(ok, "a non-empty 'artifacts' list must not hide 'objects'")
+            self.assertIn(ERR_BUNDLE_DIGEST_MISMATCH, codes(findings))
+
+    def test_f2_unverifiable_or_malformed_artifact_entries_fail(self) -> None:
+        cases = {
+            "remote_retention": {"digest": ZERO_DIGEST, "role": "r", "sizeBytes": 1, "retentionState": "remote", "uriHint": "s3://bucket/key"},
+            "no_locator": {"digest": ZERO_DIGEST, "role": "r", "sizeBytes": 1, "retentionState": "local"},
+            "non_object_entry": "some/file.bin",
+            "unknown_retention_state": {"digest": ZERO_DIGEST, "role": "r", "sizeBytes": 1, "retentionState": "maybe", "uriHint": "x.bin"},
+        }
+        for label, entry in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(objects=[entry])))
+                self.assertFalse(ok, f"artifact entry '{label}' cannot be verified and must fail closed")
+
+    def test_f2_intentionally_omitted_object_is_explicit_not_a_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            obj = {"digest": ZERO_DIGEST, "role": "r", "sizeBytes": 0, "retentionState": "intentionally_omitted", "uriHint": None}
+            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(objects=[obj])))
+            self.assertTrue(ok, [f.message for f in findings])
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores file permissions")
+    def test_f2_unreadable_artifact_is_typed_finding_not_crash(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            art = tmp / "locked.bin"
+            art.write_bytes(b"secret-free payload")
+            art.chmod(0)
+            try:
+                ok, findings, _ = verify(tmp, seal(make_bundle(artifacts=[{"path": "locked.bin", "digest": ZERO_DIGEST}])))
+            finally:
+                art.chmod(0o600)
+            self.assertFalse(ok)
+            self.assertIn(ERR_UNREADABLE_INPUT, codes(findings))
+
+
+class TestReview606F3ClaimBinding(unittest.TestCase):
+    """F3 (HIGH): a bundle must bind the exact claim that cites it."""
+
+    def test_f3_mismatched_claim_id_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(claim_id="SLO-COST-002")), expected_claim_id="SLO-DETECT-001")
+            self.assertFalse(ok, "bundle claim_id differing from expected_claim_id must fail closed")
+            self.assertIn(cpb.ERR_CLAIM_BINDING_MISMATCH, codes(findings))
+
+    def test_f3_bundle_without_claim_id_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(claim_id=_DROP)), expected_claim_id="SLO-DETECT-001")
+            self.assertFalse(ok, "a bundle binding no claim cannot prove a specific claim")
+            self.assertIn(cpb.ERR_CLAIM_BINDING_MISMATCH, codes(findings))
+
+    def test_f3_markdown_row_cross_claim_substitution_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            write_json(tmp / "p/other.bundle.json", seal(make_bundle(claim_id="SLO-COST-002")))
+            findings = scan(tmp, claim_table("| `SLO-DETECT-001` | achieved | `p/other.bundle.json` |"))
+            self.assertTrue(findings, "a row citing another claim's bundle must fail")
+            self.assertIn(cpb.ERR_CLAIM_BINDING_MISMATCH, codes(findings))
+
+    def test_f3_promoted_row_without_id_column_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            write_json(tmp / "p/b.bundle.json", seal(make_bundle()))
+            findings = scan(tmp, "| Status | Proof root |\n|---|---|\n| achieved | `p/b.bundle.json` |\n")
+            self.assertTrue(findings, "a promoted row with no claim ID cannot be bound to its proof")
+            self.assertIn(cpb.ERR_CLAIM_BINDING_MISMATCH, codes(findings))
+
+
+class TestReview606F4LevelComparisons(unittest.TestCase):
+    """F4 (HIGH): unknown levels/statuses fail closed; every promoted level needs proof."""
+
+    def test_f4_unrecognized_bundle_statuses_fail(self) -> None:
+        for status in ("rejected", "error", "aborted", "crashed", "", _DROP):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(status=status)), claim_level="achieved")
+                self.assertFalse(ok, f"bundle status {status!r} must not be accepted as passing")
+
+    def test_f4_unknown_claim_level_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle()), claim_level="certified")
+            self.assertFalse(ok, "an unrecognized claim level must not default to a low rank")
+            self.assertIn(cpb.ERR_UNRECOGNIZED_STATE, codes(findings))
+
+    def test_f4_unknown_or_missing_supported_level_fails(self) -> None:
+        for level in ("unsupported", "none", _DROP):
+            with self.subTest(level=level), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(supported_level=level)), claim_level="specified")
+                self.assertFalse(ok, f"supported level {level!r} must not default to a low rank")
+
+    def test_f4_supported_level_whitespace_is_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(supported_level=" Achieved ")), claim_level="achieved")
+            self.assertTrue(ok, [f.message for f in findings])
+
+    def test_f4_implemented_levels_without_proof_fail(self) -> None:
+        for status in ("implemented", "reference_implemented", "positively_verified", "qualified"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmpdir:
+                findings = scan(Path(tmpdir), claim_table(f"| SLO-1 | {status} | - |"))
+                self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings), f"'{status}' requires retained proof")
+
+    def test_f4_implemented_row_citing_draft_bundle_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            write_json(tmp / "p/b.bundle.json", seal(make_bundle(claim_id="SLO-1", supported_level="draft")))
+            findings = scan(tmp, claim_table("| SLO-1 | implemented | `p/b.bundle.json` |"))
+            self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings))
+
+    def test_f4_unrecognized_markdown_status_fails(self) -> None:
+        for status in ("certified", "complete", ""):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmpdir:
+                findings = scan(Path(tmpdir), claim_table(f"| SLO-1 | {status} | - |"))
+                self.assertTrue(findings, f"status {status!r} must not be silently accepted")
+                self.assertIn(cpb.ERR_UNRECOGNIZED_STATE, codes(findings))
+
+
+class TestReview606F5MarkdownSurfaces(unittest.TestCase):
+    """F5 (HIGH): markdown formatting cannot hide claims; claim surfaces cannot vanish."""
+
+    def test_f5_emphasized_status_is_recognized(self) -> None:
+        for cell in ("**achieved**", "*qualified*", "__verified__", "_achieved_", "<b>achieved</b>", "~~achieved~~"):
+            with self.subTest(cell=cell), tempfile.TemporaryDirectory() as tmpdir:
+                findings = scan(Path(tmpdir), claim_table(f"| SLO-1 | {cell} | - |"))
+                self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings), f"{cell} must be recognized as promoted")
+
+    def test_f5_borderless_gfm_table_is_scanned(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            findings = scan(Path(tmpdir), "ID | Status | Proof root\n--- | --- | ---\nSLO-1 | achieved | -\n")
+            self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings))
+            tables = parse_markdown_tables("ID | Status | Proof root\n--- | --- | ---\nSLO-1 | achieved | -\n")
+            self.assertEqual(tables, [(["ID", "Status", "Proof root"], [["SLO-1", "achieved", "-"]])])
+
+    def test_f5_tilde_fence_hides_nothing_and_is_skipped(self) -> None:
+        text = "~~~\n| ID | Status | Proof root |\n|---|---|---|\n| SLO-1 | achieved | - |\n~~~\n"
+        self.assertEqual(parse_markdown_tables(text), [])
+
+    def test_f5_missing_claim_surface_fails_audit(self) -> None:
+        for rel in ("registries/SLOS.md", "registries/QUALIFICATION_LANES.md", "README.md"):
+            with self.subTest(surface=rel), tempfile.TemporaryDirectory() as tmpdir:
+                root = build_fixture_root(Path(tmpdir))
+                (root / rel).unlink()
+                ok, findings, _ = audit_claim_proof_bundles(root)
+                self.assertFalse(ok, f"missing {rel} must fail the audit")
+                self.assertTrue(any(f.file == rel for f in findings), [(f.file, f.message) for f in findings])
+
+    def test_f5_slos_without_claim_table_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            slos = root / "registries/SLOS.md"
+            slos.write_text(slos.read_text(encoding="utf-8").replace("| Status | Proof root |", "| State | Evidence |"), encoding="utf-8")
+            ok, findings, _ = audit_claim_proof_bundles(root)
+            self.assertFalse(ok, "SLOS.md whose claim table cannot be recognized must fail, not audit zero rows")
+            self.assertIn(ERR_EMPTY_INPUT, codes(findings))
+
+
+class TestReview606F6Generations(unittest.TestCase):
+    """F6 (MEDIUM): 'latest' tags, case-variant tombstones, nested generations, and expiry."""
+
+    def test_f6_latest_tag_variants(self) -> None:
+        for alias in ("model:latest", "latest/v1", "v1:latest", "model@latest", "weights/latest"):
+            with self.subTest(alias=alias):
+                self.assertTrue(is_latest_generation(alias))
+        for benign in ("gen-2026-09-01", "lateststyle-001", "v1"):
+            with self.subTest(benign=benign):
+                self.assertFalse(is_latest_generation(benign))
+
+    def test_f6_tombstone_match_is_case_and_whitespace_insensitive(self) -> None:
+        for value in ("gen-tombstone-01", " GEN-TOMBSTONE-01 "):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(generation=value)), tombstoned_ids={"GEN-TOMBSTONE-01"})
+                self.assertFalse(ok, "a case/whitespace variant of a tombstoned ID must fail closed")
+                self.assertIn(ERR_STALE_GENERATION, codes(findings))
+
+    def test_f6_generation_fields_outside_top_level_list_are_checked(self) -> None:
+        cases = {
+            "environment": {"environment": {"modelGeneration": "model:latest"}},
+            "device_generation": {"device_generation": "latest"},
+            "adapter_generation": {"adapter_generation": "latest"},
+            "config_generation": {"config_generation": "latest"},
+            "nested_matrix": {"platform_matrix": [{"model_generation_id": "latest"}]},
+        }
+        for label, extra in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(**extra)))
+                self.assertFalse(ok, f"'latest' in {label} must be refused")
+                self.assertIn(ERR_STALE_GENERATION, codes(findings))
+
+    def test_f6_expiry_timestamps_are_enforced(self) -> None:
+        now = datetime(2026, 9, 12, tzinfo=timezone.utc)
+        for key in ("expires_at", "expiresAt", "valid_until", "validUntil"):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(**{key: "2026-01-01T00:00:00Z"})), now=now)
+                self.assertFalse(ok, f"a bundle past its {key} must fail closed")
+                self.assertIn(ERR_STALE_GENERATION, codes(findings))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(expires_at="2027-01-01T00:00:00Z")), now=now)
+            self.assertTrue(ok, [f.message for f in findings])
+
+    def test_f6_malformed_expiry_markers_fail(self) -> None:
+        for extra in ({"expires_at": "soon"}, {"expires_at": 12}, {"is_expired": "true"}, {"is_expired": 1}):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(**extra)))
+                self.assertFalse(ok, f"indeterminate expiry {extra} must not be treated as unexpired")
+
+
+class TestReview606F7ReceiptsAndVacuity(unittest.TestCase):
+    """F7 (MEDIUM): receipts are inspected, the live pass is not vacuous, CLI failures are typed."""
+
+    def test_f7_non_passing_receipt_fails_closed_when_verified(self) -> None:
+        for status in ("failed", "partial", "interrupted"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmpdir:
+                tmp = Path(tmpdir)
+                path = write_json(tmp / "qualification-artifacts/local/run1/qualification-receipt.json", make_receipt(status))
+                ok, findings, _ = verify_proof_bundle(path, tmp)
+                self.assertFalse(ok, f"a '{status}' qualification receipt must fail closed")
+
+    def test_f7_receipt_claiming_pass_with_failed_command_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            path = write_json(tmp / "qualification-receipt.json", make_receipt("passed", command_status="failed"))
+            ok, findings, _ = verify_proof_bundle(path, tmp)
+            self.assertFalse(ok, "a 'passed' receipt containing a failed command is self-contradictory")
+
+    def test_f7_receipt_cannot_bind_a_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            write_json(tmp / "qualification-artifacts/r/qualification-receipt.json", make_receipt("passed"))
+            findings = scan(tmp, claim_table("| SLO-1 | achieved | `qualification-artifacts/r/qualification-receipt.json` |"))
+            self.assertIn(cpb.ERR_CLAIM_BINDING_MISMATCH, codes(findings))
+
+    def test_f7_audit_inspects_qualification_receipts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            rel = "qualification-artifacts/local/run1/qualification-receipt.json"
+            write_json(root / rel, make_receipt("failed"))
+            ok, findings, summary = audit_claim_proof_bundles(root)
+            self.assertEqual(summary["receipts_inspected"], 1)
+            self.assertEqual(summary["receipts_nonpassing"], 1)
+            warned = [f for f in findings if f.file == rel and f.code == cpb.WARN_NONPASSING_RECEIPT]
+            self.assertEqual(len(warned), 1, [(f.code, f.file) for f in findings])
+            self.assertEqual(warned[0].severity, "warning")
+            self.assertTrue(ok, "an uncited failed local receipt is reported, not a claim violation")
+
+    def test_f7_corrupt_or_malformed_receipt_fails_audit(self) -> None:
+        for label, payload in (("corrupt", "{ nope"), ("missing_fields", json.dumps({"schema": "fss.release_qualification_receipt.v1", "status": "passed"}))):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                root = build_fixture_root(Path(tmpdir))
+                path = root / "qualification-artifacts/local/run1/qualification-receipt.json"
+                path.parent.mkdir(parents=True)
+                path.write_text(payload, encoding="utf-8")
+                ok, findings, _ = audit_claim_proof_bundles(root)
+                self.assertFalse(ok, f"{label} receipt under the retention root must fail closed")
+
+    def test_f7_live_repo_pass_is_not_vacuous(self) -> None:
+        ok, findings, summary = audit_claim_proof_bundles(ROOT)
+        self.assertTrue(ok, [f.message for f in findings])
+        self.assertIn("registries/SLOS.md", summary["claim_surfaces_scanned"])
+        slo_rows = sum(1 for line in (ROOT / "registries/SLOS.md").read_text(encoding="utf-8").splitlines() if line.startswith("| `SLO-"))
+        self.assertGreater(slo_rows, 0)
+        self.assertGreaterEqual(summary["claim_rows_evaluated"], slo_rows)
+        for key in ("promoted_claim_rows", "bundles_checked", "receipts_inspected", "receipts_nonpassing"):
+            self.assertIn(key, summary)
+
+    def test_f7_cli_claims_flag_failures_exit_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            bad = Path(tmpdir) / "claims.json"
+            for payload, code in (("{ broken", ERR_UNREADABLE_INPUT), ("", ERR_EMPTY_INPUT), ('{"classes": []}', ERR_EMPTY_INPUT)):
+                with self.subTest(payload=payload):
+                    bad.write_text(payload, encoding="utf-8")
+                    result = run_cli("--claims", str(bad))
+                    self.assertEqual(result.returncode, 1, result.stdout)
+                    self.assertIn(code, result.stdout)
+
+    def test_f7_cli_repo_wide_failure_exits_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            slos = root / "registries/SLOS.md"
+            text = slos.read_text(encoding="utf-8")
+            first = next(line for line in text.splitlines() if line.startswith("| `SLO-"))
+            slos.write_text(text.replace(first, first.replace("| target | - |", "| achieved | - |")), encoding="utf-8")
+            result = run_cli("--root", str(root), "--json")
+            self.assertEqual(result.returncode, 1, result.stdout)
+            report = json.loads(result.stdout)
+            self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, [f["code"] for f in report["findings"]])
+
+
+class TestGateTombstoneIndex(unittest.TestCase):
+    """Gate B1: the tombstone index must load or the run fails with a typed code and non-zero exit."""
+
+    def _run_with_index(self, payload: bytes | None) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            index = root / "architecture/stable_id_resolution.json"
+            if payload is None:
+                index.unlink()
+            else:
+                index.write_bytes(payload)
+            return run_cli("--root", str(root))
+
+    def test_gate_corrupt_index_fails_run(self) -> None:
+        result = self._run_with_index(b"{ not json")
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn(getattr(cpb, "ERR_TOMBSTONE_INDEX_UNAVAILABLE", "<missing>"), result.stdout)
+
+    def test_gate_empty_index_fails_run(self) -> None:
+        for payload in (b"", b"   \n", b"{}", b'{"schema": "fss.stable_id_resolution.v1", "resolutions": []}'):
+            with self.subTest(payload=payload):
+                result = self._run_with_index(payload)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(getattr(cpb, "ERR_TOMBSTONE_INDEX_UNAVAILABLE", "<missing>"), result.stdout)
+
+    def test_gate_missing_or_wrong_schema_index_fails_run(self) -> None:
+        for payload in (None, b'{"schema": "fss.other.v1", "resolutions": [{"legacyId": "GOAL-001"}]}', b"[1, 2]", b"\xff\xfe\x00"):
+            with self.subTest(payload=payload):
+                result = self._run_with_index(payload)
+                self.assertNotEqual(result.returncode, 0, result.stdout)
+                self.assertIn(getattr(cpb, "ERR_TOMBSTONE_INDEX_UNAVAILABLE", "<missing>"), result.stdout)
+
+    def test_gate_index_failure_also_fails_single_bundle_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / "p/b.bundle.json", seal(make_bundle()))
+            (root / "architecture/stable_id_resolution.json").write_text("{ nope", encoding="utf-8")
+            result = run_cli("--root", str(root), "--bundle", "p/b.bundle.json")
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+
+    def test_gate_tombstones_from_repository_index_are_enforced(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            index_path = root / "architecture/stable_id_resolution.json"
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            index["resolutions"].append({
+                "legacyId": "SLO-OLD-001", "title": "Retired objective", "canonicalId": "SLO-OLD-001",
+                "disposition": "tombstoned", "status": "tombstoned", "titleDigest": ZERO_DIGEST,
+            })
+            index_path.write_text(json.dumps(index), encoding="utf-8")
+            write_json(root / "qualification-artifacts/p/x.bundle.json", seal(make_bundle(generation="slo-old-001")))
+            ok, findings, _ = audit_claim_proof_bundles(root)
+            self.assertFalse(ok, "a bundle bound to a tombstoned ID from the stable-ID index must fail")
+            self.assertIn(ERR_STALE_GENERATION, codes(findings))
+
+
+class _ExplodingPartsPath(type(Path())):
+    """A path whose .parts raises: guards must surface this, never silently skip the check."""
+
+    @property
+    def parts(self):  # type: ignore[override]
+        raise RuntimeError("parts unavailable")
+
+
+class TestGateNoSilentGuards(unittest.TestCase):
+    """Gate B2/B3: no guard skips its check; only decode errors map to ERR_UNREADABLE_INPUT."""
+
+    def test_gate_traversal_guard_cannot_be_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            (tmp / "sub").mkdir()
+            write_json(tmp / "b.bundle.json", seal(make_bundle()))
+            try:
+                ok, _, _ = verify_proof_bundle(_ExplodingPartsPath("sub/../b.bundle.json"), tmp, known_classes=_known_classes())
+            except RuntimeError:
+                return  # surfaced loudly: acceptable
+            self.assertFalse(ok, "the '..' guard was skipped and the bundle passed")
+
+    def test_gate_bundle_decode_errors_are_typed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            for payload in (b"\xff\xfe not utf8", b"{ broken"):
+                with self.subTest(payload=payload):
+                    path = tmp / "x.bundle.json"
+                    path.write_bytes(payload)
+                    ok, findings, _ = verify_proof_bundle(path, tmp)
+                    self.assertFalse(ok)
+                    self.assertIn(ERR_UNREADABLE_INPUT, codes(findings))
+
+    def test_gate_claims_decode_errors_are_typed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "claims.json"
+            path.write_bytes(b"\xff\xfe not utf8")
+            _, _, findings = load_authoritative_claims(path)
+            self.assertIn(ERR_UNREADABLE_INPUT, codes(findings))
+
+    def test_gate_internal_faults_are_not_mislabelled_as_input_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            claims = write_json(tmp / "claims.json", {"classes": [{"id": "slo", "requiredEvidence": ["x"]}], "prohibited": []})
+            bundle = write_json(tmp / "b.bundle.json", seal(make_bundle()))
+            known = _known_classes()
+            with mock.patch.object(cpb.json, "loads", side_effect=RuntimeError("internal fault")):
+                with self.assertRaises(RuntimeError):
+                    load_authoritative_claims(claims)
+                with self.assertRaises(RuntimeError):
+                    verify_proof_bundle(bundle, tmp, known_classes=known)
+
+
+class TestFailOpenScan(unittest.TestCase):
+    """Other silent defaults found by scanning the whole checker."""
+
+    def test_scan_claim_class_without_valid_required_evidence_fails(self) -> None:
+        for entry in ({"id": "slo"}, {"id": "slo", "requiredEvidence": "x"}, {"id": "slo", "requiredEvidence": []}, {"id": "slo", "requiredEvidence": [1]}):
+            with self.subTest(entry=entry), tempfile.TemporaryDirectory() as tmpdir:
+                path = write_json(Path(tmpdir) / "claims.json", {"classes": [entry], "prohibited": ["p"]})
+                _, _, findings = load_authoritative_claims(path)
+                self.assertTrue(findings, f"class {entry} would require no evidence")
+
+    def test_scan_duplicate_claim_class_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = write_json(Path(tmpdir) / "claims.json", {"classes": [{"id": "slo", "requiredEvidence": ["a"]}, {"id": "slo", "requiredEvidence": ["b"]}], "prohibited": ["p"]})
+            _, _, findings = load_authoritative_claims(path)
+            self.assertTrue(findings, "a duplicate class silently overwrote its first definition")
+
+    def test_scan_missing_or_malformed_prohibited_list_fails(self) -> None:
+        for extra in ({}, {"prohibited": "x"}, {"prohibited": [1]}):
+            with self.subTest(extra=extra), tempfile.TemporaryDirectory() as tmpdir:
+                path = write_json(Path(tmpdir) / "claims.json", {"classes": [{"id": "slo", "requiredEvidence": ["a"]}], **extra})
+                _, _, findings = load_authoritative_claims(path)
+                self.assertTrue(findings, "prohibited promotions silently became an empty set")
+
+    def test_scan_bundle_without_claim_class_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(claim_class=_DROP)))
+            self.assertFalse(ok, "without a claim class, required evidence is never checked")
+            self.assertIn(ERR_INVALID_CLAIM_CLASS, codes(findings))
+
+    def test_scan_missing_class_registry_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ok, findings, _ = verify(Path(tmpdir), seal(make_bundle()), known_classes=None)
+            self.assertFalse(ok, "without a class registry, required evidence is never checked")
+            self.assertIn(ERR_INVALID_CLAIM_CLASS, codes(findings))
+
+    def test_scan_malformed_retained_evidence_is_typed_finding(self) -> None:
+        for value in ([{"a": 1}], "operation_cost_row", [1, 2]):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as tmpdir:
+                ok, findings, _ = verify(Path(tmpdir), seal(make_bundle(retained_evidence=value)))
+                self.assertFalse(ok)
+                self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings))
+
+    def test_scan_mandatory_authority_file_that_is_a_directory_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            target = root / "architecture/readiness_dimensions.json"
+            target.unlink()
+            target.mkdir()
+            (target / "filler").write_text("x", encoding="utf-8")
+            ok, findings, _ = audit_claim_proof_bundles(root)
+            self.assertFalse(ok, "a directory is not an authority file")
+
+    def test_scan_corrupt_or_drifted_readiness_registry_fails(self) -> None:
+        for payload in ("{ broken", json.dumps({"schema": "fss.readiness_dimensions.v2", "states": []}),
+                        json.dumps({"schema": "fss.readiness_dimensions.v2", "states": ["absent", "certified"]})):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as tmpdir:
+                root = build_fixture_root(Path(tmpdir))
+                (root / "architecture/readiness_dimensions.json").write_text(payload, encoding="utf-8")
+                ok, findings, _ = audit_claim_proof_bundles(root)
+                self.assertFalse(ok, "a corrupt or drifted readiness vocabulary must fail closed")
+
+    def test_scan_markdown_with_invalid_utf8_is_typed_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            md = Path(tmpdir) / "bad.md"
+            md.write_bytes(b"| ID | Status |\n|---|---|\n| X \xff | achieved |\n")
+            findings = scan_markdown_claim_tables(md, Path(tmpdir), {}, set())
+            self.assertIn(ERR_UNREADABLE_INPUT, codes(findings))
+
+    @unittest.skipIf(hasattr(os, "geteuid") and os.geteuid() == 0, "root ignores directory permissions")
+    def test_scan_unreadable_retention_directory_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            locked = root / "qualification-artifacts/local/locked"
+            locked.mkdir(parents=True)
+            write_json(locked / "x.bundle.json", make_bundle())
+            locked.chmod(0)
+            try:
+                ok, findings, _ = audit_claim_proof_bundles(root)
+            finally:
+                locked.chmod(0o700)
+            self.assertFalse(ok, "an unreadable retention directory was silently skipped")
+            self.assertIn(ERR_UNREADABLE_INPUT, codes(findings))
+
+    def test_scan_failed_bundles_are_not_counted_as_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / "qualification-artifacts/p/x.bundle.json", make_bundle())  # unsealed
+            ok, _, summary = audit_claim_proof_bundles(root)
+            self.assertFalse(ok)
+            self.assertEqual(summary["verified_bundles_count"], 0)
+
+    def test_scan_symlinked_citation_escaping_root_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmp = Path(tmpdir)
+            root = tmp / "root"
+            root.mkdir()
+            write_json(tmp / "outside.bundle.json", seal(make_bundle(claim_id="SLO-1")))
+            (root / "link.bundle.json").symlink_to(tmp / "outside.bundle.json")
+            findings = scan(root, claim_table("| SLO-1 | achieved | `link.bundle.json` |"))
+            self.assertIn(ERR_PROOF_BUNDLE_NOT_FOUND, codes(findings))
+
+    def test_scan_receipt_constants_match_schema(self) -> None:
+        schema = json.loads((ROOT / "schemas/release_qualification_receipt.v1.json").read_text(encoding="utf-8"))
+        self.assertEqual(cpb.QUALIFICATION_RECEIPT_SCHEMA, schema["properties"]["schema"]["const"])
+        self.assertEqual(tuple(cpb.RECEIPT_REQUIRED_FIELDS), tuple(schema["required"]))
+        self.assertEqual(frozenset(cpb.RECEIPT_STATUSES), frozenset(schema["properties"]["status"]["enum"]))
 
 
 if __name__ == "__main__":
