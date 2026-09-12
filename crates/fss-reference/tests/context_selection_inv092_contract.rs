@@ -492,9 +492,10 @@ fn test_inv092_warning_looking_redundant_is_preserved_while_exact_duplicate_is_d
     );
     let warn_dedup = redundancy_records
         .iter()
-        .find(|r| r.dropped_item_id == warn_north_id);
+        .find(|r| r.retained_item_id == warn_north_id);
     assert!(warn_dedup.is_some());
     let warn_record: &RedundancyRecord = warn_dedup.ok_or(ContractError::NotFound)?;
+    assert_ne!(warn_record.dropped_item_id, warn_record.retained_item_id);
     assert_eq!(warn_record.retained_item_id, warn_north_id);
     assert_eq!(warn_record.kind, "at_risk");
 
@@ -506,7 +507,7 @@ fn test_inv092_warning_looking_redundant_is_preserved_while_exact_duplicate_is_d
     assert!(
         !redundancy_records
             .iter()
-            .any(|r| r.dropped_item_id == warn_south_id)
+            .any(|r| r.retained_item_id == warn_south_id)
     );
 
     // Critical preservation remains completely lossless:
@@ -810,6 +811,80 @@ fn test_contradiction_basis_must_include_positive_evidence() -> Result<(), Box<d
     assert!(
         contra_item.basis.contains(&evidence_digest.to_string()),
         "Contradiction context item basis failed to retain positive evidence!"
+    );
+    Ok(())
+}
+
+#[test]
+fn test_redundancy_record_must_not_be_self_referential() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("site:inv092:adv3");
+    let warn_text = "Warning: Perimeter motion alert in Sector 4";
+    let evidence_digest = ContentDigest::sha256(b"warn-evidence-digest");
+
+    let world = PossibleWorld {
+        world_id: "world:adv:3".to_owned(),
+        description: "World 3".to_owned(),
+        claim_ids: BTreeSet::from(["claim:warn:adv3".to_owned()]),
+        evidence: vec![evidence_digest],
+        consequence_severity: 4,
+        protected: true,
+    };
+    let envelope = WorldEnvelope {
+        envelope_id: "envelope:adv:3".to_owned(),
+        objective_id: "objective:adv:3".to_owned(),
+        anchor: anchor.clone(),
+        nominal_claim_ids: BTreeSet::from(["claim:warn:adv3".to_owned()]),
+        certified_core_claim_ids: BTreeSet::new(),
+        alternatives: vec![world],
+        adversarial_residuals: Vec::new(),
+        common_invariants: BTreeSet::new(),
+        coverage_boundary_handles: BTreeSet::new(),
+    };
+    // Duplicate identical warning in frame.at_risk
+    let frame = SituationFrame {
+        frame_id: "frame:adv:3".to_owned(),
+        objective_id: "objective:adv:3".to_owned(),
+        anchor: anchor.clone(),
+        world_envelope: envelope,
+        knowledge_cells: Vec::new(),
+        now: vec!["Monitoring".to_owned()],
+        changed: Vec::new(),
+        why: Vec::new(),
+        unknown: Vec::new(),
+        at_risk: vec![warn_text.to_owned(), warn_text.to_owned()],
+        next: Vec::new(),
+        evidence_handles: BTreeSet::new(),
+    };
+    let capsule = SituationCapsule {
+        capsule_id: "situation:adv:3".to_owned(),
+        revision: 1,
+        contract_basis: test_basis(),
+        mission_id: MissionId::parse("mission:adv:3")?,
+        session_id: SessionId::parse("session:adv:3")?,
+        principal_id: PrincipalId::parse("principal:adv")?,
+        anchor,
+        previous_anchor: None,
+        frame,
+        obligations: Vec::new(),
+        affordances: Vec::new(),
+        completeness: Completeness::Partial,
+        created_at: TimestampNs(1_000_000),
+        mission_state: None,
+    };
+    let situation = ReferenceSituation {
+        capsule,
+        proof_roots: BTreeSet::from([evidence_digest]),
+    };
+
+    let publ = project_reference_situation(situation, &test_spec(10_000)?)?;
+    let records = publ.redundancy_records();
+    assert_eq!(records.len(), 1);
+
+    // A dropped item cannot be recorded as dropped in favor of itself with the identical ID:
+    assert_ne!(
+        records[0].dropped_item_id, records[0].retained_item_id,
+        "Redundancy record is self-referential: dropped_item_id == retained_item_id ({})",
+        records[0].dropped_item_id
     );
     Ok(())
 }

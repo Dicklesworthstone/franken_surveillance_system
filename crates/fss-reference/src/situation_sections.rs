@@ -627,6 +627,7 @@ fn context_candidates(
         .filter(|world| world.protected || world.consequence_severity >= 4)
     {
         let mut basis = world.claim_ids.clone();
+        basis.insert(world.world_id.clone());
         basis.extend(world.evidence.iter().map(ToString::to_string));
         insert_candidate(
             &mut candidates,
@@ -659,8 +660,18 @@ fn context_candidates(
                         .basis
                         .extend(cell.evidence.iter().map(ToString::to_string));
                 }
+                let dropped_item_id = if item_id == *prev_item_id {
+                    let duplicate_count = redundancy
+                        .iter()
+                        .filter(|r| r.retained_item_id == *prev_item_id)
+                        .count()
+                        + 1;
+                    format!("{item_id}:duplicate:{duplicate_count}")
+                } else {
+                    item_id
+                };
                 redundancy.push(RedundancyRecord {
-                    dropped_item_id: item_id,
+                    dropped_item_id,
                     retained_item_id: prev_item_id.clone(),
                     kind: "contradiction".to_owned(),
                     reason: "duplicate contradiction with identical statement and contradicting evidence roots; retained earlier representative with merged evidence basis".to_owned(),
@@ -780,8 +791,18 @@ fn context_candidates(
                     && c.knowledge_state == cell.knowledge_state
                     && c.evidence == cell.evidence
             }) {
+                let dropped_item_id = if item_id == *prev_item_id {
+                    let duplicate_count = redundancy
+                        .iter()
+                        .filter(|r| r.retained_item_id == *prev_item_id)
+                        .count()
+                        + 1;
+                    format!("{item_id}:duplicate:{duplicate_count}")
+                } else {
+                    item_id
+                };
                 redundancy.push(RedundancyRecord {
-                    dropped_item_id: item_id,
+                    dropped_item_id,
                     retained_item_id: prev_item_id.clone(),
                     kind: "knowledge".to_owned(),
                     reason: "duplicate knowledge proposition with identical statement and evidence roots; retained earlier representative".to_owned(),
@@ -817,6 +838,7 @@ fn context_candidates(
         .filter(|world| !world.protected && world.consequence_severity < 4)
     {
         let mut basis = world.claim_ids.clone();
+        basis.insert(world.world_id.clone());
         basis.extend(world.evidence.iter().map(ToString::to_string));
         insert_candidate(
             &mut candidates,
@@ -906,8 +928,15 @@ fn insert_candidate(
     candidate.item.validate()?;
     match candidates.get(&candidate.item.item_id) {
         Some(existing) if existing.item == candidate.item => {
+            let duplicate_count = redundancy
+                .iter()
+                .filter(|r| r.retained_item_id == existing.item.item_id)
+                .count()
+                + 1;
+            let dropped_item_id =
+                format!("{}:duplicate:{}", candidate.item.item_id, duplicate_count);
             redundancy.push(RedundancyRecord {
-                dropped_item_id: candidate.item.item_id.clone(),
+                dropped_item_id,
                 retained_item_id: existing.item.item_id.clone(),
                 kind: candidate.item.kind.clone(),
                 reason: format!("duplicate exact {} item", candidate.item.kind),
