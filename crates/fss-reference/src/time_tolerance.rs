@@ -435,10 +435,7 @@ impl SourceTimeEvidence {
         let new_interval = CaptureInterval::new_checked(earliest, latest)?;
 
         let mut updated_sources = self.uncertainty_sources;
-        let additional_u64 = match u64::try_from(additional_ns) {
-            Ok(val) => val,
-            Err(_) => u64::MAX,
-        };
+        let additional_u64 = u64::try_from(additional_ns).unwrap_or(u64::MAX);
         updated_sources.network_ns = updated_sources.network_ns.saturating_add(additional_u64);
 
         Self::new(SourceTimeEvidenceParams {
