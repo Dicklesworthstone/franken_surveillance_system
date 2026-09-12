@@ -12,9 +12,10 @@ use fss_core::{
 use fss_ledger::{LedgerOracle, OracleLimits};
 use fss_object::{SpoolLimits, StagingSpool};
 use fss_publication::{
-    MAX_REPLAY_FAULT_DIRECTIVES, MAX_REPLAY_FAULT_REORDER_WINDOW, ReplayBundle, ReplayBundleError,
-    ReplayBundleLimits, ReplayBundleReader, ReplayBundleWriter, ReplayFaultAction,
-    ReplayFaultDirective, ReplayFaultSchedule, ReplayMetadata, ReplayObject,
+    MAX_REPLAY_FAULT_DIRECTIVES, MAX_REPLAY_FAULT_REORDER_WINDOW, MAX_REPLAY_TEMP_ATTEMPTS,
+    ReplayBundle, ReplayBundleError, ReplayBundleLimits, ReplayBundleReader, ReplayBundleWriter,
+    ReplayFaultAction, ReplayFaultDirective, ReplayFaultSchedule, ReplayMetadata, ReplayObject,
+    replay_temp_path_for,
 };
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -773,6 +774,146 @@ fn test_bounds_total_bytes_at_bound_and_bound_plus_one() -> TestResult {
     match res_exceeded {
         Err(ReplayBundleError::BoundExceeded("total_bytes")) => {}
         other => return Err(format!("expected BoundExceeded(total_bytes), got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_replay_temp_path_is_pure_function() -> TestResult {
+    let dummy_path = PathBuf::from("/tmp/test/bundle.replay");
+    let dummy_digest = ContentDigest::sha256(b"pure-test");
+    let path0 = replay_temp_path_for(&dummy_path, dummy_digest, 0);
+    let path1 = replay_temp_path_for(&dummy_path, dummy_digest, 1);
+    assert_ne!(path0, path1);
+    let path0_again = replay_temp_path_for(&dummy_path, dummy_digest, 0);
+    assert_eq!(path0, path0_again);
+    assert!(
+        path0
+            .to_string_lossy()
+            .contains(&format!("{}", std::process::id()))
+    );
+    Ok(())
+}
+
+#[test]
+fn test_replay_bundle_writer_skips_existing_temp_and_does_not_clobber() -> TestResult {
+    let lineage = "site:test:replay:skips_existing";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = sample_fault_schedule()?;
+
+    let bundle = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        fixture.objects,
+    )?;
+
+    let path = temp_bundle_path("skips-existing");
+    let _ = fs::remove_file(&path);
+
+    // Compute the digest to determine candidate temp paths
+    let bundle_digest = bundle.digest()?;
+    let temp_attempt0 = replay_temp_path_for(&path, bundle_digest, 0);
+
+    // Plant an existing file at attempt 0 with sentinel bytes
+    let sentinel = b"sentinel-bytes-that-must-survive";
+    fs::write(&temp_attempt0, sentinel)?;
+
+    // Write should succeed by taking attempt 1
+    let receipt = ReplayBundleWriter::write_to_path(&path, &bundle)?;
+    assert_eq!(receipt.manifest_root, fixture.manifest_root);
+
+    // Sentinel at attempt 0 must remain completely untouched
+    let surviving = fs::read(&temp_attempt0)?;
+    assert_eq!(surviving, sentinel);
+
+    // Clean up
+    let _ = fs::remove_file(&temp_attempt0);
+    let _ = fs::remove_file(&path);
+    Ok(())
+}
+
+#[test]
+fn test_replay_bundle_writer_bounded_temp_retry_exhaustion_is_typed() -> TestResult {
+    let lineage = "site:test:replay:exhaustion";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = sample_fault_schedule()?;
+
+    let bundle = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        fixture.objects,
+    )?;
+
+    let path = temp_bundle_path("exhaustion");
+    let _ = fs::remove_file(&path);
+
+    let bundle_digest = bundle.digest()?;
+
+    // Plant existing files for all bounded attempts 0..MAX_REPLAY_TEMP_ATTEMPTS
+    let mut planted_paths = Vec::new();
+    for attempt in 0..MAX_REPLAY_TEMP_ATTEMPTS {
+        let p = replay_temp_path_for(&path, bundle_digest, attempt);
+        fs::write(&p, format!("occupied-attempt-{attempt}"))?;
+        planted_paths.push(p);
+    }
+
+    // Attempting to write must fail with typed ReplayTempExhausted error
+    let res = ReplayBundleWriter::write_to_path(&path, &bundle);
+    match res {
+        Err(ReplayBundleError::ReplayTempExhausted { attempts, .. }) => {
+            assert_eq!(attempts, MAX_REPLAY_TEMP_ATTEMPTS);
+        }
+        other => {
+            return Err(format!("expected ReplayTempExhausted, got {other:?}").into());
+        }
+    }
+
+    // Destination file must not exist
+    assert!(!path.exists());
+
+    // Clean up planted paths
+    for p in planted_paths {
+        let _ = fs::remove_file(p);
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_replay_bundle_digest_returns_result_and_never_fabricates() -> TestResult {
+    let lineage = "site:test:replay:digest_result";
+    let fixture = create_test_fixture(lineage)?;
+    let metadata = sample_metadata(lineage);
+    let fault_schedule = sample_fault_schedule()?;
+
+    let bundle = ReplayBundle::new(
+        fixture.manifest_root,
+        metadata,
+        fault_schedule,
+        fixture.batches,
+        fixture.objects,
+    )?;
+
+    // Valid bundle digest returns Ok
+    let digest = bundle.digest()?;
+    assert_ne!(digest, ContentDigest::sha256(b""));
+
+    // Constrained limits must return typed BoundExceeded error, NEVER fabricate empty sha256
+    let tight_limits = ReplayBundleLimits {
+        max_batches: 1, // bundle has 2 batches
+        ..ReplayBundleLimits::default()
+    };
+    let res = bundle.digest_with_limits(&tight_limits);
+    match res {
+        Err(ReplayBundleError::BoundExceeded("batches")) => {}
+        other => return Err(format!("expected BoundExceeded(batches), got {other:?}").into()),
     }
 
     Ok(())

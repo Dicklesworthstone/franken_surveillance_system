@@ -28,11 +28,10 @@
 
 use std::collections::BTreeMap;
 use std::error::Error;
-use std::fmt;
-use std::fs::{self, File};
+use std::fmt::{self, Write as _};
+use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
-use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::path::{Path, PathBuf};
 
 use fss_core::{
     BatchId, ContentDigest, ContractError, DigestAlgorithm, EvidenceDeltaBatch, LedgerAnchor,
@@ -77,8 +76,81 @@ pub const MAX_REPLAY_FAULT_REORDER_WINDOW: usize = 256;
 /// Length of the trailer checksum record: 1 byte algorithm tag + 32 bytes SHA-256.
 pub const REPLAY_TRAILER_LEN: usize = 33;
 
-/// Monotonic sequence counter for atomic temporary file generation.
-static TEMP_FILE_SEQ: AtomicU64 = AtomicU64::new(1);
+/// Upper bound on distinct staging names tried when writing a replay bundle.
+///
+/// Each write owns its own attempt sequence `0..MAX_REPLAY_TEMP_ATTEMPTS`; no
+/// process-global state participates in staging names. `create_new` guarantees that a name held
+/// by a concurrent writer or left behind by an interrupted one is never opened, overwritten, or
+/// removed by this call.
+pub const MAX_REPLAY_TEMP_ATTEMPTS: u32 = 16;
+
+/// Computes the deterministic staging path used by `attempt` while writing a replay bundle.
+///
+/// The name is `.tmp.replay.{digest-hex}.{pid}.{attempt}` in the target directory.
+/// It is a pure function of its inputs and the current process id and never consults shared mutable state.
+#[must_use]
+pub fn replay_temp_path_for(target_path: &Path, digest: ContentDigest, attempt: u32) -> PathBuf {
+    sibling_path(
+        target_path,
+        format!(
+            ".tmp.replay.{}.{}.{attempt}",
+            digest_hex(digest),
+            std::process::id()
+        ),
+    )
+}
+
+fn digest_hex(digest: ContentDigest) -> String {
+    let mut hex = String::with_capacity(64);
+    for byte in digest.bytes() {
+        let _ = write!(&mut hex, "{byte:02x}");
+    }
+    hex
+}
+
+fn sibling_path(target_path: &Path, file_name: String) -> PathBuf {
+    let parent = target_path.parent().unwrap_or_else(|| Path::new("."));
+    if parent.as_os_str().is_empty() {
+        PathBuf::from(file_name)
+    } else {
+        parent.join(file_name)
+    }
+}
+
+/// Creates a fresh staging file for atomic bundle publication with a bounded `create_new` retry.
+///
+/// A name that already exists belongs to someone else (a concurrent writer or an interrupted
+/// earlier write) and is skipped, never opened or removed. When every bounded name is taken the
+/// call fails with [`ReplayBundleError::ReplayTempExhausted`] before the target file is touched.
+fn create_replay_temp(
+    target_path: &Path,
+    digest: ContentDigest,
+) -> Result<(PathBuf, File), ReplayBundleError> {
+    for attempt in 0..MAX_REPLAY_TEMP_ATTEMPTS {
+        let candidate = replay_temp_path_for(target_path, digest, attempt);
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((candidate, file)),
+            Err(err) if err.kind() == ErrorKind::AlreadyExists => {}
+            Err(err) => {
+                return Err(ReplayBundleError::Io {
+                    operation: "create_temp_file",
+                    kind: err.kind(),
+                });
+            }
+        }
+    }
+    Err(ReplayBundleError::ReplayTempExhausted {
+        directory: target_path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .to_path_buf(),
+        attempts: MAX_REPLAY_TEMP_ATTEMPTS,
+    })
+}
 
 /// Configurable limits for validating replay bundles.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -375,6 +447,13 @@ pub enum ReplayBundleError {
     Spool(SpoolError),
     /// Batch codec failure.
     BatchCodec(BatchCodecError),
+    /// Every bounded staging name for atomic bundle write already exists.
+    ReplayTempExhausted {
+        /// Directory in which staging was attempted.
+        directory: PathBuf,
+        /// Number of distinct staging names tried.
+        attempts: u32,
+    },
 }
 
 impl fmt::Display for ReplayBundleError {
@@ -469,6 +548,14 @@ impl fmt::Display for ReplayBundleError {
             Self::Oracle(error) => write!(formatter, "replay oracle error: {error}"),
             Self::Spool(error) => write!(formatter, "replay spool error: {error}"),
             Self::BatchCodec(error) => write!(formatter, "replay batch codec error: {error}"),
+            Self::ReplayTempExhausted {
+                directory,
+                attempts,
+            } => write!(
+                formatter,
+                "could not stage replay bundle in {}: all {attempts} bounded staging names already exist; inspect stale *.tmp.* files from interrupted writes",
+                directory.display()
+            ),
         }
     }
 }
@@ -723,12 +810,17 @@ impl ReplayBundle {
     }
 
     /// SHA-256 digest over the canonical serialized body (excluding trailer).
-    #[must_use]
-    pub fn digest(&self) -> ContentDigest {
-        match ReplayBundleWriter::to_body_bytes(self, &ReplayBundleLimits::default()) {
-            Ok(body) => ContentDigest::sha256(&body),
-            Err(_) => ContentDigest::sha256(b""),
-        }
+    pub fn digest(&self) -> Result<ContentDigest, ReplayBundleError> {
+        self.digest_with_limits(&ReplayBundleLimits::default())
+    }
+
+    /// SHA-256 digest over the canonical serialized body with explicit limits (excluding trailer).
+    pub fn digest_with_limits(
+        &self,
+        limits: &ReplayBundleLimits,
+    ) -> Result<ContentDigest, ReplayBundleError> {
+        let body = ReplayBundleWriter::to_body_bytes(self, limits)?;
+        Ok(ContentDigest::sha256(&body))
     }
 
     /// Replays the ordered batch history through a [`LedgerOracle`].
@@ -848,21 +940,9 @@ impl ReplayBundleWriter {
         let body_len = bytes.len() - REPLAY_TRAILER_LEN;
         let bundle_digest = ContentDigest::sha256(&bytes[..body_len]);
 
-        let parent = path.parent().unwrap_or_else(|| Path::new("."));
-        let seq = TEMP_FILE_SEQ.fetch_add(1, Ordering::Relaxed);
-        let temp_name = format!(
-            ".tmp.replay.{}.{}.{}",
-            std::process::id(),
-            seq,
-            bundle_digest.to_text()
-        );
-        let temp_path = parent.join(temp_name);
+        let (temp_path, mut file) = create_replay_temp(path, bundle_digest)?;
 
         let write_res = (|| -> Result<(), ReplayBundleError> {
-            let mut file = File::create(&temp_path).map_err(|e| ReplayBundleError::Io {
-                operation: "create_temp_file",
-                kind: e.kind(),
-            })?;
             file.write_all(&bytes).map_err(|e| ReplayBundleError::Io {
                 operation: "write_temp_file",
                 kind: e.kind(),
@@ -871,6 +951,7 @@ impl ReplayBundleWriter {
                 operation: "sync_temp_file",
                 kind: e.kind(),
             })?;
+            drop(file);
             fs::rename(&temp_path, path).map_err(|e| ReplayBundleError::Io {
                 operation: "rename_temp_file",
                 kind: e.kind(),
