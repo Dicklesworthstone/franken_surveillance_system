@@ -257,6 +257,61 @@ class ReleaseArtifactTests(unittest.TestCase):
         for forbidden in ("tempfile", ".write_text(", ".write_bytes(", "os.replace"):
             self.assertFalse(forbidden in text, f"release_artifacts.py must not write in place or copy the writer: {forbidden}")
 
+    def run_verify_then_package(self, root: Path, target: str = "x86_64-unknown-linux-gnu") -> subprocess.CompletedProcess[str]:
+        """Runs the real `verify` then `package` entry points; returns the package process."""
+        subprocess.run([os.fspath(SCRIPT), *self.verify_args(root, target)], cwd=ROOT, check=True)
+        package_args = [
+            "package", *self.verify_args(root, target)[1:],
+            "--metadata", str(root / "metadata.json"), "--source-commit", COMMIT,
+        ]
+        env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
+        return subprocess.run(
+            [os.fspath(SCRIPT), *package_args], cwd=ROOT, env=env, capture_output=True, text=True, timeout=300
+        )
+
+    def checksum_listings(self, root: Path) -> dict[str, list[str]]:
+        """Every checksum receipt package() may have written, mapped to the names it lists."""
+        candidates = [*sorted((root / "artifacts").glob("*.sha256sums.txt")), root / "receipts" / "ARTIFACT_SHA256SUMS.txt"]
+        return {
+            path.name: [line.split("  ", 1)[1] for line in path.read_text(encoding="utf-8").splitlines()]
+            for path in candidates
+            if path.is_file()
+        }
+
+    def test_package_refuses_leftover_atomic_writer_temp_file(self) -> None:
+        """fss-0uofb: a `.<name>.tmp.<suffix>` file left in the artifacts directory by a killed
+        atomic write must make package fail closed, naming the file, instead of checksumming it
+        into <target>.sha256sums.txt / ARTIFACT_SHA256SUMS.txt (or silently skipping it)."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_input(root)
+            leftover_name = ".fss-x86_64-unknown-linux-gnu.sbom.spdx.json.tmp.stale"
+            leftover = root / "artifacts" / leftover_name
+            leftover.write_text('{"partial": ', encoding="utf-8")
+
+            packaged = self.run_verify_then_package(root)
+            self.assertNotEqual(packaged.returncode, 0, packaged.stderr)
+            self.assertIn(leftover_name, packaged.stderr)
+            self.assertIn("LeftoverAtomicTempFileError", packaged.stderr)
+            self.assertNotIn("Traceback", packaged.stderr, "the refusal must be a clear typed error, not a crash")
+            for name, listed in self.checksum_listings(root).items():
+                self.assertFalse([entry for entry in listed if ".tmp." in entry], f"{name} lists a temp file: {listed}")
+            self.assertTrue(leftover.is_file(), "package must not silently delete the evidence of the killed write")
+
+    def test_package_clean_artifacts_directory_still_packages(self) -> None:
+        """fss-0uofb positive control: without a leftover temp file the same inputs package, and
+        both checksum receipts list only real release assets."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self.make_input(root)
+            packaged = self.run_verify_then_package(root)
+            self.assertEqual(packaged.returncode, 0, packaged.stderr)
+            listings = self.checksum_listings(root)
+            self.assertEqual(sorted(listings), ["ARTIFACT_SHA256SUMS.txt", "fss-x86_64-unknown-linux-gnu.sha256sums.txt"])
+            for name, listed in listings.items():
+                self.assertIn("fss-x86_64-unknown-linux-gnu.sbom.spdx.json", listed, name)
+                self.assertFalse([entry for entry in listed if ".tmp." in entry or entry.startswith(".")], f"{name}: {listed}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,16 +9,18 @@ import lzma
 import os
 import stat
 import subprocess
+import sys
 import tarfile
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
-from qualification_receipt import atomic_write_bytes, write_json_atomic
+from qualification_receipt import atomic_write_bytes, is_atomic_temp_name, write_json_atomic
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXED_ZIP_DATE = (1980, 1, 1, 0, 0, 0)
+EXIT_LEFTOVER_ATOMIC_TEMP = 3
 
 
 @dataclass(frozen=True)
@@ -62,6 +64,32 @@ def normalized_files(root: Path) -> list[Path]:
             raise ValueError(f"symlink is forbidden in release input: {path}")
         if path.is_file():
             files.append(path)
+    return files
+
+
+class LeftoverAtomicTempFileError(ValueError):
+    """The artifacts directory holds a temp file of the shared atomic writer (fss-0uofb).
+
+    Such a file is what a write killed before its final rename leaves behind. It is neither
+    a release asset nor safe to skip silently (it proves an earlier run did not finish), so package
+    refuses rather than checksumming it into the receipts or letting an upload ship it."""
+
+    def __init__(self, root: Path, paths: list[Path]) -> None:
+        self.root = root
+        self.paths = paths
+        names = ", ".join(path.relative_to(root).as_posix() for path in paths)
+        super().__init__(
+            f"refusing to package {root}: leftover atomic-writer temp file(s) from an interrupted "
+            f"write: {names}; confirm no release step is still running, remove them, and re-run"
+        )
+
+
+def release_artifact_files(root: Path) -> list[Path]:
+    """normalized_files(root), failing closed on any leftover atomic-writer temp file."""
+    files = normalized_files(root)
+    leftovers = [path for path in files if is_atomic_temp_name(path.name)]
+    if leftovers:
+        raise LeftoverAtomicTempFileError(root, leftovers)
     return files
 
 
@@ -318,6 +346,8 @@ def artifact_row(path: Path) -> dict[str, Any]:
 
 
 def package(ctx: Context, metadata_path: Path, source_commit: str) -> None:
+    # Preflight before any write: a leftover from an earlier killed run is refused up front.
+    release_artifact_files(ctx.artifacts)
     verification = verify_stage(ctx)
     metadata = load_metadata(metadata_path)
     stage_files = [(path, path.relative_to(ctx.stage).as_posix()) for path in normalized_files(ctx.stage)]
@@ -392,9 +422,9 @@ def package(ctx: Context, metadata_path: Path, source_commit: str) -> None:
     write_json(qualification_path, qualification)
 
     target_checksums = ctx.artifacts / f"{ctx.target_base}.sha256sums.txt"
-    checksum_targets = [path for path in normalized_files(ctx.artifacts) if path != target_checksums]
+    checksum_targets = [path for path in release_artifact_files(ctx.artifacts) if path != target_checksums]
     write_checksum_file(checksum_targets, target_checksums, ctx.artifacts)
-    write_checksum_file(normalized_files(ctx.artifacts), ctx.receipts / "ARTIFACT_SHA256SUMS.txt", ctx.artifacts)
+    write_checksum_file(release_artifact_files(ctx.artifacts), ctx.receipts / "ARTIFACT_SHA256SUMS.txt", ctx.artifacts)
 
 
 def parse_context(args: argparse.Namespace) -> Context:
@@ -428,7 +458,11 @@ def main() -> int:
         return 0
     if args.metadata is None or args.source_commit is None:
         parser.error("package requires --metadata and --source-commit")
-    package(ctx, args.metadata.resolve(), args.source_commit)
+    try:
+        package(ctx, args.metadata.resolve(), args.source_commit)
+    except LeftoverAtomicTempFileError as exc:
+        print(f"release_artifacts: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return EXIT_LEFTOVER_ATOMIC_TEMP
     return 0
 
 

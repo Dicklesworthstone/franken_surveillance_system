@@ -15,7 +15,8 @@ checksum release assets) and ``scripts/claim_proof_bundle_checker.py`` persist g
 A reader therefore sees either the previous complete file or the new complete file, never a
 partial one. A crash (SIGKILL, power loss) can leave a ``.<name>.tmp.*`` file behind; its name
 never equals ``qualification-receipt.json`` or a proof-bundle suffix, so the repository audit never
-reads it as a receipt.
+reads it as a receipt. The name shape is defined once, as :data:`ATOMIC_TEMP_NAME_RE`;
+``release_artifacts.py package`` refuses an artifacts directory that still holds such a file.
 
 Command-line entry points used by the shell scripts (stdlib only):
 
@@ -57,6 +58,25 @@ OUTPUT_DIGEST_RE = re.compile(r"^[a-z0-9][a-z0-9:+._-]{7,255}$")
 ARGV_ITEM_MAX = 4096
 UNIQUE_DIR_ATTEMPTS = 1000
 EXIT_RUN_DIR_IN_USE = 4
+
+# The single definition of the atomic writer's same-directory temp-file name (fss-0uofb):
+# ``tempfile.mkstemp(prefix=atomic_temp_prefix(name))`` yields ``.<name>.tmp.<random suffix>``.
+# Consumers that enumerate a directory the writer targets (release_artifacts.py package) import
+# ATOMIC_TEMP_NAME_RE / is_atomic_temp_name instead of re-spelling the pattern. The suffix is
+# matched as any non-empty run of non-separator characters rather than mkstemp's current
+# 8-character alphabet, so a leftover is recognised regardless of the stdlib's random-name format.
+ATOMIC_TEMP_INFIX = ".tmp."
+ATOMIC_TEMP_NAME_RE = re.compile(r"\A\.(?P<target>.+)" + re.escape(ATOMIC_TEMP_INFIX) + r"(?P<suffix>[^/\\]+)\Z")
+
+
+def atomic_temp_prefix(target_name: str) -> str:
+    """The ``mkstemp`` prefix atomic_write_bytes uses for a temp file replacing ``target_name``."""
+    return f".{target_name}{ATOMIC_TEMP_INFIX}"
+
+
+def is_atomic_temp_name(name: str) -> bool:
+    """True when ``name`` has the shape of an atomic_write_bytes temp file (possibly a crash leftover)."""
+    return ATOMIC_TEMP_NAME_RE.fullmatch(name) is not None
 
 LANE_IDS = {
     "policy": "QL-POLICY-001", "docs": "QL-POLICY-001", "rust": "QL-RUST-001",
@@ -111,7 +131,10 @@ def _discard_temp(temp_path: Path) -> None:
         if original is None:
             raise
         note = f"additionally failed to remove temp file {temp_path}: {secondary!r}"
-        original.add_note(note)
+        # BaseException.add_note is Python >= 3.11; the repository declares no minimum Python
+        # version, so on older interpreters the note is only logged (below), never lost silently.
+        if hasattr(original, "add_note"):
+            original.add_note(note)
         print(f"qualification_receipt: {note}", file=sys.stderr)
 
 
@@ -119,7 +142,7 @@ def atomic_write_bytes(output_path: Path | str, data: bytes, mode: int = 0o644) 
     """Durably and atomically replaces ``output_path`` with ``data`` (see module docstring)."""
     target = Path(output_path).resolve()
     make_durable_dirs(target.parent)
-    descriptor, temp_name = tempfile.mkstemp(prefix=f".{target.name}.tmp.", dir=target.parent)
+    descriptor, temp_name = tempfile.mkstemp(prefix=atomic_temp_prefix(target.name), dir=target.parent)
     temp_path = Path(temp_name)
     replaced = False
     try:
