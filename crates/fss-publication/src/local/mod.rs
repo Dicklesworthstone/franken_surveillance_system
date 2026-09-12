@@ -100,7 +100,7 @@ pub use error::{
 pub use record::{
     LOCAL_ROOT_RECORD_DOMAIN, LOCAL_ROOT_RECORD_FORMAT_VERSION, LOCAL_TOMBSTONE_RECORD_DOMAIN,
     MAX_ROOT_RECORD_BYTES, MAX_SLOT_NAME_BYTES, MAX_TOMBSTONE_RECORD_BYTES, SlotName,
-    root_record_bytes,
+    root_record_bytes, tombstone_record_bytes,
 };
 
 /// Lock file under the publication root.
@@ -711,6 +711,11 @@ impl LocalRootPublisher {
         self.visible.values().map(|entry| &entry.visible)
     }
 
+    /// Every object digest with a durable tombstone recorded in this instance, in digest order.
+    pub fn tombstones(&self) -> impl Iterator<Item = &ContentDigest> {
+        self.tombstones.keys()
+    }
+
     /// Every object reachable from the root visible in `slot`, including the manifest body.
     ///
     /// Descent follows the publication rule: a reached object that is itself the root of a visible
@@ -888,18 +893,20 @@ impl LocalRootPublisher {
                 }
             })
         }) {
-            self.remove_temp(&temp_relative, &temp_path)?;
-            return Err(error);
+            let cleanup = self.remove_temp(&temp_relative, &temp_path);
+            return Err(Self::fail_with_cleanup(error, cleanup));
         }
         match self.io.symlink_metadata(&target_path) {
             Ok(_) => {
-                self.remove_temp(&temp_relative, &temp_path)?;
-                return Err(LocalPublicationError::InvalidLayout { path: target_path });
+                let original = LocalPublicationError::InvalidLayout { path: target_path };
+                let cleanup = self.remove_temp(&temp_relative, &temp_path);
+                return Err(Self::fail_with_cleanup(original, cleanup));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
-                self.remove_temp(&temp_relative, &temp_path)?;
-                return Err(io_error(LocalIoOperation::Inspect, &target_path, &error));
+                let original = io_error(LocalIoOperation::Inspect, &target_path, &error);
+                let cleanup = self.remove_temp(&temp_relative, &temp_path);
+                return Err(Self::fail_with_cleanup(original, cleanup));
             }
         }
 
@@ -1023,18 +1030,25 @@ impl LocalRootPublisher {
         self.write_temp(&temp_relative, &temp_path, &bytes)?;
         match self.io.symlink_metadata(&target_path) {
             Ok(_) => {
-                self.remove_temp(&temp_relative, &temp_path)?;
-                return Err(LocalPublicationError::InvalidLayout { path: target_path });
+                let original = LocalPublicationError::InvalidLayout { path: target_path };
+                let cleanup = self.remove_temp(&temp_relative, &temp_path);
+                return Err(Self::fail_with_cleanup(original, cleanup));
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
             Err(error) => {
-                self.remove_temp(&temp_relative, &temp_path)?;
-                return Err(io_error(LocalIoOperation::Inspect, &target_path, &error));
+                let original = io_error(LocalIoOperation::Inspect, &target_path, &error);
+                let cleanup = self.remove_temp(&temp_relative, &temp_path);
+                return Err(Self::fail_with_cleanup(original, cleanup));
             }
         }
         if let Err(error) = self.io.rename(&temp_path, &target_path) {
-            self.remove_temp(&temp_relative, &temp_path)?;
-            return Err(io_error(LocalIoOperation::Rename, &target_path, &error));
+            return Err(self.roll_back_failed_tombstone_rename(
+                &object,
+                (&temp_relative, &temp_path),
+                &target_path,
+                &bytes,
+                error.kind(),
+            ));
         }
         if let Err(error) = self.io.sync_directory(&self.tombstones_dir) {
             self.poisoned = true;
@@ -1178,10 +1192,12 @@ impl LocalRootPublisher {
             return Err(LocalPublicationError::InjectedCrash { point });
         }
         if point != PublishCutPoint::AfterRootRename && cancel.cancel_requested(point) {
+            let original = LocalPublicationError::Cancelled { point };
             if let Some((relative, path)) = temp {
-                self.remove_temp(relative, path)?;
+                let cleanup = self.remove_temp(relative, path);
+                return Err(Self::fail_with_cleanup(original, cleanup));
             }
-            return Err(LocalPublicationError::Cancelled { point });
+            return Err(original);
         }
         Ok(())
     }
@@ -1300,6 +1316,19 @@ impl LocalRootPublisher {
         }
     }
 
+    fn fail_with_cleanup(
+        original: LocalPublicationError,
+        cleanup: Result<(), LocalPublicationError>,
+    ) -> LocalPublicationError {
+        match cleanup {
+            Ok(()) => original,
+            Err(cleanup) => LocalPublicationError::CleanupFailed {
+                original: Box::new(original),
+                cleanup: Box::new(cleanup),
+            },
+        }
+    }
+
     /// Rolls back a root rename that was reported failed and returns the error to report.
     ///
     /// The rename may have taken effect anyway, so the record at `target` is removed (the slot
@@ -1326,14 +1355,12 @@ impl LocalRootPublisher {
             },
         };
         let Some((rollback_operation, rollback_kind)) = rollback else {
-            return match self.remove_temp(temp_relative, temp_path) {
-                Ok(()) => LocalPublicationError::Io {
-                    operation: LocalIoOperation::Rename,
-                    path: target.to_path_buf(),
-                    kind: rename_kind,
-                },
-                Err(cleanup) => cleanup,
+            let original = LocalPublicationError::Io {
+                operation: LocalIoOperation::Rename,
+                path: target.to_path_buf(),
+                kind: rename_kind,
             };
+            return Self::fail_with_cleanup(original, self.remove_temp(temp_relative, temp_path));
         };
         self.poisoned = true;
         self.staged.remove(slot);
@@ -1342,6 +1369,53 @@ impl LocalRootPublisher {
         let marker_kind = self.record_indeterminate_marker(slot, record).err();
         LocalPublicationError::RootVisibilityIndeterminate {
             slot: slot.clone(),
+            path: target.to_path_buf(),
+            rename_kind,
+            rollback_operation,
+            rollback_kind,
+            marker_kind,
+        }
+    }
+
+    /// Rolls back a tombstone rename that was reported failed and returns the error to report.
+    ///
+    /// The rename may have taken effect anyway, so the record at `target` is removed and the
+    /// removal is fsynced; `NotFound` proves the rename did not take effect. When the rollback
+    /// completes, nothing is visible and the rename error is returned. When the removal or its
+    /// fsync fails, the tombstone may be visible or may reappear after a crash: the tombstone is
+    /// marked indeterminate on disk, the instance is poisoned, and
+    /// [`LocalPublicationError::TombstoneVisibilityIndeterminate`] carries every observed outcome.
+    fn roll_back_failed_tombstone_rename(
+        &mut self,
+        object: &ContentDigest,
+        (temp_relative, temp_path): (&Path, &Path),
+        target: &Path,
+        record: &[u8],
+        rename_kind: io::ErrorKind,
+    ) -> LocalPublicationError {
+        let rollback = match self.io.remove_file(target) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => Some((LocalIoOperation::RemoveRecord, error.kind())),
+            Ok(()) => match self.io.sync_directory(&self.tombstones_dir) {
+                Ok(()) => None,
+                Err(error) => Some((LocalIoOperation::SyncDirectory, error.kind())),
+            },
+        };
+        let Some((rollback_operation, rollback_kind)) = rollback else {
+            let original = LocalPublicationError::Io {
+                operation: LocalIoOperation::Rename,
+                path: target.to_path_buf(),
+                kind: rename_kind,
+            };
+            return Self::fail_with_cleanup(original, self.remove_temp(temp_relative, temp_path));
+        };
+        self.poisoned = true;
+        self.tombstones.remove(object);
+        let marker_kind = self
+            .record_indeterminate_tombstone_marker(object, record)
+            .err();
+        LocalPublicationError::TombstoneVisibilityIndeterminate {
+            object: *object,
             path: target.to_path_buf(),
             rename_kind,
             rollback_operation,
@@ -1378,6 +1452,35 @@ impl LocalRootPublisher {
             .map_err(|error| error.kind())
     }
 
+    /// Durably records `<stem>.tomb.indeterminate`, holding the attempted tombstone `record`.
+    ///
+    /// A marker that already exists records the same fact and is kept. A marker left partially
+    /// written by a failure here still marks the tombstone on reopen, which classifies it by
+    /// existence alone.
+    fn record_indeterminate_tombstone_marker(
+        &self,
+        object: &ContentDigest,
+        record: &[u8],
+    ) -> Result<(), io::ErrorKind> {
+        let stem = digest_file_stem(*object);
+        let path = self.tombstones_dir.join(format!(
+            "{stem}{TOMBSTONE_RECORD_SUFFIX}{ROOT_INDETERMINATE_SUFFIX}"
+        ));
+        match self.io.create_new(&path) {
+            Ok(mut file) => {
+                let written = write_all(self.io.as_ref(), &mut file, record)
+                    .and_then(|()| self.io.sync_file(&file));
+                drop(file);
+                written.map_err(|error| error.kind())?;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error.kind()),
+        }
+        self.io
+            .sync_directory(&self.tombstones_dir)
+            .map_err(|error| error.kind())
+    }
+
     fn write_temp(
         &mut self,
         relative: &Path,
@@ -1398,27 +1501,30 @@ impl LocalRootPublisher {
             write_all(self.io.as_ref(), &mut file, bytes).and_then(|()| self.io.sync_file(&file));
         drop(file);
         if let Err(error) = written {
-            self.remove_temp(relative, path)?;
-            return Err(io_error(LocalIoOperation::WriteTemp, path, &error));
+            let original = io_error(LocalIoOperation::WriteTemp, path, &error);
+            let cleanup = self.remove_temp(relative, path);
+            return Err(Self::fail_with_cleanup(original, cleanup));
         }
         if let Err(error) = self.io.sync_directory(&parent) {
-            self.remove_temp(relative, path)?;
-            return Err(io_error(LocalIoOperation::SyncDirectory, &parent, &error));
+            let original = io_error(LocalIoOperation::SyncDirectory, &parent, &error);
+            let cleanup = self.remove_temp(relative, path);
+            return Err(Self::fail_with_cleanup(original, cleanup));
         }
         let limit = bytes.len() as u64;
         match read_bounded(self.io.as_ref(), path, limit) {
             Ok(Some(read_back)) if read_back == bytes => Ok(()),
             Ok(_) => {
-                self.remove_temp(relative, path)?;
-                Err(LocalPublicationError::Io {
+                let original = LocalPublicationError::Io {
                     operation: LocalIoOperation::ReadRecord,
                     path: path.to_path_buf(),
                     kind: io::ErrorKind::InvalidData,
-                })
+                };
+                let cleanup = self.remove_temp(relative, path);
+                Err(Self::fail_with_cleanup(original, cleanup))
             }
             Err(error) => {
-                self.remove_temp(relative, path)?;
-                Err(error)
+                let cleanup = self.remove_temp(relative, path);
+                Err(Self::fail_with_cleanup(error, cleanup))
             }
         }
     }
@@ -1528,13 +1634,13 @@ impl LocalRootPublisher {
                 .sync_directory(directory)
                 .map_err(|error| io_error(LocalIoOperation::SyncDirectory, directory, &error))?;
         }
-        let mut referenced = BTreeSet::new();
-        for entry in self.visible.values() {
-            referenced.extend(self.closure(entry.visible.root, &entry.children));
-        }
         for entry in self.visible.values_mut() {
             entry.visible.state = LocalPublicationState::Durable;
             report.roots.push(entry.visible.clone());
+        }
+        let mut referenced = BTreeSet::new();
+        for entry in self.visible.values() {
+            referenced.extend(self.closure(entry.visible.root, &entry.children));
         }
         let spool_objects = report
             .spool
@@ -1566,6 +1672,16 @@ impl LocalRootPublisher {
                 report.foreign.push(relative);
                 continue;
             };
+            if let Some(stem) = text.strip_suffix(ROOT_INDETERMINATE_SUFFIX) {
+                let parsed = stem
+                    .strip_suffix(TOMBSTONE_RECORD_SUFFIX)
+                    .and_then(parse_digest_file_stem);
+                if parsed.is_some() {
+                    return Err(LocalPublicationError::CorruptTombstone { path: relative });
+                }
+                report.foreign.push(relative);
+                continue;
+            }
             if let Some(stem) = text.strip_suffix(ROOT_TEMP_SUFFIX) {
                 let parsed = stem
                     .strip_suffix(TOMBSTONE_RECORD_SUFFIX)

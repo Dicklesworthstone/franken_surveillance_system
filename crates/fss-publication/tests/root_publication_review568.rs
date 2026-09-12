@@ -113,14 +113,19 @@ fn test_publish_rejects_child_root_that_is_only_visible_not_durable() -> TestRes
     let root_b = publisher.root(&slot_b).ok_or("slot-b root missing")?;
     assert_eq!(root_b.state, LocalPublicationState::Visible);
 
-    // Attempt to publish Slot A referencing Slot B
+    // Attempt to publish Slot A referencing Slot B while publisher is poisoned:
+    // This fails with Poisoned rather than ReferenceBlocked because the publisher is poisoned.
     let manifest_a = ObjectManifest::new("archive", [manifest_b.root()], None)?;
     let slot_a = SlotName::parse("slot-a")?;
-    let res = publisher.publish(&slot_a, &manifest_a);
+    let error = match publisher.publish(&slot_a, &manifest_a) {
+        Err(err) => err,
+        Ok(receipt) => return Err(format!("expected Poisoned, got Ok({receipt:?})").into()),
+    };
 
-    assert!(
-        res.is_err(),
-        "Publishing Slot A must fail because referenced child Slot B is only Visible, not Durable"
+    assert_eq!(
+        error,
+        LocalPublicationError::Poisoned,
+        "Publishing on the faulted publisher must fail with Poisoned"
     );
 
     // Furthermore, closure() must NOT descend into Slot B's children while Slot B is not Durable
@@ -128,6 +133,26 @@ fn test_publish_rejects_child_root_that_is_only_visible_not_durable() -> TestRes
     assert!(
         !closure_a.contains(&leaf),
         "closure() must not descend into Slot B while Slot B is not Durable"
+    );
+
+    // Drop faulted publisher and reopen fresh publisher
+    drop(publisher);
+    let mut reopened = LocalRootPublisher::open(&root, limits)?;
+    let root_b = reopened
+        .root(&slot_b)
+        .ok_or("slot-b root missing on reopen")?;
+    assert_eq!(root_b.state, LocalPublicationState::Durable);
+    assert!(
+        !reopened.is_poisoned(),
+        "reopened publisher must be unpoisoned"
+    );
+
+    // After recovery promoted Slot B to Durable, publishing Slot A succeeds
+    reopened.publish(&slot_a, &manifest_a)?;
+    let closure_reopened = reopened.closure(manifest_a.root(), manifest_a.children());
+    assert!(
+        closure_reopened.contains(&leaf),
+        "closure() must descend into Slot B once Slot B is Durable"
     );
     Ok(())
 }

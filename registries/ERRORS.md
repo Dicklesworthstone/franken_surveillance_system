@@ -114,6 +114,8 @@ operation states rather than generic errors.
 | `ERR-PUBLICATION-LOCAL-LAYOUT-001` | a publication directory or record path has the wrong file type or is occupied unexpectedly | repair the layout; nothing is overwritten |
 | `ERR-PUBLICATION-LOCAL-INDETERMINATE-001` | root was renamed into place but its directory fsync failed; durability unknown | reopen to reconcile before any retry |
 | `ERR-PUBLICATION-LOCAL-ROOT-VISIBILITY-INDETERMINATE-001` | root rename was reported failed and rolling back the possibly renamed record failed; visibility unknown, slot marked indeterminate | reopen to reconcile; the slot is refused until its record and indeterminate marker are repaired |
+| `ERR-PUBLICATION-LOCAL-TOMBSTONE-VISIBILITY-INDETERMINATE-001` | tombstone rename was reported failed and rolling back the possibly renamed record failed; visibility unknown | reopen to reconcile; the tombstone is refused until its record and indeterminate marker are repaired |
+| `ERR-PUBLICATION-LOCAL-CLEANUP-001` | removing a temporary publication file failed after an earlier error; both errors are carried | repair storage, discard orphaned temps, then retry idempotently |
 | `ERR-PUBLICATION-LOCAL-INJECTED-CRASH-001` | a fault-injection cut point fired and the instance behaves as a dead process | reopen to reconcile |
 | `ERR-PUBLICATION-LOCAL-CANCELLED-001` | publication was cancelled before the root rename; nothing is visible | retry idempotently when resumed |
 | `ERR-PUBLICATION-LOCAL-POISONED-001` | publisher observed a crash or indeterminate outcome and refuses further work | reopen to reconcile |

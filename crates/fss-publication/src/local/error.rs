@@ -34,6 +34,8 @@ pub const LOCAL_PUBLICATION_ERROR_CODES: &[&str] = &[
     "ERR-PUBLICATION-LOCAL-LAYOUT-001",
     "ERR-PUBLICATION-LOCAL-INDETERMINATE-001",
     "ERR-PUBLICATION-LOCAL-ROOT-VISIBILITY-INDETERMINATE-001",
+    "ERR-PUBLICATION-LOCAL-TOMBSTONE-VISIBILITY-INDETERMINATE-001",
+    "ERR-PUBLICATION-LOCAL-CLEANUP-001",
     "ERR-PUBLICATION-LOCAL-INJECTED-CRASH-001",
     "ERR-PUBLICATION-LOCAL-CANCELLED-001",
     "ERR-PUBLICATION-LOCAL-POISONED-001",
@@ -420,6 +422,35 @@ pub enum LocalPublicationError {
         /// creating, writing, or fsyncing it, and a reopen may not see it.
         marker_kind: Option<io::ErrorKind>,
     },
+    /// The tombstone rename was reported failed and rolling back the possibly renamed record failed
+    /// too: whether the tombstone is visible, or could reappear after a crash, is unknown.
+    ///
+    /// The instance is poisoned and the tombstone is refused. Unless `marker_kind` is set, a durable
+    /// `<digest>.tomb.indeterminate` marker names the tombstone, so a reopen reports it corrupt or
+    /// never admits its record.
+    TombstoneVisibilityIndeterminate {
+        /// Object whose tombstone visibility is unknown.
+        object: ContentDigest,
+        /// Absolute path of the tombstone record.
+        path: PathBuf,
+        /// Failure kind the rename reported.
+        rename_kind: io::ErrorKind,
+        /// Rollback step that failed: [`LocalIoOperation::RemoveRecord`] or
+        /// [`LocalIoOperation::SyncDirectory`].
+        rollback_operation: LocalIoOperation,
+        /// Failure kind of that rollback step.
+        rollback_kind: io::ErrorKind,
+        /// `None` when the indeterminate marker was made durable; otherwise the failure kind of
+        /// creating, writing, or fsyncing it, and a reopen may not see it.
+        marker_kind: Option<io::ErrorKind>,
+    },
+    /// Removing a temporary publication file failed after an earlier error; both errors are carried.
+    CleanupFailed {
+        /// Original error that triggered cleanup.
+        original: Box<LocalPublicationError>,
+        /// Cleanup error.
+        cleanup: Box<LocalPublicationError>,
+    },
     /// A fault-injection cut point fired; this instance behaves as a dead process.
     InjectedCrash {
         /// Cut point that fired.
@@ -489,6 +520,10 @@ impl LocalPublicationError {
             Self::RootVisibilityIndeterminate { .. } => {
                 "ERR-PUBLICATION-LOCAL-ROOT-VISIBILITY-INDETERMINATE-001"
             }
+            Self::TombstoneVisibilityIndeterminate { .. } => {
+                "ERR-PUBLICATION-LOCAL-TOMBSTONE-VISIBILITY-INDETERMINATE-001"
+            }
+            Self::CleanupFailed { .. } => "ERR-PUBLICATION-LOCAL-CLEANUP-001",
             Self::InjectedCrash { .. } => "ERR-PUBLICATION-LOCAL-INJECTED-CRASH-001",
             Self::Cancelled { .. } => "ERR-PUBLICATION-LOCAL-CANCELLED-001",
             Self::Poisoned => "ERR-PUBLICATION-LOCAL-POISONED-001",
@@ -536,12 +571,14 @@ impl LocalPublicationError {
                 SpoolError::Locked { .. } => LocalPublicationGuidance::WaitForOwner,
                 _ => LocalPublicationGuidance::RepairStorage,
             },
-            Self::Io { .. } | Self::InvalidLayout { .. } | Self::EntryLimit { .. } => {
-                LocalPublicationGuidance::RepairStorage
-            }
+            Self::Io { .. }
+            | Self::InvalidLayout { .. }
+            | Self::EntryLimit { .. }
+            | Self::CleanupFailed { .. } => LocalPublicationGuidance::RepairStorage,
             Self::Locked { .. } => LocalPublicationGuidance::WaitForOwner,
             Self::Indeterminate { .. }
             | Self::RootVisibilityIndeterminate { .. }
+            | Self::TombstoneVisibilityIndeterminate { .. }
             | Self::InjectedCrash { .. }
             | Self::Poisoned => LocalPublicationGuidance::ReopenAndReconcile,
             Self::Cancelled { .. } => LocalPublicationGuidance::RetryIdempotently,
@@ -646,6 +683,31 @@ impl fmt::Display for LocalPublicationError {
                     Some(kind) => write!(formatter, "indeterminate marker not recorded: {kind}"),
                 }
             }
+            Self::TombstoneVisibilityIndeterminate {
+                object,
+                path,
+                rename_kind,
+                rollback_operation,
+                rollback_kind,
+                marker_kind,
+            } => {
+                write!(
+                    formatter,
+                    "rename of tombstone record {} for object {object} reported {rename_kind} and \
+                     its rollback {rollback_operation} failed: {rollback_kind}; visibility unknown; ",
+                    path.display()
+                )?;
+                match marker_kind {
+                    None => formatter.write_str("indeterminate marker is durable"),
+                    Some(kind) => write!(formatter, "indeterminate marker not recorded: {kind}"),
+                }
+            }
+            Self::CleanupFailed { original, cleanup } => {
+                write!(
+                    formatter,
+                    "cleanup failed ({cleanup}) after earlier failure: {original}"
+                )
+            }
             Self::InjectedCrash { point } => write!(formatter, "injected crash {point}"),
             Self::Cancelled { point } => write!(formatter, "cancelled {point}"),
             Self::Poisoned => formatter.write_str("publisher is poisoned; reopen to reconcile"),
@@ -671,6 +733,7 @@ impl Error for LocalPublicationError {
         match self {
             Self::Spool(error) => Some(error),
             Self::InvalidSlot { violation } => Some(violation),
+            Self::CleanupFailed { original, .. } => Some(original.as_ref()),
             _ => None,
         }
     }
@@ -765,6 +828,24 @@ mod tests {
                 rollback_operation: LocalIoOperation::RemoveRecord,
                 rollback_kind: std::io::ErrorKind::PermissionDenied,
                 marker_kind: None,
+            },
+            LocalPublicationError::TombstoneVisibilityIndeterminate {
+                object: digest,
+                path: PathBuf::from("tombstones/x.tomb"),
+                rename_kind: std::io::ErrorKind::Other,
+                rollback_operation: LocalIoOperation::RemoveRecord,
+                rollback_kind: std::io::ErrorKind::PermissionDenied,
+                marker_kind: None,
+            },
+            LocalPublicationError::CleanupFailed {
+                original: Box::new(LocalPublicationError::InvalidLayout {
+                    path: PathBuf::from("roots"),
+                }),
+                cleanup: Box::new(LocalPublicationError::Io {
+                    operation: LocalIoOperation::RemoveTemp,
+                    path: PathBuf::from("roots/slot.root.tmp"),
+                    kind: std::io::ErrorKind::Other,
+                }),
             },
             LocalPublicationError::InjectedCrash {
                 point: PublishCutPoint::AfterRootRename,

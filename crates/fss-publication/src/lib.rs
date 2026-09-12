@@ -43,7 +43,7 @@ pub use local::{
     MAX_TOMBSTONE_RECORD_BYTES, PublicationClaims, PublicationTransition, PublishCancellation,
     PublishCutPoint, PublishOutcome, ROOT_INDETERMINATE_SUFFIX, ROOT_RECORD_SUFFIX,
     ROOT_TEMP_SUFFIX, ReferenceRole, SlotName, SlotViolation, TOMBSTONE_RECORD_SUFFIX,
-    TombstoneOutcome, VisibleRoot, root_record_bytes,
+    TombstoneOutcome, VisibleRoot, root_record_bytes, tombstone_record_bytes,
 };
 pub use publisher::AuthorityPublisher;
 pub use replay::{

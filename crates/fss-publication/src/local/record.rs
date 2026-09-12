@@ -113,9 +113,7 @@ pub fn root_record_bytes(
 }
 
 /// Exact canonical bytes of the durable tombstone record for `record`.
-pub(crate) fn tombstone_record_bytes(
-    record: &TombstoneRecord,
-) -> Result<Vec<u8>, LocalPublicationError> {
+pub fn tombstone_record_bytes(record: &TombstoneRecord) -> Result<Vec<u8>, LocalPublicationError> {
     let body = record
         .try_canonical_bytes()
         .map_err(LocalPublicationError::Encoding)?;
