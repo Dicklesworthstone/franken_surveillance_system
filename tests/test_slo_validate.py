@@ -754,10 +754,15 @@ slo_ids = ["SLO-INGEST-001"]
                 root=ROOT, slos_path=SLOS_PATH, costs_path=planted_costs
             )
             self.assertFalse(is_valid, "Lowercase hot path ID must fail closed and not bypass validation")
-            codes = [f.code for f in findings]
-            self.assertTrue(
-                "SLO-VAL-015" in codes or "SLO-VAL-016" in codes or "SLO-VAL-011" in codes,
-                f"Expected fail-closed diagnostic for lowercase hot path bypass, got {codes}",
+            val_011_codes = [
+                f.code
+                for f in findings
+                if f.code == "SLO-VAL-011" and f.params.get("cost_id") == "cost-spool-ingest-001"
+            ]
+            self.assertIn(
+                "SLO-VAL-011",
+                val_011_codes,
+                f"Expected SLO-VAL-011 specifically for lowercase hot path 'cost-spool-ingest-001', got {[f.code for f in findings]}",
             )
 
     def test_planted_non_code_baseline_reference_fails_closed(self) -> None:
