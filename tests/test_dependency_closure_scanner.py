@@ -45,6 +45,7 @@ try:
         audit_adapter_registry,
         audit_dependency_closure,
         load_allowlist,
+        scan_manifest_dependencies,
     )
 except ImportError:
     # Will fail when tests run first before implementation
@@ -1137,6 +1138,57 @@ checksum = "0000000000000000000000000000000000000000000000000000000000000000"
         findings = audit_adapter_registry(real_adapter_md, ROOT)
         errors = [f for f in findings if f.severity == "error"]
         self.assertEqual(errors, [], f"Real adapter registry must have zero errors: {errors}")
+
+    def test_planted_negative_adapter_registry_msdk_production_rejected(self) -> None:
+        """Review-731 Finding 4: Adapter registry entry with MSDK and production state must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            adapter_md = tmp / "DEVICE_ADAPTERS.md"
+            adapter_md.write_text(
+                "| ID | Surface | Tier | Current state | Promotion gate |\n"
+                "|---|---|---:|---|---|\n"
+                "| `ADP-DJI-FLIP-002` | DJI Flip live capture via MSDK | T1 | production | `GATE-100` |\n",
+                encoding="utf-8",
+            )
+            findings = audit_adapter_registry(adapter_md, tmp)
+            self.assertTrue(
+                any(f.code == ERR_ADAPTER_DJI_SDK_FORBIDDEN for f in findings),
+                f"MSDK production entry must be rejected with ERR_ADAPTER_DJI_SDK_FORBIDDEN, got: {findings}",
+            )
+
+    def test_aliased_dji_sdk_dependency_rejected(self) -> None:
+        """Review-731 Finding 9: Aliased dependency declaring DJI SDK must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            manifest = tmp / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname = "test-crate"\nversion = "0.1.0"\nedition = "2024"\n\n'
+                '[dependencies]\n'
+                'my_flight = { package = "dji-mobile-sdk", version = "4.16" }\n',
+                encoding="utf-8",
+            )
+            findings = scan_manifest_dependencies(manifest, tmp, (), tmp)
+            self.assertTrue(
+                any(f.code == ERR_DJI_SDK_DEPENDENCY_FORBIDDEN for f in findings),
+                f"Aliased dji-mobile-sdk must produce ERR_DJI_SDK_DEPENDENCY_FORBIDDEN, got: {findings}",
+            )
+
+    def test_feature_declaring_dji_sdk_rejected(self) -> None:
+        """Review-731 Finding 9: Crate feature declaring or targeting DJI SDK must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp = Path(td)
+            manifest = tmp / "Cargo.toml"
+            manifest.write_text(
+                '[package]\nname = "test-crate"\nversion = "0.1.0"\nedition = "2024"\n\n'
+                '[features]\n'
+                'dji-sdk-support = []\n',
+                encoding="utf-8",
+            )
+            findings = scan_manifest_dependencies(manifest, tmp, (), tmp)
+            self.assertTrue(
+                any(f.code == ERR_DJI_SDK_DEPENDENCY_FORBIDDEN for f in findings),
+                f"Feature dji-sdk-support must produce ERR_DJI_SDK_DEPENDENCY_FORBIDDEN, got: {findings}",
+            )
 
 
 if __name__ == "__main__":
