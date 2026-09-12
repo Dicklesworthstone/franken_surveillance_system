@@ -10,6 +10,7 @@ mod error;
 mod manifest;
 mod memory;
 pub mod model_manifest;
+pub mod model_package;
 mod spool;
 
 #[cfg(test)]
@@ -20,6 +21,7 @@ pub use fss_core::TombstoneRecord;
 pub use manifest::ObjectManifest;
 pub use memory::{InMemoryObjectStore, ObjectLimits};
 pub use model_manifest::*;
+pub use model_package::*;
 pub use spool::{
     CorruptObject, CorruptionKind, DiscardReceipt, FaultInjectingSpoolIo, ForeignEntry,
     ForeignReason, HostSpoolIo, MAX_INTERRUPTED_ATTEMPTS, MAX_STAGING_NAME_ATTEMPTS,
