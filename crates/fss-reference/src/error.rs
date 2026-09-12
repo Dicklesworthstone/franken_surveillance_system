@@ -100,6 +100,15 @@ pub enum ReferenceError {
         /// Absolute deviation in nanoseconds.
         deviation_ns: u64,
     },
+    /// Clock offset/skew estimator configuration violates a documented bound.
+    InvalidEstimatorConfig {
+        /// Offending `EstimatorConfig` field name.
+        parameter: &'static str,
+        /// Offending value.
+        value: u64,
+        /// The documented bound the value violates.
+        requirement: &'static str,
+    },
 }
 
 impl fmt::Display for ReferenceError {
@@ -196,6 +205,16 @@ impl fmt::Display for ReferenceError {
                     "clock sync estimate contradicted by new sample: expected offset {expected_offset_ns} ns, observed {observed_offset_ns} ns, deviation {deviation_ns} ns"
                 )
             }
+            Self::InvalidEstimatorConfig {
+                parameter,
+                value,
+                requirement,
+            } => {
+                write!(
+                    formatter,
+                    "invalid clock estimator configuration: {parameter} = {value} ({requirement})"
+                )
+            }
         }
     }
 }
@@ -220,7 +239,8 @@ impl Error for ReferenceError {
             | Self::NonMonotonicSyncSequence { .. }
             | Self::OutlierDominatedFit { .. }
             | Self::StaleEstimatePastValidity { .. }
-            | Self::ContradictedEstimate { .. } => None,
+            | Self::ContradictedEstimate { .. }
+            | Self::InvalidEstimatorConfig { .. } => None,
         }
     }
 }

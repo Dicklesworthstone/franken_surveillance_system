@@ -28,7 +28,7 @@ fn fault_insufficient_samples_rejected_with_typed_error() -> Result<(), Box<dyn 
         min_samples: 4,
         ..EstimatorConfig::default()
     };
-    let mut estimator = ClockOffsetSkewEstimator::new(config);
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
 
     // 0 samples
     match estimator.fit() {
@@ -64,7 +64,7 @@ fn fault_insufficient_samples_rejected_with_typed_error() -> Result<(), Box<dyn 
 
 #[test]
 fn fault_non_monotonic_reference_samples_rejected() -> Result<(), Box<dyn Error>> {
-    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default());
+    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default())?;
     estimator.add_sample(create_nominal_sample(1, 10_000_000, 10_050_000)?)?;
 
     // Backward step in reference time
@@ -89,7 +89,7 @@ fn fault_non_monotonic_reference_samples_rejected() -> Result<(), Box<dyn Error>
 
 #[test]
 fn fault_non_monotonic_sensor_samples_rejected() -> Result<(), Box<dyn Error>> {
-    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default());
+    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default())?;
     estimator.add_sample(create_nominal_sample(1, 1_000_000, 5_000_000)?)?;
 
     // Reference time increases, but sensor time steps backwards
@@ -113,7 +113,7 @@ fn fault_outlier_dominated_fit_rejected_with_typed_error() -> Result<(), Box<dyn
         max_outlier_basis_points: 2_000,  // max 20% outliers allowed
         ..EstimatorConfig::default()
     };
-    let mut estimator = ClockOffsetSkewEstimator::new(config);
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
 
     // 5 samples where 2 of them have outlier noise exceeding 1 us tolerance
     estimator.add_sample(create_nominal_sample(1, 1_000_000, 2_000_000)?)?;
@@ -146,7 +146,7 @@ fn fault_stale_estimate_past_validity_rejected() -> Result<(), Box<dyn Error>> {
         validity_horizon_ns: 10_000_000, // 10 ms validity horizon
         ..EstimatorConfig::default()
     };
-    let mut estimator = ClockOffsetSkewEstimator::new(config);
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
 
     estimator.add_sample(create_nominal_sample(1, 1_000_000, 2_000_000)?)?;
     estimator.add_sample(create_nominal_sample(2, 2_000_000, 3_000_000)?)?;
@@ -189,7 +189,7 @@ fn fault_contradicted_estimate_triggers_invalidation_and_rollback() -> Result<()
         contradiction_tolerance_ns: 20_000, // 20 microseconds
         ..EstimatorConfig::default()
     };
-    let mut estimator = ClockOffsetSkewEstimator::new(config);
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
 
     // Fit initial synchronized estimate: constant offset = 1_000_000 ns
     estimator.add_sample(create_nominal_sample(1, 10_000_000, 11_000_000)?)?;
@@ -260,7 +260,7 @@ fn deterministic_bit_identical_estimates_from_virtual_clock() -> Result<(), Box<
             min_samples: 5,
             ..EstimatorConfig::default()
         };
-        let mut estimator = ClockOffsetSkewEstimator::new(config);
+        let mut estimator = ClockOffsetSkewEstimator::new(config)?;
 
         for seq in 1..=10 {
             let ref_t = ref_clock.now();
@@ -297,7 +297,7 @@ fn deterministic_bit_identical_estimates_from_virtual_clock() -> Result<(), Box<
 
 #[test]
 fn conservative_uncertainty_expansion_in_predicted_intervals() -> Result<(), Box<dyn Error>> {
-    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default());
+    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default())?;
     estimator.add_sample(create_nominal_sample(1, 10_000_000, 15_000_000)?)?;
     estimator.add_sample(create_nominal_sample(2, 20_000_000, 25_000_000)?)?;
     estimator.add_sample(create_nominal_sample(3, 30_000_000, 35_000_000)?)?;
@@ -339,7 +339,7 @@ fn end_to_end_virtual_clock_sync_workflow() -> Result<(), Box<dyn Error>> {
         validity_horizon_ns: 30_000_000_000, // 30 seconds
         contradiction_tolerance_ns: 5_000_000,
     };
-    let mut estimator = ClockOffsetSkewEstimator::new(config);
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
 
     // Collect 8 periodic synchronization samples
     for seq in 1..=8 {
@@ -428,7 +428,7 @@ fn fault_contradicting_sample_not_retained_in_samples() -> Result<(), Box<dyn Er
         contradiction_tolerance_ns: 10_000,
         ..EstimatorConfig::default()
     };
-    let mut estimator = ClockOffsetSkewEstimator::new(config);
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
 
     estimator.add_sample(create_nominal_sample(1, 10_000_000, 11_000_000)?)?;
     estimator.add_sample(create_nominal_sample(2, 20_000_000, 21_000_000)?)?;
@@ -448,7 +448,7 @@ fn fault_contradicting_sample_not_retained_in_samples() -> Result<(), Box<dyn Er
 
 #[test]
 fn fault_non_monotonic_sequence_rejected_with_typed_error() -> Result<(), Box<dyn Error>> {
-    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default());
+    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default())?;
     estimator.add_sample(create_nominal_sample(5, 10_000_000, 11_000_000)?)?;
 
     match estimator.add_sample(create_nominal_sample(5, 20_000_000, 21_000_000)?) {
@@ -479,7 +479,7 @@ fn outliers_trimmed_from_final_linear_fit() -> Result<(), Box<dyn Error>> {
         max_outlier_basis_points: 3_000, // allow up to 30% outliers
         ..EstimatorConfig::default()
     };
-    let mut estimator = ClockOffsetSkewEstimator::new(config);
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
 
     // 4 samples: 3 follow exact offset=1_000_000, skew=0; 1 is an outlier (+50us)
     estimator.add_sample(create_nominal_sample(1, 10_000_000, 11_000_000)?)?;
@@ -496,5 +496,207 @@ fn outliers_trimmed_from_final_linear_fit() -> Result<(), Box<dyn Error>> {
     assert_eq!(estimate.residual.max_residual_ns, 0);
     assert_eq!(estimate.sample_evidence.len(), 3);
 
+    Ok(())
+}
+
+#[test]
+fn realistic_day_long_fit_reports_exact_variance_without_overflow() -> Result<(), Box<dyn Error>> {
+    // 100 samples spanning ~23.8 h (99 steps of 864 s), ~1 ms offset, +/-100 us residuals.
+    // sum_xx ~ 2.45e29 ns^2 and mse ~ 1e10 ns^2, so `mse * sum_xx` ~ 2.45e39 > u128::MAX.
+    const SAMPLES: u64 = 100;
+    const STEP_NS: i128 = 864_000_000_000;
+    const OFFSET_NS: i128 = 1_000_000;
+    const NOISE_NS: i128 = 100_000;
+    const BASE_NS: i128 = 1_000_000_000;
+
+    let mut estimator = ClockOffsetSkewEstimator::new(EstimatorConfig::default())?;
+    for k in 0..SAMPLES {
+        let ref_ns = BASE_NS + i128::from(k) * STEP_NS;
+        let noise = if k % 2 == 0 { NOISE_NS } else { -NOISE_NS };
+        estimator.add_sample(create_nominal_sample(
+            k + 1,
+            ref_ns,
+            ref_ns + OFFSET_NS + noise,
+        )?)?;
+    }
+
+    let estimate = estimator.fit()?;
+    let residual = &estimate.residual;
+    assert_eq!(residual.sample_count, 100);
+    // The alternating noise has leverage 50 * NOISE_NS * mean(k) / sum((k - mean k)^2)
+    // = 50 * 100_000 * 49.5 / 83_325 ~ 2_970 ns on the intercept; the fitted slope
+    // (~ -7e-5 ppm) truncates to 0 ppm. Values below come from an independent
+    // arbitrary-precision integer model of the same OLS fit.
+    assert_eq!(estimate.offset_ns, 1_002_970);
+    assert_eq!(estimate.skew_ppm, 0);
+    assert_eq!(residual.max_residual_ns, 102_970);
+    assert_eq!(residual.mean_squared_error_ns2, 10_008_820_900);
+
+    // For x_k = k * STEP_NS (k = 0..100) the OLS offset variance is
+    // mse * sum(k^2) / (n * sum(k^2) - (sum k)^2) = mse * 328_350 / 8_332_500 exactly,
+    // because STEP_NS^2 cancels from numerator and denominator.
+    let mse = u128::from(residual.mean_squared_error_ns2);
+    let sum_xx = u128::try_from(STEP_NS * STEP_NS)? * 328_350;
+    assert!(mse.checked_mul(sum_xx).is_none());
+    let expected_offset_variance = u64::try_from(mse * 328_350 / 8_332_500)?;
+    assert_eq!(residual.offset_variance_ns2, expected_offset_variance);
+    assert_eq!(residual.offset_variance_ns2, 394_407_001);
+
+    // Skew variance: mse * n * 1e12 / (STEP_NS^2 * 8_332_500).
+    let step_sq = u128::try_from(STEP_NS * STEP_NS)?;
+    let expected_skew_variance =
+        u64::try_from(mse * 100 * 1_000_000_000_000 / (step_sq * 8_332_500))?;
+    assert_eq!(residual.skew_variance_ppm2, expected_skew_variance);
+    Ok(())
+}
+
+#[test]
+fn large_tolerance_mean_squared_error_saturates_conservatively() -> Result<(), Box<dyn Error>> {
+    // Residuals of ~3.3 s and ~6.7 s are inside a 10 s tolerance but their mean square
+    // (~2.22e19 ns^2) exceeds u64::MAX (~1.84e19); a truncating cast would wrap it.
+    let config = EstimatorConfig {
+        min_samples: 3,
+        max_residual_tolerance_ns: 10_000_000_000,
+        ..EstimatorConfig::default()
+    };
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
+    let base: i128 = 1_000_000_000;
+    estimator.add_sample(create_nominal_sample(1, base, base)?)?;
+    estimator.add_sample(create_nominal_sample(
+        2,
+        base + 20_000_000_000,
+        base + 30_000_000_000,
+    )?)?;
+    estimator.add_sample(create_nominal_sample(
+        3,
+        base + 40_000_000_000,
+        base + 40_000_000_000,
+    )?)?;
+
+    let estimate = estimator.fit()?;
+    assert_eq!(estimate.offset_ns, 3_333_333_333);
+    assert_eq!(estimate.skew_ppm, 0);
+    let residual = &estimate.residual;
+    assert_eq!(residual.sample_count, 3);
+    assert_eq!(residual.max_residual_ns, 6_666_666_667);
+
+    // Exact mean square exceeds u64::MAX: reported as the maximum (least confident) value.
+    let r_small: u128 = 3_333_333_333;
+    let r_large: u128 = 6_666_666_667;
+    let sum_sq = 2 * r_small * r_small + r_large * r_large;
+    let exact_mse = sum_sq / 3;
+    assert!(exact_mse > u128::from(u64::MAX));
+    assert_eq!(residual.mean_squared_error_ns2, u64::MAX);
+
+    // Offset variance exact value (~1.85e19) also exceeds u64::MAX: saturated.
+    // sum_xx = 2e21 and denominator = 3 * 2e21 - (6e10)^2 = 2.4e21, so sum_xx / denominator
+    // is exactly 5/6 (the direct `exact_mse * sum_xx` product itself overflows u128).
+    let denominator: u128 = 2_400_000_000_000_000_000_000;
+    assert!(exact_mse * 5 / 6 > u128::from(u64::MAX));
+    assert_eq!(residual.offset_variance_ns2, u64::MAX);
+
+    // Skew variance fits in u64 and is computed from the exact (unsaturated) mean square.
+    let expected_skew_variance = u64::try_from(exact_mse * 3 * 1_000_000_000_000 / denominator)?;
+    assert_eq!(residual.skew_variance_ppm2, expected_skew_variance);
+    Ok(())
+}
+
+#[test]
+fn estimator_config_min_samples_boundary_validated_at_construction() -> Result<(), Box<dyn Error>> {
+    // Below the documented minimum of 2: rejected at construction, so `fit()` can never index
+    // an empty sample set (min_samples 0 previously panicked with index out of bounds).
+    for below in [0_usize, 1] {
+        let config = EstimatorConfig {
+            min_samples: below,
+            ..EstimatorConfig::default()
+        };
+        match config.validate() {
+            Err(ReferenceError::InvalidEstimatorConfig {
+                parameter, value, ..
+            }) => {
+                assert_eq!(parameter, "min_samples");
+                assert_eq!(value, u64::try_from(below)?);
+            }
+            other => return Err(format!("expected InvalidEstimatorConfig, got {other:?}").into()),
+        }
+        match ClockOffsetSkewEstimator::new(config) {
+            Err(ReferenceError::InvalidEstimatorConfig {
+                parameter, value, ..
+            }) => {
+                assert_eq!(parameter, "min_samples");
+                assert_eq!(value, u64::try_from(below)?);
+            }
+            other => return Err(format!("expected InvalidEstimatorConfig, got {other:?}").into()),
+        }
+    }
+
+    // Exactly 2: accepted; an empty fit is a typed error and a two-sample fit succeeds.
+    let config = EstimatorConfig {
+        min_samples: 2,
+        ..EstimatorConfig::default()
+    };
+    config.validate()?;
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
+    match estimator.fit() {
+        Err(ReferenceError::InsufficientSyncSamples {
+            count,
+            minimum_required,
+        }) => {
+            assert_eq!(count, 0);
+            assert_eq!(minimum_required, 2);
+        }
+        other => return Err(format!("expected InsufficientSyncSamples, got {other:?}").into()),
+    }
+    estimator.add_sample(create_nominal_sample(1, 10_000_000, 11_000_000)?)?;
+    estimator.add_sample(create_nominal_sample(2, 20_000_000, 21_000_000)?)?;
+    let estimate = estimator.fit()?;
+    assert_eq!(estimate.offset_ns, 1_000_000);
+    assert_eq!(estimate.skew_ppm, 0);
+    assert_eq!(estimate.residual.sample_count, 2);
+    Ok(())
+}
+
+#[test]
+fn estimator_config_outlier_basis_points_boundary_validated_at_construction()
+-> Result<(), Box<dyn Error>> {
+    // Exactly 10_000 (100%): accepted.
+    let config = EstimatorConfig {
+        max_outlier_basis_points: 10_000,
+        ..EstimatorConfig::default()
+    };
+    config.validate()?;
+    let mut estimator = ClockOffsetSkewEstimator::new(config)?;
+    estimator.add_sample(create_nominal_sample(1, 10_000_000, 11_000_000)?)?;
+    estimator.add_sample(create_nominal_sample(2, 20_000_000, 21_000_000)?)?;
+    estimator.add_sample(create_nominal_sample(3, 30_000_000, 31_000_000)?)?;
+    assert_eq!(estimator.fit()?.offset_ns, 1_000_000);
+
+    // 10_001 and above: rejected with a typed error.
+    for above in [10_001_u16, u16::MAX] {
+        let config = EstimatorConfig {
+            max_outlier_basis_points: above,
+            ..EstimatorConfig::default()
+        };
+        match config.validate() {
+            Err(ReferenceError::InvalidEstimatorConfig {
+                parameter, value, ..
+            }) => {
+                assert_eq!(parameter, "max_outlier_basis_points");
+                assert_eq!(value, u64::from(above));
+            }
+            other => return Err(format!("expected InvalidEstimatorConfig, got {other:?}").into()),
+        }
+        match ClockOffsetSkewEstimator::new(config) {
+            Err(ReferenceError::InvalidEstimatorConfig {
+                parameter, value, ..
+            }) => {
+                assert_eq!(parameter, "max_outlier_basis_points");
+                assert_eq!(value, u64::from(above));
+            }
+            other => return Err(format!("expected InvalidEstimatorConfig, got {other:?}").into()),
+        }
+    }
+
+    EstimatorConfig::default().validate()?;
     Ok(())
 }

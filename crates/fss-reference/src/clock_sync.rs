@@ -70,10 +70,19 @@ pub struct SyncFitResidual {
     /// Maximum absolute residual across all fitted samples in nanoseconds.
     pub max_residual_ns: u64,
     /// Mean squared error across fitted samples in ns^2.
+    ///
+    /// Saturates at `u64::MAX` (read as "at least `u64::MAX`") when the exact value does not fit;
+    /// see `FitVariance` in this module for the conservative saturation policy.
     pub mean_squared_error_ns2: u64,
     /// Estimated variance of the offset parameter in ns^2.
+    ///
+    /// Computed exactly with a 256-bit intermediate and saturated at `u64::MAX` (maximum
+    /// variance) only when the exact floor-rounded value does not fit.
     pub offset_variance_ns2: u64,
     /// Estimated variance of the skew parameter in ppm^2.
+    ///
+    /// Computed exactly with a 256-bit intermediate and saturated at `u64::MAX` (maximum
+    /// variance) only when the exact floor-rounded value does not fit.
     pub skew_variance_ppm2: u64,
     /// Sample count used in the fit.
     pub sample_count: usize,
@@ -270,6 +279,15 @@ impl ClockSyncEstimate {
     }
 }
 
+/// Smallest `min_samples` that determines a two-parameter (offset, skew) linear fit.
+const MIN_FIT_SAMPLES: usize = 2;
+
+/// Upper bound of `max_outlier_basis_points` (10_000 basis points = 100%).
+const MAX_OUTLIER_BASIS_POINTS: u16 = 10_000;
+
+/// Scale from a squared dimensionless slope to ppm^2 (`(10^6)^2`).
+const PPM2_PER_UNIT_SLOPE2: u128 = 1_000_000_000_000;
+
 /// Configuration parameters for the clock offset and skew estimator.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EstimatorConfig {
@@ -283,6 +301,34 @@ pub struct EstimatorConfig {
     pub validity_horizon_ns: u64,
     /// Contradiction tolerance in nanoseconds for new samples.
     pub contradiction_tolerance_ns: u64,
+}
+
+impl EstimatorConfig {
+    /// Validates the documented configuration bounds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReferenceError::InvalidEstimatorConfig`] when `min_samples < 2` (an offset and
+    /// skew fit is undetermined with fewer samples, and an empty sample set has no reference
+    /// anchor) or when `max_outlier_basis_points > 10_000` (more than 100% outliers).
+    pub fn validate(&self) -> Result<(), ReferenceError> {
+        if self.min_samples < MIN_FIT_SAMPLES {
+            return Err(ReferenceError::InvalidEstimatorConfig {
+                parameter: "min_samples",
+                value: u64::try_from(self.min_samples)
+                    .map_err(|_| ReferenceError::ArithmeticOverflow)?,
+                requirement: "must be at least 2",
+            });
+        }
+        if self.max_outlier_basis_points > MAX_OUTLIER_BASIS_POINTS {
+            return Err(ReferenceError::InvalidEstimatorConfig {
+                parameter: "max_outlier_basis_points",
+                value: u64::from(self.max_outlier_basis_points),
+                requirement: "must be at most 10000",
+            });
+        }
+        Ok(())
+    }
 }
 
 impl Default for EstimatorConfig {
@@ -327,17 +373,22 @@ pub struct ClockOffsetSkewEstimator {
 }
 
 impl ClockOffsetSkewEstimator {
-    /// Creates a new estimator with the given configuration.
-    #[must_use]
-    pub fn new(config: EstimatorConfig) -> Self {
-        Self {
+    /// Creates a new estimator after validating the configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReferenceError::InvalidEstimatorConfig`] when `config` violates a bound checked
+    /// by [`EstimatorConfig::validate`].
+    pub fn new(config: EstimatorConfig) -> Result<Self, ReferenceError> {
+        config.validate()?;
+        Ok(Self {
             config,
             samples: Vec::new(),
             active_estimate: None,
             prior_estimates: Vec::new(),
             state: EstimatorState::Uncalibrated,
             generation_counter: 0,
-        }
+        })
     }
 
     /// Returns the active estimator state.
@@ -516,8 +567,12 @@ impl ClockOffsetSkewEstimator {
             });
         }
 
-        let first = &self.samples[0];
-        let last = &self.samples[n - 1];
+        let (Some(first), Some(last)) = (self.samples.first(), self.samples.last()) else {
+            return Err(ReferenceError::InsufficientSyncSamples {
+                count: n,
+                minimum_required: self.config.min_samples,
+            });
+        };
         let reference_anchor = first.reference_time;
 
         let mut active_samples: Vec<TimeSyncSample> = self.samples.clone();
@@ -575,7 +630,8 @@ impl ClockOffsetSkewEstimator {
 
         let eff_n = active_samples.len();
         let mut max_residual_ns: u64 = 0;
-        let mut sum_sq_residuals: u128 = 0;
+        // `None` records that the exact sum of squared residuals exceeded `u128::MAX`.
+        let mut sum_sq_residuals: Option<u128> = Some(0);
 
         for sample in &active_samples {
             let x = sample.reference_time.0 - reference_anchor.0;
@@ -588,30 +644,19 @@ impl ClockOffsetSkewEstimator {
             if residual_u64 > max_residual_ns {
                 max_residual_ns = residual_u64;
             }
-            sum_sq_residuals = sum_sq_residuals.saturating_add(residual.saturating_mul(residual));
+            sum_sq_residuals = sum_sq_residuals.and_then(|acc| {
+                residual
+                    .checked_mul(residual)
+                    .and_then(|square| acc.checked_add(square))
+            });
         }
 
-        let mse = (sum_sq_residuals / eff_n as u128) as u64;
-        let offset_variance_ns2 = if denominator > 0 {
-            let var = (u128::from(mse) * sum_xx.unsigned_abs()) / denominator.unsigned_abs();
-            u64::try_from(var).unwrap_or(u64::MAX)
-        } else {
-            u64::MAX
-        };
-
-        let skew_variance_ppm2 = if denominator > 0 {
-            let var = (u128::from(mse) * eff_n as u128 * 1_000_000_000_000_u128)
-                / denominator.unsigned_abs();
-            u64::try_from(var).unwrap_or(u64::MAX)
-        } else {
-            u64::MAX
-        };
-
+        let variance = FitVariance::from_residuals(sum_sq_residuals, eff_n, sum_xx, denominator)?;
         let residual = SyncFitResidual {
             max_residual_ns,
-            mean_squared_error_ns2: mse,
-            offset_variance_ns2,
-            skew_variance_ppm2,
+            mean_squared_error_ns2: variance.mean_squared_error_ns2,
+            offset_variance_ns2: variance.offset_variance_ns2,
+            skew_variance_ppm2: variance.skew_variance_ppm2,
             sample_count: eff_n,
         };
 
@@ -705,5 +750,259 @@ impl ClockOffsetSkewEstimator {
                 reason: reason.into(),
             };
         }
+    }
+}
+
+/// Integer fit-quality statistics of the ordinary-least-squares clock model.
+///
+/// For `n` inlier samples with anchored abscissae `x`, `mse = floor(sum(r^2) / n)`,
+/// `denominator = n * sum(x^2) - sum(x)^2`, and
+/// - `offset_variance_ns2 = floor(mse * sum(x^2) / denominator)`,
+/// - `skew_variance_ppm2 = floor(mse * n * 10^12 / denominator)`.
+///
+/// # Conservative saturation, not a typed error
+///
+/// Each value saturates to `u64::MAX` when its exact value does not fit. It never wraps.
+/// Saturation was chosen over a typed error because of how the values are consumed. They are
+/// reported fit-quality metrics in [`SyncFitResidual`]. They do not feed the predicted capture
+/// intervals, which widen by `max_residual_ns` plus sample uncertainty. They do not feed any
+/// accept/reject gate either, because the residual-tolerance and outlier gates have already
+/// accepted the fit when they are computed. Returning an error here would discard a valid
+/// estimate only because a reporting metric is unrepresentable. `u64::MAX` is the
+/// maximum-variance (least confident) reading, so a saturated value never understates
+/// uncertainty.
+///
+/// Products are formed with a 256-bit intermediate ([`mul_div_floor_saturating_u64`]), so
+/// saturation happens only when the exact floor-rounded result exceeds `u64::MAX`. A realistic
+/// day-long fit whose `mse * sum(x^2)` exceeds `u128::MAX` still reports its exact variance. If
+/// the sum of squared residuals itself exceeds `u128::MAX`, the true mean square is unknown and
+/// all three metrics take the maximum.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct FitVariance {
+    mean_squared_error_ns2: u64,
+    offset_variance_ns2: u64,
+    skew_variance_ppm2: u64,
+}
+
+impl FitVariance {
+    /// Every metric at the conservative maximum-variance value.
+    const SATURATED: Self = Self {
+        mean_squared_error_ns2: u64::MAX,
+        offset_variance_ns2: u64::MAX,
+        skew_variance_ppm2: u64::MAX,
+    };
+
+    /// Derives the metrics from the exact sum of squared residuals.
+    ///
+    /// `sum_sq_residuals` is `None` when that sum exceeded `u128::MAX`.
+    fn from_residuals(
+        sum_sq_residuals: Option<u128>,
+        sample_count: usize,
+        sum_xx: i128,
+        denominator: i128,
+    ) -> Result<Self, ReferenceError> {
+        if denominator <= 0 {
+            return Err(ReferenceError::ArithmeticOverflow);
+        }
+        if sample_count == 0 {
+            return Err(ReferenceError::InsufficientSyncSamples {
+                count: 0,
+                minimum_required: MIN_FIT_SAMPLES,
+            });
+        }
+        let Some(sum_sq) = sum_sq_residuals else {
+            return Ok(Self::SATURATED);
+        };
+
+        let n = u128::try_from(sample_count).map_err(|_| ReferenceError::ArithmeticOverflow)?;
+        let mse = sum_sq / n;
+        let divisor = denominator.unsigned_abs();
+        let offset_variance_ns2 = mul_div_floor_saturating_u64(mse, sum_xx.unsigned_abs(), divisor)
+            .ok_or(ReferenceError::ArithmeticOverflow)?;
+        let skew_scale = n
+            .checked_mul(PPM2_PER_UNIT_SLOPE2)
+            .ok_or(ReferenceError::ArithmeticOverflow)?;
+        let skew_variance_ppm2 = mul_div_floor_saturating_u64(mse, skew_scale, divisor)
+            .ok_or(ReferenceError::ArithmeticOverflow)?;
+
+        Ok(Self {
+            // Conservative saturation: `u64::MAX` means "at least u64::MAX" (see type docs).
+            mean_squared_error_ns2: u64::try_from(mse).unwrap_or(u64::MAX),
+            offset_variance_ns2,
+            skew_variance_ppm2,
+        })
+    }
+}
+
+/// Mask selecting the low 64 bits of a `u128`.
+const LOW_64_MASK: u128 = 0xFFFF_FFFF_FFFF_FFFF;
+
+/// Full 256-bit product of two `u128` values as `(high, low)` 128-bit halves.
+const fn widening_mul_u128(a: u128, b: u128) -> (u128, u128) {
+    let (a_high, a_low) = (a >> 64, a & LOW_64_MASK);
+    let (b_high, b_low) = (b >> 64, b & LOW_64_MASK);
+    // Each partial product of two 64-bit limbs is below 2^128.
+    let low_low = a_low * b_low;
+    let low_high = a_low * b_high;
+    let high_low = a_high * b_low;
+    let high_high = a_high * b_high;
+    // Three terms below 2^64 each: the sum stays below 3 * 2^64.
+    let middle = (low_low >> 64) + (low_high & LOW_64_MASK) + (high_low & LOW_64_MASK);
+    let low = (low_low & LOW_64_MASK) | (middle << 64);
+    // The exact product is below 2^256, so its high half cannot overflow.
+    let high = high_high + (low_high >> 64) + (high_low >> 64) + (middle >> 64);
+    (high, low)
+}
+
+/// Computes `floor(a * b / divisor)` exactly and narrows it to `u64`, saturating to `u64::MAX`
+/// (conservative maximum) when the exact quotient does not fit.
+///
+/// The product is formed with checked `u128` arithmetic when it fits and with a 256-bit
+/// intermediate otherwise, so no intermediate ever overflows or wraps. Returns `None` only when
+/// `divisor` is zero.
+fn mul_div_floor_saturating_u64(a: u128, b: u128, divisor: u128) -> Option<u64> {
+    if divisor == 0 {
+        return None;
+    }
+    if let Some(product) = a.checked_mul(b) {
+        return Some(u64::try_from(product / divisor).unwrap_or(u64::MAX));
+    }
+    let (high, low) = widening_mul_u128(a, b);
+    if high >= divisor {
+        // Quotient is at least 2^128.
+        return Some(u64::MAX);
+    }
+    // Restoring long division of the 256-bit dividend: `remainder < divisor` is invariant.
+    let mut remainder = high;
+    let mut quotient: u64 = 0;
+    for bit in (0..128_u32).rev() {
+        let carry = remainder >> 127;
+        remainder = (remainder << 1) | ((low >> bit) & 1);
+        // With `carry` set the true shifted remainder is `2^128 + remainder`, which exceeds
+        // `divisor`; the difference is below `divisor`, so the wrapping subtraction is exact.
+        if carry == 1 || remainder >= divisor {
+            remainder = remainder.wrapping_sub(divisor);
+            if bit >= 64 {
+                return Some(u64::MAX);
+            }
+            quotient |= 1_u64 << bit;
+        }
+    }
+    Some(quotient)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{FitVariance, mul_div_floor_saturating_u64};
+    use crate::ReferenceError;
+
+    #[test]
+    fn mul_div_matches_direct_quotient_when_product_fits() -> Result<(), String> {
+        let max64 = u128::from(u64::MAX);
+        let cases: [(u128, u128, u128); 5] = [
+            (0, 5, 3),
+            (7, 9, 4),
+            (10_000_000_000, 1_000_000, 3),
+            (max64, max64, max64),
+            (max64, max64, 1_u128 << 64),
+        ];
+        for (a, b, divisor) in cases {
+            let direct = a.checked_mul(b).ok_or("product overflowed")? / divisor;
+            let expected = u64::try_from(direct).map_err(|error| error.to_string())?;
+            assert_eq!(mul_div_floor_saturating_u64(a, b, divisor), Some(expected));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn mul_div_is_exact_when_product_exceeds_u128() -> Result<(), String> {
+        // Realistic day-long fit: mse = 1e10 ns^2, sum_xx = s^2 * 328_350 and
+        // denominator = s^2 * 8_332_500 with s = 864 s; mse * sum_xx ~ 2.45e39 > u128::MAX.
+        let step_sq = 864_000_000_000_u128 * 864_000_000_000;
+        let mse = 10_000_000_000_u128;
+        let sum_xx = step_sq * 328_350;
+        let denominator = step_sq * 8_332_500;
+        assert!(mse.checked_mul(sum_xx).is_none());
+        let expected =
+            u64::try_from(mse * 328_350 / 8_332_500).map_err(|error| error.to_string())?;
+        assert_eq!(
+            mul_div_floor_saturating_u64(mse, sum_xx, denominator),
+            Some(expected)
+        );
+
+        // Divisor above 2^127 exercises the carry branch of the long division.
+        let big = u128::MAX - 7;
+        let factor = 0xDEAD_BEEF_1234_5678_u128;
+        assert!(big.checked_mul(factor).is_none());
+        assert_eq!(
+            mul_div_floor_saturating_u64(big, factor, big),
+            Some(0xDEAD_BEEF_1234_5678)
+        );
+
+        let half = 1_u128 << 127;
+        assert_eq!(
+            mul_div_floor_saturating_u64(half, (1_u128 << 63) + 7, half),
+            Some((1_u64 << 63) + 7)
+        );
+        assert_eq!(
+            mul_div_floor_saturating_u64(u128::MAX, (1_u128 << 64) - 2, u128::MAX),
+            Some(u64::MAX - 1)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn mul_div_saturates_only_when_exact_quotient_exceeds_u64() {
+        // Exact quotient 2^64: one past u64::MAX.
+        assert_eq!(
+            mul_div_floor_saturating_u64(u128::MAX, 1_u128 << 64, u128::MAX),
+            Some(u64::MAX)
+        );
+        // Exact quotient 2^73 via the long-division path.
+        assert_eq!(
+            mul_div_floor_saturating_u64(1_u128 << 100, 1_u128 << 100, 1_u128 << 127),
+            Some(u64::MAX)
+        );
+        // Exact quotient u128::MAX: the high half alone decides.
+        assert_eq!(
+            mul_div_floor_saturating_u64(u128::MAX, u128::MAX, u128::MAX),
+            Some(u64::MAX)
+        );
+        // Exact quotient 2^63 fits.
+        assert_eq!(
+            mul_div_floor_saturating_u64(1_u128 << 100, 1_u128 << 90, 1_u128 << 127),
+            Some(1_u64 << 63)
+        );
+        assert_eq!(mul_div_floor_saturating_u64(1, 1, 0), None);
+    }
+
+    #[test]
+    fn fit_variance_saturates_all_metrics_when_sum_of_squares_overflows() -> Result<(), String> {
+        let variance = FitVariance::from_residuals(None, 3, 2_000, 2_400)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(variance, FitVariance::SATURATED);
+        assert_eq!(variance.mean_squared_error_ns2, u64::MAX);
+        assert_eq!(variance.offset_variance_ns2, u64::MAX);
+        assert_eq!(variance.skew_variance_ppm2, u64::MAX);
+        Ok(())
+    }
+
+    #[test]
+    fn fit_variance_rejects_degenerate_inputs_with_typed_errors() {
+        assert!(matches!(
+            FitVariance::from_residuals(Some(9), 3, 2_000, 0),
+            Err(ReferenceError::ArithmeticOverflow)
+        ));
+        assert!(matches!(
+            FitVariance::from_residuals(Some(9), 3, 2_000, -1),
+            Err(ReferenceError::ArithmeticOverflow)
+        ));
+        assert!(matches!(
+            FitVariance::from_residuals(Some(9), 0, 2_000, 2_400),
+            Err(ReferenceError::InsufficientSyncSamples {
+                count: 0,
+                minimum_required: 2
+            })
+        ));
     }
 }
