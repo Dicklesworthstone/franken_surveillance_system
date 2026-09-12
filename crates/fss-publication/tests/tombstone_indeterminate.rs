@@ -342,9 +342,11 @@ fn unparsable_tombstone_indeterminate_marker_is_foreign() -> TestResult {
 #[test]
 fn cleanup_failure_carries_both_original_and_cleanup_errors() -> TestResult {
     let root = fresh_root("cleanup_failure_carries_both_original_and_cleanup_errors")?;
-    let io = Arc::new(FaultInjectingSpoolIo::new(
-        SpoolFaultPlan::new().fail(SpoolIoCall::RemoveFile, 1, io::ErrorKind::PermissionDenied),
-    ));
+    let io = Arc::new(FaultInjectingSpoolIo::new(SpoolFaultPlan::new().fail(
+        SpoolIoCall::RemoveFile,
+        1,
+        io::ErrorKind::PermissionDenied,
+    )));
     let mut publisher = LocalRootPublisher::open_with_io(&root, limits(), io.clone())?;
     let leaf = publisher.stage_object(b"test-leaf")?;
     let manifest = ObjectManifest::new("clip", [leaf], None)?;
