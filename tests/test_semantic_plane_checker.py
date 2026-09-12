@@ -850,6 +850,91 @@ impl From<MockModelOutcome> for CoverageWitness {
             codes = [f.code for f in findings]
             self.assertIn(ERR_MUTABLE_MODEL_GENERATION, codes)
 
+    def test_try_from_and_unlisted_effect_types_must_fail_closed(self) -> None:
+        """TryFrom, TryInto, generic functions, and canonical effect types (e.g. Obligation) must fail closed under NEG-003."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            src = tmp_root / "crates/fss-cognition/src"
+            src.mkdir(parents=True, exist_ok=True)
+            (src / "bridge.rs").write_text("""
+pub struct ModelOutput;
+pub struct EffectIntent;
+pub struct Obligation;
+
+impl TryFrom<ModelOutput> for EffectIntent {
+    type Error = ();
+    fn try_from(_: ModelOutput) -> Result<Self, Self::Error> { Ok(EffectIntent) }
+}
+pub fn generic_bridge<T>(m: ModelOutput) -> EffectIntent { EffectIntent }
+pub fn model_to_obligation(m: ModelOutput) -> Obligation { Obligation }
+""", encoding="utf-8")
+            reg = tmp_root / "architecture"
+            reg.mkdir(parents=True, exist_ok=True)
+            (reg / "semantic_plane_registry.json").write_text(json.dumps({
+                "schema": "fss.semantic_plane_registry.v1",
+                "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                "registered_boundary_modules": [],
+                "module_declarations": {"crates/fss-cognition/src/bridge.rs": "cognition"},
+                "types": {
+                    "ModelOutput": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "cognition"},
+                    "EffectIntent": {"file": "crates/fss-cognition/src/bridge.rs", "plane": "effect"},
+                    "Obligation": {"file": "crates/fss-core/src/effect.rs", "plane": "effect"}
+                }
+            }), encoding="utf-8")
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "TryFrom, generic functions, and Obligation return must fail closed under NEG-003")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_MODEL_OUTPUT_REACHES_EFFECT, codes)
+
+    def test_corrupt_corroboration_policy_json_must_fail_closed(self) -> None:
+        """Corrupt JSON in corroboration policy files must fail closed with an error finding."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            arch = tmp_root / "architecture"
+            arch.mkdir(parents=True, exist_ok=True)
+            (arch / "corroboration_policy.json").write_text("{ unclosed json: ", encoding="utf-8")
+            (arch / "semantic_plane_registry.json").write_text(json.dumps({
+                "schema": "fss.semantic_plane_registry.v1",
+                "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                "registered_boundary_modules": [],
+                "module_declarations": {},
+                "types": {"Dummy": {"file": "crates/fss-core/src/effect.rs", "plane": "support"}}
+            }), encoding="utf-8")
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Corrupt JSON in corroboration policy must fail closed, not silently continue")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_SINGLE_MODEL_CORROBORATION, codes)
+
+    def test_corrupt_model_generation_json_must_fail_closed(self) -> None:
+        """Corrupt JSON in model manifest files must fail closed with an error finding."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            arch = tmp_root / "architecture"
+            arch.mkdir(parents=True, exist_ok=True)
+            (arch / "model_manifest.json").write_text("{ malformed: ", encoding="utf-8")
+            (arch / "semantic_plane_registry.json").write_text(json.dumps({
+                "schema": "fss.semantic_plane_registry.v1",
+                "planes": {"authority": {}, "cognition": {}, "effect": {}, "ambiguous": {}, "support": {}},
+                "registered_boundary_modules": [],
+                "module_declarations": {},
+                "types": {"Dummy": {"file": "crates/fss-core/src/effect.rs", "plane": "support"}}
+            }), encoding="utf-8")
+            is_valid, findings, _ = audit_semantic_planes(tmp_root, check_doctests=False)
+            self.assertFalse(is_valid, "Corrupt JSON in model manifest must fail closed, not silently continue")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_MUTABLE_MODEL_GENERATION, codes)
+
+    def test_missing_core_file_must_fail_census(self) -> None:
+        """Missing mandatory core file in type census must emit an error finding."""
+        from semantic_plane_checker import audit_fss_core_type_census, ERR_UNMAPPED_CORE_TYPE
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            findings = audit_fss_core_type_census(tmp_root, {"types": {}})
+            self.assertTrue(
+                any(f.code == ERR_UNMAPPED_CORE_TYPE and f.severity == "error" for f in findings),
+                "Missing mandatory core file must emit an error finding",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

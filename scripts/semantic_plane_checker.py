@@ -500,6 +500,17 @@ def audit_fss_core_type_census(
     for rel_path in core_files:
         abs_path = root / rel_path
         if not abs_path.is_file():
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_UNMAPPED_CORE_TYPE,
+                    file=rel_path,
+                    location="file_system",
+                    message=f"Mandatory core file '{rel_path}' is missing",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_UNMAPPED_CORE_TYPE]["remediation"],
+                    params={"file": rel_path},
+                )
+            )
             continue
 
         try:
@@ -591,7 +602,22 @@ EFFECT_TYPES: set[str] = {
     "PreparedEffect",
     "AlertIntent",
     "AlertEffectRecord",
+    "PreparedOperation",
+    "Obligation",
+    "ObligationState",
+    "EffectJournalTransition",
+    "OperationReceipt",
+    "EffectJournal",
 }
+
+
+def is_effect_or_authority_type(ty_str: str, registered_types: dict[str, Any]) -> bool:
+    """Checks if a type string refers to an effect or authority plane type."""
+    tokens = re.findall(r"\b[A-Za-z0-9_]+\b", ty_str)
+    return any(
+        t in EFFECT_TYPES or registered_types.get(t, {}).get("plane") in ("effect", "authority")
+        for t in tokens
+    )
 
 ABSTENTION_TYPES: set[str] = {
     "MockModelOutcome",
@@ -628,15 +654,15 @@ def check_module_imports(
 
     use_pattern = re.compile(r"\buse\s+([^;]+);", re.MULTILINE)
     fn_sig_pattern = re.compile(
-        r"(?:pub(?:\([^\)]*\))?\s+)?fn\s+([A-Za-z0-9_]+)\s*\([^)]*\)\s*->\s*([^;{]+)",
+        r"(?:pub(?:\([^\)]*\))?\s+)?fn\s+([A-Za-z0-9_]+)(?:<[^>]*>)?\s*\([^)]*\)\s*->\s*([^;{]+)",
         re.DOTALL,
     )
     from_pattern = re.compile(
-        r"impl(?:<[^>]*>)?\s+From<([^>]+)>\s+for\s+([A-Za-z0-9_:]+)",
+        r"impl(?:<[^>]*>)?\s+(?:Try)?From<([^>]+)>\s+for\s+([A-Za-z0-9_:]+)",
         re.MULTILINE,
     )
     into_pattern = re.compile(
-        r"impl(?:<[^>]*>)?\s+Into<([^>]+)>\s+for\s+([A-Za-z0-9_:]+)",
+        r"impl(?:<[^>]*>)?\s+(?:Try)?Into<([^>]+)>\s+for\s+([A-Za-z0-9_:]+)",
         re.MULTILINE,
     )
 
@@ -672,52 +698,48 @@ def check_module_imports(
             )
             continue
 
-        if mod_rel in boundary_modules or mod_plane in ("support", "ambiguous"):
+        if mod_rel in boundary_modules:
             continue
 
         # Check for functions directly returning EffectAuthority in cognition modules,
         # or bridging model outputs directly to effects, or abstention to negative evidence
-        if mod_plane == "cognition":
-            for match in fn_sig_pattern.finditer(content):
-                fn_name = match.group(1)
-                ret_type = match.group(2).strip()
-                full_fn = match.group(0)
+        for match in fn_sig_pattern.finditer(content):
+            fn_name = match.group(1)
+            ret_type = match.group(2).strip()
+            full_fn = match.group(0)
 
-                # NEG-003: Model/VLM output can never reach an effect type directly
-                is_model_input = any(
-                    re.search(r"\b" + re.escape(m_ty) + r"\b", full_fn)
-                    for m_ty in MODEL_OUTPUT_TYPES
-                ) or "vlm" in fn_name.lower() or "model" in fn_name.lower()
-                is_effect_ret = any(
-                    re.search(r"\b" + re.escape(e_ty) + r"\b", ret_type)
-                    for e_ty in EFFECT_TYPES
+            # NEG-003: Model/VLM output can never reach an effect type directly
+            is_model_input = any(
+                re.search(r"\b" + re.escape(m_ty) + r"\b", full_fn)
+                for m_ty in MODEL_OUTPUT_TYPES
+            ) or "vlm" in fn_name.lower() or "model" in fn_name.lower()
+            is_effect_ret = is_effect_or_authority_type(ret_type, registered_types)
+            if is_model_input and is_effect_ret:
+                line_no = content[: match.start()].count("\n") + 1
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_MODEL_OUTPUT_REACHES_EFFECT,
+                        file=mod_rel,
+                        location=f"line {line_no}",
+                        message=f"Prohibited direct model-to-effect bridge (NEG-003): function '{fn_name}' takes model output and returns effect type ({ret_type})",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_MODEL_OUTPUT_REACHES_EFFECT]["remediation"],
+                        params={"module": mod_rel, "function": fn_name, "return_type": ret_type},
+                    )
                 )
-                if is_model_input and is_effect_ret:
-                    line_no = content[: match.start()].count("\n") + 1
-                    findings.append(
-                        SemanticPlaneFinding(
-                            code=ERR_MODEL_OUTPUT_REACHES_EFFECT,
-                            file=mod_rel,
-                            location=f"line {line_no}",
-                            message=f"Prohibited direct model-to-effect bridge (NEG-003): function '{fn_name}' takes model output and returns effect type ({ret_type})",
-                            severity="error",
-                            remediation=DIAGNOSTIC_REGISTRY[ERR_MODEL_OUTPUT_REACHES_EFFECT]["remediation"],
-                            params={"module": mod_rel, "function": fn_name, "return_type": ret_type},
-                        )
+            elif mod_plane == "cognition" and re.search(r"\bEffectAuthority\b", ret_type):
+                line_no = content[: match.start()].count("\n") + 1
+                findings.append(
+                    SemanticPlaneFinding(
+                        code=ERR_COGNITION_GRANTS_EFFECT,
+                        file=mod_rel,
+                        location=f"line {line_no}",
+                        message=f"Prohibited cognition-to-effect bridge: module '{mod_rel}' has function '{fn_name}' returning EffectAuthority ({ret_type})",
+                        severity="error",
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_COGNITION_GRANTS_EFFECT]["remediation"],
+                        params={"module": mod_rel, "type_name": "EffectAuthority", "function": fn_name},
                     )
-                elif re.search(r"\bEffectAuthority\b", ret_type):
-                    line_no = content[: match.start()].count("\n") + 1
-                    findings.append(
-                        SemanticPlaneFinding(
-                            code=ERR_COGNITION_GRANTS_EFFECT,
-                            file=mod_rel,
-                            location=f"line {line_no}",
-                            message=f"Prohibited cognition-to-effect bridge: module '{mod_rel}' has function '{fn_name}' returning EffectAuthority ({ret_type})",
-                            severity="error",
-                            remediation=DIAGNOSTIC_REGISTRY[ERR_COGNITION_GRANTS_EFFECT]["remediation"],
-                            params={"module": mod_rel, "type_name": "EffectAuthority", "function": fn_name},
-                        )
-                    )
+                )
 
                 # NEG-003: Abstention/failure is never negative evidence
                 is_absten_input = any(
@@ -750,7 +772,7 @@ def check_module_imports(
             to_plane = registered_types.get(to_ty, {}).get("plane")
 
             is_model_output = from_ty in MODEL_OUTPUT_TYPES or "vlm" in from_ty.lower()
-            is_effect_type = to_ty in EFFECT_TYPES or to_plane == "effect"
+            is_effect_type = is_effect_or_authority_type(to_ty, registered_types)
             is_abstention = from_ty in ABSTENTION_TYPES or "absten" in from_ty.lower()
             is_negative_evidence = to_ty in NEGATIVE_EVIDENCE_TYPES or to_ty == "CoverageWitness"
 
@@ -807,7 +829,7 @@ def check_module_imports(
             to_plane = registered_types.get(to_ty, {}).get("plane")
 
             is_model_output = from_ty in MODEL_OUTPUT_TYPES or "vlm" in from_ty.lower()
-            is_effect_type = to_ty in EFFECT_TYPES or to_plane == "effect"
+            is_effect_type = is_effect_or_authority_type(to_ty, registered_types)
             is_abstention = from_ty in ABSTENTION_TYPES or "absten" in from_ty.lower()
             is_negative_evidence = to_ty in NEGATIVE_EVIDENCE_TYPES or to_ty == "CoverageWitness"
 
@@ -856,6 +878,10 @@ def check_module_imports(
                             params={"module": mod_rel, "from_type": from_ty, "to_type": to_ty},
                         )
                     )
+
+        # Skip use-statement cross-plane import restrictions for support or ambiguous modules
+        if mod_plane in ("support", "ambiguous"):
+            continue
 
         # Check use statements for unauthorized cross-plane imports
         for match in use_pattern.finditer(content):
@@ -959,7 +985,17 @@ def check_model_corroboration_policy(root: Path) -> list[SemanticPlaneFinding]:
             continue
         try:
             data = json.loads(content)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_SINGLE_MODEL_CORROBORATION,
+                    file=rel_path,
+                    location="file_system",
+                    message=f"Failed to parse JSON for corroboration policy check: {exc}",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_SINGLE_MODEL_CORROBORATION]["remediation"],
+                )
+            )
             continue
 
         def inspect_obj(obj: Any, path: str) -> None:
@@ -1057,7 +1093,17 @@ def check_model_generation_immutability(root: Path) -> list[SemanticPlaneFinding
             continue
         try:
             data = json.loads(content)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as exc:
+            findings.append(
+                SemanticPlaneFinding(
+                    code=ERR_MUTABLE_MODEL_GENERATION,
+                    file=rel_path,
+                    location="file_system",
+                    message=f"Failed to parse JSON for model generation immutability check: {exc}",
+                    severity="error",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_MUTABLE_MODEL_GENERATION]["remediation"],
+                )
+            )
             continue
 
         def inspect_obj(obj: Any, path: str) -> None:
