@@ -12,17 +12,16 @@
 //! - Domain-separated metadata digest computation.
 
 use fss_core::{
-    AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind,
-    AppGeneration, CaptureInterval, ClockBasis, ContentDigest, ContinuityState,
+    AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind, AppGeneration,
+    CapsuleDecodeError, CapsuleId, CaptureInterval, ClockBasis, ContentDigest, ContinuityState,
     ContractError, CredentialMethod, DecodeState, DeviceCapabilities, DeviceClass,
     DeviceGeneration, DeviceId, DeviceIdentity, ExplicitOmission, FirmwareGeneration,
-    IntegrityWitness, IsolationMode, MediaDescriptor, MediaKind, ModelGeneration,
-    OmissionReason, PrivacyDescriptor, PublicationDescriptor, PublicationState,
-    RedactionState, SensorCapsuleV1, SourceCustody, SourceId, SourceIdentity,
-    SourceKind, StreamGeneration, TimestampNs, CapsuleDecodeError, CapsuleId,
-    SensorId, StreamId, MAX_CAPSULE_ID_LEN, MAX_CODEC_LEN, MAX_CONTAINER_LEN,
-    MAX_STORAGE_HANDLE_LEN, MAX_POLICY_RULE_LEN, MAX_FIRMWARE_FINGERPRINT_LEN,
-    MAX_RETENTION_CLASS_LEN, SENSOR_CAPSULE_SCHEMA, SENSOR_CAPSULE_METADATA_DOMAIN,
+    IntegrityWitness, IsolationMode, MAX_CAPSULE_ID_LEN, MAX_CODEC_LEN, MAX_CONTAINER_LEN,
+    MAX_FIRMWARE_FINGERPRINT_LEN, MAX_POLICY_RULE_LEN, MAX_RETENTION_CLASS_LEN,
+    MAX_STORAGE_HANDLE_LEN, MediaDescriptor, MediaKind, ModelGeneration, OmissionReason,
+    PrivacyDescriptor, PublicationDescriptor, PublicationState, RedactionState,
+    SENSOR_CAPSULE_METADATA_DOMAIN, SENSOR_CAPSULE_SCHEMA, SensorCapsuleV1, SensorId,
+    SourceCustody, SourceId, SourceIdentity, SourceKind, StreamGeneration, StreamId, TimestampNs,
 };
 
 fn sample_identities() -> Result<(SourceIdentity, DeviceIdentity, AdapterIdentity), ContractError> {
@@ -92,7 +91,8 @@ fn sample_capsule() -> Result<SensorCapsuleV1, CapsuleDecodeError> {
 
     let capsule = SensorCapsuleV1 {
         schema: SENSOR_CAPSULE_SCHEMA.to_string(),
-        capsule_id: CapsuleId::parse("cap:camera-entry-01:seq0001").map_err(CapsuleDecodeError::Contract)?,
+        capsule_id: CapsuleId::parse("cap:camera-entry-01:seq0001")
+            .map_err(CapsuleDecodeError::Contract)?,
         source_id: source.source_id.clone(),
         device_id: device.device_id.clone(),
         adapter_id: adapter.adapter_id.clone(),
@@ -102,7 +102,8 @@ fn sample_capsule() -> Result<SensorCapsuleV1, CapsuleDecodeError> {
         device_identity: device,
         adapter_identity: adapter,
         sequence: 1,
-        capture_interval: CaptureInterval::new(TimestampNs(100_000_000), TimestampNs(133_333_333)).map_err(CapsuleDecodeError::Contract)?,
+        capture_interval: CaptureInterval::new(TimestampNs(100_000_000), TimestampNs(133_333_333))
+            .map_err(CapsuleDecodeError::Contract)?,
         receive_time_ns: TimestampNs(135_000_000),
         clock_basis: ClockBasis::HostMonotonic,
         custody: SourceCustody::Retained {
@@ -147,9 +148,15 @@ fn sample_capsule() -> Result<SensorCapsuleV1, CapsuleDecodeError> {
 #[test]
 fn test_schema_and_domain_constants() {
     assert_eq!(SensorCapsuleV1::SCHEMA, "fss.sensor_capsule.v1");
-    assert_eq!(SensorCapsuleV1::METADATA_DOMAIN, "fss.sensor_capsule.metadata.v1");
+    assert_eq!(
+        SensorCapsuleV1::METADATA_DOMAIN,
+        "fss.sensor_capsule.metadata.v1"
+    );
     assert_eq!(SENSOR_CAPSULE_SCHEMA, "fss.sensor_capsule.v1");
-    assert_eq!(SENSOR_CAPSULE_METADATA_DOMAIN, "fss.sensor_capsule.metadata.v1");
+    assert_eq!(
+        SENSOR_CAPSULE_METADATA_DOMAIN,
+        "fss.sensor_capsule.metadata.v1"
+    );
 }
 
 #[test]
@@ -226,7 +233,9 @@ fn test_retained_evidence_invariant() -> Result<(), CapsuleDecodeError> {
     assert!(!capsule.is_retained_evidence());
     assert_eq!(
         capsule.require_retained_evidence(),
-        Err(CapsuleDecodeError::Contract(ContractError::EvidenceRequired))
+        Err(CapsuleDecodeError::Contract(
+            ContractError::EvidenceRequired
+        ))
     );
 
     Ok(())
@@ -289,28 +298,37 @@ fn test_identity_binding_enforcement() -> Result<(), CapsuleDecodeError> {
 
     // 2. Mismatched source_id fails closed
     let original_source_id = capsule.source_id.clone();
-    capsule.source_id = SourceId::parse("src:other-sensor-feed").map_err(CapsuleDecodeError::Contract)?;
+    capsule.source_id =
+        SourceId::parse("src:other-sensor-feed").map_err(CapsuleDecodeError::Contract)?;
     assert_eq!(
         capsule.verify(),
-        Err(CapsuleDecodeError::Contract(ContractError::InvalidIdentifier))
+        Err(CapsuleDecodeError::Contract(
+            ContractError::InvalidIdentifier
+        ))
     );
     capsule.source_id = original_source_id;
 
     // 3. Mismatched device_id fails closed
     let original_device_id = capsule.device_id.clone();
-    capsule.device_id = DeviceId::parse("device:other-camera").map_err(CapsuleDecodeError::Contract)?;
+    capsule.device_id =
+        DeviceId::parse("device:other-camera").map_err(CapsuleDecodeError::Contract)?;
     assert_eq!(
         capsule.verify(),
-        Err(CapsuleDecodeError::Contract(ContractError::InvalidIdentifier))
+        Err(CapsuleDecodeError::Contract(
+            ContractError::InvalidIdentifier
+        ))
     );
     capsule.device_id = original_device_id;
 
     // 4. Mismatched adapter_id fails closed
     let original_adapter_id = capsule.adapter_id.clone();
-    capsule.adapter_id = AdapterId::parse("adapter:other-adapter").map_err(CapsuleDecodeError::Contract)?;
+    capsule.adapter_id =
+        AdapterId::parse("adapter:other-adapter").map_err(CapsuleDecodeError::Contract)?;
     assert_eq!(
         capsule.verify(),
-        Err(CapsuleDecodeError::Contract(ContractError::InvalidIdentifier))
+        Err(CapsuleDecodeError::Contract(
+            ContractError::InvalidIdentifier
+        ))
     );
     capsule.adapter_id = original_adapter_id;
 
@@ -326,7 +344,9 @@ fn test_temporal_invariants_enforcement() -> Result<(), CapsuleDecodeError> {
     capsule.receive_time_ns = TimestampNs(capsule.capture_interval.earliest.0 - 1);
     assert_eq!(
         capsule.verify(),
-        Err(CapsuleDecodeError::Contract(ContractError::InvertedTimeInterval))
+        Err(CapsuleDecodeError::Contract(
+            ContractError::InvertedTimeInterval
+        ))
     );
     capsule.receive_time_ns = orig_receive;
 
@@ -338,13 +358,19 @@ fn test_decode_errors_truncation() {
     // 0 bytes
     assert_eq!(
         SensorCapsuleV1::from_versioned_bytes(&[]),
-        Err(CapsuleDecodeError::Truncated { expected_min: 6, actual: 0 })
+        Err(CapsuleDecodeError::Truncated {
+            expected_min: 6,
+            actual: 0
+        })
     );
 
     // 4 bytes (magic only)
     assert_eq!(
         SensorCapsuleV1::from_versioned_bytes(b"FSSC"),
-        Err(CapsuleDecodeError::Truncated { expected_min: 6, actual: 4 })
+        Err(CapsuleDecodeError::Truncated {
+            expected_min: 6,
+            actual: 4
+        })
     );
 
     // Header ok, but empty payload
@@ -352,7 +378,10 @@ fn test_decode_errors_truncation() {
     truncated.extend_from_slice(&1u16.to_be_bytes());
     assert_eq!(
         SensorCapsuleV1::from_versioned_bytes(&truncated),
-        Err(CapsuleDecodeError::Truncated { expected_min: 1, actual: 0 })
+        Err(CapsuleDecodeError::Truncated {
+            expected_min: 1,
+            actual: 0
+        })
     );
 }
 
@@ -631,6 +660,98 @@ fn test_metadata_digest_domain_and_separation() -> Result<(), CapsuleDecodeError
     };
     let digest4 = capsule.metadata_digest();
     assert_ne!(digest3, digest4);
+
+    Ok(())
+}
+
+#[test]
+fn test_json_decode_unpaired_surrogate_fails_typed() -> Result<(), CapsuleDecodeError> {
+    let capsule = sample_capsule()?;
+    let json = capsule.to_canonical_json();
+
+    // High surrogate U+D800 without low surrogate must fail with InvalidUnicodeEscape
+    let tampered_json = json.replace("standard_retention_30d", "standard_\\uD800_retention");
+    assert_eq!(
+        SensorCapsuleV1::from_json(&tampered_json),
+        Err(CapsuleDecodeError::InvalidUnicodeEscape { codepoint: 0xD800 })
+    );
+
+    // Low surrogate U+DC00 without preceding high surrogate must fail with InvalidUnicodeEscape
+    let tampered_low = json.replace("standard_retention_30d", "standard_\\uDC00_retention");
+    assert_eq!(
+        SensorCapsuleV1::from_json(&tampered_low),
+        Err(CapsuleDecodeError::InvalidUnicodeEscape { codepoint: 0xDC00 })
+    );
+
+    // Valid surrogate pair U+D83D U+DE00 (😀) must decode correctly
+    let valid_surrogate_json =
+        json.replace("standard_retention_30d", "retention_\\uD83D\\uDE00_30d");
+    let decoded = SensorCapsuleV1::from_json(&valid_surrogate_json)?;
+    assert_eq!(decoded.privacy.retention_class, "retention_😀_30d");
+
+    Ok(())
+}
+
+#[test]
+fn test_json_decode_malformed_optional_fields_fail_closed() -> Result<(), CapsuleDecodeError> {
+    let capsule = sample_capsule()?;
+    let json = capsule.to_canonical_json();
+
+    // 1. Negative width in media must fail closed as an error, never absent
+    let json_neg_width = json.replace("\"width\":1920", "\"width\":-1");
+    assert!(
+        matches!(
+            SensorCapsuleV1::from_json(&json_neg_width),
+            Err(CapsuleDecodeError::JsonError { .. })
+        ),
+        "negative width must fail as JsonError"
+    );
+
+    // 2. String instead of number for width
+    let json_str_width = json.replace("\"width\":1920", "\"width\":\"1920\"");
+    assert!(
+        matches!(
+            SensorCapsuleV1::from_json(&json_str_width),
+            Err(CapsuleDecodeError::JsonError { .. })
+        ),
+        "string width must fail as JsonError"
+    );
+
+    // 3. Number instead of string for applicationVersion
+    let json_num_app = json.replace(
+        "\"applicationVersion\":\"gen:app:2026-09\"",
+        "\"applicationVersion\":12345",
+    );
+    assert!(
+        matches!(
+            SensorCapsuleV1::from_json(&json_num_app),
+            Err(CapsuleDecodeError::JsonError { .. })
+        ),
+        "numeric applicationVersion must fail as JsonError"
+    );
+
+    // 4. Boolean instead of string for firmwareFingerprint
+    let json_bool_fp = json.replace(
+        "\"firmwareFingerprint\":\"sha256:abcd1234ef567890abcd1234ef567890\"",
+        "\"firmwareFingerprint\":true",
+    );
+    assert!(
+        matches!(
+            SensorCapsuleV1::from_json(&json_bool_fp),
+            Err(CapsuleDecodeError::JsonError { .. })
+        ),
+        "boolean firmwareFingerprint must fail as JsonError"
+    );
+
+    // 5. Negative ledger revision in publication
+    let json_neg_rev = json.replace("\"ledgerRevision\":42", "\"ledgerRevision\":-42");
+    assert!(
+        matches!(
+            SensorCapsuleV1::from_json(&json_neg_rev),
+            Err(CapsuleDecodeError::JsonError { .. })
+        ),
+        "negative ledgerRevision must fail as JsonError"
+    );
 
     Ok(())
 }

@@ -850,7 +850,6 @@ class TestSchemaConstitution(unittest.TestCase):
             "fss.release_qualification_receipt.v1",
             "fss.release_stage_verification.v1",
             "fss.semantic_handle.v1",
-            "fss.sensor_capsule.v1",
             "fss.source_manifest.v1",
             "fss.status.v1",
             "fss.transfer_manifest.v1",
@@ -1352,7 +1351,7 @@ class TestSchemaConstitutionCrossReviewRegressions(unittest.TestCase):
         self.assertEqual(result["status"], "passed")
         self.assertEqual(result["unregisteredImplementedCount"], 0)
         self.assertEqual(result["digestDomainCount"], 15)
-        self.assertEqual(result["implementedCount"], 21)
+        self.assertEqual(result["implementedCount"], 22)
 
         unreg_findings = [
             f for f in validator.findings

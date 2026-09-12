@@ -97,6 +97,11 @@ pub enum CapsuleDecodeError {
         /// Diagnostic detail.
         detail: String,
     },
+    /// Invalid or unpaired-surrogate Unicode escape sequence in JSON.
+    InvalidUnicodeEscape {
+        /// Codepoint value encountered.
+        codepoint: u32,
+    },
     /// Underlying invariant or contract violation.
     Contract(ContractError),
 }
@@ -137,6 +142,9 @@ impl fmt::Display for CapsuleDecodeError {
             }
             Self::JsonError { detail } => {
                 write!(f, "json decode error: {detail}")
+            }
+            Self::InvalidUnicodeEscape { codepoint } => {
+                write!(f, "invalid unicode escape: U+{codepoint:04X}")
             }
             Self::Contract(err) => write!(f, "contract error: {err}"),
         }
@@ -1689,14 +1697,13 @@ impl SensorCapsuleV1 {
             .1
             .as_bool()?;
         let custody = if is_retained {
-            let digest_val = custody_obj
-                .iter()
-                .find(|(k, _)| k == "sourceDigest")
-                .and_then(|(_, v)| v.as_opt_str())
-                .flatten()
-                .ok_or_else(|| CapsuleDecodeError::JsonError {
-                    detail: "retained custody requires sourceDigest".to_string(),
-                })?;
+            let digest_val = match custody_obj.iter().find(|(k, _)| k == "sourceDigest") {
+                Some((_, v)) => v.as_opt_str()?,
+                None => None,
+            }
+            .ok_or_else(|| CapsuleDecodeError::JsonError {
+                detail: "retained custody requires sourceDigest".to_string(),
+            })?;
             let source_digest =
                 ContentDigest::parse(digest_val).map_err(CapsuleDecodeError::Contract)?;
             let source_bytes = custody_obj
@@ -1830,12 +1837,10 @@ impl SensorCapsuleV1 {
                 actual: codec.len(),
             });
         }
-        let container = media_obj
-            .iter()
-            .find(|(k, _)| k == "container")
-            .and_then(|(_, v)| v.as_opt_str())
-            .flatten()
-            .map(ToOwned::to_owned);
+        let container = match media_obj.iter().find(|(k, _)| k == "container") {
+            Some((_, v)) => v.as_opt_str()?.map(ToOwned::to_owned),
+            None => None,
+        };
         if let Some(c) = &container
             && c.len() > MAX_CONTAINER_LEN
         {
@@ -1845,16 +1850,14 @@ impl SensorCapsuleV1 {
                 actual: c.len(),
             });
         }
-        let width = media_obj
-            .iter()
-            .find(|(k, _)| k == "width")
-            .and_then(|(_, v)| v.as_opt_u32())
-            .flatten();
-        let height = media_obj
-            .iter()
-            .find(|(k, _)| k == "height")
-            .and_then(|(_, v)| v.as_opt_u32())
-            .flatten();
+        let width = match media_obj.iter().find(|(k, _)| k == "width") {
+            Some((_, v)) => v.as_opt_u32()?,
+            None => None,
+        };
+        let height = match media_obj.iter().find(|(k, _)| k == "height") {
+            Some((_, v)) => v.as_opt_u32()?,
+            None => None,
+        };
         let source_bytes = media_obj
             .iter()
             .find(|(k, _)| k == "sourceBytes")
@@ -1873,22 +1876,22 @@ impl SensorCapsuleV1 {
             })?
             .1
             .as_u32()?;
-        let source_digest = media_obj
-            .iter()
-            .find(|(k, _)| k == "sourceDigest")
-            .and_then(|(_, v)| v.as_opt_str())
-            .flatten()
-            .map(ContentDigest::parse)
-            .transpose()
-            .map_err(CapsuleDecodeError::Contract)?;
-        let proxy_digest = media_obj
-            .iter()
-            .find(|(k, _)| k == "proxyDigest")
-            .and_then(|(_, v)| v.as_opt_str())
-            .flatten()
-            .map(ContentDigest::parse)
-            .transpose()
-            .map_err(CapsuleDecodeError::Contract)?;
+        let source_digest = match media_obj.iter().find(|(k, _)| k == "sourceDigest") {
+            Some((_, v)) => v
+                .as_opt_str()?
+                .map(ContentDigest::parse)
+                .transpose()
+                .map_err(CapsuleDecodeError::Contract)?,
+            None => None,
+        };
+        let proxy_digest = match media_obj.iter().find(|(k, _)| k == "proxyDigest") {
+            Some((_, v)) => v
+                .as_opt_str()?
+                .map(ContentDigest::parse)
+                .transpose()
+                .map_err(CapsuleDecodeError::Contract)?,
+            None => None,
+        };
 
         let media = MediaDescriptor {
             kind,
@@ -1935,12 +1938,13 @@ impl SensorCapsuleV1 {
             .1
             .as_str()?;
         let decode = DecodeState::parse(decode_str)?;
-        let firmware_fingerprint = integrity_obj
+        let firmware_fingerprint = match integrity_obj
             .iter()
             .find(|(k, _)| k == "firmwareFingerprint")
-            .and_then(|(_, v)| v.as_opt_str())
-            .flatten()
-            .map(ToOwned::to_owned);
+        {
+            Some((_, v)) => v.as_opt_str()?.map(ToOwned::to_owned),
+            None => None,
+        };
         if let Some(fp) = &firmware_fingerprint
             && fp.len() > MAX_FIRMWARE_FINGERPRINT_LEN
         {
@@ -1959,14 +1963,14 @@ impl SensorCapsuleV1 {
 
         // Privacy
         let privacy_obj = get_field("privacy")?.as_object()?;
-        let mask_generation = privacy_obj
-            .iter()
-            .find(|(k, _)| k == "maskGeneration")
-            .and_then(|(_, v)| v.as_opt_str())
-            .flatten()
-            .map(ContentDigest::parse)
-            .transpose()
-            .map_err(CapsuleDecodeError::Contract)?;
+        let mask_generation = match privacy_obj.iter().find(|(k, _)| k == "maskGeneration") {
+            Some((_, v)) => v
+                .as_opt_str()?
+                .map(ContentDigest::parse)
+                .transpose()
+                .map_err(CapsuleDecodeError::Contract)?,
+            None => None,
+        };
         let redaction_str = privacy_obj
             .iter()
             .find(|(k, _)| k == "redactionState")
@@ -2023,11 +2027,10 @@ impl SensorCapsuleV1 {
             .as_str()?;
         let root_digest =
             ContentDigest::parse(root_digest_str).map_err(CapsuleDecodeError::Contract)?;
-        let ledger_revision = pub_obj
-            .iter()
-            .find(|(k, _)| k == "ledgerRevision")
-            .and_then(|(_, v)| v.as_opt_u64())
-            .flatten();
+        let ledger_revision = match pub_obj.iter().find(|(k, _)| k == "ledgerRevision") {
+            Some((_, v)) => v.as_opt_u64()?,
+            None => None,
+        };
         let publication = PublicationDescriptor {
             state,
             root_digest,
@@ -2175,22 +2178,22 @@ fn parse_device_identity_from_json(
     let hardware_revision = get_str("hardwareRevision")?.to_string();
     let firmware_version = FirmwareGeneration::parse(get_str("firmwareVersion")?)
         .map_err(CapsuleDecodeError::Contract)?;
-    let application_version = obj
-        .iter()
-        .find(|(k, _)| k == "applicationVersion")
-        .and_then(|(_, v)| v.as_opt_str())
-        .flatten()
-        .map(AppGeneration::parse)
-        .transpose()
-        .map_err(CapsuleDecodeError::Contract)?;
-    let model_generation = obj
-        .iter()
-        .find(|(k, _)| k == "modelGeneration")
-        .and_then(|(_, v)| v.as_opt_str())
-        .flatten()
-        .map(ModelGeneration::parse)
-        .transpose()
-        .map_err(CapsuleDecodeError::Contract)?;
+    let application_version = match obj.iter().find(|(k, _)| k == "applicationVersion") {
+        Some((_, v)) => v
+            .as_opt_str()?
+            .map(AppGeneration::parse)
+            .transpose()
+            .map_err(CapsuleDecodeError::Contract)?,
+        None => None,
+    };
+    let model_generation = match obj.iter().find(|(k, _)| k == "modelGeneration") {
+        Some((_, v)) => v
+            .as_opt_str()?
+            .map(ModelGeneration::parse)
+            .transpose()
+            .map_err(CapsuleDecodeError::Contract)?,
+        None => None,
+    };
     let device_class =
         DeviceClass::parse(get_str("deviceClass")?).map_err(CapsuleDecodeError::Contract)?;
     let cap_bits = obj
@@ -2495,11 +2498,13 @@ impl JsonValue {
         }
     }
 
-    fn as_opt_str(&self) -> Option<Option<&str>> {
+    fn as_opt_str(&self) -> Result<Option<&str>, CapsuleDecodeError> {
         match self {
-            Self::Null => Some(None),
-            Self::String(s) => Some(Some(s.as_str())),
-            _ => None,
+            Self::Null => Ok(None),
+            Self::String(s) => Ok(Some(s.as_str())),
+            _ => Err(CapsuleDecodeError::JsonError {
+                detail: "expected string or null".to_string(),
+            }),
         }
     }
 
@@ -2535,19 +2540,33 @@ impl JsonValue {
         })
     }
 
-    fn as_opt_u32(&self) -> Option<Option<u32>> {
+    fn as_opt_u32(&self) -> Result<Option<u32>, CapsuleDecodeError> {
         match self {
-            Self::Null => Some(None),
-            Self::Number(n) => u32::try_from(*n).ok().map(Some),
-            _ => None,
+            Self::Null => Ok(None),
+            Self::Number(n) => {
+                let val = u32::try_from(*n).map_err(|_| CapsuleDecodeError::JsonError {
+                    detail: "negative or overflowing u32".to_string(),
+                })?;
+                Ok(Some(val))
+            }
+            _ => Err(CapsuleDecodeError::JsonError {
+                detail: "expected integer or null".to_string(),
+            }),
         }
     }
 
-    fn as_opt_u64(&self) -> Option<Option<u64>> {
+    fn as_opt_u64(&self) -> Result<Option<u64>, CapsuleDecodeError> {
         match self {
-            Self::Null => Some(None),
-            Self::Number(n) => u64::try_from(*n).ok().map(Some),
-            _ => None,
+            Self::Null => Ok(None),
+            Self::Number(n) => {
+                let val = u64::try_from(*n).map_err(|_| CapsuleDecodeError::JsonError {
+                    detail: "negative or overflowing u64".to_string(),
+                })?;
+                Ok(Some(val))
+            }
+            _ => Err(CapsuleDecodeError::JsonError {
+                detail: "expected integer or null".to_string(),
+            }),
         }
     }
 
@@ -2743,8 +2762,57 @@ impl<'a> JsonParser<'a> {
                                     detail: "invalid unicode hex digits".to_string(),
                                 }
                             })?;
-                            let ch = char::from_u32(codepoint as u32).unwrap_or('\u{FFFD}');
-                            s.push(ch);
+                            if (0xD800..=0xDBFF).contains(&codepoint) {
+                                if self.pos + 6 <= self.src.len()
+                                    && &self.src[self.pos..self.pos + 2] == b"\\u"
+                                {
+                                    let low_hex =
+                                        core::str::from_utf8(&self.src[self.pos + 2..self.pos + 6])
+                                            .map_err(|_| CapsuleDecodeError::JsonError {
+                                                detail: "invalid unicode escape in low surrogate"
+                                                    .to_string(),
+                                            })?;
+                                    let low_codepoint =
+                                        u16::from_str_radix(low_hex, 16).map_err(|_| {
+                                            CapsuleDecodeError::JsonError {
+                                                detail:
+                                                    "invalid unicode hex digits in low surrogate"
+                                                        .to_string(),
+                                            }
+                                        })?;
+                                    if (0xDC00..=0xDFFF).contains(&low_codepoint) {
+                                        self.pos += 6;
+                                        let full_codepoint = 0x10000
+                                            + (((codepoint as u32 - 0xD800) << 10)
+                                                | (low_codepoint as u32 - 0xDC00));
+                                        let ch = char::from_u32(full_codepoint).ok_or(
+                                            CapsuleDecodeError::InvalidUnicodeEscape {
+                                                codepoint: full_codepoint,
+                                            },
+                                        )?;
+                                        s.push(ch);
+                                    } else {
+                                        return Err(CapsuleDecodeError::InvalidUnicodeEscape {
+                                            codepoint: codepoint as u32,
+                                        });
+                                    }
+                                } else {
+                                    return Err(CapsuleDecodeError::InvalidUnicodeEscape {
+                                        codepoint: codepoint as u32,
+                                    });
+                                }
+                            } else if (0xDC00..=0xDFFF).contains(&codepoint) {
+                                return Err(CapsuleDecodeError::InvalidUnicodeEscape {
+                                    codepoint: codepoint as u32,
+                                });
+                            } else {
+                                let ch = char::from_u32(codepoint as u32).ok_or(
+                                    CapsuleDecodeError::InvalidUnicodeEscape {
+                                        codepoint: codepoint as u32,
+                                    },
+                                )?;
+                                s.push(ch);
+                            }
                         }
                         _ => {
                             return Err(CapsuleDecodeError::JsonError {
