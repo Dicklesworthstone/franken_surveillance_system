@@ -10,7 +10,7 @@ use fss_publication::AuthorityPublisher;
 
 use crate::{
     DeliveryContinuity, DeliveryPacket, DeliveryPlan, DeliveryTrace, ReferenceError, SourcePacket,
-    SourceTrace, VirtualCameraSpec, generate_source,
+    SourceTrace, VirtualCameraSpec, VirtualClock, generate_source_with_clock,
 };
 
 /// Receipt binding virtual source truth, delivery truth, object closure, and authority history.
@@ -59,9 +59,21 @@ pub fn run_reference_capture(
     objects: &mut InMemoryObjectStore,
     ledger: &mut DurableReferenceLedger,
 ) -> Result<ReferenceCapture, ReferenceError> {
+    let clock = VirtualClock::from_spec(spec);
+    run_reference_capture_with_clock(spec, clock, plan, objects, ledger)
+}
+
+/// Executes one deterministic virtual capture driven by an explicit [`VirtualClock`] time authority.
+pub fn run_reference_capture_with_clock(
+    spec: &VirtualCameraSpec,
+    clock: VirtualClock,
+    plan: &DeliveryPlan,
+    objects: &mut InMemoryObjectStore,
+    ledger: &mut DurableReferenceLedger,
+) -> Result<ReferenceCapture, ReferenceError> {
     spec.validate()?;
     plan.validate_against(spec.packet_count)?;
-    let source_packets = generate_source(spec)?;
+    let source_packets = generate_source_with_clock(spec, clock)?;
 
     for packet in &source_packets {
         let stored = objects.put_verified(&packet.bytes)?;

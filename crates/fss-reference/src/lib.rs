@@ -9,8 +9,10 @@
 mod alert;
 mod bundle;
 mod capture;
+mod clock;
 mod context_binding;
 mod delivery;
+mod durable_effect;
 mod error;
 mod hydration;
 mod meaningful_delta;
@@ -48,13 +50,18 @@ mod situation_tests;
 mod tests;
 
 pub use alert::{
-    PrepareAlertParams, ProviderDispatch, REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan,
-    ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert,
-    observe_reference_alert, prepare_reference_alert, reconcile_failed_reference_alert,
-    reconcile_reference_alert, verify_reference_alert,
+    PrepareAlertParams, ProviderDispatch, ProviderObservationReceipt,
+    REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan, ReferenceAlertProvider,
+    ReferenceProviderBehavior, dispatch_reference_alert, observe_reference_alert,
+    prepare_reference_alert, reconcile_failed_reference_alert, reconcile_reference_alert,
+    verify_reference_alert,
 };
 pub use bundle::{ReplayBundle, ReplayBundleError, ReplayCursor};
-pub use capture::{ReferenceCapture, ReferenceCaptureReceipt, run_reference_capture};
+pub use capture::{
+    ReferenceCapture, ReferenceCaptureReceipt, run_reference_capture,
+    run_reference_capture_with_clock,
+};
+pub use clock::{MAX_SKEW_PPM, VirtualClock};
 pub use context_binding::{
     BoundReferenceSituationPublication, ReferenceContextBindingError,
     ReferenceExpansionBindingSpec, seal_bound_reference_publication_handoff,
@@ -88,7 +95,8 @@ pub use situation_sections::{
     seal_reference_publication_handoff,
 };
 pub use source::{
-    MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, generate_source,
+    MAX_VIRTUAL_PACKET_BYTES, MAX_VIRTUAL_PACKETS, SourcePacket, VirtualCameraSpec, VirtualSource,
+    generate_source, generate_source_with_clock,
 };
 
 pub(crate) use delivery::DeliveryTrace;
