@@ -7,8 +7,8 @@ use fss_core::hydration::{
     HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationResponse, SemanticHandle,
 };
 use fss_core::{
-    BudgetVector, ContentDigest, ContinuationCursor, ContinuationScope, ContractError, SessionId,
-    TimestampNs,
+    BudgetVector, ContentDigest, ContinuationCursor, ContinuationCursorPublishParams,
+    ContinuationScope, ContractError, SessionId, TimestampNs,
 };
 
 /// Explicit storage ceilings for the in-memory reference catalog.
@@ -443,20 +443,22 @@ impl ReferenceHydrationCatalog {
             record.expires_at.min(descriptor.retention_until)
         });
         Ok(Some(ContinuationCursor::publish(
-            ContinuationScope::EvidenceHydration,
-            descriptor.handle_id.clone(),
-            descriptor.contract_basis.clone(),
-            request.session_id.clone(),
-            HYDRATION_VIEW_ID,
-            descriptor.anchor.clone(),
-            descriptor.anchor.clone(),
-            descriptor.ladder_policy_digest(),
-            u64::from(next.ordinal()),
-            u64::from(maximum.ordinal()) + 1,
-            artifact.artifact_digest,
-            predecessor,
-            now,
-            expiry,
+            ContinuationCursorPublishParams {
+                scope: ContinuationScope::EvidenceHydration,
+                stream_id: descriptor.handle_id.clone(),
+                contract_basis: descriptor.contract_basis.clone(),
+                session_id: request.session_id.clone(),
+                view_id: HYDRATION_VIEW_ID.to_owned(),
+                basis_anchor: descriptor.anchor.clone(),
+                resume_anchor: descriptor.anchor.clone(),
+                source_digest: descriptor.ladder_policy_digest(),
+                position: u64::from(next.ordinal()),
+                upper_bound: u64::from(maximum.ordinal()) + 1,
+                selection_witness: artifact.artifact_digest,
+                predecessor_digest: predecessor,
+                issued_at: now,
+                expires_at: expiry,
+            },
         )?))
     }
 }

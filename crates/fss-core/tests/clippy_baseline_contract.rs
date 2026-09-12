@@ -10,8 +10,9 @@ use fss_core::{
     ContentDigest, ContextItem, ContractBasis, ContractBasisRegistryBytes, ContractError,
     CriticalPreservation, EffectIntent, EffectJournal, HandoffCapsule, HandoffId,
     HandoffPublishParams, IdempotencyKey, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
-    OperationId, PrincipalId, SemanticCompressionReceipt, SemanticContextPack, SensorCapsule,
-    SensorId, SensorSourceBytesSpec, SessionId, StreamId, TimestampNs,
+    OperationId, PrincipalId, SemanticCompressionReceipt, SemanticContextPack,
+    SemanticContextPackPublishParams, SensorCapsule, SensorId, SensorSourceBytesSpec, SessionId,
+    StreamId, TimestampNs,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -217,19 +218,19 @@ fn test_semantic_compression_receipt_validation() -> Result<(), ContractError> {
         basis: BTreeSet::from(["claim:selected".to_owned()]),
         expansion_handles: BTreeSet::new(),
     };
-    let pack = SemanticContextPack::publish(
-        "pack:test-001",
-        sample_basis(),
-        MissionId::parse("mission:test")?,
-        SessionId::parse("session:test")?,
-        "AVIEW-001",
-        anchor.clone(),
-        ContentDigest::sha256(b"frame-digest"),
-        vec![item],
-        "receipt:test-001",
-        None,
-        TimestampNs(50),
-    )?;
+    let pack = SemanticContextPack::publish(SemanticContextPackPublishParams {
+        pack_id: "pack:test-001".to_owned(),
+        contract_basis: sample_basis(),
+        mission_id: MissionId::parse("mission:test")?,
+        session_id: SessionId::parse("session:test")?,
+        view_id: "AVIEW-001".to_owned(),
+        anchor: anchor.clone(),
+        situation_fingerprint: ContentDigest::sha256(b"frame-digest"),
+        items: vec![item],
+        compression_receipt_id: "receipt:test-001".to_owned(),
+        continuation: None,
+        created_at: TimestampNs(50),
+    })?;
 
     let receipt = SemanticCompressionReceipt {
         receipt_id: "receipt:test-001".to_owned(),

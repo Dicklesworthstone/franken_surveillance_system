@@ -130,22 +130,22 @@ fn ladders_must_be_contiguous() -> Result<(), HydrationError> {
 #[test]
 fn request_cursor_is_bound_to_handle_session_and_level() -> Result<(), HydrationError> {
     let handle = handle(HandleAvailability::Available, 1)?;
-    let cursor = ContinuationCursor::publish(
-        ContinuationScope::EvidenceHydration,
-        handle.handle_id.clone(),
-        handle.contract_basis.clone(),
-        SessionId::parse("session:hydration")?,
-        HYDRATION_VIEW_ID,
-        handle.anchor.clone(),
-        handle.anchor.clone(),
-        handle.ladder_policy_digest(),
-        2,
-        5,
-        handle.descriptor_digest,
-        None,
-        TimestampNs(10),
-        TimestampNs(100),
-    )?;
+    let cursor = ContinuationCursor::publish(crate::ContinuationCursorPublishParams {
+        scope: ContinuationScope::EvidenceHydration,
+        stream_id: handle.handle_id.clone(),
+        contract_basis: handle.contract_basis.clone(),
+        session_id: SessionId::parse("session:hydration")?,
+        view_id: HYDRATION_VIEW_ID.to_owned(),
+        basis_anchor: handle.anchor.clone(),
+        resume_anchor: handle.anchor.clone(),
+        source_digest: handle.ladder_policy_digest(),
+        position: 2,
+        upper_bound: 5,
+        selection_witness: handle.descriptor_digest,
+        predecessor_digest: None,
+        issued_at: TimestampNs(10),
+        expires_at: TimestampNs(100),
+    })?;
     let request = HydrationRequest::publish(HydrationRequestSpec {
         contract_basis: handle.contract_basis.clone(),
         session_id: SessionId::parse("session:hydration")?,

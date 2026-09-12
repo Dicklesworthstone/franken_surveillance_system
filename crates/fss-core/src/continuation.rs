@@ -146,41 +146,58 @@ pub struct ContinuationCursor {
     pub cursor_digest: ContentDigest,
 }
 
+/// Parameters for publishing a `ContinuationCursor`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContinuationCursorPublishParams {
+    /// Scope classification.
+    pub scope: ContinuationScope,
+    /// Identifier of the underlying logical stream.
+    pub stream_id: String,
+    /// Governing contract basis.
+    pub contract_basis: ContractBasis,
+    /// Client session identity.
+    pub session_id: SessionId,
+    /// View projection identity.
+    pub view_id: String,
+    /// Genesis/basis anchor.
+    pub basis_anchor: LedgerAnchor,
+    /// Anchor from which iteration should resume.
+    pub resume_anchor: LedgerAnchor,
+    /// Digest of the complete immutable ordered stream.
+    pub source_digest: ContentDigest,
+    /// Zero-based next unread entry position.
+    pub position: u64,
+    /// Exclusive immutable upper bound.
+    pub upper_bound: u64,
+    /// Selection/comparison witness binding cursor semantics.
+    pub selection_witness: ContentDigest,
+    /// Digest of the immediate predecessor cursor, when advanced.
+    pub predecessor_digest: Option<ContentDigest>,
+    /// Deterministic issue time.
+    pub issued_at: TimestampNs,
+    /// Exclusive expiry time at which rebasing becomes required.
+    pub expires_at: TimestampNs,
+}
+
 impl ContinuationCursor {
     /// Publishes an exact cursor after validating all monotonic bounds.
-    #[allow(clippy::too_many_arguments)]
-    pub fn publish(
-        scope: ContinuationScope,
-        stream_id: impl Into<String>,
-        contract_basis: ContractBasis,
-        session_id: SessionId,
-        view_id: impl Into<String>,
-        basis_anchor: LedgerAnchor,
-        resume_anchor: LedgerAnchor,
-        source_digest: ContentDigest,
-        position: u64,
-        upper_bound: u64,
-        selection_witness: ContentDigest,
-        predecessor_digest: Option<ContentDigest>,
-        issued_at: TimestampNs,
-        expires_at: TimestampNs,
-    ) -> Result<Self, ContinuationError> {
+    pub fn publish(params: ContinuationCursorPublishParams) -> Result<Self, ContinuationError> {
         let mut cursor = Self {
             cursor_id: String::new(),
-            scope,
-            stream_id: stream_id.into(),
-            contract_basis,
-            session_id,
-            view_id: view_id.into(),
-            basis_anchor,
-            resume_anchor,
-            source_digest,
-            position,
-            upper_bound,
-            selection_witness,
-            predecessor_digest,
-            issued_at,
-            expires_at,
+            scope: params.scope,
+            stream_id: params.stream_id,
+            contract_basis: params.contract_basis,
+            session_id: params.session_id,
+            view_id: params.view_id,
+            basis_anchor: params.basis_anchor,
+            resume_anchor: params.resume_anchor,
+            source_digest: params.source_digest,
+            position: params.position,
+            upper_bound: params.upper_bound,
+            selection_witness: params.selection_witness,
+            predecessor_digest: params.predecessor_digest,
+            issued_at: params.issued_at,
+            expires_at: params.expires_at,
             cursor_digest: ContentDigest::sha256(b"unpublished-continuation"),
         };
         cursor.validate_body()?;
@@ -251,22 +268,22 @@ impl ContinuationCursor {
                 ContinuationError::NonMonotone
             });
         }
-        Self::publish(
-            self.scope,
-            self.stream_id.clone(),
-            self.contract_basis.clone(),
-            self.session_id.clone(),
-            self.view_id.clone(),
-            self.basis_anchor.clone(),
-            new_resume_anchor,
-            self.source_digest,
-            new_position,
-            self.upper_bound,
+        Self::publish(ContinuationCursorPublishParams {
+            scope: self.scope,
+            stream_id: self.stream_id.clone(),
+            contract_basis: self.contract_basis.clone(),
+            session_id: self.session_id.clone(),
+            view_id: self.view_id.clone(),
+            basis_anchor: self.basis_anchor.clone(),
+            resume_anchor: new_resume_anchor,
+            source_digest: self.source_digest,
+            position: new_position,
+            upper_bound: self.upper_bound,
             selection_witness,
-            Some(self.cursor_digest),
+            predecessor_digest: Some(self.cursor_digest),
             issued_at,
             expires_at,
-        )
+        })
     }
 
     fn validate_body(&self) -> Result<(), ContinuationError> {
@@ -390,40 +407,54 @@ pub struct ContinuationStream {
     pub source_digest: ContentDigest,
 }
 
+/// Parameters for publishing a bounded immutable `ContinuationStream`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ContinuationStreamPublishParams {
+    /// Identifier of the underlying logical stream.
+    pub stream_id: String,
+    /// Scope classification.
+    pub scope: ContinuationScope,
+    /// Governing contract basis.
+    pub contract_basis: ContractBasis,
+    /// Client session identity.
+    pub session_id: SessionId,
+    /// View projection identity.
+    pub view_id: String,
+    /// Ledger authority anchor.
+    pub anchor: LedgerAnchor,
+    /// Ordered contiguous stream entries.
+    pub entries: Vec<ContinuationEntry>,
+    /// Maximum entries returned per page.
+    pub page_size: u32,
+    /// Selection/comparison witness for the complete stream.
+    pub selection_witness: ContentDigest,
+    /// Issue time shared by every deterministic page cursor.
+    pub issued_at: TimestampNs,
+    /// Stream expiry.
+    pub expires_at: TimestampNs,
+}
+
 impl ContinuationStream {
     /// Publishes a bounded immutable stream after sorting and validating contiguous entries.
-    #[allow(clippy::too_many_arguments)]
-    pub fn publish(
-        stream_id: impl Into<String>,
-        scope: ContinuationScope,
-        contract_basis: ContractBasis,
-        session_id: SessionId,
-        view_id: impl Into<String>,
-        anchor: LedgerAnchor,
-        mut entries: Vec<ContinuationEntry>,
-        page_size: u32,
-        selection_witness: ContentDigest,
-        issued_at: TimestampNs,
-        expires_at: TimestampNs,
-    ) -> Result<Self, ContinuationError> {
-        entries.sort_by_key(|entry| entry.sequence);
-        for (index, entry) in entries.iter().enumerate() {
+    pub fn publish(mut params: ContinuationStreamPublishParams) -> Result<Self, ContinuationError> {
+        params.entries.sort_by_key(|entry| entry.sequence);
+        for (index, entry) in params.entries.iter().enumerate() {
             if entry.sequence != index as u64 {
                 return Err(ContractError::NonCanonicalOrdering.into());
             }
         }
         let mut stream = Self {
-            stream_id: stream_id.into(),
-            scope,
-            contract_basis,
-            session_id,
-            view_id: view_id.into(),
-            anchor,
-            entries,
-            page_size,
-            selection_witness,
-            issued_at,
-            expires_at,
+            stream_id: params.stream_id,
+            scope: params.scope,
+            contract_basis: params.contract_basis,
+            session_id: params.session_id,
+            view_id: params.view_id,
+            anchor: params.anchor,
+            entries: params.entries,
+            page_size: params.page_size,
+            selection_witness: params.selection_witness,
+            issued_at: params.issued_at,
+            expires_at: params.expires_at,
             source_digest: ContentDigest::sha256(b"unpublished-continuation-stream"),
         };
         stream.validate_body()?;
@@ -434,22 +465,22 @@ impl ContinuationStream {
     /// Returns the exact initial cursor.
     pub fn initial_cursor(&self) -> Result<ContinuationCursor, ContinuationError> {
         self.verify()?;
-        ContinuationCursor::publish(
-            self.scope,
-            self.stream_id.clone(),
-            self.contract_basis.clone(),
-            self.session_id.clone(),
-            self.view_id.clone(),
-            self.anchor.clone(),
-            self.anchor.clone(),
-            self.source_digest,
-            0,
-            self.entries.len() as u64,
-            self.selection_witness,
-            None,
-            self.issued_at,
-            self.expires_at,
-        )
+        ContinuationCursor::publish(ContinuationCursorPublishParams {
+            scope: self.scope,
+            stream_id: self.stream_id.clone(),
+            contract_basis: self.contract_basis.clone(),
+            session_id: self.session_id.clone(),
+            view_id: self.view_id.clone(),
+            basis_anchor: self.anchor.clone(),
+            resume_anchor: self.anchor.clone(),
+            source_digest: self.source_digest,
+            position: 0,
+            upper_bound: self.entries.len() as u64,
+            selection_witness: self.selection_witness,
+            predecessor_digest: None,
+            issued_at: self.issued_at,
+            expires_at: self.expires_at,
+        })
     }
 
     /// Reads one deterministic page and returns the exact next cursor when entries remain.
@@ -618,23 +649,23 @@ mod tests {
     }
 
     fn stream() -> Result<ContinuationStream, ContinuationError> {
-        ContinuationStream::publish(
-            "stream:test",
-            ContinuationScope::MeaningfulDelta,
-            basis(),
-            SessionId::parse("session:test")?,
-            "AVIEW-001",
-            LedgerAnchor::genesis("site:test"),
-            vec![
+        ContinuationStream::publish(ContinuationStreamPublishParams {
+            stream_id: "stream:test".to_owned(),
+            scope: ContinuationScope::MeaningfulDelta,
+            contract_basis: basis(),
+            session_id: SessionId::parse("session:test")?,
+            view_id: "AVIEW-001".to_owned(),
+            anchor: LedgerAnchor::genesis("site:test"),
+            entries: vec![
                 ContinuationEntry::new(0, "first", ContentDigest::sha256(b"first"), true)?,
                 ContinuationEntry::new(1, "second", ContentDigest::sha256(b"second"), false)?,
                 ContinuationEntry::new(2, "third", ContentDigest::sha256(b"third"), false)?,
             ],
-            2,
-            ContentDigest::sha256(b"selection"),
-            TimestampNs(10),
-            TimestampNs(100),
-        )
+            page_size: 2,
+            selection_witness: ContentDigest::sha256(b"selection"),
+            issued_at: TimestampNs(10),
+            expires_at: TimestampNs(100),
+        })
     }
 
     #[test]
@@ -667,19 +698,19 @@ mod tests {
             Err(ContinuationError::Contract(ContractError::DigestMismatch))
         ));
 
-        let other = ContinuationStream::publish(
-            "stream:other",
-            ContinuationScope::MeaningfulDelta,
-            basis(),
-            SessionId::parse("session:test")?,
-            "AVIEW-001",
-            LedgerAnchor::genesis("site:test"),
-            Vec::new(),
-            1,
-            ContentDigest::sha256(b"selection"),
-            TimestampNs(10),
-            TimestampNs(100),
-        )?;
+        let other = ContinuationStream::publish(ContinuationStreamPublishParams {
+            stream_id: "stream:other".to_owned(),
+            scope: ContinuationScope::MeaningfulDelta,
+            contract_basis: basis(),
+            session_id: SessionId::parse("session:test")?,
+            view_id: "AVIEW-001".to_owned(),
+            anchor: LedgerAnchor::genesis("site:test"),
+            entries: Vec::new(),
+            page_size: 1,
+            selection_witness: ContentDigest::sha256(b"selection"),
+            issued_at: TimestampNs(10),
+            expires_at: TimestampNs(100),
+        })?;
         let valid = stream.initial_cursor()?;
         assert_eq!(
             other.read_page(&valid, TimestampNs(20)),

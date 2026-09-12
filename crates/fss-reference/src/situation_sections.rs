@@ -8,7 +8,8 @@ use fss_core::{
     CompressionTransformKind, ContentDigest, ContextItem, ContractError, ControlEnvelope,
     CriticalPreservation, ExpansionHandle, HandoffCapsule, HandoffId, HandoffPublishParams,
     KnowledgeCell, KnowledgeState, OperationReceipt, ResourcePressure, ResourceState,
-    SemanticCompressionReceipt, SemanticContextPack, TimestampNs, reference_token_count,
+    SemanticCompressionReceipt, SemanticContextPack, SemanticContextPackPublishParams, TimestampNs,
+    reference_token_count,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -241,19 +242,19 @@ pub fn project_reference_situation(
     } else {
         Some(format!("continuation:context:{identity}"))
     };
-    let context_pack = SemanticContextPack::publish(
-        format!("context-pack:{identity}"),
-        situation.capsule.contract_basis.clone(),
-        situation.capsule.mission_id.clone(),
-        situation.capsule.session_id.clone(),
-        spec.view_id.clone(),
-        situation.capsule.anchor.clone(),
-        situation.capsule.frame.frame_digest(),
-        selection.selected.clone(),
-        receipt_id.clone(),
+    let context_pack = SemanticContextPack::publish(SemanticContextPackPublishParams {
+        pack_id: format!("context-pack:{identity}"),
+        contract_basis: situation.capsule.contract_basis.clone(),
+        mission_id: situation.capsule.mission_id.clone(),
+        session_id: situation.capsule.session_id.clone(),
+        view_id: spec.view_id.clone(),
+        anchor: situation.capsule.anchor.clone(),
+        situation_fingerprint: situation.capsule.frame.frame_digest(),
+        items: selection.selected.clone(),
+        compression_receipt_id: receipt_id.clone(),
         continuation,
-        situation.capsule.created_at,
-    )?;
+        created_at: situation.capsule.created_at,
+    })?;
     if context_pack.encoded_bytes() > spec.available_resources.bytes {
         return Err(ContractError::BudgetExhausted.into());
     }

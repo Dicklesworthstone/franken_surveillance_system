@@ -423,37 +423,53 @@ pub struct SemanticContextPack {
     pub pack_digest: ContentDigest,
 }
 
+/// Parameters for publishing a deterministic `SemanticContextPack`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticContextPackPublishParams {
+    /// Stable pack identity.
+    pub pack_id: String,
+    /// Exact contract basis governing the pack.
+    pub contract_basis: ContractBasis,
+    /// Mission identifier.
+    pub mission_id: MissionId,
+    /// Session identifier.
+    pub session_id: SessionId,
+    /// View projection identity.
+    pub view_id: String,
+    /// Exact anchor.
+    pub anchor: LedgerAnchor,
+    /// Fingerprint of the source situation frame.
+    pub situation_fingerprint: ContentDigest,
+    /// Context items selected by policy and budget.
+    pub items: Vec<ContextItem>,
+    /// Receipt verifying compression transforms and budget invariants.
+    pub compression_receipt_id: String,
+    /// Continuation for optional omitted detail.
+    pub continuation: Option<String>,
+    /// Caller-supplied creation time.
+    pub created_at: TimestampNs,
+}
+
 impl SemanticContextPack {
     /// Publishes a deterministic pack after sorting and validating every selected item.
-    #[allow(clippy::too_many_arguments)]
-    pub fn publish(
-        pack_id: impl Into<String>,
-        contract_basis: ContractBasis,
-        mission_id: MissionId,
-        session_id: SessionId,
-        view_id: impl Into<String>,
-        anchor: LedgerAnchor,
-        situation_fingerprint: ContentDigest,
-        mut items: Vec<ContextItem>,
-        compression_receipt_id: impl Into<String>,
-        continuation: Option<String>,
-        created_at: TimestampNs,
-    ) -> Result<Self, ContractError> {
-        items.sort_by(|left, right| left.item_id.cmp(&right.item_id));
-        let token_count = reference_token_count(&items);
+    pub fn publish(mut params: SemanticContextPackPublishParams) -> Result<Self, ContractError> {
+        params
+            .items
+            .sort_by(|left, right| left.item_id.cmp(&right.item_id));
+        let token_count = reference_token_count(&params.items);
         let mut pack = Self {
-            pack_id: pack_id.into(),
-            contract_basis,
-            mission_id,
-            session_id,
-            view_id: view_id.into(),
-            anchor,
-            situation_fingerprint,
-            items,
-            compression_receipt_id: compression_receipt_id.into(),
+            pack_id: params.pack_id,
+            contract_basis: params.contract_basis,
+            mission_id: params.mission_id,
+            session_id: params.session_id,
+            view_id: params.view_id,
+            anchor: params.anchor,
+            situation_fingerprint: params.situation_fingerprint,
+            items: params.items,
+            compression_receipt_id: params.compression_receipt_id,
             token_count,
-            continuation,
-            created_at,
+            continuation: params.continuation,
+            created_at: params.created_at,
             pack_digest: ContentDigest::sha256(b"unpublished-context-pack"),
         };
         pack.validate_body()?;
@@ -874,19 +890,19 @@ mod tests {
             basis: BTreeSet::from(["claim:test".to_owned()]),
             expansion_handles: BTreeSet::new(),
         };
-        let pack = SemanticContextPack::publish(
-            "context-pack:test",
-            basis(),
-            MissionId::parse("mission:test")?,
-            SessionId::parse("session:test")?,
-            "AVIEW-001",
-            anchor.clone(),
-            ContentDigest::sha256(b"frame"),
-            vec![item],
-            "compression:test",
-            None,
-            TimestampNs(1),
-        )?;
+        let pack = SemanticContextPack::publish(SemanticContextPackPublishParams {
+            pack_id: "context-pack:test".to_owned(),
+            contract_basis: basis(),
+            mission_id: MissionId::parse("mission:test")?,
+            session_id: SessionId::parse("session:test")?,
+            view_id: "AVIEW-001".to_owned(),
+            anchor: anchor.clone(),
+            situation_fingerprint: ContentDigest::sha256(b"frame"),
+            items: vec![item],
+            compression_receipt_id: "compression:test".to_owned(),
+            continuation: None,
+            created_at: TimestampNs(1),
+        })?;
         let receipt = SemanticCompressionReceipt {
             receipt_id: "compression:test".to_owned(),
             source_anchor: anchor,

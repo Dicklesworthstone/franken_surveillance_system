@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
-    BudgetVector, Completeness, ContentDigest, ContinuationCursor, ContinuationScope,
-    ContractBasis, ContractBasisRegistryBytes, ContractError, HYDRATION_VIEW_ID,
+    BudgetVector, Completeness, ContentDigest, ContinuationCursor, ContinuationCursorPublishParams,
+    ContinuationScope, ContractBasis, ContractBasisRegistryBytes, ContractError, HYDRATION_VIEW_ID,
     HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
     HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec,
     LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
@@ -147,22 +147,22 @@ fn public_receipt_closes_over_request_handle_and_artifact() -> Result<(), Hydrat
         Completeness::Complete,
         None,
     )?;
-    let cursor = ContinuationCursor::publish(
-        ContinuationScope::EvidenceHydration,
-        handle.handle_id.clone(),
-        handle.contract_basis.clone(),
-        request.session_id.clone(),
-        HYDRATION_VIEW_ID,
-        handle.anchor.clone(),
-        handle.anchor.clone(),
-        handle.ladder_policy_digest(),
-        2,
-        3,
-        artifact.artifact_digest,
-        None,
-        TimestampNs(20),
-        TimestampNs(1_000),
-    )?;
+    let cursor = ContinuationCursor::publish(ContinuationCursorPublishParams {
+        scope: ContinuationScope::EvidenceHydration,
+        stream_id: handle.handle_id.clone(),
+        contract_basis: handle.contract_basis.clone(),
+        session_id: request.session_id.clone(),
+        view_id: HYDRATION_VIEW_ID.to_owned(),
+        basis_anchor: handle.anchor.clone(),
+        resume_anchor: handle.anchor.clone(),
+        source_digest: handle.ladder_policy_digest(),
+        position: 2,
+        upper_bound: 3,
+        selection_witness: artifact.artifact_digest,
+        predecessor_digest: None,
+        issued_at: TimestampNs(20),
+        expires_at: TimestampNs(1_000),
+    })?;
     let mut proof_roots = artifact.proof_roots.clone();
     proof_roots.insert(artifact.artifact_digest);
     proof_roots.insert(handle.descriptor_digest);

@@ -14,7 +14,7 @@ use fss_core::{
     ContextBindingError, ContextExpansionBinding, ContextExpansionBindingSet, ContextItem,
     ContractBasis, ContractBasisRegistryBytes, ContractError, CriticalPreservation,
     ExpansionHandle, KnowledgeState, LedgerAnchor, MissionId, SemanticCompressionReceipt,
-    SemanticContextPack, SessionId, TimestampNs,
+    SemanticContextPack, SemanticContextPackPublishParams, SessionId, TimestampNs,
 };
 
 fn basis() -> ContractBasis {
@@ -75,15 +75,15 @@ fn descriptor(anchor: &LedgerAnchor) -> Result<SemanticHandle, Box<dyn Error>> {
 
 fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt), Box<dyn Error>> {
     let anchor = LedgerAnchor::genesis("site:context-metadata");
-    let pack = SemanticContextPack::publish(
-        "context-pack:metadata",
-        basis(),
-        MissionId::parse("mission:context-metadata")?,
-        SessionId::parse("session:context-metadata")?,
-        "AVIEW-001",
+    let pack = SemanticContextPack::publish(SemanticContextPackPublishParams {
+        pack_id: "context-pack:metadata".to_owned(),
+        contract_basis: basis(),
+        mission_id: MissionId::parse("mission:context-metadata")?,
+        session_id: SessionId::parse("session:context-metadata")?,
+        view_id: "AVIEW-001".to_owned(),
         anchor,
-        ContentDigest::sha256(b"situation-frame"),
-        vec![ContextItem {
+        situation_fingerprint: ContentDigest::sha256(b"situation-frame"),
+        items: vec![ContextItem {
             item_id: "context:knowledge:selected".to_owned(),
             kind: "knowledge".to_owned(),
             epistemic_state: KnowledgeState::Known,
@@ -91,10 +91,10 @@ fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt
             basis: BTreeSet::from(["claim:selected".to_owned()]),
             expansion_handles: BTreeSet::new(),
         }],
-        "compression:context-metadata",
-        Some("continuation:context-metadata".to_owned()),
-        TimestampNs(2),
-    )?;
+        compression_receipt_id: "compression:context-metadata".to_owned(),
+        continuation: Some("continuation:context-metadata".to_owned()),
+        created_at: TimestampNs(2),
+    })?;
     let receipt = SemanticCompressionReceipt {
         receipt_id: "compression:context-metadata".to_owned(),
         source_anchor: pack.anchor.clone(),

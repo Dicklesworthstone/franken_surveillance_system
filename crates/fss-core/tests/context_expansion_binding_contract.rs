@@ -15,7 +15,7 @@ use fss_core::{
     ContextBindingError, ContextExpansionBinding, ContextExpansionBindingSet, ContextItem,
     ContractBasis, ContractBasisRegistryBytes, ContractError, CriticalPreservation,
     ExpansionHandle, KnowledgeState, LedgerAnchor, MissionId, SemanticCompressionReceipt,
-    SemanticContextPack, SessionId, TimestampNs,
+    SemanticContextPack, SemanticContextPackPublishParams, SessionId, TimestampNs,
 };
 
 fn basis() -> ContractBasis {
@@ -96,15 +96,15 @@ fn handle(subject: &str, sequence: u64) -> Result<SemanticHandle, HydrationError
 }
 
 fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt), ContractError> {
-    let pack = SemanticContextPack::publish(
-        "context-pack:test",
-        basis(),
-        MissionId::parse("mission:context-binding")?,
-        SessionId::parse("session:context-binding")?,
-        "AVIEW-001",
-        anchor(0),
-        ContentDigest::sha256(b"situation-frame"),
-        vec![ContextItem {
+    let pack = SemanticContextPack::publish(SemanticContextPackPublishParams {
+        pack_id: "context-pack:test".to_owned(),
+        contract_basis: basis(),
+        mission_id: MissionId::parse("mission:context-binding")?,
+        session_id: SessionId::parse("session:context-binding")?,
+        view_id: "AVIEW-001".to_owned(),
+        anchor: anchor(0),
+        situation_fingerprint: ContentDigest::sha256(b"situation-frame"),
+        items: vec![ContextItem {
             item_id: "context:knowledge:selected".to_owned(),
             kind: "knowledge".to_owned(),
             epistemic_state: KnowledgeState::Known,
@@ -112,10 +112,10 @@ fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt
             basis: BTreeSet::from(["claim:selected".to_owned()]),
             expansion_handles: BTreeSet::from(["slot:item:evidence".to_owned()]),
         }],
-        "compression:context-binding",
-        Some("continuation:context-binding".to_owned()),
-        TimestampNs(2),
-    )?;
+        compression_receipt_id: "compression:context-binding".to_owned(),
+        continuation: Some("continuation:context-binding".to_owned()),
+        created_at: TimestampNs(2),
+    })?;
     let receipt = SemanticCompressionReceipt {
         receipt_id: "compression:context-binding".to_owned(),
         source_anchor: pack.anchor.clone(),
@@ -158,15 +158,15 @@ fn pack_and_receipt() -> Result<(SemanticContextPack, SemanticCompressionReceipt
 fn pack_and_receipt_with_handles(
     count: usize,
 ) -> Result<(SemanticContextPack, SemanticCompressionReceipt), Box<dyn Error>> {
-    let pack = SemanticContextPack::publish(
-        "context-pack:capacity",
-        basis(),
-        MissionId::parse("mission:context-binding")?,
-        SessionId::parse("session:context-binding")?,
-        "AVIEW-001",
-        anchor(0),
-        ContentDigest::sha256(b"situation-frame"),
-        vec![ContextItem {
+    let pack = SemanticContextPack::publish(SemanticContextPackPublishParams {
+        pack_id: "context-pack:capacity".to_owned(),
+        contract_basis: basis(),
+        mission_id: MissionId::parse("mission:context-binding")?,
+        session_id: SessionId::parse("session:context-binding")?,
+        view_id: "AVIEW-001".to_owned(),
+        anchor: anchor(0),
+        situation_fingerprint: ContentDigest::sha256(b"situation-frame"),
+        items: vec![ContextItem {
             item_id: "context:knowledge:selected".to_owned(),
             kind: "knowledge".to_owned(),
             epistemic_state: KnowledgeState::Known,
@@ -174,10 +174,10 @@ fn pack_and_receipt_with_handles(
             basis: BTreeSet::from(["claim:selected".to_owned()]),
             expansion_handles: BTreeSet::new(),
         }],
-        "compression:context-binding",
-        Some("continuation:context-binding".to_owned()),
-        TimestampNs(2),
-    )?;
+        compression_receipt_id: "compression:context-binding".to_owned(),
+        continuation: Some("continuation:context-binding".to_owned()),
+        created_at: TimestampNs(2),
+    })?;
     let expansion_handles = (0..count)
         .map(|i| {
             Ok(ExpansionHandle {

@@ -6,10 +6,11 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use fss_core::{
     BudgetVector, CanonicalEncode, Completeness, ContentDigest, ContinuationCursor,
-    ContinuationScope, ContractBasis, ContractBasisRegistryBytes, ContractError, HYDRATION_VIEW_ID,
-    HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
-    HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec,
-    LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
+    ContinuationCursorPublishParams, ContinuationScope, ContractBasis, ContractBasisRegistryBytes,
+    ContractError, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact, HydrationError,
+    HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
+    HydrationRequestSpec, LaboratoryAccess, LedgerAnchor, SemanticHandle, SemanticHandleSpec,
+    SessionId, TimestampNs,
 };
 
 fn basis() -> ContractBasis {
@@ -107,20 +108,22 @@ fn cursor(
     expires_at: TimestampNs,
 ) -> Result<ContinuationCursor, HydrationError> {
     Ok(ContinuationCursor::publish(
-        ContinuationScope::EvidenceHydration,
-        handle.handle_id.clone(),
-        handle.contract_basis.clone(),
-        request.session_id.clone(),
-        HYDRATION_VIEW_ID,
-        handle.anchor.clone(),
-        handle.anchor.clone(),
-        stream_digest,
-        2,
-        3,
-        page_digest,
-        None,
-        request.issued_at,
-        expires_at,
+        ContinuationCursorPublishParams {
+            scope: ContinuationScope::EvidenceHydration,
+            stream_id: handle.handle_id.clone(),
+            contract_basis: handle.contract_basis.clone(),
+            session_id: request.session_id.clone(),
+            view_id: HYDRATION_VIEW_ID.to_owned(),
+            basis_anchor: handle.anchor.clone(),
+            resume_anchor: handle.anchor.clone(),
+            source_digest: stream_digest,
+            position: 2,
+            upper_bound: 3,
+            selection_witness: page_digest,
+            predecessor_digest: None,
+            issued_at: request.issued_at,
+            expires_at,
+        },
     )?)
 }
 

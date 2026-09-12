@@ -104,7 +104,7 @@ pub use projection::{
     BranchCondition, CompressionCompleteness, CompressionLossClass, CompressionStopReason,
     CompressionTransform, CompressionTransformKind, ContextItem, ControlEnvelope,
     CriticalPreservation, ExpansionHandle, ResourcePressure, ResourceState, SemanticContextPack,
-    reference_token_count,
+    SemanticContextPackPublishParams, reference_token_count,
 };
 pub use time::{
     CaptureInterval, CaptureIntervalWithBasis, IntervalContainment, IntervalUnion,

@@ -206,23 +206,25 @@ mod tests {
     };
 
     fn pack() -> Result<SemanticContextPack, ContractError> {
-        SemanticContextPack::publish(
-            "context-pack:partial",
-            crate::ContractBasis::from_registry_bytes(crate::ContractBasisRegistryBytes::new(
-                b"schemas",
-                b"operations",
-                b"views",
-                b"capabilities",
-                b"errors",
-                b"costs",
-                "fss:test",
-            )),
-            MissionId::parse("mission:partial")?,
-            SessionId::parse("session:partial")?,
-            "AVIEW-001",
-            LedgerAnchor::genesis("site:partial"),
-            ContentDigest::sha256(b"frame"),
-            vec![ContextItem {
+        SemanticContextPack::publish(crate::SemanticContextPackPublishParams {
+            pack_id: "context-pack:partial".to_owned(),
+            contract_basis: crate::ContractBasis::from_registry_bytes(
+                crate::ContractBasisRegistryBytes::new(
+                    b"schemas",
+                    b"operations",
+                    b"views",
+                    b"capabilities",
+                    b"errors",
+                    b"costs",
+                    "fss:test",
+                ),
+            ),
+            mission_id: MissionId::parse("mission:partial")?,
+            session_id: SessionId::parse("session:partial")?,
+            view_id: "AVIEW-001".to_owned(),
+            anchor: LedgerAnchor::genesis("site:partial"),
+            situation_fingerprint: ContentDigest::sha256(b"frame"),
+            items: vec![ContextItem {
                 item_id: "context:knowledge:selected".to_owned(),
                 kind: "knowledge".to_owned(),
                 epistemic_state: KnowledgeState::Known,
@@ -230,10 +232,10 @@ mod tests {
                 basis: BTreeSet::from(["claim:selected".to_owned()]),
                 expansion_handles: BTreeSet::new(),
             }],
-            "compression:partial",
-            Some("continuation:partial".to_owned()),
-            TimestampNs(1),
-        )
+            compression_receipt_id: "compression:partial".to_owned(),
+            continuation: Some("continuation:partial".to_owned()),
+            created_at: TimestampNs(1),
+        })
     }
 
     #[test]
