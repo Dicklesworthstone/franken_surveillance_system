@@ -943,3 +943,248 @@ fn indeterminate_effect_becoming_estimated_with_terminal_hypothesis_is_not_termi
 -> Result<(), Box<dyn Error>> {
     assert_terminal_hypothesis_leaves_indeterminate_effect_open(KnowledgeState::Estimated)
 }
+
+// fss-deir9: every effect terminalization must pass the full irreversible-effect premise bar,
+// whatever state (or absence) the basis carried.
+
+/// Compares a basis whose effect cell is `prior` (`None` omits it) with a result whose effect
+/// cell is `current` (`None` omits it), the result cell further shaped by `configure`.
+fn effect_transition_delta(
+    prior: Option<KnowledgeState>,
+    current: Option<KnowledgeState>,
+    configure: impl FnOnce(&mut Variant),
+) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>> {
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.effect_state = prior;
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = basis_variant.clone();
+    result_variant.sequence = 2;
+    result_variant.effect_state = current;
+    configure(&mut result_variant);
+    let result = publication(&result_variant)?;
+    Ok(classify_reference_meaningful_delta(&basis, &result)?)
+}
+
+const fn drop_effect_evidence(variant: &mut Variant) {
+    variant.effect_evidence = false;
+}
+
+const fn contradict_effect(variant: &mut Variant) {
+    variant.effect_contradicted = true;
+}
+
+const fn expire_effect(variant: &mut Variant) {
+    variant.effect_valid_until = Some(EXPIRED_VALIDITY);
+}
+
+fn unproved_known_change() -> String {
+    format!(
+        "effect uncertainty remains: effect {EFFECT_CLAIM} is known without a proved terminal outcome"
+    )
+}
+
+fn unproved_known_coverage() -> String {
+    format!("unproved effect {EFFECT_CLAIM} is known without admissible terminal outcome evidence")
+}
+
+/// Asserts that a `known` effect cell failing the irreversible-effect premise bar is reported as
+/// continued effect uncertainty and lost coverage, never as a terminal transition.
+fn assert_unproved_known_effect_not_terminal(
+    delta: &fss_core::MeaningfulDelta,
+    context: &str,
+) -> Result<(), Box<dyn Error>> {
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{context}: a known effect without a proved terminal outcome is not terminal: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::EffectUncertainty),
+        "{context}: the unproved effect must stay reported as uncertain: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .effect_uncertainty_changes
+            .contains(&unproved_known_change()),
+        "{context}: missing {:?} in {:?}",
+        unproved_known_change(),
+        delta.effect_uncertainty_changes
+    );
+    assert!(
+        !delta
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change.contains("resolved")),
+        "{context}: an unproved effect must not be reported as resolved: {:?}",
+        delta.effect_uncertainty_changes
+    );
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+        "{context}: an unproved known effect is coverage loss: {:?}",
+        delta.classes
+    );
+    assert!(
+        delta.coverage_changes.contains(&unproved_known_coverage()),
+        "{context}: missing {:?} in {:?}",
+        unproved_known_coverage(),
+        delta.coverage_changes
+    );
+    assert!(
+        delta.coverage_changes.iter().any(|change| {
+            change.contains("epistemic cell degraded") && change.contains(EFFECT_CLAIM)
+        }),
+        "{context}: the unproved effect must be listed as a degraded epistemic cell: {:?}",
+        delta.coverage_changes
+    );
+    assert_eq!(delta.priority, DeltaPriority::Critical);
+    assert!(delta.is_non_coalescible());
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn unknown_effect_becoming_known_without_evidence_is_not_terminal() -> Result<(), Box<dyn Error>> {
+    let delta = effect_transition_delta(
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Known),
+        drop_effect_evidence,
+    )?;
+    assert_unproved_known_effect_not_terminal(&delta, "unknown->known without evidence")
+}
+
+#[test]
+fn absent_effect_becoming_known_without_evidence_is_not_terminal() -> Result<(), Box<dyn Error>> {
+    let delta = effect_transition_delta(None, Some(KnowledgeState::Known), drop_effect_evidence)?;
+    assert_unproved_known_effect_not_terminal(&delta, "absent->known without evidence")
+}
+
+#[test]
+fn stale_effect_becoming_known_without_evidence_is_not_terminal() -> Result<(), Box<dyn Error>> {
+    let delta = effect_transition_delta(
+        Some(KnowledgeState::Stale),
+        Some(KnowledgeState::Known),
+        drop_effect_evidence,
+    )?;
+    assert_unproved_known_effect_not_terminal(&delta, "stale->known without evidence")
+}
+
+#[test]
+fn unknown_effect_becoming_contradicted_known_is_not_terminal() -> Result<(), Box<dyn Error>> {
+    let delta = effect_transition_delta(
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Known),
+        contradict_effect,
+    )?;
+    assert_unproved_known_effect_not_terminal(&delta, "unknown->contradicted known")
+}
+
+#[test]
+fn unknown_effect_becoming_known_with_expired_validity_is_not_terminal()
+-> Result<(), Box<dyn Error>> {
+    let delta = effect_transition_delta(
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Known),
+        expire_effect,
+    )?;
+    assert_unproved_known_effect_not_terminal(&delta, "unknown->known with expired validity")
+}
+
+#[test]
+fn non_indeterminate_effect_with_terminal_hypothesis_is_not_terminal() -> Result<(), Box<dyn Error>>
+{
+    for prior in [
+        None,
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Stale),
+    ] {
+        for successor in [KnowledgeState::Unknown, KnowledgeState::Estimated] {
+            for hypothesis in TERMINAL_HYPOTHESES {
+                let delta = effect_transition_delta(prior, Some(successor), |variant| {
+                    variant.effect_hypothesis = Some(hypothesis);
+                })?;
+                assert!(
+                    !delta
+                        .classes
+                        .contains(&MeaningfulDeltaClass::TerminalTransition),
+                    "{prior:?}->{} with hypothesis {hypothesis:?} is not terminal: {:?}",
+                    successor.as_str(),
+                    delta.classes
+                );
+                delta.validate()?;
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn indeterminate_effect_laundered_through_unknown_never_terminalizes() -> Result<(), Box<dyn Error>>
+{
+    let mut first = Variant::baseline()?;
+    first.effect_state = Some(KnowledgeState::Indeterminate);
+    let mut second = first.clone();
+    second.sequence = 2;
+    second.effect_state = Some(KnowledgeState::Unknown);
+    let mut third = second.clone();
+    third.sequence = 3;
+    third.effect_state = Some(KnowledgeState::Known);
+    third.effect_evidence = false;
+    let first = publication(&first)?;
+    let second = publication(&second)?;
+    let third = publication(&third)?;
+
+    // Step one keeps the indeterminate effect open.
+    let step_one = classify_reference_meaningful_delta(&first, &second)?;
+    assert_effect_unresolved(
+        &step_one,
+        &became(KnowledgeState::Unknown),
+        Some(&degraded_to(KnowledgeState::Unknown)),
+    )?;
+    // Step two cannot see the indeterminate history, so it must refuse on the premise bar alone.
+    let step_two = classify_reference_meaningful_delta(&second, &third)?;
+    assert_unproved_known_effect_not_terminal(&step_two, "laundering step unknown->known")?;
+    // The end-to-end comparison agrees with the stepwise one.
+    let end_to_end = classify_reference_meaningful_delta(&first, &third)?;
+    assert_effect_unresolved(
+        &end_to_end,
+        &became(KnowledgeState::Known),
+        Some(&degraded_to(KnowledgeState::Known)),
+    )
+}
+
+#[test]
+fn effect_with_proved_terminal_outcome_is_terminal_whatever_the_prior_state()
+-> Result<(), Box<dyn Error>> {
+    for prior in [
+        None,
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Stale),
+    ] {
+        let delta =
+            effect_transition_delta(prior, Some(KnowledgeState::Known), keep_effect_evidence)?;
+        assert!(
+            delta
+                .classes
+                .contains(&MeaningfulDeltaClass::TerminalTransition),
+            "{prior:?}->known with a proved outcome is terminal: {:?}",
+            delta.classes
+        );
+        assert!(
+            delta.effect_uncertainty_changes.is_empty(),
+            "{prior:?}->known with a proved outcome carries no effect uncertainty: {:?}",
+            delta.effect_uncertainty_changes
+        );
+        assert!(
+            !delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss),
+            "{prior:?}->known with a proved outcome is not coverage loss: {:?}",
+            delta.coverage_changes
+        );
+        delta.validate()?;
+    }
+    Ok(())
+}

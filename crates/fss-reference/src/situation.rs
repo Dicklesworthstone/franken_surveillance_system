@@ -336,6 +336,13 @@ pub fn compile_reference_situation(
 
     if let Some(outcome) = request.alert_outcome {
         let operation = &outcome.outcome.operation_receipt;
+        // A terminal outcome may be published as `known` only with its retained proof root
+        // (KSTATE-001); without it the effect cell would carry no evidence (fss-deir9).
+        if matches!(operation.state, EffectState::Verified | EffectState::Failed)
+            && operation.result_digest.is_none()
+        {
+            return Err(ReferenceError::InvalidSpec("situation_effect_outcome"));
+        }
         let (knowledge_state, statement) = match operation.state {
             EffectState::Verified => (
                 KnowledgeState::Known,

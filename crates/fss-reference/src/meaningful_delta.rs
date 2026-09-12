@@ -124,6 +124,8 @@ pub fn classify_reference_meaningful_delta(
     let result_capsule = &result.situation.capsule;
     let basis_frame = &basis_capsule.frame;
     let result_frame = &result_capsule.frame;
+    let basis_now = basis_capsule.created_at;
+    let result_now = result_capsule.created_at;
     let mut classes = BTreeSet::new();
     let changed_cells = changed_cells(&basis_frame.knowledge_cells, &result_frame.knowledge_cells);
     let mut invalidated_assumptions = Vec::new();
@@ -292,28 +294,26 @@ pub fn classify_reference_meaningful_delta(
             .iter()
             .find(|candidate| candidate.claim_id == *claim_id)
         {
-            Some(current) => {
-                match indeterminate_effect_successor(current, result_capsule.created_at) {
-                    IndeterminateEffectSuccessor::Resolved => {
-                        effect_resolved = true;
-                        effect_uncertainty_changes.push(format!(
+            Some(current) => match indeterminate_effect_successor(current, result_now) {
+                IndeterminateEffectSuccessor::Resolved => {
+                    effect_resolved = true;
+                    effect_uncertainty_changes.push(format!(
                         "effect uncertainty resolved: {claim_id} became known with retained outcome evidence"
                     ));
-                    }
-                    IndeterminateEffectSuccessor::Unresolved { coverage_gap } => {
-                        let state = current.knowledge_state.as_str();
-                        effect_uncertainty_changes.push(format!(
+                }
+                IndeterminateEffectSuccessor::Unresolved { coverage_gap } => {
+                    let state = current.knowledge_state.as_str();
+                    effect_uncertainty_changes.push(format!(
                         "effect uncertainty remains: indeterminate effect {claim_id} became {state} without a proved outcome"
                     ));
-                        if coverage_gap {
-                            classes.insert(MeaningfulDeltaClass::CoverageLoss);
-                            coverage_changes.push(format!(
-                                "unproved effect {claim_id} degraded from indeterminate to {state}"
-                            ));
-                        }
+                    if coverage_gap {
+                        classes.insert(MeaningfulDeltaClass::CoverageLoss);
+                        coverage_changes.push(format!(
+                            "unproved effect {claim_id} degraded from indeterminate to {state}"
+                        ));
                     }
                 }
-            }
+            },
             None => {
                 effect_uncertainty_changes.push(format!(
                     "effect uncertainty remains: indeterminate effect {claim_id} disappeared from the result frame without a proved outcome"
@@ -323,6 +323,24 @@ pub fn classify_reference_meaningful_delta(
                     "unproved effect {claim_id} disappeared from the result frame while indeterminate"
                 ));
             }
+        }
+    }
+    // A changed effect cell that claims `known` without clearing the premise bar asserts an outcome
+    // it has not proved, whatever the basis carried, so it stays effect uncertainty and lost
+    // coverage rather than a quiet terminal state (fss-deir9). A basis-indeterminate cell was
+    // classified above.
+    for cell in &changed_cells {
+        if unproved_known_effect(cell, result_now)
+            && !basis_indeterminate.contains(cell.claim_id.as_str())
+        {
+            let claim_id = &cell.claim_id;
+            effect_uncertainty_changes.push(format!(
+                "effect uncertainty remains: effect {claim_id} is known without a proved terminal outcome"
+            ));
+            classes.insert(MeaningfulDeltaClass::CoverageLoss);
+            coverage_changes.push(format!(
+                "unproved effect {claim_id} is known without admissible terminal outcome evidence"
+            ));
         }
     }
     if !effect_uncertainty_changes.is_empty() {
@@ -360,41 +378,26 @@ pub fn classify_reference_meaningful_delta(
                             )
                     })
         });
-    // A basis-indeterminate effect is terminal only when it resolved above; its other successors
-    // are classified there and must not be re-read as terminal here.
+    // KSTATE-001: an effect is terminal only when its cell clears the full irreversible-effect
+    // premise bar at the result anchor, whatever state (or absence) the basis carried. A
+    // basis-indeterminate effect is terminal only when it resolved above. Any other effect cell is
+    // terminal when it newly clears the bar, never through a bare `known` state or a hypothesis
+    // disposition, so an effect laundered through another state still needs a proved outcome.
     let effect_terminalized = effect_resolved
         || result_frame.knowledge_cells.iter().any(|cell| {
-            cell.claim_id.starts_with("claim:effect:")
+            is_effect_claim(cell)
                 && !basis_indeterminate.contains(cell.claim_id.as_str())
-                && (cell.knowledge_state == KnowledgeState::Known
-                    || matches!(
-                        cell.hypothesis,
-                        Some(
-                            HypothesisDisposition::Refuted
-                                | HypothesisDisposition::Resolved
-                                | HypothesisDisposition::Superseded
-                        )
-                    ))
+                && cell.is_irreversible_effect_premise(result_now)
                 && basis_frame
                     .knowledge_cells
                     .iter()
                     .find(|b| b.claim_id == cell.claim_id)
-                    .is_none_or(|b| {
-                        b.knowledge_state != KnowledgeState::Known
-                            && !matches!(
-                                b.hypothesis,
-                                Some(
-                                    HypothesisDisposition::Refuted
-                                        | HypothesisDisposition::Resolved
-                                        | HypothesisDisposition::Superseded
-                                )
-                            )
-                    })
+                    .is_none_or(|b| !b.is_irreversible_effect_premise(basis_now))
         });
-    // A basis-indeterminate effect is terminal only through the resolution classified above, so a
-    // terminal hypothesis disposition on its unresolved successor never terminalizes it here.
+    // An effect cell is terminal only through the premise bar applied above, so a terminal
+    // hypothesis disposition on any effect cell never terminalizes it here.
     let event_terminalized = result_frame.knowledge_cells.iter().any(|cell| {
-        if basis_indeterminate.contains(cell.claim_id.as_str()) {
+        if is_effect_claim(cell) {
             return false;
         }
         let is_terminal_hypothesis = matches!(
@@ -486,16 +489,19 @@ pub fn classify_reference_meaningful_delta(
             // Every state that leaves the proposition unestablished or withheld for this decision
             // is degraded. `Known` is established, `Estimated` carries explicit uncertainty and
             // its Known->Estimated drop is reported as an invalidated premise above, and
-            // `NotApplicable` asserts the proposition has no meaning in scope rather than a gap.
-            matches!(
-                cell.knowledge_state,
-                KnowledgeState::NotObservable
-                    | KnowledgeState::Conflicted
-                    | KnowledgeState::Stale
-                    | KnowledgeState::Indeterminate
-                    | KnowledgeState::Unknown
-                    | KnowledgeState::Redacted
-            )
+            // `NotApplicable` asserts the proposition has no meaning in scope rather than a gap. An
+            // effect cell that claims `known` without clearing the irreversible-effect premise bar
+            // has not established its outcome, so it is degraded too (fss-deir9).
+            unproved_known_effect(cell, result_now)
+                || matches!(
+                    cell.knowledge_state,
+                    KnowledgeState::NotObservable
+                        | KnowledgeState::Conflicted
+                        | KnowledgeState::Stale
+                        | KnowledgeState::Indeterminate
+                        | KnowledgeState::Unknown
+                        | KnowledgeState::Redacted
+                )
         })
         .map(|cell| cell.claim_id.clone())
         .collect();
@@ -655,12 +661,24 @@ fn contradiction_changed(
     })
 }
 
+fn is_effect_claim(cell: &KnowledgeCell) -> bool {
+    cell.claim_id.starts_with("claim:effect:")
+}
+
+/// Returns whether `cell` is an effect claim in `KSTATE-001` `known` that does not clear the full
+/// irreversible-effect premise bar at `now` (valid state basis, retained evidence, no
+/// contradictions, open validity window): it asserts an outcome it has not proved.
+fn unproved_known_effect(cell: &KnowledgeCell, now: TimestampNs) -> bool {
+    is_effect_claim(cell)
+        && cell.knowledge_state == KnowledgeState::Known
+        && !cell.is_irreversible_effect_premise(now)
+}
+
 fn indeterminate_effect_claims(cells: &[KnowledgeCell]) -> BTreeSet<&str> {
     cells
         .iter()
         .filter(|cell| {
-            cell.claim_id.starts_with("claim:effect:")
-                && cell.knowledge_state == KnowledgeState::Indeterminate
+            is_effect_claim(cell) && cell.knowledge_state == KnowledgeState::Indeterminate
         })
         .map(|cell| cell.claim_id.as_str())
         .collect()
