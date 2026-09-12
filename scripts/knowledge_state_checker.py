@@ -4,8 +4,12 @@
 Enforces the knowledge-state registry contract:
 1. Knowledge-state registry row drift between architecture JSON and markdown mirror (ERR-KSTATE-REGISTRY-DRIFT-001)
 2. Stable ID reused, duplicated, renumbered, or diverging from canonical baseline (ERR-KSTATE-STABLE-ID-REUSED-001)
-3. Missing or empty mandatory field in a knowledge-state row (ERR-KSTATE-MISSING-FIELD-001)
+3. Missing or empty mandatory field in a knowledge-state row or top-level metadata (ERR-KSTATE-MISSING-FIELD-001)
 4. Corrupt or missing mandatory registry files (ERR-KSTATE-CORRUPT-FILE-001)
+5. Registry digest mismatch between declared and canonical computed digest (ERR-KSTATE-DIGEST-MISMATCH-001)
+6. Registry digest diverged from pinned baseline freeze digest (ERR-KSTATE-FREEZE-DIVERGENCE-001)
+7. Registry generation diverged from baseline generation (ERR-KSTATE-GENERATION-MISMATCH-001)
+8. Non-known knowledge state illegally authorizes irreversible effect (ERR-KSTATE-ILLEGAL-IRREVERSIBLE-AUTH-001)
 """
 from __future__ import annotations
 
@@ -25,24 +29,109 @@ ERR_KSTATE_REGISTRY_DRIFT = "ERR-KSTATE-REGISTRY-DRIFT-001"
 ERR_KSTATE_STABLE_ID_REUSED = "ERR-KSTATE-STABLE-ID-REUSED-001"
 ERR_KSTATE_MISSING_FIELD = "ERR-KSTATE-MISSING-FIELD-001"
 ERR_KSTATE_CORRUPT_FILE = "ERR-KSTATE-CORRUPT-FILE-001"
+ERR_KSTATE_DIGEST_MISMATCH = "ERR-KSTATE-DIGEST-MISMATCH-001"
+ERR_KSTATE_FREEZE_DIVERGENCE = "ERR-KSTATE-FREEZE-DIVERGENCE-001"
+ERR_KSTATE_GENERATION_MISMATCH = "ERR-KSTATE-GENERATION-MISMATCH-001"
+ERR_KSTATE_ILLEGAL_IRREVERSIBLE_AUTH = "ERR-KSTATE-ILLEGAL-IRREVERSIBLE-AUTH-001"
 
 KNOWLEDGE_STATES_JSON_PATH = "architecture/knowledge_states.json"
 AGENT_CONTRACTS_MD_PATH = "registries/AGENT_CONTRACTS.md"
 
-# Canonical stable ID to state name baseline (immutable 9-state universe)
-CANONICAL_BASELINE: dict[str, str] = {
-    "KSTATE-001": "known",
-    "KSTATE-002": "estimated",
-    "KSTATE-003": "unknown",
-    "KSTATE-004": "conflicted",
-    "KSTATE-005": "stale",
-    "KSTATE-006": "not_observable",
-    "KSTATE-007": "redacted",
-    "KSTATE-008": "indeterminate",
-    "KSTATE-009": "not_applicable",
+BASELINE_GENERATION = "gen:fss1:kstate-v1"
+BASELINE_FREEZE_DIGEST = "sha256:bfff3fbe7e9639ba630d70f940fbd01d40ee560a32d64ee2e70be67fb26f4cd8"
+
+EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
+    BASELINE_GENERATION: BASELINE_FREEZE_DIGEST,
 }
 
-MANDATORY_FIELDS: tuple[str, ...] = (
+# Full baseline knowledge-state rows for generation gen:fss1:kstate-v1
+BASELINE_KNOWLEDGE_STATES: dict[str, dict[str, str]] = {
+    "KSTATE-001": {
+        "id": "KSTATE-001",
+        "state": "known",
+        "meaning": "The proposition is established for the named anchor and validity scope by admissible evidence or a proved terminal postcondition.",
+        "may_support_planning": "yes",
+        "may_authorize_irreversible_effect": "yes, subject to capability and policy",
+        "explicit_assumptions_required": "no",
+    },
+    "KSTATE-002": {
+        "id": "KSTATE-002",
+        "state": "estimated",
+        "meaning": "The proposition is supported by a declared derivation or model with explicit uncertainty and operating-envelope limits.",
+        "may_support_planning": "yes",
+        "may_authorize_irreversible_effect": "no",
+        "explicit_assumptions_required": "yes",
+    },
+    "KSTATE-003": {
+        "id": "KSTATE-003",
+        "state": "unknown",
+        "meaning": "The authorized evidence acquired so far does not establish the proposition.",
+        "may_support_planning": "yes, as an explicit branch or open variable",
+        "may_authorize_irreversible_effect": "no",
+        "explicit_assumptions_required": "yes",
+    },
+    "KSTATE-004": {
+        "id": "KSTATE-004",
+        "state": "conflicted",
+        "meaning": "Material admissible evidence supports incompatible propositions or generations.",
+        "may_support_planning": "yes, only as competing branches",
+        "may_authorize_irreversible_effect": "no",
+        "explicit_assumptions_required": "yes",
+    },
+    "KSTATE-005": {
+        "id": "KSTATE-005",
+        "state": "stale",
+        "meaning": "The proposition was valid only at an older anchor or generation and has not been revalidated.",
+        "may_support_planning": "yes, only as a revalidation candidate",
+        "may_authorize_irreversible_effect": "no",
+        "explicit_assumptions_required": "yes",
+    },
+    "KSTATE-006": {
+        "id": "KSTATE-006",
+        "state": "not_observable",
+        "meaning": "The declared sensor/authorization/model domain could not have established the proposition for the requested interval.",
+        "may_support_planning": "yes, as a protected residual possibility",
+        "may_authorize_irreversible_effect": "no",
+        "explicit_assumptions_required": "yes",
+    },
+    "KSTATE-007": {
+        "id": "KSTATE-007",
+        "state": "redacted",
+        "meaning": "The proposition or its evidence exists but is intentionally withheld by the current privacy/capability projection.",
+        "may_support_planning": "yes, only through non-leaking abstract constraints",
+        "may_authorize_irreversible_effect": "no",
+        "explicit_assumptions_required": "yes",
+    },
+    "KSTATE-008": {
+        "id": "KSTATE-008",
+        "state": "indeterminate",
+        "meaning": "A consequential external outcome may have occurred but is not yet proved or safely negated.",
+        "may_support_planning": "yes, only in reconciliation branches",
+        "may_authorize_irreversible_effect": "no",
+        "explicit_assumptions_required": "yes",
+    },
+    "KSTATE-009": {
+        "id": "KSTATE-009",
+        "state": "not_applicable",
+        "meaning": "The proposition has no meaning for the named object, scope, or lifecycle state.",
+        "may_support_planning": "no",
+        "may_authorize_irreversible_effect": "no",
+        "explicit_assumptions_required": "no",
+    },
+}
+
+MANDATORY_TOP_LEVEL_FIELDS: tuple[str, ...] = (
+    "schema",
+    "asOf",
+    "generation",
+    "semanticProtocol",
+    "constitutionalDocument",
+    "humanContracts",
+    "registryDigest",
+    "knowledgeStates",
+)
+
+MANDATORY_ROW_FIELDS: tuple[str, ...] = (
     "id",
     "state",
     "meaning",
@@ -74,10 +163,58 @@ class ValidationResult:
         self.errors.append(DiagnosticError(code=code, file_path=file_path, target=target, message=message))
 
 
-def compute_canonical_knowledge_state_digest(knowledge_states: list[dict[str, Any]]) -> str:
-    """Computes SHA-256 digest of canonically serialized sorted knowledge-state rows."""
-    sorted_rows = sorted(knowledge_states, key=lambda r: str(r.get("id", "")))
-    canonical_bytes = json.dumps(sorted_rows, sort_keys=True, separators=(",", ":")).encode("utf-8")
+def canonicalize_value(val: Any) -> Any:
+    if isinstance(val, dict):
+        return {k: canonicalize_value(v) for k, v in sorted(val.items())}
+    if isinstance(val, list):
+        return [canonicalize_value(item) for item in val]
+    return val
+
+
+def compute_canonical_knowledge_state_digest(
+    data_or_kstates: dict[str, Any] | list[dict[str, Any]],
+    schema: str = "fss.knowledge_states.v1",
+    as_of: str = "2026-08-31",
+    generation: str = BASELINE_GENERATION,
+    semantic_protocol: str = "fss/1",
+    constitutional_document: str = "AGENT_COGNITION_AND_CONTROL.md",
+    human_contracts: str = "registries/AGENT_CONTRACTS.md",
+) -> str:
+    """Computes SHA-256 digest of canonically serialized knowledge-state registry data.
+
+    Binds top-level metadata (schema, asOf, generation, semanticProtocol,
+    constitutionalDocument, humanContracts) and deterministically sorted
+    knowledgeStates rows.
+    """
+    if isinstance(data_or_kstates, dict):
+        data = data_or_kstates
+        schema_val = str(data.get("schema", "")).strip()
+        as_of_val = str(data.get("asOf", "")).strip()
+        generation_val = str(data.get("generation", "")).strip()
+        proto_val = str(data.get("semanticProtocol", "")).strip()
+        doc_val = str(data.get("constitutionalDocument", "")).strip()
+        contracts_val = str(data.get("humanContracts", "")).strip()
+        raw_kstates = data.get("knowledgeStates", [])
+    else:
+        schema_val = schema
+        as_of_val = as_of
+        generation_val = generation
+        proto_val = semantic_protocol
+        doc_val = constitutional_document
+        contracts_val = human_contracts
+        raw_kstates = data_or_kstates
+
+    sorted_kstates = sorted(raw_kstates, key=lambda r: str(r.get("id", "")))
+    canonical_payload = {
+        "asOf": as_of_val,
+        "constitutionalDocument": doc_val,
+        "generation": generation_val,
+        "humanContracts": contracts_val,
+        "knowledgeStates": [canonicalize_value(r) for r in sorted_kstates],
+        "schema": schema_val,
+        "semanticProtocol": proto_val,
+    }
+    canonical_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}"
 
 
@@ -145,6 +282,71 @@ def validate_knowledge_state_registry(repo_root: Path = ROOT) -> ValidationResul
         )
         return result
 
+    # Validate top-level mandatory fields
+    for field_name in MANDATORY_TOP_LEVEL_FIELDS:
+        val = data.get(field_name)
+        if val is None:
+            result.add_error(
+                ERR_KSTATE_MISSING_FIELD,
+                KNOWLEDGE_STATES_JSON_PATH,
+                f"#/{field_name}",
+                f"Knowledge-state registry missing mandatory top-level field '{field_name}'",
+            )
+        elif field_name != "knowledgeStates" and (not isinstance(val, str) or not val.strip()):
+            result.add_error(
+                ERR_KSTATE_MISSING_FIELD,
+                KNOWLEDGE_STATES_JSON_PATH,
+                f"#/{field_name}",
+                f"Knowledge-state registry top-level field '{field_name}' must be a non-empty string",
+            )
+
+    generation = str(data.get("generation", "")).strip()
+    if not generation:
+        result.add_error(
+            ERR_KSTATE_GENERATION_MISMATCH,
+            KNOWLEDGE_STATES_JSON_PATH,
+            "#/generation",
+            "Knowledge-state registry missing or empty 'generation'",
+        )
+    elif generation != BASELINE_GENERATION:
+        result.add_error(
+            ERR_KSTATE_GENERATION_MISMATCH,
+            KNOWLEDGE_STATES_JSON_PATH,
+            "#/generation",
+            f"Knowledge-state registry generation mismatch: declared '{generation}', expected '{BASELINE_GENERATION}'",
+        )
+
+    declared_digest = str(data.get("registryDigest", "")).strip()
+    result.registry_digest = declared_digest
+
+    # Pinned freeze digest check against EXPECTED_FREEZE_DIGESTS
+    expected_pinned_digest = EXPECTED_FREEZE_DIGESTS.get(generation)
+    if expected_pinned_digest is not None:
+        if declared_digest != expected_pinned_digest:
+            result.add_error(
+                ERR_KSTATE_FREEZE_DIVERGENCE,
+                KNOWLEDGE_STATES_JSON_PATH,
+                "#/registryDigest",
+                f"Knowledge-state registry digest diverged from pinned baseline freeze digest: declared '{declared_digest}', pinned '{expected_pinned_digest}'",
+            )
+    else:
+        result.add_error(
+            ERR_KSTATE_FREEZE_DIVERGENCE,
+            KNOWLEDGE_STATES_JSON_PATH,
+            "#/registryDigest",
+            f"Knowledge-state registry digest has no pinned freeze digest for generation '{generation}'",
+        )
+
+    # Computed canonical digest check
+    computed_digest = compute_canonical_knowledge_state_digest(data)
+    if declared_digest != computed_digest:
+        result.add_error(
+            ERR_KSTATE_DIGEST_MISMATCH,
+            KNOWLEDGE_STATES_JSON_PATH,
+            "#/registryDigest",
+            f"Registry digest mismatch: declared '{declared_digest}', computed '{computed_digest}'",
+        )
+
     kstates_list = data.get("knowledgeStates")
     if not isinstance(kstates_list, list):
         result.add_error(
@@ -156,20 +358,8 @@ def validate_knowledge_state_registry(repo_root: Path = ROOT) -> ValidationResul
         return result
 
     result.knowledge_state_count = len(kstates_list)
-    declared_digest = data.get("registryDigest", "")
-    result.registry_digest = declared_digest
 
-    # Validate canonical digest
-    computed_digest = compute_canonical_knowledge_state_digest(kstates_list)
-    if declared_digest != computed_digest:
-        result.add_error(
-            ERR_KSTATE_REGISTRY_DRIFT,
-            KNOWLEDGE_STATES_JSON_PATH,
-            "#/registryDigest",
-            f"Registry digest mismatch: declared {declared_digest}, computed {computed_digest}",
-        )
-
-    # Check each row for mandatory fields, valid IDs, and canonical baseline
+    # Check each row for mandatory fields, valid IDs, and irreversible effect permissions
     seen_ids: set[str] = set()
     json_kstates: dict[str, dict[str, Any]] = {}
     for idx, row in enumerate(kstates_list):
@@ -183,7 +373,7 @@ def validate_knowledge_state_registry(repo_root: Path = ROOT) -> ValidationResul
             continue
 
         kid = row.get("id")
-        if not kid or not isinstance(kid, str):
+        if not kid or not isinstance(kid, str) or not kid.strip():
             result.add_error(
                 ERR_KSTATE_MISSING_FIELD,
                 KNOWLEDGE_STATES_JSON_PATH,
@@ -192,6 +382,7 @@ def validate_knowledge_state_registry(repo_root: Path = ROOT) -> ValidationResul
             )
             continue
 
+        kid = kid.strip()
         if not KSTATE_ID_PATTERN.match(kid):
             result.add_error(
                 ERR_KSTATE_STABLE_ID_REUSED,
@@ -210,8 +401,8 @@ def validate_knowledge_state_registry(repo_root: Path = ROOT) -> ValidationResul
         seen_ids.add(kid)
         json_kstates[kid] = row
 
-        # Check mandatory fields
-        for field_name in MANDATORY_FIELDS:
+        # Check row mandatory fields
+        for field_name in MANDATORY_ROW_FIELDS:
             val = row.get(field_name)
             if val is None or not isinstance(val, str) or not val.strip():
                 result.add_error(
@@ -221,16 +412,59 @@ def validate_knowledge_state_registry(repo_root: Path = ROOT) -> ValidationResul
                     f"Knowledge-state '{kid}' missing or empty mandatory field '{field_name}'",
                 )
 
-        # Check canonical baseline state name (no renumbering)
+        # Hard constitutional gate on irreversible effects
         state_name = row.get("state")
-        expected_state = CANONICAL_BASELINE.get(kid)
-        if expected_state is not None and state_name != expected_state:
-            result.add_error(
-                ERR_KSTATE_STABLE_ID_REUSED,
-                KNOWLEDGE_STATES_JSON_PATH,
-                f"#/knowledgeStates/{kid}/state",
-                f"Knowledge-state ID '{kid}' renumbered or bound to unexpected state '{state_name}' (expected '{expected_state}')",
-            )
+        may_effect = row.get("may_authorize_irreversible_effect")
+        if state_name == "known":
+            if may_effect != "yes, subject to capability and policy":
+                result.add_error(
+                    ERR_KSTATE_ILLEGAL_IRREVERSIBLE_AUTH,
+                    KNOWLEDGE_STATES_JSON_PATH,
+                    f"#/knowledgeStates/{kid}/may_authorize_irreversible_effect",
+                    f"Knowledge-state 'known' ({kid}) must specify 'yes, subject to capability and policy' for may_authorize_irreversible_effect, got '{may_effect}'",
+                )
+        elif state_name is not None:
+            if may_effect != "no":
+                result.add_error(
+                    ERR_KSTATE_ILLEGAL_IRREVERSIBLE_AUTH,
+                    KNOWLEDGE_STATES_JSON_PATH,
+                    f"#/knowledgeStates/{kid}/may_authorize_irreversible_effect",
+                    f"Non-known knowledge-state '{state_name}' ({kid}) illegally authorizes irreversible effect: '{may_effect}' (must be 'no')",
+                )
+
+    # Check baseline presence and immutability when at BASELINE_GENERATION
+    expected_baseline_ids = set(BASELINE_KNOWLEDGE_STATES.keys())
+    missing_baseline_ids = expected_baseline_ids - seen_ids
+    for mid in sorted(missing_baseline_ids):
+        result.add_error(
+            ERR_KSTATE_STABLE_ID_REUSED,
+            KNOWLEDGE_STATES_JSON_PATH,
+            f"#/knowledgeStates/{mid}",
+            f"Mandatory baseline knowledge-state ID '{mid}' is missing from registry",
+        )
+
+    extra_ids = seen_ids - expected_baseline_ids
+    for xid in sorted(extra_ids):
+        result.add_error(
+            ERR_KSTATE_STABLE_ID_REUSED,
+            KNOWLEDGE_STATES_JSON_PATH,
+            f"#/knowledgeStates/{xid}",
+            f"Unregistered or renumbered knowledge-state ID '{xid}' present without generation bump",
+        )
+
+    if generation == BASELINE_GENERATION:
+        for kid, expected_row in BASELINE_KNOWLEDGE_STATES.items():
+            if kid in json_kstates:
+                actual_row = json_kstates[kid]
+                for k, exp_val in expected_row.items():
+                    act_val = actual_row.get(k)
+                    if act_val != exp_val:
+                        result.add_error(
+                            ERR_KSTATE_REGISTRY_DRIFT,
+                            KNOWLEDGE_STATES_JSON_PATH,
+                            f"#/knowledgeStates/{kid}/{k}",
+                            f"Knowledge-state '{kid}' field '{k}' diverged from baseline without generation bump: declared '{act_val}', expected '{exp_val}'",
+                        )
 
     # Parse and cross-check against Markdown mirror
     try:
@@ -255,6 +489,24 @@ def validate_knowledge_state_registry(repo_root: Path = ROOT) -> ValidationResul
 
     # Check all MD rows are present in JSON and mirror-equal
     for kid, (md_state, md_meaning, md_plan, md_effect, md_assump) in md_kstates.items():
+        # Enforce irreversible effect gate on markdown mirror
+        if md_state == "known":
+            if md_effect != "yes, subject to capability and policy":
+                result.add_error(
+                    ERR_KSTATE_ILLEGAL_IRREVERSIBLE_AUTH,
+                    AGENT_CONTRACTS_MD_PATH,
+                    f"#{kid}/may_authorize_irreversible_effect",
+                    f"Markdown knowledge-state 'known' ({kid}) must specify 'yes, subject to capability and policy' for may_authorize_irreversible_effect, got '{md_effect}'",
+                )
+        else:
+            if md_effect != "no":
+                result.add_error(
+                    ERR_KSTATE_ILLEGAL_IRREVERSIBLE_AUTH,
+                    AGENT_CONTRACTS_MD_PATH,
+                    f"#{kid}/may_authorize_irreversible_effect",
+                    f"Markdown non-known knowledge-state '{md_state}' ({kid}) illegally authorizes irreversible effect: '{md_effect}' (must be 'no')",
+                )
+
         if kid not in json_kstates:
             result.add_error(
                 ERR_KSTATE_REGISTRY_DRIFT,

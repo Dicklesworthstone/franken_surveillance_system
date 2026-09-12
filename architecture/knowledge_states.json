@@ -1,10 +1,11 @@
 {
   "schema": "fss.knowledge_states.v1",
   "asOf": "2026-08-31",
+  "generation": "gen:fss1:kstate-v1",
   "semanticProtocol": "fss/1",
   "constitutionalDocument": "AGENT_COGNITION_AND_CONTROL.md",
   "humanContracts": "registries/AGENT_CONTRACTS.md",
-  "registryDigest": "sha256:2a3f43a243d4b99a16362777765a036841320a0f356457fd3bce84030f2a9f03",
+  "registryDigest": "sha256:bfff3fbe7e9639ba630d70f940fbd01d40ee560a32d64ee2e70be67fb26f4cd8",
   "knowledgeStates": [
     {
       "id": "KSTATE-001",
