@@ -113,15 +113,16 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             bundle_data = {
                 "schema": "fss.proof_bundle.v1",
                 "bundle_id": "BUNDLE-TEST-001",
-                "claim_id": "PROOF-TEST-001",
-                "claim_class": "proof",
+                "claim_id": "STAT-TEST-001",
+                "claim_class": "statistical",
                 "supported_level": "achieved",
                 "generation": "gen-2026-09-01",
                 "status": "passed",
                 "retained_evidence": [
-                    "formal_artifact",
-                    "toolchain_identity",
-                    "proof_check_receipt",
+                    "dataset_manifest",
+                    "sampling_protocol",
+                    "confidence_interval",
+                    "held_out_results",
                 ],
             }
             digest = compute_bundle_digest(bundle_data)
@@ -133,7 +134,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             is_valid, findings, loaded_data = verify_proof_bundle(
                 bundle_path=bundle_file,
                 root=tmp_root,
-                expected_claim_id="PROOF-TEST-001",
+                expected_claim_id="STAT-TEST-001",
                 claim_level="achieved",
                 known_classes=known_classes,
                 prohibited_promotions=prohibited,
@@ -196,19 +197,20 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
 
             bundle_data = {
                 "schema": "fss.proof_bundle.v1",
-                "claim_id": "PROOF-001",
-                "claim_class": "proof",
+                "claim_id": "STAT-001",
+                "claim_class": "statistical",
                 "supported_level": "achieved",
                 "generation": "gen-active-01",
                 "status": "passed",
                 "retained_evidence": [
-                    "formal_artifact",
-                    "toolchain_identity",
-                    "proof_check_receipt",
+                    "dataset_manifest",
+                    "sampling_protocol",
+                    "confidence_interval",
+                    "held_out_results",
                 ],
             }
             bundle_data["content_digest"] = compute_bundle_digest(bundle_data)
-            rel_bundle = "proof_bundles/proof1.bundle.json"
+            rel_bundle = "proof_bundles/stat1.bundle.json"
             full_bundle_path = tmp_root / rel_bundle
             full_bundle_path.parent.mkdir(parents=True, exist_ok=True)
             full_bundle_path.write_text(json.dumps(bundle_data), encoding="utf-8")
@@ -217,7 +219,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
                 "# Status Table\n\n"
                 "| ID | Status | Proof root |\n"
                 "|---|---|---|\n"
-                f"| `PROOF-001` | achieved | `{rel_bundle}` |\n"
+                f"| `STAT-001` | achieved | `{rel_bundle}` |\n"
             )
             md_file = tmp_root / "test_table.md"
             md_file.write_text(md_content, encoding="utf-8")
@@ -3018,6 +3020,329 @@ class TestSloEvidenceInspectionFailures(unittest.TestCase):
             self.assertTrue(is_valid, f"Expected pass, got: {[f.message for f in findings]}")
             self.assertEqual(len(findings), 0)
 
+
+
+# ---------------------------------------------------------------------------
+# Claim class 'proof' realization (fss-x4a.30.87.2)
+# ---------------------------------------------------------------------------
+
+PROOF_EVIDENCE = ["formal_artifact", "toolchain_identity", "proof_check_receipt"]
+PROOF_CLAIM_ID = "FORMAL-002"
+PROOF_GENERATION = "gen:fss1:formal-publication-v1"
+PROOF_MODEL_ID = "MODEL-TLA-PUBLICATION-001"
+PROOF_THEOREM = "Root manifest is never visible before all referenced objects are durable"
+PROOF_MODEL_REL = "proofs/tla/publication.model.json"
+PROOF_MODEL_SOURCE_REL = "proofs/tla/Publication.tla"
+PROOF_ARTIFACT_REL = "proofs/tla/PublicationProof.tla"
+PROOF_RECEIPT_REL = "qualification-artifacts/proof/publication.check.json"
+PROOF_MODEL_SOURCE_BYTES = b"---- MODULE Publication ----\nVARIABLES staged, durable, visible\n====\n"
+PROOF_ARTIFACT_BYTES = b"---- MODULE PublicationProof ----\nEXTENDS Publication\nTHEOREM RootLast == Spec => []RootVisibleImpliesDurable\n====\n"
+
+
+def _code(name: str) -> str:
+    """Resolves a registered finding id; an unregistered id can never match a real finding."""
+    return getattr(cpb, name, f"<unregistered {name}>")
+
+
+def _write_bytes(root: Path, rel: str, data: bytes) -> str:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return compute_sha256(data)
+
+
+def _write_doc(root: Path, rel: str, doc: dict) -> str:
+    return _write_bytes(root, rel, json.dumps(doc, sort_keys=True).encode("utf-8"))
+
+
+def build_proof_fixture(
+    root: Path,
+    *,
+    model: dict | None = None,
+    receipt: dict | None = None,
+    bundle: dict | None = None,
+    artifact_rel: str = PROOF_ARTIFACT_REL,
+    artifact_bytes: bytes = PROOF_ARTIFACT_BYTES,
+    omit_roles: tuple[str, ...] = (),
+    extra_artifacts: list[dict] | None = None,
+) -> dict:
+    """Writes a complete, valid 'proof' claim (model manifest, model source, formal proof
+    artifact, check receipt) under root and returns the unsealed bundle. Each negative
+    test perturbs exactly one aspect through the override dictionaries."""
+    source_digest = _write_bytes(root, PROOF_MODEL_SOURCE_REL, PROOF_MODEL_SOURCE_BYTES)
+    model_doc = {
+        "schema": "fss.formal_model.v1",
+        "model_id": PROOF_MODEL_ID,
+        "generation": PROOF_GENERATION,
+        "claim_ids": [PROOF_CLAIM_ID],
+        "source": {"path": PROOF_MODEL_SOURCE_REL, "digest": source_digest},
+    }
+    model_doc.update(model or {})
+    model_digest = _write_doc(root, PROOF_MODEL_REL, model_doc)
+    artifact_digest = _write_bytes(root, artifact_rel, artifact_bytes)
+    receipt_doc = {
+        "schema": "fss.proof_check_receipt.v1",
+        "claim_id": PROOF_CLAIM_ID,
+        "status": "passed",
+        "checker": "tlc",
+        "checker_version": "2.19",
+        "model_id": PROOF_MODEL_ID,
+        "model_generation": PROOF_GENERATION,
+        "formal_artifact_digest": artifact_digest,
+        "theorem_statement": PROOF_THEOREM,
+    }
+    receipt_doc.update(receipt or {})
+    receipt_digest = _write_doc(root, PROOF_RECEIPT_REL, receipt_doc)
+    artifacts = [
+        {"role": "formal_model", "path": PROOF_MODEL_REL, "digest": model_digest},
+        {"role": "formal_artifact", "path": artifact_rel, "digest": artifact_digest},
+        {"role": "proof_check_receipt", "path": PROOF_RECEIPT_REL, "digest": receipt_digest},
+    ]
+    artifacts = [a for a in artifacts if a["role"] not in omit_roles] + list(extra_artifacts or [])
+    data = {
+        "schema": "fss.proof_bundle.v1",
+        "bundle_id": "BUNDLE-PROOF-FORMAL-002",
+        "claim_id": PROOF_CLAIM_ID,
+        "claim_class": "proof",
+        "supported_level": "verified",
+        "generation": PROOF_GENERATION,
+        "status": "passed",
+        "retained_evidence": list(PROOF_EVIDENCE),
+        "theorem": {"claim_id": PROOF_CLAIM_ID, "statement": PROOF_THEOREM},
+        "formal_model": {"model_id": PROOF_MODEL_ID, "generation": PROOF_GENERATION},
+        "assumptions": [
+            {"id": "ASSUME-PUT-ATOMIC", "statement": "each object-store PUT is atomic per object"},
+            {"id": "ASSUME-FAIR-SCHEDULER", "statement": "the publisher is weakly fair"},
+        ],
+        "toolchain_identity": {"checker": "tlc", "version": "2.19"},
+        "artifacts": artifacts,
+    }
+    for key, value in (bundle or {}).items():
+        if value is _DROP:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    return data
+
+
+def verify_class_bundle(root: Path, data: dict, claim_id: str, claim_level: str | None = "verified"):
+    path = write_json(root / "qualification-artifacts/claim.bundle.json", seal(data))
+    return verify_proof_bundle(
+        bundle_path=path,
+        root=root,
+        expected_claim_id=claim_id,
+        claim_level=claim_level,
+        known_classes=_known_classes(),
+        tombstoned_ids=set(),
+        prohibited_promotions=set(CANONICAL_PROHIBITED_PROMOTIONS),
+    )
+
+
+def error_code_set(findings: list) -> list[str]:
+    return sorted(set(error_codes(findings)))
+
+
+class TestProofClaimClassRealization(unittest.TestCase):
+    """Claim class 'proof' opens and validates the evidence its row demands (fss-x4a.30.87.2)."""
+
+    def _run(self, **kwargs: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_proof_fixture(root, **kwargs)
+            return verify_class_bundle(root, data, PROOF_CLAIM_ID)
+
+    def assertRefused(self, result, expected: list[str]) -> None:
+        is_valid, findings, _ = result
+        self.assertFalse(is_valid, "planted bypass was accepted: " + repr([f.message for f in findings]))
+        self.assertEqual(error_code_set(findings), sorted(expected), [f.message for f in findings])
+
+    def test_proof_row_exact_normative_fields(self) -> None:
+        data = json.loads((ROOT / "architecture/claims.json").read_text(encoding="utf-8"))
+        row = next(c for c in data["classes"] if c["id"] == "proof")
+        self.assertEqual(row["claim_class"], "proof")
+        self.assertEqual(row["meaning"], "theorem under declared formal model")
+        self.assertEqual(row["minimum_evidence"], "formal artifact, assumptions, toolchain identity, check receipt")
+        self.assertEqual(row["requiredEvidence"], ["formal_artifact", "toolchain_identity", "proof_check_receipt"])
+        self.assertEqual(CANONICAL_CLAIM_CLASSES["proof"], row)
+
+    def test_proof_finding_ids_are_registered(self) -> None:
+        errors_md = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8")
+        expected = {
+            "ERR_PROOF_FORMAL_MODEL_UNBOUND": "ERR-CLAIM-PROOF-FORMAL-MODEL-UNBOUND-001",
+            "ERR_PROOF_MODEL_GENERATION_MISMATCH": "ERR-CLAIM-PROOF-MODEL-GENERATION-MISMATCH-001",
+            "ERR_PROOF_THEOREM_UNBOUND": "ERR-CLAIM-PROOF-THEOREM-UNBOUND-001",
+            "ERR_PROOF_FORMAL_ARTIFACT_MISSING": "ERR-CLAIM-PROOF-FORMAL-ARTIFACT-MISSING-001",
+            "ERR_PROOF_TESTS_ONLY": "ERR-CLAIM-PROOF-TESTS-ONLY-001",
+            "ERR_PROOF_TOOLCHAIN_UNBOUND": "ERR-CLAIM-PROOF-TOOLCHAIN-UNBOUND-001",
+            "ERR_PROOF_CHECK_RECEIPT_INVALID": "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001",
+            "ERR_CLAIM_ASSUMPTIONS_MISSING": "ERR-CLAIM-ASSUMPTIONS-MISSING-001",
+        }
+        for name, code in expected.items():
+            self.assertEqual(_code(name), code)
+            self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+            self.assertEqual(errors_md.count(f"| `{code}` |"), 1, code)
+
+    def test_proof_complete_evidence_passes(self) -> None:
+        is_valid, findings, _ = self._run()
+        self.assertTrue(is_valid, [f.message for f in findings])
+        self.assertEqual(findings, [])
+
+    def test_planted_proof_without_formal_artifact_fails(self) -> None:
+        self.assertRefused(self._run(omit_roles=("formal_artifact",)), [_code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")])
+
+    def test_planted_proof_artifact_missing_on_disk_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_proof_fixture(root)
+            (root / PROOF_ARTIFACT_REL).unlink()
+            result = verify_class_bundle(root, data, PROOF_CLAIM_ID)
+        self.assertRefused(result, [ERR_PROOF_BUNDLE_NOT_FOUND, _code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")])
+
+    def test_planted_proof_empty_formal_artifact_fails(self) -> None:
+        self.assertRefused(self._run(artifact_bytes=b"  \n"), [_code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")])
+
+    def test_planted_proof_model_generation_mismatch_fails(self) -> None:
+        stale = "gen:fss1:formal-publication-v0"
+        result = self._run(
+            model={"generation": stale},
+            receipt={"model_generation": stale},
+            bundle={"formal_model": {"model_id": PROOF_MODEL_ID, "generation": stale}},
+        )
+        self.assertRefused(result, [_code("ERR_PROOF_MODEL_GENERATION_MISMATCH")])
+
+    def test_planted_proof_declared_model_generation_differs_from_manifest_fails(self) -> None:
+        result = self._run(bundle={"formal_model": {"model_id": PROOF_MODEL_ID, "generation": "gen:fss1:formal-publication-v2"}})
+        self.assertRefused(result, [_code("ERR_PROOF_MODEL_GENERATION_MISMATCH")])
+
+    def test_planted_proof_receipt_checked_other_model_generation_fails(self) -> None:
+        result = self._run(receipt={"model_generation": "gen:fss1:formal-publication-v0"})
+        self.assertRefused(result, [_code("ERR_PROOF_MODEL_GENERATION_MISMATCH")])
+
+    def test_planted_proof_backed_only_by_tests_fails(self) -> None:
+        result = self._run(
+            artifact_rel="tests/test_publication.py",
+            artifact_bytes=b"def test_root_last():\n    assert True\n",
+            receipt={"checker": "pytest", "checker_version": "8.3.2"},
+            bundle={"toolchain_identity": {"checker": "pytest", "version": "8.3.2"}},
+        )
+        self.assertRefused(result, [_code("ERR_PROOF_TESTS_ONLY")])
+
+    def test_planted_proof_with_test_results_instead_of_formal_artifact_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            digest = _write_bytes(root, "qualification-artifacts/proof/tests.log", b"test_root_last ... ok\n")
+            data = build_proof_fixture(
+                root,
+                omit_roles=("formal_artifact",),
+                extra_artifacts=[{"role": "test_results", "path": "qualification-artifacts/proof/tests.log", "digest": digest}],
+            )
+            result = verify_class_bundle(root, data, PROOF_CLAIM_ID)
+        self.assertRefused(result, [_code("ERR_PROOF_FORMAL_ARTIFACT_MISSING"), _code("ERR_PROOF_TESTS_ONLY")])
+
+    def test_planted_proof_formal_artifact_in_wrong_language_fails(self) -> None:
+        self.assertRefused(
+            self._run(artifact_rel="proofs/tla/PublicationProof.txt"),
+            [_code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")],
+        )
+
+    def test_planted_proof_without_formal_model_fails(self) -> None:
+        self.assertRefused(self._run(omit_roles=("formal_model",)), [_code("ERR_PROOF_FORMAL_MODEL_UNBOUND")])
+
+    def test_planted_proof_model_not_bound_to_claim_fails(self) -> None:
+        self.assertRefused(self._run(model={"claim_ids": ["FORMAL-003"]}), [_code("ERR_PROOF_FORMAL_MODEL_UNBOUND")])
+
+    def test_planted_proof_declared_model_id_differs_fails(self) -> None:
+        result = self._run(bundle={"formal_model": {"model_id": "MODEL-TLA-OTHER-001", "generation": PROOF_GENERATION}})
+        self.assertRefused(result, [_code("ERR_PROOF_FORMAL_MODEL_UNBOUND")])
+
+    def test_planted_proof_model_source_missing_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_proof_fixture(root)
+            (root / PROOF_MODEL_SOURCE_REL).unlink()
+            result = verify_class_bundle(root, data, PROOF_CLAIM_ID)
+        self.assertRefused(result, [_code("ERR_PROOF_FORMAL_MODEL_UNBOUND")])
+
+    def test_planted_proof_model_manifest_not_json_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_proof_fixture(root)
+            data["artifacts"][0]["digest"] = _write_bytes(root, PROOF_MODEL_REL, b"not json")
+            result = verify_class_bundle(root, data, PROOF_CLAIM_ID)
+        self.assertRefused(result, [_code("ERR_PROOF_FORMAL_MODEL_UNBOUND")])
+
+    def test_planted_proof_without_theorem_fails(self) -> None:
+        self.assertRefused(self._run(bundle={"theorem": _DROP}), [_code("ERR_PROOF_THEOREM_UNBOUND")])
+
+    def test_planted_proof_theorem_bound_to_other_claim_fails(self) -> None:
+        result = self._run(bundle={"theorem": {"claim_id": "FORMAL-003", "statement": PROOF_THEOREM}})
+        self.assertRefused(result, [_code("ERR_PROOF_THEOREM_UNBOUND")])
+
+    def test_planted_proof_receipt_checked_other_theorem_fails(self) -> None:
+        result = self._run(receipt={"theorem_statement": "Some weaker theorem"})
+        self.assertRefused(result, [_code("ERR_PROOF_THEOREM_UNBOUND")])
+
+    def test_planted_proof_without_check_receipt_fails(self) -> None:
+        self.assertRefused(self._run(omit_roles=("proof_check_receipt",)), [_code("ERR_PROOF_CHECK_RECEIPT_INVALID")])
+
+    def test_planted_proof_failed_check_receipt_fails(self) -> None:
+        self.assertRefused(self._run(receipt={"status": "failed"}), [_code("ERR_PROOF_CHECK_RECEIPT_INVALID")])
+
+    def test_planted_proof_receipt_for_other_artifact_fails(self) -> None:
+        result = self._run(receipt={"formal_artifact_digest": "sha256:" + "a" * 64})
+        self.assertRefused(result, [_code("ERR_PROOF_CHECK_RECEIPT_INVALID")])
+
+    def test_planted_proof_receipt_for_other_claim_fails(self) -> None:
+        self.assertRefused(self._run(receipt={"claim_id": "FORMAL-003"}), [_code("ERR_PROOF_CHECK_RECEIPT_INVALID")])
+
+    def test_planted_proof_without_toolchain_identity_fails(self) -> None:
+        self.assertRefused(self._run(bundle={"toolchain_identity": _DROP}), [_code("ERR_PROOF_TOOLCHAIN_UNBOUND")])
+
+    def test_planted_proof_latest_toolchain_version_fails(self) -> None:
+        result = self._run(
+            bundle={"toolchain_identity": {"checker": "tlc", "version": "latest"}},
+            receipt={"checker_version": "latest"},
+        )
+        self.assertRefused(result, [_code("ERR_PROOF_TOOLCHAIN_UNBOUND")])
+
+    def test_planted_proof_receipt_toolchain_differs_fails(self) -> None:
+        self.assertRefused(self._run(receipt={"checker_version": "2.18"}), [_code("ERR_PROOF_TOOLCHAIN_UNBOUND")])
+
+    def test_planted_proof_unknown_checker_fails(self) -> None:
+        result = self._run(
+            bundle={"toolchain_identity": {"checker": "handwave", "version": "1"}},
+            receipt={"checker": "handwave", "checker_version": "1"},
+        )
+        self.assertRefused(result, [_code("ERR_PROOF_TOOLCHAIN_UNBOUND")])
+
+    def test_planted_proof_empty_assumptions_fails(self) -> None:
+        self.assertRefused(self._run(bundle={"assumptions": []}), [_code("ERR_CLAIM_ASSUMPTIONS_MISSING")])
+
+    def test_planted_proof_missing_assumptions_fails(self) -> None:
+        self.assertRefused(self._run(bundle={"assumptions": _DROP}), [_code("ERR_CLAIM_ASSUMPTIONS_MISSING")])
+
+    def test_planted_proof_unnamed_assumption_fails(self) -> None:
+        result = self._run(bundle={"assumptions": [{"id": "", "statement": "anonymous"}]})
+        self.assertRefused(result, [_code("ERR_CLAIM_ASSUMPTIONS_MISSING")])
+
+    def test_proof_findings_carry_claim_class_param(self) -> None:
+        _, findings, _ = self._run(omit_roles=("formal_artifact",))
+        realized = [f for f in findings if f.code == _code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")]
+        self.assertEqual(len(realized), 1)
+        self.assertEqual(realized[0].params.get("claim_class"), "proof")
+        self.assertEqual(realized[0].params.get("claim_id"), PROOF_CLAIM_ID)
+
+    def test_live_repo_passes_only_because_no_proof_claims_exist(self) -> None:
+        is_valid, findings, _ = audit_claim_proof_bundles(root=ROOT)
+        self.assertTrue(is_valid, [f.message for f in findings])
+        retention = ROOT / "qualification-artifacts"
+        proof_bundles = []
+        if retention.is_dir():
+            for path in sorted(retention.rglob("*")):
+                if path.is_file() and path.name.endswith(cpb.BUNDLE_SUFFIXES):
+                    if json.loads(path.read_text(encoding="utf-8")).get("claim_class") == "proof":
+                        proof_bundles.append(path)
+        self.assertEqual(proof_bundles, [])
 
 if __name__ == "__main__":
     unittest.main()
