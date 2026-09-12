@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use fss_core::{
-    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, KnowledgeState,
-    ModelGeneration, ProbabilityInterval, ProvenanceClass, SensorCapsuleV1, SensorId,
+    CanonicalEncode, CanonicalEncoder, CaptureInterval, ContentDigest, ContractError,
+    KnowledgeState, ModelGeneration, ProbabilityInterval, ProvenanceClass, SensorCapsuleV1,
+    SensorId,
 };
 use fss_object::InMemoryObjectStore;
 
@@ -56,14 +57,17 @@ pub fn is_latest_generation(generation: &str) -> bool {
 /// Encodes a normalized coordinate [0.0, 1.0] into a deterministic discrete basis point [0, 10_000]
 /// using IEEE 754 half-away-from-zero rounding to eliminate float truncation drift (INV-004).
 ///
-/// Fails closed if `coord` is NaN or non-finite.
+/// Fails closed with typed error if `coord` is non-finite or out of range [0.0, 1.0]. Never silently clamps.
 #[inline]
 pub fn encode_coord_to_basis_point(coord: f64) -> Result<u64, MockModelError> {
     if !coord.is_finite() {
         return Err(MockModelError::InvalidCoordinate);
     }
-    let clamped = coord.clamp(0.0, 1.0);
-    Ok((clamped * 10_000.0).round() as u64)
+    if !(0.0..=1.0).contains(&coord) {
+        return Err(MockModelError::CoordinateOutOfRange { coord });
+    }
+    let normalized = if coord == 0.0 { 0.0 } else { coord };
+    Ok((normalized * 10_000.0).round() as u64)
 }
 
 /// Coarse model-facing label. This is derived cognition, not canonical event truth.
@@ -402,6 +406,79 @@ pub struct MockDetection {
     pub bounding_box: [f64; 4],
 }
 
+impl MockDetection {
+    /// Constructs and validates a detection with finite normalized bounding box coordinates.
+    pub fn new(
+        label: MockSemanticLabel,
+        probability: ProbabilityInterval,
+        bounding_box: [f64; 4],
+    ) -> Result<Self, MockModelError> {
+        Self::validate_bounding_box(&bounding_box)?;
+        Ok(Self {
+            label,
+            probability,
+            bounding_box,
+        })
+    }
+
+    /// Validates that a bounding box is non-NaN, finite, within [0.0, 1.0], and non-inverted.
+    pub fn validate_bounding_box(bounding_box: &[f64; 4]) -> Result<(), MockModelError> {
+        for &coord in bounding_box {
+            if !coord.is_finite() {
+                return Err(MockModelError::InvalidCoordinate);
+            }
+            if !(0.0..=1.0).contains(&coord) {
+                return Err(MockModelError::CoordinateOutOfRange { coord });
+            }
+        }
+        let [x1, y1, x2, y2] = *bounding_box;
+        if x1 > x2 || y1 > y2 {
+            return Err(MockModelError::InvertedBoundingBox {
+                bounding_box: *bounding_box,
+            });
+        }
+        Ok(())
+    }
+
+    /// Validates internal bounds and invariants.
+    pub fn validate(&self) -> Result<(), MockModelError> {
+        Self::validate_bounding_box(&self.bounding_box)
+    }
+
+    /// Computes the intersection of two normalized bounding boxes `[x1, y1, x2, y2]`.
+    /// Fails closed with typed error if the boxes are disjoint, inverted, or contain non-finite or out-of-range coordinates.
+    pub fn compute_bounding_box_intersection(
+        box_a: &[f64; 4],
+        box_b: &[f64; 4],
+    ) -> Result<[f64; 4], MockModelError> {
+        compute_bounding_box_intersection(box_a, box_b)
+    }
+}
+
+/// Computes the intersection of two normalized bounding boxes `[x1, y1, x2, y2]`.
+/// Fails closed with typed error if the boxes are disjoint, inverted, or contain non-finite or out-of-range coordinates.
+pub fn compute_bounding_box_intersection(
+    box_a: &[f64; 4],
+    box_b: &[f64; 4],
+) -> Result<[f64; 4], MockModelError> {
+    MockDetection::validate_bounding_box(box_a)?;
+    MockDetection::validate_bounding_box(box_b)?;
+
+    let nx1 = box_a[0].max(box_b[0]);
+    let ny1 = box_a[1].max(box_b[1]);
+    let nx2 = box_a[2].min(box_b[2]);
+    let ny2 = box_a[3].min(box_b[3]);
+
+    if nx1 > nx2 || ny1 > ny2 {
+        return Err(MockModelError::DisjointBoundingBoxes {
+            box_a: *box_a,
+            box_b: *box_b,
+        });
+    }
+
+    Ok([nx1, ny1, nx2, ny2])
+}
+
 /// Corroboration status of a model finding.
 ///
 /// In FSS, a model score is NEVER corroborated on its own (a single camera and single model
@@ -449,8 +526,11 @@ pub struct MockModelOutput {
     pub virtual_latency_ns: u64,
 }
 
-impl CanonicalEncode for MockModelOutput {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+impl MockModelOutput {
+    /// Encodes this model output into canonical form.
+    /// Fails closed if any coordinate is non-finite or out of normalized bounds.
+    pub fn encode_canonical(&self, encoder: &mut CanonicalEncoder) -> Result<(), MockModelError> {
+        self.validate()?;
         encoder.text("fss.mock_model_output.v1");
         encoder.text(self.generation.as_str());
         self.sensor_id.encode_canonical(encoder);
@@ -461,24 +541,24 @@ impl CanonicalEncode for MockModelOutput {
         encode_corroboration_status(&self.corroboration, encoder);
         encoder.u64(self.detections.len() as u64);
         for det in &self.detections {
+            det.validate()?;
             encoder.u8(det.label.tag());
             det.probability.encode_canonical(encoder);
             for &coord in &det.bounding_box {
-                let bp = encode_coord_to_basis_point(coord).unwrap_or_default();
+                let bp = encode_coord_to_basis_point(coord)?;
                 encoder.u64(bp);
             }
         }
         encoder.u64(self.virtual_latency_ns);
+        Ok(())
     }
-}
 
-impl MockModelOutput {
     /// Serializes to deterministic canonical bytes.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
+    /// Fails closed if any detection or coordinate is invalid.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, MockModelError> {
         let mut encoder = CanonicalEncoder::new();
-        self.encode_canonical(&mut encoder);
-        encoder.finish()
+        self.encode_canonical(&mut encoder)?;
+        Ok(encoder.finish())
     }
 
     /// Validates internal bounds and invariants.
@@ -489,13 +569,16 @@ impl MockModelOutput {
                 max: MAX_DETECTIONS_PER_OUTPUT,
             });
         }
+        for det in &self.detections {
+            det.validate()?;
+        }
         Ok(())
     }
 
     /// Computes the content digest for this output object.
-    #[must_use]
-    pub fn compute_digest(&self) -> ContentDigest {
-        ContentDigest::sha256(&self.canonical_bytes())
+    pub fn compute_digest(&self) -> Result<ContentDigest, MockModelError> {
+        let bytes = self.canonical_bytes()?;
+        Ok(ContentDigest::sha256(&bytes))
     }
 }
 
@@ -879,7 +962,7 @@ impl MockModelExecutor {
             let low = 0.50 + prob_raw; // 0.50 .. 0.90
             let high = (low + 0.05).min(0.99); // 0.55 .. 0.95
             let probability = ProbabilityInterval::new(low, high)
-                .map_err(|_| MockModelError::InvalidProbabilityScore)?;
+                .map_err(MockModelError::InvalidProbabilityScore)?;
 
             let x1 = (next_u64() % 400) as f64 / 1000.0;
             let y1 = (next_u64() % 400) as f64 / 1000.0;
@@ -889,11 +972,7 @@ impl MockModelExecutor {
             let y2 = (y1 + h).min(1.0);
             let bounding_box = [x1, y1, x2, y2];
 
-            detections.push(MockDetection {
-                label,
-                probability,
-                bounding_box,
-            });
+            detections.push(MockDetection::new(label, probability, bounding_box)?);
         }
 
         let corroboration = CorroborationStatus::UncorroboratedSingleSource {
@@ -998,6 +1077,7 @@ pub fn compute_output_digest(
     encode_corroboration_status(req.corroboration, &mut encoder);
     encoder.u64(req.detections.len() as u64);
     for det in req.detections {
+        det.validate()?;
         encoder.u8(det.label.tag());
         det.probability.encode_canonical(&mut encoder);
         for &coord in &det.bounding_box {
@@ -1028,7 +1108,9 @@ pub fn compare_model_scores(
     let mid_b = (score_b.probability.lower + score_b.probability.upper) / 2.0;
     mid_a
         .partial_cmp(&mid_b)
-        .ok_or(MockModelError::InvalidProbabilityScore)
+        .ok_or(MockModelError::InvalidProbabilityScore(
+            ContractError::InvalidProbabilityInterval,
+        ))
 }
 
 /// Fuses two detection scores from the same model generation.
@@ -1065,9 +1147,9 @@ pub fn fuse_model_scores(
     }
     match score_a.probability.calibration_generation {
         Some(calib) => ProbabilityInterval::with_calibration(fused_lower, fused_upper, calib)
-            .map_err(|_| MockModelError::InvalidProbabilityScore),
+            .map_err(MockModelError::InvalidProbabilityScore),
         None => ProbabilityInterval::new(fused_lower, fused_upper)
-            .map_err(|_| MockModelError::InvalidProbabilityScore),
+            .map_err(MockModelError::InvalidProbabilityScore),
     }
 }
 
@@ -1319,21 +1401,23 @@ pub fn evaluate_corroboration(
                         }
                     }
 
-                    let [bx1, by1, bx2, by2] = det.bounding_box;
                     match bbox_intersection {
                         None => {
-                            bbox_intersection = Some([bx1, by1, bx2, by2]);
+                            MockDetection::validate_bounding_box(&det.bounding_box)?;
+                            bbox_intersection = Some(det.bounding_box);
                         }
-                        Some([ix1, iy1, ix2, iy2]) => {
-                            let nx1 = ix1.max(bx1);
-                            let ny1 = iy1.max(by1);
-                            let nx2 = ix2.min(bx2);
-                            let ny2 = iy2.min(by2);
-                            if nx1 > nx2 || ny1 > ny2 {
-                                spatial_disjoint = true;
-                                break;
+                        Some(current_box) => {
+                            match compute_bounding_box_intersection(&current_box, &det.bounding_box)
+                            {
+                                Ok(intersection) => {
+                                    bbox_intersection = Some(intersection);
+                                }
+                                Err(MockModelError::DisjointBoundingBoxes { .. }) => {
+                                    spatial_disjoint = true;
+                                    break;
+                                }
+                                Err(err) => return Err(err),
                             }
-                            bbox_intersection = Some([nx1, ny1, nx2, ny2]);
                         }
                     }
                 }
@@ -1370,12 +1454,15 @@ pub fn evaluate_corroboration(
         let calib_opt = expected_calibration.flatten();
         let fused_probability = match calib_opt {
             Some(calib) => ProbabilityInterval::with_calibration(fused_lower, fused_upper, calib)
-                .map_err(|_| MockModelError::InvalidProbabilityScore)?,
+                .map_err(MockModelError::InvalidProbabilityScore)?,
             None => ProbabilityInterval::new(fused_lower, fused_upper)
-                .map_err(|_| MockModelError::InvalidProbabilityScore)?,
+                .map_err(MockModelError::InvalidProbabilityScore)?,
         };
 
-        let bounding_box = bbox_intersection.unwrap_or([0.0, 0.0, 1.0, 1.0]);
+        let bounding_box =
+            bbox_intersection.ok_or(MockModelError::DisjointSpatialCorroboration {
+                label: candidate_label,
+            })?;
 
         let mut contributing_gens = BTreeSet::new();
         for out in contributing_outputs {
@@ -1426,7 +1513,7 @@ pub fn evaluate_corroboration(
 }
 
 /// Errors returned by the mock model subsystem.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum MockModelError {
     /// Model generation identifier is empty.
     EmptyGenerationId,
@@ -1502,10 +1589,27 @@ pub enum MockModelError {
     },
     /// The sensor capsule is invalid.
     InvalidCapsule(String),
-    /// Invalid probability score.
-    InvalidProbabilityScore,
+    /// Invalid probability score, preserving inner contract error.
+    InvalidProbabilityScore(ContractError),
     /// Bounding box coordinate is non-finite (NaN or Inf).
     InvalidCoordinate,
+    /// Bounding box coordinate is outside normalized range [0.0, 1.0].
+    CoordinateOutOfRange {
+        /// The invalid coordinate value.
+        coord: f64,
+    },
+    /// Bounding box is inverted (x1 > x2 or y1 > y2).
+    InvertedBoundingBox {
+        /// The inverted bounding box.
+        bounding_box: [f64; 4],
+    },
+    /// Bounding boxes do not intersect.
+    DisjointBoundingBoxes {
+        /// First bounding box.
+        box_a: [f64; 4],
+        /// Second bounding box.
+        box_b: [f64; 4],
+    },
     /// Spatial bounding boxes do not intersect across corroborating sensors.
     DisjointSpatialCorroboration {
         /// The candidate semantic label whose bounding boxes did not intersect.
@@ -1608,9 +1712,21 @@ impl fmt::Display for MockModelError {
                 )
             }
             Self::InvalidCapsule(reason) => write!(f, "invalid sensor capsule: {reason}"),
-            Self::InvalidProbabilityScore => write!(f, "invalid probability score"),
+            Self::InvalidProbabilityScore(err) => write!(f, "invalid probability score: {err}"),
             Self::InvalidCoordinate => {
                 write!(f, "bounding box coordinate is non-finite (NaN or Inf)")
+            }
+            Self::CoordinateOutOfRange { coord } => {
+                write!(
+                    f,
+                    "bounding box coordinate {coord} is outside normalized range [0.0, 1.0]"
+                )
+            }
+            Self::InvertedBoundingBox { bounding_box } => {
+                write!(f, "bounding box is inverted: {bounding_box:?}")
+            }
+            Self::DisjointBoundingBoxes { box_a, box_b } => {
+                write!(f, "bounding boxes {box_a:?} and {box_b:?} do not intersect")
             }
             Self::DisjointSpatialCorroboration { label } => {
                 write!(

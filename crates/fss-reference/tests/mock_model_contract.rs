@@ -4,8 +4,8 @@
 use std::error::Error;
 
 use fss_core::{
-    CapsuleId, CaptureInterval, ClockBasis, ContentDigest, ContinuityState, DecodeState,
-    ExplicitOmission, IntegrityWitness, KnowledgeState, MediaDescriptor, MediaKind,
+    CapsuleId, CaptureInterval, ClockBasis, ContentDigest, ContinuityState, ContractError,
+    DecodeState, ExplicitOmission, IntegrityWitness, KnowledgeState, MediaDescriptor, MediaKind,
     ModelGeneration, PrivacyDescriptor, ProbabilityInterval, ProvenanceClass,
     PublicationDescriptor, PublicationState, RedactionState, SensorCapsuleV1, SensorId,
     SourceCustody, TimestampNs,
@@ -696,10 +696,10 @@ fn test_canonical_encode_and_output_digest_must_bind_knowledge_state_provenance_
         contributing_generations: vec![generation.as_str().to_string()],
     };
 
-    let bytes_estimated = out_estimated.canonical_bytes();
-    let bytes_conflicted = out_conflicted.canonical_bytes();
-    let bytes_remembered = out_remembered.canonical_bytes();
-    let bytes_corroborated = out_corroborated.canonical_bytes();
+    let bytes_estimated = out_estimated.canonical_bytes()?;
+    let bytes_conflicted = out_conflicted.canonical_bytes()?;
+    let bytes_remembered = out_remembered.canonical_bytes()?;
+    let bytes_corroborated = out_corroborated.canonical_bytes()?;
 
     assert_ne!(
         bytes_estimated, bytes_conflicted,
@@ -1618,6 +1618,219 @@ fn test_adr_0004_normative_facets_and_atomic_activation_rollback() -> Result<(),
     assert_eq!(rolled_back, gen_v2);
     assert_eq!(executor.current_generation(), &gen_v1);
     assert!(executor.prior_generation().is_none());
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_nan_box_refused_never_encoded() -> Result<(), Box<dyn Error>> {
+    let prob = ProbabilityInterval::new(0.5, 0.9)?;
+
+    // 1. Refused at construction via MockDetection::new
+    let nan_box = [f64::NAN, 0.1, 0.5, 0.5];
+    let res_nan = MockDetection::new(MockSemanticLabel::PersonLike, prob, nan_box);
+    assert_eq!(res_nan, Err(MockModelError::InvalidCoordinate));
+
+    let inf_box = [0.1, 0.1, f64::INFINITY, 0.5];
+    let res_inf = MockDetection::new(MockSemanticLabel::PersonLike, prob, inf_box);
+    assert_eq!(res_inf, Err(MockModelError::InvalidCoordinate));
+
+    let neg_inf_box = [f64::NEG_INFINITY, 0.1, 0.5, 0.5];
+    let res_neg_inf = MockDetection::new(MockSemanticLabel::PersonLike, prob, neg_inf_box);
+    assert_eq!(res_neg_inf, Err(MockModelError::InvalidCoordinate));
+
+    // 2. Refused when directly constructed and passed to canonical encoding or digest
+    let nan_det = MockDetection {
+        label: MockSemanticLabel::PersonLike,
+        probability: prob,
+        bounding_box: nan_box,
+    };
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_id = SensorId::parse("sensor:cam-1")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let output_with_nan = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"placeholder"),
+        generation: generation.clone(),
+        sensor_id: sensor_id.clone(),
+        input_digest: ContentDigest::sha256(b"input"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![nan_det.clone()],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_id.clone(),
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    // Canonical bytes must fail closed, NEVER silently encoding NaN as basis point 0
+    assert_eq!(
+        output_with_nan.canonical_bytes(),
+        Err(MockModelError::InvalidCoordinate)
+    );
+    assert_eq!(
+        output_with_nan.compute_digest(),
+        Err(MockModelError::InvalidCoordinate)
+    );
+
+    // compute_output_digest must also refuse NaN box
+    let req = MockOutputDigestRequest::from(&output_with_nan);
+    assert_eq!(
+        compute_output_digest(&req),
+        Err(MockModelError::InvalidCoordinate)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_disjoint_boxes_refused() -> Result<(), Box<dyn Error>> {
+    // 1. Standalone intersection fails closed on disjoint boxes
+    let box_a = [0.1, 0.1, 0.3, 0.3];
+    let box_b = [0.6, 0.6, 0.8, 0.8];
+    let res = MockDetection::compute_bounding_box_intersection(&box_a, &box_b);
+    assert_eq!(
+        res,
+        Err(MockModelError::DisjointBoundingBoxes { box_a, box_b })
+    );
+
+    // Partially overlapping boxes intersect correctly
+    let box_c = [0.2, 0.2, 0.5, 0.5];
+    let overlap = MockDetection::compute_bounding_box_intersection(&box_a, &box_c)?;
+    assert_eq!(overlap, [0.2, 0.2, 0.3, 0.3]);
+
+    // Inverted boxes fail closed
+    let box_inverted = [0.5, 0.5, 0.2, 0.2];
+    assert_eq!(
+        MockDetection::compute_bounding_box_intersection(&box_inverted, &box_c),
+        Err(MockModelError::InvertedBoundingBox {
+            bounding_box: box_inverted,
+        })
+    );
+
+    // 2. Corroboration evaluation fails closed with typed error, NEVER fabricating full-frame [0.0, 0.0, 1.0, 1.0]
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let sensor_1 = SensorId::parse("sensor:cam-1")?;
+    let sensor_2 = SensorId::parse("sensor:cam-2")?;
+    let interval = CaptureInterval::new(TimestampNs(1_000_000), TimestampNs(2_000_000))?;
+
+    let out_1 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out1"),
+        generation: generation.clone(),
+        sensor_id: sensor_1.clone(),
+        input_digest: ContentDigest::sha256(b"in1"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![MockDetection::new(
+            MockSemanticLabel::PersonLike,
+            ProbabilityInterval::new(0.8, 0.9)?,
+            box_a,
+        )?],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_1,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let out_2 = MockModelOutput {
+        output_digest: ContentDigest::sha256(b"out2"),
+        generation: generation.clone(),
+        sensor_id: sensor_2.clone(),
+        input_digest: ContentDigest::sha256(b"in2"),
+        capture_interval: interval,
+        knowledge_state: KnowledgeState::Estimated,
+        provenance_class: ProvenanceClass::Predicted,
+        detections: vec![MockDetection::new(
+            MockSemanticLabel::PersonLike,
+            ProbabilityInterval::new(0.85, 0.95)?,
+            box_b,
+        )?],
+        corroboration: CorroborationStatus::UncorroboratedSingleSource {
+            sensor_id: sensor_2,
+            model_generation: generation.as_str().to_string(),
+        },
+        virtual_latency_ns: 10_000_000,
+    };
+
+    let corroboration_res = evaluate_corroboration(&[out_1, out_2]);
+    assert_eq!(
+        corroboration_res,
+        Err(MockModelError::DisjointSpatialCorroboration {
+            label: MockSemanticLabel::PersonLike,
+        })
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_out_of_range_coordinates_refused() -> Result<(), Box<dyn Error>> {
+    // Exact requested test boundaries: 0.0, 1.0, 1.0000001, -0.0000001
+    assert_eq!(encode_coord_to_basis_point(0.0), Ok(0));
+    assert_eq!(encode_coord_to_basis_point(1.0), Ok(10_000));
+    assert_eq!(
+        encode_coord_to_basis_point(1.0000001),
+        Err(MockModelError::CoordinateOutOfRange { coord: 1.0000001 })
+    );
+    assert_eq!(
+        encode_coord_to_basis_point(-0.0000001),
+        Err(MockModelError::CoordinateOutOfRange { coord: -0.0000001 })
+    );
+
+    // Bounding box construction refuses out-of-range coordinates
+    let prob = ProbabilityInterval::new(0.5, 0.9)?;
+    let res_high = MockDetection::new(
+        MockSemanticLabel::PersonLike,
+        prob,
+        [0.0, 0.0, 1.0000001, 1.0],
+    );
+    assert_eq!(
+        res_high,
+        Err(MockModelError::CoordinateOutOfRange { coord: 1.0000001 })
+    );
+
+    let res_low = MockDetection::new(
+        MockSemanticLabel::PersonLike,
+        prob,
+        [-0.0000001, 0.0, 1.0, 1.0],
+    );
+    assert_eq!(
+        res_low,
+        Err(MockModelError::CoordinateOutOfRange { coord: -0.0000001 })
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_defect_invalid_probability_preserves_inner_error() -> Result<(), Box<dyn Error>> {
+    let generation = ModelGeneration::parse("model:detector:v1")?;
+    let det_a = MockDetection::new(
+        MockSemanticLabel::PersonLike,
+        ProbabilityInterval::new(0.7, 0.9)?,
+        [0.1, 0.1, 0.5, 0.5],
+    )?;
+
+    // Construct det_b with raw field values where probability has lower > upper via unsafe/raw struct
+    // or test compare_model_scores NaN comparison
+    let mut det_nan = det_a.clone();
+    det_nan.probability = ProbabilityInterval {
+        lower: f64::NAN,
+        upper: 0.9,
+        calibration_generation: None,
+    };
+
+    let compare_res = compare_model_scores(&det_a, &generation, &det_nan, &generation);
+    assert_eq!(
+        compare_res,
+        Err(MockModelError::InvalidProbabilityScore(
+            ContractError::InvalidProbabilityInterval,
+        ))
+    );
 
     Ok(())
 }
