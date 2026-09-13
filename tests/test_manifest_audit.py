@@ -79,4 +79,44 @@ with tempfile.TemporaryDirectory() as temporary:
     finally:
         module.ROOT = old_root
 
+with tempfile.TemporaryDirectory() as temporary:
+    fixture = Path(temporary)
+    (fixture / "a.txt").write_text("a\n", encoding="utf-8")
+    base = fixture / "MANIFEST.sha256"
+    delta = fixture / "MANIFEST.delta.sha256"
+    digest = sha(fixture / "a.txt")
+    base.write_text(f"{digest}  a.txt\n{digest}  a.txt\n", encoding="utf-8")
+    delta.write_text("", encoding="utf-8")
+    old_root = module.ROOT
+    module.ROOT = fixture
+    try:
+        try:
+            module.audit(base, delta)
+        except module.ManifestError as exc:
+            assert str(exc) == "duplicate path in MANIFEST.sha256: a.txt"
+        else:
+            raise AssertionError("duplicate base row should fail with exact finding")
+    finally:
+        module.ROOT = old_root
+
+with tempfile.TemporaryDirectory() as temporary:
+    fixture = Path(temporary)
+    (fixture / "a.txt").write_text("a\n", encoding="utf-8")
+    base = fixture / "MANIFEST.sha256"
+    delta = fixture / "MANIFEST.delta.sha256"
+    digest = sha(fixture / "a.txt")
+    base.write_text(f"{digest}  a.txt\n", encoding="utf-8")
+    delta.write_text(f"{digest}  a.txt\n{digest}  a.txt\n", encoding="utf-8")
+    old_root = module.ROOT
+    module.ROOT = fixture
+    try:
+        try:
+            module.audit(base, delta)
+        except module.ManifestError as exc:
+            assert str(exc) == "duplicate path in MANIFEST.delta.sha256: a.txt"
+        else:
+            raise AssertionError("duplicate delta row should fail with exact finding")
+    finally:
+        module.ROOT = old_root
+
 print("layered manifest audit tests passed")
