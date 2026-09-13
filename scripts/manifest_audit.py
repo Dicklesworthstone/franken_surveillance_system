@@ -33,7 +33,13 @@ LINE = re.compile(r"([0-9a-f]{64})  ([^\r\n]+)")
 
 
 class ManifestError(ValueError):
-    pass
+    """Fail-closed audit failure carrying every finding from one run, sorted."""
+
+    def __init__(self, findings: list[str] | str) -> None:
+        if isinstance(findings, str):
+            findings = [findings]
+        self.findings: list[str] = sorted(set(findings))
+        super().__init__("\n".join(self.findings))
 
 
 def included(path: Path) -> bool:
@@ -55,36 +61,52 @@ def source_paths() -> set[str]:
     }
 
 
-def parse_manifest(path: Path) -> dict[str, str]:
+def parse_manifest_rows(path: Path, findings: list[str]) -> dict[str, str]:
+    """Parse one layer, appending every malformed/unsafe/duplicate finding instead of stopping."""
     if not path.is_file():
-        raise ManifestError(f"missing manifest layer: {path.name}")
+        findings.append(f"missing manifest layer: {path.name}")
+        return {}
     rows: dict[str, str] = {}
+    duplicates: set[str] = set()
     for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
         if not line.strip():
             continue
         match = LINE.fullmatch(line)
         if match is None:
-            raise ManifestError(f"malformed {path.name} line {line_number}")
+            findings.append(f"malformed {path.name} line {line_number}")
+            continue
         digest, relative_text = match.groups()
         relative = Path(relative_text)
         if relative.is_absolute() or ".." in relative.parts or relative_text in {"MANIFEST.sha256", "MANIFEST.delta.sha256"}:
-            raise ManifestError(f"unsafe/self-referential manifest path in {path.name}: {relative_text}")
+            findings.append(f"unsafe/self-referential manifest path in {path.name}: {relative_text}")
+            continue
         if relative_text in rows:
-            raise ManifestError(f"duplicate path in {path.name}: {relative_text}")
+            duplicates.add(relative_text)
+            continue
         rows[relative_text] = digest
+    findings.extend(f"duplicate path in {path.name}: {relative_text}" for relative_text in sorted(duplicates))
+    return rows
+
+
+def parse_manifest(path: Path) -> dict[str, str]:
+    findings: list[str] = []
+    rows = parse_manifest_rows(path, findings)
+    if findings:
+        raise ManifestError(findings)
     return rows
 
 
 def audit(base: Path = BASE, delta: Path = DELTA) -> dict[str, object]:
-    base_rows = parse_manifest(base)
-    delta_rows = parse_manifest(delta)
+    findings: list[str] = []
+    base_rows = parse_manifest_rows(base, findings)
+    delta_rows = parse_manifest_rows(delta, findings)
     merged = dict(base_rows)
     changed = 0
     added = 0
     for relative, digest in delta_rows.items():
         prior = merged.get(relative)
         if prior == digest:
-            raise ManifestError(f"redundant unchanged delta entry: {relative}")
+            findings.append(f"redundant unchanged delta entry: {relative}")
         if prior is None:
             added += 1
         else:
@@ -95,18 +117,21 @@ def audit(base: Path = BASE, delta: Path = DELTA) -> dict[str, object]:
     missing = sorted(expected - set(merged))
     stale = sorted(set(merged) - expected)
     if missing:
-        raise ManifestError("source files missing from layered manifest: " + ", ".join(missing))
+        findings.append("source files missing from layered manifest: " + ", ".join(missing))
     if stale:
-        raise ManifestError("layered manifest lists excluded/unknown files: " + ", ".join(stale))
+        findings.append("layered manifest lists excluded/unknown files: " + ", ".join(stale))
 
-    for relative in sorted(expected):
+    for relative in sorted(expected & set(merged)):
         path = ROOT / relative
         actual = hashlib.sha256(path.read_bytes()).hexdigest()
         if actual != merged[relative]:
             layer = "delta" if relative in delta_rows else "base"
-            raise ManifestError(
+            findings.append(
                 f"{layer} manifest digest mismatch: {relative}: expected {merged[relative]}, observed {actual}"
             )
+
+    if findings:
+        raise ManifestError(findings)
 
     root_hasher = hashlib.sha256()
     for relative in sorted(merged):
@@ -133,7 +158,11 @@ def main() -> int:
     args = parser.parse_args()
     try:
         report = audit(args.base, args.delta)
-    except (OSError, ManifestError) as exc:
+    except ManifestError as exc:
+        for finding in exc.findings:
+            print(f"layered manifest audit failed: {finding}", file=sys.stderr)
+        return 1
+    except OSError as exc:
         print(f"layered manifest audit failed: {exc}", file=sys.stderr)
         return 1
     for key, value in report.items():
