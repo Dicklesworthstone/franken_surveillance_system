@@ -250,14 +250,14 @@ policy_lane() {
     scripts/schema_validate.py scripts/slo_validate.py scripts/architecture_registry_consistency.py \
     scripts/dependency_dag_checker.py scripts/claim_proof_bundle_checker.py scripts/unsafe_prohibition_checker.py \
     scripts/dependency_closure_scanner.py scripts/semantic_plane_checker.py scripts/qualification_receipt.py \
-    scripts/standards_first_adapter_checker.py \
+    scripts/standards_first_adapter_checker.py scripts/generate_robot_docs.py scripts/robot_docs_checker.py \
     scripts/generate-manifest.py scripts/release_artifacts.py \
     tests/test_manifest_audit.py tests/test_stable_id_audit.py tests/test_release_artifacts.py \
     tests/test_schema_validate.py tests/test_slo_validate.py tests/test_slo_operation_cost_consistency.py \
     tests/test_architecture_registry_consistency.py tests/test_dependency_dag_checker.py \
     tests/test_claim_proof_bundle_checker.py tests/test_unsafe_prohibition_checker.py \
     tests/test_dependency_closure_scanner.py tests/test_semantic_plane_checker.py \
-    tests/test_standards_first_adapter_checker.py
+    tests/test_standards_first_adapter_checker.py tests/test_robot_docs.py
 }
 
 docs_lane() {
@@ -265,6 +265,8 @@ docs_lane() {
   run docs-slo-validate python3 scripts/slo_validate.py
   run docs-manifest-audit python3 scripts/manifest_audit.py
   run docs-stable-id-audit python3 scripts/stable_id_audit.py
+  run docs-robot-docs python3 scripts/robot_docs_checker.py
+  run docs-robot-docs-tests env PYTHONPYCACHEPREFIX="$RECEIPT_DIR/pycache" python3 tests/test_robot_docs.py
 }
 
 rust_lane() {
