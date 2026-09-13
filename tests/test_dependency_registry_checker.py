@@ -200,8 +200,8 @@ class TestDependencyRegistryChecker(AuthorityCase):
         self.assertEqual(EXPECTED_FREEZE_DIGESTS, {BASELINE_DEPENDENCIES_GENERATION: BASELINE_DEPENDENCIES_FREEZE_DIGEST})
         self.assertTrue(result.freeze_digest.startswith("sha256:"))
         self.assertEqual(len(result.freeze_digest), 7 + 64)
-        self.assertEqual(compute_allowlist_freeze_digest(self.path(AL)), BASELINE_ALLOWLIST_FREEZE_DIGEST)
-        self.assertEqual(compute_constitution_freeze_digest(self.path(CJ)), BASELINE_CONSTITUTION_FREEZE_DIGEST)
+        self.assertEqual(compute_allowlist_freeze_digest(self.path(AL), self.tmp_root), BASELINE_ALLOWLIST_FREEZE_DIGEST)
+        self.assertEqual(compute_constitution_freeze_digest(self.path(CJ), self.tmp_root), BASELINE_CONSTITUTION_FREEZE_DIGEST)
         self.assertEqual(result.report["allowlistDigest"], BASELINE_ALLOWLIST_FREEZE_DIGEST)
 
     def test_canonical_digest_deterministic(self) -> None:
