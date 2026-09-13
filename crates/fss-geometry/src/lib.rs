@@ -11,11 +11,16 @@
 mod camera;
 mod math;
 mod mesh;
+mod linear;
+mod refine;
+mod registration;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub use camera::{PinholeIntrinsics, Ray, RigidPose};
 pub use mesh::{GeometryBasis, IndexedTriangle, MeshLimits, SurfaceHit, TriangleMesh};
+pub use registration::{Correspondence, LandmarkResidual, PoseCandidate, PoseSearch,
+    PoseSolverOptions, PoseValidation, estimate_camera_pose};
 
 /// Stable, non-disclosing failures at the numerical boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -46,6 +51,22 @@ pub enum GeometryError {
     BasisMismatch,
     /// A mesh triangle references an absent vertex or invalid feature handle.
     InvalidIndex,
+    /// The requested solver configuration is invalid.
+    InvalidSolverOptions,
+    /// A landmark association is invalid, duplicated, or non-independent by supplied identity.
+    InvalidCorrespondence,
+    /// Too few distinct landmarks were supplied.
+    InsufficientCorrespondences,
+    /// The known-intrinsics nonplanar solver cannot admit this map geometry.
+    UnsupportedGeometry,
+    /// The bounded numerical solver could not converge.
+    SolverDidNotConverge,
+    /// No sampled hypothesis met all fixed support and image-error floors.
+    NoPoseConsensus,
+    /// More distinct passing modes exist than the bounded output can preserve.
+    TooManyPoseCandidates,
+    /// An excluded landmark overlaps fitting inputs by identity, group, position, or pixel.
+    HoldoutLeak,
 }
 
 impl std::fmt::Display for GeometryError {
@@ -64,6 +85,14 @@ impl std::fmt::Display for GeometryError {
             Self::Cancelled => "geometry operation cancelled",
             Self::BasisMismatch => "geometry basis mismatch",
             Self::InvalidIndex => "invalid geometry reference",
+            Self::HoldoutLeak => "validation landmark overlaps fitting evidence",
+            Self::TooManyPoseCandidates => "pose ambiguity exceeds candidate limit",
+            Self::NoPoseConsensus => "no admissible pose consensus",
+            Self::SolverDidNotConverge => "bounded pose solver did not converge",
+            Self::UnsupportedGeometry => "planar or weak geometry requires another solver",
+            Self::InsufficientCorrespondences => "insufficient pose correspondences",
+            Self::InvalidCorrespondence => "invalid or duplicate correspondence",
+            Self::InvalidSolverOptions => "invalid pose solver options",
         };
         f.write_str(message)
     }

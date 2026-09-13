@@ -42,3 +42,52 @@ The authoring environment has no Rust compiler. Contract tests are checked in,
 but compilation, Rust test execution, formatting, and repository qualification
 remain outstanding. BTI-01/03/05 and their parent FSS beads remain open until the
 complete import, calibration, evidence, and retained qualification contracts pass.
+
+## Supplied-correspondence camera registration
+
+`estimate_camera_pose` now solves the missing **2D-to-3D** problem, not the existing
+3D-to-3D Horn alignment. It fixes the supplied map and known pinhole intrinsics,
+normalizes the 3D controls, solves small symmetric systems with bounded Jacobi
+iterations, recovers a proper rotation, and refines on SE(3) using analytic image
+Jacobians and damped robust least squares. Translation steps are normalized to
+local support extent rather than an assumed metric unit. Six-point deterministic
+RANSAC rejects incorrect matches; both inlier count/fraction and image/3D support
+floors apply. Hypotheses failing cheirality or numerical conditioning are refused.
+
+The admitted initial family is nonplanar, known-intrinsics, undistorted pinhole.
+Planar/collinear or weakly conditioned controls fail explicitly; no claim of
+P3P, planar homography pose, fisheye fitting, unknown focal-length solving, or
+automatic feature matching is made. The methods follow the problem distinction
+in https://docs.opencv.org/4.x/d5/d1f/calib3d_solvePnP.html; OpenCV is not a dependency.
+
+Search preserves up to eight distinct passing modes. Close modes use documented
+numerical clustering thresholds, not purported physical confidence intervals.
+The sampling schedule is bounded and cannot prove that all alternatives were
+exhausted. Candidate fields distinguish fit-only residuals from excluded checks.
+`validate_candidate` never refits: it refuses held landmarks overlapping ANY fit
+input, including rejected outliers, by supplied identity, physical group, exact
+world coordinate, or pixel. A failed holdout retains every residual; behind-camera
+points never count as zero error. These guards do not prove physical independence,
+correct reconstruction scale, or the absence of correlated map error.
+
+Executable example and independent end-to-end check:
+
+```sh
+cargo run --locked --offline -p fss-geometry --example register_camera
+python3 scripts/test_geometry_replay.py
+```
+
+The example registers a synthetic camera whose center is independently fixed at
+[4,-8,5], scores twelve excluded controls, and intersects an independently computed
+observation ray with the support mesh at [4,2,0]. It emits one bounded JSON record,
+not an FSS authority receipt. No real property imagery or private skill code ships.
+
+Authoring numerical checks (not Rust execution): an independent Python calculation
+of normalized DLT/Jacobi/SE(3) refinement matched OpenCV 4.13.0 on 80 seeded noisy
+synthetic problems (maximum optical-center difference about 3.1e-9 world units),
+and 24 independent Jacobi systems passed eigenvector/orthogonality checks. Separate
+calculations rejected 10/40 incorrect matches and retained both 20-point modes of
+an ambiguous 40-point set. These sanity checks concern the mathematics; they do
+not substitute for compiling or executing the checked-in Rust. The real Rust
+example, its Python consumer, contract tests, and qualification still need a Rust
+compiler. No physical accuracy, calibration covariance, or production claim follows.
