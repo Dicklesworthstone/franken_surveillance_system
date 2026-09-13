@@ -1465,6 +1465,13 @@ fn test_supporting_evidence_required_is_a_typed_transition_error() {
         EventTransitionError::from(EventDecodeError::Contract(ContractError::EvidenceRequired)),
         EventTransitionError::EvidenceRequired
     );
+    // Callers see one typed variant for a sensor-integrity risk, whichever layer refused it.
+    assert_eq!(
+        EventTransitionError::from(EventDecodeError::Contract(
+            ContractError::SensorIntegrityRisk
+        )),
+        EventTransitionError::SensorIntegrityRisk
+    );
 }
 
 #[test]

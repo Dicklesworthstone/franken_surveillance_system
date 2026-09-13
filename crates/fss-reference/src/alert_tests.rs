@@ -329,8 +329,9 @@ fn tamper_report_vetoes_alert_preparation() -> Result<(), Box<dyn Error>> {
     }
     let mut decision =
         evaluate_unknown_presence(EventId::parse("event:alert:tamper-bypass")?, observations)?;
+    let receipt = publish_reference_event(&decision, &mut objects, &mut authority)?;
     // The reviewer's planted bypass: the third finding is re-typed as a tamper report after
-    // policy, so the revision stays corroborated by two supports and is never verified.
+    // policy, so the revision stays corroborated by two supports.
     let tamper = decision
         .event
         .evidence
@@ -340,8 +341,20 @@ fn tamper_report_vetoes_alert_preparation() -> Result<(), Box<dyn Error>> {
     tamper.supports = false;
     tamper.relation = fss_core::EvidenceEdgeRelation::SensorTamper;
     assert_eq!(decision.event.state, fss_core::EventState::Corroborated);
-    let receipt = publish_reference_event(&decision, &mut objects, &mut authority)?;
 
+    // Publication verifies, so the tampered revision never becomes authority.
+    let published = publish_reference_event(&decision, &mut objects, &mut authority);
+    assert!(
+        matches!(
+            published,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::SensorIntegrityRisk
+            ))
+        ),
+        "{published:?}"
+    );
+    // The alert veto is probed directly, against the authority receipt of the untampered
+    // revision: it refuses before any receipt check.
     let mut journal = EffectJournal::new();
     let refused = prepare(&decision, &receipt, &authority, &mut journal);
     assert!(
@@ -354,6 +367,134 @@ fn tamper_report_vetoes_alert_preparation() -> Result<(), Box<dyn Error>> {
         "a tamper report must veto alert preparation"
     );
     assert_eq!(journal.obligations().count(), 0);
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+/// Builds the revision of `prior` that carries `next`'s policy outcome.
+fn successor(
+    prior: &fss_core::EventHypothesis,
+    next: &ReferencePolicyDecision,
+) -> Result<ReferencePolicyDecision, Box<dyn Error>> {
+    let event = next.event.clone();
+    Ok(ReferencePolicyDecision {
+        event: prior.supersede(fss_core::event::EventSupersedeParams {
+            state: event.state,
+            kind: event.kind,
+            interval: event.interval,
+            uncertainty_reason: event.uncertainty_reason,
+            zone_ids: event.zone_ids,
+            track_ids: event.track_ids,
+            probability: event.probability,
+            evidence: event.evidence,
+            model_receipts: event.model_receipts,
+            decision_path: event.decision_path,
+        })?,
+        action: next.action,
+    })
+}
+
+#[test]
+fn forked_revision_is_refused_at_publish_and_never_prepared() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("fork");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let event_id = EventId::parse("event:alert:fork")?;
+    // Revision 1 (A) is published from one support.
+    let a = observation(
+        "capture:alert:fork-a",
+        "sensor:alert:fork-a",
+        41,
+        "power:alert:alpha",
+        &mut objects,
+        &mut authority,
+    )?;
+    let published = evaluate_unknown_presence(event_id.clone(), vec![a])?;
+    let published_receipt = publish_reference_event(&published, &mut objects, &mut authority)?;
+    // Revision 1 (B) of the same event is built from other evidence but never published.
+    let b = observation(
+        "capture:alert:fork-b",
+        "sensor:alert:fork-b",
+        42,
+        "power:alert:beta",
+        &mut objects,
+        &mut authority,
+    )?;
+    let unpublished = evaluate_unknown_presence(event_id.clone(), vec![b])?;
+    // A corroborated policy outcome from two further independent supports.
+    let c = observation(
+        "capture:alert:fork-c",
+        "sensor:alert:fork-c",
+        43,
+        "power:alert:gamma",
+        &mut objects,
+        &mut authority,
+    )?;
+    let d = observation(
+        "capture:alert:fork-d",
+        "sensor:alert:fork-d",
+        44,
+        "power:alert:delta",
+        &mut objects,
+        &mut authority,
+    )?;
+    let corroborated = evaluate_unknown_presence(event_id, vec![c, d])?;
+    assert_eq!(corroborated.event.state, fss_core::EventState::Corroborated);
+
+    // Probe P6: B superseded to a corroborated revision 2 whose supersedes names B, not A.
+    let fork = successor(&unpublished.event, &corroborated)?;
+    assert_ne!(
+        fork.event.supersedes,
+        Some(published.event.revision_digest())
+    );
+    let anchor = authority.current().anchor.clone();
+    let refused = publish_reference_event(&fork, &mut objects, &mut authority);
+    assert!(
+        matches!(
+            refused,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::SupersessionMismatch
+            ))
+        ),
+        "{refused:?}"
+    );
+    // A second genesis of an already published event is a fork too.
+    let regenesis = publish_reference_event(&unpublished, &mut objects, &mut authority);
+    assert!(
+        matches!(
+            regenesis,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::SupersessionMismatch
+            ))
+        ),
+        "{regenesis:?}"
+    );
+    assert_eq!(authority.current().anchor, anchor);
+    // The fork never reaches effect authority: no authority receipt witnesses it.
+    let mut journal = EffectJournal::new();
+    let prepared = prepare(&fork, &published_receipt, &authority, &mut journal);
+    assert!(
+        matches!(
+            prepared,
+            Err(ReferenceError::InvalidSpec("event_receipt_mismatch"))
+        ),
+        "a forked revision must never be prepared"
+    );
+    assert_eq!(journal.obligations().count(), 0);
+
+    // Control: the legitimate successor of A is published and prepared.
+    let succession = successor(&published.event, &corroborated)?;
+    let receipt = publish_reference_event(&succession, &mut objects, &mut authority)?;
+    let plan = prepare(&succession, &receipt, &authority, &mut journal)?;
+    assert_eq!(
+        journal
+            .operation(&plan.intent.operation_id)
+            .ok_or("prepared operation receipt missing")?
+            .state,
+        EffectState::Prepared
+    );
     let _ = fs::remove_file(path);
     Ok(())
 }
