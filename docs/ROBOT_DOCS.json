@@ -2657,11 +2657,25 @@
       "schema": "fss.investigation_state.v1"
     },
     {
+      "authority": "test evidence",
+      "compatibilityRule": "baseline JPEG fixture suite manifest recording dimensions, subsampling, quality, file sha256, source pixel sha256, and float IDCT reconstruction metrics",
+      "file": "schemas/jpeg_fixture_manifest.v1.json",
+      "id": "SCHEMA-JPEG-FIXTURE-MANIFEST-001",
+      "schema": "fss.jpeg_fixture_manifest.v1"
+    },
+    {
       "authority": "supply-chain evidence",
       "compatibilityRule": "package identity/source/license fields remain auditable",
       "file": "schemas/license_inventory.v1.json",
       "id": "SCHEMA-LICENSE-INVENTORY-001",
       "schema": "fss.license_inventory.v1"
+    },
+    {
+      "authority": "test evidence",
+      "compatibilityRule": "MJPEG stream fixture suite manifest recording variant, frame count, file sha256, and per-frame source fixture bindings",
+      "file": "schemas/mjpeg_fixture_manifest.v1.json",
+      "id": "SCHEMA-MJPEG-FIXTURE-MANIFEST-001",
+      "schema": "fss.mjpeg_fixture_manifest.v1"
     },
     {
       "authority": "derived/model evidence",
