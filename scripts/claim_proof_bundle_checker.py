@@ -93,6 +93,7 @@ ERR_PROOF_TOOLCHAIN_UNBOUND = "ERR-CLAIM-PROOF-TOOLCHAIN-UNBOUND-001"
 ERR_PROOF_CHECK_RECEIPT_INVALID = "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001"
 ERR_PROOF_UNPROVEN_PLACEHOLDER = "ERR-CLAIM-PROOF-UNPROVEN-PLACEHOLDER-001"
 ERR_PROOF_UNSOUND_ESCAPE = "ERR-CLAIM-PROOF-UNSOUND-ESCAPE-001"
+ERR_PROOF_PROVER_RUN_REQUIRED = "ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001"
 ERR_CLAIM_GENERATION_UNBOUND = "ERR-CLAIM-GENERATION-UNBOUND-001"
 ERR_CLAIM_CLASS_REGISTRY_INVALID = "ERR-CLAIM-CLASS-REGISTRY-INVALID-001"
 ERR_CLAIM_CLASS_EVIDENCE_UNINSPECTED = "ERR-CLAIM-CLASS-EVIDENCE-UNINSPECTED-001"
@@ -223,6 +224,10 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_PROOF_UNPROVEN_PLACEHOLDER: {
         "trigger": "A 'proof' claim's formal artifact contains, outside comments and string literals, an unproven placeholder: a Lean identifier component sorry, sorryAx, admit, or stop (or a confusable lookalike), or TLAPS OMITTED in any case",
         "remediation": "Complete the proof; a placeholder is never a checked proof",
+    },
+    ERR_PROOF_PROVER_RUN_REQUIRED: {
+        "trigger": "A promoted 'proof' bundle passed every static pre-filter check, but a proof counts as verified only with a qualification receipt from actually running the prover in sealed qualification (for example Lean lake build plus #print axioms showing only the standard axioms, or tlapm with every obligation proved), bound to the artifact digest, prover version, and theorem name; no such receipt mechanism is defined yet",
+        "remediation": "A user decision: define the prover-run qualification receipt; until then no proof claim is verified, whatever its static evidence",
     },
     ERR_PROOF_UNSOUND_ESCAPE: {
         "trigger": "A 'proof' claim's formal artifact contains, outside comments and string literals, an escape that can make a false theorem check: a Lean axiom declaration, native_decide, or user metaprogramming (elab, macro, syntax, run_cmd, initialize, ...), or a standalone TLA+ ASSUME/ASSUMPTION/AXIOM unit",
@@ -584,7 +589,7 @@ def _read_json_document(path: Path, display: str, kind: str) -> tuple[dict[str, 
         return None, [_finding(ERR_EMPTY_INPUT, display, "file", f"{label} '{display}' is empty (0 bytes); existence is not proof")]
     try:
         data = json.loads(raw_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:  # RecursionError: nesting too deep
         return None, [_finding(ERR_UNREADABLE_INPUT, display, "file", f"{label} '{display}' contains invalid JSON: {exc}", {"error": str(exc)})]
     if not isinstance(data, dict):
         return None, [_finding(ERR_UNREADABLE_INPUT, display, "root", f"{label} '{display}' JSON root must be an object")]
@@ -616,7 +621,7 @@ def load_authoritative_claims(claims_json_path: Path) -> tuple[dict[str, list[st
 
     try:
         data = json.loads(raw_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:  # RecursionError: nesting too deep
         findings.append(_finding(ERR_UNREADABLE_INPUT, path_str, "root", f"Authoritative claims registry '{claims_json_path}' is invalid JSON: {exc}"))
         return classes, prohibited, findings
 
@@ -708,7 +713,7 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
         return unavailable(f"'{display}' is empty (0 bytes)")
     try:
         data = json.loads(raw_bytes.decode("utf-8-sig"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:  # RecursionError: nesting too deep
         return unavailable(f"'{display}' is not valid JSON: {exc}", error=str(exc))
     if not isinstance(data, dict):
         return unavailable(f"'{display}' root must be a JSON object")
@@ -1725,7 +1730,7 @@ def _open_retained_file(root: Path, rel_val: Any, declared_digest: Any) -> tuple
 def _json_object(raw: bytes) -> dict[str, Any] | None:
     try:
         doc = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError):
+    except (UnicodeDecodeError, ValueError, RecursionError):  # RecursionError: nesting too deep
         return None
     return doc if isinstance(doc, dict) else None
 
@@ -3277,6 +3282,16 @@ def verify_proof_bundle(
             _verify_slo_claim_evidence(data, root, path_str, expected_claim_id, effective_now, findings)
         elif effective_class == "proof" and _is_promoted_bundle(data, claim_level):
             _verify_proof_claim_evidence(data, root, path_str, expected_claim_id, findings, claim_generation)
+            if not any(f.severity == "error" for f in findings):
+                # Static scanning cannot establish a Lean or TLA+ proof (orchestrator decision,
+                # round-3 review): a proof is verified only by a prover-run qualification receipt.
+                findings.append(_finding(
+                    ERR_PROOF_PROVER_RUN_REQUIRED, path_str, "proof_check_receipt",
+                    f"'proof' claim '{_bound_claim_id(data, expected_claim_id)}' passed the static pre-filter, but static "
+                    "evidence never verifies a proof: a qualification receipt from actually running the prover is "
+                    "required, and that receipt mechanism is not defined yet",
+                    {"claim_class": "proof", "claim_id": _bound_claim_id(data, expected_claim_id)},
+                ))
         elif effective_class == "bounded_model" and _is_promoted_bundle(data, claim_level):
             _verify_bounded_model_claim_evidence(data, root, path_str, expected_claim_id, findings, claim_generation)
         elif effective_class not in REALIZED_CLAIM_CLASSES and _is_promoted_bundle(data, claim_level):
@@ -3378,9 +3393,12 @@ def _row_promoted(claim_level: str | None) -> bool:
     return (rank is not None and rank >= PROMOTION_RANK) or level in ("achieved", "promoted")
 
 
-def _outcome_key(root: Path, path: Path, data: dict[str, Any] | None) -> str:
-    """One outcome per bundle: its exact declared content digest when it has one (two copies at
-    different paths are one bundle), else its resolved path."""
+def _outcome_key(root: Path, path: Path, data: dict[str, Any] | None, claim_id: str | None = None) -> str:
+    """One outcome per claim when a claim row cites the bundle (several bundles or rows for one
+    claim are one claim); otherwise one per bundle: its exact declared content digest when it has
+    one (two copies at different paths are one bundle), else its resolved path."""
+    if isinstance(claim_id, str) and claim_id:
+        return f"claim:{claim_id}"
     if isinstance(data, dict):
         _, declared = _single_field(data, CONTENT_DIGEST_FIELDS)
         digest = _exact_token(declared)
@@ -3540,7 +3558,7 @@ def scan_markdown_claim_tables(
                     prohibited_promotions=prohibited_promotions,
                     now=now,
                 )
-                key = _outcome_key(root, proof_path, bundle_data)
+                key = _outcome_key(root, proof_path, bundle_data, row_id)
                 resolved = _citation_key(root, proof_path)
                 _record_outcome(local_outcomes, key, bundle_ok, _row_promoted(status_val), resolved)
                 if outcomes is not None:
@@ -3807,7 +3825,7 @@ def audit_claim_kind_registry(
 
     try:
         data = json.loads(json_bytes.decode("utf-8"))
-    except (UnicodeDecodeError, ValueError) as exc:
+    except (UnicodeDecodeError, ValueError, RecursionError) as exc:  # RecursionError: nesting too deep
         return [_finding(ERR_UNREADABLE_INPUT, json_str, "file", f"Claims registry '{json_path}' is invalid JSON: {exc}")]
 
     if not isinstance(data, dict):
