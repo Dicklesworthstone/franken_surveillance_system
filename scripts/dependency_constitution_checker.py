@@ -824,11 +824,26 @@ COMPILER_OVERRIDE_ENV = frozenset({"RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WR
                                    "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTDOC"})
 COMPILER_OVERRIDE_ENV_RE = re.compile(r"\b(?:CARGO_BUILD_)?(?:RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTDOC)\s*=")
 BOOTSTRAP_ENV_RE = re.compile(r"\bRUSTC_BOOTSTRAP\s*=")
+# Environment assignments that silently change which toolchain cargo runs (the identity check uses
+# ``rustup run <accepted>`` and never sees them) or turn on cargo [unstable] options.
+RUSTUP_TOOLCHAIN_ENV_RE = re.compile(r"\bRUSTUP_TOOLCHAIN\s*=")
+CARGO_UNSTABLE_ENV_RE = re.compile(r"\bCARGO_UNSTABLE_[A-Z0-9_]+\s*=")
+# Literal toolchain overrides in scripts. A ``$``/quoted token is a variable we cannot evaluate and is
+# left alone (the sealed qualification scripts pass ``"$tc"``); a literal toolchain other than the
+# accepted channel is refused.
+CARGO_PLUS_RE = re.compile(r"(?<![\w.])cargo\s+\+(\S+)")
+RUSTUP_RUN_RE = re.compile(r"\brustup\s+run\s+(?:--install\s+)*(\S+)")
+RUSTUP_OVERRIDE_RE = re.compile(r"\brustup\s+override\s+set\s+(\S+)")
+SHELL_SHEBANG_RE = re.compile(r"^#!\s*\S*/(?:env\s+)?(?:ba|z|da|k|a)?sh\b")
+DOC_INCLUDE_STR_RE = re.compile(r'#\s*!?\s*\[\s*doc\s*=\s*include_str!\s*\(\s*"')
+DOC_STRING_RE = re.compile(r'#\s*!?\s*\[\s*doc\s*=\s*"')
 TASK_RUNNER_NAMES = frozenset({"Makefile", "makefile", "GNUmakefile", "justfile", "Justfile", ".justfile"})
 SHELL_LIKE_SUFFIXES = frozenset({".sh", ".bash", ".zsh", ".mk", ".just"})
 TOOLCHAIN_FILE_NAMES = frozenset({"rust-toolchain", "rust-toolchain.toml"})
-# rustdoc compiles a fenced block when its info string is empty or made only of these tags.
-RUSTDOC_CODE_TAGS = frozenset({"rust", "ignore", "should_panic", "no_run", "compile_fail", "test_harness", "standalone_crate", "allow_fail"})
+# rustdoc COMPILES a fenced block (so a feature attribute in it takes effect) when its info string is
+# empty or made only of these tags. ``ignore`` and ``text`` (and any other language tag) are absent, so
+# such a block is not compiled; ``no_run``/``should_panic``/``compile_fail`` ARE compiled, so they count.
+RUSTDOC_COMPILED_TAGS = frozenset({"rust", "should_panic", "no_run", "compile_fail", "test_harness", "standalone_crate", "allow_fail"})
 DOC_LINE_RE = re.compile(r"^\s*//[/!](?!/)")
 DOC_BLOCK_RE = re.compile(r"/\*[*!](?![*/])(.*?)\*/", re.S)
 FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})\s*(.*?)\s*$")
@@ -836,6 +851,16 @@ MANIFEST_CARGO_FEATURES_RE = re.compile(r"^\s*cargo-features\s*=", re.MULTILINE)
 MANIFEST_RUSTFLAGS_Z_RE = re.compile(r"^\s*rustflags\s*=.*?(?<![\w-])-Z", re.MULTILINE)
 INNER_ATTRIBUTE_RE = re.compile(r"#\s*!\s*\[")
 ATTRIBUTE_PATH_RE = re.compile(r"\s*(?:r#)?([A-Za-z_][A-Za-z0-9_]*)(?:\s*::\s*(?:r#)?[A-Za-z_][A-Za-z0-9_]*)*\s*")
+
+
+def _has_shell_shebang(path: Path) -> bool:
+    """True when an extensionless file begins with a POSIX shell shebang (sh/bash/zsh/dash/ksh)."""
+    try:
+        with open(path, "rb") as handle:
+            first = handle.readline(256)
+    except OSError:
+        return False
+    return bool(SHELL_SHEBANG_RE.match(first.decode("utf-8", "replace")))
 
 
 def repository_files(root: Path, predicate: Any) -> list[Path]:
@@ -940,8 +965,41 @@ def _config_keys(node: Any, keys: frozenset[str], path: str = "") -> list[str]:
 
 
 def _is_rustdoc_code(info: str) -> bool:
+    """Whether rustdoc would compile a fenced block with this info string (so a feature in it applies)."""
     tokens = [token for token in re.split(r"[\s,]+", info.strip().strip("{}").lstrip(".")) if token]
-    return all(token in RUSTDOC_CODE_TAGS or token.startswith("edition") or re.fullmatch(r"E\d{4}", token) for token in tokens)
+    # An empty info string compiles (all([]) is True). ``ignore``/``text`` (and any other language tag)
+    # are not in the compiled set, so a block carrying one does not compile; ``no_run``/``should_panic``/
+    # ``compile_fail`` are in the set, so they do.
+    return all(token in RUSTDOC_COMPILED_TAGS or token.startswith("edition") or re.fullmatch(r"E\d{4}", token) for token in tokens)
+
+
+def _fenced_rust_blocks(segment: list[tuple[int, str]]) -> list[list[tuple[int, str]]]:
+    """Rust code blocks (lists of (line, code)) in one run of doc/markdown lines."""
+    blocks: list[list[tuple[int, str]]] = []
+    fence: str | None = None
+    rust = False
+    body: list[tuple[int, str]] = []
+    for number, content in segment:
+        fence_match = FENCE_RE.match(content)
+        if fence is None:
+            if fence_match:
+                fence, rust, body = fence_match.group(1), _is_rustdoc_code(fence_match.group(2)), []
+            continue
+        if fence_match and fence_match.group(1)[0] == fence[0] and len(fence_match.group(1)) >= len(fence) and not fence_match.group(2):
+            if rust:
+                blocks.append(body)
+            fence = None
+            continue
+        code = content[1:] if content.startswith(" ") else content
+        stripped = code.lstrip()
+        if stripped == "#":
+            code = ""
+        elif stripped.startswith("# "):
+            code = stripped[2:]
+        body.append((number, code))
+    if fence is not None and rust:
+        blocks.append(body)  # an unclosed fence runs to the end of the run
+    return blocks
 
 
 def doctest_blocks(text: str) -> list[list[tuple[int, str]]]:
@@ -966,30 +1024,81 @@ def doctest_blocks(text: str) -> list[list[tuple[int, str]]]:
         segments.append([(start + offset, re.sub(r"^\s*\*?", "", raw, count=1)) for offset, raw in enumerate(match.group(1).split("\n"))])
     blocks: list[list[tuple[int, str]]] = []
     for segment in segments:
-        fence: str | None = None
-        rust = False
-        body: list[tuple[int, str]] = []
-        for number, content in segment:
-            fence_match = FENCE_RE.match(content)
-            if fence is None:
-                if fence_match:
-                    fence, rust, body = fence_match.group(1), _is_rustdoc_code(fence_match.group(2)), []
-                continue
-            if fence_match and fence_match.group(1)[0] == fence[0] and len(fence_match.group(1)) >= len(fence) and not fence_match.group(2):
-                if rust:
-                    blocks.append(body)
-                fence = None
-                continue
-            code = content[1:] if content.startswith(" ") else content
-            stripped = code.lstrip()
-            if stripped == "#":
-                code = ""
-            elif stripped.startswith("# "):
-                code = stripped[2:]
-            body.append((number, code))
-        if fence is not None and rust:
-            blocks.append(body)  # an unclosed fence runs to the end of the comment
+        blocks.extend(_fenced_rust_blocks(segment))
     return blocks
+
+
+def _decode_rust_string(raw: str) -> str:
+    """Decode the common escapes of a (non-raw) Rust string literal; unknown escapes keep their char."""
+    out, index = [], 0
+    simple = {"n": "\n", "t": "\t", "r": "\r", "0": "\0", "\\": "\\", '"': '"', "'": "'"}
+    while index < len(raw):
+        char = raw[index]
+        if char == "\\" and index + 1 < len(raw):
+            out.append(simple.get(raw[index + 1], raw[index + 1]))
+            index += 2
+        else:
+            out.append(char)
+            index += 1
+    return "".join(out)
+
+
+def included_doc_payloads(text: str, masked: str, path: Path, root: Path, read_text: Any) -> list[tuple[str, list[tuple[int, str]]]]:
+    """Doc content pulled into a crate: ``#[doc = include_str!("f")]`` files and ``#[doc = "..."]`` strings.
+
+    Only attributes that survive comment/literal masking count (``masked`` keeps code and the opening
+    ``"`` of each literal). Returns (report-relative-path, [(line, content)]). Included files (kept under
+    the root) are read through the bounded reader, reporting their own line numbers; a doc string's lines
+    are reported at the attribute's line."""
+    payloads: list[tuple[str, list[tuple[int, str]]]] = []
+    for match in DOC_INCLUDE_STR_RE.finditer(text):
+        if "include_str" not in masked[match.start():match.end()]:
+            continue  # the attribute is inside a comment
+        end = text.find('"', match.end())
+        included = text[match.end():end] if end != -1 else ""
+        if not included:
+            continue
+        target = Path(os.path.normpath(path.parent / included))  # collapse '..' so the bounded reader accepts it
+        try:
+            report = target.resolve().relative_to(root.resolve()).as_posix()
+        except (ValueError, OSError):
+            continue  # an include outside the repository is out of scope here (and the reader refuses it)
+        included_text = read_text(target)
+        if included_text is None:
+            continue  # a missing or unreadable include is already a CORRUPT-FILE finding via read_text
+        payloads.append((report, list(enumerate(included_text.split("\n"), 1))))
+    for match in DOC_STRING_RE.finditer(text):
+        if "doc" not in masked[match.start():match.end()] or DOC_INCLUDE_STR_RE.match(text, match.start()):
+            continue  # a comment, or the include_str form already handled above
+        index, buf = match.end(), []
+        while index < len(text):
+            char = text[index]
+            if char == "\\" and index + 1 < len(text):
+                buf.append(text[index:index + 2])
+                index += 2
+                continue
+            if char == '"':
+                break
+            buf.append(char)
+            index += 1
+        line = text.count("\n", 0, match.start()) + 1
+        rel = path.relative_to(root).as_posix()
+        payloads.append((rel, [(line, content) for content in _decode_rust_string("".join(buf)).split("\n")]))
+    return payloads
+
+
+def _override_toolchain_problem(line: str, channel: str | None) -> str | None:
+    """A literal toolchain override in a shell line that does not name the accepted channel."""
+    for regex, kind in ((CARGO_PLUS_RE, "cargo +<toolchain>"), (RUSTUP_RUN_RE, "rustup run <toolchain>"), (RUSTUP_OVERRIDE_RE, "rustup override set <toolchain>")):
+        match = regex.search(line)
+        if match is None:
+            continue
+        toolchain = match.group(1).strip("\"'")
+        if not toolchain or toolchain[0] in "$-\"'" or "$" in toolchain:
+            continue  # a variable or flag token we cannot evaluate; the sealed scripts pass "$tc"
+        if toolchain != channel:
+            return f"{kind} selects toolchain {toolchain!r}, not the accepted channel {channel!r}"
+    return None
 
 
 def scan_unstable_features(root: Path, result: ValidationResult) -> int:
@@ -1008,6 +1117,8 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
     local_qualification.toml accepts.
     """
     import dependency_audit  # local import: dependency_audit imports this checker's authority module
+
+    channel = accepted_channel(root)
 
     def emit(rel: str, target: str, message: str) -> None:
         result.add_error(ERR_DEP_UNSTABLE_FEATURE, rel, target, f"{message}; no registered unstable-feature allowlist exists (DEPENDENCY_CONSTITUTION 2.1 requires enabled unstable features to be recorded)")
@@ -1037,6 +1148,13 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
                 if attribute_enables_feature(content):
                     line = block[code_masked.count("\n", 0, offset)][0]
                     emit(rel, f"line/{line}", f"{rel}:{line}: a rustdoc code block enables an unstable feature (doctests are compiled)")
+        for origin, payload_lines in included_doc_payloads(text, masked, path, root, read_text):
+            for block in _fenced_rust_blocks(payload_lines):
+                block_masked, _ = dependency_audit.mask_rust_source("\n".join(code for _number, code in block))
+                for offset, content in inner_attributes(block_masked):
+                    if attribute_enables_feature(content):
+                        line = block[block_masked.count("\n", 0, offset)][0]
+                        emit(origin, f"line/{line}", f"{origin}:{line}: an included/attribute doc code block enables an unstable feature (doctests are compiled)")
         if path.name == "build.rs":
             for literal in literals:
                 if re.search(r"(?<![\w-])-Z", literal.content):
@@ -1063,6 +1181,10 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
                 emit(rel, "#/env.RUSTC_BOOTSTRAP", f"{rel} [env] sets RUSTC_BOOTSTRAP, which unlocks unstable features on any compiler")
             elif key in COMPILER_OVERRIDE_ENV:
                 result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"#/env.{key}", f"{rel} [env] sets {key}, which replaces the compiler whose identity {LOCAL_QUALIFICATION_PATH} accepts")
+            elif key == "RUSTUP_TOOLCHAIN":
+                result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/env.RUSTUP_TOOLCHAIN", f"{rel} [env] sets RUSTUP_TOOLCHAIN, which changes the toolchain cargo runs away from the accepted channel")
+            elif key.startswith("CARGO_UNSTABLE_"):
+                emit(rel, f"#/env.{key}", f"{rel} [env] sets {key}; cargo honours CARGO_UNSTABLE_* from the process environment (the refused [unstable] table), so it is refused here for consistency")
     for path in repository_files(root, lambda p: p.name == "Cargo.toml"):
         text = read_text(path)
         if text is None:
@@ -1073,22 +1195,31 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
         if MANIFEST_RUSTFLAGS_Z_RE.search(text):
             emit(rel, "#/profile/rustflags", f"{rel} passes an unstable -Z flag in profile rustflags")
     def shell_like(p: Path) -> bool:
-        return p.suffix in SHELL_LIKE_SUFFIXES or p.name in TASK_RUNNER_NAMES
+        return p.suffix in SHELL_LIKE_SUFFIXES or p.name in TASK_RUNNER_NAMES or (p.suffix == "" and _has_shell_shebang(p))
 
     for path in repository_files(root, lambda p: shell_like(p) or p.name.startswith(".env") or p.name.endswith(".env")):
         text = read_text(path)
         if text is None:
             continue
         rel = path.relative_to(root).as_posix()
+        shelly = shell_like(path)
         for number, line in enumerate(text.split("\n"), 1):
             if line.lstrip().startswith("#"):
                 continue
-            if ENV_RUSTFLAGS_RE.search(line) or (shell_like(path) and TOOL_Z_FLAG_RE.search(line)):
+            if ENV_RUSTFLAGS_RE.search(line) or (shelly and TOOL_Z_FLAG_RE.search(line)):
                 emit(rel, f"line/{number}", f"{rel}:{number}: sets RUSTFLAGS-style flags or passes cargo/rustc an unstable -Z option")
             elif BOOTSTRAP_ENV_RE.search(line):
                 emit(rel, f"line/{number}", f"{rel}:{number}: sets RUSTC_BOOTSTRAP, which unlocks unstable features on any compiler")
+            elif CARGO_UNSTABLE_ENV_RE.search(line):
+                emit(rel, f"line/{number}", f"{rel}:{number}: sets a CARGO_UNSTABLE_* variable, which cargo reads as the refused [unstable] table")
+            elif RUSTUP_TOOLCHAIN_ENV_RE.search(line):
+                result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"line/{number}", f"{rel}:{number}: sets RUSTUP_TOOLCHAIN, which silently changes the toolchain cargo runs; the identity check uses `rustup run <accepted>` and never sees it")
             elif COMPILER_OVERRIDE_ENV_RE.search(line):
                 result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"line/{number}", f"{rel}:{number}: overrides the compiler rustup runs, so the accepted rustc identity of {LOCAL_QUALIFICATION_PATH} would not be what builds")
+            if shelly:
+                problem = _override_toolchain_problem(line, channel)
+                if problem is not None:
+                    result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"line/{number}", f"{rel}:{number}: {problem}")
     for path in repository_files(root, lambda p: p.name in TOOLCHAIN_FILE_NAMES and p.parent != root):
         rel = path.relative_to(root).as_posix()
         result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#", f"{rel} overrides the toolchain for its subtree; only the root {RUST_TOOLCHAIN_PATH} pins the accepted channel")
