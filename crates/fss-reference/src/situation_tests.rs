@@ -1166,11 +1166,11 @@ fn neutral_only_witnessed_revision_is_refused_at_compile() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// Compiles a two-observation decision and returns its physical-presence cell.
-fn compiled_physical_cell(
+/// Compiles a decision from PersonLike on `power:alpha` plus `second` on `power:beta`.
+fn compiled_situation(
     name: &str,
     second: MockSemanticLabel,
-) -> Result<(ReferencePolicyDecision, KnowledgeCell), Box<dyn Error>> {
+) -> Result<(ReferencePolicyDecision, crate::ReferenceSituation), Box<dyn Error>> {
     let mut harness = SituationHarness::new(name)?;
     let (decision, event_receipt) = harness.publish_decision(
         name,
@@ -1187,23 +1187,26 @@ fn compiled_physical_cell(
         )?,
         &harness.authority,
     )?;
-    let physical = situation
+    harness.cleanup();
+    Ok((decision, situation))
+}
+
+fn cell_ending<'a>(
+    situation: &'a crate::ReferenceSituation,
+    suffix: &str,
+) -> Option<&'a KnowledgeCell> {
+    situation
         .capsule
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":unknown-presence"))
-        .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?
-        .clone();
-    harness.cleanup();
-    Ok((decision, physical))
+        .find(|cell| cell.claim_id.ends_with(suffix))
 }
 
 #[test]
 fn unknown_finding_keeps_the_physical_cell_indeterminate_with_its_basis()
 -> Result<(), Box<dyn Error>> {
-    let (decision, physical) =
-        compiled_physical_cell("person-unknown", MockSemanticLabel::Unknown)?;
+    let (decision, situation) = compiled_situation("person-unknown", MockSemanticLabel::Unknown)?;
     assert_eq!(decision.event.state, EventState::Indeterminate);
     // An unknown finding is an abstention on presence: never counted as a contradiction.
     assert!(
@@ -1213,6 +1216,8 @@ fn unknown_finding_keeps_the_physical_cell_indeterminate_with_its_basis()
             .iter()
             .any(|edge| edge.relation == EvidenceEdgeRelation::Contradicts)
     );
+    let physical = cell_ending(&situation, ":unknown-presence")
+        .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
     assert_eq!(physical.knowledge_state, KnowledgeState::Indeterminate);
     assert!(physical.state_basis.is_some());
     assert_eq!(
@@ -1224,30 +1229,76 @@ fn unknown_finding_keeps_the_physical_cell_indeterminate_with_its_basis()
     );
     assert_eq!(physical.evidence.len(), 1);
     assert!(physical.contradictions.is_empty());
+    // Nor is it a tamper report: no integrity claim and no tamper world.
+    assert!(cell_ending(&situation, ":sensor-integrity").is_none());
+    assert!(
+        !situation
+            .capsule
+            .frame
+            .world_envelope
+            .world_ids()
+            .iter()
+            .any(|world| world.ends_with(":sensor-tamper"))
+    );
     Ok(())
 }
 
 #[test]
-fn tamper_finding_is_a_neutral_risk_signal_not_a_contradiction() -> Result<(), Box<dyn Error>> {
-    let (decision, physical) =
-        compiled_physical_cell("person-tamper", MockSemanticLabel::TamperLike)?;
-    // Tampering can hide a person as easily as fake one, so it holds the event unresolved
-    // without counting against presence.
+fn tamper_finding_is_a_typed_integrity_risk_not_a_presence_contradiction()
+-> Result<(), Box<dyn Error>> {
+    let (decision, situation) = compiled_situation("person-tamper", MockSemanticLabel::TamperLike)?;
     assert_eq!(decision.event.state, EventState::Indeterminate);
-    let tamper_edges: Vec<_> = decision
+    // The tamper finding is typed on the event edge and never counted against presence.
+    let tamper_roots: Vec<_> = decision
         .event
         .evidence
         .iter()
-        .filter(|edge| !edge.counts_as_support())
+        .filter(|edge| edge.relation == EvidenceEdgeRelation::SensorTamper && !edge.supports)
+        .map(|edge| edge.digest)
         .collect();
-    assert_eq!(tamper_edges.len(), 1);
-    for edge in tamper_edges {
-        assert_eq!(edge.relation, EvidenceEdgeRelation::DerivedFrom);
-        assert!(!edge.supports);
-        assert!(!edge.counts_as_contradiction());
-    }
+    assert_eq!(tamper_roots.len(), 1);
+    assert!(
+        !decision
+            .event
+            .evidence
+            .iter()
+            .any(|edge| edge.counts_as_contradiction())
+    );
+    let physical = cell_ending(&situation, ":unknown-presence")
+        .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
     assert_eq!(physical.knowledge_state, KnowledgeState::Indeterminate);
     assert!(physical.state_basis.is_some());
     assert!(physical.contradictions.is_empty());
+    // Typed risk: a sensor-integrity claim contradicted by exactly the tamper roots.
+    let integrity = cell_ending(&situation, ":sensor-integrity")
+        .ok_or(ReferenceError::InvalidSpec("missing_integrity_cell"))?;
+    assert_eq!(integrity.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(
+        integrity.hypothesis,
+        Some(HypothesisDisposition::Disfavored)
+    );
+    assert!(integrity.evidence.is_empty());
+    assert_eq!(integrity.contradictions, tamper_roots);
+    // A protected adversarial world names the tampered roots, and at_risk states the risk.
+    let world = situation
+        .capsule
+        .frame
+        .world_envelope
+        .adversarial_residuals
+        .iter()
+        .find(|world| world.world_id.ends_with(":sensor-tamper"))
+        .ok_or(ReferenceError::InvalidSpec("missing_tamper_world"))?;
+    assert!(world.protected);
+    assert!(world.consequence_severity >= 4);
+    assert_eq!(world.evidence, tamper_roots);
+    assert!(world.claim_ids.contains(&integrity.claim_id));
+    assert!(
+        situation
+            .capsule
+            .frame
+            .at_risk
+            .iter()
+            .any(|risk| risk.starts_with("Sensor tamper is reported"))
+    );
     Ok(())
 }
