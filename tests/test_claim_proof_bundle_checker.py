@@ -800,6 +800,7 @@ class TestCliEndToEndFailures(unittest.TestCase):
             self.assertIn(ERR_UNREADABLE_INPUT, result.stdout)
         finally:
             Path(f_path).unlink(missing_ok=True)
+            shutil.rmtree(root_dir, ignore_errors=True)  # round 9: the migrated temp root is removed too
 
 
 # ---------------------------------------------------------------------------
@@ -6507,6 +6508,219 @@ class TestRound8ByteCap(unittest.TestCase):
             with open(root / SLO_BUNDLE_REL, "r+b") as handle:
                 handle.truncate(cpb.MAX_INPUT_BYTES + 1)  # sparse: the tail is zeros
             self.assertEqual(run_json_cli(root)[:2], (1, [ERR_UNREADABLE_INPUT]))
+
+
+# ---------------------------------------------------------------------------
+# Round-9 review, 30.87.2: N1 fail-closed receipt schema interpretation, N2 no stdout, N3 index
+# re-hash, N4 containment on the open descriptor
+# ---------------------------------------------------------------------------
+
+RECEIPT_SCHEMA_SOURCE = ROOT / "schemas/release_qualification_receipt.v1.json"
+
+
+def inspect_with_schema(mutate_schema, receipt: dict) -> list[str]:
+    """Error ids of inspecting receipt against a modified copy of the registered receipt schema."""
+    schema = json.loads(RECEIPT_SCHEMA_SOURCE.read_text(encoding="utf-8"))
+    mutate_schema(schema)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        schema_path = root / "schema.json"
+        schema_path.write_text(json.dumps(schema), encoding="utf-8")
+        receipt_path = plant_receipt(root, receipt)
+        with mock.patch.object(cpb, "RECEIPT_SCHEMA_PATH", schema_path):
+            findings, _ = cpb.inspect_qualification_receipt(receipt_path, root)
+        return error_code_set(findings)
+
+
+def schema_edit(*steps: tuple[tuple, object]):
+    """A schema mutation setting each (path, value): path is a tuple of keys into the schema."""
+    def mutate(schema: dict) -> None:
+        for path, value in steps:
+            target = schema
+            for key in path[:-1]:
+                target = target[key]
+            target[path[-1]] = value
+    return mutate
+
+
+TOOLCHAIN = ("properties", "toolchain")
+COMMAND_STATUS = ("properties", "commands", "items", "properties", "status")
+
+
+class TestRound9ReceiptSchemaInterpretation(unittest.TestCase):
+    """N1: every schema form the validator does not fully implement is a fail-closed violation that
+    no filter discards; the forms it does implement are applied with JSON Schema semantics."""
+
+    def test_control_unmodified_schema(self) -> None:
+        self.assertEqual(inspect_with_schema(lambda s: None, make_receipt()), [])
+
+    def test_a_unknown_keywords_are_never_filtered(self) -> None:
+        for label, mutate in (
+            ("format under properties.status", schema_edit((("properties", "status", "format"), "x"))),
+            ("x-new under commands", schema_edit((("properties", "commands", "x-new"), 1))),
+            ("format under the command status", schema_edit((COMMAND_STATUS + ("format",), "x"))),
+            ("unknown keyword at the root", schema_edit((("if",), {"type": "object"}))),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(inspect_with_schema(mutate, make_receipt()), [ERR_UNREADABLE_INPUT])
+
+    def test_b_type_lists_are_implemented_and_malformed_types_refused(self) -> None:
+        string_or_null = schema_edit((TOOLCHAIN + ("type",), ["string", "null"]))
+        self.assertEqual(inspect_with_schema(string_or_null, make_receipt()), [])
+        self.assertEqual(inspect_with_schema(string_or_null, {**make_receipt(), "toolchain": None}), [])
+        self.assertEqual(inspect_with_schema(string_or_null, {**make_receipt(), "toolchain": 5}), [ERR_UNREADABLE_INPUT])
+        for bad in (["string", "bogus"], 7, [], ["string", "string"], "String"):
+            with self.subTest(type=bad):
+                self.assertEqual(inspect_with_schema(schema_edit((TOOLCHAIN + ("type",), bad)), make_receipt()), [ERR_UNREADABLE_INPUT])
+
+    def test_c_patterns_have_json_schema_semantics_or_are_refused(self) -> None:
+        def with_pattern(pattern: str, toolchain: str) -> list[str]:
+            mutate = schema_edit((TOOLCHAIN + ("pattern",), pattern))
+            return inspect_with_schema(mutate, {**make_receipt(), "toolchain": toolchain})
+        self.assertEqual(with_pattern("^nightly\\$", "nightly$"), [])  # an escaped $ is a literal $
+        self.assertEqual(with_pattern("^nightly\\$", "nightly-2026-09-01"), [ERR_UNREADABLE_INPUT])
+        self.assertEqual(with_pattern("night", "a nightly build"), [])  # search, not full match
+        self.assertEqual(with_pattern("^night$", "night\n"), [ERR_UNREADABLE_INPUT])  # ECMA-262 $
+        self.assertEqual(with_pattern("^[a-z]{3,}$", "nightly"), [])
+        for pattern in ("(?i)^x", "\\d+", "[", "^a.b$", "[^a]+", "a{,3}", "a$b", "x^", "\\bx", "(?=x)"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(with_pattern(pattern, "nightly"), [ERR_UNREADABLE_INPUT])
+
+    def test_d_additional_properties_schemas_anyof_siblings_and_tuple_items(self) -> None:
+        additional = schema_edit((("properties", "startedAt", "additionalProperties"), {"type": "string"}))
+        started = {"earliestNs": 1, "latestNs": 1, "clockBasis": "host-realtime"}
+        self.assertEqual(inspect_with_schema(additional, {**make_receipt(), "startedAt": {**started, "note": "x"}}), [])
+        self.assertEqual(inspect_with_schema(additional, {**make_receipt(), "startedAt": {**started, "note": 5}}), [ERR_UNREADABLE_INPUT])
+        siblings = schema_edit((TOOLCHAIN, {"anyOf": [{"type": "string"}, {"type": "null"}], "minLength": 50}))
+        self.assertEqual(inspect_with_schema(siblings, make_receipt()), [ERR_UNREADABLE_INPUT])
+        self.assertEqual(inspect_with_schema(siblings, {**make_receipt(), "toolchain": "t" * 50}), [])
+        for label, items in (("tuple form", [{"type": "object"}]), ("boolean", True)):
+            with self.subTest(items=label):
+                self.assertEqual(inspect_with_schema(schema_edit((("properties", "commands", "items"), items)), make_receipt()), [ERR_UNREADABLE_INPUT])
+
+    def test_integral_floats_are_integers(self) -> None:
+        started = {"earliestNs": 1.0, "latestNs": 1, "clockBasis": "host-realtime"}
+        self.assertEqual(inspect_with_schema(lambda s: None, {**make_receipt(), "startedAt": started}), [])
+
+
+class TestRound9ClosedStdout(unittest.TestCase):
+    """N2: with fd 1 closed before start, no report can be written: exit 1, even for a passing audit."""
+
+    def run_with_stdout_closed(self, *args: str) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, "-B", str(CHECKER_SCRIPT), *args], stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, timeout=120, preexec_fn=lambda: os.close(1))
+
+    def test_passing_audit_with_stdout_closed_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            control = subprocess.run([sys.executable, "-B", str(CHECKER_SCRIPT), "--root", str(root), "--as-of", "2026-09-02T00:00:00Z"],
+                                     stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=120)
+            self.assertEqual(control.returncode, 0, control.stderr[-300:])
+            result = self.run_with_stdout_closed("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+            self.assertNotIn(b"Traceback", result.stderr)
+            self.assertEqual(result.returncode, 1)
+
+    def test_help_with_stdout_closed_fails_closed(self) -> None:
+        result = self.run_with_stdout_closed("--help")
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertEqual(result.returncode, 1)
+
+
+class TestRound9IndexRehash(unittest.TestCase):
+    """N3: the stable-ID index must read the bytes the checker pre-parsed; a change, addition, or
+    removal while it is built, or a file deleted before it is read, leaves it unavailable."""
+
+    def load_with(self, during_build=None, before_read=None):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            extra = root / "architecture/extra.json"
+            extra.write_bytes(b'{"items":[{"id":"FSS-990","status":"tombstoned"}]}')
+            real_index = cpb.stable_id_audit._load_repository_index
+            real_read = cpb._read_regular_file
+
+            def index(root_arg: Path):
+                if during_build is not None:
+                    during_build(root)
+                return real_index(root_arg)
+
+            def read(path: Path) -> bytes:
+                if before_read is not None and path == extra:
+                    before_read(extra)
+                return real_read(path)
+
+            with mock.patch.object(cpb.stable_id_audit, "_load_repository_index", index), mock.patch.object(cpb, "_read_regular_file", read):
+                tombstones, findings = cpb.load_tombstone_index(root)
+            return tombstones, sorted(codes(findings)), [f.message for f in findings]
+
+    def test_control_tombstone_is_indexed(self) -> None:
+        tombstones, found, _ = self.load_with()
+        self.assertEqual(found, [])
+        self.assertIn(cpb.normalize_id("FSS-990"), tombstones)
+
+    def test_a_file_changed_while_the_index_is_built(self) -> None:
+        def flip(root: Path) -> None:  # the round-8 exploit, swapped in after the pre-parse
+            (root / "architecture/extra.json").write_bytes(b'{"items":[{"id":"FSS-990","status":"tombstoned","status":"active"}]}')
+        tombstones, found, messages = self.load_with(during_build=flip)
+        self.assertEqual((tombstones, found), (set(), [TOMBSTONE_UNAVAILABLE]))
+        self.assertIn("changed while the stable-ID index was built", messages[0])
+
+    def test_a_file_added_while_the_index_is_built(self) -> None:
+        def add(root: Path) -> None:
+            (root / "architecture/late.json").write_bytes(b'{"items":[]}')
+        tombstones, found, _ = self.load_with(during_build=add)
+        self.assertEqual((tombstones, found), (set(), [TOMBSTONE_UNAVAILABLE]))
+
+    def test_a_file_deleted_between_the_glob_and_its_read(self) -> None:
+        tombstones, found, _ = self.load_with(before_read=lambda path: path.unlink())
+        self.assertEqual((tombstones, found), (set(), [TOMBSTONE_UNAVAILABLE]))
+
+
+class TestRound9DescriptorContainment(unittest.TestCase):
+    """N4: a path checked for containment and then swapped for a symlink to an outside file before it
+    is opened is refused: containment is checked on the open descriptor, which is then read."""
+
+    def swap_after_path_check(self, target_in_root: Path, outside_file: Path):
+        real_contained = cpb._is_contained
+        state = {"swapped": False}
+
+        def contained(path: Path, root: Path) -> bool:
+            verdict = real_contained(path, root)
+            if not state["swapped"] and Path(path) == target_in_root:
+                state["swapped"] = True
+                target_in_root.unlink()
+                os.symlink(outside_file, target_in_root)
+            return verdict
+        return mock.patch.object(cpb, "_is_contained", contained)
+
+    def test_bundle_swapped_for_an_outside_symlink_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outside_receipt = plant_receipt(Path(outside), make_receipt(), "qualification-receipt.json")
+            bundle = plant_receipt(root, make_receipt(), "qualification-artifacts/x.bundle.json")
+            with self.swap_after_path_check(bundle, outside_receipt):
+                ok, findings, _ = verify_proof_bundle(bundle_path=bundle, root=root, known_classes=_known_classes(), now=FIXED_NOW)
+            self.assertEqual((ok, error_code_set(findings)), (False, [BUNDLE_NOT_FOUND]))
+
+    def test_retained_receipt_swapped_for_an_outside_symlink_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            outside_receipt = plant_receipt(Path(outside), make_receipt(), "qualification-receipt.json")
+            receipt = plant_receipt(root, make_receipt())
+            with self.swap_after_path_check(receipt, outside_receipt):
+                findings, status = cpb.inspect_qualification_receipt(receipt, root)
+            self.assertEqual((error_code_set(findings), status), ([BUNDLE_NOT_FOUND], None))
+
+    def test_read_contained_file_checks_the_descriptor(self) -> None:
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (Path(outside) / "x").write_bytes(b"outside")
+            (root / "inside").write_bytes(b"inside")
+            os.symlink(root / "inside", root / "link-in")
+            os.symlink(Path(outside) / "x", root / "link-out")
+            self.assertEqual(cpb._read_contained_file(root / "inside", root), b"inside")
+            self.assertEqual(cpb._read_contained_file(root / "link-in", root), b"inside")  # an in-root symlink stays valid
+            with self.assertRaises(cpb._OutsideRoot):
+                cpb._read_contained_file(root / "link-out", root)
 
 
 if __name__ == "__main__":
