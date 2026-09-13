@@ -27,6 +27,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 import os
 import shutil
@@ -66,6 +67,20 @@ from claim_proof_bundle_checker import (
     EXPECTED_CLAIMS_FREEZE_DIGESTS,
 )
 import claim_proof_bundle_checker as cpb
+
+
+def _live_operation_cost_generation() -> str:
+    """The current generation of the repository's operation-cost registry, read exactly as the
+    checker reads it (load_operation_cost_registry). Fixtures follow the live registry instead of a
+    literal, so a registry generation bump on main does not turn every fixture into a stale
+    measurement; a registry that cannot be read fails the suite at import, never a default."""
+    registry, findings = cpb.load_operation_cost_registry(ROOT)
+    if registry is None or findings:
+        raise RuntimeError(f"the repository operation-cost registry cannot be read: {findings}")
+    return registry.generation
+
+
+LIVE_OPERATION_COST_GENERATION = _live_operation_cost_generation()
 
 ERR_CLAIM_BINDING_MISMATCH = cpb.ERR_CLAIM_BINDING_MISMATCH
 ERR_BOUND_DERIVATION_UNBOUND = cpb.ERR_BOUND_DERIVATION_UNBOUND
@@ -840,7 +855,7 @@ DEFAULT_MEASUREMENT_DATA = {
     "slo_id": "SLO-DETECT-001",
     "operation_id": "COST-DETECT-001",
     "generation": "gen-2026-09-01",
-    "operation_cost_generation": "gen:fss1:operation-cost-v1",
+    "operation_cost_generation": LIVE_OPERATION_COST_GENERATION,
     "status": "passed",
     "measurement_window": {
         "started_at": "2026-09-01T00:00:00Z",
@@ -2654,7 +2669,7 @@ class TestSloEvidenceInspectionFailures(unittest.TestCase):
 SLO_CLAIM_ID = "SLO-DETECT-001"  # registries/SLOS.md: "p95 first event hypothesis <= 1.5 s ..."
 SLO_OPERATION_ID = "COST-DETECT-001"  # operation_cost_registry.toml: slo_ids includes SLO-DETECT-001
 SLO_GENERATION = "gen-2026-09-01"
-SLO_COST_GENERATION = "gen:fss1:operation-cost-v1"
+SLO_COST_GENERATION = LIVE_OPERATION_COST_GENERATION  # the live registry's current generation, never a literal
 SLO_NOW = FIXED_NOW
 SLO_MEASUREMENT_REL = "qualification-artifacts/slo/detect.measurement.json"
 SLO_ENVIRONMENT_REL = "qualification-artifacts/slo/reference.environment.json"
@@ -6858,6 +6873,28 @@ class TestRound10(unittest.TestCase):
             self.assertEqual(findings, [])
             self.assertIn(cpb.normalize_id("FSS-990"), tombstones)
             self.assertNotEqual(seen_roots[0].resolve(), root.resolve())
+
+
+class TestFixturesFollowTheLiveCostGeneration(unittest.TestCase):
+    """The slo fixtures bind the live operation-cost registry's current generation; the explicit
+    stale-generation negative test stays pinned to a literal older generation."""
+
+    STALE_LITERAL = "gen:fss1:operation-cost-v0"  # test_item2_generation_required_and_bound
+
+    def test_fixture_generation_is_the_live_registry_generation(self) -> None:
+        text = (ROOT / "architecture/operation_cost_registry.toml").read_text(encoding="utf-8")
+        declared = tomllib.loads(text)["generation"]
+        self.assertEqual(SLO_COST_GENERATION, declared)
+        self.assertEqual(DEFAULT_MEASUREMENT_DATA["operation_cost_generation"], declared)
+
+    def test_the_stale_negative_test_still_names_an_old_generation(self) -> None:
+        self.assertNotEqual(self.STALE_LITERAL, SLO_COST_GENERATION)
+        self.assertIn(f'"operation_cost_generation": "{self.STALE_LITERAL}"', Path(__file__).read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_slo_bundle(root, build_slo_fixture(root, measurement={"operation_cost_generation": self.STALE_LITERAL}))
+            self.assertEqual((ok, error_code_set(findings)), (False, [ERR_STALE_GENERATION]))
+
 
 
 if __name__ == "__main__":
