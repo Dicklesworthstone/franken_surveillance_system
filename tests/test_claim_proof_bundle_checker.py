@@ -6723,6 +6723,143 @@ class TestRound9DescriptorContainment(unittest.TestCase):
                 cpb._read_contained_file(root / "link-out", root)
 
 
+# ---------------------------------------------------------------------------
+# Round-10 review, 30.87.2: W1 load-bearing test gaps, W2 schema depth, W4 possessive quantifiers,
+# W3 the stable-ID index built from a private snapshot of the parsed bytes
+# ---------------------------------------------------------------------------
+
+
+def inspect_with_schema_text(schema_text: str, receipt: dict) -> list[str]:
+    """Error ids of inspecting receipt against a schema given as raw JSON text."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        schema_path = root / "schema.json"
+        schema_path.write_text(schema_text, encoding="utf-8")
+        receipt_path = plant_receipt(root, receipt)
+        with mock.patch.object(cpb, "RECEIPT_SCHEMA_PATH", schema_path):
+            findings, _ = cpb.inspect_qualification_receipt(receipt_path, root)
+        return error_code_set(findings)
+
+
+class TestRound10(unittest.TestCase):
+    """Round-10 findings as planted tests with exact finding sets."""
+
+    def with_toolchain_schema(self, sub_schema: object, toolchain: object) -> list[str]:
+        return inspect_with_schema(schema_edit((TOOLCHAIN, sub_schema)), {**make_receipt(), "toolchain": toolchain})
+
+    # W1a: JSON Schema equality never equates a boolean with a number ----------------------------
+
+    def test_w1a_booleans_never_equal_numbers_in_const_or_enum(self) -> None:
+        refused = [ERR_UNREADABLE_INPUT]
+        for label, sub_schema, value, expected in (
+            ("const true, value 1", {"const": True}, 1, refused),
+            ("const 1, value true", {"const": 1}, True, refused),
+            ("const false, value 0", {"const": False}, 0, refused),
+            ("const 0, value false", {"const": 0}, False, refused),
+            ("enum [true], value 1", {"enum": [True]}, 1, refused),
+            ("enum [0], value false", {"enum": [0]}, False, refused),
+            ("nested array const", {"const": [True]}, [1], refused),
+            ("nested object const", {"const": {"a": False}}, {"a": 0}, refused),
+            ("nested enum", {"enum": [[0, {"b": True}]]}, [False, {"b": 1}], refused),
+            ("control: true is true", {"const": True}, True, []),
+            ("control: 1 equals 1.0", {"const": 1}, 1.0, []),
+            ("control: nested numbers by value", {"const": [1, {"a": 2}]}, [1.0, {"a": 2.0}], []),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(self.with_toolchain_schema(sub_schema, value), expected)
+
+    # W1b: the fallback path is confirmed by device and inode -------------------------------------
+
+    def test_w1b_fallback_path_refuses_an_outside_descriptor(self) -> None:
+        """No /proc: the realpath of the path is the candidate. The path was a symlink to an outside
+        file when opened and is an in-root file by the time its realpath is taken: without the
+        device/inode confirmation the descriptor's outside bytes would be read as contained."""
+        real_readlink = os.readlink
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (Path(outside) / "x").write_bytes(b"outside")
+            link = root / "x.json"
+            os.symlink(Path(outside) / "x", link)
+
+            def readlink_without_proc(path, *args, **kwargs):
+                if str(path).startswith("/proc/self/fd/"):
+                    link.unlink()
+                    link.write_bytes(b"inside")  # swapped after the open, before the fallback realpath
+                    raise OSError("no /proc on this platform")
+                return real_readlink(path, *args, **kwargs)
+
+            with mock.patch.object(cpb.os, "readlink", readlink_without_proc):
+                with self.assertRaises(cpb._OutsideRoot):
+                    cpb._read_contained_file(link, root)
+
+    def test_w1b_fallback_path_reads_an_unswapped_file(self) -> None:
+        real_readlink = os.readlink
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "x.json").write_bytes(b"inside")
+
+            def readlink_without_proc(path, *args, **kwargs):
+                if str(path).startswith("/proc/self/fd/"):
+                    raise OSError("no /proc on this platform")
+                return real_readlink(path, *args, **kwargs)
+
+            with mock.patch.object(cpb.os, "readlink", readlink_without_proc):
+                self.assertEqual(cpb._read_contained_file(root / "x.json", root), b"inside")
+
+    # W2: a schema deeper than MAX_JSON_DEPTH is refused, never a RecursionError ---------------------
+
+    def test_w2_deeply_nested_schema_is_refused(self) -> None:
+        schema = json.loads(RECEIPT_SCHEMA_SOURCE.read_text(encoding="utf-8"))
+        schema["properties"]["toolchain"] = "__DEEP__"
+        deep = '{"anyOf": [' * 3000 + '{"type": "string"}' + "]}" * 3000
+        text = json.dumps(schema).replace('"__DEEP__"', deep)
+        self.assertEqual(inspect_with_schema_text(text, make_receipt()), [ERR_UNREADABLE_INPUT])
+
+    def test_w2_depth_is_checked_before_the_walk(self) -> None:
+        node: object = {"type": "string"}
+        for _ in range(3000):
+            node = {"anyOf": [node]}
+        problems = cpb._schema_interpretation_problems(node)
+        self.assertEqual(len(problems), 1)
+        self.assertIn("nests deeper than", problems[0])
+
+    # W4: possessive quantifiers are refused ---------------------------------------------------
+
+    def test_w4_possessive_quantifiers_are_refused(self) -> None:
+        for pattern in ("^a*+$", "^a{2}+$", "^a++$", "^a?+$", "^a+?+$", "^a{2,}+$"):
+            with self.subTest(pattern=pattern):
+                self.assertEqual(self.with_toolchain_schema({"pattern": pattern}, "aa"), [ERR_UNREADABLE_INPUT])
+                self.assertIsNone(cpb._translate_pattern(pattern))
+        for pattern, value in (("^a+$", "aaa"), ("^a*?$", "aaa"), ("^a{2}$", "aa"), ("^[+]+$", "++"), ("^a\\++$", "a++")):
+            with self.subTest(control=pattern):
+                self.assertEqual(self.with_toolchain_schema({"pattern": pattern}, value), [])
+
+    # W3: the index is built from exactly the bytes that were parsed ------------------------------
+
+    def test_w3_index_is_built_from_the_parsed_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            extra = root / "architecture/extra.json"
+            original = b'{"items":[{"id":"FSS-990","status":"tombstoned"}]}'
+            extra.write_bytes(original)
+            real_index = cpb.stable_id_audit._load_repository_index
+            seen_roots: list[Path] = []
+
+            def index(root_arg: Path):
+                seen_roots.append(Path(root_arg))
+                extra.write_bytes(b'{"items":[{"id":"FSS-990","status":"tombstoned","status":"active"}]}')  # swapped in on disk...
+                try:
+                    return real_index(root_arg)
+                finally:
+                    extra.write_bytes(original)  # ...and back before any re-check could see it
+
+            with mock.patch.object(cpb.stable_id_audit, "_load_repository_index", index):
+                tombstones, findings = cpb.load_tombstone_index(root)
+            self.assertEqual(findings, [])
+            self.assertIn(cpb.normalize_id("FSS-990"), tombstones)
+            self.assertNotEqual(seen_roots[0].resolve(), root.resolve())
+
+
 if __name__ == "__main__":
     unittest.main()
 
