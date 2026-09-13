@@ -410,21 +410,6 @@ impl ProvenanceClass {
     pub const fn is_vendor_claimed(self) -> bool {
         matches!(self, Self::VendorClaimed)
     }
-
-    /// Returns the relative evidentiary strength of this provenance class.
-    ///
-    /// Higher strength classes require more direct physical or deterministic proof.
-    /// Per Constitution §8.3, the same evidence digest cannot be reused under a
-    /// stronger provenance class without fresh live observation.
-    #[must_use]
-    pub const fn strength(self) -> u8 {
-        match self {
-            Self::Predicted | Self::Remembered | Self::VendorClaimed => 1,
-            Self::Policy | Self::OperatorAsserted => 2,
-            Self::Derived => 3,
-            Self::Observed => 4,
-        }
-    }
 }
 
 impl CanonicalEncode for ProvenanceClass {
@@ -436,7 +421,7 @@ impl CanonicalEncode for ProvenanceClass {
 impl CanonicalDecode for ProvenanceClass {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let text = decoder.text()?;
-        Self::from_name(text)
+        Self::from_name(text).or_else(|_| Self::from_id(text))
     }
 }
 
@@ -2745,10 +2730,6 @@ pub enum ContractError {
     HypothesisMissingFalsifier,
     /// An investigation hypothesis cannot claim the `known` knowledge state (AGT-LAYER-006, INV-104).
     HypothesisKnownForbidden,
-    /// Evidence from a weaker provenance class was reused under a stronger provenance class without fresh live observation (AGENTS.md, Constitution §8.3).
-    EvidenceLaunderingDetected,
-    /// A prediction cannot claim the `known` knowledge state (PROV-003, AGENTS.md, Constitution §8.2).
-    PredictedKnownForbidden,
 }
 
 impl ContractError {
@@ -2797,8 +2778,6 @@ impl ContractError {
             Self::CompetingHypothesesRequired => "competing_hypotheses_required",
             Self::HypothesisMissingFalsifier => "hypothesis_missing_falsifier",
             Self::HypothesisKnownForbidden => "hypothesis_known_forbidden",
-            Self::EvidenceLaunderingDetected => "evidence_laundering_detected",
-            Self::PredictedKnownForbidden => "predicted_known_forbidden",
         }
     }
 }
