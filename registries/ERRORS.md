@@ -186,7 +186,7 @@ operation states rather than generic errors.
 | `ERR-NEG-ENTRY-TOMBSTONED-001` | attempted operation on or with a permanently tombstoned negative entry | do not operate on tombstoned negative-evidence entries |
 | `ERR-NEG-REVIVAL-UNMET-001` | candidate retry or promotion attempted without meeting revival condition | satisfy documented revival condition before promoting candidate |
 | `ERR-NEG-VALIDATION-FAILED-001` | negative evidence entry semantic validation failed | provide valid required fields conforming to negative evidence contract |
-| `ERR-DEP-REGISTRY-DRIFT-001` | dependency registry or constitution drift between machine registry and markdown mirror | synchronize architecture/dependencies.json, architecture/dependency_constitution.json, and documentation |
+| `ERR-DEP-REGISTRY-DRIFT-001` | dependency registry row drift between machine registry and markdown mirror | synchronize architecture/dependencies.json and registries/DEPENDENCIES.md |
 | `ERR-DEP-STABLE-ID-REUSED-001` | dependency class stable identifier was reused, duplicated, renumbered, or tombstoned | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-DEP-MISSING-FIELD-001` | dependency class row or root metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in dependency class row |
 | `ERR-DEP-CORRUPT-FILE-001` | dependency registry or markdown documentation file is missing or corrupt | repair or restore dependency registry file |
@@ -195,6 +195,7 @@ operation states rather than generic errors.
 | `ERR-DEP-GENERATION-MISMATCH-001` | dependency registry generation diverged from baseline generation | assign expected generation to dependency registry |
 | `ERR-DEP-CONST-INVARIANT-001` | dependency constitution semantic invariant violated | enforce constitutional admission rule and production closed-universe invariants |
 | `ERR-DEP-CONST-METADATA-VIOLATION-001` | Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0 | ensure all workspace crates compile under rust-2024 without foreign links |
+| `ERR-DEP-CONST-DRIFT-001` | dependency constitution drift between machine registry and markdown documentation | synchronize architecture/dependency_constitution.json and docs/DEPENDENCY_CONSTITUTION.md |
 | `ERR-AGT-REGISTRY-DRIFT-001` | agent abstraction registry row drift between machine registry and markdown mirror | synchronize architecture/agent_abstraction_stack.json and registries/AGENT_ABSTRACTIONS.md |
 | `ERR-AGT-STABLE-ID-REUSED-001` | agent abstraction layer stable identifier was reused, duplicated, renumbered, or tombstoned | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-AGT-MISSING-FIELD-001` | agent abstraction layer row or root metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in agent abstraction layer row |
