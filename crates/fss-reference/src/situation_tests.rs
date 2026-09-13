@@ -5,9 +5,9 @@ use std::fs;
 use fss_core::{
     AffordanceClass, CapsuleId, CaptureInterval, Completeness, ContentDigest, ContractBasis,
     ContractBasisRegistryBytes, ContractError, EffectJournal, EventId, EventState,
-    EvidenceEdgeRelation, HandoffId, HypothesisDisposition, IdempotencyKey, KnowledgeState,
-    MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval, SensorId, SessionId,
-    TimestampNs,
+    EvidenceEdgeRelation, HandoffId, HypothesisDisposition, IdempotencyKey, KnowledgeCell,
+    KnowledgeState, MissionId, ObligationId, OperationId, PrincipalId, ProbabilityInterval,
+    ProvenanceClass, SensorId, SessionId, TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -15,6 +15,7 @@ use fss_object::{InMemoryObjectStore, ObjectLimits};
 use crate::policy::ReferencePolicyAction;
 use crate::situation::{
     physical_knowledge_state, physical_statement, policy_hypothesis, policy_statement,
+    reconciliation_basis_for,
 };
 use crate::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
@@ -576,10 +577,11 @@ fn physical_knowledge_state_maps_every_event_state_explicitly() {
 }
 
 #[test]
-fn physical_cell_is_conflicted_whenever_evidence_points_both_ways() -> Result<(), Box<dyn Error>> {
+fn physical_cell_mapping_is_pinned_for_every_evidence_mix() -> Result<(), Box<dyn Error>> {
     let support = [ContentDigest::sha256(b"supporting-witness")];
     let contra = [ContentDigest::sha256(b"contradicting-witness")];
     let none: [ContentDigest; 0] = [];
+    let revision_root = ContentDigest::sha256(b"event-revision");
     let states: Vec<EventState> = (0..=u8::MAX)
         .filter_map(|tag| EventState::from_u8(tag).ok())
         .collect();
@@ -587,37 +589,72 @@ fn physical_cell_is_conflicted_whenever_evidence_points_both_ways() -> Result<()
         return Err(format!("expected 8 decodable event states, found {}", states.len()).into());
     }
     for state in states {
-        // Support-only and contradiction-only rows keep their per-state mapping. Exhaustive on
-        // purpose: a new `EventState` must choose both before this compiles.
-        let (support_only, contradiction_only) = match state {
-            EventState::Hypothesized => (KnowledgeState::Unknown, KnowledgeState::Unknown),
-            EventState::Witnessed => (KnowledgeState::Estimated, KnowledgeState::Estimated),
-            EventState::Corroborated => (KnowledgeState::Known, KnowledgeState::Known),
-            EventState::Adjudicated | EventState::AlertDelivered | EventState::Resolved => {
-                (KnowledgeState::Estimated, KnowledgeState::Unknown)
-            }
-            EventState::Indeterminate => {
-                (KnowledgeState::Indeterminate, KnowledgeState::Indeterminate)
-            }
-            EventState::Rejected => (KnowledgeState::Unknown, KnowledgeState::Unknown),
+        // (support only, contradiction only, neither). Exhaustive on purpose: a new `EventState`
+        // must choose all three before this compiles. Without a supporting root no state is
+        // estimated or known; indeterminate stays indeterminate rather than flattening to unknown.
+        let (support_only, contradiction_only, neither) = match state {
+            EventState::Hypothesized => (
+                KnowledgeState::Unknown,
+                KnowledgeState::Unknown,
+                KnowledgeState::Unknown,
+            ),
+            EventState::Witnessed
+            | EventState::Adjudicated
+            | EventState::AlertDelivered
+            | EventState::Resolved => (
+                KnowledgeState::Estimated,
+                KnowledgeState::Unknown,
+                KnowledgeState::Unknown,
+            ),
+            EventState::Corroborated => (
+                KnowledgeState::Known,
+                KnowledgeState::Unknown,
+                KnowledgeState::Unknown,
+            ),
+            EventState::Indeterminate => (
+                KnowledgeState::Indeterminate,
+                KnowledgeState::Indeterminate,
+                KnowledgeState::Indeterminate,
+            ),
+            EventState::Rejected => (
+                KnowledgeState::Unknown,
+                KnowledgeState::Unknown,
+                KnowledgeState::Unknown,
+            ),
         };
         // No typed basis retires a contradiction, so both kinds of evidence is always conflicted.
-        let rows: [(&[ContentDigest], &[ContentDigest], KnowledgeState); 3] = [
+        let rows: [(&[ContentDigest], &[ContentDigest], KnowledgeState); 4] = [
             (&support, &contra, KnowledgeState::Conflicted),
             (&support, &none, support_only),
             (&none, &contra, contradiction_only),
+            (&none, &none, neither),
         ];
         for (supporting, contradicting, expected) in rows {
+            let row = format!(
+                "event state {} with {} supporting and {} contradicting roots",
+                state.as_str(),
+                supporting.len(),
+                contradicting.len()
+            );
             let actual = physical_knowledge_state(state, supporting, contradicting);
             if actual != expected {
-                return Err(format!(
-                    "event state {} with {} supporting and {} contradicting roots: expected {expected:?}, got {actual:?}",
-                    state.as_str(),
-                    supporting.len(),
-                    contradicting.len()
-                )
-                .into());
+                return Err(format!("{row}: expected {expected:?}, got {actual:?}").into());
             }
+            // Build the cell exactly as `compile_reference_situation` does: the mapping must
+            // yield a contract-valid cell.
+            KnowledgeCell {
+                claim_id: format!("claim:event:{}:unknown-presence", state.as_str()),
+                statement: physical_statement(state).to_owned(),
+                knowledge_state: actual,
+                provenance: ProvenanceClass::Derived,
+                hypothesis: Some(policy_hypothesis(state)),
+                evidence: supporting.to_vec(),
+                contradictions: contradicting.to_vec(),
+                valid_until: None,
+                state_basis: reconciliation_basis_for(actual, revision_root),
+            }
+            .validated()
+            .map_err(|error| format!("{row}: {actual:?} cell is invalid: {error}"))?;
         }
     }
     Ok(())
@@ -978,6 +1015,47 @@ fn compiled_corroborated_cell_with_contradicting_edge_is_conflicted() -> Result<
     assert_eq!(physical.knowledge_state, KnowledgeState::Conflicted);
     assert_eq!(physical.evidence.len(), 2);
     assert_eq!(physical.contradictions.len(), 1);
+
+    harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn contradiction_only_witnessed_revision_is_refused_at_compile() -> Result<(), Box<dyn Error>> {
+    let mut harness = SituationHarness::new("contradiction-only-witnessed")?;
+    let (mut decision, _) = harness.publish_decision(
+        "contradiction-only-witnessed-policy",
+        &[(MockSemanticLabel::PersonLike, "power:alpha")],
+    )?;
+    assert_eq!(decision.event.state, EventState::Witnessed);
+    // The reviewer's probe: every edge flipped to Contradicts under a fresh event identity.
+    for edge in &mut decision.event.evidence {
+        edge.supports = false;
+        edge.relation = EvidenceEdgeRelation::Contradicts;
+    }
+    decision.event.event_id = EventId::parse("event:situation:contradiction-only-witnessed")?;
+    assert_eq!(
+        decision.event.validate(),
+        Err(ContractError::EvidenceRequired)
+    );
+    // Publication does not validate, so compile must refuse it rather than project an estimate.
+    let event_receipt =
+        publish_reference_event(&decision, &mut harness.objects, &mut harness.authority)?;
+    let compiled = compile_reference_situation(
+        request(
+            &decision,
+            &event_receipt,
+            capabilities(&["capability:evidence.query", "capability:session.wait"]),
+        )?,
+        &harness.authority,
+    );
+    assert!(
+        matches!(
+            compiled,
+            Err(ReferenceError::Contract(ContractError::EvidenceRequired))
+        ),
+        "{compiled:?}"
+    );
 
     harness.cleanup();
     Ok(())
