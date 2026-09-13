@@ -107,11 +107,11 @@ impl HydrationLevel {
     #[must_use]
     pub const fn owner(self) -> &'static str {
         match self {
-            Self::H0 => "fss-core/hydration",
+            Self::H0 => "fss-core",
             Self::H1 => "fss-situation/fss-context-pack",
-            Self::H2 => "fss-media/fss-privacy",
-            Self::H3 => "fss-capture/fss-chronicle",
-            Self::H4 => "fss-laboratory/oracle",
+            Self::H2 => "fss-privacy/fss-media-transform",
+            Self::H3 => "fss-chronicle",
+            Self::H4 => "fss-lab",
         }
     }
 
@@ -151,12 +151,12 @@ impl core::str::FromStr for HydrationLevel {
     type Err = ContractError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim() {
-            "H0" | "h0" | "identity" => Ok(Self::H0),
-            "H1" | "h1" | "semantic_synopsis" => Ok(Self::H1),
-            "H2" | "h2" | "decision_artifact" => Ok(Self::H2),
-            "H3" | "h3" | "source_evidence" => Ok(Self::H3),
-            "H4" | "h4" | "laboratory_expansion" => Ok(Self::H4),
+        match s {
+            "H0" => Ok(Self::H0),
+            "H1" => Ok(Self::H1),
+            "H2" => Ok(Self::H2),
+            "H3" => Ok(Self::H3),
+            "H4" => Ok(Self::H4),
             _ => Err(ContractError::InvalidIdentifier),
         }
     }
@@ -176,8 +176,14 @@ impl CanonicalEncode for HydrationLevel {
 
 impl CanonicalDecode for HydrationLevel {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let text = decoder.text()?;
-        text.parse()
+        match decoder.text()? {
+            "H0" => Ok(Self::H0),
+            "H1" => Ok(Self::H1),
+            "H2" => Ok(Self::H2),
+            "H3" => Ok(Self::H3),
+            "H4" => Ok(Self::H4),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
     }
 }
 
@@ -242,7 +248,7 @@ impl core::str::FromStr for HandleAvailability {
     type Err = ContractError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.trim() {
+        match s {
             "available" => Ok(Self::Available),
             "superseded" => Ok(Self::Superseded),
             "deleted" => Ok(Self::Deleted),
@@ -269,8 +275,16 @@ impl CanonicalEncode for HandleAvailability {
 
 impl CanonicalDecode for HandleAvailability {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let text = decoder.text()?;
-        text.parse()
+        match decoder.text()? {
+            "available" => Ok(Self::Available),
+            "superseded" => Ok(Self::Superseded),
+            "deleted" => Ok(Self::Deleted),
+            "expired" => Ok(Self::Expired),
+            "corrupt" => Ok(Self::Corrupt),
+            "privacy_transformed" => Ok(Self::PrivacyTransformed),
+            "not_observable" => Ok(Self::NotObservable),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
     }
 }
 
@@ -349,7 +363,7 @@ fn validate_contiguous_levels(levels: &BTreeSet<HydrationLevel>) -> Result<(), H
     Ok(())
 }
 
-fn valid_text(value: &str) -> bool {
+pub(crate) fn valid_text(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_TEXT_BYTES
         && !value.bytes().any(|byte| byte.is_ascii_control())
@@ -438,9 +452,9 @@ pub(crate) fn decode_text_set(
     decoder: &mut CanonicalDecoder<'_>,
 ) -> Result<BTreeSet<String>, ContractError> {
     let count_u64 = decoder.u64()?;
-    let count = usize::try_from(count_u64).map_err(|_| ContractError::InvalidDigest)?;
+    let count = usize::try_from(count_u64).map_err(|_| ContractError::ArithmeticOverflow)?;
     if count > MAX_REQUEST_SET_ITEMS || decoder.remaining() < count {
-        return Err(ContractError::InvalidDigest);
+        return Err(ContractError::ArithmeticOverflow);
     }
     let mut set = BTreeSet::new();
     let mut prev: Option<&str> = None;
