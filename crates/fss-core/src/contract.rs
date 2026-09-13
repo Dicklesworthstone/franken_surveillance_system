@@ -2718,6 +2718,13 @@ pub enum ContractError {
     DerivedBeliefMissingAnchor,
     /// A derived belief illegally claimed the `known` knowledge state.
     DerivedBeliefKnownForbidden,
+    /// A derived belief is pinned to an anchor that is neither the caller's current anchor nor
+    /// strictly older than it: a future, forked, or cross-lineage anchor (AGT-LAYER-004, INV-069).
+    DerivedBeliefAnchorMismatch,
+    /// A derived belief lists the same evidence root twice within one evidence set (AGT-LAYER-004).
+    DerivedBeliefDuplicateEvidence,
+    /// A derived belief lists one evidence root as both supporting and contradicting (AGT-LAYER-004).
+    DerivedBeliefEvidenceOverlap,
     /// An unknown abstraction layer identifier or name was encountered.
     UnknownAbstractionLayer(String),
     /// Attempted to promote decode or model output into source evidence (AGT-LAYER-002, INV-003).
@@ -2772,6 +2779,9 @@ impl ContractError {
             Self::DerivedLayerAuthorityForbidden => "derived_layer_authority_forbidden",
             Self::DerivedBeliefMissingAnchor => "derived_belief_missing_anchor",
             Self::DerivedBeliefKnownForbidden => "derived_belief_known_forbidden",
+            Self::DerivedBeliefAnchorMismatch => "derived_belief_anchor_mismatch",
+            Self::DerivedBeliefDuplicateEvidence => "derived_belief_duplicate_evidence",
+            Self::DerivedBeliefEvidenceOverlap => "derived_belief_evidence_overlap",
             Self::UnknownAbstractionLayer(_) => "unknown_abstraction_layer",
             Self::ProhibitedEvidencePromotion => "prohibited_evidence_promotion",
             Self::UnadjudicatedUncertaintyCollapse => "unadjudicated_uncertainty_collapse",
