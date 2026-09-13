@@ -60,34 +60,28 @@ enum IndeterminateEffectSuccessor {
 }
 
 /// The bar a proved effect outcome clears in one publication: the full irreversible-effect premise
-/// at the capsule's `created_at`, with every evidence root among the publication's retained proof
-/// roots, so a caller-supplied digest that nothing retains cannot prove an outcome (fss-deir9).
+/// at the capsule's `created_at`.
 ///
-/// A proof root alone is not the binding: both publications pass `verify` before any bar is
-/// applied, and `ReferenceSituation::verify` refuses a `known` effect cell that no compile path
-/// bound to a verified outcome or receipt, so a hand-built situation cannot assert its own proof
-/// root into a terminal effect (fss-6sph6).
+/// The rest of the proof is enforced before any bar is applied, because both publications pass
+/// `verify` first: `ReferenceSituation::verify` refuses a `known` effect cell that no compile path
+/// bound to a verified outcome or receipt, a bound cell whose evidence roots left the proof roots
+/// (fss-deir9), and bindings sealed to another capsule. So a `known` effect cell reaching this bar
+/// is bound, sealed, and retains its evidence (fss-6sph6).
 #[derive(Clone, Copy)]
-struct ProofBar<'a> {
+struct ProofBar {
     now: TimestampNs,
-    proof_roots: &'a BTreeSet<ContentDigest>,
 }
 
-impl<'a> ProofBar<'a> {
-    fn of(publication: &'a ReferenceSituationPublication) -> Self {
+impl ProofBar {
+    fn of(publication: &ReferenceSituationPublication) -> Self {
         Self {
             now: publication.situation.capsule.created_at,
-            proof_roots: &publication.situation.proof_roots,
         }
     }
 
     /// Returns whether `cell` carries a proved outcome under this bar.
     fn proves(self, cell: &KnowledgeCell) -> bool {
         cell.is_irreversible_effect_premise(self.now)
-            && cell
-                .evidence
-                .iter()
-                .all(|root| self.proof_roots.contains(root))
     }
 }
 
@@ -103,7 +97,7 @@ impl<'a> ProofBar<'a> {
 /// than silently resolving.
 fn indeterminate_effect_successor(
     current: &KnowledgeCell,
-    bar: ProofBar<'_>,
+    bar: ProofBar,
 ) -> IndeterminateEffectSuccessor {
     let unresolved = IndeterminateEffectSuccessor::Unresolved;
     match current.knowledge_state {
@@ -331,7 +325,6 @@ pub fn classify_reference_meaningful_delta(
     for added in result_indeterminate.difference(&basis_indeterminate) {
         effect_uncertainty_changes.push(format!("effect uncertainty added: {added}"));
     }
-    let mut effect_resolved = false;
     for claim_id in basis_indeterminate.difference(&result_indeterminate) {
         match result_frame
             .knowledge_cells
@@ -340,7 +333,6 @@ pub fn classify_reference_meaningful_delta(
         {
             Some(current) => match indeterminate_effect_successor(current, result_bar) {
                 IndeterminateEffectSuccessor::Resolved => {
-                    effect_resolved = true;
                     let outcome = result
                         .situation
                         .effect_operation(claim_id)
@@ -364,7 +356,6 @@ pub fn classify_reference_meaningful_delta(
             // Effects are proved per operation: another retained cell proves this cell's operation,
             // so the cell was superseded by a proved outcome rather than dropped (fss-6sph6).
             None if operation_proved(basis, claim_id, &result_proved) => {
-                effect_resolved = true;
                 effect_uncertainty_changes.push(format!(
                     "effect uncertainty resolved: indeterminate effect {claim_id} left the result frame and another retained cell proves its operation"
                 ));
@@ -482,55 +473,27 @@ pub fn classify_reference_meaningful_delta(
         classes.insert(MeaningfulDeltaClass::EffectUncertainty);
     }
 
+    // An obligation terminalizes only through the capsule's typed obligation set. No compile path
+    // binds a `claim:obligation:` cell, so such a cell's state or hypothesis is unproved and never
+    // terminalizes one by its name (fss-6sph6).
     let obligation_terminalized = basis_obligations
         .difference(&result_obligations)
         .next()
-        .is_some()
-        || result_frame.knowledge_cells.iter().any(|cell| {
-            cell.claim_id.starts_with("claim:obligation:")
-                && (cell.knowledge_state == KnowledgeState::Known
-                    || matches!(
-                        cell.hypothesis,
-                        Some(
-                            HypothesisDisposition::Refuted
-                                | HypothesisDisposition::Resolved
-                                | HypothesisDisposition::Superseded
-                        )
-                    ))
-                && basis_frame
-                    .knowledge_cells
-                    .iter()
-                    .find(|b| b.claim_id == cell.claim_id)
-                    .is_none_or(|b| {
-                        b.knowledge_state != KnowledgeState::Known
-                            && !matches!(
-                                b.hypothesis,
-                                Some(
-                                    HypothesisDisposition::Refuted
-                                        | HypothesisDisposition::Resolved
-                                        | HypothesisDisposition::Superseded
-                                )
-                            )
-                    })
-        });
-    // KSTATE-001: an effect is terminal only when its cell clears the full irreversible-effect
-    // premise bar at the result anchor, whatever state (or absence) the basis carried. A
-    // basis-indeterminate effect is terminal only when it resolved above. Any other effect cell is
-    // terminal when it newly clears the bar, never through a bare `known` state or a hypothesis
-    // disposition, so an effect laundered through another state still needs a proved outcome.
-    // "Newly" is per operation: a cell added to an operation the basis already proved is not a
-    // second terminal transition (fss-6sph6).
-    let effect_terminalized = effect_resolved
-        || result_frame.knowledge_cells.iter().any(|cell| {
-            is_effect_claim(cell)
-                && !basis_indeterminate.contains(cell.claim_id.as_str())
-                && result_bar.proves(cell)
-                && !operation_proved(result, &cell.claim_id, &basis_proved)
-        });
-    // An effect cell is terminal only through the premise bar applied above, so a terminal
-    // hypothesis disposition on any effect cell never terminalizes it here.
+        .is_some();
+    // KSTATE-001: an effect is terminal only when an operation newly has a proved outcome: a
+    // bound, sealed cell (see `proved_operations`) that clears the full irreversible-effect premise
+    // bar at the result anchor, for an operation the basis did not prove. That covers a resolved
+    // basis-indeterminate effect and a proof that supersedes another cell of the operation, and it
+    // never follows from a bare `known` state, a hypothesis disposition, or a claim name; a cell
+    // added to an operation the basis already proved is not a second transition (fss-6sph6).
+    let effect_terminalized = result_proved
+        .keys()
+        .any(|operation| !basis_proved.contains_key(operation));
+    // An effect cell is terminal only through the premise bar applied above, and an obligation only
+    // through the typed obligation set, so a terminal hypothesis disposition on a cell in either
+    // namespace never terminalizes it here (`verify` refuses look-alike spellings of both).
     let event_terminalized = result_frame.knowledge_cells.iter().any(|cell| {
-        if is_effect_claim(cell) {
+        if is_effect_claim(cell) || cell.claim_id.starts_with("claim:obligation:") {
             return false;
         }
         let is_terminal_hypothesis = matches!(
@@ -816,10 +779,10 @@ fn is_effect_claim(cell: &KnowledgeCell) -> bool {
 ///
 /// `verify` refuses an unbound `known` effect cell, so only a bound cell clears the bar and every
 /// proved cell has a typed operation; effects group by that operation, never by claim identity.
-fn proved_operations<'a>(
-    publication: &'a ReferenceSituationPublication,
-    bar: ProofBar<'_>,
-) -> BTreeMap<&'a str, BTreeSet<EffectOutcome>> {
+fn proved_operations(
+    publication: &ReferenceSituationPublication,
+    bar: ProofBar,
+) -> BTreeMap<&str, BTreeSet<EffectOutcome>> {
     let situation = &publication.situation;
     let mut proved: BTreeMap<&str, BTreeSet<EffectOutcome>> = BTreeMap::new();
     for cell in &situation.capsule.frame.knowledge_cells {
@@ -879,13 +842,13 @@ fn outcome_labels(outcomes: &BTreeSet<EffectOutcome>) -> String {
 /// Returns whether `cell` is an effect claim in `KSTATE-001` `known` that does not clear the full
 /// irreversible-effect premise bar under `bar` (valid state basis, retained evidence roots, no
 /// contradictions, open validity window): it asserts an outcome it has not proved.
-fn unproved_known_effect(cell: &KnowledgeCell, bar: ProofBar<'_>) -> bool {
+fn unproved_known_effect(cell: &KnowledgeCell, bar: ProofBar) -> bool {
     cell.knowledge_state == KnowledgeState::Known && unproved_effect(cell, bar)
 }
 
 /// Returns whether `cell` is an effect claim that does not clear `bar`: whatever its state, its
 /// outcome is not proved.
-fn unproved_effect(cell: &KnowledgeCell, bar: ProofBar<'_>) -> bool {
+fn unproved_effect(cell: &KnowledgeCell, bar: ProofBar) -> bool {
     is_effect_claim(cell) && !bar.proves(cell)
 }
 

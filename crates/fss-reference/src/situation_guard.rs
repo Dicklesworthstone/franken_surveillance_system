@@ -390,6 +390,8 @@ fn finalize_projection(situation: &mut ReferenceSituation) -> Result<(), Referen
         .collect();
     refresh_identity(situation)?;
     situation.capsule.validate()?;
+    // This is the path's last capsule edit, so the bindings are sealed to the finished capsule.
+    situation.seal_effect_bindings()?;
     Ok(())
 }
 

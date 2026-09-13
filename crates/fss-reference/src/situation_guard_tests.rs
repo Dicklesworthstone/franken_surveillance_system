@@ -1198,3 +1198,65 @@ fn terminal_outcome_flip_of_one_operation_is_a_contradiction() -> Result<(), Box
     harness.cleanup();
     Ok(())
 }
+
+/// Review probe P2: bindings are sealed to the situation they were compiled for. A verified outcome
+/// cell transplanted into the prepared capsule, where commit is still exposed, and a mission
+/// relabel of a compiled situation are both refused, so a terminal proof never sits beside a live
+/// re-dispatch affordance (fss-6sph6).
+#[test]
+fn bound_effect_cells_are_sealed_to_their_situation() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("p2-seal")?;
+    let verified = lifecycle.verified(false)?;
+    let prepared = &lifecycle.prepared;
+    let is_commit = |affordance: &&fss_core::ActionAffordance| affordance.operation == "commit";
+    assert!(
+        !verified
+            .situation
+            .capsule
+            .affordances
+            .iter()
+            .any(|a| is_commit(&a)),
+        "{:?}",
+        verified.situation.capsule.affordances
+    );
+    assert!(
+        prepared
+            .situation
+            .capsule
+            .affordances
+            .iter()
+            .filter(is_commit)
+            .any(|affordance| affordance.class == fss_core::AffordanceClass::Conditional),
+        "{:?}",
+        prepared.situation.capsule.affordances
+    );
+    let expected = ReferenceError::InvalidSpec("situation_effect_binding_seal");
+
+    let mut transplanted = verified.situation.clone();
+    let outcome_cells: Vec<_> = transplanted
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .filter(|cell| cell.claim_id.starts_with("claim:effect:"))
+        .cloned()
+        .collect();
+    assert!(!outcome_cells.is_empty());
+    let mut capsule = prepared.situation.capsule.clone();
+    capsule
+        .frame
+        .knowledge_cells
+        .retain(|cell| !cell.claim_id.starts_with("claim:effect:"));
+    capsule.frame.knowledge_cells.extend(outcome_cells);
+    transplanted.capsule = capsule;
+    transplanted
+        .proof_roots
+        .extend(prepared.situation.proof_roots.iter().copied());
+    assert_effect_tamper_refused(&verified.situation, transplanted, &expected)?;
+
+    let mut relabeled = verified.situation.clone();
+    relabeled.capsule.mission_id = fss_core::MissionId::parse("mission:elsewhere")?;
+    assert_effect_tamper_refused(&verified.situation, relabeled, &expected)?;
+    lifecycle.harness.cleanup();
+    Ok(())
+}
