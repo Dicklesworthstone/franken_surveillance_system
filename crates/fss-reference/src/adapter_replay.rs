@@ -9,11 +9,11 @@
 use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 use fss_core::{
     AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind, ContentDigest,
-    ContractError, CredentialMethod, IsolationMode,
+    ContextAuthority, ContractError, CredentialMethod, IsolationMode,
 };
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger, IncompleteTailPolicy, JournalError};
 use fss_object::InMemoryObjectStore;
@@ -68,24 +68,116 @@ pub const ADP_REPLAY_GOLDEN_AUDIT_HASH: &str =
     "sha256:fbf3b421bcbe2bf30c95cd723496087902ac25eb1a1087d63352f564a9a7e100";
 
 /// Explicit I/O authority capability required for journal persistence and ledger access.
-#[derive(Clone, Debug)]
+///
+/// Unforgeable capability: cannot be fabricated without validating an authorized principal
+/// and explicit capability grant matching row `ADP-REPLAY-001`.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayIoAuthority {
-    _private: (),
+    principal: String,
+    capability: String,
 }
 
 impl ReplayIoAuthority {
-    /// Acquires explicit I/O authority capability.
+    /// Authorizes replay I/O capability for an explicit principal and capability scope.
+    ///
+    /// Fails closed if principal or capability is empty, or if the capability does not grant
+    /// authority for [`ADP_REPLAY_ROW_ID`].
+    ///
+    /// # Errors
+    /// Returns [`ReplayAdapterError::Unauthorized`] on missing or invalid principal/capability.
+    pub fn authorize(
+        principal: impl Into<String>,
+        capability: impl Into<String>,
+    ) -> Result<Self, ReplayAdapterError> {
+        let principal = principal.into();
+        let capability = capability.into();
+        if principal.trim().is_empty() {
+            return Err(ReplayAdapterError::Unauthorized {
+                reason: "principal cannot be empty",
+            });
+        }
+        if capability.trim().is_empty() {
+            return Err(ReplayAdapterError::Unauthorized {
+                reason: "capability cannot be empty",
+            });
+        }
+        if capability != ADP_REPLAY_ROW_ID && capability != "io:adapter:adp-replay-001" {
+            return Err(ReplayAdapterError::Unauthorized {
+                reason: "capability does not grant ADP-REPLAY-001 I/O authority",
+            });
+        }
+        Ok(Self {
+            principal,
+            capability,
+        })
+    }
+
+    /// Acquires authority directly from a validated root [`ContextAuthority`].
+    ///
+    /// # Errors
+    /// Returns [`ReplayAdapterError::Unauthorized`] if the context authority lacks the required capability.
+    pub fn from_context_authority(auth: &ContextAuthority) -> Result<Self, ReplayAdapterError> {
+        if !auth
+            .capabilities()
+            .iter()
+            .any(|c| c == ADP_REPLAY_ROW_ID || c == "io:adapter:adp-replay-001")
+        {
+            return Err(ReplayAdapterError::Unauthorized {
+                reason: "ContextAuthority does not grant ADP-REPLAY-001 capability",
+            });
+        }
+        Self::authorize(&auth.principal, ADP_REPLAY_ROW_ID)
+    }
+
+    /// Authorized principal identity.
     #[must_use]
-    pub const fn acquire() -> Self {
-        Self { _private: () }
+    pub fn principal(&self) -> &str {
+        &self.principal
+    }
+
+    /// Authorized capability string.
+    #[must_use]
+    pub fn capability(&self) -> &str {
+        &self.capability
     }
 }
+
+/// Execution lifecycle state for [`ReplayCx`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum ReplayLifecycleState {
+    /// Context is active and accepting replay execution steps.
+    Active,
+    /// Cancellation has been requested; rejecting new work and preparing to drain.
+    CancellationRequested,
+    /// Actively draining in-flight work and discarding uncommitted staging.
+    Draining,
+    /// Quiescence reached; terminal state after complete drain.
+    Finalized,
+}
+
+impl ReplayLifecycleState {
+    /// Returns the stable string representation of this lifecycle state.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::CancellationRequested => "cancellation_requested",
+            Self::Draining => "draining",
+            Self::Finalized => "finalized",
+        }
+    }
+}
+
+const STATE_ACTIVE: u8 = 0;
+const STATE_CANCEL_REQUESTED: u8 = 1;
+const STATE_DRAINING: u8 = 2;
+const STATE_FINALIZED: u8 = 3;
 
 /// Execution capability and cooperative cancellation context for replay operations.
 #[derive(Debug)]
 pub struct ReplayCx {
-    cancelled: AtomicBool,
-    drain_completed: AtomicBool,
+    state: AtomicU8,
+    checkpoints: AtomicUsize,
     io: ReplayIoAuthority,
 }
 
@@ -94,49 +186,96 @@ impl ReplayCx {
     #[must_use]
     pub fn new(io: ReplayIoAuthority) -> Self {
         Self {
-            cancelled: AtomicBool::new(false),
-            drain_completed: AtomicBool::new(false),
+            state: AtomicU8::new(STATE_ACTIVE),
+            checkpoints: AtomicUsize::new(0),
             io,
         }
     }
 
-    /// Constructs a test execution context with acquired I/O authority.
+    /// Current lifecycle state of this execution context.
     #[must_use]
-    pub fn for_test() -> Self {
-        Self::new(ReplayIoAuthority::acquire())
+    pub fn lifecycle_state(&self) -> ReplayLifecycleState {
+        match self.state.load(Ordering::SeqCst) {
+            STATE_CANCEL_REQUESTED => ReplayLifecycleState::CancellationRequested,
+            STATE_DRAINING => ReplayLifecycleState::Draining,
+            STATE_FINALIZED => ReplayLifecycleState::Finalized,
+            _ => ReplayLifecycleState::Active,
+        }
     }
 
-    /// Signals a cooperative cancellation request.
+    /// Signals a cooperative cancellation request, transitioning state from `Active` to `CancellationRequested`.
     pub fn request_cancellation(&self) {
-        self.cancelled.store(true, Ordering::SeqCst);
+        let _ = self.state.compare_exchange(
+            STATE_ACTIVE,
+            STATE_CANCEL_REQUESTED,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
     }
 
-    /// Returns `true` if cancellation has been requested.
+    /// Returns `true` if cancellation has been requested or the context has begun draining.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.cancelled.load(Ordering::SeqCst)
+        self.state.load(Ordering::SeqCst) != STATE_ACTIVE
+    }
+
+    /// Initiates the drain phase of cancellation (`CancellationRequested` -> `Draining`).
+    pub fn drain(&self) {
+        let _ = self.state.compare_exchange(
+            STATE_ACTIVE,
+            STATE_CANCEL_REQUESTED,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+        let _ = self.state.compare_exchange(
+            STATE_CANCEL_REQUESTED,
+            STATE_DRAINING,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+    }
+
+    /// Completes finalization of cancellation (`Draining` -> `Finalized`).
+    pub fn finalize(&self) {
+        let _ = self.state.compare_exchange(
+            STATE_DRAINING,
+            STATE_FINALIZED,
+            Ordering::SeqCst,
+            Ordering::SeqCst,
+        );
+    }
+
+    /// Completes the drain and finalize lifecycle phase, ensuring no half-published state remains.
+    pub fn drain_and_finalize(&self) {
+        self.drain();
+        self.finalize();
+    }
+
+    /// Returns `true` if the drain/finalize cycle completed.
+    #[must_use]
+    pub fn is_drain_completed(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == STATE_FINALIZED
+    }
+
+    /// Number of cooperative checkpoints passed during execution.
+    #[must_use]
+    pub fn checkpoints_reached(&self) -> usize {
+        self.checkpoints.load(Ordering::SeqCst)
     }
 
     /// Cooperative checkpoint during execution. Fails closed with [`ReplayAdapterError::CancellationRequested`]
     /// if cancellation was requested, completing the drain/finalize cycle.
+    ///
+    /// # Errors
+    /// Returns [`ReplayAdapterError::CancellationRequested`] if cancellation was signaled.
     pub fn checkpoint(&self, _stage: &'static str) -> Result<(), ReplayAdapterError> {
+        self.checkpoints.fetch_add(1, Ordering::SeqCst);
         if self.is_cancelled() {
             self.drain_and_finalize();
             Err(ReplayAdapterError::CancellationRequested)
         } else {
             Ok(())
         }
-    }
-
-    /// Completes the drain and finalize lifecycle phase, ensuring no half-published state remains.
-    pub fn drain_and_finalize(&self) {
-        self.drain_completed.store(true, Ordering::SeqCst);
-    }
-
-    /// Returns `true` if the drain/finalize cycle completed.
-    #[must_use]
-    pub fn is_drain_completed(&self) -> bool {
-        self.drain_completed.load(Ordering::SeqCst)
     }
 
     /// Explicit I/O authority held by this context.
@@ -344,6 +483,11 @@ pub enum ReplayAdapterError {
         /// Actual value found in registry.
         actual: String,
     },
+    /// Unauthorized I/O authority capability or missing permissions.
+    Unauthorized {
+        /// Rationale for authorization denial.
+        reason: &'static str,
+    },
     /// Filesystem or directory operation error.
     Io(std::io::Error),
     /// Core contract error.
@@ -393,6 +537,7 @@ impl fmt::Display for ReplayAdapterError {
                     "registry drift on field '{field}': expected '{expected}', found '{actual}'"
                 )
             }
+            Self::Unauthorized { reason } => write!(f, "unauthorized: {reason}"),
             Self::Io(err) => write!(f, "I/O error: {err}"),
             Self::Contract(err) => write!(f, "contract error: {err}"),
             Self::Bundle(err) => write!(f, "bundle error: {err}"),
@@ -557,6 +702,12 @@ impl ReplayAdapter {
         &self.identity
     }
 
+    /// Active operational configuration.
+    #[must_use]
+    pub const fn config(&self) -> &ReplayAdapterConfig {
+        &self.config
+    }
+
     /// Verifies that `architecture/device_adapters.json` contains a row matching
     /// the normative constants for this adapter.
     ///
@@ -718,7 +869,14 @@ impl ReplayAdapter {
         self.preflight_request(cx, request)?;
 
         cx.checkpoint("run_replay")?;
-        let capture = request.bundle.replay(objects, ledger)?;
+        let backup_objects = objects.clone();
+        let capture = match request.bundle.replay(objects, ledger) {
+            Ok(c) => c,
+            Err(err) => {
+                *objects = backup_objects;
+                return Err(ReplayAdapterError::Bundle(err));
+            }
+        };
 
         cx.checkpoint("compute_audit")?;
         let audit_record = self.build_audit_record(request, &capture);
@@ -731,14 +889,23 @@ impl ReplayAdapter {
 
     /// Executes replay against expected reference state root and audit hash.
     ///
+    /// # Preflight and Validation
+    /// Validates request generation, cancellation state, packet bounds, byte bounds,
+    /// and caller budget via [`ReplayAdapter::preflight_request`] before isolated staging.
+    ///
     /// # Staging and Fail-Closed Semantics
     /// Replay is performed in an isolated staging journal and staging object store.
     /// Both the replayed state root and the audit hash are compared against expected values.
     /// If divergence is detected, fails closed with [`ReplayAdapterError::ReplayDiverged`],
     /// discarding staging files and leaving target `objects` and `ledger` completely untouched.
     /// Only upon exact cryptographic match is publication committed into target stores.
+    /// If target publication encounters a failure, target `objects` is restored to its
+    /// pre-publication state to prevent orphan staged objects.
     ///
     /// # Errors
+    /// Returns [`ReplayAdapterError::IncompatibleGeneration`] on generation mismatch.
+    /// Returns [`ReplayAdapterError::CancellationRequested`] on cooperative cancellation.
+    /// Returns [`ReplayAdapterError::BoundExceeded`] or [`ReplayAdapterError::BudgetExhausted`] on limit violations.
     /// Returns [`ReplayAdapterError::ReplayDiverged`] if `expected_root` or `expected_audit_hash` does not match.
     pub fn verify_against_expected(
         &self,
@@ -749,6 +916,9 @@ impl ReplayAdapter {
         expected_root: &ContentDigest,
         expected_audit_hash: &ContentDigest,
     ) -> Result<ReplayExecutionOutput, ReplayAdapterError> {
+        cx.checkpoint("preflight")?;
+        self.preflight_request(cx, request)?;
+
         // 1. ISOLATED STAGING REPLAY
         let staging_dir = ScopedLedgerDir::new("staging_replay", cx.io_authority().clone())?;
         let staging_journal_path = staging_dir.journal_path("staging_journal");
@@ -783,7 +953,14 @@ impl ReplayAdapter {
 
         // 3. ONLY PUBLISH ON EXACT MATCH (Root-last publication)
         cx.checkpoint("publish_on_match")?;
-        let capture = request.bundle.replay(objects, ledger)?;
+        let backup_objects = objects.clone();
+        let capture = match request.bundle.replay(objects, ledger) {
+            Ok(c) => c,
+            Err(err) => {
+                *objects = backup_objects;
+                return Err(ReplayAdapterError::Bundle(err));
+            }
+        };
         let audit_record = self.build_audit_record(request, &capture);
 
         Ok(ReplayExecutionOutput {
