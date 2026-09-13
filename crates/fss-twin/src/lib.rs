@@ -189,3 +189,6 @@ pub mod atlas_archive;
 
 /// Incremental source-contact sessions over frozen twin and camera generations.
 pub mod stream;
+
+/// Observation-driven routing and camera-handoff composition.
+pub mod observed_handoff;
