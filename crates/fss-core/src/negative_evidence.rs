@@ -18,7 +18,9 @@ use core::fmt;
 use std::collections::BTreeSet;
 
 use crate::acquisition::Neg001ScenarioLog;
-use crate::contract::{Completeness, HypothesisDisposition, KnowledgeState, Plane, ProvenanceClass};
+use crate::contract::{
+    Completeness, HypothesisDisposition, KnowledgeState, Plane, ProvenanceClass,
+};
 use crate::digest::{ContentDigest, Sha256Hasher};
 use crate::evidence::{
     CoverageContinuity, CoverageStopReason, CoverageWitness, EvidenceDelta, LedgerAnchor,
@@ -38,6 +40,10 @@ pub const NEGATIVE_EVIDENCE_LEDGER_MAGIC: [u8; 8] = *b"FSSNEG01";
 
 /// Current format version for negative-evidence binary ledgers.
 pub const NEGATIVE_EVIDENCE_FORMAT_VERSION: u32 = 1;
+
+/// Pinned freeze digest of the initial canonical binary negative-evidence ledger containing NEG-001, NEG-002, and NEG-003.
+pub const INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST: &str =
+    "sha256:122dc8bb5041a7a30b58e3a895900978d0683a9109ef5c710c7fb0eb97d1c17d";
 
 /// Maximum number of negative evidence entries in a single ledger.
 pub const MAX_NEGATIVE_ENTRIES: usize = 1024;
@@ -458,8 +464,7 @@ impl NegativeEvidenceEntry {
         generation: u64,
         plane: Plane,
     ) -> Result<EvidenceDelta, NegativeEvidenceError> {
-        let object_id =
-            ObjectId::parse(&self.neg_id).map_err(NegativeEvidenceError::Contract)?;
+        let object_id = ObjectId::parse(&self.neg_id).map_err(NegativeEvidenceError::Contract)?;
         let payload_digest = self.canonical_digest();
         let witness_digest = Some(self.coverage_witness.witness_digest());
         Ok(EvidenceDelta {
@@ -592,18 +597,7 @@ impl CanonicalDecode for NegativeEvidenceEntry {
         }
         let revival_condition = decoder.text()?.to_string();
         let kstate_str = decoder.text()?;
-        let knowledge_state = match kstate_str {
-            "known" => KnowledgeState::Known,
-            "estimated" => KnowledgeState::Estimated,
-            "unknown" => KnowledgeState::Unknown,
-            "conflicted" => KnowledgeState::Conflicted,
-            "stale" => KnowledgeState::Stale,
-            "not_observable" => KnowledgeState::NotObservable,
-            "redacted" => KnowledgeState::Redacted,
-            "indeterminate" => KnowledgeState::Indeterminate,
-            "not_applicable" => KnowledgeState::NotApplicable,
-            _ => return Err(ContractError::InvalidIdentifier),
-        };
+        let knowledge_state = KnowledgeState::from_name(kstate_str)?;
         let prov_str = decoder.text()?;
         let provenance_class = match prov_str {
             "observed" => ProvenanceClass::Observed,
@@ -721,13 +715,13 @@ impl NegativeEvidenceLedger {
                 });
             }
         }
-        if let Some(last) = self.entries.last() {
-            if entry.neg_id <= last.neg_id {
-                return Err(NegativeEvidenceError::NonCanonicalOrder {
-                    prior: last.neg_id.clone(),
-                    current: entry.neg_id.clone(),
-                });
-            }
+        if let Some(last) = self.entries.last()
+            && entry.neg_id <= last.neg_id
+        {
+            return Err(NegativeEvidenceError::NonCanonicalOrder {
+                prior: last.neg_id.clone(),
+                current: entry.neg_id.clone(),
+            });
         }
         self.entries.push(entry);
         Ok(())
@@ -739,9 +733,9 @@ impl NegativeEvidenceLedger {
         neg_id: &str,
         condition_met: bool,
     ) -> Result<(), NegativeEvidenceError> {
-        let entry = self
-            .get(neg_id)
-            .ok_or_else(|| NegativeEvidenceError::InvalidIdentifier(format!("entry '{neg_id}' not found")))?;
+        let entry = self.get(neg_id).ok_or_else(|| {
+            NegativeEvidenceError::InvalidIdentifier(format!("entry '{neg_id}' not found"))
+        })?;
         if !condition_met {
             return Err(NegativeEvidenceError::RevivalConditionUnmet {
                 neg_id: neg_id.to_string(),
@@ -814,6 +808,12 @@ impl NegativeEvidenceLedger {
         Ok(payload)
     }
 
+    /// Returns the canonical root digest of the ledger.
+    pub fn root_digest(&self) -> Result<ContentDigest, NegativeEvidenceError> {
+        let binary = self.encode_canonical()?;
+        Ok(ContentDigest::sha256(&binary))
+    }
+
     /// Decodes a canonical negative-evidence binary ledger, enforcing checksum integrity,
     /// format version check (refusing unknown versions), bounds, and canonical ordering.
     pub fn decode_canonical(bytes: &[u8]) -> Result<Self, NegativeEvidenceError> {
@@ -822,7 +822,10 @@ impl NegativeEvidenceLedger {
         }
         if bytes.len() > MAX_LEDGER_BYTES {
             return Err(NegativeEvidenceError::InputOversized {
-                detail: format!("binary input length {} exceeds {MAX_LEDGER_BYTES}", bytes.len()),
+                detail: format!(
+                    "binary input length {} exceeds {MAX_LEDGER_BYTES}",
+                    bytes.len()
+                ),
             });
         }
 
@@ -892,18 +895,18 @@ impl NegativeEvidenceLedger {
                 .map_err(NegativeEvidenceError::Contract)?;
             entry.validate()?;
 
-            if let Some(ref prior) = prev_id {
-                if entry.neg_id <= *prior {
-                    if entry.neg_id == *prior {
-                        return Err(NegativeEvidenceError::DuplicateEntryId {
-                            neg_id: entry.neg_id.clone(),
-                        });
-                    }
-                    return Err(NegativeEvidenceError::NonCanonicalOrder {
-                        prior: prior.clone(),
-                        current: entry.neg_id.clone(),
+            if let Some(ref prior) = prev_id
+                && entry.neg_id <= *prior
+            {
+                if entry.neg_id == *prior {
+                    return Err(NegativeEvidenceError::DuplicateEntryId {
+                        neg_id: entry.neg_id.clone(),
                     });
                 }
+                return Err(NegativeEvidenceError::NonCanonicalOrder {
+                    prior: prior.clone(),
+                    current: entry.neg_id.clone(),
+                });
             }
             prev_id = Some(entry.neg_id.clone());
             entries.push(entry);
@@ -1196,7 +1199,10 @@ impl fmt::Display for NegativeEvidenceError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::MissingCoverageWitness => {
-                write!(f, "negative evidence entry lacks a certifying coverage witness")
+                write!(
+                    f,
+                    "negative evidence entry lacks a certifying coverage witness: absence without coverage witness is never evidence"
+                )
             }
             Self::CoverageGap { continuity } => {
                 write!(
@@ -1208,7 +1214,10 @@ impl fmt::Display for NegativeEvidenceError {
                 write!(f, "uncertified coverage: {detail}")
             }
             Self::UnknownVersion { version } => {
-                write!(f, "unknown ledger format version {version}; refusing unknown version")
+                write!(
+                    f,
+                    "unknown ledger format version {version}; refusing unknown version"
+                )
             }
             Self::CorruptMagic => {
                 write!(f, "corrupt magic header; expected FSSNEG01")

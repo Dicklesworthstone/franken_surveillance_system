@@ -23,6 +23,24 @@ fn registered_commands_decode_successfully() {
         (&["capabilities", "--json"], FssCommand::Capabilities),
         (&["doctor", "--json"], FssCommand::Doctor),
         (&["status", "--json"], FssCommand::Status),
+        (
+            &["negative-evidence", "help"],
+            FssCommand::NegativeEvidence(Box::new(fss_cli::NegativeEvidenceAction::Help)),
+        ),
+        (
+            &["neg", "list"],
+            FssCommand::NegativeEvidence(Box::new(fss_cli::NegativeEvidenceAction::List {
+                path: None,
+                json: false,
+            })),
+        ),
+        (
+            &["negative", "verify", "--json"],
+            FssCommand::NegativeEvidence(Box::new(fss_cli::NegativeEvidenceAction::Verify {
+                path: None,
+                json: true,
+            })),
+        ),
     ];
 
     for (argv, expected) in cases {
@@ -30,7 +48,7 @@ fn registered_commands_decode_successfully() {
         let result = parse_fss_args(os_args);
         assert!(result.is_ok(), "failed to parse valid argv: {argv:?}");
         if let Ok(cmd) = result {
-            assert_eq!(cmd, *expected, "mismatched command for argv: {argv:?}");
+            assert_eq!(&cmd, expected, "mismatched command for argv: {argv:?}");
         }
     }
 }

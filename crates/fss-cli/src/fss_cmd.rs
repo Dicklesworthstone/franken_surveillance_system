@@ -3,13 +3,16 @@
 
 use std::ffi::OsString;
 
-use crate::error::CliError;
+use crate::error::{CliError, ExitIdentity};
+use crate::negative_evidence_cmd::{
+    NegativeEvidenceAction, execute_negative_evidence, parse_negative_evidence_tokens,
+};
 use crate::token::{ArgToken, tokenize_os_args};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Canonical commands supported by the `fss` CLI.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FssCommand {
     /// Print help and usage information.
     Help,
@@ -21,12 +24,26 @@ pub enum FssCommand {
     Doctor,
     /// Report system status in JSON format.
     Status,
+    /// Negative evidence ledger management.
+    NegativeEvidence(Box<NegativeEvidenceAction>),
+}
+
+impl FssCommand {
+    /// Returns true if JSON envelope output is requested.
+    #[must_use]
+    pub fn is_json(&self) -> bool {
+        match self {
+            Self::Capabilities | Self::Doctor | Self::Status => true,
+            Self::NegativeEvidence(action) => action.is_json(),
+            Self::Help | Self::Version => false,
+        }
+    }
 }
 
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System design skeleton\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json\n  fss status --json\n\nNo camera, drone, model, archive, or alert operation is implemented yet."
+    "Franken Surveillance System design skeleton\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json\n  fss status --json\n  fss negative-evidence <list|verify|append> [--path <file>] [--json]\n\nNo camera, drone, model, archive, or alert operation is implemented yet."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
@@ -71,6 +88,10 @@ pub fn parse_fss_tokens(tokens: &[ArgToken]) -> Result<FssCommand, CliError> {
         }
         "doctor" => parse_json_only_subcommand("doctor", tokens, FssCommand::Doctor),
         "status" => parse_json_only_subcommand("status", tokens, FssCommand::Status),
+        "negative-evidence" | "neg" | "negative" => {
+            let action = parse_negative_evidence_tokens(&tokens[1..])?;
+            Ok(FssCommand::NegativeEvidence(Box::new(action)))
+        }
         unknown => {
             if unknown.starts_with('-') {
                 Err(CliError::UnknownOption {
@@ -147,18 +168,34 @@ fn parse_json_only_subcommand(
 /// Executes a validated `FssCommand` and returns its standard output text.
 #[must_use]
 pub fn execute_fss(command: FssCommand) -> String {
+    execute_fss_with_exit(command).0
+}
+
+/// Executes a validated `FssCommand` and returns output text along with exit identity.
+#[must_use]
+pub fn execute_fss_with_exit(command: FssCommand) -> (String, ExitIdentity) {
     match command {
-        FssCommand::Help => help_text().to_owned(),
-        FssCommand::Version => format!("fss {VERSION}"),
-        FssCommand::Capabilities => format!(
-            "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"design_skeleton\",\"implemented\":[\"semantic_contracts\",\"machine_readable_registries\"],\"not_implemented\":[\"device_acquisition\",\"media_decode\",\"inference\",\"archive_upload\",\"alerts\"]}}"
+        FssCommand::Help => (help_text().to_owned(), ExitIdentity::SUCCESS),
+        FssCommand::Version => (format!("fss {VERSION}"), ExitIdentity::SUCCESS),
+        FssCommand::Capabilities => (
+            format!(
+                "{{\"schema\":\"fss.capabilities.v1\",\"version\":\"{VERSION}\",\"status\":\"design_skeleton\",\"implemented\":[\"semantic_contracts\",\"machine_readable_registries\"],\"not_implemented\":[\"device_acquisition\",\"media_decode\",\"inference\",\"archive_upload\",\"alerts\"]}}"
+            ),
+            ExitIdentity::SUCCESS,
         ),
-        FssCommand::Doctor => format!(
-            "{{\"schema\":\"fss.doctor.v1\",\"version\":\"{VERSION}\",\"verdict\":\"design_only\",\"checks\":[{{\"id\":\"core.contracts\",\"status\":\"present\"}},{{\"id\":\"runtime.acquisition\",\"status\":\"not_implemented\"}},{{\"id\":\"release.qualification\",\"status\":\"not_qualified\"}}]}}"
+        FssCommand::Doctor => (
+            format!(
+                "{{\"schema\":\"fss.doctor.v1\",\"version\":\"{VERSION}\",\"verdict\":\"design_only\",\"checks\":[{{\"id\":\"core.contracts\",\"status\":\"present\"}},{{\"id\":\"runtime.acquisition\",\"status\":\"not_implemented\"}},{{\"id\":\"release.qualification\",\"status\":\"not_qualified\"}}]}}"
+            ),
+            ExitIdentity::SUCCESS,
         ),
-        FssCommand::Status => format!(
-            "{{\"schema\":\"fss.status.v1\",\"version\":\"{VERSION}\",\"phase\":\"architecture_constitution\",\"sensors\":[],\"events\":[],\"degraded\":[\"no_runtime_implementation\"]}}"
+        FssCommand::Status => (
+            format!(
+                "{{\"schema\":\"fss.status.v1\",\"version\":\"{VERSION}\",\"phase\":\"architecture_constitution\",\"sensors\":[],\"events\":[],\"degraded\":[\"no_runtime_implementation\"]}}"
+            ),
+            ExitIdentity::SUCCESS,
         ),
+        FssCommand::NegativeEvidence(ref action) => execute_negative_evidence(action),
     }
 }
 

@@ -18,9 +18,9 @@ use std::error::Error;
 
 use fss_core::acquisition::{CaptureDeviceTuple, CaptureRouteKind, Neg001ScenarioLog};
 use fss_core::negative_evidence::{
-    MAX_FAILURE_DOMAINS, MAX_NEG_TEXT_LEN, NEGATIVE_EVIDENCE_FORMAT_VERSION,
-    NEGATIVE_EVIDENCE_LEDGER_MAGIC, NegativeDecision, NegativeEvidenceEntry,
-    NegativeEvidenceError, NegativeEvidenceLedger, NegativeEvidenceSetup,
+    INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST, MAX_FAILURE_DOMAINS, MAX_NEG_TEXT_LEN,
+    NEGATIVE_EVIDENCE_FORMAT_VERSION, NEGATIVE_EVIDENCE_LEDGER_MAGIC, NegativeDecision,
+    NegativeEvidenceEntry, NegativeEvidenceError, NegativeEvidenceLedger, NegativeEvidenceSetup,
     initial_negative_evidence_ledger, provenance_class_as_str,
 };
 use fss_core::{
@@ -33,10 +33,10 @@ fn make_valid_witness(neg_id: &str) -> CoverageWitness {
     CoverageWitness {
         anchor: LedgerAnchor::genesis("site:fss:test"),
         authorized_domain: BTreeSet::from([
-            "domain:negative-evidence:architectural-constraints".to_string(),
+            "domain:negative-evidence:architectural-constraints".to_string()
         ]),
         observed_domain: BTreeSet::from([
-            "domain:negative-evidence:architectural-constraints".to_string(),
+            "domain:negative-evidence:architectural-constraints".to_string()
         ]),
         excluded_domain: BTreeSet::new(),
         continuity: CoverageContinuity::Continuous,
@@ -407,7 +407,11 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     assert_eq!(neg001.knowledge_state, KnowledgeState::Known);
     assert_eq!(neg001.provenance_class, ProvenanceClass::Policy);
     assert_eq!(neg001.disposition, HypothesisDisposition::Refuted);
-    assert!(neg001.revival_condition.contains("official compatible SDK/product listing"));
+    assert!(
+        neg001
+            .revival_condition
+            .contains("official compatible SDK/product listing")
+    );
     assert!(neg001.coverage_witness.certifies_absence());
 
     // Exact NEG-002 doctrine
@@ -416,7 +420,11 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     assert_eq!(neg002.knowledge_state, KnowledgeState::Known);
     assert_eq!(neg002.provenance_class, ProvenanceClass::Policy);
     assert_eq!(neg002.disposition, HypothesisDisposition::Refuted);
-    assert!(neg002.revival_condition.contains("official local API/profile support"));
+    assert!(
+        neg002
+            .revival_condition
+            .contains("Official local API/profile support")
+    );
     assert!(neg002.coverage_witness.certifies_absence());
 
     // Exact NEG-003 doctrine
@@ -425,7 +433,11 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     assert_eq!(neg003.knowledge_state, KnowledgeState::Known);
     assert_eq!(neg003.provenance_class, ProvenanceClass::Policy);
     assert_eq!(neg003.disposition, HypothesisDisposition::Refuted);
-    assert!(neg003.revival_condition.contains("candidate passes every task, license, cost"));
+    assert!(
+        neg003
+            .revival_condition
+            .contains("candidate passes every task, license, cost")
+    );
     assert!(neg003.coverage_witness.certifies_absence());
 
     // Canonical binary roundtrip
@@ -435,9 +447,30 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     assert_eq!(decoded.len(), 3);
     assert_eq!(decoded, ledger);
 
+    // Golden fixture file: bit-level stability assert
+    let fixture_bytes = include_bytes!("../../../tests/fixtures/negative_evidence_ledger_v1.bin");
+    assert_eq!(
+        &binary_bytes[..],
+        &fixture_bytes[..],
+        "bit-level stability mismatch against golden fixture file"
+    );
+
     // Golden fixture: compute and assert sha256 digest of binary representation
     let digest = ContentDigest::sha256(&binary_bytes);
     assert_eq!(digest.algorithm(), DigestAlgorithm::Sha256);
+    assert_eq!(
+        format!("{digest}"),
+        INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST,
+        "golden digest mismatch against pinned constant"
+    );
+
+    // Also assert root_digest() method matches pinned digest
+    let root_dig = ledger.root_digest()?;
+    assert_eq!(
+        format!("{root_dig}"),
+        INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST,
+        "root_digest method mismatch against pinned constant"
+    );
 
     // Verify format version in binary
     assert_eq!(
@@ -448,6 +481,34 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
             binary_bytes[11]
         ]),
         NEGATIVE_EVIDENCE_FORMAT_VERSION
+    );
+
+    // SWARM RULE planted bypass test: any mutation to an entry MUST alter the pinned digest
+    let modified_ledger = initial_negative_evidence_ledger()?;
+    let mut modified_neg001 = modified_ledger
+        .get("NEG-001")
+        .ok_or("NEG-001 missing")?
+        .clone();
+    modified_neg001.hypothesis = "Subtly altered hypothesis text".to_string();
+    let mut reconstructed = NegativeEvidenceLedger::new();
+    reconstructed.append(modified_neg001)?;
+    reconstructed.append(
+        modified_ledger
+            .get("NEG-002")
+            .ok_or("NEG-002 missing")?
+            .clone(),
+    )?;
+    reconstructed.append(
+        modified_ledger
+            .get("NEG-003")
+            .ok_or("NEG-003 missing")?
+            .clone(),
+    )?;
+    let modified_digest = reconstructed.root_digest()?;
+    assert_ne!(
+        format!("{modified_digest}"),
+        INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST,
+        "mutated entry must not match pinned freeze digest"
     );
 
     Ok(())

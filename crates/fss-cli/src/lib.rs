@@ -11,6 +11,7 @@ pub mod error;
 pub mod fss_cmd;
 pub mod hydration_cmd;
 pub mod lab_cmd;
+pub mod negative_evidence_cmd;
 pub mod redact;
 pub mod token;
 
@@ -29,7 +30,8 @@ pub use error::{
     ERR_CLI_UNEXPECTED_POSITIONAL, ERR_CLI_UNKNOWN_COMMAND, ERR_CLI_UNKNOWN_OPTION, ExitIdentity,
 };
 pub use fss_cmd::{
-    FssCommand, execute_fss, help_text as fss_help_text, parse_fss_args, parse_fss_tokens,
+    FssCommand, execute_fss, execute_fss_with_exit, help_text as fss_help_text, parse_fss_args,
+    parse_fss_tokens,
 };
 pub use hydration_cmd::{
     HydrationAction, VALID_HYDRATION_SCENARIOS, help_text as hydration_help_text,
@@ -38,6 +40,10 @@ pub use hydration_cmd::{
 pub use lab_cmd::{
     LabAction, VALID_SCENARIOS as VALID_LAB_SCENARIOS, help_text as lab_help_text, parse_lab_args,
     parse_lab_tokens,
+};
+pub use negative_evidence_cmd::{
+    NegativeEvidenceAction, execute_negative_evidence, format_agent_response_envelope,
+    help_text as negative_evidence_help_text, parse_negative_evidence_tokens,
 };
 pub use redact::{
     is_safe_to_echo, is_sensitive_standalone_flag, redact_argument, redact_sensitive_bytes,
