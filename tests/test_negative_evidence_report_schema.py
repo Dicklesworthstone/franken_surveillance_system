@@ -106,6 +106,19 @@ class NegativeEvidenceReportSchemaTests(unittest.TestCase):
             self.assertEqual(report["epistemicState"], expected)
             self.assertEqual(report["entryCount"], len(report["entries"]))
 
+    def test_epistemic_state_is_consistent_with_counts_in_every_golden(self) -> None:
+        for path in sorted(GOLDEN_DIR.glob("*.json")):
+            report = load(path)
+            counts = report["knowledgeStateCounts"]
+            with self.subTest(golden=path.name):
+                self.assertEqual(sum(counts.values()), report["entryCount"] or 0)
+                if report["epistemicState"] is None:
+                    # Never upgraded: null means no entries or more than one state.
+                    self.assertNotEqual(len(counts), 1)
+                else:
+                    # A state such as "known" is reported only when every entry has it.
+                    self.assertEqual(counts, {report["epistemicState"]: report["entryCount"]})
+
     def test_append_report_does_not_upgrade_mixed_states(self) -> None:
         report = load(GOLDEN_DIR / "append_witnessed.json")
         self.assertEqual(report["knowledgeStateCounts"], {"known": 1, "unknown": 3})

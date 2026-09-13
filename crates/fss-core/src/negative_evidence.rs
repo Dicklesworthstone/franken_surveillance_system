@@ -998,11 +998,13 @@ impl NegativeEvidenceLedger {
     ///
     /// The caller cannot assert the revival condition; it must be evidenced by `evidence_id`, a
     /// row already appended to this ledger (immutable, validated, append-only) that links
-    /// `supersedes == neg_id`, is the current head of its supersession chain (nothing later
-    /// supersedes it), re-tests the target's exact hypothesis, is locally certified with a proof
-    /// hash and a retained evidence reference, has `observed` or `derived` provenance, and records
-    /// the hypothesis as `supported`. A tombstoned target or evidence row, and a target whose
-    /// disposition is already `superseded` or `resolved`, are refused.
+    /// `supersedes == neg_id`, is the current head of its own supersession chain (nothing later
+    /// supersedes it), is the latest row superseding the target (a later row superseding the
+    /// same target, such as a refutation, overrides it), re-tests the target's exact hypothesis,
+    /// is locally certified with a proof hash and a retained evidence reference, has `observed`
+    /// or `derived` provenance, is `known`, and records the hypothesis as `supported`. A
+    /// tombstoned target or evidence row, and a target whose disposition is already `superseded`
+    /// or `resolved`, are refused.
     pub fn verify_revival_condition(
         &self,
         neg_id: &str,
@@ -1052,6 +1054,19 @@ impl NegativeEvidenceLedger {
                 successor.neg_id
             )));
         }
+        // Entries are in canonical order, so the last row superseding the target is the latest.
+        if let Some(latest) = self
+            .entries
+            .iter()
+            .rev()
+            .find(|entry| entry.supersedes.as_deref() == Some(neg_id))
+            && latest.neg_id != evidence_id
+        {
+            return Err(unmet(format!(
+                "'{}' supersedes '{neg_id}' after evidence row '{evidence_id}'; revival requires the latest row superseding the target",
+                latest.neg_id
+            )));
+        }
         if evidence.hypothesis != target.hypothesis {
             return Err(unmet(format!(
                 "evidence row '{evidence_id}' tests a different hypothesis than '{neg_id}'"
@@ -1079,6 +1094,12 @@ impl NegativeEvidenceLedger {
             return Err(unmet(format!(
                 "evidence row '{evidence_id}' has '{}' provenance; revival requires locally observed or derived evidence",
                 provenance_class_as_str(evidence.provenance_class)
+            )));
+        }
+        if evidence.knowledge_state != KnowledgeState::Known {
+            return Err(unmet(format!(
+                "evidence row '{evidence_id}' has knowledge state '{}'; revival requires 'known'",
+                evidence.knowledge_state.as_str()
             )));
         }
         if evidence.disposition != HypothesisDisposition::Supported {

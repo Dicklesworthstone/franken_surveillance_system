@@ -795,3 +795,130 @@ fn test_cli_aliases_and_subcommand_dispatch() -> Result<(), Box<dyn Error>> {
     }
     Ok(())
 }
+
+struct TempDirGuard(PathBuf);
+
+impl Drop for TempDirGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A seeded ledger at `<base>/real/real.bin` and a symlink to it at `<base>/links/link.bin`,
+/// in a different directory so lock and temp placement must follow the real file.
+#[cfg(unix)]
+fn symlinked_ledger(prefix: &str) -> Result<(TempDirGuard, PathBuf, PathBuf), Box<dyn Error>> {
+    let base = temp_file_path(prefix).with_extension("d");
+    let real_dir = base.join("real");
+    let link_dir = base.join("links");
+    fs::create_dir_all(&real_dir)?;
+    fs::create_dir_all(&link_dir)?;
+    let guard = TempDirGuard(base);
+    let real = real_dir.join("real.bin");
+    fs::write(
+        &real,
+        initial_negative_evidence_ledger()?.encode_canonical()?,
+    )?;
+    let link = link_dir.join("link.bin");
+    std::os::unix::fs::symlink(&real, &link)?;
+    Ok((guard, real, link))
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_append_via_symlink_updates_the_real_ledger() -> Result<(), Box<dyn Error>> {
+    let (_guard, real, link) = symlinked_ledger("symlink_single")?;
+    let link_str = link.to_str().ok_or("non-unicode path")?;
+    let (output, code) = run(full_append_argv(link_str, "NEG-004"))?;
+    assert_eq!(code, 0, "{output}");
+    assert!(
+        fs::symlink_metadata(&link)?.file_type().is_symlink(),
+        "the symlink must not be replaced by a regular file"
+    );
+    let ledger = NegativeEvidenceLedger::decode_canonical(&fs::read(&real)?)?;
+    assert_eq!(ledger.len(), 4);
+    assert!(ledger.contains("NEG-004"));
+    assert_no_sidecars(&real)?;
+    assert_no_sidecars(&link)?;
+
+    // The next append through the real path builds on the first; both paths agree.
+    let real_str = real.to_str().ok_or("non-unicode path")?;
+    let (output, code) = run(full_append_argv(real_str, "NEG-005"))?;
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(fs::read(&link)?, fs::read(&real)?);
+    assert_eq!(
+        NegativeEvidenceLedger::decode_canonical(&fs::read(&link)?)?.len(),
+        5
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn test_cli_concurrent_appends_via_symlink_and_real_path_share_one_ledger()
+-> Result<(), Box<dyn Error>> {
+    let bin = env!("CARGO_BIN_EXE_fss");
+    for iteration in 0..20 {
+        let (_guard, real, link) = symlinked_ledger(&format!("symlink_concurrent_{iteration}"))?;
+        let real_str = real.to_str().ok_or("non-unicode path")?.to_owned();
+        let link_str = link.to_str().ok_or("non-unicode path")?.to_owned();
+        let spawn = |path: &str, id: &str| {
+            Command::new(bin)
+                .args(full_append_argv(path, id))
+                .arg("--json")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        };
+        let via_link = spawn(&link_str, "NEG-004")?;
+        let via_real = spawn(&real_str, "NEG-100")?;
+        let outputs = [
+            ("NEG-004", via_link.wait_with_output()?),
+            ("NEG-100", via_real.wait_with_output()?),
+        ];
+
+        assert!(
+            fs::symlink_metadata(&link)?.file_type().is_symlink(),
+            "iteration {iteration}: the symlink was replaced"
+        );
+        let ledger = NegativeEvidenceLedger::decode_canonical(&fs::read(&real)?)?;
+        ledger.verify()?;
+        let mut successes = 0;
+        for (id, output) in &outputs {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            match output.status.code() {
+                Some(0) => {
+                    successes += 1;
+                    assert!(
+                        ledger.contains(id),
+                        "iteration {iteration}: {id} exited 0 but is missing: {text}"
+                    );
+                }
+                Some(1) => {
+                    assert!(
+                        text.contains("ERR-NEG-LEDGER-LOCKED-001")
+                            || text.contains("ERR-NEG-NON-CANONICAL-ORDER-001"),
+                        "iteration {iteration}: unexpected refusal for {id}: {text}"
+                    );
+                    assert!(
+                        !ledger.contains(id),
+                        "iteration {iteration}: refused {id} landed"
+                    );
+                }
+                other => {
+                    return Err(
+                        format!("iteration {iteration}: {id} exited {other:?}: {text}").into(),
+                    );
+                }
+            }
+        }
+        assert_eq!(ledger.len(), 3 + successes, "iteration {iteration}");
+        assert_no_sidecars(&real)?;
+        assert_no_sidecars(&link)?;
+    }
+    Ok(())
+}

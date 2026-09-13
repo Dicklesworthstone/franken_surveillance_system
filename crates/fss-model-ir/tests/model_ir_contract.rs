@@ -431,9 +431,11 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
         .lines()
         .filter(|line| line.starts_with("| `SCHEMA-"))
         .count();
+    // 72 = 71 + SCHEMA-NEGATIVE-EVIDENCE-REPORT-001 (fss.negative_evidence_report.v1, the
+    // `fss negative-evidence --json` report added by fss-x4a.6.12).
     assert_eq!(
-        schema_count, 71,
-        "registries/SCHEMAS.md count must remain pinned at 71"
+        schema_count, 72,
+        "registries/SCHEMAS.md count must remain pinned at 72"
     );
     Ok(())
 }

@@ -1557,3 +1557,59 @@ fn test_neg001_scenario_log_bridge() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+#[test]
+fn test_revival_requires_the_latest_row_superseding_the_target() -> Result<(), Box<dyn Error>> {
+    let mut ledger = initial_negative_evidence_ledger()?;
+    let neg001 = entry_of(&ledger, "NEG-001")?;
+    ledger.append(revival_evidence("NEG-004", &neg001))?;
+    assert!(
+        ledger
+            .verify_revival_condition("NEG-001", "NEG-004")
+            .is_ok()
+    );
+
+    // A later row also supersedes NEG-001 and refutes it: NEG-004 no longer revives NEG-001.
+    let mut refutation = revival_evidence("NEG-005", &neg001);
+    refutation.disposition = HypothesisDisposition::Refuted;
+    ledger.append(refutation)?;
+    match ledger.verify_revival_condition("NEG-001", "NEG-004") {
+        Err(NegativeEvidenceError::RevivalConditionUnmet { reason, .. }) => assert_eq!(
+            reason,
+            "'NEG-005' supersedes 'NEG-001' after evidence row 'NEG-004'; revival requires the latest row superseding the target"
+        ),
+        other => return Err(format!("expected unmet revival, got {other:?}").into()),
+    }
+    // The refutation itself does not revive either.
+    assert_eq!(
+        ledger
+            .verify_revival_condition("NEG-001", "NEG-005")
+            .err()
+            .map(|e| e.error_id()),
+        Some("ERR-NEG-REVIVAL-UNMET-001")
+    );
+    Ok(())
+}
+
+#[test]
+fn test_revival_evidence_must_be_known() -> Result<(), Box<dyn Error>> {
+    for state in [KnowledgeState::Unknown, KnowledgeState::Estimated] {
+        let mut ledger = initial_negative_evidence_ledger()?;
+        let neg001 = entry_of(&ledger, "NEG-001")?;
+        let mut evidence = revival_evidence("NEG-004", &neg001);
+        evidence.knowledge_state = state;
+        assert!(evidence.validate().is_ok(), "{state:?}");
+        ledger.append(evidence)?;
+        match ledger.verify_revival_condition("NEG-001", "NEG-004") {
+            Err(NegativeEvidenceError::RevivalConditionUnmet { reason, .. }) => assert_eq!(
+                reason,
+                format!(
+                    "evidence row 'NEG-004' has knowledge state '{}'; revival requires 'known'",
+                    state.as_str()
+                )
+            ),
+            other => return Err(format!("{state:?}: expected unmet revival, got {other:?}").into()),
+        }
+    }
+    Ok(())
+}
