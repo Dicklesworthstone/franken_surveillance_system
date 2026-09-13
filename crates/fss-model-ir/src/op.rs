@@ -782,11 +782,26 @@ pub fn compute_operator_table_digest() -> Result<ContentDigest, ModelIrError> {
     Ok(ContentDigest::new(DigestAlgorithm::Sha256, digest_bytes))
 }
 
+static TABLE_TAMPERED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+/// Simulates tampering with the operator table freeze state for testing.
+#[doc(hidden)]
+pub fn set_operator_table_tampered_for_test(tampered: bool) {
+    TABLE_TAMPERED.store(tampered, core::sync::atomic::Ordering::SeqCst);
+}
+
 /// Verifies that the live operator table matches the pinned freeze digest.
 ///
 /// # Errors
 /// Returns [`ModelIrError::InvalidAttribute`] if the digest has diverged.
 pub fn verify_operator_table_frozen() -> Result<(), ModelIrError> {
+    if TABLE_TAMPERED.load(core::sync::atomic::Ordering::SeqCst) {
+        return Err(ModelIrError::InvalidAttribute {
+            node_id: "operator_table".to_string(),
+            attr_name: "freeze_digest".to_string(),
+            reason: "operator table freeze digest diverged: table tampered".to_string(),
+        });
+    }
     let computed = compute_operator_table_digest()?;
     if computed.to_string() != OPERATOR_TABLE_FREEZE_DIGEST {
         return Err(ModelIrError::InvalidAttribute {

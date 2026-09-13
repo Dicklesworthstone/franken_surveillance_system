@@ -39,25 +39,44 @@ impl<'a> ProducerId<'a> {
     }
 }
 
+/// Computes total number of elements in a tensor shape in an order-independent manner.
+///
+/// Any zero dimension short-circuits to 0. Otherwise, computes the checked product.
+///
+/// # Errors
+/// Returns [`ModelIrError::ArithmeticOverflow`] if non-zero dimensions overflow `usize`.
+pub fn order_independent_num_elements(shape: &fss_tensor::Shape) -> Result<usize, ModelIrError> {
+    let dims = shape.dims();
+    if dims.contains(&0) {
+        return Ok(0);
+    }
+    let mut count: usize = 1;
+    for &d in dims {
+        count = count
+            .checked_mul(d)
+            .ok_or(ModelIrError::ArithmeticOverflow {
+                operation: "tensor element count",
+            })?;
+    }
+    Ok(count)
+}
+
 /// Static validator enforcing topological, type, shape, generation, and IR constraints.
 pub struct GraphValidator;
 
 impl GraphValidator {
-    /// Validates a `ModelIrGraph` against all Model IR v1 rules.
-    ///
-    /// # Checks Performed
-    /// 1. Operator table freeze digest verification.
-    /// 2. IR version compatibility (`ModelIrVersion::V1`).
-    /// 3. Non-empty graph structure (at least one node and one output).
-    /// 4. Valid graph identifier.
-    /// 5. Model generation uniformity on declared inputs and outputs.
-    /// 6. Node ID uniqueness.
-    /// 7. Tensor output name uniqueness (no multiple producers or collisions with inputs).
-    /// 8. Dangling tensor inputs (all node inputs must be declared or produced).
-    /// 9. Dangling graph outputs (all outputs must be declared or produced).
-    /// 10. Cycle detection and topological ordering (graph must be a strict DAG).
-    /// 11. Node operator validation, port counts, and dtype/shape inference.
-    /// 12. Conformance of declared outputs against inferred output types and shapes.
+    /// Validates all semantic and topological rules of a `ModelIrGraph`:
+    /// 1. IR version compatibility (strictly V1).
+    /// 2. Graph is non-empty (at least one node and one output).
+    /// 3. Valid graph ID.
+    /// 4. Generation uniformity (all inputs/outputs match graph generation).
+    /// 5. Node ID uniqueness across all nodes.
+    /// 6. Output tensor name uniqueness (no collisions between inputs and nodes or across nodes).
+    /// 7. Dangling input check (every node input must be a graph input or produced by another node).
+    /// 8. Acyclic topological ordering (no cycles).
+    /// 9. Closed operator admissibility against the normative operator table.
+    /// 10. Operator input/output port counts, data type compatibility, attribute schemas, and shape inference.
+    /// 11. Conformance of declared outputs against inferred output types and shapes.
     ///
     /// # Errors
     /// Returns a typed [`ModelIrError`] detailing the exact violation.
@@ -66,11 +85,22 @@ impl GraphValidator {
         crate::op::verify_operator_table_frozen()?;
 
         // 1. IR version compatibility
-        if graph.version() != ModelIrVersion::V1 {
-            return Err(ModelIrError::VersionMismatch {
-                expected: ModelIrVersion::V1.as_u32(),
-                actual: graph.version().as_u32(),
-            });
+        match graph.version() {
+            ModelIrVersion::V1 => {}
+            ModelIrVersion::Unsupported(1) => {
+                return Err(ModelIrError::InvalidAttribute {
+                    node_id: "graph".to_string(),
+                    attr_name: "version".to_string(),
+                    reason: "version 1 is supported (V1) and cannot be represented as Unsupported"
+                        .to_string(),
+                });
+            }
+            ModelIrVersion::Unsupported(other) => {
+                return Err(ModelIrError::VersionMismatch {
+                    expected: ModelIrVersion::V1.as_u32(),
+                    actual: other,
+                });
+            }
         }
 
         // 2. Non-empty graph
@@ -96,7 +126,7 @@ impl GraphValidator {
                     tensor_name: input.name().to_string(),
                 });
             }
-            input.shape().num_elements().map_err(ModelIrError::from)?;
+            order_independent_num_elements(input.shape())?;
         }
         for output in graph.outputs() {
             if output.generation() != graph.generation() {
@@ -106,7 +136,7 @@ impl GraphValidator {
                     tensor_name: output.name().to_string(),
                 });
             }
-            output.shape().num_elements().map_err(ModelIrError::from)?;
+            order_independent_num_elements(output.shape())?;
         }
 
         // 5. Node ID uniqueness
@@ -215,10 +245,7 @@ impl GraphValidator {
             )?;
 
             for out_port in output_ports {
-                out_port
-                    .shape()
-                    .num_elements()
-                    .map_err(ModelIrError::from)?;
+                order_independent_num_elements(out_port.shape())?;
                 env.insert(out_port.name().to_string(), out_port);
             }
         }

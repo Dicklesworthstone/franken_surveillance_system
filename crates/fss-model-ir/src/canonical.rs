@@ -21,11 +21,6 @@ pub const MODEL_IR_DIGEST_DOMAIN: &[u8] = b"fss.model_ir.v1\0";
 /// Nodes are ordered in deterministic topological order with stable tie-breaking on `node.id()`.
 /// Default operator attributes are normalized so that explicit and implicit defaults encode identically.
 /// Floating point values are canonicalized (-0.0 -> +0.0).
-/// Encodes a `ModelIrGraph` into a deterministic, canonical byte representation.
-///
-/// Nodes are ordered in deterministic topological order with stable tie-breaking on `node.id()`.
-/// Default operator attributes are normalized so that explicit and implicit defaults encode identically.
-/// Floating point values are canonicalized (-0.0 -> +0.0).
 ///
 /// # Errors
 /// Returns [`ModelIrError`] if graph validation fails or arithmetic overflow occurs.
@@ -160,8 +155,33 @@ fn normalize_attributes(
         OpCode::Softmax => {
             if !inputs.is_empty() {
                 let rank = inputs[0].rank();
-                norm.entry("axis".to_string())
-                    .or_insert_with(|| AttrValue::Int(rank.saturating_sub(1) as i64));
+                let canonical_axis = match norm.get("axis") {
+                    Some(AttrValue::Int(a)) => {
+                        if *a < 0 {
+                            (rank as i64 + *a).max(0)
+                        } else {
+                            *a
+                        }
+                    }
+                    _ => rank.saturating_sub(1) as i64,
+                };
+                norm.insert("axis".to_string(), AttrValue::Int(canonical_axis));
+            }
+        }
+        OpCode::Concat => {
+            if !inputs.is_empty() {
+                let rank = inputs[0].rank();
+                let canonical_axis = match norm.get("axis") {
+                    Some(AttrValue::Int(a)) => {
+                        if *a < 0 {
+                            (rank as i64 + *a).max(0)
+                        } else {
+                            *a
+                        }
+                    }
+                    _ => 0,
+                };
+                norm.insert("axis".to_string(), AttrValue::Int(canonical_axis));
             }
         }
         OpCode::Transpose => {
@@ -185,6 +205,27 @@ fn normalize_attributes(
                 });
                 norm.entry("steps".to_string())
                     .or_insert_with(|| AttrValue::IntList(vec![1; starts_len]));
+            }
+        }
+        OpCode::Squeeze => {
+            if !inputs.is_empty() {
+                let in_dims = inputs[0].shape().dims();
+                if let Some(AttrValue::IntList(list)) = norm.get_mut("axes") {
+                    list.sort_unstable();
+                } else {
+                    let all_ones: Vec<i64> = in_dims
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, d)| **d == 1)
+                        .map(|(idx, _)| idx as i64)
+                        .collect();
+                    norm.insert("axes".to_string(), AttrValue::IntList(all_ones));
+                }
+            }
+        }
+        OpCode::Unsqueeze => {
+            if let Some(AttrValue::IntList(list)) = norm.get_mut("axes") {
+                list.sort_unstable();
             }
         }
         OpCode::MaxPool2d => {
@@ -216,6 +257,23 @@ fn normalize_attributes(
                 .or_insert_with(|| AttrValue::Bool(true));
             norm.entry("bias".to_string())
                 .or_insert_with(|| AttrValue::Bool(true));
+            if let Some(AttrValue::Shape(sh)) = norm.get("normalized_shape") {
+                let int_list: Vec<i64> = sh.dims().iter().map(|&d| d as i64).collect();
+                norm.insert("normalized_shape".to_string(), AttrValue::IntList(int_list));
+            } else if !norm.contains_key("normalized_shape") {
+                if inputs.len() >= 2 {
+                    let int_list: Vec<i64> =
+                        inputs[1].shape().dims().iter().map(|&d| d as i64).collect();
+                    norm.insert("normalized_shape".to_string(), AttrValue::IntList(int_list));
+                } else if let Some(in0) = inputs.first()
+                    && let Some(&last) = in0.shape().dims().last()
+                {
+                    norm.insert(
+                        "normalized_shape".to_string(),
+                        AttrValue::IntList(vec![last as i64]),
+                    );
+                }
+            }
         }
         OpCode::RMSNorm => {
             norm.entry("epsilon".to_string())
@@ -224,6 +282,37 @@ fn normalize_attributes(
                 .or_insert_with(|| AttrValue::Bool(true));
             norm.entry("scale".to_string())
                 .or_insert_with(|| AttrValue::Bool(true));
+            if let Some(AttrValue::Shape(sh)) = norm.get("normalized_shape") {
+                let int_list: Vec<i64> = sh.dims().iter().map(|&d| d as i64).collect();
+                norm.insert("normalized_shape".to_string(), AttrValue::IntList(int_list));
+            } else if !norm.contains_key("normalized_shape") {
+                if inputs.len() >= 2 {
+                    let int_list: Vec<i64> =
+                        inputs[1].shape().dims().iter().map(|&d| d as i64).collect();
+                    norm.insert("normalized_shape".to_string(), AttrValue::IntList(int_list));
+                } else if let Some(in0) = inputs.first()
+                    && let Some(&last) = in0.shape().dims().last()
+                {
+                    norm.insert(
+                        "normalized_shape".to_string(),
+                        AttrValue::IntList(vec![last as i64]),
+                    );
+                }
+            }
+        }
+        OpCode::Embedding => {
+            if inputs.len() >= 2 && inputs[1].rank() == 2 {
+                let weights = &inputs[1];
+                let num_embeddings = weights.shape().dims()[0] as i64;
+                let embedding_dim = weights.shape().dims()[1] as i64;
+                let dtype = weights.dtype();
+                norm.entry("num_embeddings".to_string())
+                    .or_insert_with(|| AttrValue::Int(num_embeddings));
+                norm.entry("embedding_dim".to_string())
+                    .or_insert_with(|| AttrValue::Int(embedding_dim));
+                norm.entry("dtype".to_string())
+                    .or_insert_with(|| AttrValue::DType(dtype));
+            }
         }
         OpCode::Conv2d => {
             norm.entry("dilations".to_string())

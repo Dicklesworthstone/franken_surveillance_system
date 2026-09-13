@@ -44,9 +44,19 @@ impl ModelIrVersion {
     }
 
     /// Constructs an explicit unsupported version tag for compatibility validation.
-    #[must_use]
-    pub const fn unsupported(version: u32) -> Self {
-        Self::Unsupported(version)
+    ///
+    /// # Errors
+    /// Returns [`ModelIrError::InvalidAttribute`] if `version == 1`.
+    pub fn unsupported(version: u32) -> Result<Self, ModelIrError> {
+        if version == 1 {
+            return Err(ModelIrError::InvalidAttribute {
+                node_id: "version".to_string(),
+                attr_name: "version".to_string(),
+                reason: "version 1 is supported (V1) and cannot be constructed as unsupported"
+                    .to_string(),
+            });
+        }
+        Ok(Self::Unsupported(version))
     }
 
     /// Returns `true` if this version is supported by the v1 runtime.
@@ -58,7 +68,10 @@ impl ModelIrVersion {
 
 impl fmt::Display for ModelIrVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "v{}", self.as_u32())
+        match self {
+            Self::V1 => write!(f, "v1"),
+            Self::Unsupported(v) => write!(f, "unsupported_v{v}"),
+        }
     }
 }
 
