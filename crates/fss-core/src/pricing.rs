@@ -293,29 +293,12 @@ impl PricingProvenance {
 /// Converts a [`ProvenanceClass`] to its canonical single-byte tag.
 #[must_use]
 pub const fn provenance_class_to_u8(p: ProvenanceClass) -> u8 {
-    match p {
-        ProvenanceClass::Observed => 1,
-        ProvenanceClass::Derived => 2,
-        ProvenanceClass::Predicted => 3,
-        ProvenanceClass::Remembered => 4,
-        ProvenanceClass::OperatorAsserted => 5,
-        ProvenanceClass::VendorClaimed => 6,
-        ProvenanceClass::Policy => 7,
-    }
+    p.to_code()
 }
 
 /// Decodes a [`ProvenanceClass`] from its canonical single-byte tag.
 pub fn provenance_class_from_u8(val: u8) -> Result<ProvenanceClass, ContractError> {
-    match val {
-        1 => Ok(ProvenanceClass::Observed),
-        2 => Ok(ProvenanceClass::Derived),
-        3 => Ok(ProvenanceClass::Predicted),
-        4 => Ok(ProvenanceClass::Remembered),
-        5 => Ok(ProvenanceClass::OperatorAsserted),
-        6 => Ok(ProvenanceClass::VendorClaimed),
-        7 => Ok(ProvenanceClass::Policy),
-        _ => Err(ContractError::InvalidIdentifier),
-    }
+    ProvenanceClass::from_code(val)
 }
 
 /// One dated rate specification for a cost class or specific provider operation.

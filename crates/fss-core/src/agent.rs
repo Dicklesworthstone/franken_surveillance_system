@@ -457,6 +457,20 @@ impl KnowledgeCell {
     /// `indeterminate`, `not_applicable`) stay valid without evidence, so an honest unknown is
     /// never refused for lacking the support it reports it does not have.
     pub fn validate(&self) -> Result<(), ContractError> {
+        if self.provenance == ProvenanceClass::Predicted
+            && self.knowledge_state == KnowledgeState::Known
+        {
+            return Err(ContractError::PredictedKnownForbidden);
+        }
+        if (self.claim_id.starts_with("claim:predicted:")
+            && self.provenance != ProvenanceClass::Predicted)
+            || (self.claim_id.starts_with("claim:remembered:")
+                && self.provenance != ProvenanceClass::Remembered)
+            || (self.claim_id.starts_with("claim:vendor_claimed:")
+                && self.provenance != ProvenanceClass::VendorClaimed)
+        {
+            return Err(ContractError::EvidenceLaunderingDetected);
+        }
         if matches!(
             self.provenance,
             ProvenanceClass::Observed | ProvenanceClass::Derived
@@ -478,6 +492,20 @@ impl KnowledgeCell {
     }
 
     /// Consumes and returns the cell only when [`Self::validate`] accepts it.
+    /// Verifies that evidence from `prior` is not being laundered into `self` under a stronger
+    /// provenance class without fresh observation or derivation (Constitution §8.3 / AGENTS.md).
+    pub fn verify_no_evidence_laundering(
+        &self,
+        prior: &KnowledgeCell,
+    ) -> Result<(), ContractError> {
+        if prior.provenance.may_launder_evidence_into(self.provenance)
+            && self.evidence.iter().any(|e| prior.evidence.contains(e))
+        {
+            return Err(ContractError::EvidenceLaunderingDetected);
+        }
+        Ok(())
+    }
+
     pub fn validated(self) -> Result<Self, ContractError> {
         self.validate()?;
         Ok(self)
@@ -642,7 +670,7 @@ impl CanonicalEncode for KnowledgeCell {
             encoder.text(&self.statement);
         }
         encoder.text(self.knowledge_state.as_str());
-        encoder.u8(provenance_code(self.provenance));
+        self.provenance.encode_canonical(encoder);
         match self.hypothesis {
             Some(value) => {
                 encoder.bool(true);
@@ -944,8 +972,12 @@ impl SituationFrame {
         {
             return Err(ContractError::StaleAnchor);
         }
-        for cell in &self.knowledge_cells {
+        for (i, cell) in self.knowledge_cells.iter().enumerate() {
             cell.validate()?;
+            for prior in &self.knowledge_cells[..i] {
+                cell.verify_no_evidence_laundering(prior)?;
+                prior.verify_no_evidence_laundering(cell)?;
+            }
         }
         self.world_envelope.validate()
     }
@@ -1318,18 +1350,6 @@ fn encode_text_vec(values: &[String], encoder: &mut CanonicalEncoder) {
 
 fn encode_budget(value: BudgetVector, encoder: &mut CanonicalEncoder) {
     value.encode_to_canonical(encoder);
-}
-
-fn provenance_code(value: ProvenanceClass) -> u8 {
-    match value {
-        ProvenanceClass::Observed => 1,
-        ProvenanceClass::Derived => 2,
-        ProvenanceClass::Predicted => 3,
-        ProvenanceClass::Remembered => 4,
-        ProvenanceClass::OperatorAsserted => 5,
-        ProvenanceClass::VendorClaimed => 6,
-        ProvenanceClass::Policy => 7,
-    }
 }
 
 fn hypothesis_code(value: HypothesisDisposition) -> u8 {

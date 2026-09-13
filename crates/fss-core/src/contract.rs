@@ -364,9 +364,14 @@ impl ProvenanceClass {
     /// Returns whether this provenance class may support an irreversible effect premise.
     ///
     /// CONSTITUTIONAL HARD GATE:
-    /// `Predicted`, `Remembered`, and `VendorClaimed` may NEVER authorize an irreversible effect
-    /// on their own. Even with a `Known` epistemic state, advisory memory, model predictions,
+    /// Per AGT-LAYER-004, INV-069, and the agent contracts registry, derived beliefs belong
+    /// to the Cognition plane, never the Authority plane, and cannot authorize irreversible
+    /// physical effects. `Derived` (PROV-002), `Predicted` (PROV-003), `Remembered` (PROV-004),
+    /// and `VendorClaimed` (PROV-006) may NEVER authorize an irreversible effect premise.
+    /// Even with a `Known` epistemic state, derived beliefs, advisory memory, model predictions,
     /// and unverified vendor device assertions cannot authorize irreversible effects.
+    /// Only directly observed source evidence (`Observed`), explicit human commands
+    /// (`OperatorAsserted`), and explicit root authority (`Policy`) may authorize effects.
     #[must_use]
     pub const fn may_authorize_irreversible_effect(self) -> bool {
         match self {
@@ -410,6 +415,63 @@ impl ProvenanceClass {
     pub const fn is_vendor_claimed(self) -> bool {
         matches!(self, Self::VendorClaimed)
     }
+
+    /// Returns whether reusing evidence from `self` (source provenance) under `target`
+    /// constitutes evidence or confidence laundering without fresh observation or derivation.
+    ///
+    /// CONSTITUTIONAL AND REGISTRY RULES (Constitution §8.3, PROV-001..007, AGENTS.md):
+    /// - PROV-001 (observed): Directly supported by canonical sensor, device, operator, or effect evidence.
+    ///   Sharing canonical evidence between Observed, Derived, and OperatorAsserted is permitted.
+    /// - PROV-002 (derived): Deterministically computed from named canonical inputs.
+    ///   Sharing sensor inputs between Derived and Observed is permitted.
+    /// - PROV-003 (predicted): Counterfactual or forward expectations (never current truth).
+    ///   Predicted evidence digests can NEVER be reused under non-predicted classes
+    ///   (Observed, Derived, Remembered, OperatorAsserted, VendorClaimed, Policy).
+    /// - PROV-004 (remembered): Advisory operational memory from prior episodes that must be
+    ///   revalidated against live evidence. Cannot be relabeled as live Observed, Derived, or
+    ///   OperatorAsserted without fresh live evidence.
+    /// - PROV-006 (vendor_claimed): Boundary metadata not treated as independent physical truth.
+    ///   Cannot be laundered into independent physical Observed or deterministic Derived truth.
+    #[must_use]
+    pub const fn may_launder_evidence_into(self, target: Self) -> bool {
+        match self {
+            Self::Predicted => !matches!(target, Self::Predicted),
+            Self::Remembered => matches!(
+                target,
+                Self::Observed | Self::Derived | Self::OperatorAsserted
+            ),
+            Self::VendorClaimed => matches!(target, Self::Observed | Self::Derived),
+            Self::Observed | Self::Derived | Self::OperatorAsserted | Self::Policy => false,
+        }
+    }
+
+    /// Encodes this provenance class into its canonical 1-based wire byte tag.
+    #[must_use]
+    pub const fn to_code(self) -> u8 {
+        match self {
+            Self::Observed => 1,
+            Self::Derived => 2,
+            Self::Predicted => 3,
+            Self::Remembered => 4,
+            Self::OperatorAsserted => 5,
+            Self::VendorClaimed => 6,
+            Self::Policy => 7,
+        }
+    }
+
+    /// Decodes a [`ProvenanceClass`] from its canonical 1-based wire byte tag.
+    pub const fn from_code(code: u8) -> Result<Self, ContractError> {
+        match code {
+            1 => Ok(Self::Observed),
+            2 => Ok(Self::Derived),
+            3 => Ok(Self::Predicted),
+            4 => Ok(Self::Remembered),
+            5 => Ok(Self::OperatorAsserted),
+            6 => Ok(Self::VendorClaimed),
+            7 => Ok(Self::Policy),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
 }
 
 impl CanonicalEncode for ProvenanceClass {
@@ -421,7 +483,7 @@ impl CanonicalEncode for ProvenanceClass {
 impl CanonicalDecode for ProvenanceClass {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let text = decoder.text()?;
-        Self::from_name(text).or_else(|_| Self::from_id(text))
+        Self::from_name(text)
     }
 }
 
@@ -2747,6 +2809,10 @@ pub enum ContractError {
     HypothesisMissingFalsifier,
     /// An investigation hypothesis cannot claim the `known` knowledge state (AGT-LAYER-006, INV-104).
     HypothesisKnownForbidden,
+    /// Evidence from a weaker provenance class was reused under a stronger provenance class without fresh live observation (AGENTS.md, Constitution §8.3).
+    EvidenceLaunderingDetected,
+    /// A prediction cannot claim the `known` knowledge state (PROV-003, AGENTS.md, Constitution §8.2).
+    PredictedKnownForbidden,
 }
 
 impl ContractError {
@@ -2803,6 +2869,8 @@ impl ContractError {
             Self::CompetingHypothesesRequired => "competing_hypotheses_required",
             Self::HypothesisMissingFalsifier => "hypothesis_missing_falsifier",
             Self::HypothesisKnownForbidden => "hypothesis_known_forbidden",
+            Self::EvidenceLaunderingDetected => "evidence_laundering_detected",
+            Self::PredictedKnownForbidden => "predicted_known_forbidden",
         }
     }
 }
