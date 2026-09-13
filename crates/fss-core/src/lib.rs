@@ -42,8 +42,7 @@ pub use abstraction::{
     AGENT_ABSTRACTIONS_FREEZE_DIGEST, AGENT_ABSTRACTIONS_GENERATION, AgentAbstractionLayer,
     CANONICAL_LAYERS, DerivationInputs, DerivedBelief, DerivedBeliefParams,
     MAX_DERIVED_BELIEF_CONTRADICTIONS, MAX_DERIVED_BELIEF_EVIDENCE, NegativeReadClaim,
-    NegativeReadOutcome, SituationCapsulePublication, SituationCapsulePublicationParams,
-    SituationCapsuleRecord, SourceEvidenceParams, SourceEvidenceRecord, WorldFact, WorldFactKind,
+    NegativeReadOutcome, SourceEvidenceParams, SourceEvidenceRecord, WorldFact, WorldFactKind,
     evaluate_negative_read,
 };
 
@@ -123,11 +122,9 @@ pub use evidence::{
 };
 pub use hydration::{
     HYDRATION_VIEW_ID, H0Identity, H0IdentityParams, H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME,
-    H0_SCHEMA, H1ContentSpec, H1SemanticSynopsis, H1SynopsisParams, H1_CONTENT, H1_LEVEL_ID,
-    H1_LEVEL_NAME, H1_OWNER, H1_SCHEMA, HandleAvailability, HydrationArtifact, HydrationError,
-    HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
+    H0_SCHEMA, HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel,
+    HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
     HydrationRequestSpec, HydrationResponse, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
-    SynopsisClassification, SynopsisQuality,
 };
 pub use identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, DeviceCapabilities,

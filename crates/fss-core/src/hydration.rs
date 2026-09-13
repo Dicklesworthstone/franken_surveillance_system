@@ -21,7 +21,6 @@ mod admission;
 mod artifact;
 mod error;
 mod h0;
-mod h1;
 mod h2;
 mod handle;
 mod receipt;
@@ -31,10 +30,6 @@ pub use artifact::HydrationArtifact;
 pub use error::HydrationError;
 pub use h0::{
     H0Identity, H0IdentityParams, H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA,
-};
-pub use h1::{
-    H1ContentSpec, H1SemanticSynopsis, H1SynopsisParams, SynopsisClassification, SynopsisQuality,
-    H1_CONTENT, H1_LEVEL_ID, H1_LEVEL_NAME, H1_OWNER, H1_SCHEMA,
 };
 pub use h2::{
     AudioFeaturesArtifact, BoundingBox, CropArtifact, DecisionArtifactKind,

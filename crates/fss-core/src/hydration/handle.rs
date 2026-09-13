@@ -183,14 +183,6 @@ impl SemanticHandle {
         )
     }
 
-    /// Extracts the H1 semantic synopsis from this published handle with the given synopsis content.
-    pub fn to_h1_synopsis(
-        &self,
-        content: H1ContentSpec,
-    ) -> Result<H1SemanticSynopsis, HydrationError> {
-        H1SemanticSynopsis::from_semantic_handle(self, content)
-    }
-
     /// Returns the maximum published hydration level.
     #[must_use]
     pub fn maximum_level(&self) -> Option<HydrationLevel> {
