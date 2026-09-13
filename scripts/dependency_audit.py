@@ -28,6 +28,7 @@ import bisect
 import fnmatch
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -390,10 +391,17 @@ class TargetRoot:
     has_forbid_unsafe: bool
 
 
-def load_toml(path: Path) -> dict[str, Any]:
-    value = tomllib.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(value, dict):
-        raise ValueError(f"top-level TOML value is not a table: {path}")
+def load_toml(path: Path, root: Path = ROOT) -> dict[str, Any]:
+    """Bounded, symlink-refusing TOML read through dependency_authority (every directory between ``root``
+    and the file is checked). A refused, oversized or malformed input raises ValueError; an empty file is
+    valid TOML (an empty table)."""
+    try:
+        rel = path.relative_to(root).as_posix()
+    except ValueError:
+        rel = str(path)
+    value, _raw, problems = dependency_authority.load_toml_document(path, rel, root, allow_empty=True)
+    if value is None:
+        raise ValueError("; ".join(p.message for p in problems) or f"cannot read {rel}")
     return value
 
 
@@ -503,7 +511,7 @@ def expand_workspace_members(
         manifest_path = m_dir / "Cargo.toml"
         manifests.append(manifest_path)
         try:
-            m_data = load_toml(manifest_path)
+            m_data = load_toml(manifest_path, root)
             pkg_name = m_data.get("package", {}).get("name")
             if isinstance(pkg_name, str):
                 if pkg_name in member_names:
@@ -798,7 +806,7 @@ def enumerate_dependencies(
     root_cargo_data: dict[str, Any] = {}
     if manifests and manifests[0].is_file():
         try:
-            root_cargo_data = load_toml(manifests[0])
+            root_cargo_data = load_toml(manifests[0], root)
         except Exception:
             pass
     ws_dependencies: dict[str, Any] = {}
@@ -814,7 +822,7 @@ def enumerate_dependencies(
             add(findings, "error", "DEP-AUD-010", manifest, "workspace member manifest is missing", root=root, params={"manifest": manifest})
             continue
         try:
-            data = load_toml(manifest)
+            data = load_toml(manifest, root)
         except Exception as exc:
             add(findings, "error", "DEP-AUD-011", manifest, f"cannot parse TOML: {exc}", root=root, params={"manifest": manifest, "error": str(exc)})
             continue
@@ -905,7 +913,7 @@ def enumerate_dependencies(
                             add(findings, "error", "DEP-AUD-019", manifest, f"path dependency target manifest is missing: {package} -> {raw_path}", root=root, params={"package": package, "raw_path": raw_path, "manifest": manifest})
                         else:
                             try:
-                                target_data = load_toml(target_manifest)
+                                target_data = load_toml(target_manifest, root)
                                 target_pkg_name = target_data.get("package", {}).get("name")
                                 if target_pkg_name != package:
                                     add(
@@ -993,7 +1001,7 @@ def enumerate_dependencies(
 
 
 def direct_dependency_rows(findings: list[Finding], policy: dict[str, Any], root: Path = ROOT) -> list[dict[str, Any]]:
-    root_manifest = load_toml(root / "Cargo.toml")
+    root_manifest = load_toml(root / "Cargo.toml", root)
     manifests, member_names, member_map = expand_workspace_members(root, root_manifest, findings)
     return enumerate_dependencies(root, manifests, member_names, member_map, policy, findings)
 
@@ -1253,8 +1261,10 @@ def serde_durable_bytes_audit(
     (a) a Serde-family codec crate (``SERDE_CODEC_CRATE_PATTERNS``) named, by package identity or
         local key, in any FSS ``[dependencies]``/``[dev-dependencies]``/``[build-dependencies]``/
         ``[target.*.*]``/``[workspace.dependencies]`` table, in Cargo.lock, or in resolved metadata.
-        No allowlist entry type admits a "non-durable" Serde use, so every occurrence is refused;
-        ``[fundamental].allowed_subject_to_audit`` does not override this check;
+        The crate-level refusal is data-driven: a Serde-family crate the allowlist admits
+        (``[fundamental].allowed_subject_to_audit``, not pending an owner decision, not forbidden) is
+        not refused, so the owner decision alone decides. While fss-ndxis is pending, serde and
+        serde_json are refused with the fss-ndxis message;
     (b) ``derive(...Serialize|Deserialize...)``, Serde-family crate paths, ``serde(`` attributes,
         ``extern crate``/``use`` of a Serde-family codec in any FSS Rust source file, after
         comments and literals are masked.
@@ -1269,10 +1279,9 @@ def serde_durable_bytes_audit(
             continue
         manifest_rel = str(row.get("manifest", ""))
         if manifest_rel not in manifest_text:
-            try:
-                manifest_text[manifest_rel] = (root / manifest_rel).read_text(encoding="utf-8")
-            except (OSError, UnicodeDecodeError):
-                manifest_text[manifest_rel] = ""
+            data, _problems = dependency_authority.read_input_bytes(root / manifest_rel, manifest_rel, root, allow_empty=True)
+            text, _decode = dependency_authority.decode_utf8(data, manifest_rel) if data is not None else (None, [])
+            manifest_text[manifest_rel] = text or ""  # the line number is advisory; the finding stands
         line = _toml_key_line(manifest_text[manifest_rel], local_name)
         location = f"{manifest_rel}:{line}" if line is not None else manifest_rel
         pending_note = _pending_note(offending, policy)
@@ -1287,13 +1296,13 @@ def serde_durable_bytes_audit(
         )
 
     lock_path = root / "Cargo.lock"
-    if lock_path.is_file():
-        try:
-            lock_text = lock_path.read_text(encoding="utf-8")
-            lock_data = tomllib.loads(lock_text)
-        except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-            add(findings, "error", "DEP-AUD-011", lock_path, f"cannot parse Cargo.lock; serde-family absence is unproven: {exc}", root=root, params={"manifest": "Cargo.lock", "error": str(exc)})
+    if os.path.lexists(lock_path):  # a symlinked or non-regular lock is refused, not followed or skipped
+        lock_data, lock_raw, lock_problems = dependency_authority.load_toml_document(lock_path, "Cargo.lock", root)
+        if lock_data is None:
+            error = "; ".join(p.message for p in lock_problems)
+            add(findings, "error", "DEP-AUD-011", lock_path, f"cannot parse Cargo.lock; serde-family absence is unproven: {error}", root=root, params={"manifest": "Cargo.lock", "error": error})
         else:
+            lock_text = (lock_raw or b"").decode("utf-8")  # already strictly decoded by the loader
             lock_packages = lock_data.get("package", [])
             for package in lock_packages if isinstance(lock_packages, list) else []:
                 name = package.get("name") if isinstance(package, dict) else None
@@ -1418,7 +1427,7 @@ def build_script_network_audit(
     scripts: dict[Path, Path] = {}
     for manifest in manifests or []:
         try:
-            data = load_toml(manifest)
+            data = load_toml(manifest, root)
         except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError, ValueError):
             continue  # unreadable manifests are reported as DEP-AUD-010/011 by the manifest walk
         package = data.get("package")
@@ -1868,7 +1877,7 @@ def qualify_doctest_audit(findings: list[Finding], script: Path, root: Path = RO
 
 def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: list[Path] | None = None) -> dict[str, Any]:
     if manifests is None:
-        root_manifest = load_toml(root / "Cargo.toml")
+        root_manifest = load_toml(root / "Cargo.toml", root)
         local_findings: list[Finding] = []
         manifests, _, _ = expand_workspace_members(root, root_manifest, local_findings)
         for f in local_findings:
@@ -1879,7 +1888,7 @@ def rust_source_audit(findings: list[Finding], root: Path = ROOT, manifests: lis
     all_targets: list[TargetRoot] = []
     for manifest in member_manifests:
         try:
-            data = load_toml(manifest)
+            data = load_toml(manifest, root)
             manifest_rel = sanitize_path(manifest, root)
         except Exception:
             continue
@@ -1939,7 +1948,7 @@ def metadata_audit(
         if shutil.which("rustup") is None:
             return False, "rustup is unavailable", []
         try:
-            channel = load_toml(toolchain_file).get("toolchain", {}).get("channel")
+            channel = load_toml(toolchain_file, root).get("toolchain", {}).get("channel")
         except Exception as exc:
             return False, f"cannot load rust-toolchain.toml: {exc}", []
         if not isinstance(channel, str):
@@ -2194,7 +2203,7 @@ def audit_dependency_classes(
     if root_manifest.is_file():
         try:
             scratch: list[Finding] = []
-            _manifests, workspace_names, _map = expand_workspace_members(root, load_toml(root_manifest), scratch)
+            _manifests, workspace_names, _map = expand_workspace_members(root, load_toml(root_manifest, root), scratch)
             names |= set(workspace_names)
         except Exception:  # a broken root manifest is reported by the manifest audits
             pass
@@ -2360,7 +2369,7 @@ def audit_workspace(
         member_names: set[str] = set()
         member_map: dict[str, Path] = {}
     else:
-        root_cargo_data = load_toml(root_manifest_path)
+        root_cargo_data = load_toml(root_manifest_path, root)
         manifests, member_names, member_map = expand_workspace_members(root, root_cargo_data, findings)
 
     known_manifests = {m.resolve() for m in manifests}
@@ -2391,7 +2400,7 @@ def audit_workspace(
                 params={"manifest": cand_cargo, "path": cand_cargo},
             )
             try:
-                cand_data = load_toml(cand_cargo)
+                cand_data = load_toml(cand_cargo, root)
                 crate_name = cand_data.get("package", {}).get("name", cand_cargo.parent.name)
                 cand_manifest_rel = sanitize_path(cand_cargo, root)
                 discover_crate_targets(cand_cargo.parent, cand_data, crate_name, cand_manifest_rel, root, findings)
@@ -2419,7 +2428,7 @@ def audit_workspace(
         lock_file = root / "Cargo.lock"
         if lock_file.is_file():
             try:
-                lock_data = load_toml(lock_file)
+                lock_data = load_toml(lock_file, root)
                 forbidden_crates = set(policy.get("forbidden", {}).get("crates", []))
                 for pkg in lock_data.get("package", []):
                     pkg_name = pkg.get("name")
@@ -2450,7 +2459,7 @@ def audit_workspace(
     toolchain_channel = None
     if toolchain_file.is_file():
         try:
-            toolchain_channel = load_toml(toolchain_file).get("toolchain", {}).get("channel")
+            toolchain_channel = load_toml(toolchain_file, root).get("toolchain", {}).get("channel")
         except Exception:
             pass
 

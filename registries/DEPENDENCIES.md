@@ -7,11 +7,13 @@ This file mirrors `architecture/dependencies.json` field by field. `scripts/depe
 |---|---|
 | `schema` | `fss.dependencies.v2` |
 | `generation` | `gen:fss1:dependencies-v2` |
-| `freezeDigest` | `sha256:51cdeb2f41e92f6627c83285777af1c1c3a8fd7f4cae34d4dec2906b57fb75a7` |
+| `freezeDigest` | `sha256:8f198c9ce7b3eca519c678beb4bde773fe42d8bc93b55b9f0af375d38208a9c1` |
 | `sourceDocument` | `registries/DEPENDENCIES.md` |
 | `constitution` | `architecture/dependency_constitution.json` |
 | `policy` | `architecture/dependency_allowlist.toml` |
 | `contractBasis` | `fss.agent_contract_basis.v1` |
+| `ownerRationale` | `Every row is owned by scripts/dependency_audit.py, the module that enforces it. DEP-INV-002 names fss-qualify as the replacement for the Python policy checker, but fss-qualify is not declared in architecture/crate_topology.json, so it cannot be a resolvable owner yet; the owners move to fss-qualify when it is declared, and the registry checker reports the moment it is.` |
+| `futureOwner` | `fss-qualify` |
 
 | ID | Constitution Class | Constitution Classes | Class | Rule | Scope | Status | Superseded By | Tombstone Decision | Owner | Producers | Consumers |
 |---|---|---|---|---|---|---|---|---|---|---|---|

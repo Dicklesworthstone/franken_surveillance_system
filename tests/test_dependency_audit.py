@@ -81,6 +81,35 @@ edition = "2024"
     (src_dir / "lib.rs").write_text("#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8")
 
 
+# Members whose crate_topology.json status is not a present status (skeleton/implemented/qualified).
+# This is the owner's pending topology decision on main (fss-packet, and fss-geometry added by the origin
+# merge); check-policy reports the same pair as "not marked present". Update this one line when the owner
+# registers them, never by bumping a member count.
+LIVE_MEMBERS_NOT_MARKED_PRESENT = {"fss-packet", "fss-geometry"}
+PRESENT_TOPOLOGY_STATUSES = {"skeleton", "implemented", "qualified"}
+
+
+def live_workspace_members(root: Path) -> set[str]:
+    """Package names of the root [workspace].members manifests (the live member set, never a count)."""
+    import tomllib as _tomllib
+    members = _tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["members"]
+    return {_tomllib.loads((root / member / "Cargo.toml").read_text(encoding="utf-8"))["package"]["name"] for member in members}
+
+
+def topology_statuses(root: Path) -> dict[str, str]:
+    import json as _json
+    topology = _json.loads((root / "architecture/crate_topology.json").read_text(encoding="utf-8"))
+    return {crate["name"]: crate.get("status") for layer in topology["layers"] for crate in layer["crates"]}
+
+
+def assert_live_members_match_topology(test: "unittest.TestCase", members: set[str], root: Path) -> None:
+    """Every live member is declared in the topology; the members not marked present are exactly the
+    owner's pending set."""
+    statuses = topology_statuses(root)
+    test.assertEqual(sorted(members - set(statuses)), [], "workspace members undeclared in architecture/crate_topology.json")
+    test.assertEqual({m for m in members if statuses.get(m) not in PRESENT_TOPOLOGY_STATUSES}, LIVE_MEMBERS_NOT_MARKED_PRESENT)
+
+
 class DependencyAuditTests(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
@@ -576,7 +605,12 @@ members = ["crates/crate-a"]
         self.assertEqual(report["errorCount"], 0)
         self.assertEqual(report["schema"], "fss.dependency_audit.v4")
         self.assertGreaterEqual(report["targetRootCount"], 20)
-        self.assertEqual(report["workspaceMemberCount"], 9)
+        # The member set is derived from the live Cargo.toml and held to crate_topology.json; it is not a
+        # pinned count (main's origin merge added fss-geometry, which the topology marks planned).
+        live = live_workspace_members(ROOT)
+        self.assertEqual(report["workspaceMemberCount"], len(live))
+        self.assertEqual(set(report["workspaceMembers"]), live)
+        assert_live_members_match_topology(self, live, ROOT)
 
     def test_finding_1_undeclared_nested_crate_false_green(self) -> None:
         with tempfile.TemporaryDirectory() as td:
