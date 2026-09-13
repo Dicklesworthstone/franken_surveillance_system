@@ -570,8 +570,8 @@ fn test_stale_knowledge_cell_revalidation_and_hard_gate() -> Result<(), Box<dyn 
     let now = TimestampNs(2_000_000_000);
     let evidence = ContentDigest::sha256(b"historical_perimeter_clear_assertion");
 
-    // Evidence present, no contradictions, and validity NOT expired, so only the knowledge
-    // state can refuse the premise.
+    // Evidence present, no contradictions, and validity NOT expired; the stale state (and the
+    // remembered provenance) refuse the premise.
     let cell = KnowledgeCell {
         claim_id: "claim:perimeter:clear:001".to_string(),
         statement: "Perimeter clear at older anchor".to_string(),
@@ -599,11 +599,26 @@ fn test_stale_knowledge_cell_revalidation_and_hard_gate() -> Result<(), Box<dyn 
         "Stale knowledge state must NEVER authorize irreversible effects"
     );
 
-    // The same fixture is a premise once explicitly revalidated as Known (basis dropped), so
-    // the refusal above came from the knowledge state alone.
-    let mut revalidated = cell;
-    revalidated.knowledge_state = KnowledgeState::Known;
-    revalidated.state_basis = None;
+    // Relabeling the remembered cell as Known (basis dropped, same evidence) is laundering, not
+    // revalidation: remembered provenance (PROV-004) never authorizes an irreversible effect.
+    let mut naive_relabel = cell.clone();
+    naive_relabel.knowledge_state = KnowledgeState::Known;
+    naive_relabel.state_basis = None;
+    assert!(!naive_relabel.is_irreversible_effect_premise(now));
+
+    // Revalidation is a fresh observation at the current anchor: observed provenance, new live
+    // evidence distinct from the remembered evidence, no stale basis, and an open validity window.
+    let revalidated = KnowledgeCell {
+        statement: "Perimeter clear at current anchor".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        evidence: vec![ContentDigest::sha256(
+            b"live_perimeter_clear_capture_at_current_anchor",
+        )],
+        state_basis: None,
+        ..cell
+    }
+    .validated()?;
     assert!(revalidated.is_irreversible_effect_premise(now));
 
     Ok(())
