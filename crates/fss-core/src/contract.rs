@@ -2739,6 +2739,20 @@ pub enum ContractError {
     UnknownAbstractionLayer(String),
     /// Attempted to promote decode or model output into source evidence (AGT-LAYER-002, INV-003).
     ProhibitedEvidencePromotion,
+    /// Source evidence lacks an authoritative anchor lineage (AGT-LAYER-002, INV-003).
+    SourceEvidenceMissingAnchor,
+    /// Source evidence not retained under custody requires an explicit omission reason (AGT-LAYER-002, INV-003).
+    SourceEvidenceOmissionRequired,
+    /// Source evidence retained under custody cannot declare an omission reason (AGT-LAYER-002, INV-003).
+    SourceEvidenceRetainedWithOmission,
+    /// Source evidence not retained under custody cannot bind non-empty capsule bytes or non-zero digest (AGT-LAYER-002, INV-003).
+    SourceEvidenceNotRetainedWithCapsuleBytes,
+    /// Source evidence custody byte count does not match capsule source byte count (AGT-LAYER-002, INV-003).
+    SourceEvidenceByteCountMismatch,
+    /// Storage handle for retained source evidence is empty or only whitespace (AGT-LAYER-002, INV-003).
+    SourceEvidenceEmptyStorageHandle,
+    /// Clock basis name string is unrecognized.
+    UnknownClockBasisName(String),
     /// Attempted to collapse uncertainty into truth or resolve an investigation without adjudication (AGT-LAYER-006, INV-104).
     UnadjudicatedUncertaintyCollapse,
     /// An investigation requires at least two competing hypotheses to preserve alternatives (AGT-LAYER-006, INV-104, AGENTS.md).
@@ -2799,6 +2813,15 @@ impl ContractError {
             Self::DerivedBeliefEvidenceOverlap => "derived_belief_evidence_overlap",
             Self::UnknownAbstractionLayer(_) => "unknown_abstraction_layer",
             Self::ProhibitedEvidencePromotion => "prohibited_evidence_promotion",
+            Self::SourceEvidenceMissingAnchor => "source_evidence_missing_anchor",
+            Self::SourceEvidenceOmissionRequired => "source_evidence_omission_required",
+            Self::SourceEvidenceRetainedWithOmission => "source_evidence_retained_with_omission",
+            Self::SourceEvidenceNotRetainedWithCapsuleBytes => {
+                "source_evidence_not_retained_with_capsule_bytes"
+            }
+            Self::SourceEvidenceByteCountMismatch => "source_evidence_byte_count_mismatch",
+            Self::SourceEvidenceEmptyStorageHandle => "source_evidence_empty_storage_handle",
+            Self::UnknownClockBasisName(_) => "unknown_clock_basis_name",
             Self::UnadjudicatedUncertaintyCollapse => "unadjudicated_uncertainty_collapse",
             Self::CompetingHypothesesRequired => "competing_hypotheses_required",
             Self::HypothesisMissingFalsifier => "hypothesis_missing_falsifier",
