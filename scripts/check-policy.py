@@ -15,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import capability_registry_checker
 import dependency_audit
+import dependency_constitution_checker
 import dependency_registry_checker
 import frozen_registry_checker
 import knowledge_state_checker
@@ -838,6 +839,11 @@ def main() -> int:
     dependency_registry_result = dependency_registry_checker.validate_dependency_registry(ROOT)
     if not dependency_registry_result.passed:
         for err in dependency_registry_result.errors:
+            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
+
+    dependency_constitution_result = dependency_constitution_checker.validate_dependency_constitution(ROOT)
+    if not dependency_constitution_result.passed:
+        for err in dependency_constitution_result.errors:
             fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
 
 

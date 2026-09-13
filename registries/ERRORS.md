@@ -177,6 +177,8 @@ operation states rather than generic errors.
 | `ERR-DEP-DIGEST-MISMATCH-001` | dependency registry digest does not match canonical encoding of metadata and rows | recompute canonical dependency registry digest |
 | `ERR-DEP-FREEZE-DIVERGENCE-001` | dependency registry digest diverged from pinned baseline freeze digest | restore frozen dependency registry or bump generation |
 | `ERR-DEP-GENERATION-MISMATCH-001` | dependency registry generation diverged from baseline generation | assign expected generation to dependency registry |
+| `ERR-DEP-CONST-INVARIANT-001` | dependency constitution semantic invariant violated | enforce constitutional admission rule and production closed-universe invariants |
+| `ERR-DEP-CONST-METADATA-VIOLATION-001` | Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0 | ensure all workspace crates compile under rust-2024 without foreign links |
 
 
 

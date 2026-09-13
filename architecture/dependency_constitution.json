@@ -1,6 +1,8 @@
 {
   "schema": "fss.dependency_constitution.v1",
   "asOf": "2026-08-31",
+  "generation": "gen:fss1:dep-constitution-v1",
+  "freezeDigest": "sha256:858af1b5482b25cfca1477c2c4c1967a995d802990aaf0bc7ccf139f73571310",
   "normativePolicy": "architecture/dependency_allowlist.toml",
   "production": {
     "language": "rust-2024",
