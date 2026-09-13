@@ -173,3 +173,22 @@ fss://session/{session}/handoff/{root}
 fss://experience/{capsule}
 fss://doctor/{bundle}
 ```
+
+## Registry drifts
+
+- Row: `PROV-003` (`predicted`)
+  - Target field: `knowledge_state` compatibility (`known`)
+  - Registry text: "Counterfactual or forward prediction under an explicit branch/model and assumptions."
+  - Constitutional authority: `AGENT_COGNITION_AND_CONTROL.md` §8.2: "counterfactual or future expectation, never current truth"
+  - Reconciled invariant: `Predicted` provenance strictly forbids `KnowledgeState::Known` (`Err(ContractError::PredictedKnownForbidden)`)
+  - Status: `reconciled_with_constitution`
+  - Reason: The normative PROV-003 row description defines predicted as forward/counterfactual expectation but does not inline epistemic compatibility constraints. Constitution §8.2 governs and establishes that predictions are never current truth, requiring fail-closed refusal when paired with `known`.
+
+- Row: `KnowledgeCell.evidence` (`lone_cell_untyped_evidence`)
+  - Target field: `evidence`
+  - Registry text: "Evidence digests in KnowledgeCell are ContentDigest values without inline origin provenance."
+  - Constitutional authority: `AGENT_COGNITION_AND_CONTROL.md` §8.3: "derived beliefs cannot become observed"
+  - Reconciled invariant: Single isolated KnowledgeCell with untyped evidence digest cannot be detected as relabelled without sibling or prior context; tracked in follow-up bead `fss-gefi6` (typed evidence references).
+  - Status: `tracked_limitation`
+  - Reason: A lone relabelled cell cannot be detected from the digest alone because ContentDigest is an untyped hash. Full enforcement without sibling/prior context requires typed evidence references carrying origin provenance, tracked under follow-up bead `fss-gefi6`.
+

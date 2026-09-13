@@ -457,6 +457,11 @@ impl KnowledgeCell {
     /// `indeterminate`, `not_applicable`) stay valid without evidence, so an honest unknown is
     /// never refused for lacking the support it reports it does not have.
     pub fn validate(&self) -> Result<(), ContractError> {
+        if self.provenance == ProvenanceClass::Predicted
+            && self.knowledge_state == KnowledgeState::Known
+        {
+            return Err(ContractError::PredictedKnownForbidden);
+        }
         if matches!(
             self.provenance,
             ProvenanceClass::Observed | ProvenanceClass::Derived
@@ -475,6 +480,20 @@ impl KnowledgeCell {
             (Some(_), Some(error)) => Err(error),
             (Some(_), None) => Err(ContractError::KnowledgeStateBasisMismatch),
         }
+    }
+
+    /// Verifies that evidence from `prior` is not being laundered into `self`
+    /// across incompatible provenance classes without fresh live observation (AGENTS.md, Constitution §8.3).
+    pub fn verify_no_evidence_laundering(
+        &self,
+        prior: &KnowledgeCell,
+    ) -> Result<(), ContractError> {
+        if prior.provenance.may_launder_evidence_into(self.provenance)
+            && self.evidence.iter().any(|e| prior.evidence.contains(e))
+        {
+            return Err(ContractError::EvidenceLaunderingDetected);
+        }
+        Ok(())
     }
 
     /// Consumes and returns the cell only when [`Self::validate`] accepts it.
@@ -944,10 +963,15 @@ impl SituationFrame {
         {
             return Err(ContractError::StaleAnchor);
         }
-        for cell in &self.knowledge_cells {
+        self.world_envelope.validate()?;
+
+        for (i, cell) in self.knowledge_cells.iter().enumerate() {
             cell.validate()?;
+            for prior in &self.knowledge_cells[..i] {
+                cell.verify_no_evidence_laundering(prior)?;
+            }
         }
-        self.world_envelope.validate()
+        Ok(())
     }
 
     /// Returns the frame fingerprint.

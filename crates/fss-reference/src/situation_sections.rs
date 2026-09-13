@@ -204,7 +204,7 @@ impl ReferenceSituationPublication {
     /// an invalid capsule has no decision fingerprint.
     pub fn computed_digest(&self) -> Result<ContentDigest, ReferenceError> {
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.reference_situation_publication.v4");
+        encoder.text("fss.reference_situation_publication.v5");
         encoder.digest(self.situation.capsule.decision_fingerprint()?);
         // The publication commits to the compile path's seal, so a sealed publication and the same
         // capsule rebuilt unsealed never share a digest (fss-6sph6).

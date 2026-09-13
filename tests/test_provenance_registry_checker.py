@@ -42,6 +42,7 @@ from provenance_registry_checker import (
     STATES_PERMITTING_EMPTY_EVIDENCE,
     STATES_REQUIRING_EVIDENCE,
     compute_canonical_provenance_digest,
+    extract_rust_may_launder_matrix,
     validate_cell_provenance_invariants,
     validate_provenance_authorization,
     validate_provenance_registry,
@@ -70,6 +71,11 @@ class ProvenanceRegistryCheckerTests(unittest.TestCase):
         shutil.copyfile(
             ROOT / "architecture/agent_contracts.json",
             self.fake_root / "architecture/agent_contracts.json",
+        )
+        (self.fake_root / "crates/fss-core/src").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(
+            ROOT / "crates/fss-core/src/contract.rs",
+            self.fake_root / "crates/fss-core/src/contract.rs",
         )
 
     def _read_json(self) -> dict:
@@ -650,6 +656,35 @@ class ProvenanceRegistryCheckerTests(unittest.TestCase):
         self.assertEqual(parsed["provenanceClassCount"], 7)
         self.assertEqual(parsed["registryDigest"], BASELINE_FREEZE_DIGEST)
         self.assertEqual(parsed["errorCount"], 0)
+
+    def test_may_launder_evidence_table_matches_contract_rs(self) -> None:
+        """The mayLaunderEvidenceInto table in agent_contracts.json must match may_launder_evidence_into in contract.rs."""
+        matrix = extract_rust_may_launder_matrix(ROOT / "crates/fss-core/src/contract.rs")
+        ac_data = self._read_agent_contracts()
+        json_table = ac_data.get("mayLaunderEvidenceInto")
+        self.assertIsInstance(json_table, dict)
+        self.assertEqual(matrix, json_table)
+
+    def test_planted_negative_may_launder_evidence_missing(self) -> None:
+        """Missing mayLaunderEvidenceInto in agent_contracts.json must emit ERR-PROV-MISSING-FIELD-001."""
+        ac_data = self._read_agent_contracts()
+        del ac_data["mayLaunderEvidenceInto"]
+        self._write_agent_contracts(ac_data)
+
+        res = validate_provenance_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_PROV_MISSING_FIELD, {e.code for e in res.errors})
+
+    def test_planted_negative_may_launder_evidence_drift(self) -> None:
+        """Tampered mayLaunderEvidenceInto in agent_contracts.json must emit ERR-PROV-REGISTRY-DRIFT-001."""
+        ac_data = self._read_agent_contracts()
+        # Illegally declare that observed may launder into predicted
+        ac_data["mayLaunderEvidenceInto"]["observed"] = ["predicted"]
+        self._write_agent_contracts(ac_data)
+
+        res = validate_provenance_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_PROV_REGISTRY_DRIFT, {e.code for e in res.errors})
 
 
 if __name__ == "__main__":

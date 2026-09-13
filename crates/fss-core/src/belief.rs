@@ -1037,28 +1037,11 @@ fn reconcile_calibrations(
 }
 
 fn provenance_to_code(val: ProvenanceClass) -> u8 {
-    match val {
-        ProvenanceClass::Observed => 1,
-        ProvenanceClass::Derived => 2,
-        ProvenanceClass::Predicted => 3,
-        ProvenanceClass::Remembered => 4,
-        ProvenanceClass::OperatorAsserted => 5,
-        ProvenanceClass::VendorClaimed => 6,
-        ProvenanceClass::Policy => 7,
-    }
+    val.to_code()
 }
 
 fn provenance_from_code(code: u8) -> Result<ProvenanceClass, ContractError> {
-    match code {
-        1 => Ok(ProvenanceClass::Observed),
-        2 => Ok(ProvenanceClass::Derived),
-        3 => Ok(ProvenanceClass::Predicted),
-        4 => Ok(ProvenanceClass::Remembered),
-        5 => Ok(ProvenanceClass::OperatorAsserted),
-        6 => Ok(ProvenanceClass::VendorClaimed),
-        7 => Ok(ProvenanceClass::Policy),
-        _ => Err(ContractError::NonCanonicalOrdering),
-    }
+    ProvenanceClass::from_code(code).map_err(|_| ContractError::NonCanonicalOrdering)
 }
 
 fn disposition_to_code(val: HypothesisDisposition) -> u8 {
