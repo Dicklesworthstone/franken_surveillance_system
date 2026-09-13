@@ -23,7 +23,7 @@ pub struct MjpegLimits {
     pub max_frame_bytes: usize,
     /// Maximum number of frames permitted in a single stream scan.
     pub max_frames: usize,
-    /// Maximum number of marker segments permitted per frame.
+    /// Maximum number of marker segments permitted per frame (in-frame garbage runs and stray `0xFF00` stuffing also count toward this limit).
     pub max_marker_segments_per_frame: usize,
     /// Maximum width or height permitted in pixels (rejects at SOF read before any decode allocation).
     pub max_dimension: u32,
@@ -128,7 +128,7 @@ pub struct JpegFrameSpan {
     pub has_eoi: bool,
     /// Whether the frame was truncated before a valid EOI marker was observed.
     pub is_truncated: bool,
-    /// Count of marker segments parsed in this frame.
+    /// Count of marker segments parsed in this frame (including in-frame garbage runs and stray `0xFF00` stuffing).
     pub marker_count: usize,
 }
 
@@ -1074,7 +1074,7 @@ pub fn split_jpeg_stream(
                     length: declared_length,
                     available,
                 });
-                current_pos = match find_soi(bytes, current_pos + 2) {
+                current_pos = match find_soi(bytes, current_pos) {
                     Some(next_soi) => next_soi,
                     None => bytes.len(),
                 };
