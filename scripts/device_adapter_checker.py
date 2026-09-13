@@ -289,30 +289,63 @@ def extract_markdown_device_adapters(
     rows: dict[str, tuple[str, str, str, str]] = {}
     errors: list[tuple[str, str]] = []
     lines = md_path.read_text(encoding="utf-8").splitlines()
+
     in_table = False
+    header_found = False
+    separator_found = False
+    table_ended = False
+
+    expected_headers = ["id", "surface", "tier", "current state", "promotion gate"]
+
     for line_num, line in enumerate(lines, start=1):
         stripped = line.strip()
         if not stripped.startswith("|"):
             if in_table and stripped:
                 in_table = False
+                table_ended = True
             continue
 
-        if "---" in stripped:
-            continue
-        if "ID" in stripped and "Surface" in stripped:
-            in_table = True
-            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
 
-        in_table = True
-        parts = [p.strip() for p in stripped.strip("|").split("|")]
-        if len(parts) != 5:
+        if not header_found:
+            # Check if this row is the header row
+            if [c.lower() for c in cells] == expected_headers:
+                header_found = True
+                continue
             errors.append((
                 f"line {line_num}",
-                f"Markdown table row has invalid column count {len(parts)} (expected 5): '{line}'",
+                f"Rogue or unrecognized table row before device adapter table header: '{line}'",
             ))
             continue
 
-        aid = parts[0].replace("`", "").strip()
+        if not separator_found:
+            # The immediate row following header MUST be the separator row
+            if len(cells) == 5 and all(re.fullmatch(r":?-+:?", c) for c in cells):
+                separator_found = True
+                in_table = True
+                continue
+            errors.append((
+                f"line {line_num}",
+                f"Expected markdown table separator row after header, got: '{line}'",
+            ))
+            continue
+
+        if table_ended:
+            errors.append((
+                f"line {line_num}",
+                f"Rogue or unexpected table row after table end: '{line}'",
+            ))
+            continue
+
+        # Parsing data rows inside the table
+        if len(cells) != 5:
+            errors.append((
+                f"line {line_num}",
+                f"Markdown table row has invalid column count {len(cells)} (expected 5): '{line}'",
+            ))
+            continue
+
+        aid = cells[0].replace("`", "").strip()
         if not aid.startswith("ADP-"):
             errors.append((
                 f"line {line_num}",
@@ -327,11 +360,22 @@ def extract_markdown_device_adapters(
             ))
             continue
 
-        surface = parts[1].strip()
-        tier = parts[2].strip()
-        current_state = parts[3].strip()
-        promotion_gate = parts[4].replace("`", "").strip()
+        surface = cells[1].strip()
+        tier = cells[2].strip()
+        current_state = cells[3].strip()
+        promotion_gate = cells[4].replace("`", "").strip()
         rows[aid] = (surface, tier, current_state, promotion_gate)
+
+    if not header_found:
+        errors.append((
+            "header",
+            "Device adapter table header not found in markdown file",
+        ))
+    elif not separator_found:
+        errors.append((
+            "separator",
+            "Device adapter table separator not found in markdown file",
+        ))
 
     return rows, errors
 
