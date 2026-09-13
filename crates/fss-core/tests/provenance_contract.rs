@@ -112,6 +112,114 @@ fn test_observed_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_observed_canonical_decode_rejects_stable_id_strictly_one_to_one()
+-> Result<(), Box<dyn Error>> {
+    // Canonical encoding is strictly one-to-one: decode_canonical accepts ONLY the schema name "observed"
+    // and refuses stable IDs like "PROV-001".
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("PROV-001");
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    assert_eq!(
+        ProvenanceClass::decode_canonical(&mut decoder),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_knowledge_cell_canonical_encode_uses_provenance_canonical_encoding()
+-> Result<(), Box<dyn Error>> {
+    let evidence_digest = ContentDigest::sha256(b"canonical_sensor_evidence_anchor_001");
+    let cell = KnowledgeCell {
+        claim_id: "claim:door:open:001".to_string(),
+        statement: "Physical contact sensor observes door open".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![evidence_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    let mut encoder = CanonicalEncoder::new();
+    cell.encode_canonical(&mut encoder);
+    let bytes = encoder.finish();
+
+    // Verify "observed" appears in the canonical encoding bytes
+    assert!(
+        bytes.windows(8).any(|window| window == b"observed"),
+        "KnowledgeCell canonical encoding must encode provenance via its canonical name 'observed'"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_observed_anti_laundering_from_weaker_provenance_rejected() -> Result<(), Box<dyn Error>> {
+    let predicted_evidence = ContentDigest::sha256(b"forward_prediction_model_evidence");
+
+    let predicted_cell = KnowledgeCell {
+        claim_id: "claim:fire:growth".to_string(),
+        statement: "Model predicts fire expansion".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![predicted_evidence],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    // Attempting to launder the predicted evidence into an Observed cell
+    let laundered_observed_cell = KnowledgeCell {
+        claim_id: "claim:fire:growth".to_string(),
+        statement: "Physical observation of fire expansion".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![predicted_evidence], // SAME evidence digest from predicted!
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    // The anti-laundering check strictly refuses the reused evidence
+    assert_eq!(
+        laundered_observed_cell.verify_no_evidence_laundering(&predicted_cell),
+        Err(ContractError::EvidenceLaunderingDetected)
+    );
+
+    // Fresh, distinct live observation evidence passes anti-laundering
+    let live_evidence = ContentDigest::sha256(b"live_telemetry_optical_sensor_frame_99");
+    let legitimate_observed_cell = KnowledgeCell {
+        evidence: vec![live_evidence],
+        ..laundered_observed_cell
+    };
+    assert!(
+        legitimate_observed_cell
+            .verify_no_evidence_laundering(&predicted_cell)
+            .is_ok()
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_provenance_class_relative_evidentiary_strength() -> Result<(), Box<dyn Error>> {
+    assert!(ProvenanceClass::Observed.strength() > ProvenanceClass::Derived.strength());
+    assert!(ProvenanceClass::Derived.strength() > ProvenanceClass::Predicted.strength());
+    assert!(ProvenanceClass::Derived.strength() > ProvenanceClass::Remembered.strength());
+    assert!(ProvenanceClass::Derived.strength() > ProvenanceClass::VendorClaimed.strength());
+    assert!(ProvenanceClass::Observed.strength() > ProvenanceClass::OperatorAsserted.strength());
+
+    Ok(())
+}
+
+#[test]
 fn test_observed_requires_source_evidence_anchors_fail_closed() -> Result<(), Box<dyn Error>> {
     let evidence_digest = ContentDigest::sha256(b"canonical_sensor_evidence_anchor_001");
 
@@ -239,8 +347,8 @@ fn test_observed_orthogonality_across_epistemic_states() -> Result<(), Box<dyn E
 }
 
 #[test]
-fn test_observed_cell_with_known_state_and_valid_evidence_authorizes_effect(
-) -> Result<(), Box<dyn Error>> {
+fn test_observed_cell_with_known_state_and_valid_evidence_authorizes_effect()
+-> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
     let evidence_digest = ContentDigest::sha256(b"admissible_fire_sensor_packet");
 
@@ -280,8 +388,8 @@ fn test_observed_cell_with_known_state_and_valid_evidence_authorizes_effect(
 }
 
 #[test]
-fn test_non_authorizing_provenances_rejected_for_irreversible_effects_even_when_known(
-) -> Result<(), Box<dyn Error>> {
+fn test_non_authorizing_provenances_rejected_for_irreversible_effects_even_when_known()
+-> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
     let evidence_digest = ContentDigest::sha256(b"admissible_evidence");
 
@@ -321,8 +429,8 @@ fn test_non_authorizing_provenances_rejected_for_irreversible_effects_even_when_
 }
 
 #[test]
-fn test_observed_cannot_authorize_effects_with_non_known_epistemic_states(
-) -> Result<(), Box<dyn Error>> {
+fn test_observed_cannot_authorize_effects_with_non_known_epistemic_states()
+-> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
     let evidence_digest = ContentDigest::sha256(b"admissible_evidence");
 
@@ -516,7 +624,9 @@ fn test_derived_orthogonality_across_epistemic_states() -> Result<(), Box<dyn Er
             }
             KnowledgeState::Indeterminate => {
                 Some(KnowledgeStateBasis::Reconciliation(ReconciliationBasis {
-                    unresolved_outcome_root: ContentDigest::sha256(b"unresolved_derivation_attempt"),
+                    unresolved_outcome_root: ContentDigest::sha256(
+                        b"unresolved_derivation_attempt",
+                    ),
                     branches: std::collections::BTreeSet::from([
                         fss_core::ReconciliationBranch::Occurred,
                         fss_core::ReconciliationBranch::NotOccurred,
@@ -579,7 +689,8 @@ fn test_derived_cell_effect_premise_evaluation() -> Result<(), Box<dyn Error>> {
     // Positive case: Known + Derived + Inputs + No Contradictions + Unexpired
     let valid_cell = KnowledgeCell {
         claim_id: "claim:perimeter:breach:derived".to_string(),
-        statement: "Perimeter breach deterministically proved from multi-sensor fused inputs".to_string(),
+        statement: "Perimeter breach deterministically proved from multi-sensor fused inputs"
+            .to_string(),
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::Derived,
         hypothesis: None,
@@ -877,6 +988,22 @@ fn test_predicted_orthogonality_across_epistemic_states() -> Result<(), Box<dyn 
             state_basis: basis_for(state)?,
         };
 
+        // Per PROV-003 and Constitution §8.2, a prediction is a counterfactual or
+        // forward expectation, never current truth. It is strictly forbidden from claiming
+        // the Known knowledge state.
+        if state == KnowledgeState::Known {
+            assert_eq!(
+                cell.validate(),
+                Err(ContractError::PredictedKnownForbidden),
+                "PROV-003: Predicted cell must refuse KnowledgeState::Known as a prediction is never current truth"
+            );
+            assert_eq!(
+                cell.validated(),
+                Err(ContractError::PredictedKnownForbidden)
+            );
+            continue;
+        }
+
         assert!(
             cell.validate().is_ok(),
             "Validation failed for predicted cell in state {}",
@@ -897,8 +1024,8 @@ fn test_predicted_orthogonality_across_epistemic_states() -> Result<(), Box<dyn 
 }
 
 #[test]
-fn test_predicted_cannot_authorize_irreversible_effects_even_when_known(
-) -> Result<(), Box<dyn Error>> {
+fn test_predicted_cannot_authorize_irreversible_effects_even_when_known()
+-> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
     let model_input_digest = ContentDigest::sha256(b"forward_prediction_model_evidence");
 
@@ -908,7 +1035,8 @@ fn test_predicted_cannot_authorize_irreversible_effects_even_when_known(
     // it MUST NEVER authorize an irreversible physical effect!
     let predicted_known_cell = KnowledgeCell {
         claim_id: "claim:predicted:high_confidence_fire".to_string(),
-        statement: "Forward model predicts 99.9% probability of structural fire propagation".to_string(),
+        statement: "Forward model predicts 99.9% probability of structural fire propagation"
+            .to_string(),
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::Predicted,
         hypothesis: None,
@@ -918,9 +1046,16 @@ fn test_predicted_cannot_authorize_irreversible_effects_even_when_known(
         state_basis: None,
     };
 
-    assert!(predicted_known_cell.validate().is_ok());
-    assert!(predicted_known_cell.is_predicted());
-    assert_eq!(predicted_known_cell.knowledge_state, KnowledgeState::Known);
+    // Per PROV-003 and Constitution §8.2, a prediction is never current truth and cannot claim Known
+    assert_eq!(
+        predicted_known_cell.validate(),
+        Err(ContractError::PredictedKnownForbidden),
+        "Predicted cell claiming Known state must be refused"
+    );
+    assert_eq!(
+        predicted_known_cell.clone().validated(),
+        Err(ContractError::PredictedKnownForbidden)
+    );
 
     // Irreversible effect premise MUST evaluate to false
     assert!(
@@ -928,18 +1063,50 @@ fn test_predicted_cannot_authorize_irreversible_effects_even_when_known(
         "Predicted cell must NEVER authorize irreversible effects even when Known!"
     );
 
-    // Contrast with Observed and Derived, which DO authorize under identical conditions
-    let observed_cell = KnowledgeCell {
+    // Anti-Laundering Hard Gate (Constitution §8.3 / AGENTS.md):
+    // Relabeling the predicted evidence as Observed or Derived does NOT authorize.
+    // The same evidence digest cannot be reused under a stronger provenance.
+    let laundered_observed = KnowledgeCell {
+        claim_id: "claim:predicted:high_confidence_fire".to_string(),
+        statement: "Observed physical fire propagation".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Observed,
-        ..predicted_known_cell.clone()
+        hypothesis: None,
+        evidence: vec![model_input_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
     };
-    assert!(observed_cell.is_irreversible_effect_premise(now));
+    assert_eq!(
+        laundered_observed.verify_no_evidence_laundering(&predicted_known_cell),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "Relabeling predicted evidence to Observed must be rejected as evidence laundering"
+    );
 
-    let derived_cell = KnowledgeCell {
+    let laundered_derived = KnowledgeCell {
+        claim_id: "claim:predicted:high_confidence_fire".to_string(),
+        statement: "Derived fire propagation computation".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![model_input_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    assert_eq!(
+        laundered_derived.verify_no_evidence_laundering(&predicted_known_cell),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "Relabeling predicted evidence to Derived must be rejected as evidence laundering"
+    );
+
+    // Legitimate estimated prediction fails closed for irreversible effects
+    let predicted_estimated_cell = KnowledgeCell {
+        knowledge_state: KnowledgeState::Estimated,
         ..predicted_known_cell
     };
-    assert!(derived_cell.is_irreversible_effect_premise(now));
+    assert!(predicted_estimated_cell.validate().is_ok());
+    assert!(!predicted_estimated_cell.is_irreversible_effect_premise(now));
 
     Ok(())
 }
@@ -952,7 +1119,8 @@ fn test_predicted_counterfactual_branch_and_assumptions_semantics() -> Result<()
     // Predicted cell under explicit branch assumptions and model generation
     let counterfactual_cell = KnowledgeCell {
         claim_id: "claim:counterfactual:temperature_spike".to_string(),
-        statement: "Under delayed suppression branch, server room temp reaches 85C at T+60s".to_string(),
+        statement: "Under delayed suppression branch, server room temp reaches 85C at T+60s"
+            .to_string(),
         knowledge_state: KnowledgeState::Estimated,
         provenance: ProvenanceClass::Predicted,
         hypothesis: None,
@@ -997,12 +1165,26 @@ fn test_predicted_vlm_shortcut_prohibition() -> Result<(), Box<dyn Error>> {
         state_basis: None,
     };
 
-    assert!(vlm_cell.validate().is_ok());
-    assert!(vlm_cell.is_predicted());
+    // Per PROV-003 and Constitution §8.2, a VLM prediction cannot claim Known
+    assert_eq!(
+        vlm_cell.validate(),
+        Err(ContractError::PredictedKnownForbidden),
+        "VLM prediction claiming Known state must be refused"
+    );
+    assert_eq!(
+        vlm_cell.clone().validated(),
+        Err(ContractError::PredictedKnownForbidden)
+    );
 
-    // Fails closed: VLM prediction cannot authorize lockdown or other irreversible effect
+    // Even when legitimately Estimated, VLM prediction fails closed: cannot authorize irreversible effect
+    let vlm_estimated = KnowledgeCell {
+        knowledge_state: KnowledgeState::Estimated,
+        ..vlm_cell
+    };
+    assert!(vlm_estimated.validate().is_ok());
+    assert!(vlm_estimated.is_predicted());
     assert!(
-        !vlm_cell.is_irreversible_effect_premise(now),
+        !vlm_estimated.is_irreversible_effect_premise(now),
         "VLM prediction directly triggering an effect is strictly prohibited"
     );
 
@@ -1175,7 +1357,9 @@ fn test_remembered_orthogonality_across_epistemic_states() -> Result<(), Box<dyn
             }
             KnowledgeState::Indeterminate => {
                 Some(KnowledgeStateBasis::Reconciliation(ReconciliationBasis {
-                    unresolved_outcome_root: ContentDigest::sha256(b"unresolved_memory_reconciliation"),
+                    unresolved_outcome_root: ContentDigest::sha256(
+                        b"unresolved_memory_reconciliation",
+                    ),
                     branches: std::collections::BTreeSet::from([
                         fss_core::ReconciliationBranch::Occurred,
                         fss_core::ReconciliationBranch::NotOccurred,
@@ -1231,8 +1415,8 @@ fn test_remembered_orthogonality_across_epistemic_states() -> Result<(), Box<dyn
 }
 
 #[test]
-fn test_remembered_cannot_authorize_irreversible_effects_even_when_known(
-) -> Result<(), Box<dyn Error>> {
+fn test_remembered_cannot_authorize_irreversible_effects_even_when_known()
+-> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
     let episode_digest = ContentDigest::sha256(b"prior_shift_incident_report_packet");
 
@@ -1262,18 +1446,30 @@ fn test_remembered_cannot_authorize_irreversible_effects_even_when_known(
         "Remembered operational memory must NEVER authorize irreversible effects even when Known!"
     );
 
-    // Contrast with Observed and Derived
-    let observed_cell = KnowledgeCell {
+    // Anti-Laundering Hard Gate (AGENTS.md & Constitution §8.3):
+    // Relabeling a remembered cell as Observed or Derived with the same prior-episode digest
+    // is confidence laundering and must NOT authorize.
+    let laundered_observed = KnowledgeCell {
+        statement: "Observed cooling loop valve 4 as closed".to_string(),
         provenance: ProvenanceClass::Observed,
         ..remembered_known_cell.clone()
     };
-    assert!(observed_cell.is_irreversible_effect_premise(now));
+    assert_eq!(
+        laundered_observed.verify_no_evidence_laundering(&remembered_known_cell),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "Relabeling remembered evidence to Observed without fresh observation must be rejected"
+    );
 
-    let derived_cell = KnowledgeCell {
+    let laundered_derived = KnowledgeCell {
+        statement: "Derived cooling loop valve 4 as closed".to_string(),
         provenance: ProvenanceClass::Derived,
-        ..remembered_known_cell
+        ..remembered_known_cell.clone()
     };
-    assert!(derived_cell.is_irreversible_effect_premise(now));
+    assert_eq!(
+        laundered_derived.verify_no_evidence_laundering(&remembered_known_cell),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "Relabeling remembered evidence to Derived without fresh computation must be rejected"
+    );
 
     Ok(())
 }
@@ -1529,7 +1725,9 @@ fn test_operator_asserted_orthogonality_across_epistemic_states() -> Result<(), 
             }
             KnowledgeState::Indeterminate => {
                 Some(KnowledgeStateBasis::Reconciliation(ReconciliationBasis {
-                    unresolved_outcome_root: ContentDigest::sha256(b"unresolved_operator_instruction"),
+                    unresolved_outcome_root: ContentDigest::sha256(
+                        b"unresolved_operator_instruction",
+                    ),
                     branches: std::collections::BTreeSet::from([
                         fss_core::ReconciliationBranch::Occurred,
                         fss_core::ReconciliationBranch::NotOccurred,
@@ -1555,7 +1753,10 @@ fn test_operator_asserted_orthogonality_across_epistemic_states() -> Result<(), 
     for state in all_states {
         let cell = KnowledgeCell {
             claim_id: format!("claim:operator:{}", state.as_str()),
-            statement: format!("Testing operator_asserted orthogonality for {}", state.as_str()),
+            statement: format!(
+                "Testing operator_asserted orthogonality for {}",
+                state.as_str()
+            ),
             knowledge_state: state,
             provenance: ProvenanceClass::OperatorAsserted,
             hypothesis: None,
@@ -1585,8 +1786,8 @@ fn test_operator_asserted_orthogonality_across_epistemic_states() -> Result<(), 
 }
 
 #[test]
-fn test_operator_asserted_effect_premise_authorization_positive_and_negative(
-) -> Result<(), Box<dyn Error>> {
+fn test_operator_asserted_effect_premise_authorization_positive_and_negative()
+-> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
     let operator_signature = ContentDigest::sha256(b"signed_operator_emergency_halt_authorization");
 
@@ -1636,7 +1837,8 @@ fn test_operator_asserted_effect_premise_authorization_positive_and_negative(
 fn test_operator_asserted_contradiction_and_corroboration_dynamics() -> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
     let operator_claim_digest = ContentDigest::sha256(b"operator_clearance_attestation_ticket");
-    let contradictory_sensor_digest = ContentDigest::sha256(b"radar_detects_personnel_in_hazard_zone");
+    let contradictory_sensor_digest =
+        ContentDigest::sha256(b"radar_detects_personnel_in_hazard_zone");
 
     // 1. Initial operator assertion: Area is clear
     let operator_assertion = KnowledgeCell {
@@ -1658,7 +1860,9 @@ fn test_operator_asserted_contradiction_and_corroboration_dynamics() -> Result<(
     // 2. Later corroboration / contradiction status:
     // Physical radar detects personnel in the zone, producing a contradiction
     let mut contradicted_cell = operator_assertion.clone();
-    contradicted_cell.contradictions.push(contradictory_sensor_digest);
+    contradicted_cell
+        .contradictions
+        .push(contradictory_sensor_digest);
 
     // Contradiction immediately revokes effect authorization (fail closed)
     assert!(!contradicted_cell.is_irreversible_effect_premise(now));
@@ -1680,7 +1884,8 @@ fn test_operator_asserted_audit_identity_and_scope() -> Result<(), Box<dyn Error
 
     let cell = KnowledgeCell {
         claim_id: "claim:op:alice_wright:substation_override".to_string(),
-        statement: "Operator Alice Wright (Badge #9921) asserts manual generator disconnect".to_string(),
+        statement: "Operator Alice Wright (Badge #9921) asserts manual generator disconnect"
+            .to_string(),
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::OperatorAsserted,
         hypothesis: None,
@@ -1701,8 +1906,8 @@ fn test_operator_asserted_audit_identity_and_scope() -> Result<(), Box<dyn Error
 }
 
 #[test]
-fn test_operator_asserted_distinction_from_all_other_provenance_classes(
-) -> Result<(), Box<dyn Error>> {
+fn test_operator_asserted_distinction_from_all_other_provenance_classes()
+-> Result<(), Box<dyn Error>> {
     let all_provenances = [
         ProvenanceClass::Observed,
         ProvenanceClass::Derived,
@@ -1869,7 +2074,9 @@ fn test_vendor_claimed_orthogonality_across_epistemic_states() -> Result<(), Box
             }
             KnowledgeState::Indeterminate => {
                 Some(KnowledgeStateBasis::Reconciliation(ReconciliationBasis {
-                    unresolved_outcome_root: ContentDigest::sha256(b"unresolved_vendor_poll_attempt"),
+                    unresolved_outcome_root: ContentDigest::sha256(
+                        b"unresolved_vendor_poll_attempt",
+                    ),
                     branches: std::collections::BTreeSet::from([
                         fss_core::ReconciliationBranch::Occurred,
                         fss_core::ReconciliationBranch::NotOccurred,
@@ -1895,7 +2102,10 @@ fn test_vendor_claimed_orthogonality_across_epistemic_states() -> Result<(), Box
     for state in all_states {
         let cell = KnowledgeCell {
             claim_id: format!("claim:vendor:{}", state.as_str()),
-            statement: format!("Testing vendor_claimed orthogonality for {}", state.as_str()),
+            statement: format!(
+                "Testing vendor_claimed orthogonality for {}",
+                state.as_str()
+            ),
             knowledge_state: state,
             provenance: ProvenanceClass::VendorClaimed,
             hypothesis: None,
@@ -1925,8 +2135,8 @@ fn test_vendor_claimed_orthogonality_across_epistemic_states() -> Result<(), Box
 }
 
 #[test]
-fn test_vendor_claimed_cannot_authorize_irreversible_effects_even_when_known(
-) -> Result<(), Box<dyn Error>> {
+fn test_vendor_claimed_cannot_authorize_irreversible_effects_even_when_known()
+-> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
     let vendor_event_digest = ContentDigest::sha256(b"vendor_cloud_motion_event_notification");
 
@@ -1983,7 +2193,8 @@ fn test_vendor_claimed_prohibited_shortcut_enforcement() -> Result<(), Box<dyn E
     // 3. "Presenting a mobile screen capture or app automation path as a stable native integration."
     let vendor_cell = KnowledgeCell {
         claim_id: "claim:camera:tamper:vendor".to_string(),
-        statement: "Vendor proprietary push notification claims camera 3 was tampered with".to_string(),
+        statement: "Vendor proprietary push notification claims camera 3 was tampered with"
+            .to_string(),
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::VendorClaimed,
         hypothesis: None,
@@ -2027,7 +2238,8 @@ fn test_vendor_claimed_distinction_from_observed_evidence() -> Result<(), Box<dy
     // 2. Observed evidence: Direct physical sensor measurement with cryptographic custody
     let physical_observation = KnowledgeCell {
         claim_id: "claim:door:status:001".to_string(),
-        statement: "Native GPIO reed switch circuit confirms continuity across physical door frame".to_string(),
+        statement: "Native GPIO reed switch circuit confirms continuity across physical door frame"
+            .to_string(),
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::Observed,
         hypothesis: None,
@@ -2049,7 +2261,8 @@ fn test_vendor_claimed_distinction_from_observed_evidence() -> Result<(), Box<dy
 }
 
 #[test]
-fn test_vendor_claimed_distinction_from_all_other_provenance_classes() -> Result<(), Box<dyn Error>> {
+fn test_vendor_claimed_distinction_from_all_other_provenance_classes() -> Result<(), Box<dyn Error>>
+{
     let all_provenances = [
         ProvenanceClass::Observed,
         ProvenanceClass::Derived,
