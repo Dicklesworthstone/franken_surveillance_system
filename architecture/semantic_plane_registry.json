@@ -38,6 +38,7 @@
     "crates/fss-reference/src/situation_sections.rs"
   ],
   "module_declarations": {
+    "crates/fss-core/src/abstraction.rs": "support",
     "crates/fss-core/src/acquisition.rs": "authority",
     "crates/fss-core/src/agent.rs": "authority",
     "crates/fss-core/src/belief.rs": "cognition",
