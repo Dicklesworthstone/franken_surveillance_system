@@ -2618,7 +2618,8 @@ class TestSloEvidenceInspectionFailures(unittest.TestCase):
         """Plant 5: Measurement declaring NaN or Infinity emits ERR-CLAIM-PROOF-LEVEL-EXCEEDED-001."""
         findings = self.plant(measurement={"actual": "NaN", "cpu_millis": "Infinity"})
         self.assertIn(ERR_CLAIM_LEVEL_EXCEEDED, codes(findings))
-        self.assertEqual(error_code_set(findings), [ERR_CLAIM_LEVEL_EXCEEDED])
+        # Round 5: 'cpu_millis' is also outside the measurement's exact field set.
+        self.assertEqual(error_code_set(findings), sorted([ERR_CLAIM_LEVEL_EXCEEDED, FIELD_UNKNOWN]))
 
     def test_planted_slo_stale_generation_fails(self) -> None:
         """Plant 2c: Measurement artifact with stale generation emits ERR-CLAIM-PROOF-STALE-GENERATION-001."""
@@ -2809,12 +2810,13 @@ class TestSloIndependentReviewBypasses(unittest.TestCase):
 
     def test_item1_missing_or_unrecognised_actual_fails(self) -> None:
         actual = _code("ERR_SLO_ACTUAL_INVALID")
-        for label, measurement in (
-            ("no target and no actual", {"actual": _DROP}),
-            ("actual under unrecognised key p95_ms", {"actual": _DROP, "p95_ms": 1.2}),
+        for label, measurement, expected in (
+            ("no target and no actual", {"actual": _DROP}, [actual]),
+            # Round 5: the lookalike key is an unknown field (exact field set), beside the missing actual.
+            ("actual under unrecognised key p95_ms", {"actual": _DROP, "p95_ms": 1.2}, [actual, FIELD_UNKNOWN]),
         ):
             with self.subTest(case=label):
-                self.assert_fails([actual], measurement=measurement)
+                self.assert_fails(expected, measurement=measurement)
 
     def test_item2_generation_required_and_bound(self) -> None:
         unbound = _code("ERR_SLO_GENERATION_UNBOUND")
@@ -2865,7 +2867,7 @@ class TestSloIndependentReviewBypasses(unittest.TestCase):
         target = _code("ERR_SLO_TARGET_UNBOUND")
         for label, case, expected in (
             ("measurement relaxes the target", {"measurement": {"target": 5.0, "actual": 3.0}}, [target, ERR_CLAIM_LEVEL_EXCEEDED]),
-            ("non-canonical target field", {"measurement": {"target_ms": 5000.0}}, [target]),
+            ("non-canonical target field", {"measurement": {"target_ms": 5000.0}}, [FIELD_UNKNOWN]),  # round 5: exact field set
             ("unit differs from the SLO unit", {"measurement": {"unit": "ms", "actual": 1200.0}}, [target]),
             ("no unit", {"measurement": {"unit": _DROP}}, [target]),
             (
@@ -2888,8 +2890,11 @@ class TestSloIndependentReviewBypasses(unittest.TestCase):
 
     def test_item7_exactly_one_canonical_actual(self) -> None:
         actual = _code("ERR_SLO_ACTUAL_INVALID")
-        self.assert_fails([actual], measurement={"actual": 9.0, "actual_ms": 1.0, "target": 1.5})
-        self.assert_fails([actual], measurement={"actual": 1.2, "achieved": 1.2})
+        # Round 5: an actual-like key is an unknown field (exact field set), and the canonical
+        # actual is compared regardless: 9.0 s misses the 1.5 s target.
+        self.assert_fails([FIELD_UNKNOWN, ERR_CLAIM_LEVEL_EXCEEDED], measurement={"actual": 9.0, "actual_ms": 1.0, "target": 1.5})
+        self.assert_fails([FIELD_UNKNOWN], measurement={"actual": 1.2, "achieved": 1.2})
+        del actual  # the actual-shadow denylist is gone; ERR-CLAIM-SLO-ACTUAL-INVALID-001 is not expected here
 
     def test_item8_class_comes_from_claim_row_not_bundle(self) -> None:
         # (i) an SLO-row claim whose bundle relabels itself 'statistical' (never inspected)
@@ -5496,20 +5501,23 @@ class TestRound4SloCoherence(unittest.TestCase):
                 self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, "statistic": statistic}]), (False, [self.STATISTIC]))
 
     def test_b16_statistic_must_be_exactly_the_targets(self) -> None:
-        for label, override in (
-            ("probe p10 B16", {"statistic": "p50", "percentile": 50}),
-            ("p50", {"statistic": "p50"}),
-            ("missing", {"statistic": _DROP}),
-            ("case", {"statistic": "P95"}),
-            ("padded", {"statistic": " p95"}),
-            ("number", {"statistic": 95}),
-            ("p99.9", {"statistic": "p99.9"}),
-            ("alias beside", {"statistic": "p95", "percentile": 95}),
-            ("alias instead", {"statistic": _DROP, "quantile": "p95"}),
-            ("case-variant key", {"statistic": "p95", "Statistic": "p50"}),
+        # Round 5: a statistic-like key is an unknown field (the measurement's exact field set); the
+        # statistic itself is still compared exactly against the target's.
+        both = sorted([self.STATISTIC, FIELD_UNKNOWN])
+        for label, override, expected in (
+            ("probe p10 B16", {"statistic": "p50", "percentile": 50}, both),
+            ("p50", {"statistic": "p50"}, [self.STATISTIC]),
+            ("missing", {"statistic": _DROP}, [self.STATISTIC]),
+            ("case", {"statistic": "P95"}, [self.STATISTIC]),
+            ("padded", {"statistic": " p95"}, [self.STATISTIC]),
+            ("number", {"statistic": 95}, [self.STATISTIC]),
+            ("p99.9", {"statistic": "p99.9"}, [self.STATISTIC]),
+            ("alias beside", {"statistic": "p95", "percentile": 95}, [FIELD_UNKNOWN]),
+            ("alias instead", {"statistic": _DROP, "quantile": "p95"}, both),
+            ("case-variant key", {"statistic": "p95", "Statistic": "p50"}, [FIELD_UNKNOWN]),
         ):
             with self.subTest(case=label):
-                self.assertEqual(self.run_detect(override), (False, [self.STATISTIC]))
+                self.assertEqual(self.run_detect(override), (False, expected))
 
     def test_declared_target_statistic_passes(self) -> None:
         self.assertEqual(self.run_detect({"statistic": "p95"}), (True, []))
@@ -5816,6 +5824,116 @@ class TestRound5BoundedModel(unittest.TestCase):
             with self.subTest(key=key):
                 entry = {"parameter": "Q_max", "partial": "+10 ms per additional queued frame", key: "x"}
                 self.assertEqual(self.run_bound(derivation={"sensitivity": [entry]}), (False, [FIELD_UNKNOWN]))
+
+
+# ---------------------------------------------------------------------------
+# Round-5 review, 30.87.5: measurement field sets (F3, F6), bounded windows (F4), exact ids (F5)
+# ---------------------------------------------------------------------------
+
+
+# The environment manifest digest build_slo_fixture retains (written with sort_keys, via _write_doc).
+SLO_FIXTURE_ENVIRONMENT_DIGEST = compute_sha256(json.dumps(DEFAULT_ENVIRONMENT_DATA, sort_keys=True).encode("utf-8"))
+
+
+class TestRound5Slo(unittest.TestCase):
+    """Round-5 slo findings (probes p13, p14, p16) as planted tests with exact finding-id sets."""
+
+    TOK = {"unit": "tokens", "actual": 700.0}
+    MS = {"unit": "ms", "actual": 200.0}
+    BINDING = "ERR-CLAIM-PROOF-CLAIM-BINDING-MISMATCH-001"
+    GEN_UNBOUND = "ERR-CLAIM-SLO-GENERATION-UNBOUND-001"
+    ENV = "ERR-CLAIM-SLO-ENVIRONMENT-UNRETAINED-001"
+    STATISTIC = "ERR-CLAIM-SLO-STATISTIC-MISMATCH-001"
+
+    def run_conjuncts(self, measurements: list[dict]):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_slo_bundle(root, build_conjunct_fixture(root, measurements), claim_id=AGENT_SLO_ID)
+            return ok, error_code_set(findings)
+
+    def run_detect(self, measurement: dict | None = None, bundle: dict | None = None):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_slo_bundle(root, build_slo_fixture(root, measurement=measurement, bundle=bundle))
+            return ok, error_code_set(findings)
+
+    def test_controls(self) -> None:
+        self.assertEqual(self.run_detect(), (True, []))
+        self.assertEqual(self.run_conjuncts([self.TOK, self.MS]), (True, []))
+        self.assertEqual(self.run_detect({"environment_manifest_digest": SLO_FIXTURE_ENVIRONMENT_DIGEST}), (True, []))
+
+    # F3: the statistic has one exact field; every lookalike is an unknown field ---------------------
+
+    def test_f3_statistic_lookalikes_beside_the_canonical_statistic(self) -> None:
+        for key, value in (
+            ("summary", {"statistic": "p50"}), ("percentile_rank", 50), ("Percentile ", 50), (" percentile", 50),
+            ("percentile​", 50), ("\ud800", 1), ("stats", "p50"), ("reported_statistic", "p50"), ("pct", 50),
+            ("q", 0.5), ("aggregate_fn", "median"), ("median", True), ("kind", "median"), ("STATISTIC", "p50"),
+            ("metric", "p50_latency"), ("perc", 50), ("p50", 1.2),
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(self.run_detect({"statistic": "p95", key: value}), (False, [FIELD_UNKNOWN]))
+
+    def test_f3_statistic_lookalikes_instead_of_the_canonical_statistic(self) -> None:
+        for key, value in (("percentile_rank", 95), ("pct", 95), ("summary", {"statistic": "p95"}), ("reported_statistic", "p95")):
+            with self.subTest(key=key):
+                self.assertEqual(self.run_detect({"statistic": _DROP, key: value}), (False, sorted([FIELD_UNKNOWN, self.STATISTIC])))
+
+    def test_f3_statistic_lookalikes_on_a_target_naming_none(self) -> None:
+        for key, value in (("percentile_rank", 50), ("summary", {"statistic": "p50"})):
+            with self.subTest(key=key):
+                self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, key: value}]), (False, [FIELD_UNKNOWN]))
+
+    # F6: lookalike keys beside canonical fields ----------------------------------------------------
+
+    def test_f6_lookalike_keys_beside_canonical_fields(self) -> None:
+        stale_window = {"started_at": "2020-01-01T00:00:00Z", "finished_at": "2020-01-01T01:00:00Z"}
+        for key, value in (
+            ("operationId", "COST-GRAPH-001"), ("operation", "COST-GRAPH-001"), ("window", stale_window),
+            ("measurement_window ", stale_window), ("Actual", 1.0), ("actual_ms", 1.0), ("achieved", 1.0),
+            ("target_ms", 5000.0), ("unit ", "s"), ("slo_id​", "SLO-OTHER-001"), ("Operation_id", "COST-GRAPH-001"),
+        ):
+            with self.subTest(key=key):
+                self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, key: value}]), (False, [FIELD_UNKNOWN]))
+
+    def test_f6_extra_keys_inside_the_measurement_window(self) -> None:
+        for key in ("start", "Started_at", "finished_at ", "duration", "\ud800"):
+            with self.subTest(key=key):
+                window = {"started_at": "2026-09-01T00:10:00Z", "finished_at": "2026-09-01T00:20:00Z", key: "2020-01-01T00:00:00Z"}
+                self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, "measurement_window": window}]), (False, [FIELD_UNKNOWN]))
+
+    # F4: a window lies wholly within the registry freshness bound ---------------------------------
+
+    def test_f4_a_window_must_start_within_the_freshness_bound(self) -> None:
+        # The fixture registry bound is SLO_FIXTURE_MAX_AGE_DAYS = 30 days before SLO_NOW (2026-09-02).
+        for label, started in (("year 0001", "0001-01-01T00:00:00+00:00"), ("year 2000", "2000-01-01T00:00:00Z"),
+                               ("31 days before now", "2026-08-02T00:00:00Z")):
+            with self.subTest(case=label):
+                window = slo_window(started, "2026-09-01T00:30:00Z")
+                self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, **window}]), (False, [ERR_STALE_GENERATION]))
+                self.assertEqual(self.run_detect(window), (False, [ERR_STALE_GENERATION]))
+
+    def test_f4_a_window_starting_exactly_at_the_bound_passes(self) -> None:
+        self.assertEqual(self.run_detect(slo_window("2026-08-03T00:00:00Z", "2026-09-01T00:30:00Z")), (True, []))
+
+    # F5: identities are compared byte for byte -----------------------------------------------------
+
+    def test_f5_operation_ids_are_compared_byte_for_byte(self) -> None:
+        for op in (" COST-QUERY-001", "COST-QUERY-001 ", "COST-QUERY-001\xa0", "COST-QUERY-001​", "\tCOST-QUERY-001"):
+            with self.subTest(operation_id=op):
+                self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, "operation_id": op}]), (False, [self.BINDING]))
+        both_padded = [{**self.TOK, "operation_id": " COST-QUERY-001"}, {**self.MS, "operation_id": "COST-QUERY-001 "}]
+        self.assertEqual(self.run_conjuncts(both_padded), (False, [self.BINDING]))
+
+    def test_f5_other_measurement_identities_are_byte_exact(self) -> None:
+        self.assertEqual(self.run_detect({"slo_id": " SLO-DETECT-001"}), (False, [self.BINDING]))
+        self.assertEqual(self.run_detect({"generation": SLO_GENERATION + " "}), (False, [self.GEN_UNBOUND]))
+        self.assertEqual(self.run_detect({"operation_cost_generation": " " + SLO_COST_GENERATION}), (False, [self.GEN_UNBOUND]))
+        for digest in (SLO_FIXTURE_ENVIRONMENT_DIGEST.upper(), " " + SLO_FIXTURE_ENVIRONMENT_DIGEST, SLO_FIXTURE_ENVIRONMENT_DIGEST + "\xa0"):
+            with self.subTest(environment_manifest_digest=digest):
+                self.assertEqual(self.run_detect({"environment_manifest_digest": digest}), (False, [self.ENV]))
+        padded = SLO_GENERATION + " "
+        self.assertEqual(self.run_detect({"generation": padded}, bundle={"generation": padded}), (False, [self.GEN_UNBOUND]))
 
 
 if __name__ == "__main__":

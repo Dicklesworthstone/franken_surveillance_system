@@ -286,7 +286,7 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Record every input with its value and units and the exact arithmetic yielding the derived value",
     },
     ERR_SLO_TARGET_UNBOUND: {
-        "trigger": "An 'slo' claim's target cannot be resolved to exactly one numeric threshold of its registries/SLOS.md row (unregistered, tombstoned, or non-numeric row), the measurement declares no or a different unit, or the measurement restates a target that differs from the row or uses a non-canonical target field",
+        "trigger": "An 'slo' claim's target cannot be resolved to exactly one numeric threshold of its registries/SLOS.md row (unregistered, tombstoned, or non-numeric row), the measurement declares no or a different unit, or the measurement restates a target that differs from the row (a non-canonical target key is an unknown field)",
         "remediation": "Claim only an SLO row with a registered numeric threshold, measure in its exact unit, and never restate or relax the target",
     },
     ERR_SLO_COMPARATOR_OVERRIDE: {
@@ -294,7 +294,7 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Remove the comparator from the measurement; the SLO row alone defines the comparison",
     },
     ERR_SLO_ACTUAL_INVALID: {
-        "trigger": "An 'slo' measurement has no single canonical numeric 'actual': it is missing, non-numeric, boolean, negative, overflowing, present only as a rounded value, or shadowed by another actual-like field",
+        "trigger": "An 'slo' measurement has no single canonical numeric 'actual': it is missing, non-numeric, boolean, negative, overflowing, or present only as a rounded value (an actual-like key is an unknown field)",
         "remediation": "Retain exactly one finite, non-negative numeric 'actual' in the SLO unit; never report only a rounded value",
     },
     ERR_SLO_GENERATION_UNBOUND: {
@@ -314,7 +314,7 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Declare \"schema\": \"fss.proof_bundle.v1\" byte for byte and, when present, a bundle_id of printable ASCII with no whitespace",
     },
     ERR_SLO_STATISTIC_MISMATCH: {
-        "trigger": "An 'slo' measurement's declared 'statistic' is not exactly the statistic its SLO target names (missing, different, not byte-exact, declared for a target that names none, or shadowed by a statistic-like field)",
+        "trigger": "An 'slo' measurement's declared 'statistic' is not exactly the statistic its SLO target names (missing, different, not byte-exact, or declared for a target that names none; a statistic-like key is an unknown field)",
         "remediation": "Declare the single canonical 'statistic' exactly as the SLO target names it (e.g. 'p95'), or none when the target names no statistic",
     },
     ERR_SLO_CONJUNCT_INCOHERENT: {
@@ -512,10 +512,8 @@ SLO_MAX_AGE_RANGE_DAYS = (1, 36500)
 #   CLAUSE  := COMPARATOR NUMBER UNIT        (UNIT: slo_validate.REGISTERED_UNITS; '%' may be glued)
 # A target with no comparator character declares no threshold. Anything else is unbound.
 SLO_TARGET_STATISTICS: frozenset[str] = frozenset({"p50", "p90", "p95", "p99", "p99.9"})
-# The single canonical field naming the statistic a measurement reports, and the statistic-like
-# names that may never stand beside or instead of it.
+# The single canonical field naming the statistic a measurement reports.
 SLO_STATISTIC_FIELD = "statistic"
-SLO_STATISTIC_ALIASES: frozenset[str] = frozenset({"percentile", "quantile", "stat", "aggregate", "aggregation"})
 SLO_TARGET_COMPARATORS: dict[str, str] = {"≤": "<=", "<": "<", "≥": ">=", ">": ">"}
 SLO_TARGET_SUBJECT_PHRASES: frozenset[tuple[str, ...]] = frozenset({
     (),
@@ -558,8 +556,17 @@ _COMPARATOR_ALIASES: dict[str, str] = {
 _SLO_THRESHOLD_RE = re.compile(r"(\u2264|<=|\u2265|>=|<|>)\s*(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)")
 SLO_COMPARATOR_FIELDS = ("comparison", "comparator", "operator")
 SLO_ROUNDED_FIELDS = ("reported_rounded", "reported_rounded_ms", "rounded", "rounded_value", "rounded_ms")
+# Exact field sets of fss.slo_measurement.v1 and its validity window (review round 5, F3/F6): keys
+# are compared byte for byte, so a lookalike of any field (operationId, window, percentile_rank,
+# summary.statistic, target_ms, actual_ms, ...) is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001; it is
+# never ignored, and no denylist has to guess its spelling.
+SLO_MEASUREMENT_FIELDS: frozenset[str] = frozenset({
+    "schema", "slo_id", "operation_id", "generation", "operation_cost_generation", "status",
+    "measurement_window", "unit", SLO_STATISTIC_FIELD, "actual", "environment_manifest_digest", "target",
+    *SLO_COMPARATOR_FIELDS, *SLO_ROUNDED_FIELDS,
+})
+SLO_WINDOW_FIELDS: frozenset[str] = frozenset({"started_at", "finished_at"})
 # Any field that could carry a competing actual value (actual_ms, achieved, observed_*, p95_ms, ...).
-_ACTUAL_ALIAS_RE = re.compile(r"^(?:actual|achieved|observed|measured)(?:_|$)|^p\d{1,3}(?:_|$)|^value$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -1496,14 +1503,17 @@ def _check_slo_window(
     params: dict[str, Any],
     findings: list[ClaimFinding],
 ) -> None:
-    """The measurement window is a real validity interval: both ends zone-qualified ISO-8601,
-    finished strictly after started, not in the future, and no older than the operation-cost
-    row's measurement_max_age_days (an unset bound is reported by the caller, never assumed)."""
+    """The measurement window is a real validity interval: exactly {started_at, finished_at}, both
+    ends zone-qualified ISO-8601, finished strictly after started, not in the future, and wholly
+    within the operation-cost row's measurement_max_age_days of the evaluation instant: its start
+    as well as its end, so an arbitrarily long window cannot satisfy a freshness or coherence
+    rule through its end alone (review F4; an unset bound is reported by the caller, never assumed)."""
     window = meas.get("measurement_window")
     if not isinstance(window, dict):
         findings.append(_finding(ERR_SLO_WINDOW_INVALID, path_str, f"{loc}.measurement_window",
                                  "Measurement declares no measurement_window {started_at, finished_at}", params))
         return
+    _check_allowed_fields(window, SLO_WINDOW_FIELDS, f"Measurement {loc} measurement_window", f"{loc}.measurement_window", path_str, findings, params)
     started_raw, finished_raw = window.get("started_at"), window.get("finished_at")
     started, finished = _parse_instant(started_raw), _parse_instant(finished_raw)
     if started is None or finished is None:
@@ -1530,6 +1540,13 @@ def _check_slo_window(
             f"Measurement window ended at {finished_raw}, older than the registry's measurement_max_age_days "
             f"of {max_age.days} days as of {now.isoformat()}",
             {**params, "finished_at": finished_raw, "max_age_days": max_age.days},
+        ))
+    elif max_age is not None and now - started > max_age:
+        findings.append(_finding(
+            ERR_STALE_GENERATION, path_str, f"{loc}.measurement_window",
+            f"Measurement window started at {started_raw}, older than the registry's measurement_max_age_days "
+            f"of {max_age.days} days as of {now.isoformat()}; a window lies wholly within the freshness bound",
+            {**params, "started_at": started_raw, "max_age_days": max_age.days},
         ))
 
 
@@ -1676,16 +1693,12 @@ def _check_slo_statistic(
 ) -> None:
     """The measured statistic is exactly the one the SLO target names (review round 4, B15/B16): a
     p95 target needs a measurement declaring statistic 'p95' byte for byte; a target naming no
-    statistic takes a measurement declaring none. Missing, different, or aliased fails closed."""
+    statistic takes a measurement declaring none. Missing or different fails closed; a
+    statistic-like key beside or instead of it is outside the measurement's exact field set."""
     def mismatch(message: str) -> None:
         findings.append(_finding(ERR_SLO_STATISTIC_MISMATCH, path_str, f"{loc}.{SLO_STATISTIC_FIELD}", message,
                                  {**params, "target_statistic": statistic}))
 
-    aliases = sorted(k for k in meas if k != SLO_STATISTIC_FIELD and (
-        k.lower() in SLO_STATISTIC_ALIASES or k.lower().startswith(SLO_STATISTIC_FIELD)))
-    if aliases:
-        mismatch(f"Measurement declares statistic-like field(s) {aliases}; the statistic is the single canonical '{SLO_STATISTIC_FIELD}'")
-        return
     if SLO_STATISTIC_FIELD not in meas:
         if statistic is not None:
             mismatch(f"Measurement declares no '{SLO_STATISTIC_FIELD}'; SLO '{claim_id}' target '{row_target}' is a {statistic} target")
@@ -1713,7 +1726,7 @@ def _check_slo_conjunct_coherence(
     the retained manifest and the registry, so they are shared by construction."""
     if len(measurements) < 2:
         return
-    operations = sorted({op for _, meas in measurements if (op := _nonempty_str(meas.get("operation_id"))) is not None})
+    operations = sorted({op for _, meas in measurements if (op := _exact_token(meas.get("operation_id"))) is not None})
     if len(operations) > 1:
         findings.append(_finding(
             ERR_SLO_CONJUNCT_INCOHERENT, path_str, "artifacts",
@@ -1757,8 +1770,10 @@ def _verify_slo_claim_evidence(
       'passed', bound to the claim's SLO id, a registered operation associated with that SLO, the
       bundle generation, and the operation-cost registry generation;
     - a real validity window (ISO-8601, ordered, not future, not older than the operation-cost row's
-      measurement_max_age_days; an unset bound fails closed)
+      measurement_max_age_days, its start as well as its end; an unset bound fails closed)
       evaluated against the injected ``now``;
+    - exact field sets for each measurement and its window, and identities (SLO id, operation,
+      generations, environment digest) compared byte for byte, never stripped;
     - coherent conjuncts: every measurement names the same operation and all validity windows share
       a common instant;
     - the exact statistic the target names ('p95' for a p95 target; none when it names none);
@@ -1784,10 +1799,11 @@ def _verify_slo_claim_evidence(
     findings.extend(slo_registry_findings)
     findings.extend(cost_registry_findings)
 
-    bundle_generation = _nonempty_str(bundle_data.get("generation"))
+    bundle_generation = _exact_token(bundle_data.get("generation"))
     if bundle_generation is None:
         findings.append(_finding(ERR_SLO_GENERATION_UNBOUND, path_str, "generation",
-                                 "SLO claim proof bundle declares no generation", params))
+                                 f"SLO claim proof bundle declares no exact generation (got {bundle_data.get('generation')!r}; never stripped)",
+                                 params))
 
     env_doc, env_reason = _open_role_document(bundle_data, root, "environment_manifest", SLO_ENVIRONMENT_SCHEMA)
     env_digest: str | None = None
@@ -1872,6 +1888,7 @@ def _verify_slo_measurement(
     findings: list[ClaimFinding],
 ) -> None:
     """Checks one retained measurement against the conjunct (threshold) it measures."""
+    _check_allowed_fields(meas, SLO_MEASUREMENT_FIELDS, f"Measurement {loc}", loc, path_str, findings, params)
     if _scan_nan_inf_negative({k: v for k, v in meas.items() if k != "actual"}, path_str, loc, findings):
         return  # the actual itself is judged below, as ERR-CLAIM-SLO-ACTUAL-INVALID-001
 
@@ -1879,20 +1896,27 @@ def _verify_slo_measurement(
         findings.append(_finding(ERR_SLO_MEASUREMENT_NOT_PASSED, path_str, f"{loc}.status",
                                  f"Measurement status {meas.get('status')!r} is not 'passed'", params))
 
-    # Binding: SLO id and registered operation associated with it.
-    meas_slo = _nonempty_str(meas.get("slo_id"))
-    if meas_slo is None:
-        findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.slo_id",
-                                 "Measurement is not bound to an SLO id ('slo_id')", params))
-    elif meas_slo != claim_id:
+    # Binding: SLO id and registered operation associated with it. Identities are compared byte for
+    # byte (review F5): " COST-QUERY-001" or "COST-QUERY-001\xa0" is never stripped into a match.
+    def exact_identity(field: str, code: str, what: str) -> str | None:
+        raw = meas.get(field)
+        token = _exact_token(raw)
+        if token is None:
+            findings.append(_finding(
+                code, path_str, f"{loc}.{field}",
+                f"Measurement declares no exact {what}: '{field}' is {raw!r}, not printable ASCII without whitespace "
+                "(identities are compared byte for byte, never stripped)",
+                params,
+            ))
+        return token
+
+    meas_slo = exact_identity("slo_id", ERR_CLAIM_BINDING_MISMATCH, "SLO id")
+    if meas_slo is not None and meas_slo != claim_id:
         findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.slo_id",
                                  f"Measurement binds SLO '{meas_slo}', expected '{claim_id}'",
                                  {**params, "bound_slo": meas_slo}))
-    meas_op = _nonempty_str(meas.get("operation_id"))
-    if meas_op is None:
-        findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.operation_id",
-                                 "Measurement names no 'operation_id' from the operation-cost registry", params))
-    elif cost_registry is not None:
+    meas_op = exact_identity("operation_id", ERR_CLAIM_BINDING_MISMATCH, "operation id from the operation-cost registry")
+    if meas_op is not None and cost_registry is not None:
         op_row = cost_registry.operations.get(meas_op)
         if op_row is None:
             findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.operation_id",
@@ -1903,41 +1927,27 @@ def _verify_slo_measurement(
                                      f"Operation '{meas_op}' is not associated with SLO '{claim_id}' (slo_ids {op_row['slo_ids']})",
                                      {**params, "operation_id": meas_op}))
 
-    # Generations: required, equal to the bundle's, and bound to the cost-registry generation.
-    meas_generation = _nonempty_str(meas.get("generation"))
-    if meas_generation is None:
-        findings.append(_finding(ERR_SLO_GENERATION_UNBOUND, path_str, f"{loc}.generation",
-                                 "Measurement declares no generation", params))
-    elif bundle_generation is not None and meas_generation != bundle_generation:
+    # Generations: required, exact, equal to the bundle's, and bound to the cost-registry generation.
+    meas_generation = exact_identity("generation", ERR_SLO_GENERATION_UNBOUND, "generation")
+    if meas_generation is not None and bundle_generation is not None and meas_generation != bundle_generation:
         findings.append(_finding(ERR_STALE_GENERATION, path_str, f"{loc}.generation",
                                  f"Measurement generation '{meas_generation}' is not the bundle generation '{bundle_generation}'",
                                  params))
-    cost_generation = _nonempty_str(meas.get("operation_cost_generation"))
-    if cost_generation is None:
-        findings.append(_finding(ERR_SLO_GENERATION_UNBOUND, path_str, f"{loc}.operation_cost_generation",
-                                 "Measurement is not bound to an operation-cost registry generation", params))
-    elif cost_registry is not None and cost_generation != cost_registry.generation:
+    cost_generation = exact_identity("operation_cost_generation", ERR_SLO_GENERATION_UNBOUND, "operation-cost registry generation")
+    if cost_generation is not None and cost_registry is not None and cost_generation != cost_registry.generation:
         findings.append(_finding(ERR_STALE_GENERATION, path_str, f"{loc}.operation_cost_generation",
                                  f"Measurement was taken against operation-cost generation '{cost_generation}', "
                                  f"not the registry's current '{cost_registry.generation}'", params))
 
-    # Environment binding.
-    bound_env = meas.get("environment_manifest_digest")
-    if not isinstance(bound_env, str) or not bound_env.strip():
-        findings.append(_finding(ERR_SLO_ENVIRONMENT_UNRETAINED, path_str, f"{loc}.environment_manifest_digest",
-                                 "Measurement is not bound to a retained environment manifest digest", params))
-    elif env_digest is not None and bound_env.strip().lower() != env_digest:
+    # Environment binding: the retained manifest's digest, byte for byte.
+    bound_env = exact_identity("environment_manifest_digest", ERR_SLO_ENVIRONMENT_UNRETAINED, "environment manifest digest")
+    if bound_env is not None and env_digest is not None and bound_env != env_digest:
         findings.append(_finding(ERR_SLO_ENVIRONMENT_UNRETAINED, path_str, f"{loc}.environment_manifest_digest",
                                  f"Measurement binds environment manifest '{bound_env}', not the retained '{env_digest}'",
                                  params))
 
     _check_slo_window(meas, now, max_age, path_str, loc, params, findings)
 
-    target_aliases = sorted(k for k in meas if k != "target" and k.lower().startswith("target"))
-    if target_aliases:
-        findings.append(_finding(ERR_SLO_TARGET_UNBOUND, path_str, f"{loc}.target",
-                                 f"Measurement declares non-canonical target field(s) {target_aliases}; the target is the SLO row's",
-                                 params))
     if "target" in meas and threshold is not None:
         restated = meas["target"]
         if _finite_number(restated) != threshold.value:
@@ -1960,15 +1970,7 @@ def _verify_slo_measurement(
 
     # Exactly one canonical, finite, non-negative numeric actual; never a rounded value.
     actual: float | None = None
-    shadows = sorted(k for k in meas if k != "actual" and _ACTUAL_ALIAS_RE.match(k))
-    if shadows:
-        findings.append(_finding(
-            ERR_SLO_ACTUAL_INVALID, path_str, f"{loc}.actual",
-            f"Measurement declares actual-like field(s) {shadows} "
-            f"{'beside' if 'actual' in meas else 'instead of'} the single canonical 'actual'",
-            params,
-        ))
-    elif "actual" not in meas:
+    if "actual" not in meas:
         rounded_only = sorted(k for k in meas if k in SLO_ROUNDED_FIELDS)
         findings.append(_finding(
             ERR_SLO_ACTUAL_INVALID, path_str, f"{loc}.actual",
