@@ -4,9 +4,10 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    BudgetVector, CanonicalEncode, CanonicalEncoder, CaptureInterval, Completeness, ContentDigest,
-    ContinuationCursor, ContinuationError, ContinuationScope, ContractBasis, ContractError,
-    LedgerAnchor, RecoveryClass, SessionId, TimestampNs,
+    BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
+    CaptureInterval, Completeness, ContentDigest, ContinuationCursor, ContinuationError,
+    ContinuationScope, ContractBasis, ContractError, LedgerAnchor, RecoveryClass, SessionId,
+    TimestampNs,
 };
 
 const MAX_TEXT_BYTES: usize = 4 * 1024;
@@ -19,12 +20,23 @@ pub const HYDRATION_VIEW_ID: &str = "AVIEW-HYDRATION";
 mod admission;
 mod artifact;
 mod error;
+mod h0;
+mod h2;
 mod handle;
 mod receipt;
 mod request;
 
 pub use artifact::HydrationArtifact;
 pub use error::HydrationError;
+pub use h0::{
+    H0Identity, H0IdentityParams, H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA,
+};
+pub use h2::{
+    AudioFeaturesArtifact, BoundingBox, CropArtifact, DecisionArtifactKind,
+    GraphNeighborhoodArtifact, H2DecisionArtifact, H2DecisionArtifactParams,
+    KeyframeArtifact, RedactedRegion, TrajectoryArtifact, TrajectoryWaypoint,
+    H2_CONTENT, H2_LEVEL_ID, H2_LEVEL_NAME, H2_OWNER, H2_SCHEMA,
+};
 pub use handle::{SemanticHandle, SemanticHandleSpec};
 pub use receipt::{HydrationReceipt, HydrationReceiptSpec, HydrationResponse};
 pub use request::{HydrationRequest, HydrationRequestSpec};
@@ -45,6 +57,9 @@ pub enum HydrationLevel {
 }
 
 impl HydrationLevel {
+    /// All 5 normative hydration ladder levels in progressive order.
+    pub const ALL: [Self; 5] = [Self::H0, Self::H1, Self::H2, Self::H3, Self::H4];
+
     /// Returns the stable registry spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -54,6 +69,48 @@ impl HydrationLevel {
             Self::H2 => "H2",
             Self::H3 => "H3",
             Self::H4 => "H4",
+        }
+    }
+
+    /// Returns the stable identifier (e.g. `H0`).
+    #[must_use]
+    pub const fn level_id(self) -> &'static str {
+        self.as_str()
+    }
+
+    /// Returns the stable registry name for this level.
+    #[must_use]
+    pub const fn level_name(self) -> &'static str {
+        match self {
+            Self::H0 => "identity",
+            Self::H1 => "semantic_synopsis",
+            Self::H2 => "decision_artifact",
+            Self::H3 => "source_evidence",
+            Self::H4 => "laboratory_expansion",
+        }
+    }
+
+    /// Returns the exact normative content declaration from the agent abstraction registry.
+    #[must_use]
+    pub const fn content(self) -> &'static str {
+        match self {
+            Self::H0 => "digest, type, time/spatial bounds, source, availability, cost, and authority",
+            Self::H1 => "typed facts, knowledge states, provenance, contradictions, quality, and omissions",
+            Self::H2 => "authorized redacted keyframes, crops, trajectories, graph neighborhoods, or audio features",
+            Self::H3 => "authorized original encoded packets, object bytes, exact metadata, or full-resolution media",
+            Self::H4 => "replay bundle, intermediates, alternate decoders/models, and oracle comparisons",
+        }
+    }
+
+    /// Returns the owning subsystem for this hydration level.
+    #[must_use]
+    pub const fn owner(self) -> &'static str {
+        match self {
+            Self::H0 => "fss-core/hydration",
+            Self::H1 => "fss-situation/fss-context-pack",
+            Self::H2 => "fss-media/fss-privacy",
+            Self::H3 => "fss-capture/fss-chronicle",
+            Self::H4 => "fss-laboratory/oracle",
         }
     }
 
@@ -89,9 +146,37 @@ impl HydrationLevel {
     }
 }
 
+impl core::str::FromStr for HydrationLevel {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "H0" | "h0" | "identity" => Ok(Self::H0),
+            "H1" | "h1" | "semantic_synopsis" => Ok(Self::H1),
+            "H2" | "h2" | "decision_artifact" => Ok(Self::H2),
+            "H3" | "h3" | "source_evidence" => Ok(Self::H3),
+            "H4" | "h4" | "laboratory_expansion" => Ok(Self::H4),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
+impl fmt::Display for HydrationLevel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.as_str(), self.level_name())
+    }
+}
+
 impl CanonicalEncode for HydrationLevel {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for HydrationLevel {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        text.parse()
     }
 }
 
@@ -115,6 +200,17 @@ pub enum HandleAvailability {
 }
 
 impl HandleAvailability {
+    /// All 7 normative availability states.
+    pub const ALL: [Self; 7] = [
+        Self::Available,
+        Self::Superseded,
+        Self::Deleted,
+        Self::Expired,
+        Self::Corrupt,
+        Self::PrivacyTransformed,
+        Self::NotObservable,
+    ];
+
     /// Returns the stable schema spelling.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -141,9 +237,39 @@ impl HandleAvailability {
     }
 }
 
+impl core::str::FromStr for HandleAvailability {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.trim() {
+            "available" => Ok(Self::Available),
+            "superseded" => Ok(Self::Superseded),
+            "deleted" => Ok(Self::Deleted),
+            "expired" => Ok(Self::Expired),
+            "corrupt" => Ok(Self::Corrupt),
+            "privacy_transformed" => Ok(Self::PrivacyTransformed),
+            "not_observable" => Ok(Self::NotObservable),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
+impl fmt::Display for HandleAvailability {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 impl CanonicalEncode for HandleAvailability {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for HandleAvailability {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        text.parse()
     }
 }
 
@@ -228,7 +354,7 @@ fn valid_text(value: &str) -> bool {
         && !value.bytes().any(|byte| byte.is_ascii_control())
 }
 
-fn encode_optional_interval(value: Option<CaptureInterval>, encoder: &mut CanonicalEncoder) {
+pub(crate) fn encode_optional_interval(value: Option<CaptureInterval>, encoder: &mut CanonicalEncoder) {
     match value {
         Some(interval) => {
             encoder.bool(true);
@@ -238,13 +364,33 @@ fn encode_optional_interval(value: Option<CaptureInterval>, encoder: &mut Canoni
     }
 }
 
-fn encode_optional_text(value: Option<&str>, encoder: &mut CanonicalEncoder) {
+pub(crate) fn decode_optional_interval(
+    decoder: &mut CanonicalDecoder<'_>,
+) -> Result<Option<CaptureInterval>, ContractError> {
+    if decoder.bool()? {
+        Ok(Some(CaptureInterval::decode_canonical(decoder)?))
+    } else {
+        Ok(None)
+    }
+}
+
+pub(crate) fn encode_optional_text(value: Option<&str>, encoder: &mut CanonicalEncoder) {
     match value {
         Some(text) => {
             encoder.bool(true);
             encoder.text(text);
         }
         None => encoder.bool(false),
+    }
+}
+
+pub(crate) fn decode_optional_text<'a>(
+    decoder: &mut CanonicalDecoder<'a>,
+) -> Result<Option<&'a str>, ContractError> {
+    if decoder.bool()? {
+        Ok(Some(decoder.text()?))
+    } else {
+        Ok(None)
     }
 }
 
@@ -277,11 +423,37 @@ fn encode_cost_map(
     }
 }
 
-fn encode_text_set(values: &BTreeSet<String>, encoder: &mut CanonicalEncoder) {
+pub(crate) fn encode_text_set(values: &BTreeSet<String>, encoder: &mut CanonicalEncoder) {
     encoder.u64(values.len() as u64);
     for value in values {
         encoder.text(value);
     }
+}
+
+pub(crate) fn decode_text_set(
+    decoder: &mut CanonicalDecoder<'_>,
+) -> Result<BTreeSet<String>, ContractError> {
+    let count_u64 = decoder.u64()?;
+    let count = usize::try_from(count_u64).map_err(|_| ContractError::InvalidDigest)?;
+    if count > MAX_REQUEST_SET_ITEMS || decoder.remaining() < count {
+        return Err(ContractError::InvalidDigest);
+    }
+    let mut set = BTreeSet::new();
+    let mut prev: Option<&str> = None;
+    for _ in 0..count {
+        let text = decoder.text()?;
+        if text.trim().is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if let Some(p) = prev {
+            if p >= text {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+        }
+        prev = Some(text);
+        set.insert(text.to_string());
+    }
+    Ok(set)
 }
 
 fn encode_digest_set(values: &BTreeSet<ContentDigest>, encoder: &mut CanonicalEncoder) {
