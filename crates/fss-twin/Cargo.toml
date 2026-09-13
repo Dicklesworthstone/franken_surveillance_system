@@ -1,0 +1,13 @@
+[package]
+name = "fss-twin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file.workspace = true
+
+[dependencies]
+fss-core = { path = "../fss-core" }
+fss-geometry = { path = "../fss-geometry" }
+
+[lints]
+workspace = true
