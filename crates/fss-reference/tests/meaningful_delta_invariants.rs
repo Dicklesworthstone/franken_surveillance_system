@@ -9,12 +9,11 @@ use std::fs;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
     ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, CoverageContinuity,
-    CoverageStopReason, CoverageWitness, DeltaPriority, EffectJournal, EventId,
-    HypothesisDisposition, IdempotencyKey, KnowledgeCell, KnowledgeState, KnowledgeStateBasis,
-    LedgerAnchor, MeaningfulDeltaClass, MissionId, MissionLifecycleState, ObligationId,
-    OperationId, PrincipalId, ProbabilityInterval, ProvenanceClass, ReconciliationBasis,
-    ResourcePressure, SensorId, SessionId, SilenceCertificate, SituationCapsule, SituationFrame,
-    TimestampNs, WorldEnvelope,
+    CoverageStopReason, CoverageWitness, EffectJournal, EventId, HypothesisDisposition,
+    IdempotencyKey, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
+    MeaningfulDeltaClass, MissionId, MissionLifecycleState, ObligationId, OperationId, PrincipalId,
+    ProbabilityInterval, ProvenanceClass, ReconciliationBasis, ResourcePressure, SensorId,
+    SessionId, SilenceCertificate, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
@@ -534,10 +533,12 @@ fn test_f1_silence_certificate_rejected_when_coverage_degraded() -> Result<(), B
     Ok(())
 }
 
-/// F4: Terminal event transition (e.g. candidate rejection or resolution) emits TerminalTransition
-/// and is non-coalescible, proven by a coalescing attempt that is rejected.
+/// F4: A terminal event hypothesis is a terminal transition only between sealed publications
+/// (fss-6sph6). Between hand-built publications, which no compile path sealed, it is reported as a
+/// hypothesis change and never as a terminal transition. The sealed terminal transition and its
+/// coalescing refusal are pinned by the in-crate `sealed_event_hypothesis_terminal_is_non_coalescible`.
 #[test]
-fn test_f4_terminal_event_transition_is_non_coalescible() -> Result<(), Box<dyn Error>> {
+fn test_f4_hand_built_event_hypothesis_is_never_terminal() -> Result<(), Box<dyn Error>> {
     let mut v1 = Variant::baseline()?;
     v1.sequence = 1;
     v1.premise_hypothesis = Some(HypothesisDisposition::Supported);
@@ -551,49 +552,28 @@ fn test_f4_terminal_event_transition_is_non_coalescible() -> Result<(), Box<dyn 
     let delta1 = classify_reference_meaningful_delta(&pub1, &pub2)?;
 
     assert!(
-        delta1
+        delta1.classes.contains(&MeaningfulDeltaClass::Hypothesis),
+        "{:?}",
+        delta1.classes
+    );
+    assert!(
+        !delta1
             .classes
             .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "Terminal event rejection must emit TerminalTransition!"
+        "A hand-built event hypothesis must never emit TerminalTransition: {:?}",
+        delta1.classes
     );
-    assert!(
-        delta1.is_non_coalescible(),
-        "Terminal transition must be non-coalescible!"
-    );
-    assert_eq!(delta1.priority, DeltaPriority::Critical);
-
-    let mut v3 = Variant::baseline()?;
-    v3.sequence = 3;
-    v3.pressure = ResourcePressure::Elevated;
-    let pub3 = publication(&v3)?;
-    let delta2 = classify_reference_meaningful_delta(&pub2, &pub3)?;
-
-    let can_coalesce = delta1.can_coalesce_with(&delta2)?;
-    assert!(
-        !can_coalesce,
-        "TerminalTransition must never coalesce with subsequent deltas!"
-    );
-    let coalesce_result = delta1.coalesce(
-        &delta2,
-        "delta:coalesced",
-        "continuation:coalesced",
-        ContentDigest::sha256(b"coalesced"),
-    );
-    assert!(
-        coalesce_result.is_err(),
-        "Coalescing a terminal transition delta must fail!"
-    );
-
     delta1.validate()?;
     Ok(())
 }
 
-/// F4: Obligation terminalization is typed and needs a compiled result: a hand-built result that
-/// drops an active obligation is refused rather than read as a terminal transition with no proof
-/// (fss-6sph6). The sealed discharge, terminal and non-coalescible, is pinned by the in-crate
-/// `unsealed_result_cannot_discharge_an_obligation` test.
+/// F4: An obligation discharge is a terminal transition only between sealed publications
+/// (fss-6sph6). A hand-built result that drops an active obligation reports the removal as an
+/// obligation change and never as a terminal transition. The sealed discharge, terminal and
+/// refusing to coalesce, is pinned by the in-crate
+/// `obligation_discharge_is_terminal_only_between_sealed_publications`.
 #[test]
-fn test_f4_hand_built_obligation_discharge_is_refused() -> Result<(), Box<dyn Error>> {
+fn test_f4_hand_built_obligation_discharge_is_never_terminal() -> Result<(), Box<dyn Error>> {
     let mut v1 = Variant::baseline()?;
     v1.sequence = 1;
     v1.obligations = vec![ObligationId::parse("obligation:test:001")?];
@@ -604,17 +584,27 @@ fn test_f4_hand_built_obligation_discharge_is_refused() -> Result<(), Box<dyn Er
 
     let pub1 = publication(&v1)?;
     let pub2 = publication(&v2)?;
-    let classified = classify_reference_meaningful_delta(&pub1, &pub2);
+    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
     assert!(
-        matches!(
-            classified,
-            Err(ReferenceError::InvalidSpec(
-                "meaningful_delta_unsealed_obligation_discharge"
-            ))
-        ),
+        delta.classes.contains(&MeaningfulDeltaClass::Obligation),
         "{:?}",
-        classified.map(|delta| delta.classes)
+        delta.classes
     );
+    assert!(
+        delta
+            .obligation_changes
+            .contains(&"obligation removed: obligation:test:001".to_owned()),
+        "{:?}",
+        delta.obligation_changes
+    );
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        delta.classes
+    );
+    delta.validate()?;
     Ok(())
 }
 
@@ -851,6 +841,9 @@ fn test_coalescing_preserves_terminal_and_invalidation_deltas() -> Result<(), Bo
     let mut v3 = Variant::baseline()?;
     v3.sequence = 3;
     v3.premise_hypothesis = Some(HypothesisDisposition::Refuted);
+    // Hand-built publications never carry a terminal transition (fss-6sph6), so the preserved
+    // non-coalescible delta is the plan invalidation of the known premise becoming unknown.
+    v3.premise_state = KnowledgeState::Unknown;
 
     let pub1 = publication(&v1)?;
     let pub2 = publication(&v2)?;
@@ -951,7 +944,9 @@ fn test_planted_negatives_free_text_statements_do_not_spoof_terminal_transition(
 #[test]
 fn test_neutral_statement_with_typed_terminal_state_emits_terminal_transition()
 -> Result<(), Box<dyn Error>> {
-    // 1. Event: neutral statement + HypothesisDisposition::Refuted -> MUST emit TerminalTransition
+    // 1. Event: neutral statement + HypothesisDisposition::Refuted between hand-built publications
+    // is a hypothesis change and never a TerminalTransition (fss-6sph6: terminal transitions need
+    // both publications sealed; the sealed case is pinned in-crate).
     let mut v1_base = Variant::baseline()?;
     v1_base.sequence = 1;
     v1_base.premise_hypothesis = Some(HypothesisDisposition::Supported);
@@ -969,8 +964,16 @@ fn test_neutral_statement_with_typed_terminal_state_emits_terminal_transition()
     assert!(
         delta_event
             .classes
+            .contains(&MeaningfulDeltaClass::Hypothesis),
+        "{:?}",
+        delta_event.classes
+    );
+    assert!(
+        !delta_event
+            .classes
             .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "Typed terminal event hypothesis with neutral statement MUST emit TerminalTransition!"
+        "A hand-built event hypothesis must never emit TerminalTransition: {:?}",
+        delta_event.classes
     );
 
     // 2. Effect: a hand-built `known` effect is refused whatever its statement (fss-6sph6); the

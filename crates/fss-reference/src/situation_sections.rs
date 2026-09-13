@@ -134,7 +134,7 @@ impl ReferenceSituationPublication {
 
     /// Recomputes all cross-section invariants and publication identity.
     pub fn verify(&self) -> Result<ContentDigest, ReferenceError> {
-        let base = self.situation.verify()?;
+        let base = self.situation.verify_core()?;
         self.resource_state.validate()?;
         self.control_envelope.validate_against(
             &self.situation.capsule.frame.world_envelope,
@@ -180,21 +180,16 @@ impl ReferenceSituationPublication {
         // A sealed publication's roots are exactly the roots its compile path sealed plus the ones
         // projection derived, so a foreign root is refused even with a recomputed digest
         // (fss-6sph6).
-        if let Some(sealed) = self.situation.sealed_roots() {
-            let mut expected = sealed.clone();
-            expected.extend([
+        self.situation.verify_root_set(
+            &BTreeSet::from([
                 base,
                 self.resource_state.state_digest(),
                 self.control_envelope.control_digest(),
                 self.context_pack.pack_digest,
                 self.compression_receipt.receipt_digest(),
-            ]);
-            if self.situation.proof_roots != expected {
-                return Err(ReferenceError::InvalidSpec(
-                    "situation_publication_proof_roots",
-                ));
-            }
-        }
+            ]),
+            "situation_publication_proof_roots",
+        )?;
         Ok(computed)
     }
 
@@ -1094,7 +1089,7 @@ fn insert_candidate(
 pub fn required_context_item_ids(
     situation: &ReferenceSituation,
 ) -> Result<BTreeSet<String>, ReferenceError> {
-    situation.verify()?;
+    situation.verify_core()?;
     context_candidates(situation).map(|(candidates, _)| {
         candidates
             .into_iter()

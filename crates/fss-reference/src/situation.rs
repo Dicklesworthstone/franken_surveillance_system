@@ -252,12 +252,6 @@ impl ReferenceSituation {
         self.seal.is_some()
     }
 
-    /// The proof roots the compile path gathered when it sealed, or `None` for an unsealed
-    /// situation. A sealed publication's roots are exactly these plus the roots projection derives.
-    pub(crate) fn sealed_roots(&self) -> Option<&BTreeSet<ContentDigest>> {
-        self.seal.as_ref().map(|seal| &seal.roots)
-    }
-
     /// The seal digest a publication commits to, or `None` for an unsealed situation.
     pub(crate) fn seal_digest(&self) -> Option<ContentDigest> {
         self.seal.as_ref().map(|seal| seal.digest)
@@ -300,14 +294,42 @@ impl ReferenceSituation {
     /// Refuses a claim identity that reads as a reserved typed namespace without being spelled
     /// exactly, a `known` effect cell that no compile path bound, a bound effect cell that was
     /// dropped, duplicated, relabeled, or whose evidence roots were removed from `proof_roots`,
-    /// and bindings whose seal no longer matches the capsule they were compiled for.
+    /// and bindings whose seal no longer matches the capsule they were compiled for. A sealed
+    /// situation must carry exactly the proof roots its compile path sealed: roots that projection
+    /// adds are admitted only through its publication's own verification (fss-6sph6).
     pub fn verify(&self) -> Result<ContentDigest, ReferenceError> {
+        let fingerprint = self.verify_core()?;
+        self.verify_root_set(&BTreeSet::new(), "situation_foreign_proof_root")?;
+        Ok(fingerprint)
+    }
+
+    /// Everything [`Self::verify`] checks except that a sealed situation's roots are exactly the
+    /// sealed ones; a publication calls this, then admits its own projection-derived roots.
+    pub(crate) fn verify_core(&self) -> Result<ContentDigest, ReferenceError> {
         self.capsule.validate()?;
         if self.proof_roots.is_empty() {
             return Err(fss_core::ContractError::IncompletePublicationGraph.into());
         }
         self.verify_effect_bindings()?;
         Ok(self.capsule.decision_fingerprint()?)
+    }
+
+    /// Refuses, with `refusal`, a sealed situation whose proof roots are not exactly its sealed
+    /// roots plus `projection_roots`.
+    pub(crate) fn verify_root_set(
+        &self,
+        projection_roots: &BTreeSet<ContentDigest>,
+        refusal: &'static str,
+    ) -> Result<(), ReferenceError> {
+        let Some(seal) = &self.seal else {
+            return Ok(());
+        };
+        let mut expected = seal.roots.clone();
+        expected.extend(projection_roots.iter().copied());
+        if self.proof_roots != expected {
+            return Err(ReferenceError::InvalidSpec(refusal));
+        }
+        Ok(())
     }
 
     fn verify_effect_bindings(&self) -> Result<(), ReferenceError> {
@@ -320,10 +342,10 @@ impl ReferenceSituation {
         }
         if cells
             .iter()
-            .any(|cell| confusable_reserved_namespace(&cell.claim_id))
+            .any(|cell| reserved_namespace_without_tail(&cell.claim_id))
         {
             return Err(ReferenceError::InvalidSpec(
-                "situation_claim_namespace_confusable",
+                "situation_reserved_claim_without_tail",
             ));
         }
         for (claim_id, binding) in &self.effect_bindings {
@@ -399,18 +421,19 @@ impl ReferenceSituation {
 /// binding, an obligation through the capsule's typed obligation set.
 const RESERVED_CLAIM_NAMESPACES: [&str; 2] = ["effect", "obligation"];
 
-/// Returns whether `claim_id` follows the strict claim grammar: `claim:`, then a namespace of
-/// lowercase ASCII letters, digits and `-` that starts and ends with a letter or digit, then
-/// nothing or `:` and one or more non-empty segments over `[A-Za-z0-9._-]` separated by `:`. No
-/// whitespace, control, format or non-ASCII character, no empty segment, and no dangling `-` or
-/// `:` reaches a namespace test (fss-6sph6).
+/// Returns whether `claim_id` follows the claim grammar: `claim:`, then a namespace of lowercase
+/// ASCII letters, digits and `-` that starts and ends with a letter or digit, then nothing or `:`
+/// and a tail in the portable identifier alphabet (`[A-Za-z0-9._:-]`).
+///
+/// The tail is free-form within that alphabet, empty segments included, because compile paths
+/// embed event and operation identities verbatim and those may contain `:` anywhere. Only the
+/// namespace is strict: no whitespace, control, format or non-ASCII character, and no dangling `-`,
+/// reaches a namespace test (fss-6sph6).
 fn claim_id_is_well_formed(claim_id: &str) -> bool {
     let Some(rest) = claim_id.strip_prefix("claim:") else {
         return false;
     };
-    let (namespace, tail) = rest
-        .split_once(':')
-        .map_or((rest, None), |(namespace, tail)| (namespace, Some(tail)));
+    let (namespace, tail) = rest.split_once(':').unwrap_or((rest, ""));
     let alphanumeric = |byte: Option<&u8>| {
         byte.is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
     };
@@ -419,79 +442,21 @@ fn claim_id_is_well_formed(claim_id: &str) -> bool {
         && namespace
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && tail.is_none_or(|tail| {
-            tail.split(':').all(|segment| {
-                !segment.is_empty()
-                    && segment.bytes().all(|byte| {
-                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
-                    })
-            })
-        })
+        && tail
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
-/// Returns whether a well-formed `claim_id` reads as a reserved namespace without being one.
+/// Returns whether `claim_id` names a reserved namespace with no tail (`claim:effect`,
+/// `claim:obligation`), which would fall outside the typed rules keyed on `claim:{namespace}:`.
 ///
-/// The reserved namespaces are an exact allowlist, and a reserved namespace must carry a tail. Any
-/// other namespace within edit distance 2 of a reserved one, or whose normalized spelling (no `-`,
-/// `0` read as `o` and `1` as `l`, repeated letters collapsed) contains a reserved one, would slip
-/// past the typed rules into a looser one, so it is refused rather than classified (fss-6sph6).
-fn confusable_reserved_namespace(claim_id: &str) -> bool {
-    let Some(rest) = claim_id.strip_prefix("claim:") else {
-        return false;
-    };
-    let (namespace, tail) = rest
-        .split_once(':')
-        .map_or((rest, None), |(namespace, tail)| (namespace, Some(tail)));
-    RESERVED_CLAIM_NAMESPACES.iter().any(|reserved| {
-        if namespace == *reserved {
-            return tail.is_none();
-        }
-        edit_distance(namespace, reserved) <= 2
-            || normalized_namespace(namespace).contains(&normalized_namespace(reserved))
-    })
-}
-
-/// A namespace with `-` removed, `0` read as `o` and `1` as `l`, and repeated letters collapsed.
-fn normalized_namespace(namespace: &str) -> String {
-    let mut normalized = String::with_capacity(namespace.len());
-    for letter in namespace
-        .chars()
-        .filter(|letter| *letter != '-')
-        .map(|letter| match letter {
-            '0' => 'o',
-            '1' => 'l',
-            other => other,
-        })
-    {
-        if !normalized.ends_with(letter) {
-            normalized.push(letter);
-        }
-    }
-    normalized
-}
-
-/// Levenshtein distance between two short namespaces.
-fn edit_distance(left: &str, right: &str) -> usize {
-    let right: Vec<char> = right.chars().collect();
-    let mut previous: Vec<usize> = (0..=right.len()).collect();
-    for (row, left_letter) in left.chars().enumerate() {
-        let mut current = Vec::with_capacity(right.len() + 1);
-        current.push(row + 1);
-        for (column, right_letter) in right.iter().enumerate() {
-            let substitution = previous.get(column).map_or(usize::MAX, |cost| {
-                cost.saturating_add(usize::from(left_letter != *right_letter))
-            });
-            let deletion = previous
-                .get(column + 1)
-                .map_or(usize::MAX, |cost| cost.saturating_add(1));
-            let insertion = current
-                .last()
-                .map_or(usize::MAX, |cost| cost.saturating_add(1));
-            current.push(substitution.min(deletion).min(insertion));
-        }
-        previous = current;
-    }
-    previous.last().copied().unwrap_or(usize::MAX)
+/// The reserved namespaces are an exact allowlist. A name that merely resembles one is an ordinary
+/// claim: it never terminalizes anything, because a terminal transition needs both publications
+/// sealed, so no name heuristic is needed (fss-6sph6).
+fn reserved_namespace_without_tail(claim_id: &str) -> bool {
+    claim_id
+        .strip_prefix("claim:")
+        .is_some_and(|rest| RESERVED_CLAIM_NAMESPACES.contains(&rest))
 }
 
 /// Compiles one deterministic, conservative situation projection from canonical reference state.

@@ -2161,10 +2161,11 @@ fn nominal_spec() -> Result<ReferenceProjectionSpec, Box<dyn Error>> {
 }
 
 /// The successor publication plus one hand-built `known` cell whose evidence the caller rooted
-/// itself (review probe P5).
-fn publication_with_self_rooted_cell(
+/// itself (review probe P5); sealed when `sealed`, as a compile path would seal it.
+fn publication_with_cell(
     claim_id: &str,
     hypothesis: Option<HypothesisDisposition>,
+    sealed: bool,
 ) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
     let mut variant = Variant::baseline()?;
     variant.sequence = 2;
@@ -2184,43 +2185,57 @@ fn publication_with_self_rooted_cell(
     });
     let mut roots = template.situation.proof_roots.clone();
     roots.insert(root);
+    let mut situation = ReferenceSituation::new(capsule, roots);
+    if sealed {
+        situation.seal_effect_bindings()?;
+    }
+    Ok(project_reference_situation(situation, &nominal_spec()?)?)
+}
+
+/// The unsealed form of [`publication_with_cell`].
+fn publication_with_self_rooted_cell(
+    claim_id: &str,
+    hypothesis: Option<HypothesisDisposition>,
+) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+    publication_with_cell(claim_id, hypothesis, false)
+}
+
+/// `publication` rebuilt through the public constructor, so unsealed, after `edit_capsule`.
+fn unsealed_copy(
+    publication: &crate::ReferenceSituationPublication,
+    edit_capsule: impl FnOnce(&mut SituationCapsule),
+) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+    let mut capsule = publication.situation.capsule.clone();
+    edit_capsule(&mut capsule);
     Ok(project_reference_situation(
-        ReferenceSituation::new(capsule, roots),
+        ReferenceSituation::new(capsule, publication.situation.proof_roots.clone()),
         &nominal_spec()?,
     )?)
 }
 
-/// Review probes P5 and RR2, and round 4 F3: the reserved namespaces are an exact allowlist. A
-/// namespace within edit distance 2 of one, or whose normalized spelling contains one, is refused
-/// as a look-alike, as is a reserved namespace with no tail; a namespace with a dangling `-` and a
-/// tail with an empty segment are refused by the grammar. Legitimate namespaces still publish.
+/// The reserved namespaces are an exact allowlist: a reserved namespace with no tail is refused,
+/// a namespace with a dangling `-` is refused by the grammar, and a `known` cell in the effect
+/// namespace is refused as unbound whatever its tail. Look-alike and benign names near a reserved
+/// one are ordinary claims and publish (round 5 retired the name heuristic; they cannot
+/// terminalize anything unsealed), as do tails with empty segments (fss-6sph6).
 #[test]
-fn reserved_namespace_look_alikes_and_edges_are_refused() -> Result<(), Box<dyn Error>> {
-    let confusable = "situation_claim_namespace_confusable";
+fn reserved_namespace_edges_are_refused_and_other_names_publish() -> Result<(), Box<dyn Error>> {
     let grammar = "situation_claim_id_grammar";
     for (claim_id, expected) in [
-        ("claim:effects:meaningful-delta:outcome", confusable),
-        ("claim:obligations:meaningful-delta", confusable),
-        ("claim:effect", confusable),
-        ("claim:obligation", confusable),
-        ("claim:e-ffect:x", confusable),
-        ("claim:effectss:x", confusable),
-        ("claim:efect:x", confusable),
-        ("claim:0bligation:x", confusable),
-        ("claim:obl1gation:x", confusable),
-        ("claim:effect-status:x", confusable),
-        ("claim:side-effect:x", confusable),
+        ("claim:effect", "situation_reserved_claim_without_tail"),
+        ("claim:obligation", "situation_reserved_claim_without_tail"),
         ("claim:effect-:x", grammar),
         ("claim:obligation-:x", grammar),
         ("claim:-effect:x", grammar),
         ("claim:-:x", grammar),
-        ("claim:door:", grammar),
-        ("claim:door::x", grammar),
-        ("claim:effect:", grammar),
-        ("claim:effect::meaningful-delta:outcome", grammar),
+        ("claim::x", grammar),
+        ("claim:effect:", "situation_effect_known_unbound"),
+        (
+            "claim:effect::meaningful-delta:outcome",
+            "situation_effect_known_unbound",
+        ),
     ] {
-        let projected =
-            publication_with_self_rooted_cell(claim_id, Some(HypothesisDisposition::Resolved));
+        let projected = publication_with_self_rooted_cell(claim_id, None);
         let expected = crate::ReferenceError::InvalidSpec(expected);
         assert!(
             refused_with(&projected, &expected),
@@ -2229,10 +2244,16 @@ fn reserved_namespace_look_alikes_and_edges_are_refused() -> Result<(), Box<dyn 
         );
     }
     for claim_id in [
+        "claim:defect:x",
+        "claim:affect:x",
+        "claim:perfect:x",
+        "claim:reflect:x",
+        "claim:e-ffect:x",
+        "claim:effects:x",
+        "claim:door:",
+        "claim:door::x",
         "claim:event:meaningful-delta:policy",
-        "claim:perimeter:sensor3",
         "claim:cam1",
-        "claim:door:x",
     ] {
         publication_with_self_rooted_cell(claim_id, None)?;
     }
@@ -2387,11 +2408,12 @@ fn effect_statement_free_text_never_terminalizes() -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-/// Round 4 F2: an obligation is discharged only by a sealed result. A hand-built result that drops
-/// the basis obligation is refused; the sealed result discharges it as a non-coalescible terminal
-/// obligation transition.
+/// Round 5 N2: an obligation discharge is terminal only between sealed publications. An unsealed
+/// result that drops the basis obligation reports the removal but no terminal transition; the
+/// sealed discharge is terminal, non-coalescible, and refuses to coalesce with the next delta.
 #[test]
-fn unsealed_result_cannot_discharge_an_obligation() -> Result<(), Box<dyn Error>> {
+fn obligation_discharge_is_terminal_only_between_sealed_publications() -> Result<(), Box<dyn Error>>
+{
     let mut basis_variant = Variant::baseline()?;
     basis_variant.obligations = vec![ObligationId::parse("obligation:meaningful-delta")?];
     let basis = publication(&basis_variant)?;
@@ -2399,24 +2421,25 @@ fn unsealed_result_cannot_discharge_an_obligation() -> Result<(), Box<dyn Error>
     result_variant.sequence = 2;
     result_variant.obligations.clear();
     let sealed = publication(&result_variant)?;
-    let unsealed = project_reference_situation(
-        ReferenceSituation::new(
-            sealed.situation.capsule.clone(),
-            sealed.situation.proof_roots.clone(),
-        ),
-        &nominal_spec()?,
-    )?;
-    let classified = classify_reference_meaningful_delta(&basis, &unsealed);
+    let unsealed = unsealed_copy(&sealed, |_| {})?;
+    let removed = "obligation removed: obligation:meaningful-delta".to_owned();
+
+    let delta = classify_reference_meaningful_delta(&basis, &unsealed)?;
     assert!(
-        matches!(
-            classified,
-            Err(crate::ReferenceError::InvalidSpec(
-                "meaningful_delta_unsealed_obligation_discharge"
-            ))
-        ),
+        delta.classes.contains(&MeaningfulDeltaClass::Obligation),
         "{:?}",
-        classified.map(|delta| delta.classes)
+        delta.classes
     );
+    assert!(delta.obligation_changes.contains(&removed), "{delta:?}");
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        delta.classes
+    );
+    delta.validate()?;
+
     let delta = classify_reference_meaningful_delta(&basis, &sealed)?;
     for class in [
         MeaningfulDeltaClass::Obligation,
@@ -2428,7 +2451,152 @@ fn unsealed_result_cannot_discharge_an_obligation() -> Result<(), Box<dyn Error>
             delta.classes
         );
     }
+    assert!(delta.obligation_changes.contains(&removed), "{delta:?}");
     assert!(delta.is_non_coalescible());
+    let mut next_variant = result_variant.clone();
+    next_variant.sequence = 3;
+    next_variant.pressure = ResourcePressure::Elevated;
+    let next = classify_reference_meaningful_delta(&sealed, &publication(&next_variant)?)?;
+    assert!(!delta.can_coalesce_with(&next)?);
+    assert!(
+        delta
+            .coalesce(
+                &next,
+                "delta:coalesced",
+                "continuation:coalesced",
+                ContentDigest::sha256(b"coalesced"),
+            )
+            .is_err()
+    );
+    delta.validate()?;
+    Ok(())
+}
+
+/// Round 5 N2: no name reaches a terminal transition from an unsealed publication. Every
+/// look-alike of a reserved namespace, and any ordinary name, with a resolved hypothesis publishes
+/// as an ordinary claim and is reported as a hypothesis change, never as a terminal transition.
+#[test]
+fn unsealed_publications_never_terminalize_any_name() -> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    for claim_id in [
+        "claim:efffekkt:x",
+        "claim:ef-fe-kt:x",
+        "claim:0bl1gat10n:x",
+        "claim:obl-1-gat-1-on:x",
+        "claim:oblig:x",
+        "claim:eff:x",
+        "claim:alert-delivery",
+        "claim:obligatory",
+    ] {
+        let result =
+            publication_with_self_rooted_cell(claim_id, Some(HypothesisDisposition::Resolved))?;
+        assert!(!result.situation.is_sealed());
+        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+        assert!(
+            !delta
+                .classes
+                .contains(&MeaningfulDeltaClass::TerminalTransition),
+            "{claim_id}: {:?}",
+            delta.classes
+        );
+        assert!(
+            delta.classes.contains(&MeaningfulDeltaClass::Hypothesis),
+            "{claim_id}: {:?}",
+            delta.classes
+        );
+        delta.validate()?;
+    }
+    Ok(())
+}
+
+/// Round 5 N2 positive control: the same resolved hypothesis in a sealed result, against a sealed
+/// basis, is an event terminal transition that refuses to coalesce with the next delta.
+#[test]
+fn sealed_event_hypothesis_terminal_is_non_coalescible() -> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    let result = publication_with_cell(
+        "claim:alert-delivery",
+        Some(HypothesisDisposition::Resolved),
+        true,
+    )?;
+    assert!(result.situation.is_sealed());
+    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        delta.classes
+    );
+    assert!(delta.is_non_coalescible());
+    let mut next_variant = Variant::baseline()?;
+    next_variant.sequence = 3;
+    next_variant.pressure = ResourcePressure::Elevated;
+    let next = classify_reference_meaningful_delta(&result, &publication(&next_variant)?)?;
+    assert!(
+        delta
+            .coalesce(
+                &next,
+                "delta:coalesced",
+                "continuation:coalesced",
+                ContentDigest::sha256(b"coalesced"),
+            )
+            .is_err()
+    );
+    delta.validate()?;
+    Ok(())
+}
+
+/// Round 5 N4: an unsealed basis cannot fake a discharge. A basis rebuilt with an invented
+/// obligation, against the genuine sealed result, reports the removal but no terminal transition.
+#[test]
+fn unsealed_basis_cannot_fake_an_obligation_discharge() -> Result<(), Box<dyn Error>> {
+    let genuine_basis = publication(&Variant::baseline()?)?;
+    let invented = ObligationId::parse("obligation:zz:invented")?;
+    let basis = unsealed_copy(&genuine_basis, |capsule| {
+        capsule.obligations.push(invented.clone());
+    })?;
+    let mut result_variant = Variant::baseline()?;
+    result_variant.sequence = 2;
+    let result = publication(&result_variant)?;
+    assert!(result.situation.is_sealed());
+    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+    assert!(
+        delta
+            .obligation_changes
+            .contains(&format!("obligation removed: {invented}")),
+        "{delta:?}"
+    );
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        delta.classes
+    );
+    delta.validate()?;
+    Ok(())
+}
+
+/// Round 5 N2: an effect terminalizes only when both publications are sealed. A proved effect in a
+/// sealed result is terminal against the sealed basis and not against its unsealed copy.
+#[test]
+fn effect_terminalization_needs_a_sealed_basis() -> Result<(), Box<dyn Error>> {
+    let sealed_basis = publication(&Variant::baseline()?)?;
+    let unsealed_basis = unsealed_copy(&sealed_basis, |_| {})?;
+    let mut result_variant = Variant::baseline()?;
+    result_variant.sequence = 2;
+    result_variant.effect_state = Some(KnowledgeState::Known);
+    let result = publication(&result_variant)?;
+    let terminal = |delta: &fss_core::MeaningfulDelta| {
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition)
+    };
+    let delta = classify_reference_meaningful_delta(&sealed_basis, &result)?;
+    assert!(terminal(&delta), "{:?}", delta.classes);
+    let delta = classify_reference_meaningful_delta(&unsealed_basis, &result)?;
+    assert!(!terminal(&delta), "{:?}", delta.classes);
     delta.validate()?;
     Ok(())
 }

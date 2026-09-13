@@ -146,21 +146,12 @@ pub fn classify_reference_meaningful_delta(
     basis.verify()?;
     result.verify()?;
     validate_comparison_basis(basis, result)?;
-    // An obligation is discharged only by a publication a compile path sealed: a hand-built result
-    // that drops a typed obligation would otherwise read as a terminal transition with no proof
-    // behind it (fss-6sph6).
-    if !result.situation.is_sealed()
-        && basis
-            .situation
-            .capsule
-            .obligations
-            .iter()
-            .any(|obligation| !result.situation.capsule.obligations.contains(obligation))
-    {
-        return Err(ReferenceError::InvalidSpec(
-            "meaningful_delta_unsealed_obligation_discharge",
-        ));
-    }
+    // A terminal transition says an obligation was discharged, an effect reached a proved outcome,
+    // or an event was settled. Only a compile path's seal vouches for the state on both sides of
+    // that claim, so a delta with either side unsealed reports every change, an obligation leaving
+    // the set included, but never as a terminal transition (fss-6sph6). The seal covers every cell
+    // of a sealed capsule; an effect must also be proved through its typed binding.
+    let both_sealed = basis.situation.is_sealed() && result.situation.is_sealed();
 
     let basis_capsule = &basis.situation.capsule;
     let result_capsule = &result.situation.capsule;
@@ -491,51 +482,54 @@ pub fn classify_reference_meaningful_delta(
     // An obligation terminalizes only through the capsule's typed obligation set. No compile path
     // binds a `claim:obligation:` cell, so such a cell's state or hypothesis is unproved and never
     // terminalizes one by its name (fss-6sph6).
-    let obligation_terminalized = basis_obligations
-        .difference(&result_obligations)
-        .next()
-        .is_some();
+    let obligation_terminalized = both_sealed
+        && basis_obligations
+            .difference(&result_obligations)
+            .next()
+            .is_some();
     // KSTATE-001: an effect is terminal only when an operation newly has a proved outcome: a
     // bound, sealed cell (see `proved_operations`) that clears the full irreversible-effect premise
     // bar at the result anchor, for an operation the basis did not prove. That covers a resolved
     // basis-indeterminate effect and a proof that supersedes another cell of the operation, and it
     // never follows from a bare `known` state, a hypothesis disposition, or a claim name; a cell
     // added to an operation the basis already proved is not a second transition (fss-6sph6).
-    let effect_terminalized = result_proved
-        .keys()
-        .any(|operation| !basis_proved.contains_key(operation));
+    let effect_terminalized = both_sealed
+        && result_proved
+            .keys()
+            .any(|operation| !basis_proved.contains_key(operation));
     // An effect cell is terminal only through the premise bar applied above, so a terminal
     // hypothesis disposition on an effect cell never terminalizes it here. `verify` refuses every
     // obligation-namespace cell (none is ever bound) and every look-alike spelling of either
     // namespace, so none reaches this rule (fss-6sph6).
-    let event_terminalized = result_frame.knowledge_cells.iter().any(|cell| {
-        if !event_rule_applies(cell) {
-            return false;
-        }
-        let is_terminal_hypothesis = matches!(
-            cell.hypothesis,
-            Some(
-                HypothesisDisposition::Refuted
-                    | HypothesisDisposition::Resolved
-                    | HypothesisDisposition::Superseded
-            )
-        );
-        is_terminal_hypothesis
-            && basis_frame
-                .knowledge_cells
-                .iter()
-                .find(|b| b.claim_id == cell.claim_id)
-                .is_none_or(|b| {
-                    !matches!(
-                        b.hypothesis,
-                        Some(
-                            HypothesisDisposition::Refuted
-                                | HypothesisDisposition::Resolved
-                                | HypothesisDisposition::Superseded
+    let event_terminalized = both_sealed
+        && result_frame.knowledge_cells.iter().any(|cell| {
+            if !event_rule_applies(cell) {
+                return false;
+            }
+            let is_terminal_hypothesis = matches!(
+                cell.hypothesis,
+                Some(
+                    HypothesisDisposition::Refuted
+                        | HypothesisDisposition::Resolved
+                        | HypothesisDisposition::Superseded
+                )
+            );
+            is_terminal_hypothesis
+                && basis_frame
+                    .knowledge_cells
+                    .iter()
+                    .find(|b| b.claim_id == cell.claim_id)
+                    .is_none_or(|b| {
+                        !matches!(
+                            b.hypothesis,
+                            Some(
+                                HypothesisDisposition::Refuted
+                                    | HypothesisDisposition::Resolved
+                                    | HypothesisDisposition::Superseded
+                            )
                         )
-                    )
-                })
-    });
+                    })
+        });
     let mission_terminalized = match (basis_capsule.mission_state, result_capsule.mission_state) {
         (Some(basis_state), Some(result_state)) => {
             !basis_state.is_terminal() && result_state.is_terminal()

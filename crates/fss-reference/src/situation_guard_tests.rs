@@ -898,8 +898,34 @@ fn compiled_effect_evidence_cannot_leave_the_proof_roots() -> Result<(), Box<dyn
     Ok(())
 }
 
-/// Compiles and projects a guarded publication for `plan`, bound to `operation_receipt` when one
-/// is given and carrying the canonical `outcome` when one is given.
+/// Compiles a guarded situation for `plan`, bound to `operation_receipt` when one is given and
+/// carrying the canonical `outcome` when one is given, before any projection.
+fn guarded_situation(
+    harness: &GuardHarness,
+    decision: &ReferencePolicyDecision,
+    receipt: &ReferenceEventReceipt,
+    plan: &ReferenceAlertPlan,
+    operation_receipt: Option<&fss_core::OperationReceipt>,
+    outcome: Option<&crate::ReferenceAlertOutcomeReceipt>,
+) -> Result<crate::ReferenceSituation, Box<dyn Error>> {
+    let mut compile_request = request(
+        decision,
+        receipt,
+        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+    )?;
+    compile_request.alert_plan = Some(plan);
+    compile_request.alert_outcome = outcome;
+    Ok(match operation_receipt {
+        Some(operation_receipt) => compile_reference_situation_with_operation_receipt(
+            compile_request,
+            operation_receipt,
+            &harness.authority,
+        )?,
+        None => compile_reference_situation(compile_request, &harness.authority)?,
+    })
+}
+
+/// Compiles and projects a guarded publication for `plan` (see [`guarded_situation`]).
 fn guarded_publication(
     harness: &GuardHarness,
     decision: &ReferencePolicyDecision,
@@ -908,23 +934,8 @@ fn guarded_publication(
     operation_receipt: Option<&fss_core::OperationReceipt>,
     outcome: Option<&crate::ReferenceAlertOutcomeReceipt>,
 ) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
-    let mut compile_request = request(
-        decision,
-        receipt,
-        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
-    )?;
-    compile_request.alert_plan = Some(plan);
-    compile_request.alert_outcome = outcome;
-    let situation = match operation_receipt {
-        Some(operation_receipt) => compile_reference_situation_with_operation_receipt(
-            compile_request,
-            operation_receipt,
-            &harness.authority,
-        )?,
-        None => compile_reference_situation(compile_request, &harness.authority)?,
-    };
     Ok(crate::project_reference_situation(
-        situation,
+        guarded_situation(harness, decision, receipt, plan, operation_receipt, outcome)?,
         &guard_projection_spec()?,
     )?)
 }
@@ -938,6 +949,7 @@ struct Lifecycle {
     plan: ReferenceAlertPlan,
     prepared: crate::ReferenceSituationPublication,
     dispatched: crate::ReferenceSituationPublication,
+    dispatched_situation: crate::ReferenceSituation,
     verified_receipt: fss_core::OperationReceipt,
     outcome: crate::ReferenceAlertOutcomeReceipt,
 }
@@ -975,13 +987,17 @@ impl Lifecycle {
             &mut provider,
         )?;
         let dispatched_receipt = current(&journal)?;
-        let dispatched = guarded_publication(
+        let dispatched_situation = guarded_situation(
             &harness,
             &decision,
             &receipt,
             &plan,
             Some(&dispatched_receipt),
             None,
+        )?;
+        let dispatched = crate::project_reference_situation(
+            dispatched_situation.clone(),
+            &guard_projection_spec()?,
         )?;
         let provider_receipt = provider
             .lookup(&plan.intent)?
@@ -1009,9 +1025,25 @@ impl Lifecycle {
             plan,
             prepared,
             dispatched,
+            dispatched_situation,
             verified_receipt,
             outcome,
         })
+    }
+
+    /// The verified publication, bound to the verified local receipt when `with_receipt`.
+    fn verified_situation(
+        &self,
+        with_receipt: bool,
+    ) -> Result<crate::ReferenceSituation, Box<dyn Error>> {
+        guarded_situation(
+            &self.harness,
+            &self.decision,
+            &self.receipt,
+            &self.plan,
+            with_receipt.then_some(&self.verified_receipt),
+            Some(&self.outcome),
+        )
     }
 
     /// The verified publication, bound to the verified local receipt when `with_receipt`.
@@ -1207,6 +1239,7 @@ fn terminal_outcome_flip_of_one_operation_is_a_contradiction() -> Result<(), Box
 fn bound_effect_cells_are_sealed_to_their_situation() -> Result<(), Box<dyn Error>> {
     let lifecycle = Lifecycle::new("p2-seal")?;
     let verified = lifecycle.verified(false)?;
+    let verified_situation = lifecycle.verified_situation(false)?;
     let prepared = &lifecycle.prepared;
     let is_commit = |affordance: &&fss_core::ActionAffordance| affordance.operation == "commit";
     assert!(
@@ -1232,7 +1265,7 @@ fn bound_effect_cells_are_sealed_to_their_situation() -> Result<(), Box<dyn Erro
     );
     let expected = ReferenceError::InvalidSpec("situation_effect_binding_seal");
 
-    let mut transplanted = verified.situation.clone();
+    let mut transplanted = verified_situation.clone();
     let outcome_cells: Vec<_> = transplanted
         .capsule
         .frame
@@ -1252,11 +1285,11 @@ fn bound_effect_cells_are_sealed_to_their_situation() -> Result<(), Box<dyn Erro
     transplanted
         .proof_roots
         .extend(prepared.situation.proof_roots.iter().copied());
-    assert_effect_tamper_refused(&verified.situation, transplanted, &expected)?;
+    assert_effect_tamper_refused(&verified_situation, transplanted, &expected)?;
 
-    let mut relabeled = verified.situation.clone();
+    let mut relabeled = verified_situation.clone();
     relabeled.capsule.mission_id = fss_core::MissionId::parse("mission:elsewhere")?;
-    assert_effect_tamper_refused(&verified.situation, relabeled, &expected)?;
+    assert_effect_tamper_refused(&verified_situation, relabeled, &expected)?;
     lifecycle.harness.cleanup();
     Ok(())
 }
@@ -1294,7 +1327,7 @@ fn rebuilt_situation_cannot_hand_off_or_keep_a_compiled_effect() -> Result<(), B
     let created_at = TimestampNs(1_001);
     let expires_at = TimestampNs(2_000);
     crate::seal_reference_handoff(
-        &genuine.situation,
+        &lifecycle.dispatched_situation,
         fss_core::HandoffId::parse("handoff:rr4:genuine")?,
         created_at,
         expires_at,
@@ -1355,8 +1388,8 @@ fn rebuilt_situation_cannot_hand_off_or_keep_a_compiled_effect() -> Result<(), B
 #[test]
 fn sealed_proof_roots_cannot_be_replaced() -> Result<(), Box<dyn Error>> {
     let lifecycle = Lifecycle::new("rr5-roots")?;
-    let verified = lifecycle.verified(true)?;
-    let mut tampered = verified.situation.clone();
+    let verified = lifecycle.verified_situation(true)?;
+    let mut tampered = verified.clone();
     let mut roots: std::collections::BTreeSet<fss_core::ContentDigest> = tampered
         .capsule
         .frame
@@ -1369,7 +1402,7 @@ fn sealed_proof_roots_cannot_be_replaced() -> Result<(), Box<dyn Error>> {
     assert!(tampered.proof_roots.difference(&roots).count() > 0);
     tampered.proof_roots = roots;
     assert_effect_tamper_refused(
-        &verified.situation,
+        &verified,
         tampered,
         &ReferenceError::InvalidSpec("situation_sealed_proof_root_removed"),
     )?;
@@ -1594,11 +1627,10 @@ fn bound_routes_refuse_unsealed_rebuilds() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Review round 4 F2: an unsealed rebuild that clears a compiled situation's obligations cannot
-/// discharge them; classification refuses it instead of reporting a terminal obligation transition
-/// with no proof (fss-6sph6).
+/// Round 5 N2: an unsealed rebuild that clears a compiled situation's obligations reports their
+/// removal but never discharges them as a terminal transition; only a sealed result can.
 #[test]
-fn unsealed_rebuild_cannot_discharge_compiled_obligations() -> Result<(), Box<dyn Error>> {
+fn unsealed_rebuild_never_discharges_compiled_obligations() -> Result<(), Box<dyn Error>> {
     let lifecycle = Lifecycle::new("rebuild-discharge")?;
     let dispatched = &lifecycle.dispatched;
     assert!(!dispatched.situation.capsule.obligations.is_empty());
@@ -1606,17 +1638,22 @@ fn unsealed_rebuild_cannot_discharge_compiled_obligations() -> Result<(), Box<dy
         strip_effect_cells(capsule);
         capsule.obligations.clear();
     })?;
-    let classified = crate::classify_reference_meaningful_delta(dispatched, &cleared);
+    let delta = crate::classify_reference_meaningful_delta(dispatched, &cleared)?;
     assert!(
-        matches!(
-            classified,
-            Err(ReferenceError::InvalidSpec(
-                "meaningful_delta_unsealed_obligation_discharge"
-            ))
-        ),
+        delta
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::Obligation),
         "{:?}",
-        classified.map(|delta| delta.classes)
+        delta.classes
     );
+    assert!(
+        !delta
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        delta.classes
+    );
+    delta.validate()?;
     lifecycle.harness.cleanup();
     Ok(())
 }
@@ -1626,7 +1663,7 @@ fn unsealed_rebuild_cannot_discharge_compiled_obligations() -> Result<(), Box<dy
 #[test]
 fn injected_obligation_cell_is_refused() -> Result<(), Box<dyn Error>> {
     let lifecycle = Lifecycle::new("inject-obligation")?;
-    let genuine = &lifecycle.dispatched.situation;
+    let genuine = &lifecycle.dispatched_situation;
     let root = fss_core::ContentDigest::sha256(b"injected-obligation-root");
     let mut tampered = genuine.clone();
     tampered
@@ -1722,5 +1759,147 @@ fn compiled_publication_digests_are_pinned() -> Result<(), Box<dyn Error>> {
         )
     );
     harness.cleanup();
+    Ok(())
+}
+
+/// Round 5 N1: compile paths embed event and operation identities verbatim, and those may contain
+/// `:` anywhere, so real lifecycles whose event and operation identities carry `::` or a trailing
+/// `:` compile, verify, project and hand off (fss-6sph6).
+#[test]
+fn lifecycles_with_colon_heavy_ids_compile_and_verify() -> Result<(), Box<dyn Error>> {
+    for name in ["zz4::edge", "zz4edge:"] {
+        let lifecycle = Lifecycle::new(name)?;
+        let event_id = format!("event:situation-guard:{name}");
+        let operation_id = format!("operation:situation-guard:{name}");
+        assert_eq!(
+            lifecycle.decision.event.event_id.as_str(),
+            event_id.as_str()
+        );
+        assert_eq!(
+            lifecycle.plan.intent.operation_id.as_str(),
+            operation_id.as_str()
+        );
+        let verified = lifecycle.verified(true)?;
+        for publication in [&lifecycle.prepared, &lifecycle.dispatched, &verified] {
+            publication.verify()?;
+        }
+        let claims: Vec<&str> = verified
+            .situation
+            .capsule
+            .frame
+            .knowledge_cells
+            .iter()
+            .map(|cell| cell.claim_id.as_str())
+            .collect();
+        assert!(
+            claims
+                .iter()
+                .any(|claim| claim.starts_with(&format!("claim:event:{event_id}:"))),
+            "{claims:?}"
+        );
+        assert!(
+            claims
+                .iter()
+                .any(|claim| claim.starts_with(&format!("claim:effect:{operation_id}:"))),
+            "{claims:?}"
+        );
+        crate::seal_reference_handoff(
+            &lifecycle.dispatched_situation,
+            fss_core::HandoffId::parse("handoff:colon-heavy")?,
+            TimestampNs(1_001),
+            TimestampNs(2_000),
+        )?;
+        lifecycle.harness.cleanup();
+    }
+    Ok(())
+}
+
+/// Round 5 N3: a sealed situation carries exactly the proof roots its compile path sealed. A
+/// foreign root is refused by verification, projection and the situation handoff, and a projected
+/// situation, whose projection roots belong only to its publication, cannot hand off on its own.
+#[test]
+fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("situation-roots")?;
+    let genuine = &lifecycle.dispatched_situation;
+    genuine.verify()?;
+    let foreign = ReferenceError::InvalidSpec("situation_foreign_proof_root");
+    let handoff_id = fss_core::HandoffId::parse("handoff:situation-roots")?;
+    crate::seal_reference_handoff(
+        genuine,
+        handoff_id.clone(),
+        TimestampNs(1_001),
+        TimestampNs(2_000),
+    )?;
+
+    let mut tampered = genuine.clone();
+    assert!(
+        tampered
+            .proof_roots
+            .insert(fss_core::ContentDigest::sha256(b"round5-foreign-root"))
+    );
+    let verified = tampered.verify();
+    assert!(refused_with(&verified, &foreign), "{verified:?}");
+    let handoff = crate::seal_reference_handoff(
+        &tampered,
+        handoff_id.clone(),
+        TimestampNs(1_001),
+        TimestampNs(2_000),
+    );
+    assert!(refused_with(&handoff, &foreign), "{:?}", handoff.is_ok());
+    let projected = crate::project_reference_situation(tampered, &guard_projection_spec()?)
+        .map(|publication| publication.publication_digest);
+    assert!(refused_with(&projected, &foreign), "{projected:?}");
+
+    let handoff = crate::seal_reference_handoff(
+        &lifecycle.dispatched.situation,
+        handoff_id,
+        TimestampNs(1_001),
+        TimestampNs(2_000),
+    );
+    assert!(refused_with(&handoff, &foreign), "{:?}", handoff.is_ok());
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// Pinned seal digest of the fixed compiled publication with effect bindings below.
+const GOLDEN_BOUND_SEAL_DIGEST: &str =
+    "sha256:2938fa3b2200cb078a752b011f18d9f33c8325ba65d28c56a6d39cb212d911da";
+/// Pinned v2 publication digest of the fixed compiled publication with effect bindings below.
+const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
+    "sha256:a0b9f512a2e2020b21485465a5c781e5b17fb30ac6a6aa1159fa535b5bc36c8e";
+
+/// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
+/// outcome and local-state cells, has a pinned seal digest and publication digest.
+#[test]
+fn bound_compiled_publication_digests_are_pinned() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("golden-bound")?;
+    let publication = lifecycle.verified(true)?;
+    let bound_kinds: Vec<_> = publication
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .filter_map(|cell| publication.situation.effect_cell_kind(&cell.claim_id))
+        .collect();
+    assert_eq!(
+        bound_kinds,
+        vec![
+            crate::EffectCellKind::LocalState,
+            crate::EffectCellKind::Outcome
+        ]
+    );
+    let seal = publication
+        .situation
+        .seal_digest()
+        .ok_or(ReferenceError::InvalidSpec("missing_seal"))?;
+    assert_eq!(
+        (seal.to_string(), publication.publication_digest.to_string()),
+        (
+            GOLDEN_BOUND_SEAL_DIGEST.to_owned(),
+            GOLDEN_BOUND_PUBLICATION_DIGEST.to_owned()
+        )
+    );
+    lifecycle.harness.cleanup();
     Ok(())
 }
