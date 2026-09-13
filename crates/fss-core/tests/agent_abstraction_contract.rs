@@ -209,7 +209,7 @@ fn test_pinned_generation_and_freeze_digest_constants() -> Result<(), Box<dyn Er
     assert_eq!(AGENT_ABSTRACTIONS_GENERATION, "gen:fss1:abstraction-v1");
     assert_eq!(
         AGENT_ABSTRACTIONS_FREEZE_DIGEST,
-        "sha256:8fb60f6b30d30bfe2ada8290daddc19550ee11f85d4d58a2c0da1ae7098a8496"
+        "sha256:98dfe512d870a36079fe49435d1f53d669c63a0034d03a771248fbab0abf34a9"
     );
     assert_eq!(CANONICAL_LAYERS.len(), 11);
     assert_eq!(
@@ -777,6 +777,7 @@ fn test_world_fact_construction_and_validation() -> Result<(), Box<dyn Error>> {
         WorldFactKind::Calibration,
         anchor.clone(),
         "Camera cam01 calibration parameters verified at epoch 1".to_string(),
+        ProvenanceClass::Observed,
         evidence,
         Generation(1),
     )?;
@@ -784,6 +785,7 @@ fn test_world_fact_construction_and_validation() -> Result<(), Box<dyn Error>> {
     assert_eq!(fact.fact_id, "fact:device:cam01:calib");
     assert_eq!(fact.kind, WorldFactKind::Calibration);
     assert_eq!(fact.anchor, anchor);
+    assert_eq!(fact.provenance, ProvenanceClass::Observed);
     assert_eq!(fact.evidence_digest, evidence);
     assert_eq!(fact.generation, Generation(1));
     assert_eq!(fact.layer(), AgentAbstractionLayer::WorldFactsAndCoverage);
@@ -812,6 +814,7 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
         WorldFactKind::Device,
         anchor.clone(),
         "Valid statement".to_string(),
+        ProvenanceClass::Observed,
         evidence,
         Generation(1),
     );
@@ -826,6 +829,7 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
         WorldFactKind::Device,
         anchor.clone(),
         "",
+        ProvenanceClass::Observed,
         evidence,
         Generation(1),
     );
@@ -842,13 +846,14 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
         WorldFactKind::Device,
         bad_anchor,
         "Valid statement".to_string(),
+        ProvenanceClass::Observed,
         evidence,
         Generation(1),
     );
     let Err(err) = res else {
         return Err("expected error for empty anchor lineage".into());
     };
-    assert_eq!(err, ContractError::DerivedBeliefMissingAnchor);
+    assert_eq!(err, ContractError::InvalidIdentifier);
 
     // 4. Zero generation fails closed
     let res = WorldFact::new(
@@ -856,6 +861,7 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
         WorldFactKind::Device,
         anchor.clone(),
         "Valid statement".to_string(),
+        ProvenanceClass::Observed,
         evidence,
         Generation(0),
     );
@@ -868,13 +874,44 @@ fn test_planted_negative_world_fact_validation_failures() -> Result<(), Box<dyn 
     let res = WorldFact::new(
         "fact:device:001",
         WorldFactKind::Device,
-        anchor,
+        anchor.clone(),
         "Statement with unqualified cognition treated as fact".to_string(),
+        ProvenanceClass::Observed,
         evidence,
         Generation(1),
     );
     let Err(err) = res else {
         return Err("expected error for unqualified cognition".into());
+    };
+    assert_eq!(err, ContractError::EvidenceRequired);
+
+    // 6. Planted bypass: ProvenanceClass::Predicted fails closed
+    let res = WorldFact::new(
+        "fact:device:001",
+        WorldFactKind::Device,
+        anchor.clone(),
+        "Valid statement".to_string(),
+        ProvenanceClass::Predicted,
+        evidence,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for predicted provenance in WorldFact".into());
+    };
+    assert_eq!(err, ContractError::EvidenceRequired);
+
+    // 7. Planted bypass: ProvenanceClass::Remembered fails closed
+    let res = WorldFact::new(
+        "fact:device:001",
+        WorldFactKind::Device,
+        anchor,
+        "Valid statement".to_string(),
+        ProvenanceClass::Remembered,
+        evidence,
+        Generation(1),
+    );
+    let Err(err) = res else {
+        return Err("expected error for remembered provenance in WorldFact".into());
     };
     assert_eq!(err, ContractError::EvidenceRequired);
 
@@ -1054,7 +1091,7 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
-    let mut rogue_anchor = anchor;
+    let mut rogue_anchor = anchor.clone();
     rogue_anchor.site_lineage = "site:rogue_lineage".to_string();
     let mut target_domain = BTreeSet::new();
     target_domain.insert("zone:north_perimeter".to_string());
@@ -1068,6 +1105,29 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
     };
     let Err(err) = evaluate_negative_read(&claim) else {
         return Err("expected error for stale anchor".into());
+    };
+    assert_eq!(err, ContractError::StaleAnchor);
+
+    // 9. Anchor epoch/seq_no mismatch (stale anchor)
+    let witness = sample_witness(
+        "no_unauthorized_intrusion",
+        &["zone:north_perimeter"],
+        &["zone:north_perimeter"],
+    );
+    let mut stale_anchor = anchor;
+    stale_anchor.ledger_epoch += 1;
+    let mut target_domain = BTreeSet::new();
+    target_domain.insert("zone:north_perimeter".to_string());
+    let claim = NegativeReadClaim {
+        claim_id: "neg_claim:stale_epoch".to_string(),
+        query_predicate: "no_unauthorized_intrusion".to_string(),
+        anchor: stale_anchor,
+        target_domain,
+        target_generation: 1,
+        coverage_witness: Some(witness),
+    };
+    let Err(err) = evaluate_negative_read(&claim) else {
+        return Err("expected error for stale anchor epoch".into());
     };
     assert_eq!(err, ContractError::StaleAnchor);
 
@@ -1117,11 +1177,111 @@ fn test_negative_read_claim_with_certified_absence_succeeds() -> Result<(), Box<
 }
 
 #[test]
+fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> {
+    let anchor = sample_anchor();
+    let witness_digest = ContentDigest::sha256(b"sample_witness_digest");
+
+    // 1. Non-canonical ordering (duplicate or unsorted items in certified_domain)
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("neg_claim:001");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(2); // 2 items
+    encoder.text("zone:b");
+    encoder.text("zone:a"); // unsorted!
+    encoder.digest(witness_digest);
+    encoder.u64(1);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+        return Err("expected error for non-canonical ordering".into());
+    };
+    assert_eq!(err, ContractError::NonCanonicalOrdering);
+
+    // 2. Duplicate items in certified_domain
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("neg_claim:001");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(2);
+    encoder.text("zone:a");
+    encoder.text("zone:a"); // duplicate!
+    encoder.digest(witness_digest);
+    encoder.u64(1);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+        return Err("expected error for duplicate domain items".into());
+    };
+    assert_eq!(err, ContractError::NonCanonicalOrdering);
+
+    // 3. Zero generation rejected
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("neg_claim:001");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("zone:a");
+    encoder.digest(witness_digest);
+    encoder.u64(0); // zero generation!
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+        return Err("expected error for zero generation".into());
+    };
+    assert_eq!(err, ContractError::GenerationConflict);
+
+    // 4. Zero witness digest rejected
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("neg_claim:001");
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("zone:a");
+    encoder.digest(ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0u8; 32])); // zero digest!
+    encoder.u64(1);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+        return Err("expected error for zero witness digest".into());
+    };
+    assert_eq!(err, ContractError::InvalidDigest);
+
+    // 5. Empty claim_id rejected
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(""); // empty claim_id
+    encoder.text("no_unauthorized_intrusion");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("zone:a");
+    encoder.digest(witness_digest);
+    encoder.u64(1);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let Err(err) = NegativeReadOutcome::decode_canonical(&mut decoder) else {
+        return Err("expected error for empty claim_id".into());
+    };
+    assert_eq!(err, ContractError::InvalidIdentifier);
+
+    Ok(())
+}
+
+#[test]
 fn test_agent_abstraction_pinned_freeze_digest_and_generation() -> Result<(), Box<dyn Error>> {
     assert_eq!(AGENT_ABSTRACTION_GENERATION, "gen:fss1:abstraction-v1");
     assert_eq!(
         AGENT_ABSTRACTION_FREEZE_DIGEST,
-        "sha256:8fb60f6b30d30bfe2ada8290daddc19550ee11f85d4d58a2c0da1ae7098a8496"
+        "sha256:98dfe512d870a36079fe49435d1f53d669c63a0034d03a771248fbab0abf34a9"
+    );
+    let stack_json = include_str!("../../../architecture/agent_abstraction_stack.json");
+    assert!(
+        stack_json.contains(AGENT_ABSTRACTION_FREEZE_DIGEST),
+        "registryDigest in architecture/agent_abstraction_stack.json must match AGENT_ABSTRACTION_FREEZE_DIGEST"
     );
     Ok(())
 }

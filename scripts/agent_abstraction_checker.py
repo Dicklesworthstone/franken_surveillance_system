@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fail-closed agent abstraction stack registry checker (fss-x4a.30.82.4).
+"""Fail-closed agent abstraction stack registry checker (fss-x4a.30.82.3).
 
 Enforces the agent abstraction stack registry contract:
 1. Agent abstraction registry row drift between architecture JSON and markdown mirror (ERR-AGT-REGISTRY-DRIFT-001)
@@ -40,7 +40,7 @@ AGENT_ABSTRACTION_STACK_JSON_PATH = "architecture/agent_abstraction_stack.json"
 AGENT_ABSTRACTIONS_MD_PATH = "registries/AGENT_ABSTRACTIONS.md"
 
 BASELINE_GENERATION = "gen:fss1:abstraction-v1"
-BASELINE_FREEZE_DIGEST = "sha256:8fb60f6b30d30bfe2ada8290daddc19550ee11f85d4d58a2c0da1ae7098a8496"
+BASELINE_FREEZE_DIGEST = "sha256:98dfe512d870a36079fe49435d1f53d669c63a0034d03a771248fbab0abf34a9"
 
 EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
     BASELINE_GENERATION: BASELINE_FREEZE_DIGEST,
@@ -211,6 +211,101 @@ MANDATORY_LAYER_FIELDS: tuple[str, ...] = (
 
 AGT_LAYER_ID_PATTERN = re.compile(r"^AGT-LAYER-\d{3}$")
 
+# Full baseline hydration levels for generation gen:fss1:abstraction-v1
+BASELINE_HYDRATION_LEVELS: dict[str, dict[str, str]] = {
+    "H0": {
+        "id": "H0",
+        "name": "identity",
+        "content": "digest, type, time/spatial bounds, source, availability, cost, and authority",
+    },
+    "H1": {
+        "id": "H1",
+        "name": "semantic_synopsis",
+        "content": "typed facts, knowledge states, provenance, contradictions, quality, and omissions",
+    },
+    "H2": {
+        "id": "H2",
+        "name": "decision_artifact",
+        "content": "authorized redacted keyframes, crops, trajectories, graph neighborhoods, or audio features",
+    },
+    "H3": {
+        "id": "H3",
+        "name": "source_evidence",
+        "content": "authorized original encoded packets, object bytes, exact metadata, or full-resolution media",
+    },
+    "H4": {
+        "id": "H4",
+        "name": "laboratory_expansion",
+        "content": "replay bundle, intermediates, alternate decoders/models, and oracle comparisons",
+    },
+}
+
+CANONICAL_HYDRATION_ORDER: list[str] = [
+    "H0",
+    "H1",
+    "H2",
+    "H3",
+    "H4",
+]
+
+MANDATORY_HYDRATION_FIELDS: tuple[str, ...] = (
+    "id",
+    "name",
+    "content",
+)
+
+HYDRATION_ID_PATTERN = re.compile(r"^H[0-4]$")
+
+
+KNOWN_TOP_LEVEL_KEYS: set[str] = {
+    "asOf",
+    "constitutionalRole",
+    "gate",
+    "generation",
+    "humanRegistry",
+    "hydrationLevels",
+    "knowledgeStateRefs",
+    "layers",
+    "operationRefs",
+    "primaryReadSurface",
+    "provenanceClassRefs",
+    "qualificationLane",
+    "requestComposition",
+    "responseComposition",
+    "rules",
+    "schema",
+    "semanticObjectSchemas",
+    "semanticProtocol",
+    "truthOwnership",
+    "viewRefs",
+}
+
+KNOWN_LAYER_KEYS: set[str] = {
+    "id",
+    "name",
+    "owner",
+    "question",
+    "output",
+    "prohibition",
+    "invariant",
+    "status",
+}
+
+KNOWN_HYDRATION_KEYS: set[str] = {
+    "id",
+    "name",
+    "content",
+}
+
+
+def pairs_hook_reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    d: dict[str, Any] = {}
+    for k, v in pairs:
+        if k in d:
+            raise ValueError(f"Duplicate JSON key '{k}'")
+        d[k] = v
+    return d
+
 
 @dataclass(frozen=True)
 class DiagnosticError:
@@ -224,6 +319,7 @@ class DiagnosticError:
 class ValidationResult:
     passed: bool = True
     layer_count: int = 0
+    hydration_level_count: int = 0
     registry_digest: str = ""
     errors: list[DiagnosticError] = field(default_factory=list)
 
@@ -233,14 +329,15 @@ class ValidationResult:
 
 
 def canonicalize_value(val: Any) -> Any:
-    """Deterministically orders dictionaries and primitive lists for canonical hashing."""
+    """Deterministically orders dictionaries for canonical hashing.
+
+    Lists preserve their exact sequence order (order is significant).
+    Strings and primitives are preserved byte-exact without stripping.
+    """
     if isinstance(val, dict):
         return {k: canonicalize_value(v) for k, v in sorted(val.items())}
     if isinstance(val, list):
-        canon_items = [canonicalize_value(item) for item in val]
-        if all(isinstance(x, (str, int, float, bool)) for x in canon_items):
-            return sorted(canon_items)
-        return canon_items
+        return [canonicalize_value(item) for item in val]
     return val
 
 
@@ -249,32 +346,51 @@ def compute_canonical_agent_abstraction_digest(data: dict[str, Any]) -> str:
 
     Binds top-level metadata and deterministically sorted layers and hydration levels.
     """
+    unknown_keys = set(data.keys()) - KNOWN_TOP_LEVEL_KEYS - {"registryDigest"}
+    if unknown_keys:
+        raise ValueError(f"Unknown top-level keys in agent abstraction data: {sorted(unknown_keys)}")
+
     raw_layers = data.get("layers", [])
     raw_hydration = data.get("hydrationLevels", [])
 
-    sorted_layers = sorted(raw_layers, key=lambda r: str(r.get("id", "")))
-    sorted_hydration = sorted(raw_hydration, key=lambda r: str(r.get("id", "")))
+    if not isinstance(raw_layers, list) or not isinstance(raw_hydration, list):
+        raise ValueError("layers and hydrationLevels must be lists")
+
+    for layer in raw_layers:
+        if isinstance(layer, dict):
+            uk = set(layer.keys()) - KNOWN_LAYER_KEYS
+            if uk:
+                raise ValueError(f"Unknown layer keys: {sorted(uk)}")
+
+    for hyd in raw_hydration:
+        if isinstance(hyd, dict):
+            uk = set(hyd.keys()) - KNOWN_HYDRATION_KEYS
+            if uk:
+                raise ValueError(f"Unknown hydrationLevel keys: {sorted(uk)}")
+
+    sorted_layers = sorted(raw_layers, key=lambda r: str(r.get("id", "") if isinstance(r, dict) else ""))
+    sorted_hydration = sorted(raw_hydration, key=lambda r: str(r.get("id", "") if isinstance(r, dict) else ""))
 
     canonical_payload = {
-        "asOf": str(data.get("asOf", "")).strip(),
-        "constitutionalRole": str(data.get("constitutionalRole", "")).strip(),
-        "gate": str(data.get("gate", "")).strip(),
-        "generation": str(data.get("generation", "")).strip(),
-        "humanRegistry": str(data.get("humanRegistry", "")).strip(),
+        "asOf": str(data.get("asOf", "")),
+        "constitutionalRole": str(data.get("constitutionalRole", "")),
+        "gate": str(data.get("gate", "")),
+        "generation": str(data.get("generation", "")),
+        "humanRegistry": str(data.get("humanRegistry", "")),
         "hydrationLevels": [canonicalize_value(r) for r in sorted_hydration],
         "knowledgeStateRefs": canonicalize_value(data.get("knowledgeStateRefs", [])),
         "layers": [canonicalize_value(r) for r in sorted_layers],
         "operationRefs": canonicalize_value(data.get("operationRefs", [])),
-        "primaryReadSurface": str(data.get("primaryReadSurface", "")).strip(),
+        "primaryReadSurface": str(data.get("primaryReadSurface", "")),
         "provenanceClassRefs": canonicalize_value(data.get("provenanceClassRefs", [])),
-        "qualificationLane": str(data.get("qualificationLane", "")).strip(),
+        "qualificationLane": str(data.get("qualificationLane", "")),
         "requestComposition": canonicalize_value(data.get("requestComposition", {})),
         "responseComposition": canonicalize_value(data.get("responseComposition", {})),
         "rules": canonicalize_value(data.get("rules", [])),
-        "schema": str(data.get("schema", "")).strip(),
+        "schema": str(data.get("schema", "")),
         "semanticObjectSchemas": canonicalize_value(data.get("semanticObjectSchemas", [])),
-        "semanticProtocol": str(data.get("semanticProtocol", "")).strip(),
-        "truthOwnership": str(data.get("truthOwnership", "")).strip(),
+        "semanticProtocol": str(data.get("semanticProtocol", "")),
+        "truthOwnership": str(data.get("truthOwnership", "")),
         "viewRefs": canonicalize_value(data.get("viewRefs", [])),
     }
     canonical_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -283,14 +399,24 @@ def compute_canonical_agent_abstraction_digest(data: dict[str, Any]) -> str:
 
 def extract_markdown_metadata_and_abstractions(
     md_path: Path,
-) -> tuple[str, str, dict[str, tuple[str, str, str, str]]]:
-    """Extracts (generation, digest, rows) from markdown mirror."""
+) -> tuple[str, str, dict[str, tuple[str, str, str, str]], dict[str, tuple[str, str]], list[str], list[str]]:
+    """Extracts (generation, digest, layer_rows, hydration_rows, duplicate_layer_ids, duplicate_hydration_ids)."""
     rows: dict[str, tuple[str, str, str, str]] = {}
+    hydration_rows: dict[str, tuple[str, str]] = {}
+    duplicate_layer_ids: list[str] = []
+    duplicate_hydration_ids: list[str] = []
     lines = md_path.read_text(encoding="utf-8").splitlines()
     md_gen = ""
     md_digest = ""
+    in_hydration_ladder = False
     for line in lines:
         stripped = line.strip()
+        if stripped.startswith("## Hydration ladder"):
+            in_hydration_ladder = True
+            continue
+        elif stripped.startswith("## ") and in_hydration_ladder:
+            in_hydration_ladder = False
+
         if stripped.startswith("Generation:"):
             m = re.search(r"`([^`]+)`", stripped)
             if m:
@@ -307,13 +433,24 @@ def extract_markdown_metadata_and_abstractions(
                 owner = parts[2].replace("`", "").strip()
                 invariant = parts[4].replace("`", "").strip()
                 status = parts[5].replace("`", "").strip()
+                if lid in rows:
+                    duplicate_layer_ids.append(lid)
                 rows[lid] = (name, owner, invariant, status)
-    return md_gen, md_digest, rows
+        elif in_hydration_ladder and stripped.startswith("| `H"):
+            parts = [p.strip() for p in stripped.strip("|").split("|")]
+            if len(parts) >= 3:
+                hid = parts[0].replace("`", "").strip()
+                name = parts[1].replace("`", "").strip()
+                content = parts[2].replace("`", "").strip()
+                if hid in hydration_rows:
+                    duplicate_hydration_ids.append(hid)
+                hydration_rows[hid] = (name, content)
+    return md_gen, md_digest, rows, hydration_rows, duplicate_layer_ids, duplicate_hydration_ids
 
 
 def extract_markdown_agent_abstractions(md_path: Path) -> dict[str, tuple[str, str, str, str]]:
     """Extracts abstraction layers from markdown table: {id: (name, owner, invariant, status)}."""
-    _, _, rows = extract_markdown_metadata_and_abstractions(md_path)
+    _, _, rows, _, _, _ = extract_markdown_metadata_and_abstractions(md_path)
     return rows
 
 
@@ -344,7 +481,7 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
     # Parse JSON
     try:
         raw_text = json_path.read_text(encoding="utf-8")
-        data = json.loads(raw_text)
+        data = json.loads(raw_text, object_pairs_hook=pairs_hook_reject_duplicates)
     except Exception as exc:
         result.add_error(
             ERR_AGT_CORRUPT_FILE,
@@ -362,6 +499,25 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
             "Root of agent abstraction stack JSON must be an object",
         )
         return result
+
+    # Check unknown top-level keys
+    unknown_top_keys = set(data.keys()) - KNOWN_TOP_LEVEL_KEYS - {"registryDigest"}
+    for ukey in sorted(unknown_top_keys):
+        result.add_error(
+            ERR_AGT_INVARIANT_VIOLATION,
+            AGENT_ABSTRACTION_STACK_JSON_PATH,
+            f"#/{ukey}",
+            f"Unknown top-level key '{ukey}' in agent abstraction registry",
+        )
+
+    # Check rules type
+    if "rules" in data and not isinstance(data["rules"], list):
+        result.add_error(
+            ERR_AGT_CORRUPT_FILE,
+            AGENT_ABSTRACTION_STACK_JSON_PATH,
+            "#/rules",
+            "'rules' must be a list",
+        )
 
     # Top-level mandatory fields
     for field_name in MANDATORY_TOP_LEVEL_FIELDS:
@@ -408,10 +564,19 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
 
     # Digest verification
     declared_digest = str(data.get("registryDigest", "")).strip()
-    computed_digest = compute_canonical_agent_abstraction_digest(data)
+    try:
+        computed_digest = compute_canonical_agent_abstraction_digest(data)
+    except Exception as exc:
+        result.add_error(
+            ERR_AGT_INVARIANT_VIOLATION,
+            AGENT_ABSTRACTION_STACK_JSON_PATH,
+            "#",
+            f"Failed to compute canonical digest: {exc}",
+        )
+        computed_digest = ""
     result.registry_digest = declared_digest
 
-    if declared_digest != computed_digest:
+    if computed_digest and declared_digest != computed_digest:
         result.add_error(
             ERR_AGT_DIGEST_MISMATCH,
             AGENT_ABSTRACTION_STACK_JSON_PATH,
@@ -463,6 +628,16 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 "Layer missing mandatory 'id' field",
             )
             continue
+
+        # Check unknown layer keys
+        unknown_layer_keys = set(layer.keys()) - KNOWN_LAYER_KEYS
+        for ukey in sorted(unknown_layer_keys):
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/layers/{lid}/{ukey}",
+                f"Unknown layer key '{ukey}' in layer '{lid}'",
+            )
 
         if not AGT_LAYER_ID_PATTERN.match(lid):
             result.add_error(
@@ -542,9 +717,135 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"Un-baselined layer ID '{obs_id}' introduced without generation bump",
             )
 
+    # Validate hydrationLevels
+    raw_hydration = data.get("hydrationLevels", [])
+    if not isinstance(raw_hydration, list):
+        result.add_error(
+            ERR_AGT_CORRUPT_FILE,
+            AGENT_ABSTRACTION_STACK_JSON_PATH,
+            "#/hydrationLevels",
+            "'hydrationLevels' must be a list",
+        )
+        return result
+
+    result.hydration_level_count = len(raw_hydration)
+    seen_hid_ids: set[str] = set()
+    observed_hydration: dict[str, dict[str, Any]] = {}
+    observed_hid_order: list[str] = []
+
+    for idx, hlevel in enumerate(raw_hydration):
+        if not isinstance(hlevel, dict):
+            result.add_error(
+                ERR_AGT_CORRUPT_FILE,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{idx}",
+                "Hydration level item must be a JSON object",
+            )
+            continue
+
+        hid = str(hlevel.get("id", "")).strip()
+        if not hid:
+            result.add_error(
+                ERR_AGT_MISSING_FIELD,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{idx}/id",
+                "Hydration level missing mandatory 'id' field",
+            )
+            continue
+
+        # Check unknown hydration keys
+        unknown_hyd_keys = set(hlevel.keys()) - KNOWN_HYDRATION_KEYS
+        for ukey in sorted(unknown_hyd_keys):
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{hid}/{ukey}",
+                f"Unknown hydration level key '{ukey}' in hydration level '{hid}'",
+            )
+
+        if not HYDRATION_ID_PATTERN.match(hid):
+            result.add_error(
+                ERR_AGT_STABLE_ID_REUSED,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{idx}/id",
+                f"Hydration level id '{hid}' does not conform to stable ID pattern H0-H4",
+            )
+
+        if hid in seen_hid_ids:
+            result.add_error(
+                ERR_AGT_STABLE_ID_REUSED,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{idx}/id",
+                f"Duplicate hydration level ID '{hid}' detected",
+            )
+        seen_hid_ids.add(hid)
+        observed_hydration[hid] = hlevel
+        observed_hid_order.append(hid)
+
+        # Check mandatory hydration fields
+        for field_name in MANDATORY_HYDRATION_FIELDS:
+            if field_name not in hlevel:
+                result.add_error(
+                    ERR_AGT_MISSING_FIELD,
+                    AGENT_ABSTRACTION_STACK_JSON_PATH,
+                    f"#/hydrationLevels/{hid}/{field_name}",
+                    f"Hydration level '{hid}' lacks mandatory field '{field_name}'",
+                )
+            else:
+                val = hlevel[field_name]
+                if not str(val).strip():
+                    result.add_error(
+                        ERR_AGT_MISSING_FIELD,
+                        AGENT_ABSTRACTION_STACK_JSON_PATH,
+                        f"#/hydrationLevels/{hid}/{field_name}",
+                        f"Hydration level '{hid}' field '{field_name}' must not be empty",
+                    )
+
+    # Check canonical hydration ordering
+    if observed_hid_order != CANONICAL_HYDRATION_ORDER:
+        result.add_error(
+            ERR_AGT_REGISTRY_DRIFT,
+            AGENT_ABSTRACTION_STACK_JSON_PATH,
+            "#/hydrationLevels",
+            f"Hydration levels do not follow canonical ladder ordering: observed {observed_hid_order}",
+        )
+
+    # Check against baseline hydration levels
+    for base_hid, base_hrow in BASELINE_HYDRATION_LEVELS.items():
+        if base_hid not in observed_hydration:
+            result.add_error(
+                ERR_AGT_STABLE_ID_REUSED,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{base_hid}",
+                f"Baseline hydration level '{base_hid}' missing from hydrationLevels",
+            )
+            continue
+        obs_hrow = observed_hydration[base_hid]
+        for field_name in MANDATORY_HYDRATION_FIELDS:
+            expected_val = base_hrow.get(field_name, "")
+            actual_val = str(obs_hrow.get(field_name, "")).strip()
+            if actual_val != expected_val:
+                result.add_error(
+                    ERR_AGT_REGISTRY_DRIFT,
+                    AGENT_ABSTRACTION_STACK_JSON_PATH,
+                    f"#/hydrationLevels/{base_hid}/{field_name}",
+                    f"Hydration level '{base_hid}' field '{field_name}' diverged from baseline: expected {expected_val!r}, got {actual_val!r}",
+                )
+
+    for obs_hid in observed_hydration:
+        if obs_hid not in BASELINE_HYDRATION_LEVELS:
+            result.add_error(
+                ERR_AGT_STABLE_ID_REUSED,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{obs_hid}",
+                f"Un-baselined hydration level ID '{obs_hid}' introduced without generation bump",
+            )
+
     # Validate against Markdown mirror
     try:
-        md_gen, md_digest, md_rows = extract_markdown_metadata_and_abstractions(md_path)
+        md_gen, md_digest, md_rows, md_hydration_rows, md_dup_layers, md_dup_hydration = (
+            extract_markdown_metadata_and_abstractions(md_path)
+        )
     except Exception as exc:
         result.add_error(
             ERR_AGT_CORRUPT_FILE,
@@ -554,7 +855,30 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
         )
         return result
 
-    if md_gen and md_gen != gen:
+    for dup_lid in md_dup_layers:
+        result.add_error(
+            ERR_AGT_STABLE_ID_REUSED,
+            AGENT_ABSTRACTIONS_MD_PATH,
+            f"#{dup_lid}",
+            f"Duplicate layer ID '{dup_lid}' detected in markdown mirror",
+        )
+
+    for dup_hid in md_dup_hydration:
+        result.add_error(
+            ERR_AGT_STABLE_ID_REUSED,
+            AGENT_ABSTRACTIONS_MD_PATH,
+            f"#{dup_hid}",
+            f"Duplicate hydration level ID '{dup_hid}' detected in markdown mirror",
+        )
+
+    if not md_gen:
+        result.add_error(
+            ERR_AGT_MISSING_FIELD,
+            AGENT_ABSTRACTIONS_MD_PATH,
+            "#generation",
+            "Missing or empty 'Generation:' line in markdown mirror",
+        )
+    elif md_gen != gen:
         result.add_error(
             ERR_AGT_GENERATION_MISMATCH,
             AGENT_ABSTRACTIONS_MD_PATH,
@@ -562,13 +886,58 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
             f"Markdown mirror generation '{md_gen}' diverged from JSON generation '{gen}'",
         )
 
-    if md_digest and md_digest != declared_digest:
+    if not md_digest:
+        result.add_error(
+            ERR_AGT_MISSING_FIELD,
+            AGENT_ABSTRACTIONS_MD_PATH,
+            "#registryDigest",
+            "Missing or empty 'Registry digest:' line in markdown mirror",
+        )
+    elif md_digest != declared_digest:
         result.add_error(
             ERR_AGT_DIGEST_MISMATCH,
             AGENT_ABSTRACTIONS_MD_PATH,
             "#registryDigest",
             f"Markdown mirror digest '{md_digest}' diverged from JSON digest '{declared_digest}'",
         )
+
+    # Validate hydration levels against Markdown mirror
+    for hid, obs_hrow in observed_hydration.items():
+        if hid not in md_hydration_rows:
+            result.add_error(
+                ERR_AGT_REGISTRY_DRIFT,
+                AGENT_ABSTRACTIONS_MD_PATH,
+                f"#{hid}",
+                f"Hydration level '{hid}' in architecture JSON missing from Markdown mirror",
+            )
+            continue
+        md_hname, md_hcontent = md_hydration_rows[hid]
+        obs_hname = str(obs_hrow.get("name", "")).strip()
+        obs_hcontent = str(obs_hrow.get("content", "")).strip()
+
+        if obs_hname != md_hname:
+            result.add_error(
+                ERR_AGT_REGISTRY_DRIFT,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{hid}/name",
+                f"Hydration level '{hid}' name mismatch: JSON has '{obs_hname}', Markdown has '{md_hname}'",
+            )
+        if obs_hcontent != md_hcontent:
+            result.add_error(
+                ERR_AGT_REGISTRY_DRIFT,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{hid}/content",
+                f"Hydration level '{hid}' content mismatch: JSON has '{obs_hcontent}', Markdown has '{md_hcontent}'",
+            )
+
+    for md_hid in md_hydration_rows:
+        if md_hid not in observed_hydration:
+            result.add_error(
+                ERR_AGT_REGISTRY_DRIFT,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                f"#/hydrationLevels/{md_hid}",
+                f"Hydration level '{md_hid}' in Markdown mirror missing from architecture JSON",
+            )
 
     for lid, obs_row in observed_layers.items():
         if lid not in md_rows:
@@ -641,7 +1010,7 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"AGT-LAYER-001 invariant must be INV-006, got '{inv}'",
             )
         prohibition = str(layer_001.get("prohibition", "")).strip()
-        if "Cannot infer mission meaning or physical truth." not in prohibition:
+        if prohibition != "Cannot infer mission meaning or physical truth.":
             result.add_error(
                 ERR_AGT_INVARIANT_VIOLATION,
                 AGENT_ABSTRACTION_STACK_JSON_PATH,
@@ -657,12 +1026,12 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"AGT-LAYER-001 status must be 'normative', got '{status}'",
             )
         owner = str(layer_001.get("owner", "")).strip()
-        if "asupersync" not in owner or "authority" not in owner:
+        if owner != "asupersync/authority/object owners":
             result.add_error(
                 ERR_AGT_INVARIANT_VIOLATION,
                 AGENT_ABSTRACTION_STACK_JSON_PATH,
                 "#/layers/AGT-LAYER-001/owner",
-                f"AGT-LAYER-001 owner must reference asupersync and authority, got '{owner}'",
+                f"AGT-LAYER-001 owner must be 'asupersync/authority/object owners', got '{owner}'",
             )
         question = str(layer_001.get("question", "")).strip()
         if question != "What work, authority, budget, identity, time, and object custody exist?":
@@ -679,6 +1048,64 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 AGENT_ABSTRACTION_STACK_JSON_PATH,
                 "#/layers/AGT-LAYER-001/output",
                 f"AGT-LAYER-001 output mismatch: got '{out}'",
+            )
+
+    # Semantic Invariant Enforcement for AGT-LAYER-002: source_evidence (fss-x4a.30.82.2)
+    # 1. Source evidence (AGT-LAYER-002) must have invariant INV-003.
+    # 2. Prohibition MUST state: "Cannot promote decode or model output into source evidence."
+    # 3. Status MUST be "normative".
+    # 4. Owner MUST be "fss-capture/fss-media/fss-chronicle".
+    # 5. Question MUST be: "What exact packets, files, measurements, continuity, and capture-time intervals exist?"
+    # 6. Output MUST be: "Immutable sensor capsules, source objects, continuity and time evidence."
+    layer_002 = observed_layers.get("AGT-LAYER-002")
+    if layer_002:
+        inv = str(layer_002.get("invariant", "")).strip()
+        if inv != "INV-003":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-002/invariant",
+                f"AGT-LAYER-002 invariant must be INV-003, got '{inv}'",
+            )
+        prohibition = str(layer_002.get("prohibition", "")).strip()
+        if prohibition != "Cannot promote decode or model output into source evidence.":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-002/prohibition",
+                f"AGT-LAYER-002 prohibition must be 'Cannot promote decode or model output into source evidence.', got '{prohibition}'",
+            )
+        status = str(layer_002.get("status", "")).strip()
+        if status != "normative":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-002/status",
+                f"AGT-LAYER-002 status must be 'normative', got '{status}'",
+            )
+        owner = str(layer_002.get("owner", "")).strip()
+        if owner != "fss-capture/fss-media/fss-chronicle":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-002/owner",
+                f"AGT-LAYER-002 owner must be 'fss-capture/fss-media/fss-chronicle', got '{owner}'",
+            )
+        question = str(layer_002.get("question", "")).strip()
+        if question != "What exact packets, files, measurements, continuity, and capture-time intervals exist?":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-002/question",
+                f"AGT-LAYER-002 question mismatch: got '{question}'",
+            )
+        out = str(layer_002.get("output", "")).strip()
+        if out != "Immutable sensor capsules, source objects, continuity and time evidence.":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-002/output",
+                f"AGT-LAYER-002 output mismatch: got '{out}'",
             )
 
     # Semantic Invariant Enforcement for AGT-LAYER-003 (fss-x4a.30.82.3)
@@ -701,7 +1128,7 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"AGT-LAYER-003 invariant must be INV-063, got '{inv}'",
             )
         prohibition = str(layer_003.get("prohibition", "")).strip()
-        if "Cannot include unqualified cognition as fact." not in prohibition:
+        if prohibition != "Cannot include unqualified cognition as fact.":
             result.add_error(
                 ERR_AGT_INVARIANT_VIOLATION,
                 AGENT_ABSTRACTION_STACK_JSON_PATH,
@@ -749,7 +1176,6 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"AGT-LAYER-003 output illegally includes cognition/beliefs: '{out}'",
             )
 
-
     # Semantic Invariant Enforcement (fss-x4a.30.82.4)
     # 1. Derived beliefs (AGT-LAYER-004) must belong to cognition plane, NOT authority plane.
     # 2. Derived beliefs prohibition MUST state: "Cannot authorize effects or certify absence beyond coverage."
@@ -767,20 +1193,51 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"AGT-LAYER-004 invariant must be INV-069, got '{inv}'",
             )
         prohibition = str(layer_004.get("prohibition", "")).strip()
-        if "Cannot authorize effects" not in prohibition or "certify absence beyond coverage" not in prohibition:
+        if prohibition != "Cannot authorize effects or certify absence beyond coverage.":
             result.add_error(
                 ERR_AGT_ILLEGAL_AUTHORITY,
                 AGENT_ABSTRACTION_STACK_JSON_PATH,
                 "#/layers/AGT-LAYER-004/prohibition",
                 f"AGT-LAYER-004 prohibition must forbid authorizing effects and absence certification beyond coverage, got '{prohibition}'",
             )
+        status = str(layer_004.get("status", "")).strip()
+        if status != "normative":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-004/status",
+                f"AGT-LAYER-004 status must be 'normative', got '{status}'",
+            )
         owner = str(layer_004.get("owner", "")).strip()
+        if owner != "fss-perception/fss-association/fss-graph":
+            result.add_error(
+                ERR_AGT_ILLEGAL_AUTHORITY,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-004/owner",
+                f"AGT-LAYER-004 owner must be 'fss-perception/fss-association/fss-graph', got '{owner}'",
+            )
         if "authority" in owner.lower():
             result.add_error(
                 ERR_AGT_ILLEGAL_AUTHORITY,
                 AGENT_ABSTRACTION_STACK_JSON_PATH,
                 "#/layers/AGT-LAYER-004/owner",
                 f"AGT-LAYER-004 derived beliefs cannot be owned by authority plane: '{owner}'",
+            )
+        question = str(layer_004.get("question", "")).strip()
+        if question != "What entities, tracks, events, relations, and uncertainties are supported?":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-004/question",
+                f"AGT-LAYER-004 question mismatch: got '{question}'",
+            )
+        out = str(layer_004.get("output", "")).strip()
+        if out != "Generation-pinned derived beliefs and graph/search projections with receipts.":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-004/output",
+                f"AGT-LAYER-004 output mismatch: got '{out}'",
             )
 
     # Non-authority layers must not claim authority
@@ -797,6 +1254,237 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"Non-authority layer '{lid}' output claims authority or effect authorization: '{row.get('output')}'",
             )
 
+    # Semantic Invariant Enforcement for AGT-LAYER-005: situation_capsule (fss-x4a.30.82.5)
+    # 1. Situation capsule (AGT-LAYER-005) must have invariant INV-116.
+    # 2. Prohibition MUST state: "Cannot hide decision-changing omissions or rebase evidence identities."
+    # 3. Status MUST be "normative".
+    # 4. Owner MUST be "fss-situation/fss-context-pack/fss-affordance".
+    # 5. Question MUST be: "What is the smallest sufficient mission-relative driver view now, what changed, and what can safely be done next?"
+    # 6. Output MUST be: "SituationCapsule containing SituationFrame with WorldEnvelope, MeaningfulDelta, obligations, resource state, categorized control envelope, ContextPack, compression proof, and affordance frontier."
+    # 7. Prohibition check: must strictly forbid hiding decision-changing omissions and rebasing evidence identities.
+    # 8. Output check: must include SituationCapsule, SituationFrame, WorldEnvelope, and affordance frontier.
+    # 9. Cognition plane check: owner must not claim authority plane.
+    layer_005 = observed_layers.get("AGT-LAYER-005")
+    if layer_005:
+        inv = str(layer_005.get("invariant", "")).strip()
+        if inv != "INV-116":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/invariant",
+                f"AGT-LAYER-005 invariant must be INV-116, got '{inv}'",
+            )
+        prohibition = str(layer_005.get("prohibition", "")).strip()
+        if prohibition != "Cannot hide decision-changing omissions or rebase evidence identities.":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/prohibition",
+                f"AGT-LAYER-005 prohibition must forbid hiding decision-changing omissions and rebasing evidence identities, got '{prohibition}'",
+            )
+        status = str(layer_005.get("status", "")).strip()
+        if status != "normative":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/status",
+                f"AGT-LAYER-005 status must be 'normative', got '{status}'",
+            )
+        owner = str(layer_005.get("owner", "")).strip()
+        if owner != "fss-situation/fss-context-pack/fss-affordance":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/owner",
+                f"AGT-LAYER-005 owner must be 'fss-situation/fss-context-pack/fss-affordance', got '{owner}'",
+            )
+        if "authority" in owner.lower():
+            result.add_error(
+                ERR_AGT_ILLEGAL_AUTHORITY,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/owner",
+                f"AGT-LAYER-005 situation capsule cannot be owned by authority plane: '{owner}'",
+            )
+        question = str(layer_005.get("question", "")).strip()
+        if question != "What is the smallest sufficient mission-relative driver view now, what changed, and what can safely be done next?":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/question",
+                f"AGT-LAYER-005 question mismatch: got '{question}'",
+            )
+        out = str(layer_005.get("output", "")).strip()
+        expected_output = "SituationCapsule containing SituationFrame with WorldEnvelope, MeaningfulDelta, obligations, resource state, categorized control envelope, ContextPack, compression proof, and affordance frontier."
+        if out != expected_output:
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/output",
+                f"AGT-LAYER-005 output mismatch: expected '{expected_output}', got '{out}'",
+            )
+        out_lower = out.lower()
+        if "authorizes effects" in out_lower or "grant authority" in out_lower:
+            result.add_error(
+                ERR_AGT_ILLEGAL_AUTHORITY,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/output",
+                f"AGT-LAYER-005 output cannot claim effect authorization or grant authority: '{out}'",
+            )
+        if (
+            "situationcapsule" not in out_lower
+            or "situationframe" not in out_lower
+            or "worldenvelope" not in out_lower
+            or "affordance frontier" not in out_lower
+        ):
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/output",
+                f"AGT-LAYER-005 output must declare SituationCapsule, SituationFrame, WorldEnvelope, and affordance frontier: '{out}'",
+            )
+
+    # Semantic Invariant Enforcement for AGT-LAYER-006: investigation_and_hypotheses (fss-x4a.30.82.6)
+    # 1. Investigation and hypotheses (AGT-LAYER-006) must have invariant INV-104.
+    # 2. Prohibition MUST state: "Cannot collapse uncertainty into truth without adjudication."
+    # 3. Status MUST be "normative".
+    # 4. Owner MUST be "fss-investigation".
+    # 5. Question MUST be: "Which competing explanations remain viable and how can they be discriminated?"
+    # 6. Output MUST be: "Case revision, hypotheses, support, contradictions, predicted observations, falsifiers, and stop rule."
+    # 7. Prohibition check: must strictly forbid collapsing uncertainty into truth without adjudication.
+    # 8. Output check: must not claim authority or effect authorization.
+    layer_006 = observed_layers.get("AGT-LAYER-006")
+    if layer_006:
+        inv = str(layer_006.get("invariant", "")).strip()
+        if inv != "INV-104":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-006/invariant",
+                f"AGT-LAYER-006 invariant must be INV-104, got '{inv}'",
+            )
+        prohibition = str(layer_006.get("prohibition", "")).strip()
+        if "Cannot collapse uncertainty into truth without adjudication." not in prohibition:
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-006/prohibition",
+                f"AGT-LAYER-006 prohibition must be 'Cannot collapse uncertainty into truth without adjudication.', got '{prohibition}'",
+            )
+        status = str(layer_006.get("status", "")).strip()
+        if status != "normative":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-006/status",
+                f"AGT-LAYER-006 status must be 'normative', got '{status}'",
+            )
+        owner = str(layer_006.get("owner", "")).strip()
+        if owner != "fss-investigation":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-006/owner",
+                f"AGT-LAYER-006 owner must be 'fss-investigation', got '{owner}'",
+            )
+        if "authority" in owner.lower():
+            result.add_error(
+                ERR_AGT_ILLEGAL_AUTHORITY,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-006/owner",
+                f"AGT-LAYER-006 investigation cannot be owned by authority plane: '{owner}'",
+            )
+        question = str(layer_006.get("question", "")).strip()
+        if question != "Which competing explanations remain viable and how can they be discriminated?":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-006/question",
+                f"AGT-LAYER-006 question mismatch: got '{question}'",
+            )
+        out = str(layer_006.get("output", "")).strip()
+        expected_output_006 = "Case revision, hypotheses, support, contradictions, predicted observations, falsifiers, and stop rule."
+        if out != expected_output_006:
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-006/output",
+                f"AGT-LAYER-006 output mismatch: expected '{expected_output_006}', got '{out}'",
+            )
+        out_lower = out.lower()
+        if "authorizes effects" in out_lower or "grant authority" in out_lower:
+            result.add_error(
+                ERR_AGT_ILLEGAL_AUTHORITY,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-006/output",
+                f"AGT-LAYER-006 output cannot claim effect authorization or grant authority: '{out}'",
+            )
+        if (
+            "hypotheses" not in out_lower
+            or "support" not in out_lower
+            or "contradictions" not in out_lower
+            or "falsifiers" not in out_lower
+            or "stop rule" not in out_lower
+        ):
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-006/output",
+                f"AGT-LAYER-006 output must declare hypotheses, support, contradictions, falsifiers, and stop rule: '{out}'",
+            )
+
+    # Semantic Invariant Enforcement for H0: identity (fss-x4a.30.82.12)
+    # 1. Level ID must be H0.
+    # 2. Name must be identity.
+    # 3. Content MUST contain: digest, type, time/spatial bounds, source, availability, cost, and authority.
+    # 4. Content elements check: all seven dimensions must be explicitly declared.
+    # 5. Content prohibition check: must NOT allow raw payload bytes, decoded media, or ungrounded cognition.
+    h0_row = observed_hydration.get("H0")
+    if h0_row:
+        h0_name = str(h0_row.get("name", "")).strip()
+        if h0_name != "identity":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/hydrationLevels/H0/name",
+                f"H0 name must be 'identity', got '{h0_name}'",
+            )
+        h0_content = str(h0_row.get("content", "")).strip()
+        expected_content = "digest, type, time/spatial bounds, source, availability, cost, and authority"
+        if h0_content != expected_content:
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/hydrationLevels/H0/content",
+                f"H0 content mismatch: expected '{expected_content}', got '{h0_content}'",
+            )
+        # Required elements check
+        required_elements = ("digest", "type", "source", "availability", "cost", "authority")
+        for req in required_elements:
+            if req not in h0_content.lower():
+                result.add_error(
+                    ERR_AGT_INVARIANT_VIOLATION,
+                    AGENT_ABSTRACTION_STACK_JSON_PATH,
+                    "#/hydrationLevels/H0/content",
+                    f"H0 content missing mandatory dimension '{req}': '{h0_content}'",
+                )
+        if "time" not in h0_content.lower() and "spatial" not in h0_content.lower():
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/hydrationLevels/H0/content",
+                f"H0 content missing time/spatial bounds dimension: '{h0_content}'",
+            )
+        # Prohibition check: raw payloads, decodes, unredacted media strictly forbidden at H0
+        prohibited_terms = ("raw packet", "raw byte", "decoded", "unredacted", "full-resolution")
+        for term in prohibited_terms:
+            if term in h0_content.lower():
+                result.add_error(
+                    ERR_AGT_INVARIANT_VIOLATION,
+                    AGENT_ABSTRACTION_STACK_JSON_PATH,
+                    "#/hydrationLevels/H0/content",
+                    f"H0 content illegally permits raw/decoded data ('{term}'): '{h0_content}'",
+                )
+
     return result
 
 
@@ -812,6 +1500,7 @@ def main() -> int:
         payload = {
             "passed": result.passed,
             "layer_count": result.layer_count,
+            "hydration_level_count": result.hydration_level_count,
             "registry_digest": result.registry_digest,
             "errors": [asdict(e) for e in result.errors],
         }
@@ -819,7 +1508,7 @@ def main() -> int:
     else:
         if result.passed:
             print(
-                f"[PASS] Agent abstraction stack validated: {result.layer_count} layers, digest {result.registry_digest}"
+                f"[PASS] Agent abstraction stack validated: {result.layer_count} layers, {result.hydration_level_count} hydration levels, digest {result.registry_digest}"
             )
         else:
             print(f"[FAIL] Agent abstraction stack validation failed with {len(result.errors)} error(s):")

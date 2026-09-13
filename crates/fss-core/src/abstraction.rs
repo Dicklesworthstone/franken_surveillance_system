@@ -1,21 +1,39 @@
 #![forbid(unsafe_code)]
 //! Canonical agent abstraction tower registry types and realizations:
 //! - Strongly typed [`AgentAbstractionLayer`] enum representing the 11 normative abstraction tower layers.
-//! - [`WorldFact`] and [`NegativeReadClaim`] realizing AGT-LAYER-003: world_facts_and_coverage (INV-063).
-//! - [`DerivedBelief`] realizing AGT-LAYER-004: derived_beliefs (INV-069).
+//! - Submodule [`world_facts`] realizing AGT-LAYER-003: world_facts_and_coverage (INV-063) in the Authority plane.
+//! - Submodule [`derived_belief`] realizing AGT-LAYER-004: derived_beliefs (INV-069) in the Cognition plane.
+//! - Submodule [`source_evidence`] realizing AGT-LAYER-002: source_evidence (INV-003) in the Authority plane.
 
 use core::fmt;
 use core::str::FromStr;
-use std::collections::BTreeSet;
 
-use crate::belief::BeliefInterval;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
-use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
-use crate::evidence::CoverageWitness;
-use crate::{ContentDigest, Generation, KnowledgeCell, LedgerAnchor};
+use crate::contract::{ContractError, Plane};
 
+pub mod derived_belief;
+pub mod source_evidence;
+pub mod world_facts;
 
+pub use derived_belief::*;
+pub use source_evidence::*;
+pub use world_facts::*;
 
+/// Canonical generation identifier for the agent abstraction stack.
+pub const AGENT_ABSTRACTION_GENERATION: &str = "gen:fss1:abstraction-v1";
+/// Alias for plural naming.
+pub const AGENT_ABSTRACTIONS_GENERATION: &str = AGENT_ABSTRACTION_GENERATION;
+
+/// Pinned baseline freeze digest of the canonical agent abstraction stack registry.
+pub const AGENT_ABSTRACTION_FREEZE_DIGEST: &str =
+    "sha256:98dfe512d870a36079fe49435d1f53d669c63a0034d03a771248fbab0abf34a9";
+/// Alias for plural naming.
+pub const AGENT_ABSTRACTIONS_FREEZE_DIGEST: &str = AGENT_ABSTRACTION_FREEZE_DIGEST;
+
+/// Canonical abstraction layers in strict tower order (L0 to L10).
+pub const CANONICAL_LAYERS: [AgentAbstractionLayer; 11] = AgentAbstractionLayer::ALL;
+
+/// The 11 normative abstraction tower layers in strict ascending order (L0 to L10).
 ///
 /// Order:
 /// L0  Runtime authority and custody (AGT-LAYER-001)
@@ -54,20 +72,6 @@ pub enum AgentAbstractionLayer {
     /// L10: Versioned workspace revision and root-last HandoffCapsule.
     WorkspaceAndHandoff,
 }
-
-/// Canonical generation identifier for the agent abstraction stack.
-pub const AGENT_ABSTRACTION_GENERATION: &str = "gen:fss1:abstraction-v1";
-/// Alias for plural naming.
-pub const AGENT_ABSTRACTIONS_GENERATION: &str = AGENT_ABSTRACTION_GENERATION;
-
-/// Pinned baseline freeze digest of the canonical agent abstraction stack registry.
-pub const AGENT_ABSTRACTION_FREEZE_DIGEST: &str =
-    "sha256:8fb60f6b30d30bfe2ada8290daddc19550ee11f85d4d58a2c0da1ae7098a8496";
-/// Alias for plural naming.
-pub const AGENT_ABSTRACTIONS_FREEZE_DIGEST: &str = AGENT_ABSTRACTION_FREEZE_DIGEST;
-
-/// Canonical abstraction layers in strict tower order (L0 to L10).
-pub const CANONICAL_LAYERS: [AgentAbstractionLayer; 11] = AgentAbstractionLayer::ALL;
 
 impl AgentAbstractionLayer {
     /// All 11 normative layers in canonical abstraction tower order.
@@ -202,48 +206,52 @@ impl AgentAbstractionLayer {
                 "Case revision, hypotheses, support, contradictions, predicted observations, falsifiers, and stop rule."
             }
             Self::AffordanceFrontier => {
-                "Pareto frontier of read/control affordances with VOI, cost, risk, reversibility, invalidators, and proof."
+                "Nondominated affordance frontier with value of information, resource cost, risk, reversibility, invalidators, and expected proof."
             }
             Self::PlanAndEffect => {
-                "Prepared plan, commit ticket, effect receipts, obligation states, and reconciliation path."
+                "Prepared plan, commit ticket, effect receipts, obligation states, and reconciliation."
             }
             Self::OutcomeAndEpisode => {
-                "Immutable execution episode with attribution hypotheses and resource ledger."
+                "Immutable execution episode with observed outcome, attribution hypotheses, and resource ledger."
             }
             Self::LearningAndMemory => {
-                "Evidence-linked scoped proposal with counterexamples, harmful outcomes, validation, and expiry."
+                "Evidence-linked scoped proposal with counterexamples, harmful outcomes, and validation runbook."
             }
             Self::WorkspaceAndHandoff => {
-                "Versioned workspace revision and root-last HandoffCapsule."
+                "Versioned workspace revision, invalidation set, continuation leases, and root-last HandoffCapsule."
             }
         }
     }
 
-    /// Returns the normative prohibition for this layer.
+    /// Returns the normative prohibition description for this layer.
     #[must_use]
     pub const fn prohibition(self) -> &'static str {
         match self {
             Self::RuntimeAuthorityAndCustody => "Cannot infer mission meaning or physical truth.",
-            Self::SourceEvidence => "Cannot promote decode or model output into source evidence.",
+            Self::SourceEvidence => {
+                "Cannot promote decode or model output into source evidence."
+            }
             Self::WorldFactsAndCoverage => "Cannot include unqualified cognition as fact.",
-            Self::DerivedBeliefs => "Cannot authorize effects or certify absence beyond coverage.",
+            Self::DerivedBeliefs => {
+                "Cannot authorize effects or certify absence beyond coverage."
+            }
             Self::SituationCapsule => {
                 "Cannot hide decision-changing omissions or rebase evidence identities."
             }
             Self::InvestigationAndHypotheses => {
                 "Cannot collapse uncertainty into truth without adjudication."
             }
-            Self::AffordanceFrontier => "Cannot grant authority or use one opaque score.",
-            Self::PlanAndEffect => "Cannot execute prose or count dispatch as success.",
-            Self::OutcomeAndEpisode => "Cannot rewrite original predictions after outcome.",
-            Self::LearningAndMemory => "Cannot self-promote into active policy or truth.",
+            Self::AffordanceFrontier => "Cannot grant execution authority directly.",
+            Self::PlanAndEffect => "Cannot commit without current witnesses and idempotency key.",
+            Self::OutcomeAndEpisode => "Cannot mutate completed history or prune failed paths.",
+            Self::LearningAndMemory => "Cannot activate unshadowed policy without qualification.",
             Self::WorkspaceAndHandoff => {
-                "Cannot preserve hidden conversational state or confer effect authority through custody."
+                "Cannot leave active obligations indeterminate or omit invalidations."
             }
         }
     }
 
-    /// Returns the normative invariant ID linked to this layer.
+    /// Returns the stable architectural invariant enforced by this layer.
     #[must_use]
     pub const fn invariant(self) -> &'static str {
         match self {
@@ -261,31 +269,13 @@ impl AgentAbstractionLayer {
         }
     }
 
-    /// Returns the normative status of this layer.
+    /// Returns the stable normative status for this layer.
     #[must_use]
     pub const fn status(self) -> &'static str {
         "normative"
     }
 
-    /// Returns the semantic plane this layer belongs to.
-    #[must_use]
-    pub const fn plane(self) -> Plane {
-        match self {
-            Self::RuntimeAuthorityAndCustody
-            | Self::SourceEvidence
-            | Self::WorldFactsAndCoverage => Plane::Authority,
-            Self::DerivedBeliefs
-            | Self::SituationCapsule
-            | Self::InvestigationAndHypotheses
-            | Self::AffordanceFrontier
-            | Self::OutcomeAndEpisode
-            | Self::LearningAndMemory
-            | Self::WorkspaceAndHandoff => Plane::Cognition,
-            Self::PlanAndEffect => Plane::Effect,
-        }
-    }
-
-    /// Returns the 0-indexed canonical tower level (0 = L0, ..., 10 = L10).
+    /// Returns the zero-indexed level in the abstraction tower (0 to 10).
     #[must_use]
     pub const fn tower_level(self) -> u8 {
         match self {
@@ -303,23 +293,63 @@ impl AgentAbstractionLayer {
         }
     }
 
-    /// Returns whether this layer is in the authority plane and may claim authority.
-    ///
-    /// Non-authority layers (such as `DerivedBeliefs`) must NEVER claim authority.
+    /// Returns the primary ADR-0001 semantic plane for this layer.
     #[must_use]
-    pub const fn may_claim_authority(self) -> bool {
-        matches!(self.plane(), Plane::Authority)
+    pub const fn plane(self) -> Plane {
+        match self {
+            Self::RuntimeAuthorityAndCustody
+            | Self::SourceEvidence
+            | Self::WorldFactsAndCoverage
+            | Self::OutcomeAndEpisode
+            | Self::WorkspaceAndHandoff => Plane::Authority,
+            Self::DerivedBeliefs
+            | Self::SituationCapsule
+            | Self::InvestigationAndHypotheses
+            | Self::AffordanceFrontier
+            | Self::LearningAndMemory => Plane::Cognition,
+            Self::PlanAndEffect => Plane::Effect,
+        }
     }
 
-    /// Returns whether this layer may directly authorize side effects.
-    ///
-    /// Strictly forbidden for `DerivedBeliefs` (INV-069).
+    /// Returns whether this layer may claim authority plane ownership.
+    #[must_use]
+    pub const fn may_claim_authority(self) -> bool {
+        matches!(
+            self,
+            Self::RuntimeAuthorityAndCustody
+                | Self::SourceEvidence
+                | Self::WorldFactsAndCoverage
+                | Self::OutcomeAndEpisode
+                | Self::WorkspaceAndHandoff
+        )
+    }
+
+    /// Returns whether this layer may authorize physical effects.
     #[must_use]
     pub const fn may_authorize_effects(self) -> bool {
         matches!(self, Self::PlanAndEffect)
     }
 
-    /// Returns whether state at this layer is anchor-pinned and rebuildable from canonical history.
+    /// Returns whether this layer is anchor-pinned.
+    #[must_use]
+    pub const fn is_anchor_pinned(self) -> bool {
+        !matches!(self, Self::RuntimeAuthorityAndCustody)
+    }
+
+    /// Returns whether this layer is rebuildable from canonical history.
+    #[must_use]
+    pub const fn is_rebuildable(self) -> bool {
+        matches!(
+            self,
+            Self::DerivedBeliefs
+                | Self::SituationCapsule
+                | Self::InvestigationAndHypotheses
+                | Self::AffordanceFrontier
+                | Self::OutcomeAndEpisode
+        )
+    }
+
+    /// Returns whether this layer is anchor-pinned and rebuildable from canonical history.
     #[must_use]
     pub const fn is_anchor_pinned_rebuildable(self) -> bool {
         matches!(
@@ -327,6 +357,8 @@ impl AgentAbstractionLayer {
             Self::DerivedBeliefs
                 | Self::WorldFactsAndCoverage
                 | Self::SituationCapsule
+                | Self::InvestigationAndHypotheses
+                | Self::AffordanceFrontier
                 | Self::OutcomeAndEpisode
         )
     }
@@ -464,761 +496,3 @@ impl CanonicalDecode for AgentAbstractionLayer {
         Self::from_tower_level(level)
     }
 }
-
-/// An anchor-pinned, generation-pinned derived belief (AGT-LAYER-004, INV-069).
-///
-/// Derived beliefs represent supported entities, tracks, events, relations, and uncertainties
-/// derived from canonical evidence. Per AGENTS.md and INV-069:
-/// - Derived state is anchor-pinned and rebuildable.
-/// - Derived state lives strictly in the Cognition plane and must NEVER claim authority.
-/// - Derived state can NEVER authorize effects or certify absence beyond coverage.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DerivedBelief {
-    /// Stable proposition identity (e.g. `belief:track:001`).
-    pub belief_id: String,
-    /// Exact ledger anchor to which this derivation is pinned (INV-069).
-    pub anchor: LedgerAnchor,
-    /// Generation identifier for the derivation model/engine.
-    pub generation: Generation,
-    /// Compact human-readable statement.
-    pub statement: String,
-    /// Epistemic state (must NOT be `Known`; derived beliefs are `Estimated`, `Conflicted`, etc.).
-    pub knowledge_state: KnowledgeState,
-    /// Epistemic provenance: strictly `ProvenanceClass::Derived`.
-    pub provenance: ProvenanceClass,
-    /// Bounded uncertainty micro-probability interval ([0, 1_000_000]).
-    pub uncertainty: BeliefInterval,
-    /// Evidence roots supporting the derivation.
-    pub supporting_evidence: Vec<ContentDigest>,
-    /// Contradicting evidence roots.
-    pub contradictions: Vec<ContentDigest>,
-    /// Receipt digest witnessing the deterministic derivation calculation.
-    pub derivation_receipt: ContentDigest,
-}
-
-/// Parameters for constructing a [`DerivedBelief`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct DerivedBeliefParams {
-    /// Stable proposition identity (e.g. `belief:track:001`).
-    pub belief_id: String,
-    /// Exact ledger anchor to which this derivation is pinned (INV-069).
-    pub anchor: LedgerAnchor,
-    /// Generation identifier for the derivation model/engine.
-    pub generation: Generation,
-    /// Compact human-readable statement.
-    pub statement: String,
-    /// Epistemic state (must NOT be `Known`; derived beliefs are `Estimated`, `Conflicted`, etc.).
-    pub knowledge_state: KnowledgeState,
-    /// Epistemic provenance: strictly `ProvenanceClass::Derived`.
-    pub provenance: ProvenanceClass,
-    /// Bounded uncertainty micro-probability interval ([0, 1_000_000]).
-    pub uncertainty: BeliefInterval,
-    /// Evidence roots supporting the derivation.
-    pub supporting_evidence: Vec<ContentDigest>,
-    /// Contradicting evidence roots.
-    pub contradictions: Vec<ContentDigest>,
-    /// Receipt digest witnessing the deterministic derivation calculation.
-    pub derivation_receipt: ContentDigest,
-}
-
-impl DerivedBelief {
-    /// Validates and constructs a new derived belief from parameters.
-    ///
-    /// # Errors
-    /// - `ContractError::InvalidIdentifier` if `belief_id` or `statement` is empty or oversized.
-    /// - `ContractError::DerivedBeliefMissingAnchor` if `anchor.site_lineage` is empty.
-    /// - `ContractError::KnowledgeStateBasisMismatch` if provenance is not `Derived`.
-    /// - `ContractError::DerivedBeliefKnownForbidden` if `knowledge_state` is `Known`.
-    /// - `ContractError::EvidenceRequired` if `supporting_evidence` is empty.
-    /// - `ContractError::InvalidProbabilityInterval` if `uncertainty` is malformed.
-    pub fn new(params: DerivedBeliefParams) -> Result<Self, ContractError> {
-        let belief = Self {
-            belief_id: params.belief_id,
-            anchor: params.anchor,
-            generation: params.generation,
-            statement: params.statement,
-            knowledge_state: params.knowledge_state,
-            provenance: params.provenance,
-            uncertainty: params.uncertainty,
-            supporting_evidence: params.supporting_evidence,
-            contradictions: params.contradictions,
-            derivation_receipt: params.derivation_receipt,
-        };
-        belief.validate()?;
-        Ok(belief)
-    }
-
-    /// Validates all constitutional and semantic invariants for this derived belief (INV-069).
-    pub fn validate(&self) -> Result<(), ContractError> {
-        if self.belief_id.is_empty() || self.belief_id.len() > 128 {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if self.statement.is_empty() || self.statement.len() > 512 {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if self.anchor.site_lineage.is_empty() {
-            return Err(ContractError::DerivedBeliefMissingAnchor);
-        }
-        if self.provenance != ProvenanceClass::Derived {
-            return Err(ContractError::KnowledgeStateBasisMismatch);
-        }
-        if self.knowledge_state == KnowledgeState::Known {
-            return Err(ContractError::DerivedBeliefKnownForbidden);
-        }
-        if self.supporting_evidence.is_empty() {
-            return Err(ContractError::EvidenceRequired);
-        }
-        if self.uncertainty.lower_micro() > self.uncertainty.upper_micro()
-            || self.uncertainty.upper_micro() > crate::belief::MICRO_DENOMINATOR
-        {
-            return Err(ContractError::InvalidProbabilityInterval);
-        }
-        Ok(())
-    }
-
-    /// Constitutional Hard Gate: A derived belief can NEVER claim authority (AGENTS.md).
-    #[must_use]
-    pub const fn may_claim_authority(&self) -> bool {
-        false
-    }
-
-    /// Constitutional Hard Gate: A derived belief can NEVER authorize effects (INV-069).
-    #[must_use]
-    pub const fn may_authorize_effects(&self) -> bool {
-        false
-    }
-
-    /// Returns whether this derived belief is anchor-pinned to canonical evidence.
-    #[must_use]
-    pub const fn is_anchor_pinned(&self) -> bool {
-        true
-    }
-
-    /// Returns whether this derived belief is rebuildable from canonical history.
-    #[must_use]
-    pub const fn is_rebuildable(&self) -> bool {
-        true
-    }
-
-    /// Returns the abstraction layer for this belief (`AGT-LAYER-004`).
-    #[must_use]
-    pub const fn layer(&self) -> AgentAbstractionLayer {
-        AgentAbstractionLayer::DerivedBeliefs
-    }
-
-    /// Converts this derived belief into a canonical [`KnowledgeCell`].
-    ///
-    /// Because `knowledge_state` is non-`Known` (`Estimated`, `Conflicted`, etc.),
-    /// `is_irreversible_effect_premise` is constitutionally guaranteed `false`.
-    #[must_use]
-    pub fn to_knowledge_cell(&self) -> KnowledgeCell {
-        KnowledgeCell {
-            claim_id: self.belief_id.clone(),
-            statement: self.statement.clone(),
-            knowledge_state: self.knowledge_state,
-            provenance: self.provenance,
-            hypothesis: None,
-            evidence: self.supporting_evidence.clone(),
-            contradictions: self.contradictions.clone(),
-            valid_until: None,
-            state_basis: None,
-        }
-    }
-}
-
-impl CanonicalEncode for DerivedBelief {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        encoder.text(&self.belief_id);
-        self.anchor.encode_canonical(encoder);
-        encoder.u64(self.generation.0);
-        encoder.text(&self.statement);
-        self.knowledge_state.encode_canonical(encoder);
-        self.provenance.encode_canonical(encoder);
-        self.uncertainty.encode_canonical(encoder);
-        encoder.u32(self.supporting_evidence.len() as u32);
-        for digest in &self.supporting_evidence {
-            encoder.digest(*digest);
-        }
-        encoder.u32(self.contradictions.len() as u32);
-        for digest in &self.contradictions {
-            encoder.digest(*digest);
-        }
-        encoder.digest(self.derivation_receipt);
-    }
-}
-
-impl CanonicalDecode for DerivedBelief {
-    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let belief_id = decoder.text()?.to_owned();
-        let anchor = LedgerAnchor::decode_canonical(decoder)?;
-        let generation = Generation(decoder.u64()?);
-        let statement = decoder.text()?.to_owned();
-        let knowledge_state = KnowledgeState::decode_canonical(decoder)?;
-        let provenance = ProvenanceClass::decode_canonical(decoder)?;
-        let uncertainty = BeliefInterval::decode_canonical(decoder)?;
-        let evidence_len = decoder.u32()? as usize;
-        let mut supporting_evidence = Vec::with_capacity(evidence_len);
-        for _ in 0..evidence_len {
-            supporting_evidence.push(decoder.digest()?);
-        }
-        let contra_len = decoder.u32()? as usize;
-        let mut contradictions = Vec::with_capacity(contra_len);
-        for _ in 0..contra_len {
-            contradictions.push(decoder.digest()?);
-        }
-        let derivation_receipt = decoder.digest()?;
-
-        let belief = Self {
-            belief_id,
-            anchor,
-            generation,
-            statement,
-            knowledge_state,
-            provenance,
-            uncertainty,
-            supporting_evidence,
-            contradictions,
-            derivation_receipt,
-        };
-        belief.validate()?;
-        Ok(belief)
-    }
-}
-
-/// Category of authoritative fact observed or established at one anchor (AGT-LAYER-003).
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum WorldFactKind {
-    /// Hardware presence, model, serial, power, or device status.
-    Device,
-    /// Spatial geometry, coordinates, mounting, or field-of-view bounds.
-    Geometry,
-    /// Sensor calibration parameters, intrinsics, or extrinsics generation.
-    Calibration,
-    /// Coverage continuity, witness state, or coverage domain boundaries.
-    Coverage,
-    /// Active policy generation, redaction rules, or access control constraints.
-    Policy,
-    /// Durable archive location, segment index, or publication receipt.
-    Archive,
-    /// Effect execution receipt, terminal state, or obligation fulfillment.
-    Effect,
-}
-
-impl WorldFactKind {
-    /// Returns the stable schema string identifier.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Device => "device",
-            Self::Geometry => "geometry",
-            Self::Calibration => "calibration",
-            Self::Coverage => "coverage",
-            Self::Policy => "policy",
-            Self::Archive => "archive",
-            Self::Effect => "effect",
-        }
-    }
-
-    /// Parses from a schema name string.
-    pub fn from_name(s: &str) -> Result<Self, ContractError> {
-        match s {
-            "device" => Ok(Self::Device),
-            "geometry" => Ok(Self::Geometry),
-            "calibration" => Ok(Self::Calibration),
-            "coverage" => Ok(Self::Coverage),
-            "policy" => Ok(Self::Policy),
-            "archive" => Ok(Self::Archive),
-            "effect" => Ok(Self::Effect),
-            _ => Err(ContractError::InvalidIdentifier),
-        }
-    }
-}
-
-impl fmt::Display for WorldFactKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl FromStr for WorldFactKind {
-    type Err = ContractError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Self::from_name(s)
-    }
-}
-
-impl CanonicalEncode for WorldFactKind {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        encoder.text(self.as_str());
-    }
-}
-
-impl CanonicalDecode for WorldFactKind {
-    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let text = decoder.text()?;
-        Self::from_name(text)
-    }
-}
-
-/// An authoritative fact observed or established at one anchor (AGT-LAYER-003, INV-063).
-///
-/// Output: "Device, geometry, calibration, coverage, policy, archive, and effect facts."
-/// Prohibition: "Cannot include unqualified cognition as fact."
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct WorldFact {
-    /// Stable fact identifier (e.g. `fact:device:cam01:calib`).
-    pub fact_id: String,
-    /// Category of authoritative fact.
-    pub kind: WorldFactKind,
-    /// Exact authoritative ledger anchor.
-    pub anchor: LedgerAnchor,
-    /// Human-readable fact statement.
-    pub statement: String,
-    /// Digest of source evidence, calibration, or receipt witnessing this fact.
-    pub evidence_digest: ContentDigest,
-    /// Generation identifier for the active registry or schema.
-    pub generation: Generation,
-}
-
-impl WorldFact {
-    /// Creates and validates a new authoritative world fact.
-    pub fn new(
-        fact_id: impl Into<String>,
-        kind: WorldFactKind,
-        anchor: LedgerAnchor,
-        statement: impl Into<String>,
-        evidence_digest: ContentDigest,
-        generation: Generation,
-    ) -> Result<Self, ContractError> {
-        let fact = Self {
-            fact_id: fact_id.into(),
-            kind,
-            anchor,
-            statement: statement.into(),
-            evidence_digest,
-            generation,
-        };
-        fact.validate()?;
-        Ok(fact)
-    }
-
-    /// Validates constitutional invariants for this world fact (INV-063).
-    pub fn validate(&self) -> Result<(), ContractError> {
-        if self.fact_id.is_empty() || self.fact_id.len() > 128 {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if self.statement.is_empty() || self.statement.len() > 512 {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if self.anchor.site_lineage.is_empty() {
-            return Err(ContractError::DerivedBeliefMissingAnchor);
-        }
-        if self.generation.0 == 0 {
-            return Err(ContractError::GenerationConflict);
-        }
-        // Prohibition: "Cannot include unqualified cognition as fact."
-        // A world fact MUST bind source evidence or an authoritative receipt digest.
-        // Speculative propositions without evidence are strictly rejected.
-        let lower = self.statement.to_lowercase();
-        if lower.contains("unqualified cognition")
-            || lower.contains("speculative")
-            || lower.contains("unverified hypothesis")
-        {
-            return Err(ContractError::EvidenceRequired);
-        }
-        Ok(())
-    }
-
-    /// Returns the abstraction layer for this fact (`AGT-LAYER-003`).
-    #[must_use]
-    pub const fn layer(&self) -> AgentAbstractionLayer {
-        AgentAbstractionLayer::WorldFactsAndCoverage
-    }
-
-    /// Returns the semantic plane (`Plane::Authority`).
-    #[must_use]
-    pub const fn plane(&self) -> Plane {
-        Plane::Authority
-    }
-}
-
-impl CanonicalEncode for WorldFact {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        encoder.text(&self.fact_id);
-        self.kind.encode_canonical(encoder);
-        self.anchor.encode_canonical(encoder);
-        encoder.text(&self.statement);
-        encoder.digest(self.evidence_digest);
-        encoder.u64(self.generation.0);
-    }
-}
-
-impl CanonicalDecode for WorldFact {
-    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let fact_id = decoder.text()?.to_owned();
-        let kind = WorldFactKind::decode_canonical(decoder)?;
-        let anchor = LedgerAnchor::decode_canonical(decoder)?;
-        let statement = decoder.text()?.to_owned();
-        let evidence_digest = decoder.digest()?;
-        let generation = Generation(decoder.u64()?);
-        let fact = Self {
-            fact_id,
-            kind,
-            anchor,
-            statement,
-            evidence_digest,
-            generation,
-        };
-        fact.validate()?;
-        Ok(fact)
-    }
-}
-
-/// A query or assertion claiming the absence of an event, intrusion, or entity (INV-063).
-///
-/// Per AGENTS.md Prime Directive:
-/// "Negative reads require CoverageWitness; semantic plans require read/write witnesses."
-/// "Treating a missing detection during a coverage gap as evidence of absence is prohibited."
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NegativeReadClaim {
-    /// Stable query or claim identifier.
-    pub claim_id: String,
-    /// Predicate whose absence is claimed (e.g. `no_unauthorized_intrusion`).
-    pub query_predicate: String,
-    /// Anchor against which the query is evaluated.
-    pub anchor: LedgerAnchor,
-    /// Target domain set requiring complete certified coverage.
-    pub target_domain: BTreeSet<String>,
-    /// Target generation of the active policy or capture system.
-    pub target_generation: u64,
-    /// Coverage witness provided to prove absence.
-    pub coverage_witness: Option<CoverageWitness>,
-}
-
-/// Certified outcome of an evaluated negative read query (INV-063).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct NegativeReadOutcome {
-    /// Stable claim identifier.
-    pub claim_id: String,
-    /// Certified negative predicate.
-    pub query_predicate: String,
-    /// Authoritative anchor.
-    pub anchor: LedgerAnchor,
-    /// Certified domain set.
-    pub certified_domain: BTreeSet<String>,
-    /// Pinned witness digest proving absence.
-    pub witness_digest: ContentDigest,
-    /// Generation at which coverage was certified.
-    pub generation: u64,
-}
-
-impl CanonicalEncode for NegativeReadOutcome {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        encoder.text(&self.claim_id);
-        encoder.text(&self.query_predicate);
-        self.anchor.encode_canonical(encoder);
-        encoder.u64(self.certified_domain.len() as u64);
-        for item in &self.certified_domain {
-            encoder.text(item);
-        }
-        encoder.digest(self.witness_digest);
-        encoder.u64(self.generation);
-    }
-}
-
-impl CanonicalDecode for NegativeReadOutcome {
-    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let claim_id = decoder.text()?.to_owned();
-        let query_predicate = decoder.text()?.to_owned();
-        let anchor = LedgerAnchor::decode_canonical(decoder)?;
-        let count = decoder.u64()? as usize;
-        let mut certified_domain = BTreeSet::new();
-        for _ in 0..count {
-            certified_domain.insert(decoder.text()?.to_owned());
-        }
-        let witness_digest = decoder.digest()?;
-        let generation = decoder.u64()?;
-        Ok(Self {
-            claim_id,
-            query_predicate,
-            anchor,
-            certified_domain,
-            witness_digest,
-            generation,
-        })
-    }
-}
-
-/// Evaluates a negative read claim against its coverage witness (INV-063).
-///
-/// # Invariant Rules:
-/// 1. A negative read WITHOUT a `CoverageWitness` CANNOT assert absence (`ContractError::CoverageUncertified`).
-/// 2. The witness must satisfy `certifies_absence()`:
-///    - Continuous coverage (`CoverageContinuity::Continuous`)
-///    - Complete evaluation (`Completeness::Complete`)
-///    - Stop reason complete (`CoverageStopReason::Complete`)
-///    - No excluded domain
-/// 3. The target domain must be non-empty and a subset of the witness's observed domain.
-/// 4. The target generation must match the witness's authorized generation.
-/// 5. The query predicate must match the witness's negative predicate.
-/// 6. The anchor site lineage must match.
-pub fn evaluate_negative_read(
-    claim: &NegativeReadClaim,
-) -> Result<NegativeReadOutcome, ContractError> {
-    if claim.claim_id.is_empty() || claim.query_predicate.is_empty() {
-        return Err(ContractError::InvalidIdentifier);
-    }
-    let witness = claim
-        .coverage_witness
-        .as_ref()
-        .ok_or(ContractError::CoverageUncertified)?;
-
-    if !witness.certifies_absence() {
-        return Err(ContractError::CoverageUncertified);
-    }
-
-    if claim.target_generation == 0 || witness.authorized_generation != claim.target_generation {
-        return Err(ContractError::GenerationConflict);
-    }
-
-    if claim.target_domain.is_empty() || !claim.target_domain.is_subset(&witness.observed_domain) {
-        return Err(ContractError::CoverageUncertified);
-    }
-
-    if witness.negative_predicate != claim.query_predicate {
-        return Err(ContractError::CoverageUncertified);
-    }
-
-    if witness.anchor.site_lineage != claim.anchor.site_lineage {
-        return Err(ContractError::StaleAnchor);
-    }
-
-    Ok(NegativeReadOutcome {
-        claim_id: claim.claim_id.clone(),
-        query_predicate: claim.query_predicate.clone(),
-        anchor: claim.anchor.clone(),
-        certified_domain: claim.target_domain.clone(),
-        witness_digest: witness.witness_digest(),
-        generation: claim.target_generation,
-    })
-}
-
-/// Strongly typed realization of `AGT-LAYER-002: source_evidence` (INV-003).
-///
-/// Output: "Immutable sensor capsules, source objects, continuity and time evidence."
-/// Prohibition: "Cannot promote decode or model output into source evidence."
-/// Invariant: "INV-003" ("Every retained observation names exact source bytes or records why source retention was forbidden.")
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourceEvidenceRecord {
-    /// Stable evidence identifier (e.g. `source:packet:cam01:seq1024`).
-    pub evidence_id: String,
-    /// Exact authoritative ledger anchor.
-    pub anchor: LedgerAnchor,
-    /// Generation identifier for the active capture/source system.
-    pub generation: Generation,
-    /// Human-readable evidence description or statement.
-    pub statement: String,
-    /// Epistemic provenance: strictly `ProvenanceClass::Observed`.
-    pub provenance: ProvenanceClass,
-    /// Exact source byte content digest (required unless `retention_forbidden_reason` is set per INV-003).
-    pub source_bytes_digest: Option<ContentDigest>,
-    /// Continuity witness digest proving unbroken stream/timing continuity.
-    pub continuity_witness: Option<ContentDigest>,
-    /// Explicit justification if source bytes could not be retained (INV-003 exemption).
-    pub retention_forbidden_reason: Option<String>,
-}
-
-/// Parameters for constructing a [`SourceEvidenceRecord`].
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SourceEvidenceParams {
-    /// Stable evidence identifier.
-    pub evidence_id: String,
-    /// Authoritative ledger anchor.
-    pub anchor: LedgerAnchor,
-    /// Generation of the capture/source system.
-    pub generation: Generation,
-    /// Statement or description.
-    pub statement: String,
-    /// Provenance class (must be `Observed`).
-    pub provenance: ProvenanceClass,
-    /// Content digest of source bytes.
-    pub source_bytes_digest: Option<ContentDigest>,
-    /// Continuity witness digest.
-    pub continuity_witness: Option<ContentDigest>,
-    /// Reason why retention was forbidden, if applicable.
-    pub retention_forbidden_reason: Option<String>,
-}
-
-impl SourceEvidenceRecord {
-    /// Constructs and validates a new source evidence record.
-    pub fn new(params: SourceEvidenceParams) -> Result<Self, ContractError> {
-        let record = Self {
-            evidence_id: params.evidence_id,
-            anchor: params.anchor,
-            generation: params.generation,
-            statement: params.statement,
-            provenance: params.provenance,
-            source_bytes_digest: params.source_bytes_digest,
-            continuity_witness: params.continuity_witness,
-            retention_forbidden_reason: params.retention_forbidden_reason,
-        };
-        record.validate()?;
-        Ok(record)
-    }
-
-    /// Validates constitutional invariants for this source evidence record (INV-003).
-    pub fn validate(&self) -> Result<(), ContractError> {
-        if self.evidence_id.is_empty() || self.evidence_id.len() > 128 {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if self.statement.is_empty() || self.statement.len() > 512 {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if self.anchor.site_lineage.is_empty() {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if self.generation.0 == 0 {
-            return Err(ContractError::GenerationConflict);
-        }
-        // Constitutional Prohibition: "Cannot promote decode or model output into source evidence."
-        // Provenance MUST be Observed; Derived, ModelInference, etc. are strictly prohibited.
-        if self.provenance != ProvenanceClass::Observed {
-            return Err(ContractError::ProhibitedEvidencePromotion);
-        }
-        // Prohibition check against statement text claiming decode or model outputs
-        let lower = self.statement.to_lowercase();
-        if lower.contains("decoded frame")
-            || lower.contains("model output")
-            || lower.contains("vlm inference")
-            || lower.contains("bounding box")
-            || lower.contains("model prediction")
-        {
-            return Err(ContractError::ProhibitedEvidencePromotion);
-        }
-        // Invariant INV-003: Every retained observation names exact source bytes
-        // or records why source retention was forbidden.
-        if self.source_bytes_digest.is_none() && self.retention_forbidden_reason.is_none() {
-            return Err(ContractError::EvidenceRequired);
-        }
-        Ok(())
-    }
-
-    /// Returns the abstraction layer for this record (`AGT-LAYER-002`).
-    #[must_use]
-    pub const fn layer(&self) -> AgentAbstractionLayer {
-        AgentAbstractionLayer::SourceEvidence
-    }
-
-    /// Returns the semantic plane (`Plane::Authority`).
-    #[must_use]
-    pub const fn plane(&self) -> Plane {
-        Plane::Authority
-    }
-
-    /// Returns whether this record may claim authority.
-    #[must_use]
-    pub const fn may_claim_authority(&self) -> bool {
-        true
-    }
-
-    /// Returns whether this record may authorize effects.
-    #[must_use]
-    pub const fn may_authorize_effects(&self) -> bool {
-        false
-    }
-
-    /// Converts this source evidence record into a canonical [`KnowledgeCell`].
-    #[must_use]
-    pub fn to_knowledge_cell(&self) -> KnowledgeCell {
-        let evidence = if let Some(digest) = self.source_bytes_digest {
-            vec![digest]
-        } else {
-            vec![]
-        };
-        KnowledgeCell {
-            claim_id: self.evidence_id.clone(),
-            statement: self.statement.clone(),
-            knowledge_state: KnowledgeState::Known,
-            provenance: self.provenance,
-            hypothesis: None,
-            evidence,
-            contradictions: vec![],
-            valid_until: None,
-            state_basis: None,
-        }
-    }
-}
-
-impl CanonicalEncode for SourceEvidenceRecord {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
-        encoder.text(&self.evidence_id);
-        self.anchor.encode_canonical(encoder);
-        encoder.u64(self.generation.0);
-        encoder.text(&self.statement);
-        encoder.tag(crate::pricing::provenance_class_to_u8(self.provenance));
-        match self.source_bytes_digest {
-            Some(digest) => {
-                encoder.u8(1);
-                encoder.digest(digest);
-            }
-            None => encoder.u8(0),
-        }
-        match self.continuity_witness {
-            Some(witness) => {
-                encoder.u8(1);
-                encoder.digest(witness);
-            }
-            None => encoder.u8(0),
-        }
-        match &self.retention_forbidden_reason {
-            Some(reason) => {
-                encoder.u8(1);
-                encoder.text(reason);
-            }
-            None => encoder.u8(0),
-        }
-    }
-}
-
-impl CanonicalDecode for SourceEvidenceRecord {
-    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let evidence_id = decoder.text()?.to_owned();
-        let anchor = LedgerAnchor::decode_canonical(decoder)?;
-        let generation = Generation(decoder.u64()?);
-        let statement = decoder.text()?.to_owned();
-        let provenance = crate::pricing::provenance_class_from_u8(decoder.tag()?)?;
-        let has_source = decoder.u8()?;
-        let source_bytes_digest = match has_source {
-            0 => None,
-            1 => Some(decoder.digest()?),
-            other => return Err(ContractError::UnknownEntryTag(other)),
-        };
-        let has_continuity = decoder.u8()?;
-        let continuity_witness = match has_continuity {
-            0 => None,
-            1 => Some(decoder.digest()?),
-            other => return Err(ContractError::UnknownEntryTag(other)),
-        };
-        let has_reason = decoder.u8()?;
-        let retention_forbidden_reason = match has_reason {
-            0 => None,
-            1 => Some(decoder.text()?.to_owned()),
-            other => return Err(ContractError::UnknownEntryTag(other)),
-        };
-
-        let record = Self {
-            evidence_id,
-            anchor,
-            generation,
-            statement,
-            provenance,
-            source_bytes_digest,
-            continuity_witness,
-            retention_forbidden_reason,
-        };
-        record.validate()?;
-        Ok(record)
-    }
-}
-

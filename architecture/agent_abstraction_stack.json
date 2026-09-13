@@ -3,7 +3,7 @@
   "asOf": "2026-08-31",
   "generation": "gen:fss1:abstraction-v1",
   "humanRegistry": "registries/AGENT_ABSTRACTIONS.md",
-  "registryDigest": "sha256:8fb60f6b30d30bfe2ada8290daddc19550ee11f85d4d58a2c0da1ae7098a8496",
+  "registryDigest": "sha256:98dfe512d870a36079fe49435d1f53d669c63a0034d03a771248fbab0abf34a9",
   "constitutionalRole": "orthogonal_control_membrane",
   "truthOwnership": "none; composes authority, cognition, effect, transfer, and presentation owners without redefining them",
   "rules": [

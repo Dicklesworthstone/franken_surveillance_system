@@ -2,7 +2,7 @@
 
 Stable abstraction identifiers are never renumbered. Machine source: `architecture/agent_abstraction_stack.json`. The public operation and view universes are separately frozen in `architecture/agent_operations.json` and `architecture/agent_views.json`.
 Generation: `gen:fss1:abstraction-v1`.
-Registry digest: `sha256:8fb60f6b30d30bfe2ada8290daddc19550ee11f85d4d58a2c0da1ae7098a8496`.
+Registry digest: `sha256:98dfe512d870a36079fe49435d1f53d669c63a0034d03a771248fbab0abf34a9`.
 
 ## Abstraction tower
 

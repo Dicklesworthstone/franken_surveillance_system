@@ -748,21 +748,10 @@ def main() -> int:
     capability_ids = set(re.findall(r"^\| `(CAP-[A-Z0-9-]+)` \|", (ROOT / "registries/CAPABILITIES.md").read_text(encoding="utf-8"), flags=re.MULTILINE))
 
     agent_doc = load_json("architecture/agent_abstraction_stack.json")
-    agent_layers = unique_rows(agent_doc.get("layers"), "id", "architecture/agent_abstraction_stack.json")
-    agent_layer_md = markdown_table_rows(
-        "registries/AGENT_ABSTRACTIONS.md",
-        r"^\| `((?:AGT-LAYER)-[A-Z0-9-]+)` \| `([^`]+)` \| `([^`]+)` \| .* \| `([^`]+)` \| `([^`]+)` \|$",
-    )
-    compare_ids(agent_layers, agent_layer_md, "agent abstraction layer")
-    required_agent_layer_fields = {"name", "owner", "question", "output", "prohibition", "invariant", "status"}
-    for identifier, row in agent_layers.items():
-        missing = sorted(required_agent_layer_fields - row.keys())
-        if missing:
-            fail(f"agent abstraction layer {identifier} lacks fields: {', '.join(missing)}")
-        if identifier in agent_layer_md:
-            name, owner, invariant, status = agent_layer_md[identifier]
-            if (row.get("name"), row.get("owner"), row.get("invariant"), row.get("status")) != (name, owner, invariant, status):
-                fail(f"machine and Markdown agent layer row disagree: {identifier}")
+    agent_abstraction_registry_result = agent_abstraction_checker.validate_agent_abstraction_registry(ROOT)
+    if not agent_abstraction_registry_result.passed:
+        for err in agent_abstraction_registry_result.errors:
+            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
     if agent_doc.get("constitutionalRole") != "orthogonal_control_membrane" or agent_doc.get("gate") != "GATE-115":
         fail("agent abstraction stack must declare the orthogonal control membrane and GATE-115")
     canonical_tower_lines = [
@@ -859,10 +848,6 @@ def main() -> int:
         for err in dependency_constitution_result.errors:
             fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
 
-    agent_abstraction_registry_result = agent_abstraction_checker.validate_agent_abstraction_registry(ROOT)
-    if not agent_abstraction_registry_result.passed:
-        for err in agent_abstraction_registry_result.errors:
-            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
 
 
     agent_views = unique_rows(load_json("architecture/agent_views.json").get("views"), "id", "architecture/agent_views.json")
