@@ -2,22 +2,32 @@
 //! Command specification, argument decoding, and execution for the `fss negative-evidence` subcommand.
 //!
 //! Enforces deterministic negative-evidence ledger operations:
-//! - `list`: Enumerate entries with stable ID, decision, hypothesis, and revival conditions.
-//! - `verify`: Verify continuous coverage guarantees, hash chain, and domain-separated root digest.
-//! - `append`: Append a verified entry with full validation, refusing absence without coverage witness.
-//! - `--json`: Return an `AgentResponseEnvelope` conforming to `fss.agent_response_envelope.v1`.
+//! - `init`: Create a ledger file holding the NEG-001..NEG-003 seeds; never overwrites.
+//! - `list`: Enumerate entries with stable ID, decision, hypothesis, certification, and revival.
+//! - `verify`: Verify integrity, canonical order, coverage certification, and root digest.
+//! - `append`: Append a locally certified entry to an existing ledger file. Absence without a
+//!   complete coverage witness is refused (`ERR-NEG-MISSING-COVERAGE-001`); the file is replaced
+//!   atomically (temp file in the same directory, then rename).
+//! - `--json`: Emit output shaped as `fss.agent_response_envelope.v1`. `fss negative-evidence` is
+//!   not a registered operation (no AOP row in `registries/OPERATION_CROSSWALK.md`) and fss-cli
+//!   derives no registry digests, anchors, or budget meters, so `operationId`, the contract-basis
+//!   digests, `inputAnchor`, and the budget figures are `null` and named in `degradation`; they
+//!   are never invented.
 
 use std::collections::BTreeSet;
+use std::ffi::OsString;
 use std::fs;
-use std::path::Path;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
 
 use fss_core::negative_evidence::{
-    NegativeDecision, NegativeEvidenceEntry, NegativeEvidenceError, NegativeEvidenceLedger,
-    NegativeEvidenceSetup, initial_negative_evidence_ledger,
+    EvidenceCertification, NOT_EVALUATED, NOT_LOCALLY_REPRODUCIBLE, NegativeDecision,
+    NegativeEvidenceEntry, NegativeEvidenceError, NegativeEvidenceLedger, NegativeEvidenceSetup,
+    initial_negative_evidence_ledger,
 };
 use fss_core::{
     Completeness, ContentDigest, CoverageContinuity, CoverageStopReason, CoverageWitness,
-    HypothesisDisposition, KnowledgeState, LedgerAnchor,
+    HypothesisDisposition, KnowledgeState, LedgerAnchor, ProvenanceClass,
 };
 
 use crate::diagnostic::escape_json_str;
@@ -26,71 +36,133 @@ use crate::token::{ArgToken, is_option_shaped};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+const APPEND_COMMAND: &str = "negative-evidence append";
+
+const ERROR_PAYLOAD_SCHEMA: &str = "fss.negative_evidence.error.v1";
+
+/// Degradations every negative-evidence envelope reports instead of inventing values.
+const ENVELOPE_DEGRADATION: [&str; 4] = [
+    "operation_unregistered: `fss negative-evidence` has no AOP row in registries/OPERATION_CROSSWALK.md; operationId is null",
+    "contract_basis_unavailable: fss-cli derives no schema-catalog, ontology, or registry digests; those contractBasis fields are null",
+    "input_anchor_unavailable: no EvidenceAnchor is bound to this local ledger file; inputAnchor is null",
+    "budget_unmetered: fss-cli does not meter this command; requested, consumed, and remaining budgets are null",
+];
+
 /// Help text for `fss negative-evidence`.
 pub const fn help_text() -> &'static str {
     "fss negative-evidence — deterministic negative-evidence ledger management\n\n\
 USAGE:\n  \
+  fss negative-evidence init --path <file> [--json]\n  \
   fss negative-evidence list [--path <file>] [--json]\n  \
   fss negative-evidence verify [--path <file>] [--json]\n  \
-  fss negative-evidence append [--path <file>] [options...] [--json]\n  \
+  fss negative-evidence append --path <file> <required options> <coverage witness> [options...] [--json]\n  \
   fss negative-evidence help\n\n\
 SUBCOMMANDS:\n  \
-  list      List entries with stable ID, decision, hypothesis, and revival conditions\n  \
-  verify    Verify continuous coverage guarantees, hash chain, and root digest\n  \
-  append    Append a verified entry (refusing absence without coverage witness)\n  \
+  init      Create a ledger file holding the NEG-001..NEG-003 seeds (never overwrites)\n  \
+  list      List entries with stable ID, decision, hypothesis, certification, and revival conditions\n  \
+  verify    Verify integrity, canonical order, coverage certification, and root digest\n  \
+  append    Append a locally certified entry (refusing absence without a coverage witness)\n  \
   help      Show this help message\n\n\
-APPEND OPTIONS:\n  \
+Without --path, list and verify read the built-in seed ledger.\n\n\
+APPEND REQUIRED OPTIONS:\n  \
+  --path <FILE>              Existing canonical binary ledger file (create one with `init`)\n  \
   --id <ID>                  Stable negative entry ID (e.g. NEG-004)\n  \
-  --decision <DECISION>      Reject, Narrow, Oracle, or Revisit\n  \
-  --hypothesis <TEXT>        Falsifiable proposition statement\n  \
-  --reasoning <TEXT>         Theoretical or architectural ground\n  \
-  --result <TEXT>            Empirical observation or proof reference\n  \
-  --revival <TEXT>           Explicit condition that would falsify rejection\n  \
-  --continuity <CONTINUITY>  continuous, gapped, or unknown (default: continuous)\n  \
-  --completeness <COMPL>     complete, partial, bounded, unknown (default: complete)\n  \
-  --negative-predicate <P>   Absence predicate statement\n  \
-  --stop-reason <REASON>     complete, interrupted, budget_exhausted, error\n  \
-  --corpus <CORPUS>          Evaluation corpus identity\n  \
-  --device-model <MODEL>     Hardware or simulated device model\n  \
-  --firmware <FW>            Target firmware version\n  \
-  --platform <PLATFORM>      Operating system or execution environment\n  \
-  --policy <POLICY>          Policy profile under test\n  \
-  --command <CMD>            Reproduction command\n  \
-  --entry-file <FILE>        Load entry from JSON file\n  \
-  --entry-json <JSON>        Load entry from JSON string\n  \
-  --path <FILE>              Path to canonical binary ledger file\n  \
-  --json                     Output as fss.agent_response_envelope.v1 JSON\n"
+  --date-commit <TEXT>       Exact date and commit of the experiment\n  \
+  --decision <DECISION>      reject, oracle, narrow, or revisit\n  \
+  --disposition <DISP>       live, supported, disfavored, refuted, resolved, or superseded\n  \
+  --hypothesis <TEXT>        What was expected and why\n  \
+  --reasoning <TEXT>         Architectural or theoretical reasoning\n  \
+  --result <TEXT>            Measured result, divergences, and failures\n  \
+  --revival <TEXT>           Explicit condition that would justify repeating the work\n  \
+  --failure-domain <LABEL>   Shared failure domain (repeatable; at least one)\n\n\
+COVERAGE WITNESS (all required; absence without a coverage witness is never evidence):\n  \
+  --coverage-domain <LABEL>  Domain the entry claims and the witness observed\n  \
+  --coverage-generation <N>  Authorized and observed generation (N >= 1)\n  \
+  --negative-predicate <P>   Absence predicate; its last ':' segment must be the entry ID\n  \
+  --continuity <C>           continuous, gapped, or unknown\n  \
+  --completeness <C>         complete, bounded, partial, unknown, not_observable, unauthorized, or stale\n  \
+  --stop-reason <R>          complete, budget_exhausted, cancelled, source_gap, authorization_filtered, unsupported, or error\n\n\
+APPEND OPTIONAL:\n  \
+  --decision-text <TEXT>     Verbatim decision text\n  \
+  --supersedes <ID>          Earlier entry this entry supersedes (append-only link)\n  \
+  --corpus <CORPUS>          Evaluation corpus identity (default: not-evaluated)\n  \
+  --device-model <MODEL>     Hardware or simulated device model (default: not-evaluated)\n  \
+  --firmware <FW>            Target firmware version (default: not-evaluated)\n  \
+  --platform <PLATFORM>      Operating system or execution environment (default: not-evaluated)\n  \
+  --policy <POLICY>          Policy profile under test (default: not-evaluated)\n  \
+  --command <CMD>            Reproduction command (default: not-locally-reproducible)\n  \
+  --json                     Output as fss.agent_response_envelope.v1-shaped JSON\n"
 }
 
-/// Arguments for appending a negative evidence entry.
+/// Coverage witness options for `append`; all six are required to certify absence.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct NegativeEvidenceAppendArgs {
-    /// Optional path to binary ledger file.
-    pub path: Option<String>,
-    /// Optional path to a JSON file containing the entry.
-    pub entry_file: Option<String>,
-    /// Optional raw JSON string for the entry.
-    pub entry_json: Option<String>,
-    /// Entry ID.
-    pub neg_id: Option<String>,
-    /// Decision name.
-    pub decision: Option<String>,
-    /// Hypothesis text.
-    pub hypothesis: Option<String>,
-    /// Reasoning text.
-    pub reasoning: Option<String>,
-    /// Measured result text.
-    pub measured_result: Option<String>,
-    /// Revival condition text.
-    pub revival_condition: Option<String>,
-    /// Coverage continuity name.
-    pub continuity: Option<String>,
-    /// Coverage completeness name.
-    pub completeness: Option<String>,
-    /// Negative predicate text.
+pub struct CoverageWitnessArgs {
+    /// Domain claimed by the entry and observed by the witness.
+    pub domain: Option<String>,
+    /// Authorized and observed generation.
+    pub generation: Option<u64>,
+    /// Absence predicate naming the entry.
     pub negative_predicate: Option<String>,
-    /// Stop reason name.
-    pub stop_reason: Option<String>,
+    /// Coverage continuity.
+    pub continuity: Option<CoverageContinuity>,
+    /// Coverage completeness.
+    pub completeness: Option<Completeness>,
+    /// Coverage stop reason.
+    pub stop_reason: Option<CoverageStopReason>,
+}
+
+impl CoverageWitnessArgs {
+    fn missing_options(&self) -> Vec<&'static str> {
+        let mut missing = Vec::new();
+        if self.domain.is_none() {
+            missing.push("--coverage-domain");
+        }
+        if self.generation.is_none() {
+            missing.push("--coverage-generation");
+        }
+        if self.negative_predicate.is_none() {
+            missing.push("--negative-predicate");
+        }
+        if self.continuity.is_none() {
+            missing.push("--continuity");
+        }
+        if self.completeness.is_none() {
+            missing.push("--completeness");
+        }
+        if self.stop_reason.is_none() {
+            missing.push("--stop-reason");
+        }
+        missing
+    }
+}
+
+/// Validated arguments for appending a negative evidence entry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NegativeEvidenceAppendArgs {
+    /// Path to an existing binary ledger file.
+    pub path: String,
+    /// Entry ID.
+    pub neg_id: String,
+    /// Exact date and commit of the experiment.
+    pub date_commit: String,
+    /// Normative decision.
+    pub decision: NegativeDecision,
+    /// Verbatim decision text (may be empty).
+    pub decision_text: String,
+    /// Hypothesis disposition.
+    pub disposition: HypothesisDisposition,
+    /// Hypothesis text.
+    pub hypothesis: String,
+    /// Reasoning text.
+    pub reasoning: String,
+    /// Measured result text.
+    pub measured_result: String,
+    /// Revival condition text.
+    pub revival_condition: String,
+    /// Shared failure domains.
+    pub failure_domains: BTreeSet<String>,
+    /// Earlier entry superseded by this entry.
+    pub supersedes: Option<String>,
     /// Setup corpus name.
     pub corpus: Option<String>,
     /// Setup device model name.
@@ -103,8 +175,8 @@ pub struct NegativeEvidenceAppendArgs {
     pub policy: Option<String>,
     /// Setup reproduction command.
     pub command: Option<String>,
-    /// Whether coverage witness is omitted entirely.
-    pub no_witness: bool,
+    /// Coverage witness options.
+    pub witness: CoverageWitnessArgs,
     /// Whether to output JSON envelope.
     pub json: bool,
 }
@@ -114,6 +186,13 @@ pub struct NegativeEvidenceAppendArgs {
 pub enum NegativeEvidenceAction {
     /// Print help text.
     Help,
+    /// Create a new ledger file holding the seed entries.
+    Init {
+        /// Path of the ledger file to create.
+        path: String,
+        /// Whether to output JSON envelope.
+        json: bool,
+    },
     /// List ledger entries.
     List {
         /// Optional path to binary ledger file.
@@ -137,7 +216,7 @@ impl NegativeEvidenceAction {
     #[must_use]
     pub fn is_json(&self) -> bool {
         match self {
-            Self::List { json, .. } | Self::Verify { json, .. } => *json,
+            Self::Init { json, .. } | Self::List { json, .. } | Self::Verify { json, .. } => *json,
             Self::Append(args) => args.json,
             Self::Help => false,
         }
@@ -164,8 +243,23 @@ pub fn parse_negative_evidence_tokens(
             }
             Ok(NegativeEvidenceAction::Help)
         }
-        "list" => parse_list_tokens(&tokens[1..]),
-        "verify" => parse_verify_tokens(&tokens[1..]),
+        "init" => {
+            let (path, json) = parse_path_and_json(&tokens[1..], "negative-evidence init")?;
+            let path = path.ok_or_else(|| CliError::MissingValue {
+                option: "--path".to_owned(),
+                command: Some("negative-evidence init".to_owned()),
+                expected: "path of the ledger file to create".to_owned(),
+            })?;
+            Ok(NegativeEvidenceAction::Init { path, json })
+        }
+        "list" => {
+            let (path, json) = parse_path_and_json(&tokens[1..], "negative-evidence list")?;
+            Ok(NegativeEvidenceAction::List { path, json })
+        }
+        "verify" => {
+            let (path, json) = parse_path_and_json(&tokens[1..], "negative-evidence verify")?;
+            Ok(NegativeEvidenceAction::Verify { path, json })
+        }
         "append" => parse_append_tokens(&tokens[1..]),
         unknown => {
             if is_option_shaped(unknown) {
@@ -185,7 +279,10 @@ pub fn parse_negative_evidence_tokens(
     }
 }
 
-fn parse_list_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, CliError> {
+fn parse_path_and_json(
+    tokens: &[ArgToken],
+    command: &str,
+) -> Result<(Option<String>, bool), CliError> {
     let mut path: Option<String> = None;
     let mut json = false;
     let mut idx = 0;
@@ -197,7 +294,7 @@ fn parse_list_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, CliE
                 if path.is_some() {
                     return Err(CliError::DuplicateOption {
                         option: "--path".to_owned(),
-                        command: Some("negative-evidence list".to_owned()),
+                        command: Some(command.to_owned()),
                         index: tok.index,
                     });
                 }
@@ -205,7 +302,7 @@ fn parse_list_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, CliE
                 if idx >= tokens.len() {
                     return Err(CliError::MissingValue {
                         option: "--path".to_owned(),
-                        command: Some("negative-evidence list".to_owned()),
+                        command: Some(command.to_owned()),
                         expected: "path to binary ledger file".to_owned(),
                     });
                 }
@@ -215,7 +312,7 @@ fn parse_list_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, CliE
                 if json {
                     return Err(CliError::DuplicateOption {
                         option: "--json".to_owned(),
-                        command: Some("negative-evidence list".to_owned()),
+                        command: Some(command.to_owned()),
                         index: tok.index,
                     });
                 }
@@ -224,7 +321,7 @@ fn parse_list_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, CliE
             opt if is_option_shaped(opt) => {
                 return Err(CliError::UnknownOption {
                     option: opt.to_owned(),
-                    command: Some("negative-evidence list".to_owned()),
+                    command: Some(command.to_owned()),
                     index: tok.index,
                 });
             }
@@ -232,71 +329,84 @@ fn parse_list_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, CliE
                 return Err(CliError::TrailingArgument {
                     argument: trailing.to_owned(),
                     index: tok.index,
-                    command: Some("negative-evidence list".to_owned()),
+                    command: Some(command.to_owned()),
                 });
             }
         }
         idx += 1;
     }
 
-    Ok(NegativeEvidenceAction::List { path, json })
+    Ok((path, json))
 }
 
-fn parse_verify_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, CliError> {
-    let mut path: Option<String> = None;
-    let mut json = false;
-    let mut idx = 0;
+/// A raw option value together with the argv index of the value token.
+type RawValue = Option<(String, usize)>;
 
-    while idx < tokens.len() {
-        let tok = &tokens[idx];
-        match tok.as_str() {
-            "--path" => {
-                if path.is_some() {
-                    return Err(CliError::DuplicateOption {
-                        option: "--path".to_owned(),
-                        command: Some("negative-evidence verify".to_owned()),
-                        index: tok.index,
-                    });
-                }
-                idx += 1;
-                if idx >= tokens.len() {
-                    return Err(CliError::MissingValue {
-                        option: "--path".to_owned(),
-                        command: Some("negative-evidence verify".to_owned()),
-                        expected: "path to binary ledger file".to_owned(),
-                    });
-                }
-                path = Some(tokens[idx].raw.clone());
-            }
-            "--json" => {
-                if json {
-                    return Err(CliError::DuplicateOption {
-                        option: "--json".to_owned(),
-                        command: Some("negative-evidence verify".to_owned()),
-                        index: tok.index,
-                    });
-                }
-                json = true;
-            }
-            opt if is_option_shaped(opt) => {
-                return Err(CliError::UnknownOption {
-                    option: opt.to_owned(),
-                    command: Some("negative-evidence verify".to_owned()),
-                    index: tok.index,
-                });
-            }
-            trailing => {
-                return Err(CliError::TrailingArgument {
-                    argument: trailing.to_owned(),
-                    index: tok.index,
-                    command: Some("negative-evidence verify".to_owned()),
-                });
-            }
-        }
-        idx += 1;
+fn malformed(option: &str, value: &str, reason: &str, index: usize) -> CliError {
+    CliError::MalformedValue {
+        option: option.to_owned(),
+        value: value.to_owned(),
+        reason: reason.to_owned(),
+        command: Some(APPEND_COMMAND.to_owned()),
+        index,
     }
+}
 
-    Ok(NegativeEvidenceAction::Verify { path, json })
+fn required(value: RawValue, option: &str, expected: &str) -> Result<(String, usize), CliError> {
+    value.ok_or_else(|| CliError::MissingValue {
+        option: option.to_owned(),
+        command: Some(APPEND_COMMAND.to_owned()),
+        expected: expected.to_owned(),
+    })
+}
+
+fn parse_typed<T>(
+    value: RawValue,
+    option: &str,
+    reason: &str,
+    parse: impl Fn(&str) -> Option<T>,
+) -> Result<Option<T>, CliError> {
+    match value {
+        None => Ok(None),
+        Some((raw, index)) => parse(&raw)
+            .map(Some)
+            .ok_or_else(|| malformed(option, &raw, reason, index)),
+    }
+}
+
+fn parse_continuity(raw: &str) -> Option<CoverageContinuity> {
+    match raw {
+        "continuous" => Some(CoverageContinuity::Continuous),
+        "gapped" => Some(CoverageContinuity::Gapped),
+        "unknown" => Some(CoverageContinuity::Unknown),
+        _ => None,
+    }
+}
+
+fn parse_completeness(raw: &str) -> Option<Completeness> {
+    match raw {
+        "complete" => Some(Completeness::Complete),
+        "bounded" => Some(Completeness::Bounded),
+        "partial" => Some(Completeness::Partial),
+        "unknown" => Some(Completeness::Unknown),
+        "not_observable" => Some(Completeness::NotObservable),
+        "unauthorized" => Some(Completeness::Unauthorized),
+        "stale" => Some(Completeness::Stale),
+        _ => None,
+    }
+}
+
+fn parse_stop_reason(raw: &str) -> Option<CoverageStopReason> {
+    match raw {
+        "complete" => Some(CoverageStopReason::Complete),
+        "budget_exhausted" => Some(CoverageStopReason::BudgetExhausted),
+        "cancelled" => Some(CoverageStopReason::Cancelled),
+        "source_gap" => Some(CoverageStopReason::SourceGap),
+        "authorization_filtered" => Some(CoverageStopReason::AuthorizationFiltered),
+        "unsupported" => Some(CoverageStopReason::Unsupported),
+        "error" => Some(CoverageStopReason::Error),
+        _ => None,
+    }
 }
 
 #[expect(
@@ -304,26 +414,30 @@ fn parse_verify_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, Cl
     reason = "CLI argument parsing loop over many flags"
 )]
 fn parse_append_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, CliError> {
-    let mut path: Option<String> = None;
-    let mut entry_file: Option<String> = None;
-    let mut entry_json: Option<String> = None;
-    let mut neg_id: Option<String> = None;
-    let mut decision: Option<String> = None;
-    let mut hypothesis: Option<String> = None;
-    let mut reasoning: Option<String> = None;
-    let mut measured_result: Option<String> = None;
-    let mut revival_condition: Option<String> = None;
-    let mut continuity: Option<String> = None;
-    let mut completeness: Option<String> = None;
-    let mut negative_predicate: Option<String> = None;
-    let mut stop_reason: Option<String> = None;
-    let mut corpus: Option<String> = None;
-    let mut device_model: Option<String> = None;
-    let mut firmware: Option<String> = None;
-    let mut platform: Option<String> = None;
-    let mut policy: Option<String> = None;
-    let mut command: Option<String> = None;
-    let mut no_witness = false;
+    let mut path: RawValue = None;
+    let mut neg_id: RawValue = None;
+    let mut date_commit: RawValue = None;
+    let mut decision: RawValue = None;
+    let mut decision_text: RawValue = None;
+    let mut disposition: RawValue = None;
+    let mut hypothesis: RawValue = None;
+    let mut reasoning: RawValue = None;
+    let mut measured_result: RawValue = None;
+    let mut revival_condition: RawValue = None;
+    let mut supersedes: RawValue = None;
+    let mut coverage_domain: RawValue = None;
+    let mut coverage_generation: RawValue = None;
+    let mut negative_predicate: RawValue = None;
+    let mut continuity: RawValue = None;
+    let mut completeness: RawValue = None;
+    let mut stop_reason: RawValue = None;
+    let mut corpus: RawValue = None;
+    let mut device_model: RawValue = None;
+    let mut firmware: RawValue = None;
+    let mut platform: RawValue = None;
+    let mut policy: RawValue = None;
+    let mut command: RawValue = None;
+    let mut failure_domains: BTreeSet<String> = BTreeSet::new();
     let mut json = false;
     let mut idx = 0;
 
@@ -332,7 +446,7 @@ fn parse_append_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, Cl
             if $target.is_some() {
                 return Err(CliError::DuplicateOption {
                     option: ($flag).to_owned(),
-                    command: Some("negative-evidence append".to_owned()),
+                    command: Some(APPEND_COMMAND.to_owned()),
                     index: $tok.index,
                 });
             }
@@ -340,11 +454,11 @@ fn parse_append_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, Cl
             if idx >= tokens.len() {
                 return Err(CliError::MissingValue {
                     option: ($flag).to_owned(),
-                    command: Some("negative-evidence append".to_owned()),
+                    command: Some(APPEND_COMMAND.to_owned()),
                     expected: ($expected).to_owned(),
                 });
             }
-            $target = Some(tokens[idx].raw.clone());
+            $target = Some((tokens[idx].raw.clone(), tokens[idx].index));
         }};
     }
 
@@ -352,26 +466,32 @@ fn parse_append_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, Cl
         let tok = &tokens[idx];
         match tok.as_str() {
             "--path" => parse_opt!(tok, path, "--path", "path to binary ledger file"),
-            "--entry-file" => {
-                parse_opt!(tok, entry_file, "--entry-file", "path to entry JSON file")
-            }
-            "--entry-json" => parse_opt!(
-                tok,
-                entry_json,
-                "--entry-json",
-                "JSON string representing entry"
-            ),
             "--id" => parse_opt!(
                 tok,
                 neg_id,
                 "--id",
                 "stable negative evidence ID (e.g. NEG-004)"
             ),
+            "--date-commit" => parse_opt!(
+                tok,
+                date_commit,
+                "--date-commit",
+                "exact date and commit of the experiment"
+            ),
             "--decision" => parse_opt!(
                 tok,
                 decision,
                 "--decision",
-                "negative decision (Reject, Narrow, Oracle, Revisit)"
+                "negative decision (reject, oracle, narrow, revisit)"
+            ),
+            "--decision-text" => {
+                parse_opt!(tok, decision_text, "--decision-text", "decision text")
+            }
+            "--disposition" => parse_opt!(
+                tok,
+                disposition,
+                "--disposition",
+                "hypothesis disposition (live, supported, disfavored, refuted, resolved, superseded)"
             ),
             "--hypothesis" => parse_opt!(tok, hypothesis, "--hypothesis", "hypothesis statement"),
             "--reasoning" => parse_opt!(tok, reasoning, "--reasoning", "reasoning statement"),
@@ -387,30 +507,61 @@ fn parse_append_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, Cl
                 "--revival",
                 "revival condition statement"
             ),
+            "--supersedes" => parse_opt!(
+                tok,
+                supersedes,
+                "--supersedes",
+                "earlier entry ID superseded by this entry"
+            ),
+            "--failure-domain" => {
+                idx += 1;
+                if idx >= tokens.len() {
+                    return Err(CliError::MissingValue {
+                        option: "--failure-domain".to_owned(),
+                        command: Some(APPEND_COMMAND.to_owned()),
+                        expected: "shared failure domain label".to_owned(),
+                    });
+                }
+                let value = &tokens[idx];
+                if !failure_domains.insert(value.raw.clone()) {
+                    return Err(malformed(
+                        "--failure-domain",
+                        &value.raw,
+                        "failure domain listed more than once",
+                        value.index,
+                    ));
+                }
+            }
+            "--coverage-domain" => parse_opt!(
+                tok,
+                coverage_domain,
+                "--coverage-domain",
+                "coverage domain label"
+            ),
+            "--coverage-generation" => parse_opt!(
+                tok,
+                coverage_generation,
+                "--coverage-generation",
+                "coverage generation (integer >= 1)"
+            ),
+            "--negative-predicate" => parse_opt!(
+                tok,
+                negative_predicate,
+                "--negative-predicate",
+                "negative predicate naming the entry"
+            ),
             "--continuity" => parse_opt!(
                 tok,
                 continuity,
                 "--continuity",
                 "coverage continuity (continuous, gapped, unknown)"
             ),
-            "--completeness" => parse_opt!(
-                tok,
-                completeness,
-                "--completeness",
-                "coverage completeness (complete, partial, bounded, unknown)"
-            ),
-            "--negative-predicate" => parse_opt!(
-                tok,
-                negative_predicate,
-                "--negative-predicate",
-                "negative predicate statement"
-            ),
-            "--stop-reason" => parse_opt!(
-                tok,
-                stop_reason,
-                "--stop-reason",
-                "coverage stop reason (complete, interrupted, budget_exhausted, error)"
-            ),
+            "--completeness" => {
+                parse_opt!(tok, completeness, "--completeness", "coverage completeness")
+            }
+            "--stop-reason" => {
+                parse_opt!(tok, stop_reason, "--stop-reason", "coverage stop reason")
+            }
             "--corpus" => parse_opt!(tok, corpus, "--corpus", "setup evaluation corpus"),
             "--device-model" => {
                 parse_opt!(tok, device_model, "--device-model", "setup device model")
@@ -419,21 +570,11 @@ fn parse_append_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, Cl
             "--platform" => parse_opt!(tok, platform, "--platform", "setup platform"),
             "--policy" => parse_opt!(tok, policy, "--policy", "setup policy profile"),
             "--command" => parse_opt!(tok, command, "--command", "reproduction command"),
-            "--no-witness" => {
-                if no_witness {
-                    return Err(CliError::DuplicateOption {
-                        option: "--no-witness".to_owned(),
-                        command: Some("negative-evidence append".to_owned()),
-                        index: tok.index,
-                    });
-                }
-                no_witness = true;
-            }
             "--json" => {
                 if json {
                     return Err(CliError::DuplicateOption {
                         option: "--json".to_owned(),
-                        command: Some("negative-evidence append".to_owned()),
+                        command: Some(APPEND_COMMAND.to_owned()),
                         index: tok.index,
                     });
                 }
@@ -442,7 +583,7 @@ fn parse_append_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, Cl
             opt if is_option_shaped(opt) => {
                 return Err(CliError::UnknownOption {
                     option: opt.to_owned(),
-                    command: Some("negative-evidence append".to_owned()),
+                    command: Some(APPEND_COMMAND.to_owned()),
                     index: tok.index,
                 });
             }
@@ -450,35 +591,116 @@ fn parse_append_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, Cl
                 return Err(CliError::TrailingArgument {
                     argument: trailing.to_owned(),
                     index: tok.index,
-                    command: Some("negative-evidence append".to_owned()),
+                    command: Some(APPEND_COMMAND.to_owned()),
                 });
             }
         }
         idx += 1;
     }
 
+    let (path, _) = required(
+        path,
+        "--path",
+        "existing ledger file (create one with `init`)",
+    )?;
+    let (neg_id, _) = required(neg_id, "--id", "stable negative evidence ID (e.g. NEG-004)")?;
+    let (date_commit, _) = required(
+        date_commit,
+        "--date-commit",
+        "exact date and commit of the experiment",
+    )?;
+    let (decision_raw, decision_index) = required(
+        decision,
+        "--decision",
+        "negative decision (reject, oracle, narrow, revisit)",
+    )?;
+    let decision = NegativeDecision::parse(&decision_raw).map_err(|_| {
+        malformed(
+            "--decision",
+            &decision_raw,
+            "expected reject, oracle, narrow, or revisit",
+            decision_index,
+        )
+    })?;
+    let (disposition_raw, disposition_index) = required(
+        disposition,
+        "--disposition",
+        "hypothesis disposition (live, supported, disfavored, refuted, resolved, superseded)",
+    )?;
+    let disposition = HypothesisDisposition::from_name(&disposition_raw).map_err(|_| {
+        malformed(
+            "--disposition",
+            &disposition_raw,
+            "expected live, supported, disfavored, refuted, resolved, or superseded",
+            disposition_index,
+        )
+    })?;
+    let (hypothesis, _) = required(hypothesis, "--hypothesis", "hypothesis statement")?;
+    let (reasoning, _) = required(reasoning, "--reasoning", "reasoning statement")?;
+    let (measured_result, _) = required(measured_result, "--result", "measured result statement")?;
+    let (revival_condition, _) = required(
+        revival_condition,
+        "--revival",
+        "revival condition statement",
+    )?;
+    if failure_domains.is_empty() {
+        return Err(CliError::MissingValue {
+            option: "--failure-domain".to_owned(),
+            command: Some(APPEND_COMMAND.to_owned()),
+            expected: "at least one shared failure domain label".to_owned(),
+        });
+    }
+
+    let witness = CoverageWitnessArgs {
+        domain: coverage_domain.map(|(raw, _)| raw),
+        generation: parse_typed(
+            coverage_generation,
+            "--coverage-generation",
+            "expected an integer >= 1",
+            |raw| raw.parse::<u64>().ok().filter(|generation| *generation > 0),
+        )?,
+        negative_predicate: negative_predicate.map(|(raw, _)| raw),
+        continuity: parse_typed(
+            continuity,
+            "--continuity",
+            "expected continuous, gapped, or unknown",
+            parse_continuity,
+        )?,
+        completeness: parse_typed(
+            completeness,
+            "--completeness",
+            "expected complete, bounded, partial, unknown, not_observable, unauthorized, or stale",
+            parse_completeness,
+        )?,
+        stop_reason: parse_typed(
+            stop_reason,
+            "--stop-reason",
+            "expected complete, budget_exhausted, cancelled, source_gap, authorization_filtered, unsupported, or error",
+            parse_stop_reason,
+        )?,
+    };
+
     Ok(NegativeEvidenceAction::Append(Box::new(
         NegativeEvidenceAppendArgs {
             path,
-            entry_file,
-            entry_json,
             neg_id,
+            date_commit,
             decision,
+            decision_text: decision_text.map(|(raw, _)| raw).unwrap_or_default(),
+            disposition,
             hypothesis,
             reasoning,
             measured_result,
             revival_condition,
-            continuity,
-            completeness,
-            negative_predicate,
-            stop_reason,
-            corpus,
-            device_model,
-            firmware,
-            platform,
-            policy,
-            command,
-            no_witness,
+            failure_domains,
+            supersedes: supersedes.map(|(raw, _)| raw),
+            corpus: corpus.map(|(raw, _)| raw),
+            device_model: device_model.map(|(raw, _)| raw),
+            firmware: firmware.map(|(raw, _)| raw),
+            platform: platform.map(|(raw, _)| raw),
+            policy: policy.map(|(raw, _)| raw),
+            command: command.map(|(raw, _)| raw),
+            witness,
             json,
         },
     )))
@@ -489,6 +711,7 @@ fn parse_append_tokens(tokens: &[ArgToken]) -> Result<NegativeEvidenceAction, Cl
 pub fn execute_negative_evidence(action: &NegativeEvidenceAction) -> (String, ExitIdentity) {
     match action {
         NegativeEvidenceAction::Help => (help_text().to_owned(), ExitIdentity::SUCCESS),
+        NegativeEvidenceAction::Init { path, json } => execute_init(path, *json),
         NegativeEvidenceAction::List { path, json } => execute_list(path.as_deref(), *json),
         NegativeEvidenceAction::Verify { path, json } => execute_verify(path.as_deref(), *json),
         NegativeEvidenceAction::Append(args) => execute_append(args),
@@ -499,13 +722,187 @@ fn load_ledger(path: Option<&str>) -> Result<NegativeEvidenceLedger, NegativeEvi
     match path {
         Some(file_path) => {
             let bytes = fs::read(file_path).map_err(|err| {
-                NegativeEvidenceError::Io(format!(
-                    "failed to read ledger file '{file_path}': {err}"
-                ))
+                if err.kind() == ErrorKind::NotFound {
+                    NegativeEvidenceError::Io(format!(
+                        "ledger file '{file_path}' does not exist; create it with `fss negative-evidence init --path {file_path}`"
+                    ))
+                } else {
+                    NegativeEvidenceError::Io(format!(
+                        "failed to read ledger file '{file_path}': {err}"
+                    ))
+                }
             })?;
             NegativeEvidenceLedger::decode_canonical(&bytes)
         }
         None => initial_negative_evidence_ledger(),
+    }
+}
+
+/// How [`write_ledger_atomically`] publishes the temporary file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriteMode {
+    /// Fail if the target already exists (no clobber), via hard link.
+    CreateNew,
+    /// Atomically replace the target via rename.
+    Replace,
+}
+
+/// Writes `bytes` to a temp file in the target's directory, syncs it, then publishes it by
+/// rename (replace) or hard link (create-new). A crash never leaves a partially written ledger
+/// at `path`. There is no retry loop.
+fn write_ledger_atomically(
+    path: &str,
+    bytes: &[u8],
+    mode: WriteMode,
+) -> Result<(), NegativeEvidenceError> {
+    let target = Path::new(path);
+    let file_name = target.file_name().ok_or_else(|| {
+        NegativeEvidenceError::Io(format!("ledger path '{path}' does not name a file"))
+    })?;
+    let dir = match target.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let mut temp_name = OsString::from(".");
+    temp_name.push(file_name);
+    temp_name.push(format!(".tmp-{}", std::process::id()));
+    let temp = dir.join(temp_name);
+
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temp)
+        .map_err(|err| {
+            NegativeEvidenceError::Io(format!(
+                "failed to create temporary ledger file '{}': {err}",
+                temp.display()
+            ))
+        })?;
+    if let Err(err) = file.write_all(bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&temp);
+        return Err(NegativeEvidenceError::Io(format!(
+            "failed to write temporary ledger file '{}': {err}",
+            temp.display()
+        )));
+    }
+    drop(file);
+
+    let published = match mode {
+        WriteMode::Replace => fs::rename(&temp, target),
+        WriteMode::CreateNew => fs::hard_link(&temp, target),
+    };
+    if let Err(err) = published {
+        let _ = fs::remove_file(&temp);
+        return Err(NegativeEvidenceError::Io(format!(
+            "failed to publish ledger file '{path}': {err}"
+        )));
+    }
+    if mode == WriteMode::CreateNew {
+        fs::remove_file(&temp).map_err(|err| {
+            NegativeEvidenceError::Io(format!(
+                "ledger '{path}' was created but temporary file '{}' could not be removed: {err}",
+                temp.display()
+            ))
+        })?;
+    }
+    // Persist the directory entry; a failure here does not undo the published ledger.
+    if let Ok(dir_handle) = fs::File::open(&dir) {
+        let _ = dir_handle.sync_all();
+    }
+    Ok(())
+}
+
+/// Renders a refusal as plain text or as a JSON error envelope; always a runtime failure.
+fn failure(
+    json: bool,
+    payload_schema: &str,
+    payload_prefix: &str,
+    err_id: &str,
+    message: &str,
+) -> (String, ExitIdentity) {
+    if json {
+        let payload = format!(
+            "{{{payload_prefix}\"error\":\"{err_id}\",\"detail\":\"{}\"}}",
+            escape_json_str(message)
+        );
+        let envelope = format_agent_response_envelope(
+            "error",
+            Some(err_id),
+            payload_schema,
+            &payload,
+            "unknown",
+            "partial",
+            &[message.to_owned()],
+            "no",
+            "never_unchanged",
+        );
+        (envelope, ExitIdentity::RUNTIME_FAILURE)
+    } else {
+        (message.to_owned(), ExitIdentity::RUNTIME_FAILURE)
+    }
+}
+
+fn init_ledger(path: &str) -> Result<(usize, String), NegativeEvidenceError> {
+    if Path::new(path).symlink_metadata().is_ok() {
+        return Err(NegativeEvidenceError::Io(format!(
+            "ledger file '{path}' already exists; init never overwrites a ledger"
+        )));
+    }
+    let ledger = initial_negative_evidence_ledger()?;
+    let bytes = ledger.encode_canonical()?;
+    write_ledger_atomically(path, &bytes, WriteMode::CreateNew)?;
+    Ok((ledger.len(), ContentDigest::sha256(&bytes).to_text()))
+}
+
+fn execute_init(path: &str, json: bool) -> (String, ExitIdentity) {
+    match init_ledger(path) {
+        Ok((count, root_digest)) => {
+            if json {
+                let payload = format!(
+                    "{{\"path\":\"{}\",\"entryCount\":{count},\"rootDigest\":\"{root_digest}\"}}",
+                    escape_json_str(path)
+                );
+                let envelope = format_agent_response_envelope(
+                    "ok",
+                    None,
+                    "fss.negative_evidence.init_receipt.v1",
+                    &payload,
+                    "known",
+                    "complete",
+                    &[],
+                    "no",
+                    "never_unchanged",
+                );
+                (envelope, ExitIdentity::SUCCESS)
+            } else {
+                (
+                    format!(
+                        "Ledger '{path}' initialized with {count} seed entries (root digest: {root_digest})"
+                    ),
+                    ExitIdentity::SUCCESS,
+                )
+            }
+        }
+        Err(err) => {
+            let err_id = err.error_id();
+            failure(
+                json,
+                ERROR_PAYLOAD_SCHEMA,
+                "",
+                err_id,
+                &format!("Init refused [{err_id}]: {err}"),
+            )
+        }
+    }
+}
+
+fn certification_label(entry: &NegativeEvidenceEntry) -> String {
+    match &entry.certification {
+        EvidenceCertification::LocallyCertified => "locally-certified".to_owned(),
+        EvidenceCertification::NotLocallyCertified { source } => {
+            format!("not-locally-certified (source: {source})")
+        }
     }
 }
 
@@ -514,28 +911,12 @@ fn execute_list(path: Option<&str>, json: bool) -> (String, ExitIdentity) {
         Ok(l) => l,
         Err(err) => {
             let err_id = err.error_id();
-            if json {
-                let envelope = format_agent_response_envelope(
-                    "AOP-005",
-                    "error",
-                    Some(err_id),
-                    "fss.negative_evidence.error.v1",
-                    &format!(
-                        "{{\"error\":\"{}\",\"detail\":\"{}\"}}",
-                        err_id,
-                        escape_json_str(&err.to_string())
-                    ),
-                    "unknown",
-                    "partial",
-                    &[format!("Failed to load ledger: {err}")],
-                    "no",
-                    "never_unchanged",
-                );
-                return (envelope, ExitIdentity::RUNTIME_FAILURE);
-            }
-            return (
-                format!("error[{err_id}]: {err}"),
-                ExitIdentity::RUNTIME_FAILURE,
+            return failure(
+                json,
+                ERROR_PAYLOAD_SCHEMA,
+                "",
+                err_id,
+                &format!("error[{err_id}]: failed to load ledger: {err}"),
             );
         }
     };
@@ -550,7 +931,6 @@ fn execute_list(path: Option<&str>, json: bool) -> (String, ExitIdentity) {
             ledger.len()
         );
         let envelope = format_agent_response_envelope(
-            "AOP-005",
             "ok",
             None,
             "fss.negative_evidence.list.v1",
@@ -566,11 +946,12 @@ fn execute_list(path: Option<&str>, json: bool) -> (String, ExitIdentity) {
         let mut out = String::new();
         for entry in ledger.entries() {
             out.push_str(&format!(
-                "{} [{}] \"{}\"\n  Revival: \"{}\"\n  Witness: {:?} (authorized: {}, observed: {})\n",
+                "{} [{}] \"{}\"\n  Revival: \"{}\"\n  Certification: {}\n  Witness: {:?} (authorized: {}, observed: {})\n",
                 entry.neg_id,
                 entry.decision.as_str(),
                 entry.hypothesis,
                 entry.revival_condition,
+                certification_label(entry),
                 entry.coverage_witness.continuity,
                 entry.coverage_witness.authorized_generation,
                 entry.coverage_witness.observed_generation,
@@ -581,548 +962,40 @@ fn execute_list(path: Option<&str>, json: bool) -> (String, ExitIdentity) {
 }
 
 fn execute_verify(path: Option<&str>, json: bool) -> (String, ExitIdentity) {
-    let ledger_res = load_ledger(path);
-    let ledger = match ledger_res {
-        Ok(l) => l,
+    let verified = load_ledger(path).and_then(|ledger| {
+        ledger.verify()?;
+        let root_digest = ledger.root_digest()?.to_text();
+        Ok((ledger, root_digest))
+    });
+    let (ledger, root_digest) = match verified {
+        Ok(result) => result,
         Err(err) => {
             let err_id = err.error_id();
-            if json {
-                let envelope = format_agent_response_envelope(
-                    "AOP-005",
-                    "error",
-                    Some(err_id),
-                    "fss.negative_evidence.verification.v1",
-                    &format!(
-                        "{{\"verified\":false,\"error\":\"{}\",\"detail\":\"{}\"}}",
-                        err_id,
-                        escape_json_str(&err.to_string())
-                    ),
-                    "unknown",
-                    "partial",
-                    &[format!("Verification failed: {err}")],
-                    "no",
-                    "never_unchanged",
-                );
-                return (envelope, ExitIdentity::RUNTIME_FAILURE);
-            }
-            return (
-                format!("Verification failed [{err_id}]: {err}"),
-                ExitIdentity::RUNTIME_FAILURE,
+            return failure(
+                json,
+                "fss.negative_evidence.verification.v1",
+                "\"verified\":false,",
+                err_id,
+                &format!("Verification failed [{err_id}]: {err}"),
             );
         }
     };
 
-    match ledger.verify() {
-        Ok(()) => {
-            let root_digest = ledger
-                .root_digest()
-                .map_or_else(|_| "unknown".to_string(), |d| d.to_text());
-            if json {
-                let payload = format!(
-                    "{{\"verified\":true,\"entryCount\":{},\"rootDigest\":\"{root_digest}\",\"formatVersion\":1}}",
-                    ledger.len()
-                );
-                let envelope = format_agent_response_envelope(
-                    "AOP-005",
-                    "ok",
-                    None,
-                    "fss.negative_evidence.verification.v1",
-                    &payload,
-                    "known",
-                    "complete",
-                    &[],
-                    "yes_same_request",
-                    "safe_read_retry",
-                );
-                (envelope, ExitIdentity::SUCCESS)
-            } else {
-                (
-                    format!(
-                        "Ledger verified: continuous coverage guarantees intact ({} entries, root digest: {root_digest})",
-                        ledger.len()
-                    ),
-                    ExitIdentity::SUCCESS,
-                )
-            }
-        }
-        Err(err) => {
-            let err_id = err.error_id();
-            if json {
-                let envelope = format_agent_response_envelope(
-                    "AOP-005",
-                    "error",
-                    Some(err_id),
-                    "fss.negative_evidence.verification.v1",
-                    &format!(
-                        "{{\"verified\":false,\"error\":\"{}\",\"detail\":\"{}\"}}",
-                        err_id,
-                        escape_json_str(&err.to_string())
-                    ),
-                    "unknown",
-                    "partial",
-                    &[format!("Verification failed: {err}")],
-                    "no",
-                    "never_unchanged",
-                );
-                (envelope, ExitIdentity::RUNTIME_FAILURE)
-            } else {
-                (
-                    format!("Verification failed [{err_id}]: {err}"),
-                    ExitIdentity::RUNTIME_FAILURE,
-                )
-            }
-        }
-    }
-}
-
-fn execute_append(args: &NegativeEvidenceAppendArgs) -> (String, ExitIdentity) {
-    let path = args.path.as_deref();
-    let neg_id = args.neg_id.as_deref();
-    let decision = args.decision.as_deref();
-    let hypothesis = args.hypothesis.as_deref();
-    let reasoning = args.reasoning.as_deref();
-    let measured_result = args.measured_result.as_deref();
-    let revival_condition = args.revival_condition.as_deref();
-    let continuity = args.continuity.as_deref();
-    let completeness = args.completeness.as_deref();
-    let negative_predicate = args.negative_predicate.as_deref();
-    let stop_reason = args.stop_reason.as_deref();
-    let corpus = args.corpus.as_deref();
-    let device_model = args.device_model.as_deref();
-    let firmware = args.firmware.as_deref();
-    let platform = args.platform.as_deref();
-    let policy = args.policy.as_deref();
-    let command = args.command.as_deref();
-    let no_witness = args.no_witness;
-    let json = args.json;
-
-    if no_witness {
-        let err = NegativeEvidenceError::MissingCoverageWitness;
-        let err_id = err.error_id();
-        let err_msg = err.to_string();
-        if json {
-            let envelope = format_agent_response_envelope(
-                "AOP-008",
-                "error",
-                Some(err_id),
-                "fss.negative_evidence.error.v1",
-                &format!(
-                    "{{\"error\":\"{err_id}\",\"detail\":\"{}\"}}",
-                    escape_json_str(&err_msg)
-                ),
-                "unknown",
-                "partial",
-                &[err_msg],
-                "no",
-                "never_unchanged",
-            );
-            return (envelope, ExitIdentity::RUNTIME_FAILURE);
-        }
-        return (
-            format!("error[{err_id}]: {err_msg}"),
-            ExitIdentity::RUNTIME_FAILURE,
-        );
-    }
-
-    let id_str = match neg_id {
-        Some(id) if !id.trim().is_empty() => id.trim(),
-        _ => {
-            let err_msg = "missing required option '--id'";
-            if json {
-                let envelope = format_agent_response_envelope(
-                    "AOP-008",
-                    "error",
-                    Some("ERR-NEG-VALIDATION-FAILED-001"),
-                    "fss.negative_evidence.error.v1",
-                    &format!("{{\"error\":\"{err_msg}\"}}"),
-                    "unknown",
-                    "partial",
-                    &[err_msg.to_owned()],
-                    "no",
-                    "never_unchanged",
-                );
-                return (envelope, ExitIdentity::RUNTIME_FAILURE);
-            }
-            return (format!("error: {err_msg}"), ExitIdentity::RUNTIME_FAILURE);
-        }
-    };
-
-    let dec = match decision {
-        Some(d) => match NegativeDecision::parse(d) {
-            Ok(parsed) => parsed,
-            Err(err) => {
-                let err_msg = format!("invalid decision '{d}': {err}");
-                if json {
-                    let envelope = format_agent_response_envelope(
-                        "AOP-008",
-                        "error",
-                        Some("ERR-NEG-VALIDATION-FAILED-001"),
-                        "fss.negative_evidence.error.v1",
-                        &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                        "unknown",
-                        "partial",
-                        &[err_msg],
-                        "no",
-                        "never_unchanged",
-                    );
-                    return (envelope, ExitIdentity::RUNTIME_FAILURE);
-                }
-                return (format!("error: {err_msg}"), ExitIdentity::RUNTIME_FAILURE);
-            }
-        },
-        None => NegativeDecision::Reject,
-    };
-
-    let hyp = hypothesis.unwrap_or("Unspecified negative hypothesis");
-    let rsn = reasoning.unwrap_or("Unspecified theoretical reasoning");
-    let res = measured_result.unwrap_or("Empirically observed negative outcome");
-    let rev = revival_condition.unwrap_or("Qualified owner-authorized specification");
-
-    let cont = match continuity {
-        Some("continuous") | None => CoverageContinuity::Continuous,
-        Some("gapped") => CoverageContinuity::Gapped,
-        Some("unknown") => CoverageContinuity::Unknown,
-        Some(other) => {
-            let err_msg =
-                format!("invalid continuity '{other}', expected continuous|gapped|unknown");
-            if json {
-                let envelope = format_agent_response_envelope(
-                    "AOP-008",
-                    "error",
-                    Some("ERR-NEG-VALIDATION-FAILED-001"),
-                    "fss.negative_evidence.error.v1",
-                    &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                    "unknown",
-                    "partial",
-                    &[err_msg],
-                    "no",
-                    "never_unchanged",
-                );
-                return (envelope, ExitIdentity::RUNTIME_FAILURE);
-            }
-            return (format!("error: {err_msg}"), ExitIdentity::RUNTIME_FAILURE);
-        }
-    };
-
-    let comp = match completeness {
-        Some("complete") | None => Completeness::Complete,
-        Some("partial") => Completeness::Partial,
-        Some("bounded") => Completeness::Bounded,
-        Some("unknown") => Completeness::Unknown,
-        Some("not_observable") => Completeness::NotObservable,
-        Some("unauthorized") => Completeness::Unauthorized,
-        Some("stale") => Completeness::Stale,
-        Some(other) => {
-            let err_msg = format!("invalid completeness '{other}'");
-            if json {
-                let envelope = format_agent_response_envelope(
-                    "AOP-008",
-                    "error",
-                    Some("ERR-NEG-VALIDATION-FAILED-001"),
-                    "fss.negative_evidence.error.v1",
-                    &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                    "unknown",
-                    "partial",
-                    &[err_msg],
-                    "no",
-                    "never_unchanged",
-                );
-                return (envelope, ExitIdentity::RUNTIME_FAILURE);
-            }
-            return (format!("error: {err_msg}"), ExitIdentity::RUNTIME_FAILURE);
-        }
-    };
-
-    let stop = match stop_reason {
-        Some("complete") | None => CoverageStopReason::Complete,
-        Some("interrupted") | Some("cancelled") => CoverageStopReason::Cancelled,
-        Some("budget_exhausted") => CoverageStopReason::BudgetExhausted,
-        Some("error") => CoverageStopReason::Error,
-        Some(other) => {
-            let err_msg = format!("invalid stop-reason '{other}'");
-            if json {
-                let envelope = format_agent_response_envelope(
-                    "AOP-008",
-                    "error",
-                    Some("ERR-NEG-VALIDATION-FAILED-001"),
-                    "fss.negative_evidence.error.v1",
-                    &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                    "unknown",
-                    "partial",
-                    &[err_msg],
-                    "no",
-                    "never_unchanged",
-                );
-                return (envelope, ExitIdentity::RUNTIME_FAILURE);
-            }
-            return (format!("error: {err_msg}"), ExitIdentity::RUNTIME_FAILURE);
-        }
-    };
-
-    let pred = negative_predicate
-        .map(ToOwned::to_owned)
-        .unwrap_or_else(|| format!("absence-certified:{id_str}"));
-
-    let witness = if no_witness {
-        CoverageWitness {
-            anchor: LedgerAnchor::genesis("site:fss:empty"),
-            authorized_domain: BTreeSet::new(),
-            observed_domain: BTreeSet::new(),
-            excluded_domain: BTreeSet::new(),
-            continuity: CoverageContinuity::Unknown,
-            completeness: Completeness::Unknown,
-            negative_predicate: String::new(),
-            stop_reason: CoverageStopReason::Error,
-            authorized_generation: 0,
-            observed_generation: 0,
-        }
-    } else {
-        CoverageWitness {
-            anchor: LedgerAnchor::genesis("site:fss:cli"),
-            authorized_domain: BTreeSet::from(["domain:negative-evidence:cli".to_string()]),
-            observed_domain: BTreeSet::from(["domain:negative-evidence:cli".to_string()]),
-            excluded_domain: BTreeSet::new(),
-            continuity: cont,
-            completeness: comp,
-            negative_predicate: pred,
-            stop_reason: stop,
-            authorized_generation: 1,
-            observed_generation: 1,
-        }
-    };
-
-    let entry = NegativeEvidenceEntry {
-        neg_id: id_str.to_owned(),
-        date_commit: "2026-09-12 CLI".to_owned(),
-        hypothesis: hyp.to_owned(),
-        reasoning: rsn.to_owned(),
-        setup: NegativeEvidenceSetup {
-            corpus: corpus.unwrap_or("cli-evaluation").to_owned(),
-            device_model: device_model.unwrap_or("cli-model").to_owned(),
-            firmware_version: firmware.unwrap_or("cli-fw-1.0").to_owned(),
-            platform: platform.unwrap_or("linux").to_owned(),
-            policy: policy.unwrap_or("standards-first").to_owned(),
-            command: command.unwrap_or("fss negative-evidence").to_owned(),
-            artifact_digest: None,
-        },
-        measured_result: res.to_owned(),
-        decision: dec,
-        shared_failure_domains: BTreeSet::from(["cli-test".to_string()]),
-        revival_condition: rev.to_owned(),
-        knowledge_state: KnowledgeState::Known,
-        provenance_class: fss_core::ProvenanceClass::Policy,
-        disposition: HypothesisDisposition::Refuted,
-        coverage_witness: witness,
-        is_tombstone: false,
-        tombstone_reason: None,
-        proof_hash: None,
-        reproduction_command: command.unwrap_or("").to_owned(),
-    };
-
-    // Load ledger or start fresh
-    let mut ledger = if let Some(p) = path {
-        if Path::new(p).exists() {
-            match load_ledger(Some(p)) {
-                Ok(l) => l,
-                Err(err) => {
-                    let err_id = err.error_id();
-                    let err_msg = format!("Failed to load existing ledger from '{p}': {err}");
-                    if json {
-                        let envelope = format_agent_response_envelope(
-                            "AOP-008",
-                            "error",
-                            Some(err_id),
-                            "fss.negative_evidence.error.v1",
-                            &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                            "unknown",
-                            "partial",
-                            &[err_msg],
-                            "no",
-                            "never_unchanged",
-                        );
-                        return (envelope, ExitIdentity::RUNTIME_FAILURE);
-                    }
-                    return (
-                        format!("error[{err_id}]: {err_msg}"),
-                        ExitIdentity::RUNTIME_FAILURE,
-                    );
-                }
-            }
-        } else {
-            NegativeEvidenceLedger::new()
-        }
-    } else {
-        match initial_negative_evidence_ledger() {
-            Ok(l) => l,
-            Err(err) => {
-                let err_id = err.error_id();
-                let err_msg = format!("Failed to initialize ledger: {err}");
-                if json {
-                    let envelope = format_agent_response_envelope(
-                        "AOP-008",
-                        "error",
-                        Some(err_id),
-                        "fss.negative_evidence.error.v1",
-                        &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                        "unknown",
-                        "partial",
-                        &[err_msg],
-                        "no",
-                        "never_unchanged",
-                    );
-                    return (envelope, ExitIdentity::RUNTIME_FAILURE);
-                }
-                return (
-                    format!("error[{err_id}]: {err_msg}"),
-                    ExitIdentity::RUNTIME_FAILURE,
-                );
-            }
-        }
-    };
-
-    // Validate entry before appending
-    if let Err(err) = entry.validate() {
-        let err_id = err.error_id();
-        let err_msg = format!("Entry validation failed: {err}");
-        if json {
-            let envelope = format_agent_response_envelope(
-                "AOP-008",
-                "error",
-                Some(err_id),
-                "fss.negative_evidence.error.v1",
-                &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                "unknown",
-                "partial",
-                &[err_msg],
-                "no",
-                "never_unchanged",
-            );
-            return (envelope, ExitIdentity::RUNTIME_FAILURE);
-        }
-        return (
-            format!("Append rejected [{err_id}]: {err_msg}"),
-            ExitIdentity::RUNTIME_FAILURE,
-        );
-    }
-
-    // Append to ledger
-    if let Err(err) = ledger.append(entry.clone()) {
-        let err_id = err.error_id();
-        let err_msg = format!("Ledger append failed: {err}");
-        if json {
-            let envelope = format_agent_response_envelope(
-                "AOP-008",
-                "error",
-                Some(err_id),
-                "fss.negative_evidence.error.v1",
-                &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                "unknown",
-                "partial",
-                &[err_msg],
-                "no",
-                "never_unchanged",
-            );
-            return (envelope, ExitIdentity::RUNTIME_FAILURE);
-        }
-        return (
-            format!("Append rejected [{err_id}]: {err_msg}"),
-            ExitIdentity::RUNTIME_FAILURE,
-        );
-    }
-
-    // Verify resulting ledger
-    if let Err(err) = ledger.verify() {
-        let err_id = err.error_id();
-        let err_msg = format!("Resulting ledger verification failed: {err}");
-        if json {
-            let envelope = format_agent_response_envelope(
-                "AOP-008",
-                "error",
-                Some(err_id),
-                "fss.negative_evidence.error.v1",
-                &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                "unknown",
-                "partial",
-                &[err_msg],
-                "no",
-                "never_unchanged",
-            );
-            return (envelope, ExitIdentity::RUNTIME_FAILURE);
-        }
-        return (
-            format!("Append rejected [{err_id}]: {err_msg}"),
-            ExitIdentity::RUNTIME_FAILURE,
-        );
-    }
-
-    // If path was given, write back to file
-    if let Some(p) = path {
-        match ledger.encode_canonical() {
-            Ok(bytes) => {
-                if let Err(err) = fs::write(p, &bytes) {
-                    let err_msg = format!("Failed to write ledger file '{p}': {err}");
-                    if json {
-                        let envelope = format_agent_response_envelope(
-                            "AOP-008",
-                            "error",
-                            Some("ERR-CLI-RUNTIME-FAILURE-001"),
-                            "fss.negative_evidence.error.v1",
-                            &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                            "unknown",
-                            "partial",
-                            &[err_msg],
-                            "no",
-                            "never_unchanged",
-                        );
-                        return (envelope, ExitIdentity::RUNTIME_FAILURE);
-                    }
-                    return (
-                        format!("error[ERR-CLI-RUNTIME-FAILURE-001]: {err_msg}"),
-                        ExitIdentity::RUNTIME_FAILURE,
-                    );
-                }
-            }
-            Err(err) => {
-                let err_id = err.error_id();
-                let err_msg = format!("Failed to encode ledger: {err}");
-                if json {
-                    let envelope = format_agent_response_envelope(
-                        "AOP-008",
-                        "error",
-                        Some(err_id),
-                        "fss.negative_evidence.error.v1",
-                        &format!("{{\"error\":\"{}\"}}", escape_json_str(&err_msg)),
-                        "unknown",
-                        "partial",
-                        &[err_msg],
-                        "no",
-                        "never_unchanged",
-                    );
-                    return (envelope, ExitIdentity::RUNTIME_FAILURE);
-                }
-                return (
-                    format!("error[{err_id}]: {err_msg}"),
-                    ExitIdentity::RUNTIME_FAILURE,
-                );
-            }
-        }
-    }
-
-    let root_digest = ledger
-        .root_digest()
-        .map_or_else(|_| "unknown".to_string(), |d| d.to_text());
+    let certified = ledger
+        .entries()
+        .iter()
+        .filter(|e| e.certification == EvidenceCertification::LocallyCertified)
+        .count();
+    let uncertified = ledger.len() - certified;
     if json {
         let payload = format!(
-            "{{\"appendedId\":\"{}\",\"entryCount\":{},\"rootDigest\":\"{root_digest}\",\"entry\":{}}}",
-            entry.neg_id,
-            ledger.len(),
-            entry.to_json()
+            "{{\"verified\":true,\"entryCount\":{},\"locallyCertified\":{certified},\"notLocallyCertified\":{uncertified},\"rootDigest\":\"{root_digest}\",\"formatVersion\":1}}",
+            ledger.len()
         );
         let envelope = format_agent_response_envelope(
-            "AOP-008",
             "ok",
             None,
-            "fss.negative_evidence.append_receipt.v1",
+            "fss.negative_evidence.verification.v1",
             &payload,
             "known",
             "complete",
@@ -1134,21 +1007,166 @@ fn execute_append(args: &NegativeEvidenceAppendArgs) -> (String, ExitIdentity) {
     } else {
         (
             format!(
-                "Entry {} appended successfully (new ledger root: {root_digest})",
-                entry.neg_id
+                "Ledger verified: continuous coverage guarantees intact for all {certified} locally certified entries; {uncertified} entries are not locally certified ({} entries, root digest: {root_digest})",
+                ledger.len()
             ),
             ExitIdentity::SUCCESS,
         )
     }
 }
 
-/// Formats an `AgentResponseEnvelope` adhering to `schemas/agent_response_envelope.v1.json`.
+/// Builds the caller-supplied witness; refuses when any of the six witness options is absent.
+fn build_witness(
+    args: &CoverageWitnessArgs,
+) -> Result<(String, CoverageWitness), NegativeEvidenceError> {
+    let (
+        Some(domain),
+        Some(generation),
+        Some(predicate),
+        Some(continuity),
+        Some(completeness),
+        Some(stop_reason),
+    ) = (
+        &args.domain,
+        args.generation,
+        &args.negative_predicate,
+        args.continuity,
+        args.completeness,
+        args.stop_reason,
+    )
+    else {
+        let missing = args.missing_options();
+        let detail = if missing.len() == 6 {
+            "no coverage witness supplied".to_owned()
+        } else {
+            format!(
+                "incomplete coverage witness; missing {}",
+                missing.join(", ")
+            )
+        };
+        return Err(NegativeEvidenceError::MissingCoverageWitness { detail });
+    };
+    let domain_set = BTreeSet::from([domain.clone()]);
+    Ok((
+        domain.clone(),
+        CoverageWitness {
+            anchor: LedgerAnchor::genesis("site:fss:cli"),
+            authorized_domain: domain_set.clone(),
+            observed_domain: domain_set,
+            excluded_domain: BTreeSet::new(),
+            continuity,
+            completeness,
+            negative_predicate: predicate.clone(),
+            stop_reason,
+            authorized_generation: generation,
+            observed_generation: generation,
+        },
+    ))
+}
+
+fn append_entry(
+    args: &NegativeEvidenceAppendArgs,
+) -> Result<(NegativeEvidenceEntry, usize, String), NegativeEvidenceError> {
+    let (domain, witness) = build_witness(&args.witness)?;
+    let or_not_evaluated =
+        |value: &Option<String>| value.clone().unwrap_or_else(|| NOT_EVALUATED.to_owned());
+    let command = args
+        .command
+        .clone()
+        .unwrap_or_else(|| NOT_LOCALLY_REPRODUCIBLE.to_owned());
+    let entry = NegativeEvidenceEntry {
+        neg_id: args.neg_id.clone(),
+        date_commit: args.date_commit.clone(),
+        hypothesis: args.hypothesis.clone(),
+        reasoning: args.reasoning.clone(),
+        setup: NegativeEvidenceSetup {
+            corpus: or_not_evaluated(&args.corpus),
+            device_model: or_not_evaluated(&args.device_model),
+            firmware_version: or_not_evaluated(&args.firmware),
+            platform: or_not_evaluated(&args.platform),
+            policy: or_not_evaluated(&args.policy),
+            command: command.clone(),
+            artifact_digest: None,
+        },
+        measured_result: args.measured_result.clone(),
+        decision: args.decision,
+        decision_text: args.decision_text.clone(),
+        shared_failure_domains: args.failure_domains.clone(),
+        revival_condition: args.revival_condition.clone(),
+        knowledge_state: KnowledgeState::Known,
+        provenance_class: ProvenanceClass::OperatorAsserted,
+        disposition: args.disposition,
+        coverage_witness: witness,
+        claimed_domain: BTreeSet::from([domain]),
+        certification: EvidenceCertification::LocallyCertified,
+        supersedes: args.supersedes.clone(),
+        is_tombstone: false,
+        tombstone_reason: None,
+        proof_hash: None,
+        reproduction_command: command,
+    };
+
+    let mut ledger = load_ledger(Some(&args.path))?;
+    ledger.append(entry.clone())?;
+    ledger.verify()?;
+    let bytes = ledger.encode_canonical()?;
+    write_ledger_atomically(&args.path, &bytes, WriteMode::Replace)?;
+    Ok((entry, ledger.len(), ContentDigest::sha256(&bytes).to_text()))
+}
+
+fn execute_append(args: &NegativeEvidenceAppendArgs) -> (String, ExitIdentity) {
+    match append_entry(args) {
+        Ok((entry, count, root_digest)) => {
+            if args.json {
+                let payload = format!(
+                    "{{\"appendedId\":\"{}\",\"entryCount\":{count},\"rootDigest\":\"{root_digest}\",\"entry\":{}}}",
+                    escape_json_str(&entry.neg_id),
+                    entry.to_json()
+                );
+                let envelope = format_agent_response_envelope(
+                    "ok",
+                    None,
+                    "fss.negative_evidence.append_receipt.v1",
+                    &payload,
+                    "known",
+                    "complete",
+                    &[],
+                    "no",
+                    "never_unchanged",
+                );
+                (envelope, ExitIdentity::SUCCESS)
+            } else {
+                (
+                    format!(
+                        "Entry {} appended successfully (new ledger root: {root_digest})",
+                        entry.neg_id
+                    ),
+                    ExitIdentity::SUCCESS,
+                )
+            }
+        }
+        Err(err) => {
+            let err_id = err.error_id();
+            failure(
+                args.json,
+                ERROR_PAYLOAD_SCHEMA,
+                "",
+                err_id,
+                &format!("Append rejected [{err_id}]: {err}"),
+            )
+        }
+    }
+}
+
+/// Formats output shaped as `schemas/agent_response_envelope.v1.json`.
+///
+/// Fields this command cannot derive honestly (operation ID, registry digests, input anchor,
+/// budgets) are emitted as `null` and listed in `degradation`; they are never fabricated.
 #[expect(
     clippy::too_many_arguments,
-    reason = "Constructs compliant agent response envelope across all canonical fields"
+    reason = "Constructs agent response envelope across all canonical fields"
 )]
 pub fn format_agent_response_envelope(
-    operation_id: &str,
     outcome: &str,
     error_id: Option<&str>,
     payload_schema: &str,
@@ -1173,6 +1191,13 @@ pub fn format_agent_response_envelope(
             .collect();
         format!("[{}]", items.join(","))
     };
+    let degradation_json = {
+        let items: Vec<String> = ENVELOPE_DEGRADATION
+            .iter()
+            .map(|d| format!("\"{}\"", escape_json_str(d)))
+            .collect();
+        format!("[{}]", items.join(","))
+    };
 
     let payload_digest = ContentDigest::sha256(payload_json.as_bytes()).to_text();
     let (completed_arr, not_started_arr) = if outcome == "ok" {
@@ -1186,17 +1211,17 @@ pub fn format_agent_response_envelope(
 \"contractBasis\":{{\
 \"schema\":\"fss.agent_contract_basis.v1\",\
 \"semanticProtocol\":\"fss/1\",\
-\"schemaCatalogDigest\":\"sha256:631ac85e5dada50bd38afbc915d651dae69756fca252c65a16f9d994854c775b\",\
-\"ontologyGenerationId\":\"ontology:reference:v1\",\
-\"operationRegistryDigest\":\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\
-\"viewRegistryDigest\":\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\
-\"capabilityRegistryDigest\":\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\
-\"errorRegistryDigest\":\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\
-\"costRegistryDigest\":\"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\
+\"schemaCatalogDigest\":null,\
+\"ontologyGenerationId\":null,\
+\"operationRegistryDigest\":null,\
+\"viewRegistryDigest\":null,\
+\"capabilityRegistryDigest\":null,\
+\"errorRegistryDigest\":null,\
+\"costRegistryDigest\":null,\
 \"producerReleaseId\":\"fss-cli:{VERSION}\",\
 \"acceptedNightly\":\"nightly-2026-08-31\"\
 }},\
-\"operationId\":\"{operation_id}\",\
+\"operationId\":null,\
 \"requestId\":\"req:cli:neg:1\",\
 \"responseRevision\":1,\
 \"principalId\":\"principal:cli:local\",\
@@ -1204,22 +1229,7 @@ pub fn format_agent_response_envelope(
 \"missionId\":null,\
 \"traceId\":\"trace:cli:neg:1\",\
 \"taskId\":null,\
-\"inputAnchor\":{{\
-\"schema\":\"fss.evidence_anchor.v1\",\
-\"deploymentId\":\"deploy:local\",\
-\"observationEpoch\":1,\
-\"capsuleSequence\":1,\
-\"authorityRoot\":\"auth:root:negative-evidence\",\
-\"deviceGeneration\":\"device:gen:negative-evidence\",\
-\"streamGeneration\":\"stream:gen:negative-evidence\",\
-\"schemaEpoch\":1,\
-\"policyEpoch\":1,\
-\"adapterEpoch\":1,\
-\"modelGeneration\":null,\
-\"calibrationGeneration\":null,\
-\"graphGeneration\":null,\
-\"searchGeneration\":null\
-}},\
+\"inputAnchor\":null,\
 \"outputAnchor\":null,\
 \"workspaceRevision\":null,\
 \"effectiveViewId\":\"AVIEW-001\",\
@@ -1241,12 +1251,8 @@ pub fn format_agent_response_envelope(
 \"validUntilNs\":null,\
 \"warnings\":{warnings_json},\
 \"contradictions\":[],\
-\"degradation\":[],\
-\"budgets\":{{\
-\"requested\":{{\"latencyMs\":1000,\"tokens\":1000,\"bytes\":65536,\"modelCalls\":0,\"cpuMillis\":100,\"acceleratorMillis\":0,\"energyMilliJoules\":0,\"networkBytes\":0,\"storageOperations\":1,\"privacyExposure\":0.0,\"operatorAttentionSeconds\":0.0}},\
-\"consumed\":{{\"latencyMs\":1,\"tokens\":0,\"bytes\":1024,\"modelCalls\":0,\"cpuMillis\":1,\"acceleratorMillis\":0,\"energyMilliJoules\":0,\"networkBytes\":0,\"storageOperations\":1,\"privacyExposure\":0.0,\"operatorAttentionSeconds\":0.0}},\
-\"remaining\":{{\"latencyMs\":999,\"tokens\":1000,\"bytes\":64512,\"modelCalls\":0,\"cpuMillis\":99,\"acceleratorMillis\":0,\"energyMilliJoules\":0,\"networkBytes\":0,\"storageOperations\":0,\"privacyExposure\":0.0,\"operatorAttentionSeconds\":0.0}}\
-}},\
+\"degradation\":{degradation_json},\
+\"budgets\":{{\"requested\":null,\"consumed\":null,\"remaining\":null}},\
 \"compressionReceiptId\":null,\
 \"proofPointers\":[],\
 \"continuation\":null,\
