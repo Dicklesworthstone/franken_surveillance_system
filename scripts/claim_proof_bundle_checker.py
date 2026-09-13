@@ -52,8 +52,9 @@ Fail-closed verification invariants:
    a report that cannot be written (closed pipe, full disk, closed descriptor) fails closed with
    exit 1 and no traceback. Only regular files of at most MAX_INPUT_BYTES are read (a FIFO,
    device, or socket is refused before any read could block; the files the stable-ID tombstone
-   index reads through stable_id_audit are checked first), and every bundle or receipt path,
-   absolute or relative, must resolve inside the audited root.
+   index reads through stable_id_audit are checked first and re-hashed after it is built), and
+   every bundle, receipt, or retained artifact path, absolute or relative, must resolve inside the
+   audited root; containment is checked on the open descriptor that is then read.
 11. Exact field sets: the bundle (schema exactly fss.proof_bundle.v1), its artifact entries, and
    every evidence document a realized class reads are validated against an allowlist of keys,
    compared byte for byte; any other key is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001. Every JSON
@@ -704,21 +705,67 @@ def _read_regular_file(path: Path) -> bytes:
     opened without blocking and checked on the open handle, so a FIFO, device, or socket is refused
     before any read could block forever, and nothing can be swapped in between the check and the
     read; no more than the cap plus one byte is ever read, so a huge or growing file is refused."""
-    limit = MAX_INPUT_BYTES
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise _NotRegularFile(f"'{path}' is not a regular file (a FIFO, device, socket, or directory is never read)")
-        chunks: list[bytes] = []
-        total = 0
-        while True:
-            chunk = os.read(fd, min(1 << 20, limit + 1 - total))
-            if not chunk:
-                return b"".join(chunks)
-            chunks.append(chunk)
-            total += len(chunk)
-            if total > limit:
-                raise _InputTooLarge(f"'{path}' is larger than the per-file cap of {limit} bytes; it is refused rather than read")
+        return _read_descriptor(fd, path)
+    finally:
+        os.close(fd)
+
+
+def _read_descriptor(fd: int, path: Path) -> bytes:
+    """Reads an open regular file to its end, at most MAX_INPUT_BYTES (cap + 1 bytes are read at most)."""
+    limit = MAX_INPUT_BYTES
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = os.read(fd, min(1 << 20, limit + 1 - total))
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > limit:
+            raise _InputTooLarge(f"'{path}' is larger than the per-file cap of {limit} bytes; it is refused rather than read")
+
+
+class _OutsideRoot(OSError):
+    """An open descriptor whose file lies outside the audited root."""
+
+
+def _descriptor_realpath(fd: int, fd_stat: os.stat_result, path: Path) -> str | None:
+    """The absolute path of the file an open descriptor refers to, confirmed by device and inode:
+    /proc/self/fd/N where the platform has it, else the realpath of path; None when neither names
+    the very file that is open (e.g. it was unlinked or replaced after the open)."""
+    try:
+        candidate = os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        candidate = os.path.realpath(path)
+    try:
+        named = os.stat(candidate)
+    except (OSError, ValueError):
+        return None
+    return candidate if (named.st_dev, named.st_ino) == (fd_stat.st_dev, fd_stat.st_ino) else None
+
+
+def _read_contained_file(path: Path, root: Path) -> bytes:
+    """Opens path once and reads that same descriptor, after showing that the descriptor itself is a
+    regular file inside root (review round 9, N4). Checking containment on the path and opening it
+    again by path let a racer swap in a symlink to an outside file in between; here the check is on
+    what was opened. In-root symlinks to in-root files stay valid (no O_NOFOLLOW is needed)."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    try:
+        fd_stat = os.fstat(fd)
+        if not stat.S_ISREG(fd_stat.st_mode):
+            raise _NotRegularFile(f"'{path}' is not a regular file (a FIFO, device, socket, or directory is never read)")
+        real = _descriptor_realpath(fd, fd_stat, path)
+        try:
+            root_real: str | None = os.path.realpath(root)
+        except (OSError, ValueError):
+            root_real = None
+        if real is None or root_real is None or not Path(real).is_relative_to(root_real):
+            raise _OutsideRoot(f"'{path}' is open on a file outside the repository root ({real or 'unresolvable'}); it is not read")
+        return _read_descriptor(fd, path)
     finally:
         os.close(fd)
 
@@ -778,11 +825,16 @@ def _json_depth_exceeds(value: Any, limit: int = MAX_JSON_DEPTH) -> bool:
     return False
 
 
-def _read_json_document(path: Path, display: str, kind: str) -> tuple[dict[str, Any] | None, list[ClaimFinding]]:
-    """Reads a non-empty JSON object; every failure is a typed finding."""
+def _read_json_document(
+    path: Path, display: str, kind: str, root: Path | None = None,
+) -> tuple[dict[str, Any] | None, list[ClaimFinding]]:
+    """Reads a non-empty JSON object; every failure is a typed finding. With root, the open
+    descriptor itself must lie inside root (review round 9, N4)."""
     label = kind[:1].upper() + kind[1:]
     try:
-        raw_bytes = _read_regular_file(path)
+        raw_bytes = _read_regular_file(path) if root is None else _read_contained_file(path, root)
+    except _OutsideRoot as exc:
+        return None, [_finding(ERR_PROOF_BUNDLE_NOT_FOUND, display, "path", f"{label} '{display}': {exc}", {"path": display})]
     except OSError as exc:
         return None, [_finding(ERR_UNREADABLE_INPUT, display, "file", f"Could not read {kind} '{display}': {exc}", {"error": str(exc)})]
     if len(raw_bytes.strip()) == 0:
@@ -937,35 +989,52 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
     if not isinstance(resolutions, list) or len(resolutions) == 0:
         return unavailable(f"'{display}' contains no resolutions")
     # stable_id_audit (not editable here) reads every registries/*.md, docs/adr/*.md, and
-    # architecture/*.json with its own readers: any that is not a regular file within the byte cap
-    # leaves the index unavailable (review N4, F3), and every JSON file it parses is parsed here first
-    # with duplicate keys refused, since its plain json.loads keeps the last value (review round 8, F1:
-    # {"status": "tombstoned", "status": "active"} would un-tombstone an identifier).
-    read_by_index = sorted(
-        p
-        for folder, pattern in (("registries", "*.md"), ("docs/adr", "*.md"), ("architecture", "*.json"))
-        if (root / folder).is_dir()
-        for p in (root / folder).glob(pattern)
-    )
-    irregular = sorted(sanitize_path(p, root) for p in read_by_index if not _is_regular_file(p))
-    if irregular:
-        return unavailable(f"{irregular} are not regular files (a FIFO, device, socket, or directory is never read)")
-    oversized = sorted(sanitize_path(p, root) for p in read_by_index if p.stat().st_size > MAX_INPUT_BYTES)
-    if oversized:
-        return unavailable(f"{oversized} are larger than the per-file cap of {MAX_INPUT_BYTES} bytes")
-    for json_path in (p for p in read_by_index if p.suffix == ".json"):
-        shown = sanitize_path(json_path, root)
+    # architecture/*.json with its own readers. Each is read here first through the regular-file,
+    # byte-capped reader (review N4, F3), every JSON one is parsed with duplicate keys refused, since
+    # its plain json.loads keeps the last value (review round 8, F1: {"status": "tombstoned",
+    # "status": "active"} would un-tombstone an identifier), and its bytes are hashed. After the index
+    # is built every file is read and hashed again: a file that changed, appeared, or disappeared in
+    # between leaves the index unavailable (review round 9, N3). A change that is reverted before the
+    # re-read is not visible to any reader outside stable_id_audit; that module is not editable here.
+    def files_read_by_index() -> list[Path]:
+        return sorted(
+            p
+            for folder, pattern in (("registries", "*.md"), ("docs/adr", "*.md"), ("architecture", "*.json"))
+            if (root / folder).is_dir()
+            for p in (root / folder).glob(pattern)
+        )
+
+    read_by_index = files_read_by_index()
+    snapshot: dict[Path, str] = {}
+    for index_path in read_by_index:
+        shown = sanitize_path(index_path, root)
         try:
-            _loads_json(_read_regular_file(json_path).decode("utf-8-sig"))
+            raw = _read_regular_file(index_path)  # also refuses a file deleted since the glob, without a traceback
+        except OSError as exc:
+            return unavailable(f"'{shown}' could not be read as a regular file within the byte cap: {exc}", error=str(exc))
+        snapshot[index_path] = compute_sha256(raw)
+        if index_path.suffix != ".json":
+            continue
+        try:
+            _loads_json(raw.decode("utf-8-sig"))
         except _DuplicateKeyError as exc:
             _, unusable = unavailable(f"'{shown}' declares the JSON key {exc.key!r} more than once; the index would read only its last value", key=repr(exc.key))
             return set(), [_duplicate_key_finding(shown, "file", f"Registry '{shown}' (read by the stable-ID tombstone index)", exc.key)] + unusable
-        except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        except (UnicodeDecodeError, ValueError, RecursionError) as exc:
             return unavailable(f"'{shown}' cannot be read as JSON: {exc}", error=str(exc))
     try:
         index = stable_id_audit._load_repository_index(root)
     except (stable_id_audit.AuditError, OSError, UnicodeDecodeError) as exc:
         return unavailable(f"repository stable-ID index could not be built: {exc}", error=str(exc))
+    if files_read_by_index() != read_by_index:
+        return unavailable("the set of files the stable-ID index reads changed while it was built")
+    for index_path, digest in snapshot.items():
+        try:
+            unchanged = compute_sha256(_read_regular_file(index_path)) == digest
+        except OSError:
+            unchanged = False
+        if not unchanged:
+            return unavailable(f"'{sanitize_path(index_path, root)}' changed while the stable-ID index was built; the index may not be what was checked")
     if not index.known:
         return unavailable("repository stable-ID index contains no identifiers")
     return {normalize_id(t) for t in index.tombstoned}, []
@@ -1142,7 +1211,7 @@ def _check_artifacts(data: dict[str, Any], root: Path, path_str: str, findings: 
             if not digest_ok:
                 continue
             try:
-                art_bytes = _read_regular_file(art_full_path)
+                art_bytes = _read_contained_file(art_full_path, root)  # containment on the open descriptor (review N4)
             except OSError as exc:
                 findings.append(_finding(
                     ERR_UNREADABLE_INPUT, path_str, loc,
@@ -1256,63 +1325,186 @@ def _rank_of(level: str) -> int | None:
 
 
 RECEIPT_SCHEMA_FILE = "schemas/release_qualification_receipt.v1.json"
-# The JSON Schema keywords the registered receipt schema uses; a schema using any other keyword
-# cannot be interpreted here, so every receipt is then invalid (fail closed).
-_RECEIPT_SCHEMA_KEYWORDS: frozenset[str] = frozenset({
-    "$schema", "$id", "title", "description", "type", "const", "enum", "pattern", "minLength", "maxLength",
-    "minItems", "items", "required", "properties", "additionalProperties", "anyOf",
+RECEIPT_SCHEMA_PATH = ROOT / RECEIPT_SCHEMA_FILE  # the repository's registered copy (tests point it at modified copies)
+# The JSON Schema forms this checker implements FULLY. Any other keyword, keyword value, or pattern
+# construct is a schema problem, found by a separate pass over the whole schema before any receipt
+# is checked, and every receipt is then invalid (fail closed, review round 9, N1).
+_SCHEMA_ANNOTATIONS: frozenset[str] = frozenset({"$schema", "$id", "title", "description"})
+_RECEIPT_SCHEMA_KEYWORDS: frozenset[str] = _SCHEMA_ANNOTATIONS | frozenset({
+    "type", "const", "enum", "pattern", "minLength", "maxLength", "minItems", "items", "required",
+    "properties", "additionalProperties", "anyOf",
 })
 _JSON_TYPES: dict[str, Any] = {
     "object": lambda v: isinstance(v, dict),
     "array": lambda v: isinstance(v, list),
     "string": lambda v: isinstance(v, str),
-    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    # JSON Schema: an integer is any number with a zero fractional part (1.0 included).
+    "integer": lambda v: (isinstance(v, int) and not isinstance(v, bool)) or (isinstance(v, float) and v.is_integer()),
     "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
     "boolean": lambda v: isinstance(v, bool),
     "null": lambda v: v is None,
 }
+_PATTERN_QUANTIFIER_RE = re.compile(r"\{\d+(?:,\d*)?\}")
 
 
 def _json_equal(a: Any, b: Any) -> bool:
+    """JSON Schema equality: numbers compare by value (1 == 1.0), booleans and nulls only with their
+    own kind, arrays and objects element by element."""
+    if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
+        return type(a) is type(b) and a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        return a == b
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(_json_equal(x, y) for x, y in zip(a, b))
+    if isinstance(a, dict) and isinstance(b, dict):
+        return a.keys() == b.keys() and all(_json_equal(a[k], b[k]) for k in a)
     return type(a) is type(b) and a == b
 
 
-def _schema_subset_check(value: Any, schema: Any, where: str, unknown: list[str], other: list[tuple[str, str]]) -> None:
-    """Checks value against the keyword subset of _RECEIPT_SCHEMA_KEYWORDS. Recursion follows the
-    schema's own structure (a fixed, shallow file), never the instance's depth."""
+def _translate_pattern(pattern: str) -> str | None:
+    r"""A Python regular expression with the JSON Schema (ECMA-262) meaning of pattern, applied with
+    re.search, or None when pattern uses a construct whose meaning this checker does not reproduce
+    exactly: a "(?" group, any escape of a letter or digit (\d, \w, \s, \b, backreferences, \x, \u,
+    ...), '.' outside a class (ECMA-262 excludes more line terminators), a negated or nested class,
+    a quantifier brace not of the form {n}, {n,}, or {n,m}, or ^ / $ anywhere but the very start and
+    end. A final $ becomes \Z (ECMA-262 $ never matches before a trailing newline)."""
+    out: list[str] = []
+    in_class = False
+    i = 0
+    n = len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            if i + 1 >= n or pattern[i + 1].isalnum():
+                return None
+            out.append(pattern[i:i + 2])
+            i += 2
+            continue
+        if in_class:
+            if ch == "[":
+                return None
+            if ch == "]":
+                in_class = False
+            out.append(ch)
+        elif ch == "[":
+            if i + 1 < n and pattern[i + 1] == "^":
+                return None
+            in_class = True
+            out.append(ch)
+        elif ch == "(":
+            if i + 1 < n and pattern[i + 1] == "?":
+                return None
+            out.append(ch)
+        elif ch == "{":
+            quantifier = _PATTERN_QUANTIFIER_RE.match(pattern, i)
+            if quantifier is None:
+                return None
+            out.append(quantifier.group())
+            i = quantifier.end()
+            continue
+        elif ch == ".":
+            return None
+        elif ch == "^":
+            if i != 0:
+                return None
+            out.append(ch)
+        elif ch == "$":
+            if i != n - 1:
+                return None
+            out.append(r"\Z")
+        else:
+            out.append(ch)
+        i += 1
+    if in_class:
+        return None
+    translated = "".join(out)
+    try:
+        re.compile(translated)
+    except re.error:
+        return None
+    return translated
+
+
+def _schema_interpretation_problems(schema: Any) -> list[str]:
+    """Every form in the schema that this checker does not fully implement: an unknown keyword, a
+    keyword value of an unexpected form, tuple-form or boolean items, or a pattern it cannot
+    translate exactly. Walked with an explicit stack; run before, and independently of, any
+    filtering of instance violations (review round 9, N1)."""
+    problems: list[str] = []
+    stack: list[tuple[Any, str]] = [(schema, "#")]
+    while stack:
+        node, where = stack.pop()
+        if not isinstance(node, dict):
+            problems.append(f"{where} is a {type(node).__name__}, not a schema object")
+            continue
+        extra = sorted(set(node) - _RECEIPT_SCHEMA_KEYWORDS)
+        if extra:
+            problems.append(f"{where} uses keywords this checker does not interpret: {extra}")
+        if "type" in node:
+            declared = node["type"]
+            names = declared if isinstance(declared, list) else [declared]
+            if not names or not all(isinstance(t, str) and t in _JSON_TYPES for t in names) or len(set(map(str, names))) != len(names):
+                problems.append(f"{where}/type {declared!r} is not a type name or a list of distinct type names")
+        if "enum" in node and not (isinstance(node["enum"], list) and node["enum"]):
+            problems.append(f"{where}/enum {node['enum']!r} is not a non-empty list")
+        for keyword in ("minLength", "maxLength", "minItems"):
+            if keyword in node and not (isinstance(node[keyword], int) and not isinstance(node[keyword], bool) and node[keyword] >= 0):
+                problems.append(f"{where}/{keyword} {node[keyword]!r} is not a non-negative integer")
+        if "pattern" in node and not (isinstance(node["pattern"], str) and _translate_pattern(node["pattern"]) is not None):
+            problems.append(f"{where}/pattern {node['pattern']!r} uses a construct this checker cannot interpret exactly")
+        if "required" in node and not (isinstance(node["required"], list) and all(isinstance(r, str) for r in node["required"])):
+            problems.append(f"{where}/required {node['required']!r} is not a list of names")
+        if "properties" in node:
+            if isinstance(node["properties"], dict):
+                stack.extend((sub, f"{where}/properties/{name}") for name, sub in node["properties"].items())
+            else:
+                problems.append(f"{where}/properties is not an object")
+        if "additionalProperties" in node:
+            additional = node["additionalProperties"]
+            if isinstance(additional, dict):
+                stack.append((additional, f"{where}/additionalProperties"))
+            elif not isinstance(additional, bool):
+                problems.append(f"{where}/additionalProperties {additional!r} is neither a boolean nor a schema")
+        if "items" in node:
+            if isinstance(node["items"], dict):
+                stack.append((node["items"], f"{where}/items"))
+            else:
+                problems.append(f"{where}/items is a {type(node['items']).__name__}: only a single schema object is interpreted (tuple-form and boolean items are not)")
+        if "anyOf" in node:
+            alternatives = node["anyOf"]
+            if isinstance(alternatives, list) and alternatives:
+                stack.extend((alt, f"{where}/anyOf/{idx}") for idx, alt in enumerate(alternatives))
+            else:
+                problems.append(f"{where}/anyOf is not a non-empty list")
+    return problems
+
+
+def _schema_subset_check(value: Any, schema: dict[str, Any], where: str, unknown: list[str], other: list[tuple[str, str]]) -> None:
+    """Checks value against a schema that _schema_interpretation_problems accepted. Every keyword is
+    applied (anyOf does not end the check: its siblings apply too), with JSON Schema semantics.
+    Recursion follows the schema's structure and the instance's, bounded by MAX_JSON_DEPTH."""
     label = where or "root"
-    if not isinstance(schema, dict) or set(schema) - _RECEIPT_SCHEMA_KEYWORDS:
-        other.append((label, f"schema node uses keywords this checker does not interpret: {sorted(set(schema) - _RECEIPT_SCHEMA_KEYWORDS) if isinstance(schema, dict) else schema!r}"))
-        return
-    if "anyOf" in schema:
-        for alternative in schema["anyOf"]:
-            alt_unknown: list[str] = []
-            alt_other: list[tuple[str, str]] = []
-            _schema_subset_check(value, alternative, where, alt_unknown, alt_other)
-            if not alt_unknown and not alt_other:
-                return
+    if "anyOf" in schema and not any(_schema_accepts(value, alternative) for alternative in schema["anyOf"]):
         other.append((label, f"matches none of its alternatives (got {value!r:.80})"))
-        return
     if "const" in schema and not _json_equal(value, schema["const"]):
         other.append((label, f"is {value!r:.80}, not {schema['const']!r}"))
-        return
     if "enum" in schema and not any(_json_equal(value, option) for option in schema["enum"]):
         other.append((label, f"is {value!r:.80}, not one of {schema['enum']}"))
-        return
-    expected = schema.get("type")
-    if expected is not None and not _JSON_TYPES.get(expected, lambda v: False)(value):
-        other.append((label, f"is a JSON {type(value).__name__} ({value!r:.60}), not a {expected}"))
-        return
+    if "type" in schema:
+        names = schema["type"] if isinstance(schema["type"], list) else [schema["type"]]
+        if not any(_JSON_TYPES[name](value) for name in names):
+            other.append((label, f"is a JSON {type(value).__name__} ({value!r:.60}), not {' or '.join(names)}"))
     if isinstance(value, str):
-        if len(value) < schema.get("minLength", 0) or len(value) > schema.get("maxLength", len(value)):
-            other.append((label, f"has length {len(value)} outside [{schema.get('minLength', 0)}, {schema.get('maxLength', 'inf')}]"))
-        pattern = schema.get("pattern")
-        if isinstance(pattern, str) and re.fullmatch(pattern.removeprefix("^").removesuffix("$"), value) is None:
-            other.append((label, f"{value!r:.80} does not match {pattern}"))
+        if "minLength" in schema and len(value) < schema["minLength"]:
+            other.append((label, f"has length {len(value)}, below minLength {schema['minLength']}"))
+        if "maxLength" in schema and len(value) > schema["maxLength"]:
+            other.append((label, f"has length {len(value)}, above maxLength {schema['maxLength']}"))
+        if "pattern" in schema and re.search(_translate_pattern(schema["pattern"]) or r"(?!)", value) is None:
+            other.append((label, f"{value!r:.80} does not match {schema['pattern']}"))
     elif isinstance(value, list):
-        if len(value) < schema.get("minItems", 0):
+        if "minItems" in schema and len(value) < schema["minItems"]:
             other.append((label, f"has {len(value)} items, fewer than {schema['minItems']}"))
-        if isinstance(schema.get("items"), dict):
+        if "items" in schema:
             for idx, item in enumerate(value):
                 _schema_subset_check(item, schema["items"], f"{where}[{idx}]", unknown, other)
     elif isinstance(value, dict):
@@ -1320,24 +1512,39 @@ def _schema_subset_check(value: Any, schema: Any, where: str, unknown: list[str]
         for name in schema.get("required", []):
             if name not in value:
                 other.append((label, f"lacks the required field '{name}'"))
-        if schema.get("additionalProperties") is False:
-            unknown.extend(f"{where}.{key}" if where else key for key in value if key not in properties)
-        for name, sub_schema in properties.items():
-            if name in value:
-                _schema_subset_check(value[name], sub_schema, f"{where}.{name}" if where else name, unknown, other)
+        additional = schema.get("additionalProperties", True)
+        for key, item in value.items():
+            path = f"{where}.{key}" if where else key
+            if key in properties:
+                _schema_subset_check(item, properties[key], path, unknown, other)
+            elif additional is False:
+                unknown.append(path)
+            elif isinstance(additional, dict):
+                _schema_subset_check(item, additional, path, unknown, other)
 
 
-def _receipt_schema_violations(data: dict[str, Any]) -> tuple[list[str], list[tuple[str, str]]]:
-    """(unknown keys, other violations) of a qualification receipt against the registered schema
-    (schemas/release_qualification_receipt.v1.json, the repository's own copy)."""
+def _schema_accepts(value: Any, schema: dict[str, Any]) -> bool:
+    alt_unknown: list[str] = []
+    alt_other: list[tuple[str, str]] = []
+    _schema_subset_check(value, schema, "", alt_unknown, alt_other)
+    return not alt_unknown and not alt_other
+
+
+def _receipt_schema_violations(data: dict[str, Any]) -> tuple[list[str], list[tuple[str, str]], list[str]]:
+    """(unknown keys, other violations, schema problems) of a qualification receipt against the
+    registered schema. With any schema problem, no instance check runs: the receipt cannot be
+    validated, which is reported as such and never filtered."""
     try:
-        schema = _loads_json(_read_regular_file(ROOT / RECEIPT_SCHEMA_FILE).decode("utf-8"))
+        schema = _loads_json(_read_regular_file(RECEIPT_SCHEMA_PATH).decode("utf-8"))
     except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
-        return [], [("root", f"cannot be validated: the registered schema {RECEIPT_SCHEMA_FILE} is unreadable ({exc})")]
+        return [], [], [f"the registered schema is unreadable ({exc})"]
+    problems = _schema_interpretation_problems(schema)
+    if problems:
+        return [], [], problems
     unknown: list[str] = []
     other: list[tuple[str, str]] = []
     _schema_subset_check(data, schema, "", unknown, other)
-    return unknown, other
+    return unknown, other, []
 
 
 def _key_fold(key: str) -> str:
@@ -1377,7 +1584,14 @@ def _verify_receipt_payload(
     # The registered schema (review round 8, F5): unknown keys are unknown fields; every other
     # violation makes the receipt malformed, except those the specific checks below already report
     # (missing required fields, the run and command status vocabularies, an empty command list).
-    unknown, violations = _receipt_schema_violations(data)
+    unknown, violations, schema_problems = _receipt_schema_violations(data)
+    if schema_problems:  # never filtered: the receipt cannot be validated at all (review round 9, N1)
+        findings.append(_finding(
+            ERR_UNREADABLE_INPUT, path_str, "root",
+            f"Qualification receipt '{path_str}' cannot be validated: the registered schema {RECEIPT_SCHEMA_FILE} "
+            f"uses forms this checker does not fully implement: {schema_problems[:10]}",
+            {"schema_problems": schema_problems[:10]},
+        ))
     if unknown:
         findings.append(_finding(
             ERR_EVIDENCE_FIELD_UNKNOWN, path_str, "root",
@@ -2346,7 +2560,7 @@ def _open_retained_file(root: Path, rel_val: Any, declared_digest: Any) -> tuple
     if not full.is_file():
         return None, f"'{rel_val}' does not exist on disk as a regular file"
     try:
-        raw = _read_regular_file(full)
+        raw = _read_contained_file(full, root)  # containment on the open descriptor (review N4)
     except OSError as exc:
         return None, f"'{rel_val}' could not be read: {exc}"
     digest = declared_digest if isinstance(declared_digest, str) else None
@@ -3960,7 +4174,7 @@ def verify_proof_bundle(
         findings.append(_finding(ERR_PROOF_BUNDLE_NOT_FOUND, path_str, "path", f"Referenced proof bundle is not a regular file: '{path_str}'", {"path": path_str}))
         return False, findings, None
 
-    data, read_findings = _read_json_document(resolved_path, path_str, "proof bundle")
+    data, read_findings = _read_json_document(resolved_path, path_str, "proof bundle", root=root)
     if data is None:
         return False, read_findings, None
 
@@ -4240,7 +4454,7 @@ def inspect_qualification_receipt(receipt_path: Path, root: Path) -> tuple[list[
             f"Qualification receipt '{path_str}' resolves outside the repository root; it is not inspected",
             {"path": path_str},
         )], None
-    data, findings = _read_json_document(receipt_path, path_str, "qualification receipt")
+    data, findings = _read_json_document(receipt_path, path_str, "qualification receipt", root=root)
     if data is None:
         return findings, None
     if data.get("schema") != QUALIFICATION_RECEIPT_SCHEMA:
@@ -5318,7 +5532,8 @@ def _emit_report(args: argparse.Namespace, is_valid: bool, findings: list[ClaimF
 def _flush_or_silence(stream: Any) -> bool:
     """Flushes a standard stream. If it cannot be written (a closed pipe, a full disk, a closed
     descriptor), its descriptor is pointed at /dev/null so that neither this nor the interpreter's
-    final flush can raise, and the failure is reported (review round 8, F2)."""
+    final flush can raise, and the failure is reported (review round 8, F2). No stream at all (its
+    descriptor was closed before start) has nothing to flush; the caller decides what that means."""
     if stream is None:
         return True
     try:
@@ -5339,8 +5554,10 @@ def _flush_or_silence(stream: Any) -> bool:
 
 
 def _finish_streams(exit_code: int) -> int:
-    """The exit code, or 1 when stdout or stderr could not be written: an undelivered report fails closed."""
-    stdout_ok = _flush_or_silence(sys.stdout)
+    """The exit code, or 1 when stdout or stderr could not be written: an undelivered report fails
+    closed. No stdout at all (fd 1 closed before start) means no report could be written (review
+    round 9, N2), even for a passing audit or --help."""
+    stdout_ok = sys.stdout is not None and _flush_or_silence(sys.stdout)
     stderr_ok = _flush_or_silence(sys.stderr)
     return exit_code if stdout_ok and stderr_ok else 1
 
