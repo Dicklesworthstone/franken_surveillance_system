@@ -1623,6 +1623,12 @@ impl EventHypothesis {
             return Err(EventDecodeError::Contract(ContractError::EvidenceRequired));
         }
 
+        // A witnessed candidate is defined by a retained supporting observation witness; edges
+        // that only contradict it cannot witness it.
+        if self.state == EventState::Witnessed && !self.evidence.iter().any(|edge| edge.supports) {
+            return Err(EventDecodeError::Contract(ContractError::EvidenceRequired));
+        }
+
         // Corroboration strictly requires >= 2 distinct failure domains among supporting edges.
         // AGENTS.md prime directive: one camera's model score is NEVER corroborated.
         if self.state == EventState::Corroborated {

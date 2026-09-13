@@ -1214,3 +1214,30 @@ fn test_graph_edge_individual_digest_validation() -> Result<(), Box<dyn Error>> 
 
     Ok(())
 }
+
+#[test]
+fn test_witnessed_requires_a_supporting_edge() -> Result<(), Box<dyn Error>> {
+    let mut event = sample_genesis_event()?;
+    event.state = EventState::Witnessed;
+    // Contradicting edges alone cannot witness the candidate.
+    event.evidence = vec![
+        sample_evidence("cam-east-1", false),
+        sample_evidence("cam-west-1", false),
+    ];
+    assert_eq!(event.validate(), Err(ContractError::EvidenceRequired));
+    let Err(err) = event.verify() else {
+        return Err("expected error".into());
+    };
+    assert!(matches!(
+        err,
+        EventDecodeError::Contract(ContractError::EvidenceRequired)
+    ));
+
+    // Positive case: one supporting edge alongside a contradicting one is a valid witness.
+    event.evidence = vec![
+        sample_evidence("cam-east-1", true),
+        sample_evidence("cam-west-1", false),
+    ];
+    event.verify()?;
+    Ok(())
+}

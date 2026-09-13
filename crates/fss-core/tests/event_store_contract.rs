@@ -1589,3 +1589,57 @@ fn has_contradiction_agrees_with_unresolved_worlds_for_every_disposition() -> Te
     }
     Ok(())
 }
+
+#[test]
+fn retired_contradiction_never_hides_an_active_one_on_the_same_world() -> TestResult {
+    let orders = [
+        [HypothesisDisposition::Live, HypothesisDisposition::Refuted],
+        [HypothesisDisposition::Refuted, HypothesisDisposition::Live],
+    ];
+    for (order_index, order) in orders.into_iter().enumerate() {
+        let mut store = EventRevisionStore::new(LedgerAnchor::genesis("site-contradiction-mixed"));
+        let ev_id = EventId::parse("evt_contra_mixed")?;
+        store.append_genesis(
+            store.current_anchor().clone(),
+            sample_genesis("evt_contra_mixed")?,
+            "domain.gamma",
+            TimestampNs(1_000),
+        )?;
+        for (index, disposition) in order.into_iter().enumerate() {
+            let contradiction = sample_contradiction_with_disposition(
+                &format!("contra_mixed_{order_index}_{index}"),
+                "evt_contra_mixed",
+                &["world.shared"],
+                disposition,
+            )?;
+            store.record_contradiction(
+                store.current_anchor().clone(),
+                ev_id.clone(),
+                contradiction,
+                TimestampNs(2_000 + i128::try_from(index)?),
+            )?;
+            let any_active = order[..=index].iter().any(|recorded| {
+                matches!(
+                    recorded,
+                    HypothesisDisposition::Live
+                        | HypothesisDisposition::Supported
+                        | HypothesisDisposition::Disfavored
+                )
+            });
+            assert_eq!(
+                store.has_contradiction(&ev_id),
+                any_active,
+                "has_contradiction after {:?}",
+                &order[..=index]
+            );
+            assert_eq!(
+                store.is_world_unresolved("world.shared"),
+                any_active,
+                "shared world after {:?}",
+                &order[..=index]
+            );
+        }
+        assert_eq!(store.contradictions_for_event(&ev_id).len(), 2);
+    }
+    Ok(())
+}
