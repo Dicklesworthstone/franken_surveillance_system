@@ -204,7 +204,7 @@ fn optional_interval_codec_round_trip() -> Result<(), ContractError> {
     let mut encoder = CanonicalEncoder::new();
     encode_optional_interval(Some(interval), &mut encoder);
     encode_optional_interval(None, &mut encoder);
-    let bytes = encoder.finish();
+    let bytes = encoder.finish_checked()?;
 
     let mut decoder = CanonicalDecoder::new(&bytes);
     let decoded_some = decode_optional_interval(&mut decoder)?;

@@ -136,9 +136,9 @@ pub use hydration::{
     HydrationResponse, IntermediateArtifact, KeyframeArtifact, LaboratoryAccess,
     LaboratoryArtifact, LaboratoryQuarantine, MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN,
     MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN, MAX_H4_ORACLE_COMPARISONS, MAX_H4_PROOF_ROOTS,
-    OracleComparison, RedactedRegion, ReplayBundleRef, SEMANTIC_HYDRATION_OWNER,
-    SemanticHandle, SemanticHandleSpec, TrajectoryArtifact, TrajectoryWaypoint,
-    is_valid_h0_screened_field,
+    OracleComparison, RedactedRegion, RedactionTransform, ReplayBundleRef,
+    SEMANTIC_HYDRATION_OWNER, SemanticHandle, SemanticHandleSpec, TrajectoryArtifact,
+    TrajectoryWaypoint, is_registered_redaction_transform, is_valid_h0_screened_field,
 };
 pub use identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, DeviceCapabilities,

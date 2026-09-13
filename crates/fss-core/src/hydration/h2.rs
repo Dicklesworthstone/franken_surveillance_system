@@ -11,22 +11,23 @@
 //! Invariants:
 //! - Level is strictly [`HydrationLevel::H2`].
 //! - Artifacts must be explicitly authorized with an authorization grant ID.
-//! - Artifacts must carry certified redaction / privacy transform metadata.
+//! - Artifacts must carry certified redaction / privacy transform metadata from registered transforms.
 //! - Raw unredacted media, raw camera streams, and ungrounded cognition are strictly prohibited.
-//! - Proof roots must retain provenance and include the exact payload digest.
+//! - Proof roots must include both the exact payload digest and the subject digest.
 //! - Completeness must not be Unknown, NotObservable, Unauthorized, or Stale.
 
 use std::collections::BTreeSet;
 
 use super::{
-    Completeness, HydrationArtifact, HydrationError, HydrationLevel, MAX_ARTIFACT_BYTES,
-    MAX_REQUEST_SET_ITEMS, SemanticHandle, decode_optional_text, decode_text_set,
-    encode_optional_text, encode_text_set, valid_text,
+    Completeness, HydrationArtifact, HydrationError, HydrationLevel, MAX_REQUEST_SET_ITEMS,
+    SemanticHandle, decode_optional_text, decode_text_set, encode_optional_text, encode_text_set,
+    valid_text,
 };
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::ContractError;
 use crate::{
-    BudgetVector, CaptureInterval, ContentDigest, ContractBasis, LedgerAnchor, TimestampNs,
+    BudgetVector, CaptureInterval, ContentDigest, ContractBasis, LedgerAnchor,
+    MAX_CANONICAL_BYTES_LEN, TimestampNs,
 };
 
 /// Stable identifier for hydration ladder level H2.
@@ -39,29 +40,109 @@ pub const H2_LEVEL_NAME: &str = "decision_artifact";
 pub const H2_CONTENT: &str =
     "authorized redacted keyframes, crops, trajectories, graph neighborhoods, or audio features";
 
-/// Owning subsystem for hydration ladder level H2.
-pub const H2_OWNER: &str = "fss-media/fss-privacy";
+/// Owning subsystem for hydration ladder level H2 pinned to architecture/semantic_hydration.json.
+pub const H2_OWNER: &str = "fss-agent-core";
 
 /// Canonical schema discriminator tag for H2 decision artifact binary envelopes.
 pub const H2_SCHEMA: &str = "fss.h2_decision_artifact.v1";
 
+/// Registered privacy redaction transforms recognized for H2 decision artifacts.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum RedactionTransform {
+    /// Face blurring filter.
+    FaceBlur,
+    /// License plate masking filter.
+    PlateMask,
+    /// Combined face blurring and license plate masking.
+    FaceBlurAndPlateMask,
+    /// Bounding-box area obscuration / redaction.
+    BoundingBoxRedact,
+    /// Pixelation / mosaic transform.
+    Pixelate,
+    /// Spatial cropping with perimeter redaction.
+    CropRedact,
+    /// Spatio-temporal trajectory coarsening / dithering.
+    TrajectoryCoarsen,
+    /// Sub-graph neighborhood attribute masking.
+    GraphNeighborhoodRedact,
+    /// Acoustic voice masking and feature extraction.
+    AudioFeatureExtraction,
+}
+
+impl RedactionTransform {
+    /// All 9 registered redaction transforms.
+    pub const ALL: [Self; 9] = [
+        Self::FaceBlur,
+        Self::PlateMask,
+        Self::FaceBlurAndPlateMask,
+        Self::BoundingBoxRedact,
+        Self::Pixelate,
+        Self::CropRedact,
+        Self::TrajectoryCoarsen,
+        Self::GraphNeighborhoodRedact,
+        Self::AudioFeatureExtraction,
+    ];
+
+    /// Returns the canonical transform URI.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::FaceBlur => "transform:face_blur",
+            Self::PlateMask => "transform:plate_mask",
+            Self::FaceBlurAndPlateMask => "transform:face_blur_and_plate_mask",
+            Self::BoundingBoxRedact => "transform:bounding_box_redact",
+            Self::Pixelate => "transform:pixelate",
+            Self::CropRedact => "transform:crop_redact",
+            Self::TrajectoryCoarsen => "transform:trajectory_coarsen",
+            Self::GraphNeighborhoodRedact => "transform:graph_neighborhood_redact",
+            Self::AudioFeatureExtraction => "transform:audio_feature_extraction",
+        }
+    }
+
+    /// Parses a registered transform URI with exact matching.
+    pub fn parse(s: &str) -> Result<Self, ContractError> {
+        match s {
+            "transform:face_blur" => Ok(Self::FaceBlur),
+            "transform:plate_mask" => Ok(Self::PlateMask),
+            "transform:face_blur_and_plate_mask" => Ok(Self::FaceBlurAndPlateMask),
+            "transform:bounding_box_redact" => Ok(Self::BoundingBoxRedact),
+            "transform:pixelate" => Ok(Self::Pixelate),
+            "transform:crop_redact" => Ok(Self::CropRedact),
+            "transform:trajectory_coarsen" => Ok(Self::TrajectoryCoarsen),
+            "transform:graph_neighborhood_redact" => Ok(Self::GraphNeighborhoodRedact),
+            "transform:audio_feature_extraction" => Ok(Self::AudioFeatureExtraction),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
+/// Verifies whether a string is one of the registered H2 redaction transforms.
+#[must_use]
+pub fn is_registered_redaction_transform(s: &str) -> bool {
+    RedactionTransform::parse(s).is_ok()
+}
+
+fn is_negative_zero(val: f32) -> bool {
+    val.to_bits() == (-0.0_f32).to_bits()
+}
+
 /// A bounding box with normalized coordinates in range `[0.0, 1.0]`.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BoundingBox {
-    /// Minimum horizontal coordinate (left), normalized `[0.0, 1.0]`.
-    pub x_min: f32,
-    /// Minimum vertical coordinate (top), normalized `[0.0, 1.0]`.
-    pub y_min: f32,
-    /// Maximum horizontal coordinate (right), normalized `[0.0, 1.0]`.
-    pub x_max: f32,
-    /// Maximum vertical coordinate (bottom), normalized `[0.0, 1.0]`.
-    pub y_max: f32,
+    x_min: f32,
+    y_min: f32,
+    x_max: f32,
+    y_max: f32,
 }
 
 impl BoundingBox {
     /// Creates and validates a new bounding box.
     pub fn new(x_min: f32, y_min: f32, x_max: f32, y_max: f32) -> Result<Self, ContractError> {
-        if !x_min.is_finite()
+        if is_negative_zero(x_min)
+            || is_negative_zero(y_min)
+            || is_negative_zero(x_max)
+            || is_negative_zero(y_max)
+            || !x_min.is_finite()
             || !y_min.is_finite()
             || !x_max.is_finite()
             || !y_max.is_finite()
@@ -85,6 +166,30 @@ impl BoundingBox {
     /// Validates the bounding box invariants.
     pub fn validate(&self) -> Result<(), ContractError> {
         Self::new(self.x_min, self.y_min, self.x_max, self.y_max).map(|_| ())
+    }
+
+    /// Left horizontal boundary normalized to `[0.0, 1.0]`.
+    #[must_use]
+    pub const fn x_min(&self) -> f32 {
+        self.x_min
+    }
+
+    /// Top vertical boundary normalized to `[0.0, 1.0]`.
+    #[must_use]
+    pub const fn y_min(&self) -> f32 {
+        self.y_min
+    }
+
+    /// Right horizontal boundary normalized to `[0.0, 1.0]`.
+    #[must_use]
+    pub const fn x_max(&self) -> f32 {
+        self.x_max
+    }
+
+    /// Bottom vertical boundary normalized to `[0.0, 1.0]`.
+    #[must_use]
+    pub const fn y_max(&self) -> f32 {
+        self.y_max
     }
 }
 
@@ -110,16 +215,11 @@ impl CanonicalDecode for BoundingBox {
 /// A spatial region in a visual artifact that underwent privacy redaction.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RedactedRegion {
-    /// Left coordinate in pixels.
-    pub x: u32,
-    /// Top coordinate in pixels.
-    pub y: u32,
-    /// Region width in pixels.
-    pub width: u32,
-    /// Region height in pixels.
-    pub height: u32,
-    /// Method used to redact this region (e.g. `"gaussian_blur"`, `"solid_mask"`).
-    pub method: String,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+    method: String,
 }
 
 impl RedactedRegion {
@@ -132,24 +232,58 @@ impl RedactedRegion {
         method: impl Into<String>,
     ) -> Result<Self, ContractError> {
         let method = method.into();
-        if width == 0 || height == 0 || !valid_text(&method) {
-            return Err(ContractError::InvalidSpatialExtent);
-        }
-        Ok(Self {
+        let region = Self {
             x,
             y,
             width,
             height,
             method,
-        })
+        };
+        region.validate()?;
+        Ok(region)
     }
 
     /// Validates the redacted region invariants.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.width == 0 || self.height == 0 || !valid_text(&self.method) {
+        if self.width == 0
+            || self.height == 0
+            || !valid_text(&self.method)
+            || self.x.checked_add(self.width).is_none()
+            || self.y.checked_add(self.height).is_none()
+        {
             return Err(ContractError::InvalidSpatialExtent);
         }
         Ok(())
+    }
+
+    /// Left coordinate in pixels.
+    #[must_use]
+    pub const fn x(&self) -> u32 {
+        self.x
+    }
+
+    /// Top coordinate in pixels.
+    #[must_use]
+    pub const fn y(&self) -> u32 {
+        self.y
+    }
+
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Redaction method description.
+    #[must_use]
+    pub fn method(&self) -> &str {
+        &self.method
     }
 }
 
@@ -177,14 +311,10 @@ impl CanonicalDecode for RedactedRegion {
 /// A single spatio-temporal waypoint in an authorized trajectory.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TrajectoryWaypoint {
-    /// Observation timestamp.
-    pub timestamp_ns: TimestampNs,
-    /// Spatial coordinate X.
-    pub x: f64,
-    /// Spatial coordinate Y.
-    pub y: f64,
-    /// Spatial coordinate Z.
-    pub z: f64,
+    timestamp_ns: TimestampNs,
+    x: f64,
+    y: f64,
+    z: f64,
 }
 
 impl TrajectoryWaypoint {
@@ -207,6 +337,30 @@ impl TrajectoryWaypoint {
             return Err(ContractError::InvalidSpatialExtent);
         }
         Ok(())
+    }
+
+    /// Observation timestamp.
+    #[must_use]
+    pub const fn timestamp_ns(&self) -> TimestampNs {
+        self.timestamp_ns
+    }
+
+    /// Coordinate X.
+    #[must_use]
+    pub const fn x(&self) -> f64 {
+        self.x
+    }
+
+    /// Coordinate Y.
+    #[must_use]
+    pub const fn y(&self) -> f64 {
+        self.y
+    }
+
+    /// Coordinate Z.
+    #[must_use]
+    pub const fn z(&self) -> f64 {
+        self.z
     }
 }
 
@@ -232,22 +386,37 @@ impl CanonicalDecode for TrajectoryWaypoint {
 /// An authorized redacted video keyframe artifact.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct KeyframeArtifact {
-    /// Capture timestamp of the keyframe.
-    pub timestamp_ns: TimestampNs,
-    /// Stable sensor or camera stream identifier.
-    pub stream_id: String,
-    /// Keyframe pixel width.
-    pub width: u32,
-    /// Keyframe pixel height.
-    pub height: u32,
-    /// Content encoding MIME format (e.g. `"image/jpeg"`, `"image/webp"`).
-    pub format: String,
-    /// List of spatial regions with applied redaction.
-    pub redacted_regions: Vec<RedactedRegion>,
+    timestamp_ns: TimestampNs,
+    stream_id: String,
+    width: u32,
+    height: u32,
+    format: String,
+    redacted_regions: Vec<RedactedRegion>,
 }
 
 impl KeyframeArtifact {
-    /// Validates keyframe artifact bounds.
+    /// Creates and validates a new keyframe artifact.
+    pub fn new(
+        timestamp_ns: TimestampNs,
+        stream_id: impl Into<String>,
+        width: u32,
+        height: u32,
+        format: impl Into<String>,
+        redacted_regions: Vec<RedactedRegion>,
+    ) -> Result<Self, ContractError> {
+        let artifact = Self {
+            timestamp_ns,
+            stream_id: stream_id.into(),
+            width,
+            height,
+            format: format.into(),
+            redacted_regions,
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
+    /// Validates keyframe artifact bounds and ensures all redacted regions fit inside the frame.
     pub fn validate(&self) -> Result<(), ContractError> {
         if !valid_text(&self.stream_id)
             || self.width == 0
@@ -258,8 +427,49 @@ impl KeyframeArtifact {
         }
         for r in &self.redacted_regions {
             r.validate()?;
+            let x_end = r.x().checked_add(r.width()).ok_or(ContractError::InvalidSpatialExtent)?;
+            let y_end = r.y().checked_add(r.height()).ok_or(ContractError::InvalidSpatialExtent)?;
+            if x_end > self.width || y_end > self.height {
+                return Err(ContractError::InvalidSpatialExtent);
+            }
         }
         Ok(())
+    }
+
+    /// Capture timestamp of the keyframe.
+    #[must_use]
+    pub const fn timestamp_ns(&self) -> TimestampNs {
+        self.timestamp_ns
+    }
+
+    /// Sensor or stream identifier.
+    #[must_use]
+    pub fn stream_id(&self) -> &str {
+        &self.stream_id
+    }
+
+    /// Width in pixels.
+    #[must_use]
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+
+    /// Height in pixels.
+    #[must_use]
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+
+    /// Encoding MIME format.
+    #[must_use]
+    pub fn format(&self) -> &str {
+        &self.format
+    }
+
+    /// Redacted spatial regions.
+    #[must_use]
+    pub fn redacted_regions(&self) -> &[RedactedRegion] {
+        &self.redacted_regions
     }
 }
 
@@ -309,21 +519,36 @@ impl CanonicalDecode for KeyframeArtifact {
 /// An authorized redacted bounding crop artifact.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CropArtifact {
-    /// Timestamp of the source frame.
-    pub timestamp_ns: TimestampNs,
-    /// Source stream or camera identifier.
-    pub source_stream_id: String,
-    /// Normalized bounding box coordinates within the source frame.
-    pub bounding_box: BoundingBox,
-    /// Associated target entity or track anchor, if identified.
-    pub target_entity_anchor: Option<String>,
-    /// Image encoding format (e.g. `"image/png"`, `"image/jpeg"`).
-    pub format: String,
-    /// Sub-regions within the crop that underwent privacy redaction.
-    pub redacted_regions: Vec<RedactedRegion>,
+    timestamp_ns: TimestampNs,
+    source_stream_id: String,
+    bounding_box: BoundingBox,
+    target_entity_anchor: Option<String>,
+    format: String,
+    redacted_regions: Vec<RedactedRegion>,
 }
 
 impl CropArtifact {
+    /// Creates and validates a new crop artifact.
+    pub fn new(
+        timestamp_ns: TimestampNs,
+        source_stream_id: impl Into<String>,
+        bounding_box: BoundingBox,
+        target_entity_anchor: Option<String>,
+        format: impl Into<String>,
+        redacted_regions: Vec<RedactedRegion>,
+    ) -> Result<Self, ContractError> {
+        let artifact = Self {
+            timestamp_ns,
+            source_stream_id: source_stream_id.into(),
+            bounding_box,
+            target_entity_anchor,
+            format: format.into(),
+            redacted_regions,
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
     /// Validates crop artifact bounds.
     pub fn validate(&self) -> Result<(), ContractError> {
         if !valid_text(&self.source_stream_id) || !valid_text(&self.format) {
@@ -339,6 +564,42 @@ impl CropArtifact {
             r.validate()?;
         }
         Ok(())
+    }
+
+    /// Source timestamp.
+    #[must_use]
+    pub const fn timestamp_ns(&self) -> TimestampNs {
+        self.timestamp_ns
+    }
+
+    /// Source stream identifier.
+    #[must_use]
+    pub fn source_stream_id(&self) -> &str {
+        &self.source_stream_id
+    }
+
+    /// Normalized bounding box within the source frame.
+    #[must_use]
+    pub const fn bounding_box(&self) -> BoundingBox {
+        self.bounding_box
+    }
+
+    /// Associated entity anchor.
+    #[must_use]
+    pub fn target_entity_anchor(&self) -> Option<&str> {
+        self.target_entity_anchor.as_deref()
+    }
+
+    /// Image encoding format.
+    #[must_use]
+    pub fn format(&self) -> &str {
+        &self.format
+    }
+
+    /// Redacted sub-regions.
+    #[must_use]
+    pub fn redacted_regions(&self) -> &[RedactedRegion] {
+        &self.redacted_regions
     }
 }
 
@@ -388,20 +649,34 @@ impl CanonicalDecode for CropArtifact {
 /// An authorized redacted spatio-temporal trajectory artifact.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TrajectoryArtifact {
-    /// Entity or track anchor denoted by this trajectory.
-    pub entity_anchor: String,
-    /// Bounding capture interval of the trajectory.
-    pub time_window: CaptureInterval,
-    /// Monotonically ordered sequence of spatio-temporal waypoints.
-    pub waypoints: Vec<TrajectoryWaypoint>,
-    /// Coordinate frame identifier (e.g. `"frame:site_local:enu"`).
-    pub coordinate_frame: String,
-    /// Whether spatial coarsening or dithering was applied to preserve privacy.
-    pub coarsened: bool,
+    entity_anchor: String,
+    time_window: CaptureInterval,
+    waypoints: Vec<TrajectoryWaypoint>,
+    coordinate_frame: String,
+    coarsened: bool,
 }
 
 impl TrajectoryArtifact {
-    /// Validates trajectory invariants.
+    /// Creates and validates a new trajectory artifact.
+    pub fn new(
+        entity_anchor: impl Into<String>,
+        time_window: CaptureInterval,
+        waypoints: Vec<TrajectoryWaypoint>,
+        coordinate_frame: impl Into<String>,
+        coarsened: bool,
+    ) -> Result<Self, ContractError> {
+        let artifact = Self {
+            entity_anchor: entity_anchor.into(),
+            time_window,
+            waypoints,
+            coordinate_frame: coordinate_frame.into(),
+            coarsened,
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
+    /// Validates trajectory invariants, requiring strictly increasing waypoints within the time window.
     pub fn validate(&self) -> Result<(), ContractError> {
         if !valid_text(&self.entity_anchor)
             || !valid_text(&self.coordinate_frame)
@@ -410,15 +685,50 @@ impl TrajectoryArtifact {
         {
             return Err(ContractError::InvalidIdentifier);
         }
-        let mut prev_ts = self.time_window.earliest;
+        let mut prev_ts: Option<TimestampNs> = None;
         for wp in &self.waypoints {
             wp.validate()?;
-            if wp.timestamp_ns < prev_ts || wp.timestamp_ns > self.time_window.latest {
+            if wp.timestamp_ns() < self.time_window.earliest || wp.timestamp_ns() > self.time_window.latest {
                 return Err(ContractError::InvertedTimeInterval);
             }
-            prev_ts = wp.timestamp_ns;
+            if let Some(prev) = prev_ts
+                && wp.timestamp_ns() <= prev
+            {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            prev_ts = Some(wp.timestamp_ns());
         }
         Ok(())
+    }
+
+    /// Entity anchor denoted by this trajectory.
+    #[must_use]
+    pub fn entity_anchor(&self) -> &str {
+        &self.entity_anchor
+    }
+
+    /// Bounding capture interval.
+    #[must_use]
+    pub const fn time_window(&self) -> CaptureInterval {
+        self.time_window
+    }
+
+    /// Spatio-temporal waypoints sequence.
+    #[must_use]
+    pub fn waypoints(&self) -> &[TrajectoryWaypoint] {
+        &self.waypoints
+    }
+
+    /// Coordinate frame identifier.
+    #[must_use]
+    pub fn coordinate_frame(&self) -> &str {
+        &self.coordinate_frame
+    }
+
+    /// Whether spatial coarsening was applied.
+    #[must_use]
+    pub const fn coarsened(&self) -> bool {
+        self.coarsened
     }
 }
 
@@ -444,8 +754,16 @@ impl CanonicalDecode for TrajectoryArtifact {
             return Err(ContractError::InvalidDigest);
         }
         let mut waypoints = Vec::with_capacity(wp_count);
+        let mut prev_ts: Option<TimestampNs> = None;
         for _ in 0..wp_count {
-            waypoints.push(TrajectoryWaypoint::decode_canonical(decoder)?);
+            let wp = TrajectoryWaypoint::decode_canonical(decoder)?;
+            if let Some(prev) = prev_ts
+                && wp.timestamp_ns() <= prev
+            {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+            prev_ts = Some(wp.timestamp_ns());
+            waypoints.push(wp);
         }
         let coordinate_frame = decoder.text()?.to_string();
         let coarsened = decoder.bool()?;
@@ -464,21 +782,36 @@ impl CanonicalDecode for TrajectoryArtifact {
 /// An authorized redacted graph neighborhood artifact (k-hop sub-graph).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GraphNeighborhoodArtifact {
-    /// Central entity identifier of the neighborhood.
-    pub center_entity_id: String,
-    /// Radius of the extracted neighborhood in topological hops.
-    pub radius_hops: u8,
-    /// Number of nodes contained in the neighborhood.
-    pub node_count: u32,
-    /// Number of edges contained in the neighborhood.
-    pub edge_count: u32,
-    /// Deterministic canonical digest of the neighborhood sub-graph structure.
-    pub subgraph_digest: ContentDigest,
-    /// Node or edge attributes masked or removed for privacy projection.
-    pub masked_attributes: BTreeSet<String>,
+    center_entity_id: String,
+    radius_hops: u8,
+    node_count: u32,
+    edge_count: u32,
+    subgraph_digest: ContentDigest,
+    masked_attributes: BTreeSet<String>,
 }
 
 impl GraphNeighborhoodArtifact {
+    /// Creates and validates a new graph neighborhood artifact.
+    pub fn new(
+        center_entity_id: impl Into<String>,
+        radius_hops: u8,
+        node_count: u32,
+        edge_count: u32,
+        subgraph_digest: ContentDigest,
+        masked_attributes: BTreeSet<String>,
+    ) -> Result<Self, ContractError> {
+        let artifact = Self {
+            center_entity_id: center_entity_id.into(),
+            radius_hops,
+            node_count,
+            edge_count,
+            subgraph_digest,
+            masked_attributes,
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
     /// Validates graph neighborhood bounds.
     pub fn validate(&self) -> Result<(), ContractError> {
         if !valid_text(&self.center_entity_id)
@@ -494,6 +827,42 @@ impl GraphNeighborhoodArtifact {
             }
         }
         Ok(())
+    }
+
+    /// Central entity identifier.
+    #[must_use]
+    pub fn center_entity_id(&self) -> &str {
+        &self.center_entity_id
+    }
+
+    /// Radius in topological hops.
+    #[must_use]
+    pub const fn radius_hops(&self) -> u8 {
+        self.radius_hops
+    }
+
+    /// Number of nodes in neighborhood.
+    #[must_use]
+    pub const fn node_count(&self) -> u32 {
+        self.node_count
+    }
+
+    /// Number of edges in neighborhood.
+    #[must_use]
+    pub const fn edge_count(&self) -> u32 {
+        self.edge_count
+    }
+
+    /// Sub-graph canonical digest.
+    #[must_use]
+    pub const fn subgraph_digest(&self) -> ContentDigest {
+        self.subgraph_digest
+    }
+
+    /// Masked attribute keys.
+    #[must_use]
+    pub fn masked_attributes(&self) -> &BTreeSet<String> {
+        &self.masked_attributes
     }
 }
 
@@ -532,21 +901,36 @@ impl CanonicalDecode for GraphNeighborhoodArtifact {
 /// An authorized redacted acoustic / audio spectral feature artifact.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AudioFeaturesArtifact {
-    /// Bounding capture interval of the audio features.
-    pub time_window: CaptureInterval,
-    /// Source microphone or audio channel identifier.
-    pub source_channel_id: String,
-    /// Feature representation type (e.g. `"log_mel_spectrogram"`, `"mfcc_13"`).
-    pub feature_type: String,
-    /// Number of temporal feature frames / samples.
-    pub sample_count: u32,
-    /// Number of spectral frequency bands or feature dimensions per frame.
-    pub band_count: u32,
-    /// Whether speech / voice-activity regions were masked for privacy.
-    pub voice_activity_masked: bool,
+    time_window: CaptureInterval,
+    source_channel_id: String,
+    feature_type: String,
+    sample_count: u32,
+    band_count: u32,
+    voice_activity_masked: bool,
 }
 
 impl AudioFeaturesArtifact {
+    /// Creates and validates a new audio features artifact.
+    pub fn new(
+        time_window: CaptureInterval,
+        source_channel_id: impl Into<String>,
+        feature_type: impl Into<String>,
+        sample_count: u32,
+        band_count: u32,
+        voice_activity_masked: bool,
+    ) -> Result<Self, ContractError> {
+        let artifact = Self {
+            time_window,
+            source_channel_id: source_channel_id.into(),
+            feature_type: feature_type.into(),
+            sample_count,
+            band_count,
+            voice_activity_masked,
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
     /// Validates audio feature bounds.
     pub fn validate(&self) -> Result<(), ContractError> {
         if !valid_text(&self.source_channel_id)
@@ -558,6 +942,42 @@ impl AudioFeaturesArtifact {
             return Err(ContractError::InvalidIdentifier);
         }
         Ok(())
+    }
+
+    /// Capture interval.
+    #[must_use]
+    pub const fn time_window(&self) -> CaptureInterval {
+        self.time_window
+    }
+
+    /// Microphone or channel identifier.
+    #[must_use]
+    pub fn source_channel_id(&self) -> &str {
+        &self.source_channel_id
+    }
+
+    /// Feature type name.
+    #[must_use]
+    pub fn feature_type(&self) -> &str {
+        &self.feature_type
+    }
+
+    /// Temporal samples count.
+    #[must_use]
+    pub const fn sample_count(&self) -> u32 {
+        self.sample_count
+    }
+
+    /// Frequency bands or feature dimension count.
+    #[must_use]
+    pub const fn band_count(&self) -> u32 {
+        self.band_count
+    }
+
+    /// Whether voice-activity regions were masked.
+    #[must_use]
+    pub const fn voice_activity_masked(&self) -> bool {
+        self.voice_activity_masked
     }
 }
 
@@ -691,13 +1111,13 @@ pub struct H2DecisionArtifactParams {
     pub artifact_kind: DecisionArtifactKind,
     /// Exact bounded payload bytes.
     pub payload: Vec<u8>,
-    /// Retained provenance roots (must include payload digest plus at least one distinct provenance root).
+    /// Retained provenance roots (must include payload digest plus subject digest).
     pub proof_roots: BTreeSet<ContentDigest>,
     /// Completeness of this artifact.
     pub completeness: Completeness,
     /// Authorized privacy class.
     pub privacy_class: String,
-    /// Explicit privacy/redaction transform applied (e.g. `"privacy:face_blur+plate_mask"`).
+    /// Explicit privacy/redaction transform applied (must be a registered transform).
     pub applied_redaction_transform: String,
     /// Capability grant proving explicit authorization for H2 materialization.
     pub authorization_grant_id: String,
@@ -719,40 +1139,23 @@ pub struct H2DecisionArtifactParams {
 /// authorized redacted keyframes, crops, trajectories, graph neighborhoods, or audio features.
 #[derive(Clone, Debug, PartialEq)]
 pub struct H2DecisionArtifact {
-    /// Content-derived handle identifier.
-    pub handle_id: String,
-    /// Stable canonical subject identity.
-    pub subject_id: String,
-    /// Exact subject content digest.
-    pub subject_digest: ContentDigest,
-    /// Specific typed decision artifact kind.
-    pub artifact_kind: DecisionArtifactKind,
-    /// Exact bounded payload bytes.
-    pub payload: Vec<u8>,
-    /// SHA-256 digest of the exact payload.
-    pub payload_digest: ContentDigest,
-    /// Retained provenance roots plus payload digest.
-    pub proof_roots: BTreeSet<ContentDigest>,
-    /// Completeness of this artifact.
-    pub completeness: Completeness,
-    /// Authorized privacy class.
-    pub privacy_class: String,
-    /// Certified redaction/privacy transform applied.
-    pub applied_redaction_transform: String,
-    /// Authorization grant identifier.
-    pub authorization_grant_id: String,
-    /// Authority anchor.
-    pub anchor: LedgerAnchor,
-    /// Exact semantic contract universe.
-    pub contract_basis: ContractBasis,
-    /// Conservative estimated resource cost.
-    pub estimated_cost: BudgetVector,
-    /// Publication timestamp.
-    pub published_at: TimestampNs,
-    /// Retention horizon.
-    pub retention_until: TimestampNs,
-    /// Digest of the complete artifact envelope.
-    pub artifact_digest: ContentDigest,
+    handle_id: String,
+    subject_id: String,
+    subject_digest: ContentDigest,
+    artifact_kind: DecisionArtifactKind,
+    payload: Vec<u8>,
+    payload_digest: ContentDigest,
+    proof_roots: BTreeSet<ContentDigest>,
+    completeness: Completeness,
+    privacy_class: String,
+    applied_redaction_transform: String,
+    authorization_grant_id: String,
+    anchor: LedgerAnchor,
+    contract_basis: ContractBasis,
+    estimated_cost: BudgetVector,
+    published_at: TimestampNs,
+    retention_until: TimestampNs,
+    artifact_digest: ContentDigest,
 }
 
 impl H2DecisionArtifact {
@@ -761,6 +1164,7 @@ impl H2DecisionArtifact {
         let payload_digest = ContentDigest::sha256(&params.payload);
         let mut roots = params.proof_roots;
         roots.insert(payload_digest);
+        roots.insert(params.subject_digest);
 
         let mut artifact = Self {
             handle_id: params.handle_id,
@@ -782,7 +1186,7 @@ impl H2DecisionArtifact {
             artifact_digest: ContentDigest::sha256(b"unsealed-h2-decision-artifact"),
         };
         artifact.validate()?;
-        artifact.artifact_digest = artifact.computed_digest();
+        artifact.artifact_digest = artifact.computed_digest()?;
         Ok(artifact)
     }
 
@@ -800,10 +1204,18 @@ impl H2DecisionArtifact {
             return Err(HydrationError::LevelUnavailable);
         }
 
-        let estimated_cost = match handle.estimated_costs.get(&HydrationLevel::H2) {
-            Some(cost) => *cost,
-            None => BudgetVector::ZERO,
-        };
+        let estimated_cost = handle
+            .estimated_costs
+            .get(&HydrationLevel::H2)
+            .copied()
+            .ok_or(HydrationError::LevelUnavailable)?;
+
+        let _caps = handle
+            .required_capabilities
+            .get(&HydrationLevel::H2)
+            .ok_or(HydrationError::LevelUnavailable)?;
+
+        handle.verify()?;
 
         let params = H2DecisionArtifactParams {
             handle_id: handle.handle_id.clone(),
@@ -844,8 +1256,8 @@ impl H2DecisionArtifact {
             return Err(ContractError::InvalidDigest.into());
         }
 
-        // Payload checks
-        if self.payload.is_empty() || self.payload.len() > MAX_ARTIFACT_BYTES {
+        // Payload checks: capped at <= MAX_CANONICAL_BYTES_LEN
+        if self.payload.is_empty() || self.payload.len() > MAX_CANONICAL_BYTES_LEN {
             return Err(ContractError::EvidenceRequired.into());
         }
 
@@ -853,9 +1265,9 @@ impl H2DecisionArtifact {
             return Err(ContractError::DigestMismatch.into());
         }
 
-        // Proof roots must contain payload digest AND at least one non-payload provenance root
+        // Proof roots must contain payload digest AND subject digest
         if !self.proof_roots.contains(&self.payload_digest)
-            || !self.proof_roots.iter().any(|r| *r != self.payload_digest)
+            || !self.proof_roots.contains(&self.subject_digest)
         {
             return Err(ContractError::EvidenceRequired.into());
         }
@@ -881,7 +1293,7 @@ impl H2DecisionArtifact {
             .validate()
             .map_err(HydrationError::Contract)?;
 
-        // Enforce authorized redaction and prohibition against raw media exposure
+        // Enforce authorized redaction from registered allowlist
         if !self.is_authorized_and_redacted() {
             return Err(ContractError::ProhibitedEvidencePromotion.into());
         }
@@ -892,39 +1304,27 @@ impl H2DecisionArtifact {
     /// Verifies payload integrity and artifact digest.
     pub fn verify(&self) -> Result<(), HydrationError> {
         self.validate()?;
-        if self.artifact_digest != self.computed_digest() {
+        if self.artifact_digest != self.computed_digest()? {
             return Err(ContractError::DigestMismatch.into());
         }
         Ok(())
     }
 
     /// Recomputes the complete artifact digest from canonical body encoding.
-    #[must_use]
-    pub fn computed_digest(&self) -> ContentDigest {
+    pub fn computed_digest(&self) -> Result<ContentDigest, ContractError> {
         let mut encoder = CanonicalEncoder::new();
         self.encode_body(&mut encoder);
-        ContentDigest::sha256(&encoder.finish())
+        Ok(ContentDigest::sha256(&encoder.finish_checked()?))
     }
 
-    /// Checks whether the artifact is authorized, explicitly redacted, and contains no raw unredacted media.
+    /// Checks whether the artifact is authorized, explicitly redacted using a registered transform, and contains no raw unredacted media.
     #[must_use]
     pub fn is_authorized_and_redacted(&self) -> bool {
-        let prohibited = [
-            "unredacted_raw_media",
-            "raw_undecoded_stream",
-            "raw_camera_packets",
-            "unmasked_pii",
-            "unredacted",
-            "none",
-        ];
-
-        let red = self.applied_redaction_transform.to_lowercase();
-        let priv_class = self.privacy_class.to_lowercase();
-
-        for p in &prohibited {
-            if red == *p || priv_class.contains(p) {
-                return false;
-            }
+        if !is_registered_redaction_transform(&self.applied_redaction_transform) {
+            return false;
+        }
+        if !valid_text(&self.privacy_class) || !valid_text(&self.authorization_grant_id) {
+            return false;
         }
         true
     }
@@ -953,7 +1353,7 @@ impl H2DecisionArtifact {
         H2_CONTENT
     }
 
-    /// Returns the owning subsystem (`"fss-media/fss-privacy"`).
+    /// Returns the owning subsystem (`"fss-agent-core"`).
     #[must_use]
     pub const fn owner(&self) -> &'static str {
         H2_OWNER
@@ -963,6 +1363,108 @@ impl H2DecisionArtifact {
     #[must_use]
     pub const fn content_type(&self) -> &'static str {
         self.artifact_kind.content_type()
+    }
+
+    /// Content-derived handle identifier.
+    #[must_use]
+    pub fn handle_id(&self) -> &str {
+        &self.handle_id
+    }
+
+    /// Canonical subject identifier.
+    #[must_use]
+    pub fn subject_id(&self) -> &str {
+        &self.subject_id
+    }
+
+    /// Exact subject content digest.
+    #[must_use]
+    pub const fn subject_digest(&self) -> ContentDigest {
+        self.subject_digest
+    }
+
+    /// Specific typed decision artifact kind.
+    #[must_use]
+    pub const fn artifact_kind(&self) -> &DecisionArtifactKind {
+        &self.artifact_kind
+    }
+
+    /// Exact bounded payload bytes.
+    #[must_use]
+    pub fn payload(&self) -> &[u8] {
+        &self.payload
+    }
+
+    /// SHA-256 digest of the exact payload.
+    #[must_use]
+    pub const fn payload_digest(&self) -> ContentDigest {
+        self.payload_digest
+    }
+
+    /// Retained provenance roots.
+    #[must_use]
+    pub const fn proof_roots(&self) -> &BTreeSet<ContentDigest> {
+        &self.proof_roots
+    }
+
+    /// Completeness of this artifact.
+    #[must_use]
+    pub const fn completeness(&self) -> Completeness {
+        self.completeness
+    }
+
+    /// Authorized privacy class.
+    #[must_use]
+    pub fn privacy_class(&self) -> &str {
+        &self.privacy_class
+    }
+
+    /// Applied redaction transform URI.
+    #[must_use]
+    pub fn applied_redaction_transform(&self) -> &str {
+        &self.applied_redaction_transform
+    }
+
+    /// Authorization grant identifier.
+    #[must_use]
+    pub fn authorization_grant_id(&self) -> &str {
+        &self.authorization_grant_id
+    }
+
+    /// Authority anchor.
+    #[must_use]
+    pub const fn anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+
+    /// Exact semantic contract basis.
+    #[must_use]
+    pub const fn contract_basis(&self) -> &ContractBasis {
+        &self.contract_basis
+    }
+
+    /// Conservative estimated resource cost.
+    #[must_use]
+    pub const fn estimated_cost(&self) -> BudgetVector {
+        self.estimated_cost
+    }
+
+    /// Publication timestamp.
+    #[must_use]
+    pub const fn published_at(&self) -> TimestampNs {
+        self.published_at
+    }
+
+    /// Retention horizon.
+    #[must_use]
+    pub const fn retention_until(&self) -> TimestampNs {
+        self.retention_until
+    }
+
+    /// Digest of the complete artifact envelope.
+    #[must_use]
+    pub const fn artifact_digest(&self) -> ContentDigest {
+        self.artifact_digest
     }
 
     /// Returns true if this artifact has passed its retention expiration timestamp.
@@ -977,10 +1479,10 @@ impl H2DecisionArtifact {
         self.estimated_cost.fits_within(*budget)
     }
 
-    /// Converts this typed decision artifact into the universal [`HydrationArtifact`] container.
-    #[must_use]
-    pub fn to_hydration_artifact(&self) -> HydrationArtifact {
-        HydrationArtifact {
+    /// Converts this typed decision artifact into the universal [`HydrationArtifact`] container, re-validating all invariants.
+    pub fn to_hydration_artifact(&self) -> Result<HydrationArtifact, HydrationError> {
+        self.validate()?;
+        Ok(HydrationArtifact {
             level: HydrationLevel::H2,
             content_type: self.content_type().to_string(),
             payload: self.payload.clone(),
@@ -989,7 +1491,7 @@ impl H2DecisionArtifact {
             completeness: self.completeness,
             applied_transform: Some(self.applied_redaction_transform.clone()),
             artifact_digest: self.artifact_digest,
-        }
+        })
     }
 
     /// Encodes the canonical body of this artifact (excluding the self-referential digest).
@@ -1017,11 +1519,17 @@ impl H2DecisionArtifact {
     }
 
     /// Computes the deterministic canonical digest of this H2 decision artifact.
-    #[must_use]
-    pub fn canonical_digest(&self) -> ContentDigest {
+    pub fn canonical_digest(&self) -> Result<ContentDigest, ContractError> {
         let mut encoder = CanonicalEncoder::new();
         self.encode_canonical(&mut encoder);
-        ContentDigest::sha256(&encoder.finish())
+        Ok(ContentDigest::sha256(&encoder.finish_checked()?))
+    }
+
+    /// Serializes this artifact to canonical binary bytes.
+    pub fn to_canonical_bytes(&self) -> Result<Vec<u8>, ContractError> {
+        let mut encoder = CanonicalEncoder::new();
+        self.encode_canonical(&mut encoder);
+        encoder.finish_checked()
     }
 
     /// Decodes an [`H2DecisionArtifact`] from canonical binary bytes and verifies no trailing bytes exist.
@@ -1051,6 +1559,9 @@ impl CanonicalDecode for H2DecisionArtifact {
         let subject_digest = decoder.digest()?;
         let artifact_kind = DecisionArtifactKind::decode_canonical(decoder)?;
         let payload = decoder.bytes()?.to_vec();
+        if payload.len() > MAX_CANONICAL_BYTES_LEN {
+            return Err(ContractError::EvidenceRequired);
+        }
         let payload_digest = decoder.digest()?;
 
         let root_count =
@@ -1109,7 +1620,7 @@ impl CanonicalDecode for H2DecisionArtifact {
             _ => ContractError::InvalidIdentifier,
         })?;
 
-        if artifact.artifact_digest != artifact.computed_digest() {
+        if artifact.artifact_digest != artifact.computed_digest()? {
             return Err(ContractError::DigestMismatch);
         }
 
@@ -1117,8 +1628,10 @@ impl CanonicalDecode for H2DecisionArtifact {
     }
 }
 
-impl From<H2DecisionArtifact> for HydrationArtifact {
-    fn from(artifact: H2DecisionArtifact) -> Self {
+impl TryFrom<H2DecisionArtifact> for HydrationArtifact {
+    type Error = HydrationError;
+
+    fn try_from(artifact: H2DecisionArtifact) -> Result<Self, Self::Error> {
         artifact.to_hydration_artifact()
     }
 }
