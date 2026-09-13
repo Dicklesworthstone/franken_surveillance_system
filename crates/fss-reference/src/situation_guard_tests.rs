@@ -3327,8 +3327,8 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
 /// outcome is published and L continuing P is recorded, and P to L is terminal. A planless X
 /// continuing L is recorded; L to X drops the proved effect and is reported as effect uncertainty,
 /// not terminal. G with the outcome continuing X is recorded; X to G is not terminal, and the
-/// operation is reported as already proved on the lineage, since its outcome was published before
-/// X was compiled.
+/// operation is reported as already proved on the lineage, since L, an earlier entry of the
+/// lineage, first proved it.
 #[test]
 fn a_planless_step_never_lets_an_operation_terminalize_again() -> Result<(), Box<dyn Error>> {
     let mut lifecycle = Lifecycle::new("r5a-planless")?;
@@ -3377,7 +3377,8 @@ fn a_planless_step_never_lets_an_operation_terminalize_again() -> Result<(), Box
     assert!(!is_terminal(&replay), "X to G: {:?}", replay.classes);
     let operation = lifecycle.plan.intent.operation_id.as_str();
     let already = format!(
-        "effect already proved on the lineage: operation {operation} had a published outcome before the basis was compiled"
+        "effect already proved on the lineage: operation {operation} was first proved by publication {}",
+        proved.publication_digest
     );
     assert_eq!(
         replay
@@ -3528,5 +3529,110 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
         displaced.map(|delta| delta.classes)
     );
     harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 R6-A (the reviewer's probe, ordinary API): a planless X continuing P, compiled right
+/// after the outcome was published, does not make the first proof on the lineage look old. P is
+/// recorded; X continuing P is recorded (P to X is not terminal); G with the outcome continuing X
+/// is recorded, and X to G, the first lineage step that ever proves the effect, is terminal: its
+/// classes are exactly the plain classifier's plus the terminal transition, with nothing reported
+/// as already proved. The next step does not terminalize the operation again, so it terminalizes
+/// exactly once along the lineage.
+#[test]
+fn the_first_proof_after_a_late_planless_basis_stays_terminal() -> Result<(), Box<dyn Error>> {
+    let mut lifecycle = Lifecycle::new("r6a-first-proof")?;
+    let prepared = lifecycle.dispatched.clone();
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &prepared)?;
+    let planless = planless_publication(
+        &lifecycle.harness,
+        &lifecycle.decision,
+        &lifecycle.receipt,
+        Some(&prepared),
+    )?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &planless)?;
+    let dropped = crate::classify_reference_meaningful_delta_in_lineage(
+        &prepared,
+        &planless,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(!is_terminal(&dropped), "P to X: {:?}", dropped.classes);
+
+    let proved = lifecycle.verified_after(false, &planless)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &proved)?;
+    let first = crate::classify_reference_meaningful_delta_in_lineage(
+        &planless,
+        &proved,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    let mut expected = crate::classify_reference_meaningful_delta(&planless, &proved)?.classes;
+    expected.insert(fss_core::MeaningfulDeltaClass::TerminalTransition);
+    assert_eq!(first.classes, expected);
+    assert!(
+        !first
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change.starts_with("effect already proved on the lineage")),
+        "{:?}",
+        first.effect_uncertainty_changes
+    );
+    first.validate()?;
+
+    let next = lifecycle.verified_after(true, &proved)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &next)?;
+    let again = crate::classify_reference_meaningful_delta_in_lineage(
+        &proved,
+        &next,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(!is_terminal(&again), "G to next: {:?}", again.classes);
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1: a raw proof marker written outside the batch that recorded the publication it names
+/// never counts as an earlier proof. A marker naming the recorded planless X, appended on its own,
+/// is skipped, so the first lineage step that proves the effect (X to G) stays terminal.
+#[test]
+fn a_raw_proof_marker_never_suppresses_a_first_proof() -> Result<(), Box<dyn Error>> {
+    let mut lifecycle = Lifecycle::new("r6a-raw-marker")?;
+    let prepared = lifecycle.dispatched.clone();
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &prepared)?;
+    let planless = planless_publication(
+        &lifecycle.harness,
+        &lifecycle.decision,
+        &lifecycle.receipt,
+        Some(&prepared),
+    )?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &planless)?;
+    let (event_id, objective_id) = prepared
+        .situation
+        .subject()
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+    let marker = crate::situation_sections::lineage_proof_object_id(
+        event_id,
+        objective_id,
+        lifecycle.plan.intent.operation_id.as_str(),
+    )?;
+    append_raw_record(
+        &mut lifecycle.harness.authority,
+        &marker,
+        crate::situation_sections::LINEAGE_PROOF_FAMILY,
+        planless.publication_digest,
+        None,
+    )?;
+    let proved = lifecycle.verified_after(false, &planless)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &proved)?;
+    let first = crate::classify_reference_meaningful_delta_in_lineage(
+        &planless,
+        &proved,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(is_terminal(&first), "X to G: {:?}", first.classes);
+    lifecycle.harness.cleanup();
     Ok(())
 }

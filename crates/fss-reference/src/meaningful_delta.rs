@@ -14,8 +14,7 @@ use fss_core::ObligationId;
 use crate::situation::{EFFECT_CLAIM_PREFIX, EffectOutcome, OBLIGATION_CLAIM_PREFIX};
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger};
 
-use crate::outcome::ALERT_OUTCOME_FAMILY;
-use crate::situation_sections::{LineageStep, compiled_against, lineage_step};
+use crate::situation_sections::{LineageStep, compiled_against, first_lineage_proof, lineage_step};
 use crate::{DurableEffectJournal, ReferenceError, ReferenceSituationPublication};
 
 /// Returns whether a premise that a plan relied on at `prior` is invalidated by its `current`
@@ -580,20 +579,25 @@ fn classify(
     // basis-indeterminate effect and a proof that supersedes another cell of the operation, and it
     // never follows from a bare `known` state, a hypothesis disposition, or a claim name; a cell
     // added to an operation the basis already proved is not a second transition (fss-6sph6).
-    // fss-mnlz1 R5-A: "newly proved" is judged against the authority too. An operation whose
-    // outcome the authority published at or before the basis's sealed compile anchor was already
-    // proved when the basis was compiled, so a basis that merely omits it (a planless step in the
-    // middle of the lineage) never lets it terminalize a second time; it is reported as already
-    // proved instead.
+    // fss-mnlz1 R5-A/R6-A: "newly proved" is judged along the lineage too. The authority's lineage
+    // marks the first recorded publication that proved each operation. An operation first proved
+    // by an earlier entry than the result was already announced along the lineage, so a basis that
+    // merely omits it (a planless step) never lets it terminalize a second time; it is reported as
+    // already proved instead. The first lineage step that proves it stays terminal, whenever its
+    // outcome was published.
     let mut already_proved = BTreeSet::new();
-    if let Some(binding) = binding.filter(|_| terminal_allowed) {
+    if let Some(binding) = binding.filter(|_| terminal_allowed)
+        && let Some((event_id, objective_id)) = result.situation.subject()
+    {
         for operation in result_proved.keys() {
-            if !basis_proved.contains_key(operation)
-                && outcome_published_by(binding.authority, operation, basis)?
-            {
+            if basis_proved.contains_key(operation) {
+                continue;
+            }
+            let first = first_lineage_proof(binding.authority, event_id, objective_id, operation)?;
+            if let Some(first) = first.filter(|first| *first != result.publication_digest) {
                 already_proved.insert(*operation);
                 effect_uncertainty_changes.push(format!(
-                    "effect already proved on the lineage: operation {operation} had a published outcome before the basis was compiled"
+                    "effect already proved on the lineage: operation {operation} was first proved by publication {first}"
                 ));
                 classes.insert(MeaningfulDeltaClass::EffectUncertainty);
             }
@@ -985,27 +989,15 @@ pub(crate) fn event_rule_applies(cell: &KnowledgeCell) -> bool {
     !is_effect_claim(cell) && !cell.claim_id.starts_with(OBLIGATION_CLAIM_PREFIX)
 }
 
-/// Returns whether `authority` published an outcome of `operation` at or before the authority
-/// anchor `publication` sealed, that is whether the outcome already existed when `publication` was
-/// compiled (fss-mnlz1 R5-A).
-fn outcome_published_by(
-    authority: &DurableReferenceLedger,
-    operation: &str,
+/// Every operation an effect cell proves in `publication` at its own anchor: the operations
+/// recording it marks as proved on its lineage (fss-mnlz1).
+pub(crate) fn proved_operation_ids(
     publication: &ReferenceSituationPublication,
-) -> Result<bool, ReferenceError> {
-    let Some(anchor) = publication.situation.authority_anchor() else {
-        return Ok(false);
-    };
-    let effect_object = fss_core::ObjectId::parse(format!("object:effect:{operation}"))?;
-    Ok(authority
-        .batches()
-        .iter()
-        .find(|batch| {
-            batch.deltas.iter().any(|delta| {
-                delta.object_id == effect_object && delta.family == ALERT_OUTCOME_FAMILY
-            })
-        })
-        .is_some_and(|batch| batch.new_anchor.commit_sequence <= anchor.commit_sequence))
+) -> BTreeSet<String> {
+    proved_operations(publication, ProofBar::of(publication))
+        .into_keys()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// Typed terminal outcomes of every operation an effect cell proves in `publication` under `bar`,

@@ -392,13 +392,22 @@ pub(crate) const LINEAGE_FAMILY: &str = "situation_publication_lineage";
 /// Object-identity prefix of every publication lineage object.
 const LINEAGE_OBJECT_PREFIX: &str = "object:situation-lineage:";
 
+/// Semantic family of the lineage proof markers: the first recorded publication of a subject that
+/// proved an operation (fss-mnlz1).
+pub(crate) const LINEAGE_PROOF_FAMILY: &str = "situation_publication_lineage_proof";
+
+/// Object-identity prefix of every lineage proof marker.
+const LINEAGE_PROOF_OBJECT_PREFIX: &str = "object:situation-lineage-proof:";
+
 /// Records `publication` in the durable authority ledger as the latest publication of its subject
 /// (fss-mnlz1).
 ///
 /// The publication lineage lives in the one authority ledger that compilation reads: one object per
 /// subject (event and objective) whose lineage records name a publication and witness its sealed
-/// predecessor. A lineage record changes no other authority object, so an event receipt or effect
-/// outcome stays current across it.
+/// predecessor. The same batch marks every operation the publication proves that no earlier entry
+/// of the lineage proved, so the lineage knows which step first announced each proof. Lineage
+/// records and proof markers change no other authority object, so an event receipt or effect
+/// outcome stays current across them.
 ///
 /// Refuses an unsealed publication or one without a sealed subject, a publication compiled against
 /// another authority (its sealed authority anchor is not committed here), a publication whose
@@ -438,26 +447,30 @@ pub fn record_reference_publication(
             return Err(ReferenceError::InvalidSpec("lineage_predecessor_unknown"));
         }
     }
-    // A skipped raw write still advanced the lineage object's generation, so the record continues
-    // the object's current revision rather than the replayed lineage's.
-    let prior_generation = authority
-        .current()
-        .objects
-        .get(&object_id)
-        .map(|revision| revision.generation);
-    let new_generation = match prior_generation {
-        Some(generation) => generation
-            .checked_add(1)
-            .ok_or(ContractError::ArithmeticOverflow)?,
-        None => 1,
-    };
-    let delta = lineage_delta(
-        object_id,
-        (prior_generation, new_generation),
+    let created_at = situation.capsule.created_at;
+    let mut deltas = vec![lineage_delta(
+        object_id.clone(),
+        next_generations(authority, &object_id)?,
         digest,
         predecessor,
-        situation.capsule.created_at,
-    )?;
+        created_at,
+    )?];
+    for operation in crate::meaningful_delta::proved_operation_ids(publication) {
+        if first_lineage_proof(authority, event_id, objective_id, &operation)?.is_some() {
+            continue;
+        }
+        let proof_object = lineage_proof_object_id(event_id, objective_id, &operation)?;
+        let mut marker = lineage_delta(
+            proof_object.clone(),
+            next_generations(authority, &proof_object)?,
+            digest,
+            None,
+            created_at,
+        )?;
+        LINEAGE_PROOF_FAMILY.clone_into(&mut marker.family);
+        marker.delta_id = format!("delta:situation-lineage-proof:{digest}:{}", deltas.len());
+        deltas.push(marker);
+    }
     let used: BTreeSet<&BatchId> = authority
         .batches()
         .iter()
@@ -474,12 +487,32 @@ pub fn record_reference_publication(
             .ok_or(ContractError::ArithmeticOverflow)?;
     };
     let batch = authority
-        .prepare_batch(batch_id, vec![delta], [digest])
+        .prepare_batch(batch_id, deltas, [digest])
         .map_err(|error| ReferenceError::Publication(error.into()))?;
     let snapshot = authority
         .append(batch)
         .map_err(|error| ReferenceError::Publication(error.into()))?;
     Ok(snapshot.anchor.clone())
+}
+
+/// The generations a new write of `object_id` takes: it continues the object's current revision,
+/// whatever wrote it (a skipped raw write still advanced it).
+fn next_generations(
+    authority: &DurableReferenceLedger,
+    object_id: &ObjectId,
+) -> Result<(Option<u64>, u64), ReferenceError> {
+    let prior = authority
+        .current()
+        .objects
+        .get(object_id)
+        .map(|revision| revision.generation);
+    let next = match prior {
+        Some(generation) => generation
+            .checked_add(1)
+            .ok_or(ContractError::ArithmeticOverflow)?,
+        None => 1,
+    };
+    Ok((prior, next))
 }
 
 /// Returns the latest publication of the subject `event_id` and `objective_id` in the authority
@@ -509,28 +542,81 @@ struct ReplayedLineage {
     /// Every recorded publication with the lineage predecessor it was recorded after (`None` for
     /// the subject's first entry).
     entries: BTreeMap<ContentDigest, Option<ContentDigest>>,
+    /// The index of the authority batch that recorded each publication.
+    recorded_in: BTreeMap<ContentDigest, usize>,
 }
 
 /// Replays the lineage object `object_id` of `authority` (see [`ReplayedLineage`]).
 fn replay_lineage(authority: &DurableReferenceLedger, object_id: &ObjectId) -> ReplayedLineage {
     let mut latest = None;
     let mut entries = BTreeMap::new();
-    for delta in authority
-        .batches()
-        .iter()
-        .flat_map(|batch| batch.deltas.iter())
-        .filter(|delta| delta.object_id == *object_id)
-    {
-        let extends = delta.family == LINEAGE_FAMILY
-            && delta.witness_digest == latest
-            && !entries.contains_key(&delta.payload_digest);
-        if !extends {
-            continue;
+    let mut recorded_in = BTreeMap::new();
+    for (index, batch) in authority.batches().iter().enumerate() {
+        for delta in batch
+            .deltas
+            .iter()
+            .filter(|delta| delta.object_id == *object_id)
+        {
+            let extends = delta.family == LINEAGE_FAMILY
+                && delta.witness_digest == latest
+                && !entries.contains_key(&delta.payload_digest);
+            if !extends {
+                continue;
+            }
+            entries.insert(delta.payload_digest, latest);
+            recorded_in.insert(delta.payload_digest, index);
+            latest = Some(delta.payload_digest);
         }
-        entries.insert(delta.payload_digest, latest);
-        latest = Some(delta.payload_digest);
     }
-    ReplayedLineage { latest, entries }
+    ReplayedLineage {
+        latest,
+        entries,
+        recorded_in,
+    }
+}
+
+/// Returns the first publication of the subject `event_id` and `objective_id` that the
+/// authority's lineage marks as proving `operation`, if any (fss-mnlz1).
+///
+/// A proof marker counts only if the batch that recorded the lineage entry it names wrote it, as
+/// [`record_reference_publication`] does; a marker written anywhere else is skipped, like any raw
+/// write that does not extend the lineage.
+pub(crate) fn first_lineage_proof(
+    authority: &DurableReferenceLedger,
+    event_id: &EventId,
+    objective_id: &str,
+    operation: &str,
+) -> Result<Option<ContentDigest>, ReferenceError> {
+    let lineage = replay_lineage(authority, &lineage_object_id(event_id, objective_id)?);
+    let proof_object = lineage_proof_object_id(event_id, objective_id, operation)?;
+    for (index, batch) in authority.batches().iter().enumerate() {
+        for delta in &batch.deltas {
+            if delta.object_id == proof_object
+                && delta.family == LINEAGE_PROOF_FAMILY
+                && lineage.recorded_in.get(&delta.payload_digest) == Some(&index)
+            {
+                return Ok(Some(delta.payload_digest));
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// The proof marker object of `operation` in the lineage of one subject (event and objective).
+pub(crate) fn lineage_proof_object_id(
+    event_id: &EventId,
+    objective_id: &str,
+    operation: &str,
+) -> Result<ObjectId, ReferenceError> {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.reference_publication_lineage_proof.v1");
+    encoder.text(event_id.as_str());
+    encoder.text(objective_id);
+    encoder.text(operation);
+    let marker = ContentDigest::sha256(&encoder.finish());
+    Ok(ObjectId::parse(format!(
+        "{LINEAGE_PROOF_OBJECT_PREFIX}{marker}"
+    ))?)
 }
 
 /// The lineage record of `publication`, continuing `predecessor`, as generation
@@ -609,13 +695,18 @@ pub(crate) fn lineage_step(
     })
 }
 
-/// Returns whether `batch` holds only publication lineage records, which change no authority
-/// object other than a lineage object.
+/// Returns whether `batch` holds only publication lineage records and lineage proof markers, which
+/// change no authority object other than a lineage object.
 pub(crate) fn is_lineage_batch(batch: &EvidenceDeltaBatch) -> bool {
     !batch.deltas.is_empty()
         && batch.deltas.iter().all(|delta| {
-            delta.family == LINEAGE_FAMILY
-                && delta.object_id.as_str().starts_with(LINEAGE_OBJECT_PREFIX)
+            (delta.family == LINEAGE_FAMILY
+                && delta.object_id.as_str().starts_with(LINEAGE_OBJECT_PREFIX))
+                || (delta.family == LINEAGE_PROOF_FAMILY
+                    && delta
+                        .object_id
+                        .as_str()
+                        .starts_with(LINEAGE_PROOF_OBJECT_PREFIX))
         })
 }
 
