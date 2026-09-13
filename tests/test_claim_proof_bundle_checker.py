@@ -4189,7 +4189,8 @@ class TestBoundedModelReviewFindings(unittest.TestCase):
         self.assertRefused(self._run(bound={"value": -5.0}), [_code("ERR_BOUND_VALUE_OUT_OF_DOMAIN")])
 
     def test_4_percent_above_one_hundred_fails(self) -> None:
-        result = self._run(bound={"units": "%", "value": 150.0}, derivation={"units": "%"})
+        percent_inputs = {"D_decode": {"value": 40.0, "units": "%"}, "Q_max": {"value": 8, "units": "frames"}, "D_frame": {"value": 10.0, "units": "%"}}
+        result = self._run(bound={"units": "%", "value": 150.0}, derivation={"units": "%", "inputs": percent_inputs})
         self.assertRefused(result, [_code("ERR_BOUND_VALUE_OUT_OF_DOMAIN")])
 
     def test_4_negative_input_fails(self) -> None:
@@ -4639,6 +4640,113 @@ class TestReviewP5toP7(unittest.TestCase):
             ))
             self.assertEqual(findings, [])
             self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (2, 1, 1))
+
+
+# ---------------------------------------------------------------------------
+# Review of c3a17fd..f0222b0, bounded_model items B1-B4 (fss-x4a.30.87.3); probes p1, p5
+# ---------------------------------------------------------------------------
+
+FIXTURE_INPUTS = {
+    "D_decode": {"value": 40.0, "units": "ms"},
+    "Q_max": {"value": 8, "units": "frames"},
+    "D_frame": {"value": 10.0, "units": "ms"},
+}
+
+
+def bound_case(formula: str, inputs: dict, value: float, derived: float, expression: str | None = None) -> dict:
+    """Overrides for build_bound_fixture: a claim whose bound and derivation both use formula."""
+    expression = expression if expression is not None else f"L_ingest <= {formula}"
+    first = next(iter(inputs))
+    return {
+        "bound": {"expression": expression, "value": value},
+        "derivation": {
+            "expression": expression, "formula": formula, "inputs": inputs, "derived_value": derived,
+            "sensitivity": [{"parameter": first, "partial": "larger values raise the derived bound"}],
+        },
+    }
+
+
+class TestBoundedReviewB1toB4(unittest.TestCase):
+    """Probe p1_formula.py / p5_gen_bound.py bound cases as planted tests with exact finding-id sets."""
+
+    def run_bound(self, **kwargs: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_class_bundle(root, build_bound_fixture(root, **kwargs), BOUND_CLAIM_ID)
+            return ok, error_code_set(findings)
+
+    def assert_case(self, expected: list[str], **kwargs: object) -> None:
+        ok, codes = self.run_bound(**kwargs)
+        self.assertEqual(codes, sorted(expected))
+        self.assertEqual(ok, not expected)
+
+    def test_dimension_id_is_registered(self) -> None:
+        code = "ERR-CLAIM-BOUND-DIMENSION-MISMATCH-001"
+        self.assertEqual(_code("ERR_BOUND_DIMENSION_MISMATCH"), code)
+        self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+        self.assertEqual((ROOT / "registries/ERRORS.md").read_text(encoding="utf-8").count(f"| `{code}` |"), 1)
+
+    # B1. Every intermediate result is finite and never underflows to zero --------
+
+    def test_B1_intermediate_overflow_and_underflow_fail(self) -> None:
+        recompute, dimension = _code("ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE"), _code("ERR_BOUND_DIMENSION_MISMATCH")
+        huge, tiny = {"X": {"value": 1e308, "units": "ms"}}, {"X": {"value": 1e-200, "units": "ms"}}
+        for label, case, expected in (
+            ("overflow hidden by a later division", bound_case("X / (X * X) * X * X", huge, 0.0, 0.0), [recompute]),
+            ("underflow to zero", bound_case("X * X / X", tiny, 0.0, 0.0), [recompute]),
+            ("probe 1 / (X * X)", bound_case("1 / (X * X)", huge, 0.0, 0.0), [recompute, dimension]),
+        ):
+            with self.subTest(case=label):
+                self.assert_case(expected, **case)
+        with self.assertRaises(cpb._FormulaError):
+            cpb._evaluate_formula("1/(x*x)", {"x": 1e308})
+
+    # B2. Placeholders survive neither punctuation nor repetition ------------------
+
+    def test_B2_punctuated_or_trivial_content_fails(self) -> None:
+        unbound, sensitivity = _code("ERR_BOUND_DERIVATION_UNBOUND"), _code("ERR_BOUND_SENSITIVITY_MISSING")
+        for label, derivation, expected in (
+            ("probe: TBD. none. (n/a) / TODO! unknown. / tbd;",
+             {"steps": ["TBD.", "none.", "(n/a)"], "invalidators": ["TODO!", "unknown."],
+              "sensitivity": [{"parameter": "Q_max", "partial": "tbd;"}]}, [unbound, sensitivity]),
+            ("probe: aaa / xxx / zzz",
+             {"steps": ["aaa"], "invalidators": ["xxx"], "sensitivity": [{"parameter": "Q_max", "partial": "zzz"}]}, [unbound, sensitivity]),
+            ("steps N/A N/A", {"steps": ["N/A N/A"]}, [unbound]),
+            ("invalidators (none)", {"invalidators": ["(none)"]}, [sensitivity]),
+            ("invalidators not applicable", {"invalidators": ["not applicable"]}, [sensitivity]),
+            ("partial queue queue", {"sensitivity": [{"parameter": "Q_max", "partial": "queue queue"}]}, [sensitivity]),
+        ):
+            with self.subTest(case=label):
+                self.assert_case(expected, derivation=derivation)
+
+    # B3. Units propagate through the formula -----------------------------------------
+
+    def test_B3_dimensionally_inconsistent_formulas_fail(self) -> None:
+        dimension, recompute = _code("ERR_BOUND_DIMENSION_MISMATCH"), _code("ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE")
+        for label, case, expected in (
+            ("probe: ms + frames", bound_case("D_decode + Q_max", FIXTURE_INPUTS, 48.0, 48.0), [dimension]),
+            ("result in ms squared", bound_case("D_decode * D_frame", FIXTURE_INPUTS, 400.0, 400.0), [dimension]),
+            ("a constant names no input", bound_case("120", FIXTURE_INPUTS, 120.0, 120.0), [recompute]),
+        ):
+            with self.subTest(case=label):
+                self.assert_case(expected, **case)
+
+    def test_B3_count_units_are_dimensionless_and_constants_adopt_units(self) -> None:
+        self.assert_case([])  # D_decode [ms] + Q_max [frames] * D_frame [ms] is a latency in ms
+
+    # B4. The formula is compared to the expression as a syntax tree -------------------
+
+    def test_B4_formula_spacing_and_parentheses_do_not_matter(self) -> None:
+        for label, case in (
+            ("probe: no spaces", {"derivation": {"formula": "D_decode+Q_max*D_frame"}}),
+            ("redundant parentheses", {"derivation": {"formula": "(D_decode) + (Q_max * D_frame)"}}),
+            ("expression without spaces around the comparator", {
+                "bound": {"expression": "L_ingest<=D_decode + Q_max * D_frame"},
+                "derivation": {"expression": "L_ingest<=D_decode + Q_max * D_frame"},
+            }),
+        ):
+            with self.subTest(case=label):
+                self.assert_case([], **case)
 
 if __name__ == "__main__":
     unittest.main()
