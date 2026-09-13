@@ -397,8 +397,8 @@ impl OmissionReason {
         }
     }
 
-    /// Parses from string representation.
-    pub fn parse(s: &str) -> Result<Self, CapsuleDecodeError> {
+    /// Parses from string representation returning a [`ContractError`].
+    pub fn parse(s: &str) -> Result<Self, ContractError> {
         match s {
             "none" => Ok(Self::None),
             "privacy_redaction" => Ok(Self::PrivacyRedaction),
@@ -407,23 +407,13 @@ impl OmissionReason {
             "capability_filtered" => Ok(Self::CapabilityFiltered),
             "transient_preview_only" => Ok(Self::TransientPreviewOnly),
             "upstream_missing" => Ok(Self::UpstreamMissing),
-            _ => Err(CapsuleDecodeError::NonCanonicalEncoding {
-                detail: format!("unknown omission reason '{s}'"),
-            }),
+            _ => Err(ContractError::UnknownOmissionReason(s.to_string())),
         }
     }
+
     /// Parses from canonical string representation returning a [`ContractError`].
     pub fn parse_canonical(s: &str) -> Result<Self, ContractError> {
-        match s {
-            "none" => Ok(Self::None),
-            "privacy_redaction" => Ok(Self::PrivacyRedaction),
-            "resource_pressure" => Ok(Self::ResourcePressure),
-            "retention_policy" => Ok(Self::RetentionPolicy),
-            "capability_filtered" => Ok(Self::CapabilityFiltered),
-            "transient_preview_only" => Ok(Self::TransientPreviewOnly),
-            "upstream_missing" => Ok(Self::UpstreamMissing),
-            _ => Err(ContractError::InvalidIdentifier),
-        }
+        Self::parse(s)
     }
 }
 
@@ -539,7 +529,7 @@ impl CanonicalDecode for SourceCustody {
                     storage_handle,
                 })
             }
-            tag => Err(ContractError::UnknownEntryTag(tag)),
+            other => Err(ContractError::UnknownSourceCustodyTag(other)),
         }
     }
 }
@@ -2125,7 +2115,11 @@ fn parse_custody_json(obj: &JsonObject<'_>) -> Result<SourceCustody, CapsuleDeco
 
 fn parse_omission_json(obj: &JsonObject<'_>) -> Result<ExplicitOmission, CapsuleDecodeError> {
     let is_omitted = obj.get("isOmitted")?.as_bool()?;
-    let reason = OmissionReason::parse(obj.str("reason")?)?;
+    let reason = OmissionReason::parse(obj.str("reason")?).map_err(|e| {
+        CapsuleDecodeError::NonCanonicalEncoding {
+            detail: e.to_string(),
+        }
+    })?;
     let policy_rule = obj.str("policyRule")?;
     if policy_rule.len() > MAX_POLICY_RULE_LEN {
         return Err(CapsuleDecodeError::OverLimitLength {

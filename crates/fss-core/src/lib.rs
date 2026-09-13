@@ -44,8 +44,9 @@ pub use abstraction::{
     DerivedBelief, DerivedBeliefParams, MAX_DERIVED_BELIEF_CONTRADICTIONS,
     MAX_DERIVED_BELIEF_EVIDENCE, NegativeReadClaim, NegativeReadOutcome, RUNTIME_AUTHORITY_DOMAIN,
     RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams,
-    RuntimeAuthorityRecord, RuntimeGrant, SourceEvidenceClassification, SourceEvidenceParams,
-    SourceEvidenceRecord, WorldFact, WorldFactKind, evaluate_negative_read,
+    RuntimeAuthorityRecord, RuntimeGrant, SOURCE_EVIDENCE_RECORD_FORMAT_VERSION,
+    SourceEvidenceClassification, SourceEvidenceParams, SourceEvidenceRecord, WorldFact,
+    WorldFactKind, evaluate_negative_read,
 };
 
 pub use agent::{

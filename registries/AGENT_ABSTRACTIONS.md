@@ -57,3 +57,19 @@ The abstraction stack admits exactly these public operation IDs in revision 1:
 ## Registered view references
 
 `AVIEW-001` `AVIEW-002` `AVIEW-003` `AVIEW-004` `AVIEW-005` `AVIEW-006` `AVIEW-007` `AVIEW-008`
+
+## Source evidence classifications
+
+Authoritative classifications admitted for `AGT-LAYER-002` (`source_evidence`) under invariant `INV-003`:
+
+| Token | Meaning | Authoritative source |
+|---|---|---|
+| `raw_wire_packets` | Raw network packets (e.g. PCAP, wire frames) | yes |
+| `source_payload_file` | Unmodified source payload file on disk/blob storage | yes |
+| `physical_sensor_measurement` | Direct physical sensor hardware reading | yes |
+| `sensor_capsule` | Immutable sensor capsule with integrity proofs | yes |
+| `continuity_witness` | Cryptographic continuity witness / hash chain link | yes |
+| `decoded_frame_buffer` | Decoded frame pixel buffer (prohibited from source promotion) | no |
+| `model_inference_output` | Model inference output / bounding box / embeddings (prohibited from source promotion) | no |
+| `derived_cognition` | Derived cognition / belief (prohibited from source promotion) | no |
+

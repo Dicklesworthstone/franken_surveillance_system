@@ -421,7 +421,7 @@ impl CanonicalEncode for ProvenanceClass {
 impl CanonicalDecode for ProvenanceClass {
     fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
         let text = decoder.text()?;
-        Self::from_name(text).or_else(|_| Self::from_id(text))
+        Self::from_name(text)
     }
 }
 
@@ -2751,6 +2751,24 @@ pub enum ContractError {
     SourceEvidenceByteCountMismatch,
     /// Storage handle for retained source evidence is empty or only whitespace (AGT-LAYER-002, INV-003).
     SourceEvidenceEmptyStorageHandle,
+    /// Source evidence statement is empty or exceeds 512 bytes (AGT-LAYER-002, INV-003).
+    SourceEvidenceStatementMalformed,
+    /// Unknown source evidence classification string token.
+    UnknownSourceEvidenceClassification(String),
+    /// Unknown omission reason string token.
+    UnknownOmissionReason(String),
+    /// Unknown source custody binary wire tag.
+    UnknownSourceCustodyTag(u8),
+    /// Sensor capsule classification requires a sensor capsule payload (AGT-LAYER-002).
+    SourceEvidenceCapsuleRequired,
+    /// Continuity witness classification requires a continuity witness digest (AGT-LAYER-002).
+    SourceEvidenceWitnessRequired,
+    /// Continuity witness cannot equal source digest (circular self-witness) (AGT-LAYER-002).
+    SourceEvidenceWitnessEqualsSourceDigest,
+    /// Source evidence not retained cannot bind a continuity witness (AGT-LAYER-002).
+    SourceEvidenceNotRetainedWithWitness,
+    /// Source evidence binary wire format version is unsupported (AGT-LAYER-002).
+    UnsupportedSourceEvidenceVersion(u32),
     /// Clock basis name string is unrecognized.
     UnknownClockBasisName(String),
     /// Attempted to collapse uncertainty into truth or resolve an investigation without adjudication (AGT-LAYER-006, INV-104).
@@ -2879,6 +2897,23 @@ impl ContractError {
             }
             Self::SourceEvidenceByteCountMismatch => "source_evidence_byte_count_mismatch",
             Self::SourceEvidenceEmptyStorageHandle => "source_evidence_empty_storage_handle",
+            Self::SourceEvidenceStatementMalformed => "source_evidence_statement_malformed",
+            Self::UnknownSourceEvidenceClassification(_) => {
+                "unknown_source_evidence_classification"
+            }
+            Self::UnknownOmissionReason(_) => "unknown_omission_reason",
+            Self::UnknownSourceCustodyTag(_) => "unknown_source_custody_tag",
+            Self::SourceEvidenceCapsuleRequired => "source_evidence_capsule_required",
+            Self::SourceEvidenceWitnessRequired => "source_evidence_witness_required",
+            Self::SourceEvidenceWitnessEqualsSourceDigest => {
+                "source_evidence_witness_equals_source_digest"
+            }
+            Self::SourceEvidenceNotRetainedWithWitness => {
+                "source_evidence_not_retained_with_witness"
+            }
+            Self::UnsupportedSourceEvidenceVersion(_) => {
+                "source_evidence_unsupported_version"
+            }
             Self::UnknownClockBasisName(_) => "unknown_clock_basis_name",
             Self::UnadjudicatedUncertaintyCollapse => "unadjudicated_uncertainty_collapse",
             Self::CompetingHypothesesRequired => "competing_hypotheses_required",
