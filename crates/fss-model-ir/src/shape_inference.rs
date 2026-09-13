@@ -72,6 +72,48 @@ pub fn infer_operator_outputs(
     attrs: &AttributeMap,
     generation: Generation,
 ) -> Result<Vec<TensorPort>, ModelIrError> {
+    // 1. Enforce strict attribute schema for the operator
+    let allowed_schema = op.allowed_attributes();
+    for attr_name in attrs.keys() {
+        if !allowed_schema.contains(&attr_name.as_str()) {
+            return Err(ModelIrError::InvalidAttribute {
+                node_id: node_id.to_string(),
+                attr_name: attr_name.clone(),
+                reason: format!(
+                    "unknown attribute '{attr_name}' for operator {} (allowed: {allowed_schema:?})",
+                    op.stable_id()
+                ),
+            });
+        }
+    }
+
+    // 2. Reject any NaN float values in attributes
+    for (attr_name, attr_val) in attrs {
+        match attr_val {
+            crate::attribute::AttrValue::Float(f) => {
+                if f.is_nan() {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: attr_name.clone(),
+                        reason: "NaN float attribute is prohibited".to_string(),
+                    });
+                }
+            }
+            crate::attribute::AttrValue::FloatList(fl) => {
+                for &item in fl {
+                    if item.is_nan() {
+                        return Err(ModelIrError::InvalidAttribute {
+                            node_id: node_id.to_string(),
+                            attr_name: attr_name.clone(),
+                            reason: "NaN float in list attribute is prohibited".to_string(),
+                        });
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     match op {
         OpCode::Add | OpCode::Sub | OpCode::Mul | OpCode::Div => {
             if inputs.len() != 2 {
@@ -253,7 +295,19 @@ pub fn infer_operator_outputs(
                         attr_name: "shape".to_string(),
                     })?;
 
-            let requested_dims = target_shape_attr.as_int_list(node_id, "shape")?;
+            let requested_dims: Vec<i64> = match target_shape_attr {
+                crate::attribute::AttrValue::IntList(list) => list.clone(),
+                crate::attribute::AttrValue::Shape(sh) => {
+                    sh.dims().iter().map(|&d| d as i64).collect()
+                }
+                _ => {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "shape".to_string(),
+                        reason: "expected IntList or Shape attribute for reshape".to_string(),
+                    });
+                }
+            };
             let total_in_elements = in0.shape().num_elements()?;
 
             let mut minus_one_idx = None;
@@ -288,6 +342,28 @@ pub fn infer_operator_outputs(
                         },
                     )?;
                     resolved_dims.push(dim_u);
+                }
+            }
+
+            // Check element product with checked arithmetic across all non-zero dimensions
+            let mut positive_product: usize = 1;
+            for &dim_u in &resolved_dims {
+                if dim_u > i64::MAX as usize {
+                    return Err(ModelIrError::ArithmeticOverflow {
+                        operation: "reshape dimension exceeds i64::MAX",
+                    });
+                }
+                if dim_u > 0 {
+                    positive_product = positive_product.checked_mul(dim_u).ok_or(
+                        ModelIrError::ArithmeticOverflow {
+                            operation: "reshape known dimensions product",
+                        },
+                    )?;
+                    if positive_product > i64::MAX as usize {
+                        return Err(ModelIrError::ArithmeticOverflow {
+                            operation: "reshape dimension product exceeds i64::MAX",
+                        });
+                    }
                 }
             }
 
@@ -425,7 +501,15 @@ pub fn infer_operator_outputs(
                     .collect()
             };
 
+            let mut seen_axes = alloc::collections::BTreeSet::new();
             for &axis in &axes_to_squeeze {
+                if !seen_axes.insert(axis) {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "axes".to_string(),
+                        reason: format!("duplicate axis {axis} in squeeze"),
+                    });
+                }
                 if axis >= in_dims.len() {
                     return Err(ModelIrError::InvalidAttribute {
                         node_id: node_id.to_string(),
@@ -725,12 +809,17 @@ pub fn infer_operator_outputs(
         }
 
         OpCode::LayerNorm | OpCode::RMSNorm => {
-            if inputs.is_empty() {
+            let max_inputs = if op == OpCode::LayerNorm { 3 } else { 2 };
+            if inputs.is_empty() || inputs.len() > max_inputs {
                 return Err(ModelIrError::InvalidPortCount {
                     node_id: node_id.to_string(),
                     op_id: op.stable_id(),
-                    expected: "at least 1 input",
-                    actual: 0,
+                    expected: if op == OpCode::LayerNorm {
+                        "1 to 3 inputs (x, [weight], [bias])"
+                    } else {
+                        "1 to 2 inputs (x, [weight])"
+                    },
+                    actual: inputs.len(),
                 });
             }
             if output_names.len() != 1 {
@@ -750,6 +839,92 @@ pub fn infer_operator_outputs(
                     actual: in0.dtype(),
                     tensor_name: in0.name().to_string(),
                 });
+            }
+
+            // Epsilon check: must be Float, not NaN, non-negative
+            if let Some(eps_attr) = attrs.get("epsilon") {
+                let eps = eps_attr.as_float(node_id, "epsilon")?;
+                if eps.is_nan() || eps < 0.0 {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "epsilon".to_string(),
+                        reason: "epsilon must be a non-negative finite float".to_string(),
+                    });
+                }
+            }
+
+            let in_dims = in0.shape().dims();
+            let norm_dims: Vec<usize> = if let Some(ns_attr) = attrs.get("normalized_shape") {
+                match ns_attr {
+                    crate::attribute::AttrValue::Shape(sh) => sh.dims().to_vec(),
+                    _ => ns_attr.as_usize_list(node_id, "normalized_shape")?,
+                }
+            } else if inputs.len() >= 2 {
+                inputs[1].shape().dims().to_vec()
+            } else if in_dims.is_empty() {
+                vec![]
+            } else {
+                vec![in_dims[in_dims.len() - 1]]
+            };
+
+            if norm_dims.len() > in_dims.len()
+                || &in_dims[in_dims.len() - norm_dims.len()..] != norm_dims.as_slice()
+            {
+                return Err(ModelIrError::ShapeMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    reason: format!(
+                        "normalized shape {norm_dims:?} does not match trailing dimensions of input shape {in_dims:?}"
+                    ),
+                });
+            }
+
+            // Weight input check
+            if inputs.len() >= 2 {
+                let wt = inputs[1];
+                if wt.dtype() != in0.dtype() {
+                    return Err(ModelIrError::DTypeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        expected: in0.dtype(),
+                        actual: wt.dtype(),
+                        tensor_name: wt.name().to_string(),
+                    });
+                }
+                if wt.shape().dims() != norm_dims.as_slice() {
+                    return Err(ModelIrError::ShapeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        reason: format!(
+                            "weight shape {} does not match normalized shape {norm_dims:?}",
+                            wt.shape()
+                        ),
+                    });
+                }
+            }
+
+            // Bias input check (LayerNorm only)
+            if inputs.len() == 3 {
+                let bias = inputs[2];
+                if bias.dtype() != in0.dtype() {
+                    return Err(ModelIrError::DTypeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        expected: in0.dtype(),
+                        actual: bias.dtype(),
+                        tensor_name: bias.name().to_string(),
+                    });
+                }
+                if bias.shape().dims() != norm_dims.as_slice() {
+                    return Err(ModelIrError::ShapeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        reason: format!(
+                            "bias shape {} does not match normalized shape {norm_dims:?}",
+                            bias.shape()
+                        ),
+                    });
+                }
             }
 
             let port = TensorPort::new(
@@ -789,13 +964,23 @@ pub fn infer_operator_outputs(
                 });
             }
 
+            if in0.rank() == 0 {
+                return Err(ModelIrError::RankMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected_rank: 1,
+                    actual_rank: 0,
+                    tensor_name: in0.name().to_string(),
+                });
+            }
+
             let axis = attrs
                 .get("axis")
                 .map(|a| a.as_usize(node_id, "axis"))
                 .transpose()?
                 .unwrap_or_else(|| in0.rank().saturating_sub(1));
 
-            if in0.rank() > 0 && axis >= in0.rank() {
+            if axis >= in0.rank() {
                 return Err(ModelIrError::InvalidAttribute {
                     node_id: node_id.to_string(),
                     attr_name: "axis".to_string(),
@@ -832,6 +1017,25 @@ pub fn infer_operator_outputs(
             let in0 = inputs[0]; // [N, C_in, H, W]
             let in1 = inputs[1]; // [C_out, C_in / groups, K_h, K_w]
 
+            if in0.dtype() != in1.dtype() {
+                return Err(ModelIrError::DTypeMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected: in0.dtype(),
+                    actual: in1.dtype(),
+                    tensor_name: in1.name().to_string(),
+                });
+            }
+            if in0.dtype().is_boolean() {
+                return Err(ModelIrError::DTypeMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    expected: DType::F32,
+                    actual: in0.dtype(),
+                    tensor_name: in0.name().to_string(),
+                });
+            }
+
             if in0.rank() != 4 {
                 return Err(ModelIrError::RankMismatch {
                     node_id: node_id.to_string(),
@@ -864,20 +1068,67 @@ pub fn infer_operator_outputs(
             let k_h = wt_dims[2];
             let k_w = wt_dims[3];
 
+            if k_h == 0 || k_w == 0 {
+                return Err(ModelIrError::ShapeMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    reason: format!(
+                        "kernel dimensions [{k_h}, {k_w}] must be non-zero positive integers"
+                    ),
+                });
+            }
+
             let groups = if let Some(g_attr) = attrs.get("groups") {
                 g_attr.as_usize(node_id, "groups")?
             } else {
                 1
             };
 
-            if groups == 0 || !c_in.is_multiple_of(groups) || wt_c != c_in / groups {
+            if groups == 0
+                || !c_in.is_multiple_of(groups)
+                || !c_out.is_multiple_of(groups)
+                || wt_c != c_in / groups
+            {
                 return Err(ModelIrError::ShapeMismatch {
                     node_id: node_id.to_string(),
                     op_id: op.stable_id(),
                     reason: format!(
-                        "incompatible groups ({groups}) with C_in ({c_in}) and weight C ({wt_c})"
+                        "incompatible groups ({groups}) with C_in ({c_in}), C_out ({c_out}), and weight C ({wt_c})"
                     ),
                 });
+            }
+
+            // Bias check
+            if inputs.len() == 3 {
+                let bias = inputs[2];
+                if bias.dtype() != in0.dtype() {
+                    return Err(ModelIrError::DTypeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        expected: in0.dtype(),
+                        actual: bias.dtype(),
+                        tensor_name: bias.name().to_string(),
+                    });
+                }
+                if bias.rank() != 1 {
+                    return Err(ModelIrError::RankMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        expected_rank: 1,
+                        actual_rank: bias.rank(),
+                        tensor_name: bias.name().to_string(),
+                    });
+                }
+                if bias.shape().dims()[0] != c_out {
+                    return Err(ModelIrError::ShapeMismatch {
+                        node_id: node_id.to_string(),
+                        op_id: op.stable_id(),
+                        reason: format!(
+                            "bias length {} must match Conv2d output channels {c_out}",
+                            bias.shape().dims()[0]
+                        ),
+                    });
+                }
             }
 
             let strides = if let Some(s_attr) = attrs.get("strides") {
@@ -907,17 +1158,17 @@ pub fn infer_operator_outputs(
                 });
             }
 
-            let dilations = if let Some(d_attr) = attrs.get("dilation").or_else(|| attrs.get("dilations")) {
-                d_attr.as_usize_list(node_id, "dilation")?
+            let dilations = if let Some(d_attr) = attrs.get("dilations") {
+                d_attr.as_usize_list(node_id, "dilations")?
             } else {
                 vec![1, 1]
             };
             if dilations.len() != 2 || dilations[0] == 0 || dilations[1] == 0 {
                 return Err(ModelIrError::InvalidAttribute {
                     node_id: node_id.to_string(),
-                    attr_name: "dilation".to_string(),
+                    attr_name: "dilations".to_string(),
                     reason:
-                        "dilation must be 2 non-zero positive integers [dilation_h, dilation_w]"
+                        "dilations must be 2 non-zero positive integers [dilation_h, dilation_w]"
                             .to_string(),
                 });
             }
@@ -1057,6 +1308,21 @@ pub fn infer_operator_outputs(
                 .ok_or(ModelIrError::ArithmeticOverflow {
                     operation: "maxpool padded width calculation",
                 })?;
+
+            if pads[0] >= kernel_size[0]
+                || pads[2] >= kernel_size[0]
+                || pads[1] >= kernel_size[1]
+                || pads[3] >= kernel_size[1]
+            {
+                return Err(ModelIrError::InvalidAttribute {
+                    node_id: node_id.to_string(),
+                    attr_name: "padding".to_string(),
+                    reason: format!(
+                        "padding [{:?}] must be strictly less than kernel size [{:?}]",
+                        pads, kernel_size
+                    ),
+                });
+            }
 
             if total_h < kernel_size[0] || total_w < kernel_size[1] {
                 return Err(ModelIrError::ShapeMismatch {

@@ -25,6 +25,7 @@ impl ModelIrVersion {
     pub const fn as_u32(self) -> u32 {
         match self {
             Self::V1 => 1,
+            Self::Unsupported(1) => 0,
             Self::Unsupported(v) => v,
         }
     }
@@ -216,6 +217,7 @@ impl ModelIrGraph {
     /// # Errors
     /// Returns [`ModelIrError`] if digest computation encounters arithmetic overflow.
     pub fn content_digest(&self) -> Result<ContentDigest, ModelIrError> {
+        self.validate()?;
         compute_model_ir_digest(self)
     }
 }

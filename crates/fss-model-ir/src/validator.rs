@@ -52,7 +52,7 @@ impl GraphValidator {
             });
         }
 
-        // 4. Model generation uniformity
+        // 4. Model generation uniformity and element count validity
         for input in graph.inputs() {
             if input.generation() != graph.generation() {
                 return Err(ModelIrError::GenerationMismatch {
@@ -61,6 +61,7 @@ impl GraphValidator {
                     tensor_name: input.name().to_string(),
                 });
             }
+            input.shape().num_elements().map_err(ModelIrError::from)?;
         }
         for output in graph.outputs() {
             if output.generation() != graph.generation() {
@@ -70,6 +71,7 @@ impl GraphValidator {
                     tensor_name: output.name().to_string(),
                 });
             }
+            output.shape().num_elements().map_err(ModelIrError::from)?;
         }
 
         // 5. Node ID uniqueness
@@ -130,8 +132,16 @@ impl GraphValidator {
             }
         }
 
-        // 8. Dangling graph outputs
+        // 8. Dangling and duplicate graph outputs
+        let mut seen_outputs = BTreeSet::new();
         for out_port in graph.outputs() {
+            if !seen_outputs.insert(out_port.name()) {
+                return Err(ModelIrError::DuplicateTensorOutput {
+                    tensor_name: out_port.name().to_string(),
+                    first_node: "graph_output".to_string(),
+                    second_node: "graph_output".to_string(),
+                });
+            }
             if !tensor_producers.contains_key(out_port.name()) {
                 return Err(ModelIrError::DanglingOutput {
                     tensor_name: out_port.name().to_string(),
@@ -170,6 +180,10 @@ impl GraphValidator {
             )?;
 
             for out_port in output_ports {
+                out_port
+                    .shape()
+                    .num_elements()
+                    .map_err(ModelIrError::from)?;
                 env.insert(out_port.name().to_string(), out_port);
             }
         }
