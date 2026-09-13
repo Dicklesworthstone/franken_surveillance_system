@@ -20,6 +20,7 @@ mod encoded_fixture;
 mod error;
 mod extrinsics;
 mod hydration;
+pub mod ingest;
 mod meaningful_delta;
 mod model;
 mod outcome;
@@ -116,6 +117,10 @@ pub use extrinsics::{
     ReferenceExtrinsicsSolver, RigidTransform3D, solve_extrinsics,
 };
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
+pub use ingest::{
+    JpegFinding, JpegFrameSpan, JpegProcess, JpegScan, JpegSofInfo, JpegSplitError, MjpegLimits,
+    OmissionReason, OmissionSpan, split_jpeg_stream,
+};
 pub use meaningful_delta::{
     classify_reference_meaningful_delta, classify_reference_meaningful_delta_in_lineage,
 };
