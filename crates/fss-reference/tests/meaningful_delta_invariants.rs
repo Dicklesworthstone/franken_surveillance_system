@@ -668,9 +668,12 @@ fn test_f4_hand_built_effect_terminalization_is_refused() -> Result<(), Box<dyn 
     assert_hand_built_known_effect_refused(publication(&v2))
 }
 
-/// F4: Mission terminalization (mission active -> concluded) emits TerminalTransition.
+/// F4: A mission terminal transition needs both publications sealed (fss-6sph6). Between
+/// hand-built publications, which no compile path sealed, a mission moving from active to closed is
+/// reported as a material change and never as a terminal transition. The sealed mission terminal
+/// transition is pinned by the in-crate `mission_terminalization_needs_both_publications_sealed`.
 #[test]
-fn test_f4_mission_terminalization_emits_terminal_transition() -> Result<(), Box<dyn Error>> {
+fn test_f4_hand_built_mission_closure_is_never_terminal() -> Result<(), Box<dyn Error>> {
     let mut v1 = Variant::baseline()?;
     v1.sequence = 1;
     v1.mission_state = Some(MissionLifecycleState::Active);
@@ -686,29 +689,16 @@ fn test_f4_mission_terminalization_emits_terminal_transition() -> Result<(), Box
     let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
 
     assert!(
-        delta
+        delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
+        "{:?}",
+        delta.classes
+    );
+    assert!(
+        !delta
             .classes
             .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "Mission terminalization must emit TerminalTransition!"
-    );
-    assert!(
-        delta.is_non_coalescible(),
-        "Mission terminal transition must be non-coalescible!"
-    );
-    let mut v3 = Variant::baseline()?;
-    v3.sequence = 3;
-    v3.pressure = ResourcePressure::Elevated;
-    let pub3 = publication(&v3)?;
-    let delta2 = classify_reference_meaningful_delta(&pub2, &pub3)?;
-    assert!(
-        delta
-            .coalesce(
-                &delta2,
-                "delta:coalesced",
-                "continuation:coalesced",
-                ContentDigest::sha256(b"coalesced"),
-            )
-            .is_err()
+        "A hand-built mission closure must never emit TerminalTransition: {:?}",
+        delta.classes
     );
     delta.validate()?;
     Ok(())
@@ -825,10 +815,12 @@ fn test_f5_plan_invalidation_emitted_when_estimated_premise_gains_contradictions
     Ok(())
 }
 
-/// Proven coalescing test: non-critical deltas coalesce, but any delta carrying
-/// a terminal transition or plan invalidation is preserved and cannot be coalesced.
+/// Proven coalescing test: a non-critical budget delta coalesces with nothing critical, and a
+/// plan-invalidation delta (a known premise becoming unknown) is preserved and cannot be coalesced.
+/// Hand-built publications carry no terminal transition (fss-6sph6); terminal deltas refusing to
+/// coalesce are pinned in-crate between sealed publications and by the F2 real-situation test.
 #[test]
-fn test_coalescing_preserves_terminal_and_invalidation_deltas() -> Result<(), Box<dyn Error>> {
+fn test_coalescing_preserves_plan_invalidation_deltas() -> Result<(), Box<dyn Error>> {
     let mut v1 = Variant::baseline()?;
     v1.sequence = 1;
     v1.pressure = ResourcePressure::Nominal;
@@ -840,9 +832,6 @@ fn test_coalescing_preserves_terminal_and_invalidation_deltas() -> Result<(), Bo
 
     let mut v3 = Variant::baseline()?;
     v3.sequence = 3;
-    v3.premise_hypothesis = Some(HypothesisDisposition::Refuted);
-    // Hand-built publications never carry a terminal transition (fss-6sph6), so the preserved
-    // non-coalescible delta is the plan invalidation of the known premise becoming unknown.
     v3.premise_state = KnowledgeState::Unknown;
 
     let pub1 = publication(&v1)?;
@@ -850,16 +839,23 @@ fn test_coalescing_preserves_terminal_and_invalidation_deltas() -> Result<(), Bo
     let pub3 = publication(&v3)?;
 
     let delta_budget = classify_reference_meaningful_delta(&pub1, &pub2)?;
-    let delta_terminal = classify_reference_meaningful_delta(&pub2, &pub3)?;
+    let delta_invalidation = classify_reference_meaningful_delta(&pub2, &pub3)?;
 
+    assert!(
+        delta_invalidation
+            .classes
+            .contains(&MeaningfulDeltaClass::PlanInvalidation),
+        "{:?}",
+        delta_invalidation.classes
+    );
     assert!(!delta_budget.is_non_coalescible());
-    assert!(delta_terminal.is_non_coalescible());
+    assert!(delta_invalidation.is_non_coalescible());
 
-    assert!(!delta_budget.can_coalesce_with(&delta_terminal)?);
-    assert!(!delta_terminal.can_coalesce_with(&delta_budget)?);
+    assert!(!delta_budget.can_coalesce_with(&delta_invalidation)?);
+    assert!(!delta_invalidation.can_coalesce_with(&delta_budget)?);
 
     let result = delta_budget.coalesce(
-        &delta_terminal,
+        &delta_invalidation,
         "delta:coalesced",
         "continuation:coalesced",
         ContentDigest::sha256(b"coalesced"),
@@ -940,13 +936,20 @@ fn test_planted_negatives_free_text_statements_do_not_spoof_terminal_transition(
     Ok(())
 }
 
-/// A typed terminal state paired with a completely neutral statement MUST produce TerminalTransition.
+/// Hand-built publications never carry a terminal transition, whatever typed terminal state or
+/// neutral statement they hold (fss-6sph6): a refuted event hypothesis is a hypothesis change, a
+/// `known` effect is refused, and a closed mission is a material change. The sealed terminal
+/// transitions for events, effects and missions are pinned in-crate and by the F2 real-situation
+/// test.
 #[test]
-fn test_neutral_statement_with_typed_terminal_state_emits_terminal_transition()
--> Result<(), Box<dyn Error>> {
-    // 1. Event: neutral statement + HypothesisDisposition::Refuted between hand-built publications
-    // is a hypothesis change and never a TerminalTransition (fss-6sph6: terminal transitions need
-    // both publications sealed; the sealed case is pinned in-crate).
+fn test_hand_built_typed_terminal_states_never_terminalize() -> Result<(), Box<dyn Error>> {
+    let terminal = |delta: &fss_core::MeaningfulDelta| {
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition)
+    };
+
+    // 1. Event: neutral statement + HypothesisDisposition::Refuted is a hypothesis change.
     let mut v1_base = Variant::baseline()?;
     v1_base.sequence = 1;
     v1_base.premise_hypothesis = Some(HypothesisDisposition::Supported);
@@ -957,10 +960,8 @@ fn test_neutral_statement_with_typed_terminal_state_emits_terminal_transition()
     v1_term.premise_hypothesis = Some(HypothesisDisposition::Refuted);
     v1_term.premise_statement = "Neutral event entry #42 recorded.".to_owned();
 
-    let pub1_base = publication(&v1_base)?;
-    let pub1_term = publication(&v1_term)?;
-    let delta_event = classify_reference_meaningful_delta(&pub1_base, &pub1_term)?;
-
+    let delta_event =
+        classify_reference_meaningful_delta(&publication(&v1_base)?, &publication(&v1_term)?)?;
     assert!(
         delta_event
             .classes
@@ -968,23 +969,16 @@ fn test_neutral_statement_with_typed_terminal_state_emits_terminal_transition()
         "{:?}",
         delta_event.classes
     );
-    assert!(
-        !delta_event
-            .classes
-            .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "A hand-built event hypothesis must never emit TerminalTransition: {:?}",
-        delta_event.classes
-    );
+    assert!(!terminal(&delta_event), "{:?}", delta_event.classes);
 
-    // 2. Effect: a hand-built `known` effect is refused whatever its statement (fss-6sph6); the
-    // compiled typed terminal effect is pinned by the F2 real-situation test.
+    // 2. Effect: a hand-built `known` effect is refused whatever its statement.
     let mut v2_term = Variant::baseline()?;
     v2_term.sequence = 4;
     v2_term.effect_state = Some(KnowledgeState::Known);
     v2_term.effect_statement = Some("Routine effect log entry posted.".to_owned());
     assert_hand_built_known_effect_refused(publication(&v2_term))?;
 
-    // 3. Mission: neutral statement + MissionLifecycleState::Closed -> MUST emit TerminalTransition
+    // 3. Mission: neutral statement + MissionLifecycleState::Closed is a material change.
     let mut v3_base = Variant::baseline()?;
     v3_base.sequence = 5;
     v3_base.mission_state = Some(MissionLifecycleState::Active);
@@ -995,17 +989,16 @@ fn test_neutral_statement_with_typed_terminal_state_emits_terminal_transition()
     v3_term.mission_state = Some(MissionLifecycleState::Closed);
     v3_term.mission_statement = "Routine system heartbeat checkpoint.".to_owned();
 
-    let pub3_base = publication(&v3_base)?;
-    let pub3_term = publication(&v3_term)?;
-    let delta_mission = classify_reference_meaningful_delta(&pub3_base, &pub3_term)?;
-
+    let delta_mission =
+        classify_reference_meaningful_delta(&publication(&v3_base)?, &publication(&v3_term)?)?;
     assert!(
         delta_mission
             .classes
-            .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "Typed terminal mission state with neutral statement MUST emit TerminalTransition!"
+            .contains(&MeaningfulDeltaClass::MaterialState),
+        "{:?}",
+        delta_mission.classes
     );
-
+    assert!(!terminal(&delta_mission), "{:?}", delta_mission.classes);
     Ok(())
 }
 

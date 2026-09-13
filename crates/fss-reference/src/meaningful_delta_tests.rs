@@ -2529,10 +2529,12 @@ fn sealed_event_hypothesis_terminal_is_non_coalescible() -> Result<(), Box<dyn E
         delta.classes
     );
     assert!(delta.is_non_coalescible());
+    assert_eq!(delta.priority, DeltaPriority::Critical);
     let mut next_variant = Variant::baseline()?;
     next_variant.sequence = 3;
     next_variant.pressure = ResourcePressure::Elevated;
     let next = classify_reference_meaningful_delta(&result, &publication(&next_variant)?)?;
+    assert!(!delta.can_coalesce_with(&next)?);
     assert!(
         delta
             .coalesce(
@@ -2598,5 +2600,64 @@ fn effect_terminalization_needs_a_sealed_basis() -> Result<(), Box<dyn Error>> {
     let delta = classify_reference_meaningful_delta(&unsealed_basis, &result)?;
     assert!(!terminal(&delta), "{:?}", delta.classes);
     delta.validate()?;
+    Ok(())
+}
+
+/// `publication` rebuilt after `edit_capsule` and sealed, as a compile path would seal it.
+fn resealed_copy(
+    publication: &crate::ReferenceSituationPublication,
+    edit_capsule: impl FnOnce(&mut SituationCapsule),
+) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+    let mut capsule = publication.situation.capsule.clone();
+    edit_capsule(&mut capsule);
+    let mut situation = ReferenceSituation::new(capsule, publication.situation.proof_roots.clone());
+    situation.seal_effect_bindings()?;
+    Ok(project_reference_situation(situation, &nominal_spec()?)?)
+}
+
+/// Round 5 R5-4: a mission terminal transition, through the typed `mission_state` or a
+/// `claim:mission:` cell, needs both publications sealed like every other terminal transition.
+/// Between sealed publications it is a critical, non-coalescible terminal transition; with the
+/// result unsealed the change is reported but never as terminal.
+#[test]
+fn mission_terminalization_needs_both_publications_sealed() -> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    let mut successor = Variant::baseline()?;
+    successor.sequence = 2;
+    let template = publication(&successor)?;
+    let close = |capsule: &mut SituationCapsule| {
+        capsule.mission_state = Some(fss_core::MissionLifecycleState::Closed);
+    };
+    let terminal = |delta: &fss_core::MeaningfulDelta| {
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition)
+    };
+    for (label, sealed, unsealed) in [
+        (
+            "mission_state",
+            resealed_copy(&template, close)?,
+            unsealed_copy(&template, close)?,
+        ),
+        (
+            "claim:mission",
+            publication_with_cell("claim:mission:meaningful-delta", None, true)?,
+            publication_with_cell("claim:mission:meaningful-delta", None, false)?,
+        ),
+    ] {
+        let delta = classify_reference_meaningful_delta(&basis, &sealed)?;
+        assert!(terminal(&delta), "{label} sealed: {:?}", delta.classes);
+        assert!(delta.is_non_coalescible(), "{label}");
+        assert_eq!(delta.priority, DeltaPriority::Critical, "{label}");
+        delta.validate()?;
+        let delta = classify_reference_meaningful_delta(&basis, &unsealed)?;
+        assert!(!terminal(&delta), "{label} unsealed: {:?}", delta.classes);
+        assert!(
+            delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
+            "{label} unsealed: {:?}",
+            delta.classes
+        );
+        delta.validate()?;
+    }
     Ok(())
 }

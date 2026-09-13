@@ -168,7 +168,8 @@ pub fn classify_reference_meaningful_delta(
     let mut obligation_changes = Vec::new();
     let mut effect_uncertainty_changes = Vec::new();
 
-    if basis_frame.now != result_frame.now
+    if basis_capsule.mission_state != result_capsule.mission_state
+        || basis_frame.now != result_frame.now
         || basis_frame.at_risk != result_frame.at_risk
         || basis_frame.unknown != result_frame.unknown
         || world_semantic_digest(&basis_frame.world_envelope)
@@ -530,37 +531,41 @@ pub fn classify_reference_meaningful_delta(
                         )
                     })
         });
-    let mission_terminalized = match (basis_capsule.mission_state, result_capsule.mission_state) {
-        (Some(basis_state), Some(result_state)) => {
-            !basis_state.is_terminal() && result_state.is_terminal()
-        }
-        (None, Some(result_state)) => result_state.is_terminal(),
-        _ => false,
-    } || result_frame.knowledge_cells.iter().any(|cell| {
-        cell.claim_id.starts_with("claim:mission:")
-            && (matches!(
-                cell.hypothesis,
-                Some(
-                    HypothesisDisposition::Refuted
-                        | HypothesisDisposition::Resolved
-                        | HypothesisDisposition::Superseded
-                )
-            ) || cell.knowledge_state == KnowledgeState::Known)
-            && basis_frame
-                .knowledge_cells
-                .iter()
-                .find(|b| b.claim_id == cell.claim_id)
-                .is_none_or(|b| {
-                    !matches!(
-                        b.hypothesis,
-                        Some(
-                            HypothesisDisposition::Refuted
-                                | HypothesisDisposition::Resolved
-                                | HypothesisDisposition::Superseded
-                        )
-                    ) && b.knowledge_state != KnowledgeState::Known
-                })
-    });
+    // A mission terminal transition, like every other, needs both publications sealed: neither a
+    // hand-built `mission_state` nor a hand-built `claim:mission:` cell settles a mission
+    // (fss-6sph6).
+    let mission_terminalized = both_sealed
+        && (match (basis_capsule.mission_state, result_capsule.mission_state) {
+            (Some(basis_state), Some(result_state)) => {
+                !basis_state.is_terminal() && result_state.is_terminal()
+            }
+            (None, Some(result_state)) => result_state.is_terminal(),
+            _ => false,
+        } || result_frame.knowledge_cells.iter().any(|cell| {
+            cell.claim_id.starts_with("claim:mission:")
+                && (matches!(
+                    cell.hypothesis,
+                    Some(
+                        HypothesisDisposition::Refuted
+                            | HypothesisDisposition::Resolved
+                            | HypothesisDisposition::Superseded
+                    )
+                ) || cell.knowledge_state == KnowledgeState::Known)
+                && basis_frame
+                    .knowledge_cells
+                    .iter()
+                    .find(|b| b.claim_id == cell.claim_id)
+                    .is_none_or(|b| {
+                        !matches!(
+                            b.hypothesis,
+                            Some(
+                                HypothesisDisposition::Refuted
+                                    | HypothesisDisposition::Resolved
+                                    | HypothesisDisposition::Superseded
+                            )
+                        ) && b.knowledge_state != KnowledgeState::Known
+                    })
+        }));
 
     if obligation_terminalized || effect_terminalized || event_terminalized || mission_terminalized
     {
