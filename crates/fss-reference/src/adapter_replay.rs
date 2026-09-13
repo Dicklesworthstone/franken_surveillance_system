@@ -10,6 +10,7 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use fss_core::{
     AdapterCapabilities, AdapterGeneration, AdapterId, AdapterIdentity, AdapterKind, ContentDigest,
@@ -70,24 +71,36 @@ pub const ADP_REPLAY_GOLDEN_AUDIT_HASH: &str =
 /// Explicit I/O authority capability required for journal persistence and ledger access.
 ///
 /// Unforgeable capability: cannot be fabricated without validating an authorized principal
-/// and explicit capability grant matching row `ADP-REPLAY-001`.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// and explicit capability grant matching row `ADP-REPLAY-001` from a validated [`ContextAuthority`].
+///
+/// Not cloneable: prevents unauthorized duplication or survival across context finalization.
+#[derive(Debug)]
 pub struct ReplayIoAuthority {
     principal: String,
     capability: String,
+    root_dir: PathBuf,
+    state: Arc<AtomicU8>,
+    dir_counter: Arc<AtomicUsize>,
 }
 
+impl PartialEq for ReplayIoAuthority {
+    fn eq(&self, other: &Self) -> bool {
+        self.principal == other.principal
+            && self.capability == other.capability
+            && self.root_dir == other.root_dir
+            && self.state.load(Ordering::SeqCst) == other.state.load(Ordering::SeqCst)
+    }
+}
+
+impl Eq for ReplayIoAuthority {}
+
 impl ReplayIoAuthority {
-    /// Authorizes replay I/O capability for an explicit principal and capability scope.
-    ///
-    /// Fails closed if principal or capability is empty, or if the capability does not grant
-    /// authority for [`ADP_REPLAY_ROW_ID`].
-    ///
-    /// # Errors
-    /// Returns [`ReplayAdapterError::Unauthorized`] on missing or invalid principal/capability.
-    pub fn authorize(
+    fn authorize_internal(
         principal: impl Into<String>,
         capability: impl Into<String>,
+        root_dir: PathBuf,
+        state: Arc<AtomicU8>,
+        dir_counter: Arc<AtomicUsize>,
     ) -> Result<Self, ReplayAdapterError> {
         let principal = principal.into();
         let capability = capability.into();
@@ -109,6 +122,9 @@ impl ReplayIoAuthority {
         Ok(Self {
             principal,
             capability,
+            root_dir,
+            state,
+            dir_counter,
         })
     }
 
@@ -117,6 +133,27 @@ impl ReplayIoAuthority {
     /// # Errors
     /// Returns [`ReplayAdapterError::Unauthorized`] if the context authority lacks the required capability.
     pub fn from_context_authority(auth: &ContextAuthority) -> Result<Self, ReplayAdapterError> {
+        let base = std::env::var_os("CARGO_TARGET_TMPDIR")
+            .map(PathBuf::from)
+            .or_else(|| std::option_env!("CARGO_TARGET_TMPDIR").map(PathBuf::from))
+            .unwrap_or_else(std::env::temp_dir);
+        let default_root = base.join(format!(
+            "fss-adp-replay-{}-{}-{}",
+            std::process::id(),
+            auth.principal.replace(':', "_"),
+            auth.operation_id.to_string().replace(':', "_")
+        ));
+        Self::from_context_authority_with_root_dir(auth, default_root)
+    }
+
+    /// Acquires authority directly from a validated root [`ContextAuthority`] with an explicit root directory.
+    ///
+    /// # Errors
+    /// Returns [`ReplayAdapterError::Unauthorized`] if the context authority lacks the required capability.
+    pub fn from_context_authority_with_root_dir(
+        auth: &ContextAuthority,
+        root_dir: impl Into<PathBuf>,
+    ) -> Result<Self, ReplayAdapterError> {
         if !auth
             .capabilities()
             .iter()
@@ -126,7 +163,10 @@ impl ReplayIoAuthority {
                 reason: "ContextAuthority does not grant ADP-REPLAY-001 capability",
             });
         }
-        Self::authorize(&auth.principal, ADP_REPLAY_ROW_ID)
+        let root_dir = root_dir.into();
+        let state = Arc::new(AtomicU8::new(STATE_ACTIVE));
+        let dir_counter = Arc::new(AtomicUsize::new(0));
+        Self::authorize_internal(&auth.principal, ADP_REPLAY_ROW_ID, root_dir, state, dir_counter)
     }
 
     /// Authorized principal identity.
@@ -139,6 +179,23 @@ impl ReplayIoAuthority {
     #[must_use]
     pub fn capability(&self) -> &str {
         &self.capability
+    }
+
+    /// Base filesystem root directory for scoped ledger directories.
+    #[must_use]
+    pub fn root_dir(&self) -> &Path {
+        &self.root_dir
+    }
+
+    /// Returns `true` if authority is active and not revoked.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.state.load(Ordering::SeqCst) == STATE_ACTIVE
+    }
+
+    /// Revokes this authority, transitioning its lifecycle state to `Finalized`.
+    pub fn revoke(&self) {
+        self.state.store(STATE_FINALIZED, Ordering::SeqCst);
     }
 }
 
@@ -176,19 +233,42 @@ const STATE_FINALIZED: u8 = 3;
 /// Execution capability and cooperative cancellation context for replay operations.
 #[derive(Debug)]
 pub struct ReplayCx {
-    state: AtomicU8,
+    state: Arc<AtomicU8>,
     checkpoints: AtomicUsize,
     io: ReplayIoAuthority,
+    cancel_at_stage: Mutex<Option<&'static str>>,
 }
 
 impl ReplayCx {
     /// Constructs a new replay execution context with explicit I/O authority.
     #[must_use]
     pub fn new(io: ReplayIoAuthority) -> Self {
+        let state = io.state.clone();
+        if !io.is_valid() {
+            state.store(STATE_FINALIZED, Ordering::SeqCst);
+        }
         Self {
-            state: AtomicU8::new(STATE_ACTIVE),
+            state,
             checkpoints: AtomicUsize::new(0),
             io,
+            cancel_at_stage: Mutex::new(None),
+        }
+    }
+
+    /// Constructs a new replay execution context directly from a validated [`ContextAuthority`].
+    ///
+    /// # Errors
+    /// Returns [`ReplayAdapterError::Unauthorized`] if the context authority lacks the required capability.
+    pub fn from_context_authority(auth: &ContextAuthority) -> Result<Self, ReplayAdapterError> {
+        let io = ReplayIoAuthority::from_context_authority(auth)?;
+        Ok(Self::new(io))
+    }
+
+    /// Injects cooperative cancellation when the specified checkpoint stage is reached.
+    /// Used for deterministic, race-free cancellation testing.
+    pub fn set_cancel_at_checkpoint(&self, stage: &'static str) {
+        if let Ok(mut guard) = self.cancel_at_stage.lock() {
+            *guard = Some(stage);
         }
     }
 
@@ -235,7 +315,7 @@ impl ReplayCx {
         );
     }
 
-    /// Completes finalization of cancellation (`Draining` -> `Finalized`).
+    /// Completes finalization of cancellation (`Draining` -> `Finalized`), revoking I/O authority.
     pub fn finalize(&self) {
         let _ = self.state.compare_exchange(
             STATE_DRAINING,
@@ -243,6 +323,7 @@ impl ReplayCx {
             Ordering::SeqCst,
             Ordering::SeqCst,
         );
+        self.io.revoke();
     }
 
     /// Completes the drain and finalize lifecycle phase, ensuring no half-published state remains.
@@ -268,13 +349,52 @@ impl ReplayCx {
     ///
     /// # Errors
     /// Returns [`ReplayAdapterError::CancellationRequested`] if cancellation was signaled.
-    pub fn checkpoint(&self, _stage: &'static str) -> Result<(), ReplayAdapterError> {
+    pub fn checkpoint(&self, stage: &'static str) -> Result<(), ReplayAdapterError> {
         self.checkpoints.fetch_add(1, Ordering::SeqCst);
+        if let Ok(guard) = self.cancel_at_stage.lock()
+            && let Some(target) = *guard
+            && target == stage
+        {
+            self.request_cancellation();
+        }
         if self.is_cancelled() {
             self.drain_and_finalize();
             Err(ReplayAdapterError::CancellationRequested)
         } else {
             Ok(())
+        }
+    }
+
+    /// Root filesystem path used by this context.
+    #[must_use]
+    pub fn root_dir(&self) -> &Path {
+        self.io.root_dir()
+    }
+
+    /// Next monotonically increasing sequence number for scoped directory creation in this context.
+    #[must_use]
+    pub fn next_dir_sequence(&self) -> usize {
+        self.io.dir_counter.fetch_add(1, Ordering::SeqCst)
+    }
+
+    /// Current sequence counter for scoped directories in this context (without incrementing).
+    #[must_use]
+    pub fn current_dir_sequence(&self) -> usize {
+        self.io.dir_counter.load(Ordering::SeqCst)
+    }
+
+    /// Post-commit checkpoint: increments checkpoint counter and handles cancellation,
+    /// but never returns an error so already-committed work is not reported as cancelled.
+    pub fn checkpoint_post_commit(&self, stage: &'static str) {
+        self.checkpoints.fetch_add(1, Ordering::SeqCst);
+        if let Ok(guard) = self.cancel_at_stage.lock()
+            && let Some(target) = *guard
+            && target == stage
+        {
+            self.request_cancellation();
+        }
+        if self.is_cancelled() {
+            self.drain_and_finalize();
         }
     }
 
@@ -289,25 +409,50 @@ impl ReplayCx {
 #[derive(Debug)]
 pub struct ScopedLedgerDir {
     path: PathBuf,
-    _io: ReplayIoAuthority,
+    principal: String,
 }
 
 impl ScopedLedgerDir {
-    /// Creates a new scoped directory requiring explicit I/O authority.
+    /// Creates a new scoped directory requiring active execution context and unrevoked I/O authority.
     ///
     /// # Errors
+    /// Returns [`std::io::Error`] with [`std::io::ErrorKind::PermissionDenied`] if context is finalized or cancelled.
     /// Returns [`std::io::Error`] if directory creation fails.
-    pub fn new(prefix: &str, io: ReplayIoAuthority) -> Result<Self, std::io::Error> {
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
-        let path = std::env::temp_dir().join(format!(
-            "fss-adp-replay-{}-{prefix}-{timestamp}",
-            std::process::id()
-        ));
+    pub fn new(prefix: &str, cx: &ReplayCx) -> Result<Self, std::io::Error> {
+        if !cx.io_authority().is_valid() || cx.is_cancelled() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "ReplayIoAuthority revoked: context is not active",
+            ));
+        }
+        let seq = cx.next_dir_sequence();
+        let path = cx.root_dir().join(format!("{prefix}-{seq}"));
         std::fs::create_dir_all(&path)?;
-        Ok(Self { path, _io: io })
+        Ok(Self {
+            path,
+            principal: cx.io_authority().principal().to_string(),
+        })
+    }
+
+    /// Creates a new scoped directory directly from an active [`ReplayIoAuthority`].
+    ///
+    /// # Errors
+    /// Returns [`std::io::Error`] with [`std::io::ErrorKind::PermissionDenied`] if authority is revoked.
+    /// Returns [`std::io::Error`] if directory creation fails.
+    pub fn from_authority(prefix: &str, auth: &ReplayIoAuthority) -> Result<Self, std::io::Error> {
+        if !auth.is_valid() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "ReplayIoAuthority revoked: authority is not active",
+            ));
+        }
+        let seq = auth.dir_counter.fetch_add(1, Ordering::SeqCst);
+        let path = auth.root_dir().join(format!("{prefix}-{seq}"));
+        std::fs::create_dir_all(&path)?;
+        Ok(Self {
+            path,
+            principal: auth.principal().to_string(),
+        })
     }
 
     /// Constructs the journal path for a named ledger in this scoped directory.
@@ -320,6 +465,12 @@ impl ScopedLedgerDir {
     #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Authorized principal who created this directory.
+    #[must_use]
+    pub fn principal(&self) -> &str {
+        &self.principal
     }
 }
 
@@ -392,6 +543,15 @@ pub struct ReplayAuditRecord {
     pub packets_mutated: usize,
 }
 
+/// Terminal execution status.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplayTerminalStatus {
+    /// Replay completed and committed successfully.
+    Committed,
+    /// Replay committed successfully, but cancellation was requested after commit.
+    CancelledAfterCommit,
+}
+
 /// Output envelope returned upon successful replay execution.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplayExecutionOutput {
@@ -399,6 +559,8 @@ pub struct ReplayExecutionOutput {
     pub capture: ReferenceCapture,
     /// Retained audit record for divergence verification.
     pub audit_record: ReplayAuditRecord,
+    /// Terminal execution status.
+    pub status: ReplayTerminalStatus,
 }
 
 /// Computes the domain-separated audit hash bound to the bundle digest, generation, and row ID.
@@ -714,7 +876,15 @@ impl ReplayAdapter {
     /// # Errors
     /// Returns [`ReplayAdapterError::RegistryDrift`] if any field disagrees.
     pub fn verify_registry_row_constants() -> Result<(), ReplayAdapterError> {
-        let json_text = include_str!("../../../architecture/device_adapters.json");
+        Self::verify_registry_row_json(include_str!("../../../architecture/device_adapters.json"))
+    }
+
+    /// Verifies that a JSON representation contains a row matching
+    /// the normative constants for this adapter.
+    ///
+    /// # Errors
+    /// Returns [`ReplayAdapterError::RegistryDrift`] if any field disagrees or is missing.
+    pub fn verify_registry_row_json(json_text: &str) -> Result<(), ReplayAdapterError> {
         let id_needle = format!("\"id\": \"{ADP_REPLAY_ROW_ID}\"");
         let id_pos = match json_text.find(&id_needle) {
             Some(pos) => pos,
@@ -868,7 +1038,19 @@ impl ReplayAdapter {
         cx.checkpoint("preflight")?;
         self.preflight_request(cx, request)?;
 
+        // Pre-commit checkpoint (Mutant R6b)
         cx.checkpoint("run_replay")?;
+
+        // Bound check on target store to protect rollback snapshot
+        if objects.object_count() > self.config.max_packets
+            || objects.total_bytes() > self.config.max_total_bytes as u64
+        {
+            return Err(ReplayAdapterError::BoundExceeded(
+                "target_store_exceeds_rollback_bound",
+            ));
+        }
+
+        // Target commit with rollback on partial publish failure (Mutant M3)
         let backup_objects = objects.clone();
         let capture = match request.bundle.replay(objects, ledger) {
             Ok(c) => c,
@@ -878,12 +1060,21 @@ impl ReplayAdapter {
             }
         };
 
-        cx.checkpoint("compute_audit")?;
+        // Post-commit checkpoint (Mutants R6b, cancel-after-commit)
+        cx.checkpoint_post_commit("compute_audit");
         let audit_record = self.build_audit_record(request, &capture);
+
+        // Explicit terminal status: never report CancellationRequested while committed effect stands
+        let status = if cx.is_cancelled() {
+            ReplayTerminalStatus::CancelledAfterCommit
+        } else {
+            ReplayTerminalStatus::Committed
+        };
 
         Ok(ReplayExecutionOutput {
             capture,
             audit_record,
+            status,
         })
     }
 
@@ -920,7 +1111,7 @@ impl ReplayAdapter {
         self.preflight_request(cx, request)?;
 
         // 1. ISOLATED STAGING REPLAY
-        let staging_dir = ScopedLedgerDir::new("staging_replay", cx.io_authority().clone())?;
+        let staging_dir = ScopedLedgerDir::new("staging_replay", cx)?;
         let staging_journal_path = staging_dir.journal_path("staging_journal");
         let mut staging_ledger = DurableReferenceLedger::open(
             &staging_journal_path,
@@ -935,11 +1126,11 @@ impl ReplayAdapter {
             .replay(&mut staging_objects, &mut staging_ledger)?;
         let staged_audit = self.build_audit_record(request, &staged_capture);
 
-        // 2. COMPARE BEFORE PUBLISHING: state_root AND audit_hash
+        // 2. COMPARE BEFORE PUBLISHING: state_root (Mutant R3) AND audit_hash (Mutant R2)
         if staged_audit.state_root != *expected_root
             || staged_audit.audit_hash != *expected_audit_hash
         {
-            // Staging dir drops here and cleans up staging files.
+            // Staging dir drops here and cleans up staging files (Mutant R10).
             // Neither `objects` nor `ledger` are touched.
             return Err(ReplayAdapterError::ReplayDiverged(Box::new(
                 ReplayDivergence {
@@ -951,8 +1142,19 @@ impl ReplayAdapter {
             )));
         }
 
-        // 3. ONLY PUBLISH ON EXACT MATCH (Root-last publication)
+        // 3. CHECK CANCELLATION BEFORE COMMIT
         cx.checkpoint("publish_on_match")?;
+
+        // 4. Bound check on target store to protect rollback snapshot
+        if objects.object_count() > self.config.max_packets
+            || objects.total_bytes() > self.config.max_total_bytes as u64
+        {
+            return Err(ReplayAdapterError::BoundExceeded(
+                "target_store_exceeds_rollback_bound",
+            ));
+        }
+
+        // 5. ONLY PUBLISH ON EXACT MATCH (Root-last publication, Mutant M2 rollback)
         let backup_objects = objects.clone();
         let capture = match request.bundle.replay(objects, ledger) {
             Ok(c) => c,
@@ -961,11 +1163,20 @@ impl ReplayAdapter {
                 return Err(ReplayAdapterError::Bundle(err));
             }
         };
-        let audit_record = self.build_audit_record(request, &capture);
+
+        // 6. Explicit terminal status: if cancelled after commit, never report CancellationRequested
+        // while committed effect stands.
+        cx.checkpoint_post_commit("post_publish");
+        let status = if cx.is_cancelled() {
+            ReplayTerminalStatus::CancelledAfterCommit
+        } else {
+            ReplayTerminalStatus::Committed
+        };
 
         Ok(ReplayExecutionOutput {
             capture,
-            audit_record,
+            audit_record: staged_audit,
+            status,
         })
     }
 }

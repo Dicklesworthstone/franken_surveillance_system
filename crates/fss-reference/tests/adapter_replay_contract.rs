@@ -10,11 +10,15 @@
 //! 6. Incompatible generation rejection in both execute and verify_against_expected (N1)
 //! 7. Cooperative cancellation handling via ReplayCx with request->drain->finalize in both execute and verify (N1, N3)
 //! 8. Packet budget enforcement (including exact budget == count) in both execute and verify (N1)
-//! 9. Hard bounds enforcement (packet count, packet bytes, aggregate bytes, zero-bound rejection) (N1, mutants R2, R3, R6b, R6f, R7c)
-//! 10. Fail-closed target publish rollback on partial failure preventing orphan staged objects (N2)
-//! 11. Unforgeable ReplayIoAuthority and ReplayCx lifecycle state transitions (N3)
-//! 12. Independent state root and audit hash divergence detection (mutants R8a, R10)
-//! 13. Zero unwrap, expect, or panic anywhere in test suite
+//! 9. Hard bounds enforcement (packet count, packet bytes, aggregate bytes, zero-bound rejection) (N1, mutants R6f, R7c, R7d)
+//! 10. Fail-closed target publish rollback on partial failure preventing orphan staged objects (mutants M2, M3)
+//! 11. Unforgeable ReplayIoAuthority and ReplayCx lifecycle state transitions with finalized revocation (N3)
+//! 12. Independent state root and audit hash divergence detection (mutants R2, R3)
+//! 13. Cancellation after commit handling with explicit terminal status and checkpoint tests (mutants R6a, R6b, R6d)
+//! 14. Exact boundary enforcement (mutants R7b, R8a)
+//! 15. Staging directory cleanup on divergence (mutant R10)
+//! 16. Negative registry row drift verification (mutant R11)
+//! 17. Zero unwrap, expect, or panic anywhere in test suite
 
 use std::error::Error;
 
@@ -31,12 +35,30 @@ use fss_reference::{
     ADP_REPLAY_ROW_ID, ADP_REPLAY_SURFACE, ADP_REPLAY_TIER, DeliveryDirective, DeliveryPlan,
     ERR_ADAPTER_REPLAY_DIVERGED, ReplayAdapter, ReplayAdapterConfig, ReplayAdapterError,
     ReplayBundle, ReplayCx, ReplayExecutionRequest, ReplayIoAuthority, ReplayLifecycleState,
-    ScopedLedgerDir, VirtualCameraSpec,
+    ReplayTerminalStatus, ScopedLedgerDir, VirtualCameraSpec,
 };
 
-fn test_cx() -> Result<ReplayCx, Box<dyn Error>> {
-    let auth = ReplayIoAuthority::authorize("operator:contract-test", ADP_REPLAY_ROW_ID)?;
-    Ok(ReplayCx::new(auth))
+fn test_context_authority(label: &str) -> Result<ContextAuthority, Box<dyn Error>> {
+    let spec = RootAuthoritySpec {
+        trace_id: format!("trace:contract-test-{label}"),
+        operation_id: OperationId::parse(format!("operation:contract-test-{label}"))?,
+        principal: format!("operator:contract-test-{label}"),
+        capabilities: vec![ADP_REPLAY_ROW_ID.to_string()],
+        deadline: None,
+        priority: 10,
+        budgets: BudgetVector::default(),
+        privacy_scope: "privacy:internal".to_string(),
+        retention_scope: "retention:ephemeral".to_string(),
+        anchor_universe: ContentDigest::sha256(b"test-anchor-universe"),
+        generation: 1,
+    };
+    Ok(ContextAuthority::new_root(spec)?)
+}
+
+fn test_cx(label: &str) -> Result<ReplayCx, Box<dyn Error>> {
+    let root_auth = test_context_authority(label)?;
+    let io = ReplayIoAuthority::from_context_authority(&root_auth)?;
+    Ok(ReplayCx::new(io))
 }
 
 fn sample_bundle() -> Result<ReplayBundle, Box<dyn Error>> {
@@ -99,11 +121,11 @@ fn test_01_row_metadata_and_identity() -> Result<(), Box<dyn Error>> {
 fn test_02_deterministic_replay_and_golden_pinning() -> Result<(), Box<dyn Error>> {
     let adapter = ReplayAdapter::new()?;
     let bundle = sample_bundle()?;
-    let cx1 = test_cx()?;
-    let cx2 = test_cx()?;
+    let cx1 = test_cx("det1")?;
+    let cx2 = test_cx("det2")?;
 
-    let dir1 = ScopedLedgerDir::new("det1", cx1.io_authority().clone())?;
-    let dir2 = ScopedLedgerDir::new("det2", cx2.io_authority().clone())?;
+    let dir1 = ScopedLedgerDir::new("det1", &cx1)?;
+    let dir2 = ScopedLedgerDir::new("det2", &cx2)?;
 
     let p1 = dir1.journal_path("det1");
     let p2 = dir2.journal_path("det2");
@@ -143,8 +165,8 @@ fn test_02_deterministic_replay_and_golden_pinning() -> Result<(), Box<dyn Error
 fn test_03_incompatible_generation_rejected() -> Result<(), Box<dyn Error>> {
     let adapter = ReplayAdapter::new()?;
     let bundle = sample_bundle()?;
-    let cx = test_cx()?;
-    let dir = ScopedLedgerDir::new("incompat_gen", cx.io_authority().clone())?;
+    let cx = test_cx("incompat_gen")?;
+    let dir = ScopedLedgerDir::new("incompat_gen", &cx)?;
     let p = dir.journal_path("incompat_gen");
 
     let mut obj = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
@@ -166,8 +188,8 @@ fn test_03_incompatible_generation_rejected() -> Result<(), Box<dyn Error>> {
     }
 
     // 2. Caller controls request.generation with wrong generation in verify_against_expected (N1)
-    let golden_root = ContentDigest::sha256(ADP_REPLAY_GOLDEN_STATE_ROOT.as_bytes());
-    let golden_audit = ContentDigest::sha256(ADP_REPLAY_GOLDEN_AUDIT_HASH.as_bytes());
+    let golden_root = ContentDigest::parse(ADP_REPLAY_GOLDEN_STATE_ROOT)?;
+    let golden_audit = ContentDigest::parse(ADP_REPLAY_GOLDEN_AUDIT_HASH)?;
     match adapter.verify_against_expected(
         &cx,
         &req,
@@ -210,8 +232,8 @@ fn test_03_incompatible_generation_rejected() -> Result<(), Box<dyn Error>> {
 fn test_04_cooperative_cancellation_and_drain() -> Result<(), Box<dyn Error>> {
     let adapter = ReplayAdapter::new()?;
     let bundle = sample_bundle()?;
-    let cx = test_cx()?;
-    let dir = ScopedLedgerDir::new("cancel", cx.io_authority().clone())?;
+    let cx = test_cx("cancel_c1")?;
+    let dir = ScopedLedgerDir::new("cancel", &cx)?;
     let p = dir.journal_path("cancel");
 
     let mut obj = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
@@ -234,9 +256,9 @@ fn test_04_cooperative_cancellation_and_drain() -> Result<(), Box<dyn Error>> {
     }
 
     // Case 2: cancel via request flag in verify_against_expected (N1)
-    let cx_verify = test_cx()?;
-    let golden_root = ContentDigest::sha256(ADP_REPLAY_GOLDEN_STATE_ROOT.as_bytes());
-    let golden_audit = ContentDigest::sha256(ADP_REPLAY_GOLDEN_AUDIT_HASH.as_bytes());
+    let cx_verify = test_cx("cancel_c2")?;
+    let golden_root = ContentDigest::parse(ADP_REPLAY_GOLDEN_STATE_ROOT)?;
+    let golden_audit = ContentDigest::parse(ADP_REPLAY_GOLDEN_AUDIT_HASH)?;
     match adapter.verify_against_expected(
         &cx_verify,
         &req,
@@ -259,7 +281,7 @@ fn test_04_cooperative_cancellation_and_drain() -> Result<(), Box<dyn Error>> {
     }
 
     // Case 3: cancel via ReplayCx directly in execute
-    let cx2 = test_cx()?;
+    let cx2 = test_cx("cancel_c3")?;
     cx2.request_cancellation();
     assert_eq!(
         cx2.lifecycle_state(),
@@ -278,7 +300,7 @@ fn test_04_cooperative_cancellation_and_drain() -> Result<(), Box<dyn Error>> {
     }
 
     // Case 4: cancel via ReplayCx directly in verify_against_expected (N1)
-    let cx3 = test_cx()?;
+    let cx3 = test_cx("cancel_c4")?;
     cx3.request_cancellation();
     match adapter.verify_against_expected(
         &cx3,
@@ -307,8 +329,8 @@ fn test_04_cooperative_cancellation_and_drain() -> Result<(), Box<dyn Error>> {
 fn test_05_budget_exhaustion_and_exact_budget() -> Result<(), Box<dyn Error>> {
     let adapter = ReplayAdapter::new()?;
     let bundle = sample_bundle()?;
-    let cx = test_cx()?;
-    let dir = ScopedLedgerDir::new("budget", cx.io_authority().clone())?;
+    let cx = test_cx("budget")?;
+    let dir = ScopedLedgerDir::new("budget", &cx)?;
     let p = dir.journal_path("budget");
 
     let mut obj = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
@@ -330,8 +352,8 @@ fn test_05_budget_exhaustion_and_exact_budget() -> Result<(), Box<dyn Error>> {
     }
 
     // 2. Budget exhausted in verify_against_expected (N1)
-    let golden_root = ContentDigest::sha256(ADP_REPLAY_GOLDEN_STATE_ROOT.as_bytes());
-    let golden_audit = ContentDigest::sha256(ADP_REPLAY_GOLDEN_AUDIT_HASH.as_bytes());
+    let golden_root = ContentDigest::parse(ADP_REPLAY_GOLDEN_STATE_ROOT)?;
+    let golden_audit = ContentDigest::parse(ADP_REPLAY_GOLDEN_AUDIT_HASH)?;
     match adapter.verify_against_expected(
         &cx,
         &req,
@@ -361,11 +383,11 @@ fn test_05_budget_exhaustion_and_exact_budget() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_06_bounds_enforcement_and_zero_bounds() -> Result<(), Box<dyn Error>> {
     let bundle = sample_bundle()?;
-    let cx = test_cx()?;
-    let dir = ScopedLedgerDir::new("bounds", cx.io_authority().clone())?;
+    let cx = test_cx("bounds")?;
+    let dir = ScopedLedgerDir::new("bounds", &cx)?;
     let p = dir.journal_path("bounds");
 
-    // 1. Zero bound rejected at config construction (mutants R2, R3)
+    // 1. Zero bound rejected at config construction
     let zero_packets_cfg = ReplayAdapterConfig {
         max_packets: 0,
         ..ReplayAdapterConfig::default()
@@ -416,7 +438,7 @@ fn test_06_bounds_enforcement_and_zero_bounds() -> Result<(), Box<dyn Error>> {
     };
     assert!(ReplayAdapter::with_config(max_allowed_bytes_cfg).is_ok());
 
-    // Zero max_total_bytes rejected (mutant R2)
+    // Zero max_total_bytes rejected (mutant R7c)
     let zero_total_cfg = ReplayAdapterConfig {
         max_total_bytes: 0,
         ..ReplayAdapterConfig::default()
@@ -439,7 +461,7 @@ fn test_06_bounds_enforcement_and_zero_bounds() -> Result<(), Box<dyn Error>> {
     };
     assert!(ReplayAdapter::with_config(pos_total_cfg).is_ok());
 
-    // 2. Packet count bound exceeded during execute and verify (mutant R6b, N1)
+    // 2. Packet count bound exceeded during execute and verify (N1)
     let config_packets = ReplayAdapterConfig {
         max_packets: 4, // bundle has 6
         ..ReplayAdapterConfig::default()
@@ -460,8 +482,8 @@ fn test_06_bounds_enforcement_and_zero_bounds() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    let golden_root = ContentDigest::sha256(ADP_REPLAY_GOLDEN_STATE_ROOT.as_bytes());
-    let golden_audit = ContentDigest::sha256(ADP_REPLAY_GOLDEN_AUDIT_HASH.as_bytes());
+    let golden_root = ContentDigest::parse(ADP_REPLAY_GOLDEN_STATE_ROOT)?;
+    let golden_audit = ContentDigest::parse(ADP_REPLAY_GOLDEN_AUDIT_HASH)?;
     match adapter_packets.verify_against_expected(
         &cx,
         &req,
@@ -512,7 +534,7 @@ fn test_06_bounds_enforcement_and_zero_bounds() -> Result<(), Box<dyn Error>> {
         }
     }
 
-    // 4. Aggregate total bytes bound exceeded during execute and verify (mutant R7c, N1)
+    // 4. Aggregate total bytes bound exceeded during execute and verify (N1)
     let config_total = ReplayAdapterConfig {
         max_total_bytes: 100, // bundle has 6 * 64 = 384 bytes
         ..ReplayAdapterConfig::default()
@@ -551,8 +573,8 @@ fn test_06_bounds_enforcement_and_zero_bounds() -> Result<(), Box<dyn Error>> {
 fn test_07_fail_closed_divergence_leaves_target_unmutated() -> Result<(), Box<dyn Error>> {
     let adapter = ReplayAdapter::new()?;
     let bundle = sample_bundle()?;
-    let cx = test_cx()?;
-    let dir = ScopedLedgerDir::new("diverge", cx.io_authority().clone())?;
+    let cx = test_cx("diverge")?;
+    let dir = ScopedLedgerDir::new("diverge", &cx)?;
     let p = dir.journal_path("diverge");
 
     let mut obj = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
@@ -564,7 +586,7 @@ fn test_07_fail_closed_divergence_leaves_target_unmutated() -> Result<(), Box<dy
 
     // Compute actual roots to test independent state_root vs audit_hash divergence
     let (actual_root, actual_audit) = {
-        let dir_tmp = ScopedLedgerDir::new("tmp_golden", cx.io_authority().clone())?;
+        let dir_tmp = ScopedLedgerDir::new("tmp_golden", &cx)?;
         let mut obj_tmp = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
         let mut led_tmp = DurableReferenceLedger::open(
             dir_tmp.journal_path("tmp"),
@@ -603,7 +625,7 @@ fn test_07_fail_closed_divergence_leaves_target_unmutated() -> Result<(), Box<dy
     assert_eq!(led.current().anchor, initial_anchor);
     assert_eq!(obj.object_count(), 0);
 
-    // Case 2: Matching state_root, but diverged audit_hash (kills mutant R10!)
+    // Case 2: Matching state_root, but diverged audit_hash (kills mutant R2!)
     match adapter.verify_against_expected(&cx, &req, &mut obj, &mut led, &actual_root, &wrong_audit)
     {
         Err(ReplayAdapterError::ReplayDiverged(divergence)) => {
@@ -619,7 +641,7 @@ fn test_07_fail_closed_divergence_leaves_target_unmutated() -> Result<(), Box<dy
     assert_eq!(led.current().anchor, initial_anchor);
     assert_eq!(obj.object_count(), 0);
 
-    // Case 3: Matching audit_hash, but diverged state_root (kills mutant R8a!)
+    // Case 3: Matching audit_hash, but diverged state_root (kills mutant R3!)
     match adapter.verify_against_expected(
         &cx,
         &req,
@@ -648,11 +670,11 @@ fn test_07_fail_closed_divergence_leaves_target_unmutated() -> Result<(), Box<dy
 fn test_08_target_publish_rollback_on_partial_failure() -> Result<(), Box<dyn Error>> {
     let adapter = ReplayAdapter::new()?;
     let bundle = sample_bundle()?;
-    let cx = test_cx()?;
-    let dir = ScopedLedgerDir::new("rollback", cx.io_authority().clone())?;
+    let cx = test_cx("rollback")?;
+    let dir = ScopedLedgerDir::new("rollback", &cx)?;
     let p = dir.journal_path("rollback");
 
-    // 1. Rollback on empty target store: capacity 3 causes failure during replay after 3 objects
+    // 1. Rollback on empty target store: capacity 3 causes failure during replay after 3 objects (mutant M3)
     let mut obj_empty = InMemoryObjectStore::new(ObjectLimits::new(3, 1024 * 1024));
     let mut led =
         DurableReferenceLedger::open(&p, bundle.site_lineage(), IncompleteTailPolicy::Reject)?;
@@ -668,7 +690,7 @@ fn test_08_target_publish_rollback_on_partial_failure() -> Result<(), Box<dyn Er
     );
 
     // 2. Rollback preserves pre-existing objects without orphan additions
-    let dir2 = ScopedLedgerDir::new("rollback2", cx.io_authority().clone())?;
+    let dir2 = ScopedLedgerDir::new("rollback2", &cx)?;
     let p2 = dir2.journal_path("rollback2");
     let mut led2 =
         DurableReferenceLedger::open(&p2, bundle.site_lineage(), IncompleteTailPolicy::Reject)?;
@@ -686,54 +708,53 @@ fn test_08_target_publish_rollback_on_partial_failure() -> Result<(), Box<dyn Er
     );
     assert!(obj_existing.read_verified(pre_existing_digest).is_ok());
 
+    // 3. Rollback on verify-path partial failure (kills mutant M2)
+    // Target holding 1 pre-existing object with capacity 13 overflows mid-publish,
+    // and verify leaves 1 object, 0 orphans and an unchanged ledger.
+    let dir3 = ScopedLedgerDir::new("rollback_verify", &cx)?;
+    let p3 = dir3.journal_path("rollback_verify");
+    let mut led3 =
+        DurableReferenceLedger::open(&p3, bundle.site_lineage(), IncompleteTailPolicy::Reject)?;
+    let initial_anchor3 = led3.current().anchor.clone();
+
+    let mut obj_verify = InMemoryObjectStore::new(ObjectLimits::new(13, 1024 * 1024));
+    let pre_existing_digest3 = obj_verify.put_verified(b"pre_existing_object_verify_path")?;
+    assert_eq!(obj_verify.object_count(), 1);
+
+    let golden_root = ContentDigest::parse(ADP_REPLAY_GOLDEN_STATE_ROOT)?;
+    let golden_audit = ContentDigest::parse(ADP_REPLAY_GOLDEN_AUDIT_HASH)?;
+    let res_verify = adapter.verify_against_expected(
+        &cx,
+        &req,
+        &mut obj_verify,
+        &mut led3,
+        &golden_root,
+        &golden_audit,
+    );
+    assert!(
+        res_verify.is_err(),
+        "Must fail when capacity exceeded on verify target publish"
+    );
+    assert_eq!(
+        obj_verify.object_count(),
+        1,
+        "Verify path must roll back target object store to 1 object on failure (no orphan objects)"
+    );
+    assert!(obj_verify.read_verified(pre_existing_digest3).is_ok());
+    assert_eq!(
+        led3.current().anchor,
+        initial_anchor3,
+        "Verify path must leave ledger unchanged on failure"
+    );
+
     Ok(())
 }
 
 #[test]
 fn test_09_unforgeable_authority_and_cx_lifecycle() -> Result<(), Box<dyn Error>> {
-    // 1. Unforgeable ReplayIoAuthority constructor validation (N3)
-    // Empty principal rejected
-    match ReplayIoAuthority::authorize("", ADP_REPLAY_ROW_ID) {
-        Err(ReplayAdapterError::Unauthorized { reason }) => {
-            assert_eq!(reason, "principal cannot be empty");
-        }
-        other => {
-            return Err(format!("expected Unauthorized empty principal, got {other:?}").into());
-        }
-    }
+    let adapter = ReplayAdapter::new()?;
 
-    // Empty capability rejected
-    match ReplayIoAuthority::authorize("test-principal", "") {
-        Err(ReplayAdapterError::Unauthorized { reason }) => {
-            assert_eq!(reason, "capability cannot be empty");
-        }
-        other => {
-            return Err(format!("expected Unauthorized empty capability, got {other:?}").into());
-        }
-    }
-
-    // Unauthorized capability scope rejected
-    match ReplayIoAuthority::authorize("test-principal", "wrong:capability") {
-        Err(ReplayAdapterError::Unauthorized { reason }) => {
-            assert_eq!(
-                reason,
-                "capability does not grant ADP-REPLAY-001 I/O authority"
-            );
-        }
-        other => {
-            return Err(format!("expected Unauthorized wrong capability, got {other:?}").into());
-        }
-    }
-
-    // Valid authorizations succeed
-    let auth1 = ReplayIoAuthority::authorize("test-principal", ADP_REPLAY_ROW_ID)?;
-    assert_eq!(auth1.principal(), "test-principal");
-    assert_eq!(auth1.capability(), ADP_REPLAY_ROW_ID);
-
-    let auth2 = ReplayIoAuthority::authorize("test-principal", "io:adapter:adp-replay-001")?;
-    assert_eq!(auth2.capability(), "io:adapter:adp-replay-001");
-
-    // 2. ContextAuthority bridge validation (N3)
+    // 1. ContextAuthority bridge validation (N3): minting ONLY through validated ContextAuthority
     let valid_root_spec = RootAuthoritySpec {
         trace_id: "trace:root-001".to_string(),
         operation_id: OperationId::parse("operation:root-001")?,
@@ -748,9 +769,12 @@ fn test_09_unforgeable_authority_and_cx_lifecycle() -> Result<(), Box<dyn Error>
         generation: 1,
     };
     let valid_context = ContextAuthority::new_root(valid_root_spec)?;
-    let auth_from_cx = ReplayIoAuthority::from_context_authority(&valid_context)?;
-    assert_eq!(auth_from_cx.principal(), "principal:system-root");
+    let auth1 = ReplayIoAuthority::from_context_authority(&valid_context)?;
+    assert_eq!(auth1.principal(), "principal:system-root");
+    assert_eq!(auth1.capability(), ADP_REPLAY_ROW_ID);
+    assert!(auth1.is_valid());
 
+    // Unauthorized context lacking ADP-REPLAY-001 capability is rejected
     let invalid_root_spec = RootAuthoritySpec {
         trace_id: "trace:root-002".to_string(),
         operation_id: OperationId::parse("operation:root-002")?,
@@ -779,7 +803,7 @@ fn test_09_unforgeable_authority_and_cx_lifecycle() -> Result<(), Box<dyn Error>
         }
     }
 
-    // 3. Real ReplayCx lifecycle state machine (N3)
+    // 2. Real ReplayCx lifecycle state machine (N3)
     let cx = ReplayCx::new(auth1);
     assert_eq!(cx.lifecycle_state(), ReplayLifecycleState::Active);
     assert_eq!(cx.lifecycle_state().as_str(), "active");
@@ -818,6 +842,68 @@ fn test_09_unforgeable_authority_and_cx_lifecycle() -> Result<(), Box<dyn Error>
     }
     assert_eq!(cx.checkpoints_reached(), 2);
 
+    // 3. Finalized revokes I/O authority (Requirement 2):
+    // Authority held by finalized context is revoked
+    assert!(
+        !cx.io_authority().is_valid(),
+        "I/O authority must be revoked once context is finalized"
+    );
+
+    // ScopedLedgerDir::new with finalized cx fails closed with PermissionDenied
+    let dir_err = ScopedLedgerDir::new("stolen", &cx);
+    match dir_err {
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
+        Ok(_) => return Err("expected PermissionDenied for finalized cx".into()),
+    }
+
+    // ScopedLedgerDir::from_authority with revoked authority fails closed with PermissionDenied
+    let dir_err2 = ScopedLedgerDir::from_authority("stolen", cx.io_authority());
+    match dir_err2 {
+        Err(e) => assert_eq!(e.kind(), std::io::ErrorKind::PermissionDenied),
+        Ok(_) => return Err("expected PermissionDenied for revoked authority".into()),
+    }
+
+    // Reviving an Active context using a revoked authority is impossible:
+    // ReplayCx::new with revoked authority initializes state to Finalized
+    let revoked_auth = ReplayIoAuthority::from_context_authority(&valid_context)?;
+    revoked_auth.revoke();
+    assert!(!revoked_auth.is_valid());
+
+    let revived_cx = ReplayCx::new(revoked_auth);
+    assert_eq!(
+        revived_cx.lifecycle_state(),
+        ReplayLifecycleState::Finalized
+    );
+    assert!(revived_cx.is_cancelled());
+
+    let active_cx = test_cx("revived_test")?;
+    let active_dir = ScopedLedgerDir::new("revived_test", &active_cx)?;
+    let mut obj_revived = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led_revived = DurableReferenceLedger::open(
+        active_dir.journal_path("revived_test"),
+        "site:replay-contract",
+        IncompleteTailPolicy::Reject,
+    )?;
+    let req_revived = ReplayExecutionRequest::new(sample_bundle()?);
+    match adapter.execute(
+        &revived_cx,
+        &req_revived,
+        &mut obj_revived,
+        &mut led_revived,
+    ) {
+        Err(ReplayAdapterError::CancellationRequested) => {}
+        other => {
+            return Err(
+                format!("expected CancellationRequested on revived cx, got {other:?}").into(),
+            );
+        }
+    }
+    assert_eq!(
+        obj_revived.object_count(),
+        0,
+        "Revived context must publish 0 objects"
+    );
+
     Ok(())
 }
 
@@ -825,11 +911,11 @@ fn test_09_unforgeable_authority_and_cx_lifecycle() -> Result<(), Box<dyn Error>
 fn test_10_verify_against_expected_success() -> Result<(), Box<dyn Error>> {
     let adapter = ReplayAdapter::new()?;
     let bundle = sample_bundle()?;
-    let cx1 = test_cx()?;
-    let cx2 = test_cx()?;
+    let cx1 = test_cx("exp_succ1")?;
+    let cx2 = test_cx("exp_succ2")?;
 
-    let dir1 = ScopedLedgerDir::new("exp_succ1", cx1.io_authority().clone())?;
-    let dir2 = ScopedLedgerDir::new("exp_succ2", cx2.io_authority().clone())?;
+    let dir1 = ScopedLedgerDir::new("exp_succ1", &cx1)?;
+    let dir2 = ScopedLedgerDir::new("exp_succ2", &cx2)?;
 
     let p1 = dir1.journal_path("exp_succ1");
     let p2 = dir2.journal_path("exp_succ2");
@@ -867,6 +953,7 @@ fn test_10_verify_against_expected_success() -> Result<(), Box<dyn Error>> {
         out2.audit_record.audit_hash.to_string(),
         ADP_REPLAY_GOLDEN_AUDIT_HASH
     );
+    assert_eq!(out2.status, ReplayTerminalStatus::Committed);
 
     // On match, publication succeeds into target object store and ledger
     assert!(obj2.object_count() > 0);
@@ -880,6 +967,453 @@ fn test_10_verify_against_expected_success() -> Result<(), Box<dyn Error>> {
         .current()
         .anchor
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_11_cancellation_after_commit_and_checkpoints() -> Result<(), Box<dyn Error>> {
+    let adapter = ReplayAdapter::new()?;
+    let bundle = sample_bundle()?;
+
+    // 1. Cancel injected BEFORE commit (at run_replay checkpoint):
+    // returns Err(CancellationRequested) and leaves target stores untouched (0 objects, unchanged ledger).
+    let cx_pre = test_cx("cancel_pre")?;
+    cx_pre.set_cancel_at_checkpoint("run_replay");
+    let dir_pre = ScopedLedgerDir::new("cancel_pre_commit", &cx_pre)?;
+    let mut obj_pre = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led_pre = DurableReferenceLedger::open(
+        dir_pre.journal_path("cancel_pre_commit"),
+        bundle.site_lineage(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let initial_anchor_pre = led_pre.current().anchor.clone();
+    let req_pre = ReplayExecutionRequest::new(bundle.clone());
+
+    match adapter.execute(&cx_pre, &req_pre, &mut obj_pre, &mut led_pre) {
+        Err(ReplayAdapterError::CancellationRequested) => {}
+        other => return Err(format!("expected CancellationRequested, got {other:?}").into()),
+    }
+    assert_eq!(
+        obj_pre.object_count(),
+        0,
+        "No objects committed on pre-commit cancellation"
+    );
+    assert_eq!(
+        led_pre.current().anchor,
+        initial_anchor_pre,
+        "Ledger unchanged on pre-commit cancellation"
+    );
+
+    // 2. Normal execution returns status Committed
+    let cx_post = test_cx("cancel_post")?;
+    let dir_post = ScopedLedgerDir::new("cancel_post_commit", &cx_post)?;
+    let mut obj_post = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led_post = DurableReferenceLedger::open(
+        dir_post.journal_path("cancel_post_commit"),
+        bundle.site_lineage(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let req_post = ReplayExecutionRequest::new(bundle.clone());
+
+    let out = adapter.execute(&cx_post, &req_post, &mut obj_post, &mut led_post)?;
+    assert_eq!(out.status, ReplayTerminalStatus::Committed);
+    assert!(obj_post.object_count() > 0);
+
+    // 3. Cancel injected AFTER commit (at compute_audit checkpoint):
+    // returns Ok(...) with status CancelledAfterCommit.
+    // Never report cancelled while the effect stands.
+    let cx_post_cancel = test_cx("cancel_post_cancel")?;
+    cx_post_cancel.set_cancel_at_checkpoint("compute_audit");
+    let dir_post_cancel = ScopedLedgerDir::new("cancel_post_audit", &cx_post_cancel)?;
+    let mut obj_post_cancel = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led_post_cancel = DurableReferenceLedger::open(
+        dir_post_cancel.journal_path("cancel_post_audit"),
+        bundle.site_lineage(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let req_post_cancel = ReplayExecutionRequest::new(bundle.clone());
+
+    let out_post = adapter.execute(
+        &cx_post_cancel,
+        &req_post_cancel,
+        &mut obj_post_cancel,
+        &mut led_post_cancel,
+    )?;
+    assert_eq!(out_post.status, ReplayTerminalStatus::CancelledAfterCommit);
+    assert!(obj_post_cancel.object_count() > 0);
+    assert!(cx_post_cancel.is_cancelled());
+
+    // 4. Preflight cancellation: if cx is already cancelled before execution,
+    // returns CancellationRequested with 0 objects committed. Never report cancelled while effect stands.
+    let cx_preflight = test_cx("cancel_preflight")?;
+    let dir_preflight =
+        ScopedLedgerDir::from_authority("cancel_preflight", cx_preflight.io_authority())?;
+    let mut obj_preflight = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led_preflight = DurableReferenceLedger::open(
+        dir_preflight.journal_path("cancel_preflight"),
+        "site:replay-contract",
+        IncompleteTailPolicy::Reject,
+    )?;
+    let bundle_preflight = sample_bundle()?;
+    let req_preflight = ReplayExecutionRequest::new(bundle_preflight);
+    cx_preflight.request_cancellation();
+    match adapter.execute(
+        &cx_preflight,
+        &req_preflight,
+        &mut obj_preflight,
+        &mut led_preflight,
+    ) {
+        Err(ReplayAdapterError::CancellationRequested) => {
+            assert_eq!(obj_preflight.object_count(), 0);
+        }
+        other => return Err(format!("expected CancellationRequested, got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_12_exact_boundaries_and_mutants_r7b_r8a() -> Result<(), Box<dyn Error>> {
+    let bundle = sample_bundle()?;
+    let cx = test_cx("exact_bounds")?;
+    let dir = ScopedLedgerDir::new("exact_bounds", &cx)?;
+    let p = dir.journal_path("exact_bounds");
+    let mut obj = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led =
+        DurableReferenceLedger::open(&p, bundle.site_lineage(), IncompleteTailPolicy::Reject)?;
+    let req = ReplayExecutionRequest::new(bundle);
+
+    // Bundle has 6 packets, 64 bytes each, total 384 bytes.
+    // 1. Exact boundary for max_packets (kills mutant R7b):
+    // max_packets == 6 is accepted (packet_count 6 <= max_packets 6)
+    let cfg_exact_packets = ReplayAdapterConfig {
+        max_packets: 6,
+        ..ReplayAdapterConfig::default()
+    };
+    let adapter_exact_p = ReplayAdapter::with_config(cfg_exact_packets)?;
+    assert!(adapter_exact_p.execute(&cx, &req, &mut obj, &mut led).is_ok());
+
+    // max_packets == 5 is refused (packet_count 6 > max_packets 5)
+    let cfg_under_packets = ReplayAdapterConfig {
+        max_packets: 5,
+        ..ReplayAdapterConfig::default()
+    };
+    let adapter_under_p = ReplayAdapter::with_config(cfg_under_packets)?;
+    match adapter_under_p.execute(&cx, &req, &mut obj, &mut led) {
+        Err(ReplayAdapterError::BoundExceeded(b)) => assert_eq!(b, "packet_count"),
+        other => return Err(format!("expected BoundExceeded packet_count, got {other:?}").into()),
+    }
+
+    // 2. Exact boundary for max_total_bytes (kills mutant R8a):
+    // max_total_bytes == 384 is accepted (total_bytes 384 <= max_total_bytes 384)
+    let cfg_exact_total = ReplayAdapterConfig {
+        max_total_bytes: 384,
+        ..ReplayAdapterConfig::default()
+    };
+    let adapter_exact_t = ReplayAdapter::with_config(cfg_exact_total)?;
+    let dir_t = ScopedLedgerDir::new("exact_bounds_t", &cx)?;
+    let mut obj_t = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led_t = DurableReferenceLedger::open(
+        dir_t.journal_path("exact_bounds_t"),
+        "site:replay-contract",
+        IncompleteTailPolicy::Reject,
+    )?;
+    assert!(adapter_exact_t.execute(&cx, &req, &mut obj_t, &mut led_t).is_ok());
+
+    // max_total_bytes == 383 is refused (total_bytes 384 > max_total_bytes 383)
+    let cfg_under_total = ReplayAdapterConfig {
+        max_total_bytes: 383,
+        ..ReplayAdapterConfig::default()
+    };
+    let adapter_under_t = ReplayAdapter::with_config(cfg_under_total)?;
+    match adapter_under_t.execute(&cx, &req, &mut obj_t, &mut led_t) {
+        Err(ReplayAdapterError::BoundExceeded(b)) => assert_eq!(b, "max_total_bytes"),
+        other => return Err(format!("expected BoundExceeded max_total_bytes, got {other:?}").into()),
+    }
+
+    // 3. Bundle with 7 packets refused when max_packets == 6
+    let spec7 = VirtualCameraSpec {
+        capture_id: CapsuleId::parse("capture:replay:contract:7")?,
+        sensor_id: SensorId::parse("sensor:replay-lane")?,
+        seed: 0xfeed_face_cafe_beef,
+        packet_count: 7,
+        packet_bytes: 64,
+        start_ns: 10_000,
+        period_ns: 1_000_000,
+        uncertainty_ns: 5_000,
+    };
+    let plan7 = DeliveryPlan::new((1..=7).map(DeliveryDirective::exact).collect())?;
+    let bundle7 = ReplayBundle::new("site:replay-contract", spec7, plan7)?;
+    let req7 = ReplayExecutionRequest::new(bundle7);
+    match adapter_exact_p.execute(&cx, &req7, &mut obj, &mut led) {
+        Err(ReplayAdapterError::BoundExceeded(b)) => assert_eq!(b, "packet_count"),
+        other => {
+            return Err(
+                format!("expected BoundExceeded packet_count on 7 packets, got {other:?}").into(),
+            );
+        }
+    }
+
+    // 4. Bundle with 385 bytes refused when max_total_bytes == 384
+    let spec_385 = VirtualCameraSpec {
+        capture_id: CapsuleId::parse("capture:replay:contract:385")?,
+        sensor_id: SensorId::parse("sensor:replay-lane")?,
+        seed: 0xfeed_face_cafe_beef,
+        packet_count: 7,
+        packet_bytes: 55, // 7 * 55 = 385 bytes
+        start_ns: 10_000,
+        period_ns: 1_000_000,
+        uncertainty_ns: 5_000,
+    };
+    let plan_385 = DeliveryPlan::new((1..=7).map(DeliveryDirective::exact).collect())?;
+    let bundle_385 = ReplayBundle::new("site:replay-contract", spec_385, plan_385)?;
+    let req_385 = ReplayExecutionRequest::new(bundle_385);
+    let cfg_total_384 = ReplayAdapterConfig {
+        max_packets: 10,
+        max_total_bytes: 384,
+        ..ReplayAdapterConfig::default()
+    };
+    let adapter_total_384 = ReplayAdapter::with_config(cfg_total_384)?;
+    match adapter_total_384.execute(&cx, &req_385, &mut obj, &mut led) {
+        Err(ReplayAdapterError::BoundExceeded(b)) => assert_eq!(b, "max_total_bytes"),
+        other => {
+            return Err(
+                format!("expected BoundExceeded max_total_bytes on 385 bytes, got {other:?}").into(),
+            );
+        }
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_13_staging_cleanup_on_divergence_r10() -> Result<(), Box<dyn Error>> {
+    let adapter = ReplayAdapter::new()?;
+    let bundle = sample_bundle()?;
+    let cx = test_cx("staging_cleanup")?;
+    let dir = ScopedLedgerDir::new("staging_clean", &cx)?;
+    let p = dir.journal_path("staging_clean");
+    let mut obj = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led =
+        DurableReferenceLedger::open(&p, bundle.site_lineage(), IncompleteTailPolicy::Reject)?;
+    let req = ReplayExecutionRequest::new(bundle);
+
+    let wrong_root = ContentDigest::sha256(b"intentionally divergent root");
+    let wrong_audit = ContentDigest::sha256(b"intentionally divergent audit");
+
+    // The staging directory will be created under cx.root_dir() with current sequence number
+    let staging_path = cx
+        .root_dir()
+        .join(format!("staging_replay-{}", cx.current_dir_sequence()));
+    assert!(!staging_path.exists());
+
+    match adapter.verify_against_expected(
+        &cx,
+        &req,
+        &mut obj,
+        &mut led,
+        &wrong_root,
+        &wrong_audit,
+    ) {
+        Err(ReplayAdapterError::ReplayDiverged(_)) => {}
+        other => return Err(format!("expected ReplayDiverged, got {other:?}").into()),
+    }
+
+    // Invariant (kills mutant R10): staging directory MUST be cleaned up on divergence
+    assert!(
+        !staging_path.exists(),
+        "Staging directory must not survive divergence failure: {staging_path:?}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_14_negative_registry_row_constants_r11() -> Result<(), Box<dyn Error>> {
+    let valid_json = include_str!("../../../architecture/device_adapters.json");
+
+    // 1. Valid JSON passes
+    assert!(ReplayAdapter::verify_registry_row_json(valid_json).is_ok());
+
+    // 2. Missing ID fails with RegistryDrift { field: "id" } (kills mutant R11)
+    let json_missing_id = valid_json.replace("\"ADP-REPLAY-001\"", "\"ADP-REPLAY-REMOVED\"");
+    match ReplayAdapter::verify_registry_row_json(&json_missing_id) {
+        Err(ReplayAdapterError::RegistryDrift { field, .. }) => assert_eq!(field, "id"),
+        other => return Err(format!("expected RegistryDrift on id, got {other:?}").into()),
+    }
+
+    // 3. Tampered surface fails
+    let json_bad_surface = valid_json.replace("\"deterministic replay\"", "\"tampered surface\"");
+    match ReplayAdapter::verify_registry_row_json(&json_bad_surface) {
+        Err(ReplayAdapterError::RegistryDrift { field, .. }) => assert_eq!(field, "surface"),
+        other => return Err(format!("expected RegistryDrift on surface, got {other:?}").into()),
+    }
+
+    // 4. Tampered tier fails
+    let json_bad_tier = valid_json.replace(
+        "\"id\": \"ADP-REPLAY-001\",\n      \"surface\": \"deterministic replay\",\n      \"tier\": \"T0\"",
+        "\"id\": \"ADP-REPLAY-001\",\n      \"surface\": \"deterministic replay\",\n      \"tier\": \"T1\"",
+    );
+    match ReplayAdapter::verify_registry_row_json(&json_bad_tier) {
+        Err(ReplayAdapterError::RegistryDrift { field, .. }) => assert_eq!(field, "tier"),
+        other => return Err(format!("expected RegistryDrift on tier, got {other:?}").into()),
+    }
+
+    // 5. Tampered currentState fails
+    let json_bad_state = valid_json.replace(
+        "\"currentState\": \"specified\"",
+        "\"currentState\": \"research target\"",
+    );
+    match ReplayAdapter::verify_registry_row_json(&json_bad_state) {
+        Err(ReplayAdapterError::RegistryDrift { field, .. }) => assert_eq!(field, "currentState"),
+        other => return Err(format!("expected RegistryDrift on currentState, got {other:?}").into()),
+    }
+
+    // 6. Tampered promotionGate fails
+    let json_bad_gate = valid_json.replace(
+        "\"promotionGate\": \"GATE-010\"",
+        "\"promotionGate\": \"GATE-090\"",
+    );
+    match ReplayAdapter::verify_registry_row_json(&json_bad_gate) {
+        Err(ReplayAdapterError::RegistryDrift { field, .. }) => assert_eq!(field, "promotionGate"),
+        other => return Err(format!("expected RegistryDrift on promotionGate, got {other:?}").into()),
+    }
+
+    // 7. Tampered generation fails
+    let json_bad_gen = valid_json.replace(
+        "\"generation\": \"gen:fss1:adapters-v1\"",
+        "\"generation\": \"gen:fss1:adapters-v2\"",
+    );
+    match ReplayAdapter::verify_registry_row_json(&json_bad_gen) {
+        Err(ReplayAdapterError::RegistryDrift { field, .. }) => assert_eq!(field, "generation"),
+        other => return Err(format!("expected RegistryDrift on generation, got {other:?}").into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_15_all_execute_checkpoints_honoured_r6b() -> Result<(), Box<dyn Error>> {
+    let adapter = ReplayAdapter::new()?;
+    let bundle = sample_bundle()?;
+
+    // Test checkpoint 1: "preflight"
+    let cx1 = test_cx("ckpt1")?;
+    cx1.set_cancel_at_checkpoint("preflight");
+    let dir1 = ScopedLedgerDir::new("ckpt1", &cx1)?;
+    let mut obj1 = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led1 = DurableReferenceLedger::open(
+        dir1.journal_path("ckpt1"),
+        bundle.site_lineage(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let req1 = ReplayExecutionRequest::new(bundle.clone());
+    match adapter.execute(&cx1, &req1, &mut obj1, &mut led1) {
+        Err(ReplayAdapterError::CancellationRequested) => {
+            assert_eq!(cx1.checkpoints_reached(), 1);
+            assert_eq!(obj1.object_count(), 0);
+        }
+        other => {
+            return Err(
+                format!("expected CancellationRequested at preflight, got {other:?}").into(),
+            );
+        }
+    }
+
+    // Test checkpoint 2: "run_replay" (pre-commit)
+    let cx2 = test_cx("ckpt2")?;
+    cx2.set_cancel_at_checkpoint("run_replay");
+    let dir2 = ScopedLedgerDir::new("ckpt2", &cx2)?;
+    let mut obj2 = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led2 = DurableReferenceLedger::open(
+        dir2.journal_path("ckpt2"),
+        bundle.site_lineage(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let req2 = ReplayExecutionRequest::new(bundle.clone());
+    match adapter.execute(&cx2, &req2, &mut obj2, &mut led2) {
+        Err(ReplayAdapterError::CancellationRequested) => {
+            assert_eq!(cx2.checkpoints_reached(), 2);
+            assert_eq!(obj2.object_count(), 0);
+        }
+        other => {
+            return Err(
+                format!("expected CancellationRequested at run_replay, got {other:?}").into(),
+            );
+        }
+    }
+
+    // Test checkpoint 3: "compute_audit" (post-commit)
+    let cx3 = test_cx("ckpt3")?;
+    cx3.set_cancel_at_checkpoint("compute_audit");
+    let dir3 = ScopedLedgerDir::new("ckpt3", &cx3)?;
+    let mut obj3 = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led3 = DurableReferenceLedger::open(
+        dir3.journal_path("ckpt3"),
+        bundle.site_lineage(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let req3 = ReplayExecutionRequest::new(bundle);
+    let out3 = adapter.execute(&cx3, &req3, &mut obj3, &mut led3)?;
+    assert_eq!(cx3.checkpoints_reached(), 3);
+    assert_eq!(out3.status, ReplayTerminalStatus::CancelledAfterCommit);
+    assert!(obj3.object_count() > 0);
+    assert!(cx3.is_cancelled());
+
+    Ok(())
+}
+
+#[test]
+fn test_16_preflight_honours_cx_cancellation_r6d() -> Result<(), Box<dyn Error>> {
+    let adapter = ReplayAdapter::new()?;
+    let bundle = sample_bundle()?;
+
+    // 1. In execute: cx is cancelled, but request.cancel_requested == false (kills mutant R6d)
+    let cx = test_cx("preflight_cx1")?;
+    let dir = ScopedLedgerDir::from_authority("preflight_cx", cx.io_authority())?;
+    cx.request_cancellation();
+    let mut obj = InMemoryObjectStore::new(ObjectLimits::new(64, 1024 * 1024));
+    let mut led = DurableReferenceLedger::open(
+        dir.journal_path("preflight_cx"),
+        bundle.site_lineage(),
+        IncompleteTailPolicy::Reject,
+    )?;
+    let req = ReplayExecutionRequest::new(bundle.clone());
+    assert!(!req.cancel_requested);
+
+    match adapter.execute(&cx, &req, &mut obj, &mut led) {
+        Err(ReplayAdapterError::CancellationRequested) => {
+            assert_eq!(obj.object_count(), 0);
+            assert_eq!(cx.lifecycle_state(), ReplayLifecycleState::Finalized);
+        }
+        other => return Err(format!("expected CancellationRequested, got {other:?}").into()),
+    }
+
+    // 2. In verify_against_expected: cx is cancelled, but request.cancel_requested == false (kills mutant R6d)
+    let cx_v = test_cx("preflight_cx2")?;
+    cx_v.request_cancellation();
+    let golden_root = ContentDigest::parse(ADP_REPLAY_GOLDEN_STATE_ROOT)?;
+    let golden_audit = ContentDigest::parse(ADP_REPLAY_GOLDEN_AUDIT_HASH)?;
+
+    match adapter.verify_against_expected(
+        &cx_v,
+        &req,
+        &mut obj,
+        &mut led,
+        &golden_root,
+        &golden_audit,
+    ) {
+        Err(ReplayAdapterError::CancellationRequested) => {
+            assert_eq!(obj.object_count(), 0);
+            assert_eq!(cx_v.lifecycle_state(), ReplayLifecycleState::Finalized);
+        }
+        other => {
+            return Err(
+                format!("expected CancellationRequested in verify, got {other:?}").into(),
+            );
+        }
+    }
 
     Ok(())
 }
