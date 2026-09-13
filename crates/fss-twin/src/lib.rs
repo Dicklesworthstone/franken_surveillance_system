@@ -195,3 +195,6 @@ pub mod observed_handoff;
 
 /// Mask-safe native lens correction into the existing pinhole image domain.
 pub mod rectification;
+
+/// Source-driven multi-target association with explicit unresolved alternatives.
+pub mod association;
