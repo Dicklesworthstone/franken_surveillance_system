@@ -29,7 +29,7 @@ const CAPABILITY_SESSION_WAIT: &str = "capability:session.wait";
 /// Claim-identity namespace of every effect proposition.
 pub(crate) const EFFECT_CLAIM_PREFIX: &str = "claim:effect:";
 /// Claim-identity namespace of obligation propositions, which no compile path produces.
-const OBLIGATION_CLAIM_PREFIX: &str = "claim:obligation:";
+pub(crate) const OBLIGATION_CLAIM_PREFIX: &str = "claim:obligation:";
 
 /// Exact inputs used to compile one bounded situation projection.
 #[derive(Clone, Debug)]
@@ -252,6 +252,12 @@ impl ReferenceSituation {
         self.seal.is_some()
     }
 
+    /// The proof roots the compile path gathered when it sealed, or `None` for an unsealed
+    /// situation. A sealed publication's roots are exactly these plus the roots projection derives.
+    pub(crate) fn sealed_roots(&self) -> Option<&BTreeSet<ContentDigest>> {
+        self.seal.as_ref().map(|seal| &seal.roots)
+    }
+
     /// The seal digest a publication commits to, or `None` for an unsealed situation.
     pub(crate) fn seal_digest(&self) -> Option<ContentDigest> {
         self.seal.as_ref().map(|seal| seal.digest)
@@ -393,37 +399,99 @@ impl ReferenceSituation {
 /// binding, an obligation through the capsule's typed obligation set.
 const RESERVED_CLAIM_NAMESPACES: [&str; 2] = ["effect", "obligation"];
 
-/// Returns whether `claim_id` follows the strict claim grammar: `claim:`, a namespace of lowercase
-/// ASCII letters, digits and `-`, then nothing or `:` and a tail in the portable identifier
-/// alphabet (`[A-Za-z0-9._:-]`). No whitespace, control, format or non-ASCII character reaches a
-/// namespace test, so no Unicode or spacing look-alike of a reserved namespace survives (fss-6sph6).
+/// Returns whether `claim_id` follows the strict claim grammar: `claim:`, then a namespace of
+/// lowercase ASCII letters, digits and `-` that starts and ends with a letter or digit, then
+/// nothing or `:` and one or more non-empty segments over `[A-Za-z0-9._-]` separated by `:`. No
+/// whitespace, control, format or non-ASCII character, no empty segment, and no dangling `-` or
+/// `:` reaches a namespace test (fss-6sph6).
 fn claim_id_is_well_formed(claim_id: &str) -> bool {
     let Some(rest) = claim_id.strip_prefix("claim:") else {
         return false;
     };
-    let (namespace, tail) = rest.split_once(':').unwrap_or((rest, ""));
-    !namespace.is_empty()
+    let (namespace, tail) = rest
+        .split_once(':')
+        .map_or((rest, None), |(namespace, tail)| (namespace, Some(tail)));
+    let alphanumeric = |byte: Option<&u8>| {
+        byte.is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    };
+    alphanumeric(namespace.as_bytes().first())
+        && alphanumeric(namespace.as_bytes().last())
         && namespace
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && tail
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+        && tail.is_none_or(|tail| {
+            tail.split(':').all(|segment| {
+                !segment.is_empty()
+                    && segment.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                    })
+            })
+        })
 }
 
-/// Returns whether `claim_id` reads as a reserved namespace (ignoring ASCII case and a plural
-/// `s`) without being spelled exactly `claim:{namespace}:`. Such a cell would slip past the typed
-/// rules into a looser one, so it is refused rather than classified (fss-6sph6).
+/// Returns whether a well-formed `claim_id` reads as a reserved namespace without being one.
+///
+/// The reserved namespaces are an exact allowlist, and a reserved namespace must carry a tail. Any
+/// other namespace within edit distance 2 of a reserved one, or whose normalized spelling (no `-`,
+/// `0` read as `o` and `1` as `l`, repeated letters collapsed) contains a reserved one, would slip
+/// past the typed rules into a looser one, so it is refused rather than classified (fss-6sph6).
 fn confusable_reserved_namespace(claim_id: &str) -> bool {
-    let folded = claim_id.to_ascii_lowercase();
-    let Some(rest) = folded.strip_prefix("claim:") else {
+    let Some(rest) = claim_id.strip_prefix("claim:") else {
         return false;
     };
-    let namespace = rest.split(':').next().unwrap_or_default();
-    let singular = namespace.strip_suffix('s').unwrap_or(namespace);
+    let (namespace, tail) = rest
+        .split_once(':')
+        .map_or((rest, None), |(namespace, tail)| (namespace, Some(tail)));
     RESERVED_CLAIM_NAMESPACES.iter().any(|reserved| {
-        singular == *reserved && !claim_id.starts_with(&format!("claim:{reserved}:"))
+        if namespace == *reserved {
+            return tail.is_none();
+        }
+        edit_distance(namespace, reserved) <= 2
+            || normalized_namespace(namespace).contains(&normalized_namespace(reserved))
     })
+}
+
+/// A namespace with `-` removed, `0` read as `o` and `1` as `l`, and repeated letters collapsed.
+fn normalized_namespace(namespace: &str) -> String {
+    let mut normalized = String::with_capacity(namespace.len());
+    for letter in namespace
+        .chars()
+        .filter(|letter| *letter != '-')
+        .map(|letter| match letter {
+            '0' => 'o',
+            '1' => 'l',
+            other => other,
+        })
+    {
+        if !normalized.ends_with(letter) {
+            normalized.push(letter);
+        }
+    }
+    normalized
+}
+
+/// Levenshtein distance between two short namespaces.
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right: Vec<char> = right.chars().collect();
+    let mut previous: Vec<usize> = (0..=right.len()).collect();
+    for (row, left_letter) in left.chars().enumerate() {
+        let mut current = Vec::with_capacity(right.len() + 1);
+        current.push(row + 1);
+        for (column, right_letter) in right.iter().enumerate() {
+            let substitution = previous.get(column).map_or(usize::MAX, |cost| {
+                cost.saturating_add(usize::from(left_letter != *right_letter))
+            });
+            let deletion = previous
+                .get(column + 1)
+                .map_or(usize::MAX, |cost| cost.saturating_add(1));
+            let insertion = current
+                .last()
+                .map_or(usize::MAX, |cost| cost.saturating_add(1));
+            current.push(substitution.min(deletion).min(insertion));
+        }
+        previous = current;
+    }
+    previous.last().copied().unwrap_or(usize::MAX)
 }
 
 /// Compiles one deterministic, conservative situation projection from canonical reference state.

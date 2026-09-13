@@ -177,6 +177,24 @@ impl ReferenceSituationPublication {
             // materializes the reference-only projection.
             return Err(ContractError::IncompletePublicationGraph.into());
         }
+        // A sealed publication's roots are exactly the roots its compile path sealed plus the ones
+        // projection derived, so a foreign root is refused even with a recomputed digest
+        // (fss-6sph6).
+        if let Some(sealed) = self.situation.sealed_roots() {
+            let mut expected = sealed.clone();
+            expected.extend([
+                base,
+                self.resource_state.state_digest(),
+                self.control_envelope.control_digest(),
+                self.context_pack.pack_digest,
+                self.compression_receipt.receipt_digest(),
+            ]);
+            if self.situation.proof_roots != expected {
+                return Err(ReferenceError::InvalidSpec(
+                    "situation_publication_proof_roots",
+                ));
+            }
+        }
         Ok(computed)
     }
 
@@ -186,7 +204,7 @@ impl ReferenceSituationPublication {
     /// an invalid capsule has no decision fingerprint.
     pub fn computed_digest(&self) -> Result<ContentDigest, ReferenceError> {
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.reference_situation_publication.v1");
+        encoder.text("fss.reference_situation_publication.v2");
         encoder.digest(self.situation.capsule.decision_fingerprint()?);
         // The publication commits to the compile path's seal, so a sealed publication and the same
         // capsule rebuilt unsealed never share a digest (fss-6sph6).
@@ -196,6 +214,11 @@ impl ReferenceSituationPublication {
                 encoder.digest(seal);
             }
             None => encoder.bool(false),
+        }
+        // The digest also covers the final proof-root set, so no root joins or leaves unnoticed.
+        encoder.u64(self.situation.proof_roots.len() as u64);
+        for root in &self.situation.proof_roots {
+            encoder.digest(*root);
         }
         self.resource_state.encode_canonical(&mut encoder);
         self.control_envelope.encode_canonical(&mut encoder);

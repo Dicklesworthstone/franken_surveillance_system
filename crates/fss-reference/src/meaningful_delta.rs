@@ -9,7 +9,7 @@ use fss_core::{
     TimestampNs, WorldEnvelope,
 };
 
-use crate::situation::{EFFECT_CLAIM_PREFIX, EffectOutcome};
+use crate::situation::{EFFECT_CLAIM_PREFIX, EffectOutcome, OBLIGATION_CLAIM_PREFIX};
 use crate::{ReferenceError, ReferenceSituationPublication};
 
 /// Returns whether a premise that a plan relied on at `prior` is invalidated by its `current`
@@ -146,6 +146,21 @@ pub fn classify_reference_meaningful_delta(
     basis.verify()?;
     result.verify()?;
     validate_comparison_basis(basis, result)?;
+    // An obligation is discharged only by a publication a compile path sealed: a hand-built result
+    // that drops a typed obligation would otherwise read as a terminal transition with no proof
+    // behind it (fss-6sph6).
+    if !result.situation.is_sealed()
+        && basis
+            .situation
+            .capsule
+            .obligations
+            .iter()
+            .any(|obligation| !result.situation.capsule.obligations.contains(obligation))
+    {
+        return Err(ReferenceError::InvalidSpec(
+            "meaningful_delta_unsealed_obligation_discharge",
+        ));
+    }
 
     let basis_capsule = &basis.situation.capsule;
     let result_capsule = &result.situation.capsule;
@@ -494,7 +509,7 @@ pub fn classify_reference_meaningful_delta(
     // obligation-namespace cell (none is ever bound) and every look-alike spelling of either
     // namespace, so none reaches this rule (fss-6sph6).
     let event_terminalized = result_frame.knowledge_cells.iter().any(|cell| {
-        if is_effect_claim(cell) {
+        if !event_rule_applies(cell) {
             return false;
         }
         let is_terminal_hypothesis = matches!(
@@ -773,6 +788,16 @@ fn contradiction_changed(
 /// every effect rule (fss-6sph6).
 fn is_effect_claim(cell: &KnowledgeCell) -> bool {
     cell.claim_id.starts_with(EFFECT_CLAIM_PREFIX)
+}
+
+/// Returns whether a terminal hypothesis on `cell` may terminalize an event.
+///
+/// An effect cell terminalizes only through its proved outcome and an obligation only through the
+/// typed obligation set, so neither ever reaches the event rule. `verify` already refuses every
+/// obligation-namespace cell; excluding it here too is a second guard, so an obligation cell drives
+/// no terminal transition even if that refusal were bypassed (fss-6sph6).
+pub(crate) fn event_rule_applies(cell: &KnowledgeCell) -> bool {
+    !is_effect_claim(cell) && !cell.claim_id.starts_with(OBLIGATION_CLAIM_PREFIX)
 }
 
 /// Typed terminal outcomes of every operation an effect cell proves in `publication` under `bar`,

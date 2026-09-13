@@ -1443,3 +1443,284 @@ fn publication_digest_commits_to_the_seal() -> Result<(), Box<dyn Error>> {
     lifecycle.harness.cleanup();
     Ok(())
 }
+
+/// Rebuilds `publication`'s capsule through the public constructor after `edit_capsule`, so the
+/// result is unsealed, and projects it.
+fn unsealed_rebuild(
+    publication: &crate::ReferenceSituationPublication,
+    edit_capsule: impl FnOnce(&mut fss_core::SituationCapsule),
+) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+    let mut capsule = publication.situation.capsule.clone();
+    edit_capsule(&mut capsule);
+    let rebuilt =
+        crate::ReferenceSituation::new(capsule, publication.situation.proof_roots.clone());
+    Ok(crate::project_reference_situation(
+        rebuilt,
+        &guard_projection_spec()?,
+    )?)
+}
+
+fn strip_effect_cells(capsule: &mut fss_core::SituationCapsule) {
+    capsule
+        .frame
+        .knowledge_cells
+        .retain(|cell| !cell.claim_id.starts_with("claim:effect:"));
+}
+
+/// Asserts that both bound routes refuse `publication` with the exact unsealed refusal: publishing
+/// it as a bound publication, and a bound handoff from `genuine_bound` with its base publication
+/// swapped for it and its bound digest recomputed.
+fn assert_bound_routes_refuse(
+    genuine_bound: &crate::BoundReferenceSituationPublication,
+    publication: crate::ReferenceSituationPublication,
+) -> Result<(), Box<dyn Error>> {
+    let expected = crate::ReferenceContextBindingError::Reference(ReferenceError::InvalidSpec(
+        "situation_bound_publication_unsealed",
+    ))
+    .to_string();
+    let specs = crate::context_binding_tests::binding_specs(&publication)?;
+    let published = crate::BoundReferenceSituationPublication::publish(publication.clone(), specs);
+    assert_eq!(
+        published.as_ref().err().map(ToString::to_string),
+        Some(expected.clone()),
+        "bound publish accepted: {}",
+        published.is_ok()
+    );
+    let mut swapped = genuine_bound.clone();
+    swapped.publication = publication;
+    swapped.bound_publication_digest = swapped.computed_digest();
+    let handoff = crate::seal_bound_reference_publication_handoff(
+        &swapped,
+        fss_core::HandoffId::parse("handoff:bound:swapped")?,
+        TimestampNs(1_001),
+        TimestampNs(2_000),
+    );
+    assert_eq!(
+        handoff.as_ref().err().map(ToString::to_string),
+        Some(expected),
+        "bound handoff accepted: {}",
+        handoff.is_ok()
+    );
+    Ok(())
+}
+
+/// Review round 4 F1: a dispatched situation stripped of its indeterminate local-state cell, the
+/// same with the effect-status affordances dropped and the commit affordance restored, and a
+/// prepared situation stripped of its effect cells are all unsealed rebuilds. The plain handoff
+/// and both bound routes refuse each of them, so none can carry a live re-dispatch affordance to
+/// another principal (fss-6sph6).
+#[test]
+fn bound_routes_refuse_unsealed_rebuilds() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("bound-rebuild")?;
+    let dispatched = &lifecycle.dispatched;
+    let prepared = &lifecycle.prepared;
+    let genuine_bound = crate::BoundReferenceSituationPublication::publish(
+        dispatched.clone(),
+        crate::context_binding_tests::binding_specs(dispatched)?,
+    )?;
+    crate::seal_bound_reference_publication_handoff(
+        &genuine_bound,
+        fss_core::HandoffId::parse("handoff:bound:genuine")?,
+        TimestampNs(1_001),
+        TimestampNs(2_000),
+    )?;
+
+    let commit = prepared
+        .situation
+        .capsule
+        .affordances
+        .iter()
+        .find(|affordance| affordance.operation == "commit")
+        .cloned()
+        .ok_or(ReferenceError::InvalidSpec("missing_commit_affordance"))?;
+    let stripped = unsealed_rebuild(dispatched, strip_effect_cells)?;
+    let restored = unsealed_rebuild(dispatched, |capsule| {
+        strip_effect_cells(capsule);
+        capsule.affordances.retain(|affordance| {
+            affordance.affordance_id != EFFECT_STATUS_AFFORDANCE
+                && affordance.affordance_id != "affordance:alert:reconcile"
+        });
+        capsule.affordances.push(commit);
+        capsule
+            .affordances
+            .sort_by(|left, right| left.affordance_id.cmp(&right.affordance_id));
+        capsule.frame.next = capsule
+            .affordances
+            .iter()
+            .filter(|affordance| {
+                matches!(
+                    affordance.class,
+                    fss_core::AffordanceClass::Robust
+                        | fss_core::AffordanceClass::Conditional
+                        | fss_core::AffordanceClass::Probe
+                        | fss_core::AffordanceClass::Wait
+                )
+            })
+            .map(|affordance| affordance.affordance_id.clone())
+            .collect();
+    })?;
+    let prepared_stripped = unsealed_rebuild(prepared, strip_effect_cells)?;
+    for rebuilt in [&restored, &prepared_stripped] {
+        assert!(
+            rebuilt
+                .situation
+                .capsule
+                .affordances
+                .iter()
+                .any(|affordance| affordance.operation == "commit")
+        );
+    }
+    let unsealed = ReferenceError::InvalidSpec("situation_handoff_unsealed");
+    for (label, rebuilt) in [
+        ("stripped", stripped),
+        ("commit restored", restored),
+        ("prepared stripped", prepared_stripped),
+    ] {
+        assert!(!rebuilt.situation.is_sealed(), "{label}");
+        let handoff = crate::seal_reference_publication_handoff(
+            &rebuilt,
+            fss_core::HandoffId::parse("handoff:plain:rebuilt")?,
+            TimestampNs(1_001),
+            TimestampNs(2_000),
+        );
+        assert!(
+            refused_with(&handoff, &unsealed),
+            "{label}: {:?}",
+            handoff.is_ok()
+        );
+        assert_bound_routes_refuse(&genuine_bound, rebuilt)?;
+    }
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// Review round 4 F2: an unsealed rebuild that clears a compiled situation's obligations cannot
+/// discharge them; classification refuses it instead of reporting a terminal obligation transition
+/// with no proof (fss-6sph6).
+#[test]
+fn unsealed_rebuild_cannot_discharge_compiled_obligations() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("rebuild-discharge")?;
+    let dispatched = &lifecycle.dispatched;
+    assert!(!dispatched.situation.capsule.obligations.is_empty());
+    let cleared = unsealed_rebuild(dispatched, |capsule| {
+        strip_effect_cells(capsule);
+        capsule.obligations.clear();
+    })?;
+    let classified = crate::classify_reference_meaningful_delta(dispatched, &cleared);
+    assert!(
+        matches!(
+            classified,
+            Err(ReferenceError::InvalidSpec(
+                "meaningful_delta_unsealed_obligation_discharge"
+            ))
+        ),
+        "{:?}",
+        classified.map(|delta| delta.classes)
+    );
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// Round 4 F6: an obligation-namespace cell injected into a compiled situation is refused by
+/// verification, projection and publication verification alike; no compile path binds one.
+#[test]
+fn injected_obligation_cell_is_refused() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("inject-obligation")?;
+    let genuine = &lifecycle.dispatched.situation;
+    let root = fss_core::ContentDigest::sha256(b"injected-obligation-root");
+    let mut tampered = genuine.clone();
+    tampered
+        .capsule
+        .frame
+        .knowledge_cells
+        .push(fss_core::KnowledgeCell {
+            claim_id: "claim:obligation:situation-guard:inject-obligation".to_owned(),
+            statement: "The alert obligation was discharged.".to_owned(),
+            knowledge_state: fss_core::KnowledgeState::Known,
+            provenance: fss_core::ProvenanceClass::Observed,
+            hypothesis: Some(fss_core::HypothesisDisposition::Resolved),
+            evidence: vec![root],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        });
+    tampered.proof_roots.insert(root);
+    assert_effect_tamper_refused(
+        genuine,
+        tampered,
+        &ReferenceError::InvalidSpec("situation_obligation_cell_unbound"),
+    )?;
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// Review round 4 F4: a sealed publication's proof roots are exactly the sealed roots plus the
+/// roots projection derived, and the publication digest covers them. A foreign root is refused as
+/// a digest mismatch, and still refused once the digest is recomputed to match it (fss-6sph6).
+#[test]
+fn sealed_publication_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("exact-roots")?;
+    let genuine = lifecycle.verified(true)?;
+    genuine.verify()?;
+    let mut inserted = genuine.clone();
+    assert!(
+        inserted
+            .situation
+            .proof_roots
+            .insert(fss_core::ContentDigest::sha256(b"round4-foreign-root"))
+    );
+    let verified = inserted.verify();
+    assert!(
+        refused_with(
+            &verified,
+            &ReferenceError::Contract(fss_core::ContractError::DigestMismatch)
+        ),
+        "{verified:?}"
+    );
+    inserted.publication_digest = inserted.computed_digest()?;
+    assert_ne!(inserted.publication_digest, genuine.publication_digest);
+    let verified = inserted.verify();
+    assert!(
+        refused_with(
+            &verified,
+            &ReferenceError::InvalidSpec("situation_publication_proof_roots")
+        ),
+        "{verified:?}"
+    );
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// Pinned seal digest of the fixed compiled publication below.
+const GOLDEN_SEAL_DIGEST: &str =
+    "sha256:61826167f9626abd245a0f2add4702fae3ba736c7d52c83c1f3445bb70d0e6ce";
+/// Pinned v2 publication digest of the fixed compiled publication below.
+const GOLDEN_PUBLICATION_DIGEST: &str =
+    "sha256:d5c8f91ded4ce435f34e12259c91ddfa88bcbc7bbe1bb1352a60ca6d89913c51";
+
+/// Review round 4 F5: the seal digest and the v2 publication digest of a fixed compiled
+/// publication are pinned, so any change to either encoding has to change these goldens on purpose.
+#[test]
+fn compiled_publication_digests_are_pinned() -> Result<(), Box<dyn Error>> {
+    let name = "golden";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let compile_request = request(&decision, &receipt, &["capability:alert.prepare"])?;
+    let publication = crate::project_reference_situation(
+        compile_reference_situation(compile_request, &harness.authority)?,
+        &guard_projection_spec()?,
+    )?;
+    let seal = publication
+        .situation
+        .seal_digest()
+        .ok_or(ReferenceError::InvalidSpec("missing_seal"))?;
+    assert_eq!(
+        (seal.to_string(), publication.publication_digest.to_string()),
+        (
+            GOLDEN_SEAL_DIGEST.to_owned(),
+            GOLDEN_PUBLICATION_DIGEST.to_owned()
+        )
+    );
+    harness.cleanup();
+    Ok(())
+}

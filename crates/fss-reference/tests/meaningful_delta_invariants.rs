@@ -588,9 +588,12 @@ fn test_f4_terminal_event_transition_is_non_coalescible() -> Result<(), Box<dyn 
     Ok(())
 }
 
-/// F4: Obligation terminalization (active obligation resolved/removed) emits TerminalTransition.
+/// F4: Obligation terminalization is typed and needs a compiled result: a hand-built result that
+/// drops an active obligation is refused rather than read as a terminal transition with no proof
+/// (fss-6sph6). The sealed discharge, terminal and non-coalescible, is pinned by the in-crate
+/// `unsealed_result_cannot_discharge_an_obligation` test.
 #[test]
-fn test_f4_obligation_terminalization_emits_terminal_transition() -> Result<(), Box<dyn Error>> {
+fn test_f4_hand_built_obligation_discharge_is_refused() -> Result<(), Box<dyn Error>> {
     let mut v1 = Variant::baseline()?;
     v1.sequence = 1;
     v1.obligations = vec![ObligationId::parse("obligation:test:001")?];
@@ -601,38 +604,17 @@ fn test_f4_obligation_terminalization_emits_terminal_transition() -> Result<(), 
 
     let pub1 = publication(&v1)?;
     let pub2 = publication(&v2)?;
-    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
-
+    let classified = classify_reference_meaningful_delta(&pub1, &pub2);
     assert!(
-        delta
-            .classes
-            .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "Obligation terminalization must emit TerminalTransition!"
+        matches!(
+            classified,
+            Err(ReferenceError::InvalidSpec(
+                "meaningful_delta_unsealed_obligation_discharge"
+            ))
+        ),
+        "{:?}",
+        classified.map(|delta| delta.classes)
     );
-    assert!(
-        delta.classes.contains(&MeaningfulDeltaClass::Obligation),
-        "Obligation transition must emit Obligation class!"
-    );
-    assert!(
-        delta.is_non_coalescible(),
-        "Terminal obligation delta must be non-coalescible!"
-    );
-    let mut v3 = Variant::baseline()?;
-    v3.sequence = 3;
-    v3.pressure = ResourcePressure::Elevated;
-    let pub3 = publication(&v3)?;
-    let delta2 = classify_reference_meaningful_delta(&pub2, &pub3)?;
-    assert!(
-        delta
-            .coalesce(
-                &delta2,
-                "delta:coalesced",
-                "continuation:coalesced",
-                ContentDigest::sha256(b"coalesced"),
-            )
-            .is_err()
-    );
-    delta.validate()?;
     Ok(())
 }
 

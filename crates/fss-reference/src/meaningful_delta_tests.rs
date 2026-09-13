@@ -32,6 +32,7 @@ struct Variant {
     effect_evidence_retained: bool,
     effect_bound: bool,
     effect_terminal_state: fss_core::EffectState,
+    effect_statement: Option<String>,
     created_at: Option<TimestampNs>,
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
@@ -58,6 +59,7 @@ impl Variant {
             effect_evidence_retained: true,
             effect_bound: true,
             effect_terminal_state: fss_core::EffectState::Verified,
+            effect_statement: None,
             created_at: None,
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
@@ -164,21 +166,25 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
     if let Some(effect_state) = variant.effect_state {
         knowledge_cells.push(KnowledgeCell {
             claim_id: "claim:effect:meaningful-delta:outcome".to_owned(),
-            statement: match effect_state {
-                KnowledgeState::Indeterminate => {
-                    "The external effect may have happened and requires reconciliation."
+            statement: variant.effect_statement.clone().unwrap_or_else(|| {
+                match effect_state {
+                    KnowledgeState::Indeterminate => {
+                        "The external effect may have happened and requires reconciliation."
+                    }
+                    // A compiled outcome cell states its terminal outcome, so a flipped outcome is a
+                    // changed cell, as it is in real compilation.
+                    KnowledgeState::Known
+                        if variant.effect_terminal_state == fss_core::EffectState::Failed =>
+                    {
+                        "The external effect reached a retained failed outcome."
+                    }
+                    KnowledgeState::Known => {
+                        "The external effect reached a retained terminal outcome."
+                    }
+                    _ => "The external effect has another explicit typed state.",
                 }
-                // A compiled outcome cell states its terminal outcome, so a flipped outcome is a
-                // changed cell, as it is in real compilation.
-                KnowledgeState::Known
-                    if variant.effect_terminal_state == fss_core::EffectState::Failed =>
-                {
-                    "The external effect reached a retained failed outcome."
-                }
-                KnowledgeState::Known => "The external effect reached a retained terminal outcome.",
-                _ => "The external effect has another explicit typed state.",
-            }
-            .to_owned(),
+                .to_owned()
+            }),
             knowledge_state: effect_state,
             // PROV-001 refuses an observed cell asserting `known` without evidence, and a bound
             // effect cell whose evidence is not a retained proof root is refused at verify. An
@@ -2184,42 +2190,51 @@ fn publication_with_self_rooted_cell(
     )?)
 }
 
-/// Review probes P5 and RR2: a reserved namespace spelled as a plural, or with no tail, would slip
-/// past the typed rules, so it is refused as a look-alike; exact-prefix edge spellings stay in the
-/// effect namespace, so a `known` one is refused as unbound.
+/// Review probes P5 and RR2, and round 4 F3: the reserved namespaces are an exact allowlist. A
+/// namespace within edit distance 2 of one, or whose normalized spelling contains one, is refused
+/// as a look-alike, as is a reserved namespace with no tail; a namespace with a dangling `-` and a
+/// tail with an empty segment are refused by the grammar. Legitimate namespaces still publish.
 #[test]
 fn reserved_namespace_look_alikes_and_edges_are_refused() -> Result<(), Box<dyn Error>> {
-    for (claim_id, hypothesis, expected) in [
-        (
-            "claim:effects:meaningful-delta:outcome",
-            None,
-            "situation_claim_namespace_confusable",
-        ),
-        (
-            "claim:obligations:meaningful-delta",
-            Some(HypothesisDisposition::Resolved),
-            "situation_claim_namespace_confusable",
-        ),
-        ("claim:effect", None, "situation_claim_namespace_confusable"),
-        (
-            "claim:obligation",
-            None,
-            "situation_claim_namespace_confusable",
-        ),
-        (
-            "claim:effect::meaningful-delta:outcome",
-            None,
-            "situation_effect_known_unbound",
-        ),
-        ("claim:effect:", None, "situation_effect_known_unbound"),
+    let confusable = "situation_claim_namespace_confusable";
+    let grammar = "situation_claim_id_grammar";
+    for (claim_id, expected) in [
+        ("claim:effects:meaningful-delta:outcome", confusable),
+        ("claim:obligations:meaningful-delta", confusable),
+        ("claim:effect", confusable),
+        ("claim:obligation", confusable),
+        ("claim:e-ffect:x", confusable),
+        ("claim:effectss:x", confusable),
+        ("claim:efect:x", confusable),
+        ("claim:0bligation:x", confusable),
+        ("claim:obl1gation:x", confusable),
+        ("claim:effect-status:x", confusable),
+        ("claim:side-effect:x", confusable),
+        ("claim:effect-:x", grammar),
+        ("claim:obligation-:x", grammar),
+        ("claim:-effect:x", grammar),
+        ("claim:-:x", grammar),
+        ("claim:door:", grammar),
+        ("claim:door::x", grammar),
+        ("claim:effect:", grammar),
+        ("claim:effect::meaningful-delta:outcome", grammar),
     ] {
-        let projected = publication_with_self_rooted_cell(claim_id, hypothesis);
+        let projected =
+            publication_with_self_rooted_cell(claim_id, Some(HypothesisDisposition::Resolved));
         let expected = crate::ReferenceError::InvalidSpec(expected);
         assert!(
             refused_with(&projected, &expected),
             "{claim_id:?}: {:?}",
             projected.map(|publication| publication.publication_digest)
         );
+    }
+    for claim_id in [
+        "claim:event:meaningful-delta:policy",
+        "claim:perimeter:sensor3",
+        "claim:cam1",
+        "claim:door:x",
+    ] {
+        publication_with_self_rooted_cell(claim_id, None)?;
     }
     Ok(())
 }
@@ -2298,5 +2313,122 @@ fn hand_built_effect_cell_in_any_state_is_refused() -> Result<(), Box<dyn Error>
             projected.map(|publication| publication.publication_digest)
         );
     }
+    Ok(())
+}
+
+/// Round 4 F6: the event rule's own guard excludes effect and obligation cells, so neither can
+/// drive a terminal transition through a hypothesis even if verification were bypassed.
+#[test]
+fn event_rule_never_applies_to_effect_or_obligation_cells() {
+    let cell = |claim_id: &str| KnowledgeCell {
+        claim_id: claim_id.to_owned(),
+        statement: "The proposition was resolved.".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: Some(HypothesisDisposition::Resolved),
+        evidence: vec![ContentDigest::sha256(b"event-rule-root")],
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: None,
+    };
+    assert!(!crate::meaningful_delta::event_rule_applies(&cell(
+        "claim:obligation:meaningful-delta"
+    )));
+    assert!(!crate::meaningful_delta::event_rule_applies(&cell(
+        EFFECT_CLAIM
+    )));
+    assert!(crate::meaningful_delta::event_rule_applies(&cell(
+        "claim:event:meaningful-delta:policy"
+    )));
+}
+
+/// The classifier reads an effect cell's typed state and binding, never its free text: a still
+/// indeterminate effect whose statement claims delivery, success or resolution is neither resolved
+/// nor terminal (restores the spoof coverage the hand-built planted negative lost in fss-6sph6).
+#[test]
+fn effect_statement_free_text_never_terminalizes() -> Result<(), Box<dyn Error>> {
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.effect_state = Some(KnowledgeState::Indeterminate);
+    let basis = publication(&basis_variant)?;
+    for statement in [
+        "Alert delivery is terminally verified by retained provider proof.",
+        "Alert delivery was resolved and succeeded.",
+        "Alert delivery is unverified and not failed, pending adapter response.",
+    ] {
+        let mut result_variant = basis_variant.clone();
+        result_variant.sequence = 2;
+        result_variant.effect_statement = Some(statement.to_owned());
+        let result = publication(&result_variant)?;
+        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+        assert!(
+            !delta
+                .classes
+                .contains(&MeaningfulDeltaClass::TerminalTransition),
+            "{statement:?}: {:?}",
+            delta.classes
+        );
+        assert!(
+            delta
+                .classes
+                .contains(&MeaningfulDeltaClass::EffectUncertainty),
+            "{statement:?}: {:?}",
+            delta.classes
+        );
+        assert!(
+            !delta
+                .effect_uncertainty_changes
+                .iter()
+                .any(|change| change.starts_with("effect uncertainty resolved")),
+            "{statement:?}: {:?}",
+            delta.effect_uncertainty_changes
+        );
+        delta.validate()?;
+    }
+    Ok(())
+}
+
+/// Round 4 F2: an obligation is discharged only by a sealed result. A hand-built result that drops
+/// the basis obligation is refused; the sealed result discharges it as a non-coalescible terminal
+/// obligation transition.
+#[test]
+fn unsealed_result_cannot_discharge_an_obligation() -> Result<(), Box<dyn Error>> {
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.obligations = vec![ObligationId::parse("obligation:meaningful-delta")?];
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = basis_variant.clone();
+    result_variant.sequence = 2;
+    result_variant.obligations.clear();
+    let sealed = publication(&result_variant)?;
+    let unsealed = project_reference_situation(
+        ReferenceSituation::new(
+            sealed.situation.capsule.clone(),
+            sealed.situation.proof_roots.clone(),
+        ),
+        &nominal_spec()?,
+    )?;
+    let classified = classify_reference_meaningful_delta(&basis, &unsealed);
+    assert!(
+        matches!(
+            classified,
+            Err(crate::ReferenceError::InvalidSpec(
+                "meaningful_delta_unsealed_obligation_discharge"
+            ))
+        ),
+        "{:?}",
+        classified.map(|delta| delta.classes)
+    );
+    let delta = classify_reference_meaningful_delta(&basis, &sealed)?;
+    for class in [
+        MeaningfulDeltaClass::Obligation,
+        MeaningfulDeltaClass::TerminalTransition,
+    ] {
+        assert!(
+            delta.classes.contains(&class),
+            "{class:?}: {:?}",
+            delta.classes
+        );
+    }
+    assert!(delta.is_non_coalescible());
+    delta.validate()?;
     Ok(())
 }

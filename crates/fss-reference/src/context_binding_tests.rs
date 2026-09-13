@@ -117,6 +117,14 @@ fn situation() -> Result<ReferenceSituation, ContractError> {
     Ok(ReferenceSituation::new(capsule, BTreeSet::from([evidence])))
 }
 
+/// The fixture sealed as a compile path would seal it: both bound routes need a sealed
+/// publication (fss-6sph6).
+fn sealed_situation() -> Result<ReferenceSituation, Box<dyn Error>> {
+    let mut sealed = situation()?;
+    sealed.seal_effect_bindings()?;
+    Ok(sealed)
+}
+
 fn projection_spec() -> ReferenceProjectionSpec {
     ReferenceProjectionSpec {
         view_id: "AVIEW-001".to_owned(),
@@ -210,7 +218,7 @@ fn descriptor_for_slot(
     })
 }
 
-fn binding_specs(
+pub(crate) fn binding_specs(
     publication: &crate::ReferenceSituationPublication,
 ) -> Result<Vec<ReferenceExpansionBindingSpec>, fss_core::hydration::HydrationError> {
     ContextExpansionBindingSet::required_slots(
@@ -237,12 +245,12 @@ fn binding_specs(
 #[test]
 fn bound_reference_publication_is_self_contained_and_handoff_rooted() -> Result<(), Box<dyn Error>>
 {
-    let publication = project_reference_situation(situation()?, &projection_spec())?;
+    let publication = project_reference_situation(sealed_situation()?, &projection_spec())?;
     assert!(!publication.compression_receipt.expansion_handles.is_empty());
     let bound = BoundReferenceSituationPublication::publish(
         publication,
         binding_specs(&project_reference_situation(
-            situation()?,
+            sealed_situation()?,
             &projection_spec(),
         )?)?,
     )?;
@@ -277,7 +285,7 @@ fn bound_reference_publication_is_self_contained_and_handoff_rooted() -> Result<
 
 #[test]
 fn incomplete_binding_specs_fail_closed() -> Result<(), Box<dyn Error>> {
-    let publication = project_reference_situation(situation()?, &projection_spec())?;
+    let publication = project_reference_situation(sealed_situation()?, &projection_spec())?;
     let mut specs = binding_specs(&publication)?;
     let omitted = specs.pop().ok_or(ContractError::NotFound)?;
     assert!(matches!(
@@ -291,7 +299,7 @@ fn incomplete_binding_specs_fail_closed() -> Result<(), Box<dyn Error>> {
 
 #[test]
 fn unused_ambient_descriptor_is_rejected() -> Result<(), Box<dyn Error>> {
-    let publication = project_reference_situation(situation()?, &projection_spec())?;
+    let publication = project_reference_situation(sealed_situation()?, &projection_spec())?;
     let specs = binding_specs(&publication)?;
     let mut bound = BoundReferenceSituationPublication::publish(publication, specs)?;
     bound.descriptors.push(descriptor_for_slot(
@@ -317,7 +325,7 @@ fn unused_ambient_descriptor_is_rejected() -> Result<(), Box<dyn Error>> {
 /// before rooting anything.
 #[test]
 fn tampered_bound_publication_yields_no_proof_roots() -> Result<(), Box<dyn Error>> {
-    let publication = project_reference_situation(situation()?, &projection_spec())?;
+    let publication = project_reference_situation(sealed_situation()?, &projection_spec())?;
     let specs = binding_specs(&publication)?;
     let bound = BoundReferenceSituationPublication::publish(publication, specs)?;
     assert!(

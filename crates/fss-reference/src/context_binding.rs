@@ -201,6 +201,12 @@ impl BoundReferenceSituationPublication {
 
     fn validate_body(&self) -> Result<(), ReferenceContextBindingError> {
         self.publication.verify()?;
+        // A bound publication is what a handoff carries, so both routes (publishing and the bound
+        // handoff, which each verify through here) need a publication a compile path sealed: an
+        // unsealed rebuild could drop an indeterminate effect or restore a commit affordance.
+        if !self.publication.situation.is_sealed() {
+            return Err(ReferenceError::InvalidSpec("situation_bound_publication_unsealed").into());
+        }
         let mut descriptors = BTreeMap::new();
         let mut prior: Option<(&str, ContentDigest)> = None;
         for descriptor in &self.descriptors {
