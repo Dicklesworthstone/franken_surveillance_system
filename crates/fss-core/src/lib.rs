@@ -6,6 +6,7 @@
 //! agent-facing situation and handoff objects. It performs no device I/O and invokes
 //! no foreign runtime.
 
+pub mod abstraction;
 pub mod acquisition;
 mod agent;
 pub mod belief;
@@ -34,6 +35,13 @@ pub mod sensor_capsule;
 pub mod temporal_verifier;
 pub mod test_event;
 mod time;
+
+pub use abstraction::{
+    evaluate_negative_read, AgentAbstractionLayer, DerivedBelief, DerivedBeliefParams,
+    NegativeReadClaim, NegativeReadOutcome, WorldFact, WorldFactKind,
+    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
+    AGENT_ABSTRACTIONS_FREEZE_DIGEST, AGENT_ABSTRACTIONS_GENERATION, CANONICAL_LAYERS,
+};
 
 pub use agent::{
     ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
