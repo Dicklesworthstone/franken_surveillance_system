@@ -1012,6 +1012,7 @@ impl Lifecycle {
         ));
         let _ = crate::dispatch_reference_alert(
             &plan,
+            &harness.authority,
             crate::ReferenceProviderBehavior::Deliver,
             TimestampNs(101),
             TimestampNs(102),
@@ -3198,6 +3199,7 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
     ));
     let _ = crate::dispatch_reference_alert(
         &plan,
+        &harness.authority,
         crate::ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -3451,6 +3453,7 @@ fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn 
     ));
     let _ = crate::dispatch_reference_alert(
         &plan,
+        &harness.authority,
         crate::ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),

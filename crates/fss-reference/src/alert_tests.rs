@@ -32,6 +32,26 @@ fn observation(
     objects: &mut InMemoryObjectStore,
     ledger: &mut DurableReferenceLedger,
 ) -> Result<ReferenceModelObservation, Box<dyn Error>> {
+    observation_with_label(
+        capture_name,
+        sensor_name,
+        seed,
+        failure_domain,
+        MockSemanticLabel::PersonLike,
+        objects,
+        ledger,
+    )
+}
+
+fn observation_with_label(
+    capture_name: &str,
+    sensor_name: &str,
+    seed: u64,
+    failure_domain: &str,
+    label: MockSemanticLabel,
+    objects: &mut InMemoryObjectStore,
+    ledger: &mut DurableReferenceLedger,
+) -> Result<ReferenceModelObservation, Box<dyn Error>> {
     let spec = VirtualCameraSpec {
         capture_id: CapsuleId::parse(capture_name)?,
         sensor_id: SensorId::parse(sensor_name)?,
@@ -51,7 +71,7 @@ fn observation(
     let model = MockModelSpec::new(
         format!("mock:alert:{sensor_name}:v1"),
         MockModelScript::Fixed {
-            label: MockSemanticLabel::PersonLike,
+            label,
             probability: ProbabilityInterval::new(0.95, 1.0)?,
         },
     )?;
@@ -141,6 +161,7 @@ fn delivered_alert_closes_verified_obligation() -> Result<(), Box<dyn Error>> {
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:alert");
     let receipt = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -194,6 +215,7 @@ fn lost_ack_blocks_resend_until_provider_reconciliation() -> Result<(), Box<dyn 
 
     let first = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         TimestampNs(101),
         TimestampNs(102),
@@ -206,6 +228,7 @@ fn lost_ack_blocks_resend_until_provider_reconciliation() -> Result<(), Box<dyn 
     assert!(matches!(
         dispatch_reference_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(103),
             TimestampNs(104),
@@ -241,6 +264,7 @@ fn known_pre_delivery_failure_never_creates_provider_message() -> Result<(), Box
 
     let receipt = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::FailBeforeDelivery,
         TimestampNs(101),
         TimestampNs(102),
@@ -495,6 +519,220 @@ fn forked_revision_is_refused_at_publish_and_never_prepared() -> Result<(), Box<
             .state,
         EffectState::Prepared
     );
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn stale_event_authority_cannot_dispatch_alert() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("stale-dispatch");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision, event_receipt) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &event_receipt, &authority, &mut journal)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:stale_dispatch");
+
+    // Later observation creates a newer indeterminate revision without tamper.
+    let later_obs = observation_with_label(
+        "capture:alert:later-unknown",
+        "sensor:alert:later-unknown",
+        51,
+        "power:alert:later-unknown",
+        MockSemanticLabel::Unknown,
+        &mut objects,
+        &mut authority,
+    )?;
+    let evaluation_2 = evaluate_unknown_presence(decision.event.event_id.clone(), vec![later_obs])?;
+    assert_eq!(
+        evaluation_2.event.state,
+        fss_core::EventState::Indeterminate
+    );
+    let decision_2 = successor(&decision.event, &evaluation_2)?;
+    let _receipt_2 = publish_reference_event(&decision_2, &mut objects, &mut authority)?;
+
+    // Dispatching against authority (which now has revision 2) fails with StaleEventAuthority.
+    let res = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(
+        matches!(res, Err(ReferenceError::StaleEventAuthority)),
+        "expected StaleEventAuthority, got: {res:?}"
+    );
+    assert_eq!(provider.message_count(), 0);
+    assert_eq!(
+        journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_operation"))?
+            .state,
+        EffectState::Cancelled
+    );
+    assert_eq!(
+        journal
+            .obligations()
+            .find(|item| item.obligation_id == plan.obligation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?
+            .state,
+        ObligationState::Cancelled
+    );
+
+    // A second dispatch call on the same plan must also fail (operation not in Prepared state).
+    let second_res = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(103),
+        TimestampNs(104),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(
+        matches!(
+            second_res,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::InvalidEffectTransition
+            ))
+        ),
+        "expected InvalidEffectTransition, got: {second_res:?}"
+    );
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn later_tamper_revision_vetoes_in_flight_alert_dispatch_p5b() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("p5b-tamper-veto");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(768, 12 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let (decision_1, event_receipt_1) = eligible_event(&mut objects, &mut authority)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision_1, &event_receipt_1, &authority, &mut journal)?;
+    let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:p5b");
+
+    assert_eq!(
+        journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_operation"))?
+            .state,
+        EffectState::Prepared
+    );
+    assert_eq!(
+        journal
+            .obligations()
+            .find(|item| item.obligation_id == plan.obligation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?
+            .state,
+        ObligationState::Pending
+    );
+
+    // Later tamper report arrives.
+    let tamper_obs = observation_with_label(
+        "capture:alert:p5b-tamper",
+        "sensor:alert:p5b-tamper",
+        99,
+        "power:alert:p5b-tamper",
+        MockSemanticLabel::TamperLike,
+        &mut objects,
+        &mut authority,
+    )?;
+    let evaluation_2 = evaluate_unknown_presence(
+        decision_1.event.event_id.clone(),
+        vec![
+            observation(
+                "capture:alert:p5b-a",
+                "sensor:alert:p5b-a",
+                111,
+                "power:alert:p5b-a",
+                &mut objects,
+                &mut authority,
+            )?,
+            observation(
+                "capture:alert:p5b-b",
+                "sensor:alert:p5b-b",
+                222,
+                "power:alert:p5b-b",
+                &mut objects,
+                &mut authority,
+            )?,
+            tamper_obs,
+        ],
+    )?;
+    assert_eq!(
+        evaluation_2.event.state,
+        fss_core::EventState::Indeterminate
+    );
+    let decision_2 = successor(&decision_1.event, &evaluation_2)?;
+    let _receipt_2 = publish_reference_event(&decision_2, &mut objects, &mut authority)?;
+
+    assert_eq!(decision_2.event.revision, 2);
+    assert_eq!(
+        decision_2.event.supersedes,
+        Some(decision_1.event.revision_digest())
+    );
+
+    // Dispatching against authority after tamper revision published must refuse with StaleEventAuthority.
+    let dispatch_result = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(
+        matches!(dispatch_result, Err(ReferenceError::StaleEventAuthority)),
+        "expected StaleEventAuthority, got: {dispatch_result:?}"
+    );
+
+    assert_eq!(provider.message_count(), 0);
+    assert_eq!(
+        journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_operation"))?
+            .state,
+        EffectState::Cancelled
+    );
+    assert_eq!(
+        journal
+            .obligations()
+            .find(|item| item.obligation_id == plan.obligation_id)
+            .ok_or(ReferenceError::InvalidSpec("missing_obligation"))?
+            .state,
+        ObligationState::Cancelled
+    );
+
+    // A second dispatch call on the same plan must also fail (operation not in Prepared state).
+    let second_dispatch = dispatch_reference_alert(
+        &plan,
+        &authority,
+        ReferenceProviderBehavior::Deliver,
+        TimestampNs(103),
+        TimestampNs(104),
+        &mut journal,
+        &mut provider,
+    );
+    assert!(
+        matches!(
+            second_dispatch,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::InvalidEffectTransition
+            ))
+        ),
+        "expected InvalidEffectTransition, got: {second_dispatch:?}"
+    );
+
     let _ = fs::remove_file(path);
     Ok(())
 }

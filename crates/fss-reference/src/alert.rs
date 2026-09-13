@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use fss_core::{
     CanonicalEncode, CanonicalEncoder, ContentDigest, EffectIntent, EffectJournal, EffectState,
-    IdempotencyKey, ObligationId, OperationId, OperationReceipt, TimestampNs,
+    IdempotencyKey, LedgerAnchor, ObligationId, OperationId, OperationReceipt, TimestampNs,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -41,6 +41,8 @@ pub struct ReferenceAlertPlan {
     pub event_root: ContentDigest,
     /// Event revision fingerprint.
     pub event_revision_digest: ContentDigest,
+    /// Authority anchor after publication.
+    pub authority_anchor: LedgerAnchor,
     /// Stable bounded alert channel identity.
     pub channel: String,
 }
@@ -520,6 +522,7 @@ pub fn prepare_reference_alert(
         obligation_id: actual_obligation,
         event_root: params.event_receipt.event_root,
         event_revision_digest: params.event_receipt.event_revision_digest,
+        authority_anchor: params.event_receipt.authority_anchor.clone(),
         channel,
     })
 }
@@ -538,29 +541,32 @@ pub fn prepare_reference_alert(
 /// use fss_core::belief::BeliefInterval;
 /// use fss_core::{EffectJournal, TimestampNs};
 /// use fss_reference::ReferenceAlertPlan;
-/// use fss_reference::{ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
+/// use fss_reference::{DurableReferenceLedger, ReferenceAlertProvider, ReferenceProviderBehavior, dispatch_reference_alert};
 ///
 /// fn legal_dispatch(
 ///     plan: &ReferenceAlertPlan,
+///     authority: &DurableReferenceLedger,
 ///     journal: &mut EffectJournal,
 ///     provider: &mut ReferenceAlertProvider,
 /// ) {
 ///     let behavior = ReferenceProviderBehavior::Deliver;
-///     let _ = dispatch_reference_alert(plan, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+///     let _ = dispatch_reference_alert(plan, authority, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
 /// }
 ///
 /// fn forbidden_dispatch(
 ///     belief: &BeliefInterval,
+///     authority: &DurableReferenceLedger,
 ///     journal: &mut EffectJournal,
 ///     provider: &mut ReferenceAlertProvider,
 /// ) {
 ///     // adr-0001/inv-4-reference: a belief is not a prepared alert plan.
 ///     let behavior = ReferenceProviderBehavior::Deliver;
-///     let _ = dispatch_reference_alert(belief, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
+///     let _ = dispatch_reference_alert(belief, authority, behavior, TimestampNs(1), TimestampNs(2), journal, provider);
 /// }
 /// ```
 pub fn dispatch_reference_alert(
     plan: &ReferenceAlertPlan,
+    authority: &DurableReferenceLedger,
     behavior: ReferenceProviderBehavior,
     commit_at: TimestampNs,
     outcome_at: TimestampNs,
@@ -568,7 +574,51 @@ pub fn dispatch_reference_alert(
     provider: &mut ReferenceAlertProvider,
 ) -> Result<OperationReceipt, ReferenceError> {
     validate_reference_alert_plan(plan)?;
+
     let operation_id = &plan.intent.operation_id;
+
+    let operation = journal
+        .operation(operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?;
+    if operation.state == EffectState::Indeterminate {
+        return Err(fss_core::ContractError::ReconciliationRequired.into());
+    }
+    if operation.state != EffectState::Prepared {
+        return Err(fss_core::ContractError::InvalidEffectTransition.into());
+    }
+
+    // Publication lineage records change no authority object other than a lineage object, so a
+    // receipt stays current across them and the latest authority batch is the latest non-lineage
+    // one (fss-mnlz1).
+    let anchor_current = crate::situation_sections::anchor_is_current_modulo_lineage(
+        authority,
+        &plan.authority_anchor,
+    );
+    let latest_contains_event = authority
+        .batches()
+        .iter()
+        .rev()
+        .find(|batch| !crate::situation_sections::is_lineage_batch(batch))
+        .is_some_and(|batch| {
+            batch.deltas.iter().any(|delta| {
+                delta.family == "event_revision"
+                    && delta.payload_digest == plan.event_root
+                    && delta.witness_digest == Some(plan.event_revision_digest)
+            })
+        });
+
+    if !anchor_current || !latest_contains_event {
+        let cancel_proof = ContentDigest::sha256(b"stale_event_authority");
+        let _ = journal.transition(
+            operation_id,
+            EffectState::Cancelled,
+            commit_at,
+            Some(cancel_proof),
+            Some("stale_event_authority".to_owned()),
+        );
+        return Err(ReferenceError::StaleEventAuthority);
+    }
+
     let _ = journal.transition(operation_id, EffectState::Committed, commit_at, None, None)?;
 
     match provider.dispatch(&plan.intent, behavior) {

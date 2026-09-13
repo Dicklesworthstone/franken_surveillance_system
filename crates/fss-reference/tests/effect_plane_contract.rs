@@ -211,6 +211,7 @@ fn test_f2_idempotency_key_shared_by_different_intents_is_typed_conflict()
     // 3. First dispatch of plan_a through dispatch_reference_alert succeeds:
     let dispatch_a = dispatch_reference_alert(
         &plan_a,
+        &authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -222,6 +223,7 @@ fn test_f2_idempotency_key_shared_by_different_intents_is_typed_conflict()
     // 4. Conflicting dispatch of plan_b with different intent under same idempotency key fails:
     let err_b = dispatch_reference_alert(
         &plan_b,
+        &authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(103),
         TimestampNs(104),
@@ -382,6 +384,7 @@ fn test_f4_adapter_acceptance_does_not_promote_to_verified_without_observation()
     // 1. Adapter delivery transitions to AdapterAccepted only, not Observed or Verified
     let receipt = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(101),
         TimestampNs(102),
@@ -667,6 +670,7 @@ fn test_f6_reconciliation_preserves_indeterminate_provenance_and_publishes_succe
     // Dispatch with LoseAckAfterDelivery
     let dispatched = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         TimestampNs(101),
         TimestampNs(102),
@@ -833,6 +837,7 @@ fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn E
     // Dispatch plan1 and plan2 which both lose ACK and become Indeterminate:
     let _ = dispatch_reference_alert(
         &plan1,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         TimestampNs(150),
         TimestampNs(200),
@@ -841,6 +846,7 @@ fn test_finding_1_failure_proof_cross_operation_replay() -> Result<(), Box<dyn E
     )?;
     let _ = dispatch_reference_alert(
         &plan2,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         TimestampNs(150),
         TimestampNs(200),
@@ -1031,6 +1037,7 @@ fn test_finding_5_delivered_effect_marked_failed() -> Result<(), Box<dyn Error>>
     let t2 = TimestampNs(102);
     let dispatch_res = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         t1,
         t2,
@@ -1079,6 +1086,7 @@ fn test_finding_6_reconciliation_not_idempotent() -> Result<(), Box<dyn Error>> 
     let t2 = TimestampNs(102);
     let dispatch_res = dispatch_reference_alert(
         &plan,
+        &authority,
         ReferenceProviderBehavior::LoseAckAfterDelivery,
         t1,
         t2,
