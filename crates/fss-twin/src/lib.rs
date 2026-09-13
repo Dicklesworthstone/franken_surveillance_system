@@ -6,6 +6,15 @@
 //! right-handed Z-up source units. Scale evidence never silently rescales them.
 
 mod wire;
+mod interval;
+mod tracking;
+mod track_motion;
+
+pub use interval::{Bounds3, Interval};
+pub use tracking::{ContactHypothesis, ContactObservation, ContactProjection, ProjectionError,
+    ProjectionOptions, ProjectionQuality, TrackingCamera, project_contact};
+pub use track_motion::{MotionFitOptions, PropagatedPosition, WorldMotion, WorldMotionMode,
+    fit_world_motion, propagate_motion};
 
 use fss_geometry::{GeometryBasis, GeometryError, IndexedTriangle, TriangleMesh};
 
