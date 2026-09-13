@@ -16,13 +16,15 @@ use fss_core::{
     evaluate_negative_read, AgentAbstractionLayer, BudgetVector, CanonicalDecode,
     CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CapsuleId, CaptureInterval, ClockBasis,
     Completeness, ContentDigest, ContractError, CoverageContinuity, CoverageStopReason,
-    CoverageWitness, DerivedBelief, DerivedBeliefParams, Generation, KnowledgeState, LedgerAnchor,
-    NegativeReadClaim, NegativeReadOutcome, ObligationId, OmissionReason, OperationId, Plane,
-    ProvenanceClass, RUNTIME_AUTHORITY_DOMAIN, RuntimeAuthorityAndCustody,
+    CoverageWitness, DerivedBelief, DerivedBeliefParams, DigestAlgorithm, Generation,
+    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, NegativeReadClaim, NegativeReadOutcome,
+    ObligationId, OmissionReason, OperationId, Plane, PrivacyGeneration, ProvenanceClass,
+    RedactionMarker, RedactionReason, RUNTIME_AUTHORITY_DOMAIN, RuntimeAuthorityAndCustody,
     RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams, RuntimeAuthorityRecord, RuntimeGrant,
     SensorCapsule, SensorId, SourceCustody, SourceEvidenceClassification, SourceEvidenceParams,
     SourceEvidenceRecord, StreamId, TimestampNs, WorldFact, WorldFactKind,
     AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
+    SOURCE_EVIDENCE_RECORD_FORMAT_VERSION,
 };
 
 #[test]
@@ -1202,11 +1204,14 @@ fn test_source_evidence_row_properties() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn make_test_sensor_capsule(source_digest: ContentDigest, source_bytes: u64) -> SensorCapsule {
-    SensorCapsule {
-        capsule_id: CapsuleId::parse("cap:001").unwrap(),
-        sensor_id: SensorId::parse("sensor:cam01").unwrap(),
-        stream_id: StreamId::parse("stream:front_gate").unwrap(),
+fn make_test_sensor_capsule(
+    source_digest: ContentDigest,
+    source_bytes: u64,
+) -> Result<SensorCapsule, ContractError> {
+    Ok(SensorCapsule {
+        capsule_id: CapsuleId::parse("cap:001")?,
+        sensor_id: SensorId::parse("sensor:cam01")?,
+        stream_id: StreamId::parse("stream:front_gate")?,
         sequence: 42,
         capture: CaptureInterval {
             earliest: TimestampNs(1_700_000_000_000_000_000),
@@ -1218,7 +1223,7 @@ fn make_test_sensor_capsule(source_digest: ContentDigest, source_bytes: u64) -> 
         source_bytes,
         frame_count: 30,
         gap_before: false,
-    }
+    })
 }
 
 #[test]
@@ -1226,7 +1231,7 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
     let anchor = LedgerAnchor::genesis("camera.sensor.front_gate");
     let source_digest = ContentDigest::sha256(b"raw-h264-nalu-data");
     let continuity_digest = ContentDigest::sha256(b"rtcp-continuity-witness-sequence-42");
-    let capsule = make_test_sensor_capsule(source_digest, 1024);
+    let capsule = make_test_sensor_capsule(source_digest, 1024)?;
 
     let record = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:packet:front_gate:0042".to_string(),
@@ -1245,25 +1250,25 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
         continuity_witness: Some(continuity_digest),
     })?;
 
-    assert_eq!(record.evidence_id, "source:packet:front_gate:0042");
-    assert_eq!(record.anchor, anchor);
-    assert_eq!(record.generation, Generation(1));
-    assert_eq!(record.provenance, ProvenanceClass::Observed);
+    assert_eq!(record.evidence_id(), "source:packet:front_gate:0042");
+    assert_eq!(record.anchor(), &anchor);
+    assert_eq!(record.generation(), Generation(1));
+    assert_eq!(record.provenance(), ProvenanceClass::Observed);
     assert_eq!(
-        record.classification,
+        record.classification(),
         SourceEvidenceClassification::RawWirePackets
     );
     assert_eq!(
-        record.custody,
-        SourceCustody::Retained {
+        record.custody(),
+        &SourceCustody::Retained {
             source_digest,
             source_bytes: 1024,
             storage_handle: "cas://sha256/raw-h264".to_string(),
         }
     );
-    assert_eq!(record.omission, None);
-    assert_eq!(record.capsule, Some(capsule.clone()));
-    assert_eq!(record.continuity_witness, Some(continuity_digest));
+    assert_eq!(record.omission(), None);
+    assert_eq!(record.capsule(), Some(&capsule));
+    assert_eq!(record.continuity_witness(), Some(continuity_digest));
     assert_eq!(record.layer(), AgentAbstractionLayer::SourceEvidence);
     assert_eq!(record.plane(), Plane::Authority);
     assert!(record.may_claim_authority());
@@ -1285,7 +1290,6 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
 #[test]
 fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box<dyn Error>> {
     let anchor = LedgerAnchor::genesis("camera.sensor.restricted_area");
-    let continuity_digest = ContentDigest::sha256(b"rtcp-continuity-witness-restricted");
 
     let record = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:packet:restricted:0099".to_string(),
@@ -1299,25 +1303,56 @@ fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box
         custody: SourceCustody::NotRetained,
         omission: Some(OmissionReason::PrivacyRedaction),
         capsule: None,
-        continuity_witness: Some(continuity_digest),
+        continuity_witness: None,
     })?;
 
-    assert_eq!(record.custody, SourceCustody::NotRetained);
-    assert_eq!(record.omission, Some(OmissionReason::PrivacyRedaction));
+    assert_eq!(record.custody(), &SourceCustody::NotRetained);
+    assert_eq!(record.omission(), Some(OmissionReason::PrivacyRedaction));
 
     let kcell = record.to_knowledge_cell();
     assert!(kcell.evidence.is_empty());
-    assert_eq!(kcell.knowledge_state, KnowledgeState::Unknown);
+    assert_eq!(kcell.knowledge_state, KnowledgeState::Redacted);
+    assert_eq!(
+        kcell.state_basis,
+        Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+            reason: RedactionReason::PrivacyProjection,
+            privacy_generation: PrivacyGeneration::canonical_v1(),
+        }))
+    );
     assert!(kcell.validate().is_ok());
 
-    // Also test upstream missing maps to NotObservable
+    // Capability filtered maps to Redacted with CapabilityProjection basis
+    let record_cap = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:packet:restricted:0101".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Capability filtered sensor stream".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::PhysicalSensorMeasurement,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::CapabilityFiltered),
+        capsule: None,
+        continuity_witness: None,
+    })?;
+    let kcell_cap = record_cap.to_knowledge_cell();
+    assert_eq!(kcell_cap.knowledge_state, KnowledgeState::Redacted);
+    assert_eq!(
+        kcell_cap.state_basis,
+        Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+            reason: RedactionReason::CapabilityProjection,
+            privacy_generation: PrivacyGeneration::canonical_v1(),
+        }))
+    );
+    assert!(kcell_cap.validate().is_ok());
+
+    // Upstream missing maps to NotObservable
     let record_upstream = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:packet:restricted:0100".to_string(),
         anchor,
         generation: Generation(1),
         statement: "Upstream sensor dropout".to_string(),
         provenance: ProvenanceClass::Observed,
-        classification: SourceEvidenceClassification::SensorCapsule,
+        classification: SourceEvidenceClassification::SourcePayloadFile,
         custody: SourceCustody::NotRetained,
         omission: Some(OmissionReason::UpstreamMissing),
         capsule: None,
@@ -1327,6 +1362,41 @@ fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box
     assert!(kcell_upstream.evidence.is_empty());
     assert_eq!(kcell_upstream.knowledge_state, KnowledgeState::NotObservable);
     assert!(kcell_upstream.validate().is_ok());
+
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_gap_before_maps_to_stale() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.gap_sensor");
+    let source_digest = ContentDigest::sha256(b"source-with-gap");
+    let mut capsule = make_test_sensor_capsule(source_digest, 512)?;
+    capsule.gap_before = true;
+
+    let record = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:gap:001".to_string(),
+        anchor,
+        generation: Generation(2),
+        statement: "Capsule preceded by gap".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 512,
+            storage_handle: "cas://gap/bytes".to_string(),
+        },
+        omission: None,
+        capsule: Some(capsule),
+        continuity_witness: None,
+    })?;
+
+    let kcell = record.to_knowledge_cell();
+    assert_eq!(kcell.knowledge_state, KnowledgeState::Stale);
+    assert!(matches!(
+        kcell.state_basis,
+        Some(KnowledgeStateBasis::Stale(_))
+    ));
+    assert!(kcell.validate().is_ok());
 
     Ok(())
 }
@@ -1354,9 +1424,9 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::InvalidIdentifier);
+    assert_eq!(res, Err(ContractError::InvalidIdentifier));
 
-    // E8: Path traversal /../ in ID rejected with InvalidIdentifier
+    // Path traversal /../ in ID rejected with InvalidIdentifier
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:packet/../cam01".to_string(),
         anchor: anchor.clone(),
@@ -1369,9 +1439,9 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::InvalidIdentifier);
+    assert_eq!(res, Err(ContractError::InvalidIdentifier));
 
-    // E8: Newline in ID rejected with InvalidIdentifier
+    // Newline in ID rejected with InvalidIdentifier
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:packet\ncam01".to_string(),
         anchor: anchor.clone(),
@@ -1384,7 +1454,7 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::InvalidIdentifier);
+    assert_eq!(res, Err(ContractError::InvalidIdentifier));
 
     // 2. Empty anchor site lineage rejected with SourceEvidenceMissingAnchor
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
@@ -1399,7 +1469,7 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::SourceEvidenceMissingAnchor);
+    assert_eq!(res, Err(ContractError::SourceEvidenceMissingAnchor));
 
     // 3. Zero generation rejected with GenerationConflict
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
@@ -1414,9 +1484,9 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::GenerationConflict);
+    assert_eq!(res, Err(ContractError::GenerationConflict));
 
-    // 4. Empty statement rejected with InvalidIdentifier
+    // 4. Empty statement rejected with SourceEvidenceStatementMalformed
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
@@ -1429,7 +1499,10 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::InvalidIdentifier);
+    assert_eq!(
+        res,
+        Err(ContractError::SourceEvidenceStatementMalformed)
+    );
 
     // 5. INV-003 violation: NotRetained without omission reason
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
@@ -1444,7 +1517,7 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::SourceEvidenceOmissionRequired);
+    assert_eq!(res, Err(ContractError::SourceEvidenceOmissionRequired));
 
     // NotRetained with omission Some(OmissionReason::None) rejected with SourceEvidenceOmissionRequired
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
@@ -1459,10 +1532,10 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::SourceEvidenceOmissionRequired);
+    assert_eq!(res, Err(ContractError::SourceEvidenceOmissionRequired));
 
-    // E1: NotRetained with omission reason but capsule with bytes > 0 rejected with SourceEvidenceNotRetainedWithCapsuleBytes
-    let cap_with_bytes = make_test_sensor_capsule(source_digest, 1024);
+    // NotRetained with omission reason but capsule with bytes > 0 rejected with SourceEvidenceNotRetainedWithCapsuleBytes
+    let cap_with_bytes = make_test_sensor_capsule(source_digest, 1024)?;
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
@@ -1476,11 +1549,11 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         continuity_witness: None,
     });
     assert_eq!(
-        res.unwrap_err(),
-        ContractError::SourceEvidenceNotRetainedWithCapsuleBytes
+        res,
+        Err(ContractError::SourceEvidenceNotRetainedWithCapsuleBytes)
     );
 
-    // E2: Retained with an omission reason rejected with SourceEvidenceRetainedWithOmission
+    // Retained with an omission reason rejected with SourceEvidenceRetainedWithOmission
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
@@ -1494,11 +1567,11 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         continuity_witness: None,
     });
     assert_eq!(
-        res.unwrap_err(),
-        ContractError::SourceEvidenceRetainedWithOmission
+        res,
+        Err(ContractError::SourceEvidenceRetainedWithOmission)
     );
 
-    // E10: Retained with Some(OmissionReason::None) rejected with SourceEvidenceRetainedWithOmission
+    // Retained with Some(OmissionReason::None) rejected with SourceEvidenceRetainedWithOmission
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
@@ -1512,12 +1585,12 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         continuity_witness: None,
     });
     assert_eq!(
-        res.unwrap_err(),
-        ContractError::SourceEvidenceRetainedWithOmission
+        res,
+        Err(ContractError::SourceEvidenceRetainedWithOmission)
     );
 
-    // E3: Custody source_bytes != capsule source_bytes (1024 vs 99) rejected with SourceEvidenceByteCountMismatch
-    let cap_mismatch_bytes = make_test_sensor_capsule(source_digest, 99);
+    // Custody source_bytes != capsule source_bytes rejected with SourceEvidenceByteCountMismatch
+    let cap_mismatch_bytes = make_test_sensor_capsule(source_digest, 99)?;
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
@@ -1535,13 +1608,13 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         continuity_witness: None,
     });
     assert_eq!(
-        res.unwrap_err(),
-        ContractError::SourceEvidenceByteCountMismatch
+        res,
+        Err(ContractError::SourceEvidenceByteCountMismatch)
     );
 
     // Digest mismatch: Custody source_digest != capsule source_digest rejected with DigestMismatch
     let different_digest = ContentDigest::sha256(b"different-source-digest");
-    let cap_different_digest = make_test_sensor_capsule(different_digest, 1024);
+    let cap_different_digest = make_test_sensor_capsule(different_digest, 1024)?;
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
@@ -1558,97 +1631,50 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: Some(cap_different_digest),
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::DigestMismatch);
+    assert_eq!(res, Err(ContractError::DigestMismatch));
 
-    // E7: Retained with empty storage handle rejected with SourceEvidenceEmptyStorageHandle
-    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
-        evidence_id: "source:001".to_string(),
-        anchor: anchor.clone(),
-        generation: Generation(1),
-        statement: "Empty storage handle".to_string(),
-        provenance: ProvenanceClass::Observed,
-        classification: SourceEvidenceClassification::RawWirePackets,
-        custody: SourceCustody::Retained {
-            source_digest,
-            source_bytes: 1024,
-            storage_handle: "".to_string(),
-        },
-        omission: None,
-        capsule: None,
-        continuity_witness: None,
-    });
-    assert_eq!(
-        res.unwrap_err(),
-        ContractError::SourceEvidenceEmptyStorageHandle
-    );
-
-    // E7: Retained with whitespace-only storage handle rejected with SourceEvidenceEmptyStorageHandle
-    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
-        evidence_id: "source:001".to_string(),
-        anchor: anchor.clone(),
-        generation: Generation(1),
-        statement: "Whitespace storage handle".to_string(),
-        provenance: ProvenanceClass::Observed,
-        classification: SourceEvidenceClassification::RawWirePackets,
-        custody: SourceCustody::Retained {
-            source_digest,
-            source_bytes: 1024,
-            storage_handle: "   \t\n  ".to_string(),
-        },
-        omission: None,
-        capsule: None,
-        continuity_witness: None,
-    });
-    assert_eq!(
-        res.unwrap_err(),
-        ContractError::SourceEvidenceEmptyStorageHandle
-    );
-
-    // E5: Classification parse refuses keyword heuristic bypasses
+    // Classification parse refuses unknown tokens with UnknownSourceEvidenceClassification
     assert_eq!(
         SourceEvidenceClassification::parse("decoded_frame_pcap"),
-        Err(ContractError::InvalidIdentifier)
+        Err(ContractError::UnknownSourceEvidenceClassification(
+            "decoded_frame_pcap".to_string()
+        ))
     );
     assert_eq!(
         SourceEvidenceClassification::parse("model-output file"),
-        Err(ContractError::InvalidIdentifier)
+        Err(ContractError::UnknownSourceEvidenceClassification(
+            "model-output file".to_string()
+        ))
     );
     assert_eq!(
         SourceEvidenceClassification::parse("rgb-pixels from sensor"),
-        Err(ContractError::InvalidIdentifier)
+        Err(ContractError::UnknownSourceEvidenceClassification(
+            "rgb-pixels from sensor".to_string()
+        ))
     );
-
-    // E6: Classification parse refuses non-canonical tokens including whitespace/casing
     assert_eq!(
         SourceEvidenceClassification::parse(" RAW_WIRE_PACKETS "),
-        Err(ContractError::InvalidIdentifier)
-    );
-    assert_eq!(
-        SourceEvidenceClassification::parse("raw_wire_packets_extra"),
-        Err(ContractError::InvalidIdentifier)
+        Err(ContractError::UnknownSourceEvidenceClassification(
+            " RAW_WIRE_PACKETS ".to_string()
+        ))
     );
     assert_eq!(
         SourceEvidenceClassification::parse(""),
-        Err(ContractError::InvalidIdentifier)
+        Err(ContractError::UnknownSourceEvidenceClassification(
+            "".to_string()
+        ))
     );
 
-    // E5/E6: Canonical decoder refuses non-canonical classification tokens
+    // Canonical decoder refuses non-canonical classification tokens
     let mut encoder = CanonicalEncoder::new();
     encoder.text("decoded_frame_pcap");
     let bytes = encoder.finish();
     let mut decoder = CanonicalDecoder::new(&bytes);
     assert_eq!(
         SourceEvidenceClassification::decode_canonical(&mut decoder),
-        Err(ContractError::InvalidIdentifier)
-    );
-
-    let mut encoder = CanonicalEncoder::new();
-    encoder.text(" RAW_WIRE_PACKETS ");
-    let bytes = encoder.finish();
-    let mut decoder = CanonicalDecoder::new(&bytes);
-    assert_eq!(
-        SourceEvidenceClassification::decode_canonical(&mut decoder),
-        Err(ContractError::InvalidIdentifier)
+        Err(ContractError::UnknownSourceEvidenceClassification(
+            "decoded_frame_pcap".to_string()
+        ))
     );
 
     // Prohibited classifications return ProhibitedEvidencePromotion
@@ -1672,29 +1698,10 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
             capsule: None,
             continuity_witness: None,
         });
-        assert_eq!(res.unwrap_err(), ContractError::ProhibitedEvidencePromotion);
->>>>>>> cbe279d (fix(core): resolve review findings for AGT-LAYER-002 source_evidence [fss-x4a.30.82.2])
+        assert_eq!(res, Err(ContractError::ProhibitedEvidencePromotion));
     }
 
-    // Statement field does NOT check keyword denylists; classification is typed.
-    // "Decoded-frame RGB pixels from YOLO" succeeds when classification is permitted.
-    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
-        evidence_id: "source:001".to_string(),
-        anchor: anchor.clone(),
-        generation: Generation(1),
-        statement:
-            "Decoded-frame RGB pixels from YOLO (legacy text with permitted typed classification)"
-                .to_string(),
-        provenance: ProvenanceClass::Observed,
-        classification: SourceEvidenceClassification::RawWirePackets,
-        custody: valid_custody.clone(),
-        omission: None,
-        capsule: None,
-        continuity_witness: None,
-    });
-    assert!(res.is_ok());
-
-    // Non-Observed provenance (Derived, Predicted) rejected with ProhibitedEvidencePromotion
+    // Non-Observed provenance rejected with ProhibitedEvidencePromotion
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
@@ -1707,11 +1714,11 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::ProhibitedEvidencePromotion);
+    assert_eq!(res, Err(ContractError::ProhibitedEvidencePromotion));
 
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
-        anchor: anchor.clone(),
+        anchor,
         generation: Generation(1),
         statement: "Valid statement".to_string(),
         provenance: ProvenanceClass::Predicted,
@@ -1721,7 +1728,671 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
         capsule: None,
         continuity_witness: None,
     });
-    assert_eq!(res.unwrap_err(), ContractError::ProhibitedEvidencePromotion);
+    assert_eq!(res, Err(ContractError::ProhibitedEvidencePromotion));
+
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_not_retained_mutant_m7_kill() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.m7");
+    let zero_digest = ContentDigest::new(DigestAlgorithm::Sha256, [0u8; 32]);
+    let non_zero_digest = ContentDigest::sha256(b"some-bytes");
+
+    // Condition A: source_bytes > 0, digest == 0, frame_count == 0
+    let mut cap_a = make_test_sensor_capsule(zero_digest, 100)?;
+    cap_a.frame_count = 0;
+    let res_a = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:m7:a".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "M7 test condition A".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::ResourcePressure),
+        capsule: Some(cap_a),
+        continuity_witness: None,
+    });
+    assert_eq!(
+        res_a,
+        Err(ContractError::SourceEvidenceNotRetainedWithCapsuleBytes)
+    );
+
+    // Condition B: source_bytes == 0, digest != 0, frame_count == 0
+    let mut cap_b = make_test_sensor_capsule(non_zero_digest, 0)?;
+    cap_b.frame_count = 0;
+    let res_b = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:m7:b".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "M7 test condition B".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::ResourcePressure),
+        capsule: Some(cap_b),
+        continuity_witness: None,
+    });
+    assert_eq!(
+        res_b,
+        Err(ContractError::SourceEvidenceNotRetainedWithCapsuleBytes)
+    );
+
+    // Condition C: source_bytes == 0, digest == 0, frame_count == 30
+    let mut cap_c = make_test_sensor_capsule(zero_digest, 0)?;
+    cap_c.frame_count = 30;
+    let res_c = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:m7:c".to_string(),
+        anchor,
+        generation: Generation(1),
+        statement: "M7 test condition C".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::ResourcePressure),
+        capsule: Some(cap_c),
+        continuity_witness: None,
+    });
+    assert_eq!(
+        res_c,
+        Err(ContractError::SourceEvidenceNotRetainedWithCapsuleBytes)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_cross_checks_and_payload_binding() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.cross_checks");
+    let source_digest = ContentDigest::sha256(b"cross-check-source");
+    let witness_digest = ContentDigest::sha256(b"cross-check-witness");
+    let valid_custody = SourceCustody::Retained {
+        source_digest,
+        source_bytes: 1024,
+        storage_handle: "cas://valid/handle".to_string(),
+    };
+    let valid_capsule = make_test_sensor_capsule(source_digest, 1024)?;
+
+    // 1. Classification SensorCapsule requires capsule payload
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:01".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Missing capsule".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(res, Err(ContractError::SourceEvidenceCapsuleRequired));
+
+    // 2. Classification ContinuityWitness requires witness payload
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:02".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Missing witness".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::ContinuityWitness,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(res, Err(ContractError::SourceEvidenceWitnessRequired));
+
+    // 3. NotRetained with continuity_witness rejected
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:03".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "NotRetained with witness".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::PhysicalSensorMeasurement,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::RetentionPolicy),
+        capsule: None,
+        continuity_witness: Some(witness_digest),
+    });
+    assert_eq!(
+        res,
+        Err(ContractError::SourceEvidenceNotRetainedWithWitness)
+    );
+
+    // 4. Continuity witness equals source digest rejected
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:04".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Circular witness".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
+        continuity_witness: Some(source_digest),
+    });
+    assert_eq!(
+        res,
+        Err(ContractError::SourceEvidenceWitnessEqualsSourceDigest)
+    );
+
+    // 5. source_bytes == u64::MAX rejected with ArithmeticOverflow
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:05".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Max source bytes".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: u64::MAX,
+            storage_handle: "cas://overflow".to_string(),
+        },
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(res, Err(ContractError::ArithmeticOverflow));
+
+    // 6. Zero source bytes in Retained custody
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:06".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Zero source bytes".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 0,
+            storage_handle: "cas://zero".to_string(),
+        },
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(res, Err(ContractError::EvidenceRequired));
+
+    // 7. Zero source digest in Retained custody
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:07".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Zero source digest".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: SourceCustody::Retained {
+            source_digest: ContentDigest::new(DigestAlgorithm::Sha256, [0u8; 32]),
+            source_bytes: 1024,
+            storage_handle: "cas://zero_dig".to_string(),
+        },
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(res, Err(ContractError::InvalidDigest));
+
+    // 8. Zero continuity witness
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:08".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Zero continuity witness".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody,
+        omission: None,
+        capsule: None,
+        continuity_witness: Some(ContentDigest::new(DigestAlgorithm::Sha256, [0u8; 32])),
+    });
+    assert_eq!(res, Err(ContractError::InvalidDigest));
+
+    // 9. Inverted capture interval on capsule
+    let mut inv_cap = valid_capsule.clone();
+    inv_cap.capture.earliest = TimestampNs(2_000_000_000);
+    inv_cap.capture.latest = TimestampNs(1_000_000_000);
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:09".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Inverted interval".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 1024,
+            storage_handle: "cas://inv".to_string(),
+        },
+        omission: None,
+        capsule: Some(inv_cap),
+        continuity_witness: None,
+    });
+    assert_eq!(res, Err(ContractError::InvertedTimeInterval));
+
+    // 10. receive_time before capture window
+    let mut early_rx_cap = valid_capsule;
+    early_rx_cap.capture.earliest = TimestampNs(2_000_000_000);
+    early_rx_cap.capture.latest = TimestampNs(3_000_000_000);
+    early_rx_cap.receive_time = TimestampNs(1_000_000_000);
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:cc:10".to_string(),
+        anchor,
+        generation: Generation(1),
+        statement: "Early receive time".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 1024,
+            storage_handle: "cas://early".to_string(),
+        },
+        omission: None,
+        capsule: Some(early_rx_cap),
+        continuity_witness: None,
+    });
+    assert_eq!(res, Err(ContractError::InvertedTimeInterval));
+
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_storage_handle_and_id_sanitization() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.sanitize");
+    let source_digest = ContentDigest::sha256(b"sanitize-source");
+
+    let bad_handles = [
+        "../../etc/shadow",
+        "../parent",
+        "/etc/shadow",
+        "\\windows\\system32",
+        " leading_space",
+        "trailing_space ",
+        "cas://null\0byte",
+        "cas://newline\npath",
+        "cas://cr\rpath",
+        "cas://zero\u{200B}width",
+        "cas://bom\u{FEFF}mark",
+    ];
+
+    for bad_handle in bad_handles {
+        let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+            evidence_id: "source:san:01".to_string(),
+            anchor: anchor.clone(),
+            generation: Generation(1),
+            statement: "Bad storage handle test".to_string(),
+            provenance: ProvenanceClass::Observed,
+            classification: SourceEvidenceClassification::RawWirePackets,
+            custody: SourceCustody::Retained {
+                source_digest,
+                source_bytes: 1024,
+                storage_handle: bad_handle.to_string(),
+            },
+            omission: None,
+            capsule: None,
+            continuity_witness: None,
+        });
+        assert_eq!(
+            res,
+            Err(ContractError::SourceEvidenceEmptyStorageHandle),
+            "handle: {bad_handle}"
+        );
+    }
+
+    let bad_ids = [".", "..", ":"];
+    for bad_id in bad_ids {
+        let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+            evidence_id: bad_id.to_string(),
+            anchor: anchor.clone(),
+            generation: Generation(1),
+            statement: "Bad ID test".to_string(),
+            provenance: ProvenanceClass::Observed,
+            classification: SourceEvidenceClassification::RawWirePackets,
+            custody: SourceCustody::Retained {
+                source_digest,
+                source_bytes: 1024,
+                storage_handle: "cas://good/handle".to_string(),
+            },
+            omission: None,
+            capsule: None,
+            continuity_witness: None,
+        });
+        assert_eq!(
+            res,
+            Err(ContractError::InvalidIdentifier),
+            "id: {bad_id}"
+        );
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_statement_512_byte_boundary() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.boundary");
+    let source_digest = ContentDigest::sha256(b"boundary-payload");
+    let custody = SourceCustody::Retained {
+        source_digest,
+        source_bytes: 1024,
+        storage_handle: "cas://boundary".to_string(),
+    };
+
+    // 0 bytes: Err
+    let res0 = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:stmt:0".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: custody.clone(),
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(
+        res0,
+        Err(ContractError::SourceEvidenceStatementMalformed)
+    );
+
+    // 1 byte: Ok
+    let res1 = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:stmt:1".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "x".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: custody.clone(),
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert!(res1.is_ok());
+
+    // 512 bytes: Ok
+    let stmt_512 = "a".repeat(512);
+    let res512 = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:stmt:512".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: stmt_512,
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: custody.clone(),
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert!(res512.is_ok());
+
+    // 513 bytes: Err
+    let stmt_513 = "a".repeat(513);
+    let res513 = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:stmt:513".to_string(),
+        anchor,
+        generation: Generation(1),
+        statement: stmt_513,
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody,
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(
+        res513,
+        Err(ContractError::SourceEvidenceStatementMalformed)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_decode_path_negatives_kill_m8_m9_m10() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.dec_neg");
+    let source_digest = ContentDigest::sha256(b"dec-neg-source");
+    let continuity_digest = ContentDigest::sha256(b"dec-neg-witness");
+    let capsule = make_test_sensor_capsule(source_digest, 1024)?;
+
+    let valid_record = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:dec:001".to_string(),
+        anchor,
+        generation: Generation(1),
+        statement: "Valid record for decode negation testing".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 1024,
+            storage_handle: "cas://dec/neg".to_string(),
+        },
+        omission: None,
+        capsule: Some(capsule),
+        continuity_witness: Some(continuity_digest),
+    })?;
+
+    let valid_bytes = valid_record.to_canonical_bytes();
+
+    // 1. Invalid version envelope (version 1 or 99)
+    let mut bad_ver_bytes = valid_bytes.clone();
+    bad_ver_bytes[0..4].copy_from_slice(&1u32.to_be_bytes());
+    let mut decoder = CanonicalDecoder::new(&bad_ver_bytes);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::UnsupportedSourceEvidenceVersion(1))
+    );
+
+    // 2. Trailing unparsed bytes rejected
+    let mut trailing_bytes = valid_bytes.clone();
+    trailing_bytes.push(0xFF);
+    let mut decoder = CanonicalDecoder::new(&trailing_bytes);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::NonCanonicalOrdering)
+    );
+
+    // 3. Unknown custody tag (tag = 5)
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text("source:dec:custody");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("statement");
+    valid_record.provenance().encode_canonical(&mut encoder);
+    valid_record.classification().encode_canonical(&mut encoder);
+    encoder.u8(5); // Unknown custody tag
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::UnknownSourceCustodyTag(5))
+    );
+
+    // 4. Provenance alias "PROV-001" refused on decode
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text("source:dec:prov");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("statement");
+    encoder.text("PROV-001"); // Non-canonical alias
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // 5. Empty statement refused on decode
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text("source:dec:stmt_empty");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text(""); // Empty statement
+    valid_record.provenance().encode_canonical(&mut encoder);
+    valid_record.classification().encode_canonical(&mut encoder);
+    valid_record.custody().encode_canonical(&mut encoder);
+    encoder.bool(false);
+    encoder.bool(false);
+    encoder.bool(false);
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::SourceEvidenceStatementMalformed)
+    );
+
+    // 6. Statement > 512 bytes refused on decode
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text("source:dec:stmt_long");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text(&"x".repeat(513)); // 513 bytes
+    valid_record.provenance().encode_canonical(&mut encoder);
+    valid_record.classification().encode_canonical(&mut encoder);
+    valid_record.custody().encode_canonical(&mut encoder);
+    encoder.bool(false);
+    encoder.bool(false);
+    encoder.bool(false);
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::SourceEvidenceStatementMalformed)
+    );
+
+    // 7. Generation 0 refused on decode
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text("source:dec:gen0");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(0); // Gen 0
+    encoder.text("statement");
+    valid_record.provenance().encode_canonical(&mut encoder);
+    valid_record.classification().encode_canonical(&mut encoder);
+    valid_record.custody().encode_canonical(&mut encoder);
+    encoder.bool(false);
+    encoder.bool(false);
+    encoder.bool(false);
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::GenerationConflict)
+    );
+
+    // 8. ID "." refused on decode
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text(".");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("statement");
+    valid_record.provenance().encode_canonical(&mut encoder);
+    valid_record.classification().encode_canonical(&mut encoder);
+    valid_record.custody().encode_canonical(&mut encoder);
+    encoder.bool(false);
+    encoder.bool(false);
+    encoder.bool(false);
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // 9. SensorCapsule without capsule payload refused on decode
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text("source:dec:nocapsule");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("statement");
+    valid_record.provenance().encode_canonical(&mut encoder);
+    SourceEvidenceClassification::SensorCapsule.encode_canonical(&mut encoder);
+    valid_record.custody().encode_canonical(&mut encoder);
+    encoder.bool(false); // omission: none
+    encoder.bool(false); // capsule: none (VIOLATION)
+    encoder.bool(false); // witness: none
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::SourceEvidenceCapsuleRequired)
+    );
+
+    // 10. ContinuityWitness without witness payload refused on decode
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text("source:dec:nowitness");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("statement");
+    valid_record.provenance().encode_canonical(&mut encoder);
+    SourceEvidenceClassification::ContinuityWitness.encode_canonical(&mut encoder);
+    valid_record.custody().encode_canonical(&mut encoder);
+    encoder.bool(false); // omission: none
+    encoder.bool(false); // capsule: none
+    encoder.bool(false); // witness: none (VIOLATION)
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::SourceEvidenceWitnessRequired)
+    );
+
+    // 11. Circular continuity witness (equals source digest) refused on decode
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text("source:dec:circ_witness");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("statement");
+    valid_record.provenance().encode_canonical(&mut encoder);
+    valid_record.classification().encode_canonical(&mut encoder);
+    valid_record.custody().encode_canonical(&mut encoder);
+    encoder.bool(false); // omission: none
+    encoder.bool(true);
+    if let Some(cap) = valid_record.capsule() {
+        cap.encode_canonical(&mut encoder);
+    }
+    encoder.bool(true);
+    encoder.digest(source_digest); // EQUALS SOURCE DIGEST (VIOLATION)
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::SourceEvidenceWitnessEqualsSourceDigest)
+    );
+
+    // 12. NotRetained with continuity witness refused on decode
+    let mut encoder = CanonicalEncoder::new();
+    encoder.u32(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION);
+    encoder.text("source:dec:not_ret_wit");
+    valid_record.anchor().encode_canonical(&mut encoder);
+    encoder.u64(1);
+    encoder.text("statement");
+    valid_record.provenance().encode_canonical(&mut encoder);
+    SourceEvidenceClassification::PhysicalSensorMeasurement.encode_canonical(&mut encoder);
+    SourceCustody::NotRetained.encode_canonical(&mut encoder);
+    encoder.bool(true);
+    OmissionReason::RetentionPolicy.encode_canonical(&mut encoder);
+    encoder.bool(false); // capsule: none
+    encoder.bool(true); // witness: present (VIOLATION)
+    encoder.digest(continuity_digest);
+    let raw = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&raw);
+    assert_eq!(
+        SourceEvidenceRecord::decode_canonical(&mut decoder),
+        Err(ContractError::SourceEvidenceNotRetainedWithWitness)
+    );
 
     Ok(())
 }
@@ -1743,17 +2414,17 @@ fn test_clock_basis_and_sensor_capsule_canonical_codecs() -> Result<(), Box<dyn 
     );
     assert_eq!(ClockBasis::parse("estimated")?, ClockBasis::Estimated);
 
-    // ClockBasis::parse refuses unknown clock basis names with typed error
-    match ClockBasis::parse("atomic_clock_v2") {
-        Err(ContractError::UnknownClockBasisName(name)) => {
-            assert_eq!(name, "atomic_clock_v2");
-        }
-        other => return Err(format!("expected UnknownClockBasisName, got {other:?}").into()),
-    }
+    // ClockBasis::parse fails on unknown string with UnknownClockBasisName
+    assert_eq!(
+        ClockBasis::parse("invalid_clock_basis"),
+        Err(ContractError::UnknownClockBasisName(
+            "invalid_clock_basis".to_string()
+        ))
+    );
 
-    // SensorCapsule CanonicalEncode and CanonicalDecode roundtrip
-    let digest = ContentDigest::sha256(b"sensor-capsule-test-bytes");
-    let capsule = make_test_sensor_capsule(digest, 2048);
+    // SensorCapsule canonical roundtrip
+    let source_digest = ContentDigest::sha256(b"sensor-capsule-test-bytes");
+    let capsule = make_test_sensor_capsule(source_digest, 2048)?;
 
     let mut encoder = CanonicalEncoder::new();
     capsule.encode_canonical(&mut encoder);
@@ -1763,6 +2434,31 @@ fn test_clock_basis_and_sensor_capsule_canonical_codecs() -> Result<(), Box<dyn 
     let decoded = SensorCapsule::decode_canonical(&mut decoder)?;
     assert_eq!(decoded, capsule);
 
+    // SensorCapsule decode fails on inverted interval
+    let mut bad_enc = CanonicalEncoder::new();
+    let mut bad_cap = capsule.clone();
+    bad_cap.capture.earliest = TimestampNs(2_000);
+    bad_cap.capture.latest = TimestampNs(1_000);
+    bad_cap.encode_canonical(&mut bad_enc);
+    let bad_bytes = bad_enc.finish();
+    let mut decoder = CanonicalDecoder::new(&bad_bytes);
+    assert_eq!(
+        SensorCapsule::decode_canonical(&mut decoder),
+        Err(ContractError::InvertedTimeInterval)
+    );
+
+    // SensorCapsule decode fails on receive_time < earliest
+    let mut bad_enc = CanonicalEncoder::new();
+    let mut bad_cap = capsule;
+    bad_cap.receive_time = TimestampNs(bad_cap.capture.earliest.0 - 1);
+    bad_cap.encode_canonical(&mut bad_enc);
+    let bad_bytes = bad_enc.finish();
+    let mut decoder = CanonicalDecoder::new(&bad_bytes);
+    assert_eq!(
+        SensorCapsule::decode_canonical(&mut decoder),
+        Err(ContractError::InvertedTimeInterval)
+    );
+
     Ok(())
 }
 
@@ -1771,7 +2467,7 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
     let anchor = LedgerAnchor::genesis("camera.sensor.dock_bay");
     let source_digest = ContentDigest::sha256(b"dock-bay-payload-bytes");
     let continuity_digest = ContentDigest::sha256(b"dock-bay-continuity");
-    let capsule = make_test_sensor_capsule(source_digest, 4096);
+    let capsule = make_test_sensor_capsule(source_digest, 4096)?;
 
     let record = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:packet:dock_bay:0128".to_string(),
@@ -1790,24 +2486,20 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
         continuity_witness: Some(continuity_digest),
     })?;
 
-    let mut encoder = CanonicalEncoder::new();
-    record.encode_canonical(&mut encoder);
-    let bytes = encoder.finish();
-
-    let mut decoder = CanonicalDecoder::new(&bytes);
-    let decoded = SourceEvidenceRecord::decode_canonical(&mut decoder)?;
+    let bytes = record.to_canonical_bytes();
+    let decoded = SourceEvidenceRecord::from_canonical_bytes(&bytes)?;
 
     assert_eq!(decoded, record);
-    assert_eq!(decoded.evidence_id, record.evidence_id);
-    assert_eq!(decoded.anchor, record.anchor);
-    assert_eq!(decoded.generation, record.generation);
-    assert_eq!(decoded.statement, record.statement);
-    assert_eq!(decoded.provenance, record.provenance);
-    assert_eq!(decoded.classification, record.classification);
-    assert_eq!(decoded.custody, record.custody);
-    assert_eq!(decoded.omission, record.omission);
-    assert_eq!(decoded.capsule, record.capsule);
-    assert_eq!(decoded.continuity_witness, record.continuity_witness);
+    assert_eq!(decoded.evidence_id(), record.evidence_id());
+    assert_eq!(decoded.anchor(), record.anchor());
+    assert_eq!(decoded.generation(), record.generation());
+    assert_eq!(decoded.statement(), record.statement());
+    assert_eq!(decoded.provenance(), record.provenance());
+    assert_eq!(decoded.classification(), record.classification());
+    assert_eq!(decoded.custody(), record.custody());
+    assert_eq!(decoded.omission(), record.omission());
+    assert_eq!(decoded.capsule(), record.capsule());
+    assert_eq!(decoded.continuity_witness(), record.continuity_witness());
 
     // Roundtrip for NotRetained record
     let not_retained_record = SourceEvidenceRecord::new(SourceEvidenceParams {
@@ -1823,12 +2515,8 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
         continuity_witness: None,
     })?;
 
-    let mut encoder = CanonicalEncoder::new();
-    not_retained_record.encode_canonical(&mut encoder);
-    let bytes = encoder.finish();
-
-    let mut decoder = CanonicalDecoder::new(&bytes);
-    let decoded_not_retained = SourceEvidenceRecord::decode_canonical(&mut decoder)?;
+    let bytes = not_retained_record.to_canonical_bytes();
+    let decoded_not_retained = SourceEvidenceRecord::from_canonical_bytes(&bytes)?;
     assert_eq!(decoded_not_retained, not_retained_record);
 
     Ok(())
@@ -2756,7 +3444,7 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     let mut dec = CanonicalDecoder::new(&bytes);
     assert_eq!(
         SourceCustody::decode_canonical(&mut dec),
-        Err(ContractError::UnknownEntryTag(99))
+        Err(ContractError::UnknownSourceCustodyTag(99))
     );
 
     // Planted bypass: Record with duplicate grants in decode_canonical rejected
@@ -2782,13 +3470,77 @@ fn test_planted_negative_runtime_authority_and_custody_bypasses() -> Result<(), 
     enc.u64(0); // receipt roots
     enc.bool(false); // contract basis
     let bytes = enc.finish();
-    let mut dec = CanonicalDecoder::new(&bytes);
     assert_eq!(
         RuntimeAuthorityAndCustodyRecord::decode_canonical(&mut dec),
         Err(ContractError::DuplicateGrant(
             "CAP-LEDGER-APPEND-001".to_string()
         ))
     );
+
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_golden_vector() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor {
+        site_lineage: "site:golden".to_string(),
+        ledger_epoch: 1,
+        commit_sequence: 1,
+        adapter_registry_epoch: 1,
+        schema_epoch: 1,
+        policy_epoch: 1,
+        privacy_epoch: 1,
+        state_root: ContentDigest::sha256(b"golden-state-root"),
+    };
+    let source_digest = ContentDigest::sha256(b"golden-source-payload-bytes");
+    let continuity_witness = ContentDigest::sha256(b"golden-continuity-witness-42");
+    let capsule = SensorCapsule {
+        capsule_id: CapsuleId::parse("cap:golden:001")?,
+        sensor_id: SensorId::parse("sensor:golden:cam01")?,
+        stream_id: StreamId::parse("stream:golden:rgb")?,
+        sequence: 100,
+        capture: CaptureInterval {
+            earliest: TimestampNs(1_700_000_000_000_000_000),
+            latest: TimestampNs(1_700_000_001_000_000_000),
+        },
+        receive_time: TimestampNs(1_700_000_001_100_000_000),
+        clock_basis: ClockBasis::UtcDisciplined,
+        source_digest,
+        source_bytes: 2048,
+        frame_count: 60,
+        gap_before: false,
+    };
+    let record = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:golden:001".to_string(),
+        anchor,
+        generation: Generation(5),
+        statement: "Golden source evidence record for canonical wire format verification".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 2048,
+            storage_handle: "cas://sha256/golden-source-payload".to_string(),
+        },
+        omission: None,
+        capsule: Some(capsule),
+        continuity_witness: Some(continuity_witness),
+    })?;
+
+    assert_eq!(SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, 2);
+
+    let canonical_bytes = record.to_canonical_bytes();
+    let expected_hex = "000000020000000000000011736f757263653a676f6c64656e3a303031000000000000000b736974653a676f6c64656e0000000000000001000000000000000100000000000000010000000000000001000000000000000100000000000000010116a86d9757449df9918f423fc0bf7fb115fccedaf6547fb294c34919d994f0aa00000000000000050000000000000044476f6c64656e20736f757263652065766964656e6365207265636f726420666f722063616e6f6e6963616c207769726520666f726d617420766572696669636174696f6e00000000000000086f62736572766564000000000000000e73656e736f725f63617073756c650101b9474e3237099ce42c7040178cb9a4601d56f29f3362e5ef114989ea5244f7d2000000000000080000000000000000226361733a2f2f7368613235362f676f6c64656e2d736f757263652d7061796c6f61640001000000000000000e6361703a676f6c64656e3a303031000000000000001373656e736f723a676f6c64656e3a63616d3031000000000000001173747265616d3a676f6c64656e3a7267620000000000000064000000000000000017979cfe362a0000000000000000000017979cfe71c4ca00000000000000000017979cfe77baab00000000000000000f7574635f6469736369706c696e656401b9474e3237099ce42c7040178cb9a4601d56f29f3362e5ef114989ea5244f7d200000000000008000000003c0001019a2af80ebb359fc05dccf283e344594d86d4556e4448eb19ec3ed084a6840f70";
+    let actual_hex = canonical_bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    assert_eq!(actual_hex, expected_hex, "canonical byte vector must match pinned golden bytes");
+
+    let digest = record.canonical_digest();
+    let expected_digest = ContentDigest::parse("sha256:7b7a1b70a7812c2fa676ac00e51c03d16b025250f412d7676d7ea983fabffcd0")?;
+    assert_eq!(digest, expected_digest, "canonical digest must match pinned golden digest literal");
+
+    // Decode back and verify roundtrip identity
+    let decoded = SourceEvidenceRecord::from_canonical_bytes(&canonical_bytes)?;
+    assert_eq!(decoded, record);
 
     Ok(())
 }
