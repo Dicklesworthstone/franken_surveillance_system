@@ -14,7 +14,8 @@ use fss_core::ObligationId;
 use crate::situation::{EFFECT_CLAIM_PREFIX, EffectOutcome, OBLIGATION_CLAIM_PREFIX};
 use fss_ledger::{DurableLedgerError, DurableReferenceLedger};
 
-use crate::situation_sections::{compiled_against, records_successor};
+use crate::outcome::ALERT_OUTCOME_FAMILY;
+use crate::situation_sections::{LineageStep, compiled_against, lineage_step};
 use crate::{DurableEffectJournal, ReferenceError, ReferenceSituationPublication};
 
 /// Returns whether a premise that a plan relied on at `prior` is invalidated by its `current`
@@ -205,17 +206,28 @@ fn classify(
     // lineage records the result as the basis's one successor. Without the authority (the plain
     // classifier), with another store, a stale basis, another event of the mission, or a second
     // child every change is reported but none is terminal.
-    let terminal_allowed = match binding {
-        Some(binding) => {
-            compiled_against(binding.authority, &basis.situation)
-                && compiled_against(binding.authority, &result.situation)
-                && records_successor(binding.authority, basis, result)?
+    let step = match binding {
+        Some(binding)
+            if compiled_against(binding.authority, &basis.situation)
+                && compiled_against(binding.authority, &result.situation) =>
+        {
+            lineage_step(binding.authority, basis, result)?
         }
-        None => false,
-    } && basis.situation.is_sealed()
+        Some(_) | None => LineageStep::NotAStep,
+    };
+    let sealed_continuation = basis.situation.is_sealed()
         && result.situation.is_sealed()
         && basis.situation.same_subject(&result.situation)
         && result.situation.predecessor_publication() == Some(basis.publication_digest);
+    // fss-mnlz1 R5-B: a sealed step the lineage records from a displaced basis is refused, never
+    // silently reported as a plain delta: that would drop the terminal transition of an operation
+    // the lineage has yet to announce, or re-announce one it already announced.
+    if sealed_continuation && step == LineageStep::Displaced {
+        return Err(ReferenceError::InvalidSpec(
+            "meaningful_delta_lineage_basis_displaced",
+        ));
+    }
+    let terminal_allowed = sealed_continuation && step == LineageStep::Vouched;
 
     let basis_capsule = &basis.situation.capsule;
     let result_capsule = &result.situation.capsule;
@@ -568,10 +580,29 @@ fn classify(
     // basis-indeterminate effect and a proof that supersedes another cell of the operation, and it
     // never follows from a bare `known` state, a hypothesis disposition, or a claim name; a cell
     // added to an operation the basis already proved is not a second transition (fss-6sph6).
+    // fss-mnlz1 R5-A: "newly proved" is judged against the authority too. An operation whose
+    // outcome the authority published at or before the basis's sealed compile anchor was already
+    // proved when the basis was compiled, so a basis that merely omits it (a planless step in the
+    // middle of the lineage) never lets it terminalize a second time; it is reported as already
+    // proved instead.
+    let mut already_proved = BTreeSet::new();
+    if let Some(binding) = binding.filter(|_| terminal_allowed) {
+        for operation in result_proved.keys() {
+            if !basis_proved.contains_key(operation)
+                && outcome_published_by(binding.authority, operation, basis)?
+            {
+                already_proved.insert(*operation);
+                effect_uncertainty_changes.push(format!(
+                    "effect already proved on the lineage: operation {operation} had a published outcome before the basis was compiled"
+                ));
+                classes.insert(MeaningfulDeltaClass::EffectUncertainty);
+            }
+        }
+    }
     let effect_terminalized = terminal_allowed
-        && result_proved
-            .keys()
-            .any(|operation| !basis_proved.contains_key(operation));
+        && result_proved.keys().any(|operation| {
+            !basis_proved.contains_key(operation) && !already_proved.contains(operation)
+        });
     // An effect cell is terminal only through the premise bar applied above, so a terminal
     // hypothesis disposition on an effect cell never terminalizes it here. `verify` refuses every
     // obligation-namespace cell (none is ever bound) and every look-alike spelling of either
@@ -952,6 +983,29 @@ fn is_effect_claim(cell: &KnowledgeCell) -> bool {
 /// no terminal transition even if that refusal were bypassed (fss-6sph6).
 pub(crate) fn event_rule_applies(cell: &KnowledgeCell) -> bool {
     !is_effect_claim(cell) && !cell.claim_id.starts_with(OBLIGATION_CLAIM_PREFIX)
+}
+
+/// Returns whether `authority` published an outcome of `operation` at or before the authority
+/// anchor `publication` sealed, that is whether the outcome already existed when `publication` was
+/// compiled (fss-mnlz1 R5-A).
+fn outcome_published_by(
+    authority: &DurableReferenceLedger,
+    operation: &str,
+    publication: &ReferenceSituationPublication,
+) -> Result<bool, ReferenceError> {
+    let Some(anchor) = publication.situation.authority_anchor() else {
+        return Ok(false);
+    };
+    let effect_object = fss_core::ObjectId::parse(format!("object:effect:{operation}"))?;
+    Ok(authority
+        .batches()
+        .iter()
+        .find(|batch| {
+            batch.deltas.iter().any(|delta| {
+                delta.object_id == effect_object && delta.family == ALERT_OUTCOME_FAMILY
+            })
+        })
+        .is_some_and(|batch| batch.new_anchor.commit_sequence <= anchor.commit_sequence))
 }
 
 /// Typed terminal outcomes of every operation an effect cell proves in `publication` under `bar`,

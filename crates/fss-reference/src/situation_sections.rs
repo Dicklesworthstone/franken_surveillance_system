@@ -570,28 +570,43 @@ pub(crate) fn compiled_against(
     })
 }
 
-/// Returns whether the authority's replayed lineage vouches for `basis` to `result` as one step
-/// (see [`ReplayedLineage`]): the lineage records `result` right after `basis`, and it recorded
-/// `basis` itself right after the predecessor `basis` sealed (or as the subject's first entry when
-/// it sealed none). A raw write that does not extend the lineage vouches for nothing, and a raw
-/// write that puts a stale publication back at the head of the lineage never makes it a terminal
-/// basis: its sealed predecessor is not the entry it was recorded after, so a step from it could
-/// announce an outcome the lineage already announced (fss-mnlz1).
-pub(crate) fn records_successor(
+/// How the authority's replayed lineage relates `basis` to `result` (fss-mnlz1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LineageStep {
+    /// The lineage records `result` right after `basis`, and it recorded `basis` itself right
+    /// after the predecessor `basis` sealed (or as the subject's first entry when it sealed none).
+    Vouched,
+    /// The lineage records `result` right after `basis`, but a raw write put `basis` at the head of
+    /// the lineage after an entry other than the predecessor it sealed, so a step from it could
+    /// announce an outcome the lineage already announced, or hide the one it has yet to announce.
+    Displaced,
+    /// The lineage does not record `result` right after `basis`.
+    NotAStep,
+}
+
+/// Classifies `basis` to `result` against the authority's replayed lineage (see
+/// [`ReplayedLineage`] and [`LineageStep`]); a raw write that does not extend the lineage vouches
+/// for nothing (fss-mnlz1).
+pub(crate) fn lineage_step(
     authority: &DurableReferenceLedger,
     basis: &ReferenceSituationPublication,
     result: &ReferenceSituationPublication,
-) -> Result<bool, ReferenceError> {
+) -> Result<LineageStep, ReferenceError> {
     let Some((event_id, objective_id)) = result.situation.subject() else {
-        return Ok(false);
+        return Ok(LineageStep::NotAStep);
     };
     let object_id = lineage_object_id(event_id, objective_id)?;
     let lineage = replay_lineage(authority, &object_id);
-    let continues =
-        lineage.entries.get(&result.publication_digest) == Some(&Some(basis.publication_digest));
+    if lineage.entries.get(&result.publication_digest) != Some(&Some(basis.publication_digest)) {
+        return Ok(LineageStep::NotAStep);
+    }
     let basis_in_place = lineage.entries.get(&basis.publication_digest)
         == Some(&basis.situation.predecessor_publication());
-    Ok(continues && basis_in_place)
+    Ok(if basis_in_place {
+        LineageStep::Vouched
+    } else {
+        LineageStep::Displaced
+    })
 }
 
 /// Returns whether `batch` holds only publication lineage records, which change no authority

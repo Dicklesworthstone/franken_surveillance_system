@@ -3158,9 +3158,10 @@ fn journal_bytes_swapped_under_the_handle_are_refused() -> Result<(), Box<dyn Er
 /// while P is latest (the effect still indeterminate); (3) after the outcome is published, the
 /// genuine child L continuing P is compiled and recorded, and P to L is terminal; (4) one raw
 /// lineage record names S with L as witness, so S becomes the latest publication; (5) a genuine
-/// next step G continuing S compiles and records; (6) S to G is not terminal, because S's sealed
-/// predecessor is P but the lineage recorded it after L. The bound S to G delta equals the plain
-/// classifier's exactly, and P to L stays the plain delta plus its terminal transition.
+/// next step G continuing S compiles and records; (6) S to G is refused as a step from a displaced
+/// basis, because S's sealed predecessor is P but the lineage recorded it after L, rather than
+/// reported as a silently downgraded delta (fss-mnlz1 R5-B). P to L stays the plain delta plus its
+/// terminal transition.
 #[test]
 fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box<dyn Error>> {
     let name = "basis-in-place";
@@ -3287,24 +3288,28 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
     )?;
     crate::record_reference_publication(&mut harness.authority, &next)?;
 
-    // (6) S to G is reported exactly as the plain classifier reports it: never terminal again.
+    // (6) S to G is refused as a step from a displaced basis: never terminal again, and never a
+    // silently downgraded delta (fss-mnlz1 R5-B).
     let replayed = crate::classify_reference_meaningful_delta_in_lineage(
         &sibling,
         &next,
         &harness.authority,
         None,
-    )?;
-    let plain = crate::classify_reference_meaningful_delta(&sibling, &next)?;
-    assert_eq!(replayed.classes, plain.classes);
-    assert!(!is_terminal(&replayed), "{:?}", replayed.classes);
-    assert!(
-        replayed
-            .classes
-            .contains(&fss_core::MeaningfulDeltaClass::EffectUncertainty),
-        "{:?}",
-        replayed.classes
     );
-    replayed.validate()?;
+    assert!(
+        matches!(
+            replayed,
+            Err(ReferenceError::InvalidSpec(
+                "meaningful_delta_lineage_basis_displaced"
+            ))
+        ),
+        "{:?}",
+        replayed.map(|delta| delta.classes)
+    );
+    // The plain classifier, which never announces a terminal transition, still reports the change.
+    let plain = crate::classify_reference_meaningful_delta(&sibling, &next)?;
+    assert!(!is_terminal(&plain), "{:?}", plain.classes);
+    plain.validate()?;
     // The recorded step P to L stays terminal after the raw record.
     let still = crate::classify_reference_meaningful_delta_in_lineage(
         &prepared,
@@ -3313,6 +3318,215 @@ fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box
         None,
     )?;
     assert_eq!(still.classes, expected);
+    harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 R5-A (the reviewer's planless-step probe, no raw write): a planless publication in
+/// the middle of the lineage never lets an operation terminalize a second time. P is recorded; the
+/// outcome is published and L continuing P is recorded, and P to L is terminal. A planless X
+/// continuing L is recorded; L to X drops the proved effect and is reported as effect uncertainty,
+/// not terminal. G with the outcome continuing X is recorded; X to G is not terminal, and the
+/// operation is reported as already proved on the lineage, since its outcome was published before
+/// X was compiled.
+#[test]
+fn a_planless_step_never_lets_an_operation_terminalize_again() -> Result<(), Box<dyn Error>> {
+    let mut lifecycle = Lifecycle::new("r5a-planless")?;
+    let prepared = lifecycle.dispatched.clone();
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &prepared)?;
+    let proved = lifecycle.verified_after(false, &prepared)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &proved)?;
+    let first = crate::classify_reference_meaningful_delta_in_lineage(
+        &prepared,
+        &proved,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(is_terminal(&first), "P to L: {:?}", first.classes);
+
+    let planless = planless_publication(
+        &lifecycle.harness,
+        &lifecycle.decision,
+        &lifecycle.receipt,
+        Some(&proved),
+    )?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &planless)?;
+    let dropped = crate::classify_reference_meaningful_delta_in_lineage(
+        &proved,
+        &planless,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(!is_terminal(&dropped), "L to X: {:?}", dropped.classes);
+    assert!(
+        dropped
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::EffectUncertainty),
+        "L to X: {:?}",
+        dropped.classes
+    );
+
+    let again = lifecycle.verified_after(true, &planless)?;
+    crate::record_reference_publication(&mut lifecycle.harness.authority, &again)?;
+    let replay = crate::classify_reference_meaningful_delta_in_lineage(
+        &planless,
+        &again,
+        &lifecycle.harness.authority,
+        None,
+    )?;
+    assert!(!is_terminal(&replay), "X to G: {:?}", replay.classes);
+    let operation = lifecycle.plan.intent.operation_id.as_str();
+    let already = format!(
+        "effect already proved on the lineage: operation {operation} had a published outcome before the basis was compiled"
+    );
+    assert_eq!(
+        replay
+            .effect_uncertainty_changes
+            .iter()
+            .filter(|change| **change == already)
+            .count(),
+        1,
+        "{:?}",
+        replay.effect_uncertainty_changes
+    );
+    assert!(
+        replay
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::EffectUncertainty),
+        "X to G: {:?}",
+        replay.classes
+    );
+    replay.validate()?;
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 R5-B (the reviewer's displaced-basis probe): P is recorded; a sibling S continuing P
+/// is compiled while P is latest; after dispatch L continuing P is recorded; one raw lineage record
+/// promotes S (witness L); the outcome is published and G continuing S is recorded. S to G would
+/// be the effect's first-ever proof, so the bound classifier refuses it as a step from a displaced
+/// basis rather than returning a plain delta that silently drops the terminal transition.
+#[test]
+fn a_displaced_basis_is_refused_not_silently_downgraded() -> Result<(), Box<dyn Error>> {
+    let name = "r5b-displaced";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+    let current = |journal: &EffectJournal| {
+        journal
+            .operation(&plan.intent.operation_id)
+            .cloned()
+            .ok_or(fss_core::ContractError::NotFound)
+    };
+    let spec = guard_projection_spec()?;
+    let prepared = crate::project_reference_situation(
+        guarded_situation_after(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&current(&journal)?),
+            None,
+            None,
+        )?,
+        &spec,
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &prepared)?;
+    let sibling = crate::project_reference_situation(
+        guarded_situation_after(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&current(&journal)?),
+            None,
+            Some(&prepared),
+        )?,
+        &spec,
+    )?;
+    let mut provider = crate::ReferenceAlertProvider::with_provider_id(format!(
+        "provider:test:situation-guard:{name}"
+    ));
+    let _ = crate::dispatch_reference_alert(
+        &plan,
+        crate::ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    )?;
+    let child = crate::project_reference_situation(
+        guarded_situation_after(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&current(&journal)?),
+            None,
+            Some(&prepared),
+        )?,
+        &spec,
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &child)?;
+    append_raw_record(
+        &mut harness.authority,
+        &lineage_object_of(&prepared)?,
+        crate::situation_sections::LINEAGE_FAMILY,
+        sibling.publication_digest,
+        Some(child.publication_digest),
+    )?;
+    assert_eq!(
+        latest_of(&harness.authority, &prepared)?,
+        Some(sibling.publication_digest)
+    );
+    let provider_receipt = provider
+        .lookup(&plan.intent)?
+        .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+    let _ = crate::observe_reference_alert(
+        &plan,
+        provider_receipt.receipt_digest(),
+        TimestampNs(103),
+        &mut journal,
+        &provider,
+    )?;
+    let _ = crate::verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;
+    let outcome = crate::publish_reference_alert_outcome(
+        &plan,
+        &journal,
+        &mut harness.objects,
+        &mut harness.authority,
+        &provider,
+    )?;
+    let next = crate::project_reference_situation(
+        guarded_situation_after(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&current(&journal)?),
+            Some(&outcome),
+            Some(&sibling),
+        )?,
+        &spec,
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &next)?;
+    let displaced = crate::classify_reference_meaningful_delta_in_lineage(
+        &sibling,
+        &next,
+        &harness.authority,
+        None,
+    );
+    assert!(
+        matches!(
+            displaced,
+            Err(ReferenceError::InvalidSpec(
+                "meaningful_delta_lineage_basis_displaced"
+            ))
+        ),
+        "{:?}",
+        displaced.map(|delta| delta.classes)
+    );
     harness.cleanup();
     Ok(())
 }
