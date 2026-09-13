@@ -83,11 +83,11 @@ pub use durable::{
 pub use effect::{
     EFFECT_INTENT_SCHEMA, EFFECT_RECONCILIATION_SCHEMA, EffectIntent, EffectJournal,
     EffectJournalTransition, EffectReconciliationRecord, EffectSchemaError, EffectState,
-    MAX_DETAIL_LEN, MAX_EFFECT_CLASS_LEN, MAX_ERROR_CODE_LEN, MAX_TERMINAL_PREDICATE_LEN,
-    Obligation, ObligationState, OperationReceipt, PREPARED_EFFECT_SCHEMA,
-    PROVIDER_FAILURE_RECEIPT_SCHEMA, PROVIDER_OBSERVATION_RECEIPT_SCHEMA, PreparedEffect,
-    PreparedOperation, ProviderFailureLookup, ProviderFailureReceipt, ProviderObservationReceipt,
-    ProviderReceiptLookup, ReconciliationOutcome,
+    IndeterminateEffectReason, MAX_DETAIL_LEN, MAX_EFFECT_CLASS_LEN, MAX_ERROR_CODE_LEN,
+    MAX_TERMINAL_PREDICATE_LEN, Obligation, ObligationState, OperationReceipt,
+    PREPARED_EFFECT_SCHEMA, PROVIDER_FAILURE_RECEIPT_SCHEMA, PROVIDER_OBSERVATION_RECEIPT_SCHEMA,
+    PreparedEffect, PreparedOperation, ProviderFailureLookup, ProviderFailureReceipt,
+    ProviderObservationReceipt, ProviderReceiptLookup, ReconciliationOutcome,
 };
 pub use event::{
     DecisionPath, EVENT_HYPOTHESIS_MAGIC, EVENT_HYPOTHESIS_SCHEMA, EVENT_HYPOTHESIS_VERSION_1,
