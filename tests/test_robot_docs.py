@@ -163,6 +163,63 @@ class RobotDocsContractTests(unittest.TestCase):
         error_codes = [e.code for e in res.errors]
         self.assertEqual(error_codes, [ERR_ROBOT_DOCS_CORRUPT])
 
+    def test_drift_when_operation_added_in_registry(self) -> None:
+        """Adding an operation in architecture/agent_operations.json triggers drift/staleness detection."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        ops_data = json.loads(ops_file.read_text(encoding="utf-8"))
+        new_op = copy.deepcopy(ops_data["operations"][0])
+        new_op["id"] = "AOP-999"
+        new_op["name"] = "unregistered.synthetic"
+        ops_data["operations"].append(new_op)
+        ops_file.write_text(json.dumps(ops_data, indent=2), encoding="utf-8")
+
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = [e.code for e in res.errors]
+        self.assertTrue(
+            ERR_ROBOT_DOCS_STALE in error_codes or ERR_ROBOT_DOCS_DRIFT in error_codes,
+            f"Expected stale or drift error, got: {error_codes}",
+        )
+
+    def test_drift_when_operation_removed_in_registry(self) -> None:
+        """Removing an operation in architecture/agent_operations.json triggers drift/staleness detection."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        ops_data = json.loads(ops_file.read_text(encoding="utf-8"))
+        ops_data["operations"] = [op for op in ops_data["operations"] if op["id"] != "AOP-014"]
+        ops_file.write_text(json.dumps(ops_data, indent=2), encoding="utf-8")
+
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = [e.code for e in res.errors]
+        self.assertTrue(
+            ERR_ROBOT_DOCS_STALE in error_codes or ERR_ROBOT_DOCS_DRIFT in error_codes,
+            f"Expected stale or drift error, got: {error_codes}",
+        )
+
+    def test_drift_when_view_token_budget_changed(self) -> None:
+        """Modifying view maximumTokens in architecture/agent_views.json triggers drift detection."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        views_data = json.loads(views_file.read_text(encoding="utf-8"))
+        views_data["views"][0]["maximumTokens"] += 1000
+        views_file.write_text(json.dumps(views_data, indent=2), encoding="utf-8")
+
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = [e.code for e in res.errors]
+        self.assertIn(ERR_ROBOT_DOCS_STALE, error_codes)
+
+    def test_drift_when_resource_uri_changed(self) -> None:
+        """Modifying a resource uriTemplate in fss1_public_registry.json triggers drift detection."""
+        fss1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        fss1_data = json.loads(fss1_file.read_text(encoding="utf-8"))
+        fss1_data["resources"][0]["uriTemplate"] = "fss://altered/uri/{deployment}"
+        fss1_file.write_text(json.dumps(fss1_data, indent=2), encoding="utf-8")
+
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = [e.code for e in res.errors]
+        self.assertIn(ERR_ROBOT_DOCS_STALE, error_codes)
+
     def test_mutant_m3_disordered_operations_in_json(self) -> None:
         """Mutant M3: Swapping order of operations in ROBOT_DOCS.json triggers ERR-ROBOT-DOCS-STALE-001."""
         json_file = self.fake_root / "docs/ROBOT_DOCS.json"
@@ -499,6 +556,46 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(payload["capabilities_count"], 12)
         self.assertEqual(payload["errors_count"], 250)
         self.assertEqual(payload["errors"], [])
+
+    def test_operations_exact_crosswalk_consistency(self) -> None:
+        """Every operation documented matches the operation crosswalk exactly."""
+        docs_json = json.loads((ROOT / "docs/ROBOT_DOCS.json").read_text(encoding="utf-8"))
+        crosswalk = json.loads((ROOT / "architecture/operation_crosswalk.json").read_text(encoding="utf-8"))
+        cw_by_id = {c["operation_id"]: c for c in crosswalk["crosswalk"]}
+
+        self.assertEqual(len(docs_json["operations"]), 14)
+        for op in docs_json["operations"]:
+            cw = cw_by_id[op["id"]]
+            self.assertEqual(op["cliCommand"], cw["cli_command"])
+            self.assertEqual(op["mcpToolName"], cw["mcp_tool_name"])
+            self.assertEqual(op["libraryEntryPoint"], cw["library_entry_point"])
+            self.assertEqual(op["primaryErrorId"], cw["primary_error_id"])
+
+    def test_views_exact_registry_consistency(self) -> None:
+        """Every view documented matches the agent_views registry exactly."""
+        docs_json = json.loads((ROOT / "docs/ROBOT_DOCS.json").read_text(encoding="utf-8"))
+        views_reg = json.loads((ROOT / "architecture/agent_views.json").read_text(encoding="utf-8"))
+        reg_by_id = {v["id"]: v for v in views_reg["views"]}
+
+        self.assertEqual(len(docs_json["views"]), 8)
+        for view in docs_json["views"]:
+            expected = reg_by_id[view["id"]]
+            self.assertEqual(view["name"], expected["name"])
+            self.assertEqual(view["targetTokens"], expected["targetTokens"])
+            self.assertEqual(view["maximumTokens"], expected["maximumTokens"])
+            self.assertEqual(view["requiredSections"], expected["requiredSections"])
+
+    def test_resources_exact_registry_consistency(self) -> None:
+        """Every resource URI template documented matches fss1_public_registry exactly."""
+        docs_json = json.loads((ROOT / "docs/ROBOT_DOCS.json").read_text(encoding="utf-8"))
+        fss1_reg = json.loads((ROOT / "architecture/fss1_public_registry.json").read_text(encoding="utf-8"))
+        reg_by_id = {r["id"]: r for r in fss1_reg["resources"]}
+
+        self.assertEqual(len(docs_json["resources"]), 15)
+        for res in docs_json["resources"]:
+            expected = reg_by_id[res["id"]]
+            self.assertEqual(res["uriTemplate"], expected["uriTemplate"])
+            self.assertEqual(res["payloadSchema"], expected["payloadSchema"])
 
 
 if __name__ == "__main__":
