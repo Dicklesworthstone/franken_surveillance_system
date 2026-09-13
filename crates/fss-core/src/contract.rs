@@ -2747,6 +2747,14 @@ pub enum ContractError {
     HypothesisMissingFalsifier,
     /// An investigation hypothesis cannot claim the `known` knowledge state (AGT-LAYER-006, INV-104).
     HypothesisKnownForbidden,
+    /// An H4 laboratory expansion lacks an anchor to canonical evidence (AGT-H4).
+    LaboratoryExpansionMissingAnchor,
+    /// An H4 oracle comparison tolerance flag disagrees with discrepancy score and threshold (AGT-H4).
+    LaboratoryExpansionToleranceMismatch,
+    /// An H4 intermediate artifact tensor shape or byte count is malformed (AGT-H4).
+    LaboratoryExpansionShapeMalformed,
+    /// Access to H4 laboratory expansion requires qualification or an explicit debugging grant (AGT-H4).
+    LaboratoryGrantRequired,
 }
 
 impl ContractError {
@@ -2803,6 +2811,10 @@ impl ContractError {
             Self::CompetingHypothesesRequired => "competing_hypotheses_required",
             Self::HypothesisMissingFalsifier => "hypothesis_missing_falsifier",
             Self::HypothesisKnownForbidden => "hypothesis_known_forbidden",
+            Self::LaboratoryExpansionMissingAnchor => "laboratory_expansion_missing_anchor",
+            Self::LaboratoryExpansionToleranceMismatch => "laboratory_expansion_tolerance_mismatch",
+            Self::LaboratoryExpansionShapeMalformed => "laboratory_expansion_shape_malformed",
+            Self::LaboratoryGrantRequired => "laboratory_grant_required",
         }
     }
 }
