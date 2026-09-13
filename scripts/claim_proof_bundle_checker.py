@@ -46,7 +46,11 @@ Fail-closed verification invariants:
    no readiness level at all.
 10. Crash freedom: JSON nested deeper than MAX_JSON_DEPTH levels, a NUL character in any path,
    and undecodable registry text are typed findings, never tracebacks; every walker over
-   untrusted structure is iterative or depth-capped.
+   untrusted structure is iterative or depth-capped. Output escapes any character the output
+   encoding cannot carry (lone surrogates, non-ASCII under an ASCII locale) instead of failing.
+11. Exact field sets: the bundle (schema exactly fss.proof_bundle.v1), its artifact entries, and
+   every evidence document a realized class reads are validated against an allowlist of keys,
+   compared byte for byte; any other key is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001.
 """
 
 from __future__ import annotations
@@ -125,6 +129,8 @@ ERR_SLO_REGISTRY_INVALID = "ERR-CLAIM-SLO-REGISTRY-INVALID-001"
 ERR_SLO_STATISTIC_MISMATCH = "ERR-CLAIM-SLO-STATISTIC-MISMATCH-001"
 ERR_SLO_CONJUNCT_INCOHERENT = "ERR-CLAIM-SLO-CONJUNCT-INCOHERENT-001"
 ERR_CLAIM_CLASS_UNRESOLVED = "ERR-CLAIM-CLASS-UNRESOLVED-001"
+ERR_EVIDENCE_FIELD_UNKNOWN = "ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001"
+ERR_BUNDLE_SCHEMA_INVALID = "ERR-CLAIM-PROOF-BUNDLE-SCHEMA-INVALID-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_PROOF_BUNDLE_NOT_FOUND: {
@@ -299,6 +305,14 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "trigger": "An 'slo' measurement validity window is missing, unparseable, zone-less, empty, finished before it started, or lies in the future",
         "remediation": "Retain a zone-qualified ISO-8601 measurement window that ended before the evaluation instant",
     },
+    ERR_EVIDENCE_FIELD_UNKNOWN: {
+        "trigger": "An evidence document the checker reads (proof bundle, artifact entry, assumption, theorem, toolchain identity, formal model reference or manifest, proof check receipt, bound, derivation, or slo measurement) declares a key outside its exact field set; keys are compared byte for byte, with no case folding, stripping, or normalization",
+        "remediation": "Remove the key or spell it exactly as its document's field set names it; an unrecognized field is never silently ignored",
+    },
+    ERR_BUNDLE_SCHEMA_INVALID: {
+        "trigger": "A proof bundle's 'schema' is missing or not exactly 'fss.proof_bundle.v1', or its 'bundle_id' is present but not an exact token",
+        "remediation": "Declare \"schema\": \"fss.proof_bundle.v1\" byte for byte and, when present, a bundle_id of printable ASCII with no whitespace",
+    },
     ERR_SLO_STATISTIC_MISMATCH: {
         "trigger": "An 'slo' measurement's declared 'statistic' is not exactly the statistic its SLO target names (missing, different, not byte-exact, declared for a target that names none, or shadowed by a statistic-like field)",
         "remediation": "Declare the single canonical 'statistic' exactly as the SLO target names it (e.g. 'p95'), or none when the target names no statistic",
@@ -426,6 +440,35 @@ RETAINED_EVIDENCE_FIELDS = ("retained_evidence", "retainedEvidence", "evidence")
 ARTIFACT_LIST_FIELDS = ("artifacts", "objects")
 ARTIFACT_LOCATOR_FIELDS = ("path", "uri", "uriHint")
 EXPIRY_FIELDS = ("expires_at", "expiresAt", "valid_until", "validUntil")
+PROMOTION_BASIS_FIELDS = ("basis", "claim_basis", "promotion_basis", "method", "evidence_basis", "prohibited_promotion")
+PROOF_BUNDLE_SCHEMA = "fss.proof_bundle.v1"
+# Exact field sets (review round 5, root-cause directive): every evidence document the checker reads
+# is validated against its allowlist, keys compared byte for byte; any other key is
+# ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001. Only the fields a check reads (or a declared identity
+# covered by the content digest, bundle_id) are listed; nothing is ignored.
+BUNDLE_GENERIC_FIELDS: frozenset[str] = frozenset({
+    "schema", "bundle_id", "status", "generation", "is_expired",
+    *CONTENT_DIGEST_FIELDS, *CLAIM_ID_FIELDS, *CLAIM_CLASS_FIELDS, *SUPPORTED_LEVEL_FIELDS,
+    *RETAINED_EVIDENCE_FIELDS, *ARTIFACT_LIST_FIELDS, *EXPIRY_FIELDS, *PROMOTION_BASIS_FIELDS,
+})
+BUNDLE_CLASS_FIELDS: dict[str, frozenset[str]] = {
+    "slo": frozenset(),
+    "proof": frozenset({"assumptions", "theorem", "toolchain_identity", "formal_model"}),
+    "bounded_model": frozenset({"assumptions", "bound"}),
+}
+# An artifact entry: a path-based artifact, or an object reference of schemas/evidence_bundle.v1.json
+# (digest, role, sizeBytes, retentionState, uriHint; additionalProperties false).
+ARTIFACT_ENTRY_FIELDS: frozenset[str] = frozenset({"role", "digest", "sizeBytes", "retentionState", *ARTIFACT_LOCATOR_FIELDS})
+ASSUMPTION_FIELDS: frozenset[str] = frozenset({"id", "statement"})
+PROOF_THEOREM_FIELDS: frozenset[str] = frozenset({"claim_id", "name", "statement"})
+PROOF_TOOLCHAIN_FIELDS: frozenset[str] = frozenset({"checker", "version"})
+PROOF_MODEL_REF_FIELDS: frozenset[str] = frozenset({"model_id", "generation"})
+FORMAL_MODEL_MANIFEST_FIELDS: frozenset[str] = frozenset({"schema", "model_id", "generation", "claim_ids", "source"})
+FORMAL_MODEL_SOURCE_FIELDS: frozenset[str] = frozenset({"path", "digest"})
+PROOF_CHECK_RECEIPT_FIELDS: frozenset[str] = frozenset({
+    "schema", "status", "claim_id", "checker", "checker_version", "model_id", "model_generation",
+    "model_source_digest", "formal_artifact_digest", "theorem_statement", "theorem_name",
+})
 RETENTION_STATES: frozenset[str] = frozenset({"embedded", "local", "remote", "intentionally_omitted"})
 SHA256_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -797,6 +840,29 @@ def compute_bundle_digest(bundle_dict: dict[str, Any]) -> str:
     return compute_sha256(canonical_bytes)
 
 
+def _check_allowed_fields(
+    doc: dict[str, Any],
+    allowed: frozenset[str],
+    what: str,
+    where: str,
+    path_str: str,
+    findings: list[ClaimFinding],
+    params: dict[str, Any] | None = None,
+) -> bool:
+    """Every key of an evidence document is one of its exact field names. Keys are compared byte
+    for byte: no case folding, no stripping, no Unicode normalization, so a lookalike key beside
+    or instead of a canonical field is never silently ignored. True when all keys are known."""
+    unknown = [key for key in doc if not (isinstance(key, str) and key in allowed)]
+    if unknown:
+        findings.append(_finding(
+            ERR_EVIDENCE_FIELD_UNKNOWN, path_str, where,
+            f"{what} declares field(s) {unknown!r} outside its exact field set {sorted(allowed)}; "
+            "keys are compared byte for byte and an unrecognized field is never ignored",
+            {**(params or {}), "unknown_fields": [repr(key) for key in unknown]},
+        ))
+    return not unknown
+
+
 def _check_content_digest(data: dict[str, Any], path_str: str, findings: list[ClaimFinding]) -> None:
     present, declared = _single_field(data, CONTENT_DIGEST_FIELDS)
     if not present:
@@ -834,6 +900,16 @@ def _check_artifacts(data: dict[str, Any], root: Path, path_str: str, findings: 
             if not isinstance(art, dict):
                 findings.append(_finding(ERR_UNREADABLE_INPUT, path_str, loc, f"Bundle artifact entry {loc} must be an object, got {type(art).__name__}"))
                 continue
+            _check_allowed_fields(art, ARTIFACT_ENTRY_FIELDS, f"Bundle artifact entry {loc}", loc, path_str, findings)
+            declared_size = art.get("sizeBytes")
+            size_ok = "sizeBytes" not in art or (
+                isinstance(declared_size, int) and not isinstance(declared_size, bool) and declared_size >= 0
+            )
+            if not size_ok:
+                findings.append(_finding(
+                    ERR_UNREADABLE_INPUT, path_str, f"{loc}.sizeBytes",
+                    f"Bundle artifact {loc} sizeBytes {declared_size!r} is not a non-negative integer (schemas/evidence_bundle.v1.json)",
+                ))
             digest_val = art.get("digest")
             digest_norm = digest_val.strip().lower() if isinstance(digest_val, str) else None
             digest_ok = digest_norm is not None and SHA256_DIGEST_RE.match(digest_norm) is not None
@@ -934,6 +1010,12 @@ def _check_artifacts(data: dict[str, Any], root: Path, path_str: str, findings: 
                     {"artifact": art_path_val, "error": str(exc)},
                 ))
                 continue
+            if "sizeBytes" in art and size_ok and declared_size != len(art_bytes):
+                findings.append(_finding(
+                    ERR_BUNDLE_DIGEST_MISMATCH, path_str, f"{loc}.sizeBytes",
+                    f"Artifact '{art_path_val}' declares sizeBytes {declared_size}, but its retained bytes are {len(art_bytes)} long",
+                    {"artifact": art_path_val, "declared_size": declared_size, "actual_size": len(art_bytes)},
+                ))
             actual = compute_sha256(art_bytes)
             if actual != digest_norm:
                 findings.append(_finding(
@@ -2041,6 +2123,10 @@ def _check_assumptions(
     folded: set[str] = set()
     ok = True
     for idx, item in enumerate(raw):
+        if isinstance(item, dict) and not _check_allowed_fields(
+            item, ASSUMPTION_FIELDS, f"{label} assumption {idx}", f"assumptions[{idx}]", path_str, findings, params,
+        ):
+            ok = False
         a_id = _exact_token(item.get("id")) if isinstance(item, dict) else None
         statement = _exact_text(item.get("statement")) if isinstance(item, dict) else None
         if a_id is None or statement is None:
@@ -2721,6 +2807,7 @@ def _verify_proof_claim_evidence(
     if not isinstance(theorem, dict):
         findings.append(_finding(ERR_PROOF_THEOREM_UNBOUND, path_str, "theorem", f"{label} declares no theorem {{claim_id, name, statement}}", params))
     else:
+        _check_allowed_fields(theorem, PROOF_THEOREM_FIELDS, f"{label} theorem", "theorem", path_str, findings, params)
         statement = _exact_text(theorem.get("statement"))
         if statement is None:
             findings.append(_finding(ERR_PROOF_THEOREM_UNBOUND, path_str, "theorem.statement", f"{label} theorem has no exact statement (got {theorem.get('statement')!r})", params))
@@ -2752,6 +2839,7 @@ def _verify_proof_claim_evidence(
             params,
         ))
     else:
+        _check_allowed_fields(toolchain, PROOF_TOOLCHAIN_FIELDS, f"{label} toolchain_identity", "toolchain_identity", path_str, findings, params)
         declared_checker = (_exact_token(toolchain.get("checker")) or "").lower() or None
         checker = _classify_checker(toolchain.get("checker"), "toolchain_identity.checker", path_str, params, findings)
         declared_version = _classify_version(toolchain.get("version"), "toolchain_identity.version", path_str, params, findings)
@@ -2767,6 +2855,7 @@ def _verify_proof_claim_evidence(
             params,
         ))
     else:
+        _check_allowed_fields(declared_model, PROOF_MODEL_REF_FIELDS, f"{label} formal_model reference", "formal_model", path_str, findings, params)
         declared_model_id = _exact_token(declared_model.get("model_id"))
         declared_model_gen = _exact_token(declared_model.get("generation"))
         if declared_model_gen is None:
@@ -2790,6 +2879,7 @@ def _verify_proof_claim_evidence(
     if manifest is None:
         findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "artifacts[role=formal_model]", f"{label} formal model: {reason}", params))
     else:
+        _check_allowed_fields(manifest, FORMAL_MODEL_MANIFEST_FIELDS, f"{label} formal model manifest", "formal_model_manifest", path_str, findings, params)
         manifest_id = _exact_token(manifest.get("model_id"))
         manifest_gen = _exact_token(manifest.get("generation"))
         manifest_claims = manifest.get("claim_ids")
@@ -2826,6 +2916,7 @@ def _verify_proof_claim_evidence(
         if not isinstance(source, dict):
             findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.source", f"{label} formal model manifest declares no model source {{path, digest}}", params))
         else:
+            _check_allowed_fields(source, FORMAL_MODEL_SOURCE_FIELDS, f"{label} formal model source", "formal_model_manifest.source", path_str, findings, params)
             source_bytes, source_reason = _open_retained_file(root, source.get("path"), source.get("digest"))
             if source_bytes is None:
                 findings.append(_finding(ERR_PROOF_FORMAL_MODEL_UNBOUND, path_str, "formal_model.source", f"{label} formal model source {source_reason}", params))
@@ -2895,8 +2986,9 @@ def _verify_proof_claim_evidence(
         findings.append(_finding(ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, "artifacts[role=proof_check_receipt]", f"{label} check receipt: {receipt_reason}", params))
         return
     r_loc = "proof_check_receipt"
+    _check_allowed_fields(receipt, PROOF_CHECK_RECEIPT_FIELDS, f"{label} check receipt", r_loc, path_str, findings, params)
     r_status = receipt.get("status")
-    if r_status not in PASSING_PROOF_CHECK_STATUSES:
+    if not isinstance(r_status, str) or r_status not in PASSING_PROOF_CHECK_STATUSES:  # any JSON type, never a TypeError
         findings.append(_finding(ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, f"{r_loc}.status", f"{label} check receipt status {r_status!r} is not passing", params))
     if _exact_token(receipt.get("claim_id")) != claim_id:
         findings.append(_finding(
@@ -3560,7 +3652,22 @@ def verify_proof_bundle(
         )
         return not any(f.severity == "error" for f in receipt_findings), receipt_findings, data
 
-    # 2. Digest checks: bundle content digest and every declared artifact.
+    # 2. Schema: exactly fss.proof_bundle.v1; a declared bundle_id is an exact token.
+    raw_schema = data.get("schema")
+    if not (isinstance(raw_schema, str) and raw_schema == PROOF_BUNDLE_SCHEMA):
+        findings.append(_finding(
+            ERR_BUNDLE_SCHEMA_INVALID, path_str, "schema",
+            f"Proof bundle schema {raw_schema!r} is not exactly '{PROOF_BUNDLE_SCHEMA}'",
+            {"schema": repr(raw_schema)},
+        ))
+    if "bundle_id" in data and _exact_token(data["bundle_id"]) is None:
+        findings.append(_finding(
+            ERR_BUNDLE_SCHEMA_INVALID, path_str, "bundle_id",
+            f"Proof bundle bundle_id {data['bundle_id']!r} is not an exact token (printable ASCII, no whitespace)",
+            {"bundle_id": repr(data["bundle_id"])},
+        ))
+
+    # 2b. Digest checks: bundle content digest and every declared artifact.
     _check_content_digest(data, path_str, findings)
     _check_artifacts(data, root, path_str, findings)
 
@@ -3621,7 +3728,7 @@ def verify_proof_bundle(
     # 6. Prohibited claim promotions.
     if prohibited_promotions:
         bases: list[tuple[str, str]] = []
-        for field_name in ("basis", "claim_basis", "promotion_basis", "method", "evidence_basis", "prohibited_promotion"):
+        for field_name in PROMOTION_BASIS_FIELDS:
             val = data.get(field_name)
             if isinstance(val, str):
                 bases.append((field_name, val))
@@ -3725,6 +3832,17 @@ def verify_proof_bundle(
             ERR_INVALID_CLAIM_CLASS, path_str, "claim_class",
             f"Proof bundle '{path_str}' declares no claim class; it must restate the citing claim class '{effective_class}'",
         ))
+    # The bundle's exact field set: the generic fields plus those of the citing class and of the
+    # class the bundle declares (a mismatch between them is already refused above, so it is not
+    # reported twice); with no resolved class, the fields of any realized class.
+    if effective_class is None:
+        class_fields = frozenset().union(*BUNDLE_CLASS_FIELDS.values())
+    else:
+        class_fields = BUNDLE_CLASS_FIELDS.get(effective_class, frozenset()) | BUNDLE_CLASS_FIELDS.get(bundle_class or "", frozenset())
+    _check_allowed_fields(
+        data, BUNDLE_GENERIC_FIELDS | class_fields,
+        f"Proof bundle '{path_str}' ({effective_class or 'unresolved'} class)", "root", path_str, findings,
+    )
     if known_classes is None:
         findings.append(_finding(
             ERR_INVALID_CLAIM_CLASS, path_str, "claim_class",
@@ -4829,7 +4947,17 @@ def _parse_as_of(value: str) -> datetime:
     return instant
 
 
+def _encoding_safe_streams() -> None:
+    """Untrusted text (lone surrogates from JSON escapes or undecodable argv bytes, non-ASCII
+    under PYTHONIOENCODING=ascii) is escaped on output, never an encoding traceback (review F1)."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(errors="backslashreplace")
+
+
 def main() -> int:
+    _encoding_safe_streams()
     parser = argparse.ArgumentParser(
         description="FSS-011 Claim/proof-bundle consistency checker."
     )
