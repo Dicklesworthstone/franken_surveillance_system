@@ -109,7 +109,39 @@ cancellation semantics without a new policy epoch.
 
 ## 2. Dependency classes
 
+Machine mirror of `architecture/dependency_constitution.json` (every field except `freezeDigest` and the
+class rows, which each class section below binds in its machine row). `scripts/dependency_constitution_checker.py`
+compares every value, typed, with the JSON.
+
+| Constitution field | Value |
+|---|---|
+| `schema` | `"fss.dependency_constitution.v1"` |
+| `asOf` | `"2026-08-31"` |
+| `generation` | `"gen:fss1:dep-constitution-v1"` |
+| `normativePolicy` | `"architecture/dependency_allowlist.toml"` |
+| `production.language` | `"rust-2024"` |
+| `production.toolchain` | `"latest-accepted-pinned-nightly"` |
+| `production.unsafe` | `"forbidden-in-all-fss-crates"` |
+| `production.asyncRuntime` | `"asupersync-only"` |
+| `production.closedUniverse` | `true` |
+| `production.lockedOfflineReleaseResolution` | `true` |
+| `production.runtimeAcquisition` | `false` |
+| `production.cCppFfi` | `false` |
+| `production.dynamicLoading` | `false` |
+| `production.foreignExecutables` | `false` |
+| `production.serdeDurableFormatAuthority` | `false` |
+| `releaseEvidence[0]` | `"exact source and sibling commits"` |
+| `releaseEvidence[1]` | `"Cargo.lock digest and cargo metadata --locked --offline"` |
+| `releaseEvidence[2]` | `"enabled feature and target closure"` |
+| `releaseEvidence[3]` | `"build-script and proc-macro census"` |
+| `releaseEvidence[4]` | `"unsafe/FFI/dynamic-loading/runtime-acquisition scan"` |
+| `releaseEvidence[5]` | `"license and source identities"` |
+| `releaseEvidence[6]` | `"DSR local lane receipts"` |
+| `releaseEvidence[7]` | `"absence of laboratory oracle packages and executables"` |
+
 ### 2.1 Class F0 — Rust language and standard library
+
+Machine row: `DEP-CLASS-F0` · name `rust-language-and-stdlib` · admission `constitutional`
 
 The pinned latest-nightly toolchain is part of the source identity. FSS intentionally uses nightly
 for portable SIMD, const/type-system improvements, and optimization opportunities, but no nightly
@@ -127,6 +159,8 @@ that passed the complete local release matrix, not an untested moving channel at
 
 ### 2.2 Class F1 — Asupersync
 
+Machine row: `DEP-CLASS-F1` · name `asupersync` · admission `INT-AS-001`
+
 Asupersync owns structured concurrency, context-carried authority, budgets, cancellation, outcomes,
 obligations, deterministic laboratory execution, and ATP. No local replacement of these semantics
 is permitted inside feature crates.
@@ -141,6 +175,8 @@ FSS may wrap Asupersync in domain-specific types, but wrappers must preserve:
 - no orphan tasks or detached retry loops.
 
 ### 2.3 Class F2 — admitted Franken-suite crates
+
+Machine row: `DEP-CLASS-F2` · name `franken-suite` · admission `per-mechanism-import-gate`
 
 The intended owned universe is:
 
@@ -162,6 +198,8 @@ An entry in this table is permission to design an integration, not evidence that
 version is qualified. `architecture/franken_imports.json` records the admitted mechanism and gate.
 
 ### 2.4 Class F3 — fundamental external Rust crates
+
+Machine row: `DEP-CLASS-F3` · name `fundamental-rust-data-shape` · admission `DEP-record-and-transitive-audit`
 
 An external crate is “fundamental” only when all of the following hold:
 
@@ -191,6 +229,8 @@ configuration frameworks are not fundamental merely because they are popular. FS
 Franken sibling owns those surfaces.
 
 ### 2.5 Class F4 — laboratory and migration oracles
+
+Machine row: `DEP-CLASS-F4` · name `laboratory-oracle` · admission `non-production-quarantine-only`
 
 A Class F4 component is **not a production dependency or production boundary**. It may exist only in
 a sealed research, reverse-engineering, conformance, or one-time migration lane whose outputs are

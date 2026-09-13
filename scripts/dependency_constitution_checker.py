@@ -1,95 +1,112 @@
 #!/usr/bin/env python3
-"""Fail-closed dependency constitution and class registry checker (fss-x4a.30.88.16).
+"""Fail-closed dependency constitution and DEP-CLASS-F0 checker (fss-x4a.30.88.16).
 
-Enforces the dependency constitution and DEP-CLASS-F0 (rust-language-and-stdlib) contract:
-1. Pinned freeze digest covering all fields, metadata, production settings, and generation.
-2. Exact digest assertion against BASELINE_DEPENDENCY_CONSTITUTION_FREEZE_DIGEST.
-3. Mandatory generation bump enforcement (ERR-DEP-GENERATION-MISMATCH-001, ERR-DEP-FREEZE-DIVERGENCE-001).
-4. Baseline-checked dependency classes (DEP-CLASS-F0 through DEP-CLASS-F4) against canonical baseline.
-5. Semantic invariants for DEP-CLASS-F0 (admission must be 'constitutional', production must be 'rust-2024',
-   unsafe forbidden, asupersync-only runtime, closed universe, no C/C++ FFI).
-6. Fail-closed toolchain identity verification: checks rust-toolchain.toml and rustc -Vv.
-7. Real Cargo metadata inspection: parses packages, verifies edition '2024', forbids native C/C++ links,
-   forbids custom-build / proc-macro targets in production closure, censuses unadmitted crates against allowlist,
-   and ensures workspace metadata production_language is 'rust'.
-8. 16-policy allowlist crosswalk and dependencies.json scope/constitutionClass consistency.
-9. Substantive Markdown mirror verification against docs/DEPENDENCY_CONSTITUTION.md (titles, duplicates, semantics).
+``architecture/dependency_constitution.json`` is the machine class registry (DEP-CLASS-F0..F4) under the
+single authority DEPENDENCY_CONSTITUTION.md + ``architecture/dependency_allowlist.toml``. The shared
+loader ``scripts/dependency_authority.py`` reads, pins and cross-checks every authority input, including the
+dependency registry rows of ``architecture/dependencies.json`` against their DEP-CLASS (no policy table
+lives in this checker). On top of that this checker verifies:
+
+1. the constitution Markdown mirror (``docs/DEPENDENCY_CONSTITUTION.md``): a strictly parsed machine
+   mirror table compared value-by-value (typed) with the JSON, and exactly one machine-row binding per
+   ``### 2.N Class Fk`` section compared field-by-field with the JSON row; duplicate, missing, renamed,
+   hollow or rogue sections are drift (``ERR-DEP-CONST-DRIFT-001``);
+2. DEP-CLASS-F0 toolchain identity: ``rust-toolchain.toml`` (exact keys; pinned nightly channel; minimal
+   profile; components equal ``architecture/local_qualification.toml``; no unregistered targets; no legacy
+   ``rust-toolchain`` override) and a parsed ``rustc -Vv`` (nightly release channel, pinned commit
+   identity and date, host platform registered in ``architecture/release_qualification.json``);
+3. the DEP-CLASS-F0 closure census over real ``cargo metadata --locked --offline --all-features``: members by
+   package id, production reachability over the resolve graph (normal and build edges), member edition
+   derived from the constitution language, native links, custom-build, proc-macro and dynamic/C-ABI crate
+   types, and the shared classifier for every non-member package (pending owner decisions stay neutral);
+4. ``#![feature]`` use in FSS sources: no unstable-feature registry exists, so any use is a finding.
+
+Tool execution failures (cannot run, timeout, non-zero exit, unparseable output) are
+``ERR-DEP-EXEC-FAILED-001``, never CORRUPT-FILE. Nothing raises for malformed input.
 """
 from __future__ import annotations
 
 import argparse
-import fnmatch
-import hashlib
+import datetime as _dt
 import json
 import re
 import subprocess
 import sys
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-# Registered stable diagnostic finding IDs (registries/ERRORS.md)
-ERR_DEP_REGISTRY_DRIFT = "ERR-DEP-REGISTRY-DRIFT-001"
-ERR_DEP_CONST_DRIFT = "ERR-DEP-CONST-DRIFT-001"
-ERR_DEP_STABLE_ID_REUSED = "ERR-DEP-STABLE-ID-REUSED-001"
-ERR_DEP_MISSING_FIELD = "ERR-DEP-MISSING-FIELD-001"
-ERR_DEP_CORRUPT_FILE = "ERR-DEP-CORRUPT-FILE-001"
-ERR_DEP_DIGEST_MISMATCH = "ERR-DEP-DIGEST-MISMATCH-001"
-ERR_DEP_FREEZE_DIVERGENCE = "ERR-DEP-FREEZE-DIVERGENCE-001"
-ERR_DEP_GENERATION_MISMATCH = "ERR-DEP-GENERATION-MISMATCH-001"
-ERR_DEP_CONST_INVARIANT = "ERR-DEP-CONST-INVARIANT-001"
-ERR_DEP_CONST_METADATA_VIOLATION = "ERR-DEP-CONST-METADATA-VIOLATION-001"
-
-CONSTITUTION_JSON_PATH = "architecture/dependency_constitution.json"
-CONSTITUTION_MD_PATH = "docs/DEPENDENCY_CONSTITUTION.md"
-DEPENDENCIES_JSON_PATH = "architecture/dependencies.json"
-ALLOWLIST_TOML_PATH = "architecture/dependency_allowlist.toml"
-STABLE_ID_RESOLUTION_PATH = "architecture/stable_id_resolution.json"
-RUST_TOOLCHAIN_PATH = "rust-toolchain.toml"
-
-BASELINE_DEPENDENCY_CONSTITUTION_GENERATION = "gen:fss1:dep-constitution-v1"
-BASELINE_DEPENDENCY_CONSTITUTION_FREEZE_DIGEST = (
-    "sha256:858af1b5482b25cfca1477c2c4c1967a995d802990aaf0bc7ccf139f73571310"
+import dependency_authority as authority  # noqa: E402
+from dependency_authority import (  # noqa: E402,F401  (re-exported for callers and tests)
+    ALLOWLIST_TOML_PATH,
+    BASELINE_CONSTITUTION_FREEZE_DIGEST as BASELINE_DEPENDENCY_CONSTITUTION_FREEZE_DIGEST,
+    BASELINE_CONSTITUTION_GENERATION as BASELINE_DEPENDENCY_CONSTITUTION_GENERATION,
+    CONSTITUTION_JSON_PATH,
+    DEPENDENCIES_JSON_PATH,
+    ERR_DEP_ALLOWLIST_DIGEST_DIVERGED,
+    ERR_DEP_CONST_INVARIANT,
+    ERR_DEP_CORRUPT_FILE,
+    ERR_DEP_DIGEST_MISMATCH,
+    ERR_DEP_FREEZE_DIVERGENCE,
+    ERR_DEP_GENERATION_MISMATCH,
+    ERR_DEP_MISSING_FIELD,
+    ERR_DEP_PENDING_DECISION,
+    ERR_DEP_REGISTRY_DRIFT,
+    ERR_DEP_STABLE_ID_REUSED,
+    ERR_DEP_TOMBSTONE_INVALID,
+    ERR_DEP_TRACE_UNRESOLVED,
+    LOCAL_QUALIFICATION_PATH,
+    STABLE_ID_RESOLUTION_PATH,
+    DiagnosticError,
+    ValidationResult,
+    canonicalize_value,
+    compute_canonical_constitution_digest,
+    issue,
+    pairs_hook_reject_duplicates,
 )
 
-# Operational constants (ADR-0012 / DSR local execution bounds)
-CARGO_METADATA_TIMEOUT_SECONDS: int = 30
+ROOT = Path(__file__).resolve().parents[1]
+
+ERR_DEP_CONST_DRIFT = "ERR-DEP-CONST-DRIFT-001"
+ERR_DEP_CONST_METADATA_VIOLATION = "ERR-DEP-CONST-METADATA-VIOLATION-001"
+ERR_DEP_EXEC_FAILED = "ERR-DEP-EXEC-FAILED-001"
+ERR_DEP_UNSTABLE_FEATURE = "ERR-DEP-UNSTABLE-FEATURE-001"
+
+CONSTITUTION_CHECKER_ERROR_CODES: tuple[str, ...] = authority.AUTHORITY_ERROR_CODES + (
+    ERR_DEP_CONST_DRIFT,
+    ERR_DEP_CONST_METADATA_VIOLATION,
+    ERR_DEP_EXEC_FAILED,
+    ERR_DEP_UNSTABLE_FEATURE,
+)
+
+CONSTITUTION_MD_PATH = "docs/DEPENDENCY_CONSTITUTION.md"
+RUST_TOOLCHAIN_PATH = "rust-toolchain.toml"
+LEGACY_RUST_TOOLCHAIN_PATH = "rust-toolchain"
+RELEASE_QUALIFICATION_PATH = "architecture/release_qualification.json"
+
+# Operational bound on each rustup/cargo invocation (a hung toolchain must not stall the policy lane).
+TOOLCHAIN_COMMAND_TIMEOUT_SECONDS: int = 30
+CARGO_METADATA_TIMEOUT_SECONDS: int = TOOLCHAIN_COMMAND_TIMEOUT_SECONDS
+
+# Pinned toolchain identity (change detection): the reviewed ``rustc -Vv`` identity of each accepted
+# nightly channel. A toolchain bump is a requalification trigger (DEPENDENCY_CONSTITUTION section 8)
+# and updates this pin in the same commit as rust-toolchain.toml.
+PINNED_TOOLCHAIN_IDENTITIES: dict[str, dict[str, str]] = {
+    "nightly-2026-08-31": {
+        "release": "1.100.0-nightly",
+        "commit-hash": "90850177249efe0321573c569aec5d12b257f8d6",
+        "commit-date": "2026-08-30",
+    },
+}
 REQUIRED_RUST_CHANNEL: str = "nightly-2026-08-31"
+NIGHTLY_CHANNEL_RE = re.compile(r"nightly-(\d{4}-\d{2}-\d{2})")
+# rustup's minimal profile installs no components beyond those listed explicitly, so the registered
+# component list in local_qualification.toml is the complete component set only under this profile.
+TOOLCHAIN_PROFILE_WITHOUT_IMPLICIT_COMPONENTS = "minimal"
+TOOLCHAIN_FILE_KEYS = frozenset({"channel", "profile", "components", "targets"})
 
-EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
-    BASELINE_DEPENDENCY_CONSTITUTION_GENERATION: BASELINE_DEPENDENCY_CONSTITUTION_FREEZE_DIGEST,
-}
-
-CANONICAL_CONSTITUTION_CLASSES: dict[str, dict[str, str]] = {
-    "DEP-CLASS-F0": {
-        "id": "DEP-CLASS-F0",
-        "name": "rust-language-and-stdlib",
-        "admission": "constitutional",
-    },
-    "DEP-CLASS-F1": {
-        "id": "DEP-CLASS-F1",
-        "name": "asupersync",
-        "admission": "INT-AS-001",
-    },
-    "DEP-CLASS-F2": {
-        "id": "DEP-CLASS-F2",
-        "name": "franken-suite",
-        "admission": "per-mechanism-import-gate",
-    },
-    "DEP-CLASS-F3": {
-        "id": "DEP-CLASS-F3",
-        "name": "fundamental-rust-data-shape",
-        "admission": "DEP-record-and-transitive-audit",
-    },
-    "DEP-CLASS-F4": {
-        "id": "DEP-CLASS-F4",
-        "name": "laboratory-oracle",
-        "admission": "non-production-quarantine-only",
-    },
-}
-
+# Pinned mirror titles of the class sections (change detection; titles are prose, not JSON fields).
 CANONICAL_CONSTITUTION_MARKDOWN_TITLES: dict[str, str] = {
     "DEP-CLASS-F0": "Rust language and standard library",
     "DEP-CLASS-F1": "Asupersync",
@@ -97,374 +114,379 @@ CANONICAL_CONSTITUTION_MARKDOWN_TITLES: dict[str, str] = {
     "DEP-CLASS-F3": "fundamental external Rust crates",
     "DEP-CLASS-F4": "laboratory and migration oracles",
 }
-
+CANONICAL_CONSTITUTION_CLASSES = authority.PINNED_CONSTITUTION_CLASSES[BASELINE_DEPENDENCY_CONSTITUTION_GENERATION]
 CANONICAL_DEPENDENCY_CLASSES = CANONICAL_CONSTITUTION_CLASSES
-
-MANDATORY_TOP_LEVEL_FIELDS: tuple[str, ...] = (
-    "schema",
-    "asOf",
-    "generation",
-    "freezeDigest",
-    "normativePolicy",
-    "production",
-    "classes",
-    "releaseEvidence",
-)
+REQUIRED_PRODUCTION_VALUES = authority.PINNED_CONSTITUTION_PRODUCTION[BASELINE_DEPENDENCY_CONSTITUTION_GENERATION]
+EXPECTED_FREEZE_DIGESTS = authority.EXPECTED_CONSTITUTION_DIGESTS
+MANDATORY_TOP_LEVEL_FIELDS: tuple[str, ...] = tuple(authority.CONSTITUTION_SPEC.fields)
+MANDATORY_CLASS_FIELDS: tuple[str, ...] = tuple(authority.CONSTITUTION_CLASS_SPEC.fields)
+MANDATORY_PRODUCTION_FIELDS: tuple[str, ...] = tuple(authority.CONSTITUTION_PRODUCTION_SPEC.fields)
 ALLOWED_TOP_LEVEL_FIELDS: set[str] = set(MANDATORY_TOP_LEVEL_FIELDS)
-
-MANDATORY_CLASS_FIELDS: tuple[str, ...] = (
-    "id",
-    "name",
-    "admission",
-)
 ALLOWED_CLASS_FIELDS: set[str] = set(MANDATORY_CLASS_FIELDS)
-
-MANDATORY_PRODUCTION_FIELDS: tuple[str, ...] = (
-    "language",
-    "toolchain",
-    "unsafe",
-    "asyncRuntime",
-    "closedUniverse",
-    "lockedOfflineReleaseResolution",
-    "runtimeAcquisition",
-    "cCppFfi",
-    "dynamicLoading",
-    "foreignExecutables",
-    "serdeDurableFormatAuthority",
-)
 ALLOWED_PRODUCTION_FIELDS: set[str] = set(MANDATORY_PRODUCTION_FIELDS)
 
-REQUIRED_PRODUCTION_VALUES: dict[str, Any] = {
-    "language": "rust-2024",
-    "toolchain": "latest-accepted-pinned-nightly",
-    "unsafe": "forbidden-in-all-fss-crates",
-    "asyncRuntime": "asupersync-only",
-    "closedUniverse": True,
-    "lockedOfflineReleaseResolution": True,
-    "runtimeAcquisition": False,
-    "cCppFfi": False,
-    "dynamicLoading": False,
-    "foreignExecutables": False,
-    "serdeDurableFormatAuthority": False,
-}
+# ---------------------------------------------------------------------------------------------
+# Constitution Markdown mirror
+# ---------------------------------------------------------------------------------------------
 
-DEP_CLASS_ID_PATTERN = re.compile(r"^DEP-CLASS-F[0-4]$")
-
-# All 16 policy flags in architecture/dependency_allowlist.toml [policy]
-REQUIRED_ALLOWLIST_POLICY: dict[str, bool] = {
-    "closed_universe": True,
-    "direct_crates_must_be_allowlisted": True,
-    "transitive_closure_must_be_censused": True,
-    "new_external_dependency_requires_dep_record_and_adr": True,
-    "fss_crates_must_forbid_unsafe": True,
-    "fss_unsafe_exceptions_allowed": False,
-    "c_or_cpp_ffi_allowed": False,
-    "dynamic_loading_allowed": False,
-    "foreign_runtime_production_boundary_allowed": False,
-    "release_resolution_must_be_locked_and_offline": True,
-    "build_scripts_may_not_use_network": True,
-    "runtime_acquisition_allowed": False,
-    "foreign_executables_allowed_in_production": False,
-    "serde_may_not_define_durable_bytes": True,
-    "hosted_ci_is_not_release_authority": True,
-    "asupersync_is_only_async_runtime": True,
-}
-
-VALID_DEPENDENCY_SCOPES: set[str] = {
-    "Production",
-    "Production subject to audit",
-    "Development only",
-    "Development/migration only",
-    "Not admitted",
-}
+CLASS_HEADING_RE = re.compile(r"### 2\.(\d+) Class F(\d+) — (.+)")
+ROGUE_CLASS_HEADING_RE = re.compile(r"(?i)#{1,6}\s.*\bclass\s+f\d+\b")
+BINDING_RE = re.compile(r"Machine row: `(DEP-CLASS-F\d+)` · name `([^`]+)` · admission `([^`]+)`")
+BINDING_PREFIX = "Machine row:"
+MIRROR_HEADER = "| Constitution field | Value |"
+MIRROR_SEPARATOR = "|---|---|"
+MIRROR_ROW_RE = re.compile(r"\| `([A-Za-z][A-Za-z0-9.\[\]]*)` \| `([^`]*)` \|")
 
 
-@dataclass(frozen=True)
-class DiagnosticError:
-    code: str
-    file_path: str
-    target: str
-    message: str
+def render_binding(row: dict[str, Any]) -> str:
+    return f"Machine row: `{row['id']}` · name `{row['name']}` · admission `{row['admission']}`"
 
 
-@dataclass
-class ValidationResult:
-    passed: bool = True
-    class_count: int = 0
-    freeze_digest: str = ""
-    errors: list[DiagnosticError] = field(default_factory=list)
-
-    def add_error(self, code: str, file_path: str, target: str, message: str) -> None:
-        self.passed = False
-        self.errors.append(DiagnosticError(code=code, file_path=file_path, target=target, message=message))
-
-
-def pairs_hook_reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    """Rejects duplicate JSON keys during object construction."""
-    d: dict[str, Any] = {}
-    for k, v in pairs:
-        if k in d:
-            raise ValueError(f"Duplicate JSON key: {k!r}")
-        d[k] = v
-    return d
+def flatten_constitution(data: dict[str, Any]) -> dict[str, Any]:
+    """Mirror paths -> typed JSON values for every mirrored field (all but freezeDigest and classes)."""
+    flat: dict[str, Any] = {}
+    for key in ("schema", "asOf", "generation", "normativePolicy"):
+        if key in data and not isinstance(data[key], (dict, list)):
+            flat[key] = data[key]
+    production = data.get("production")
+    if isinstance(production, dict):
+        for key, value in production.items():
+            if not isinstance(value, (dict, list)):
+                flat[f"production.{key}"] = value
+    evidence = data.get("releaseEvidence")
+    if isinstance(evidence, list):
+        for index, value in enumerate(evidence):
+            if not isinstance(value, (dict, list)):
+                flat[f"releaseEvidence[{index}]"] = value
+    return flat
 
 
-def canonicalize_value(val: Any) -> Any:
-    """Recursively canonicalizes dict and list structures preserving typed values without arbitrary heuristics."""
-    if isinstance(val, dict):
-        return {k: canonicalize_value(v) for k, v in sorted(val.items())}
-    if isinstance(val, list):
-        return [canonicalize_value(x) for x in val]
-    return val
-
-
-def compute_canonical_constitution_digest(data: dict[str, Any]) -> str:
-    """Computes deterministic sha256 digest of dependency constitution covering all fields and metadata.
-
-    Preserves typed values (no str() coercion) to ensure distinct types hash distinctly.
-    """
-    raw_evidence = data.get("releaseEvidence")
-    if isinstance(raw_evidence, list):
-        canon_evidence: Any = sorted([canonicalize_value(x) for x in raw_evidence])
-    else:
-        canon_evidence = canonicalize_value(raw_evidence)
-
-    raw_classes = data.get("classes")
-    if isinstance(raw_classes, list):
-        canon_classes = sorted(
-            [canonicalize_value(c) for c in raw_classes if isinstance(c, dict)],
-            key=lambda x: str(x.get("id", "")),
-        )
-    else:
-        canon_classes = canonicalize_value(raw_classes)
-
-    canonical_payload = {
-        "schema": canonicalize_value(data.get("schema")),
-        "asOf": canonicalize_value(data.get("asOf")),
-        "generation": canonicalize_value(data.get("generation")),
-        "normativePolicy": canonicalize_value(data.get("normativePolicy")),
-        "production": canonicalize_value(data.get("production")),
-        "classes": canon_classes,
-        "releaseEvidence": canon_evidence,
-    }
-    payload_bytes = json.dumps(canonical_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return f"sha256:{hashlib.sha256(payload_bytes).hexdigest()}"
-
-
-def load_tombstoned_ids(root: Path) -> tuple[set[str], list[DiagnosticError]]:
-    """Loads tombstoned identifiers from architecture/stable_id_resolution.json, failing closed on any error."""
-    res_path = root / STABLE_ID_RESOLUTION_PATH
-    if not res_path.is_file():
-        return set(), [
-            DiagnosticError(
-                code=ERR_DEP_CORRUPT_FILE,
-                file_path=STABLE_ID_RESOLUTION_PATH,
-                target="#",
-                message=f"Stable ID resolution file missing at {STABLE_ID_RESOLUTION_PATH}",
-            )
-        ]
-    try:
-        raw_bytes = res_path.read_bytes()
-        if not raw_bytes.strip():
-            return set(), [
-                DiagnosticError(
-                    code=ERR_DEP_CORRUPT_FILE,
-                    file_path=STABLE_ID_RESOLUTION_PATH,
-                    target="#",
-                    message="Stable ID resolution file is 0 bytes / empty",
-                )
-            ]
-        text = raw_bytes.decode("utf-8")
-        data = json.loads(text, object_pairs_hook=pairs_hook_reject_duplicates)
-        if not isinstance(data, dict):
-            return set(), [
-                DiagnosticError(
-                    code=ERR_DEP_CORRUPT_FILE,
-                    file_path=STABLE_ID_RESOLUTION_PATH,
-                    target="#",
-                    message="Stable ID resolution root must be a JSON object",
-                )
-            ]
-        resolutions = data.get("resolutions")
-        if not isinstance(resolutions, list):
-            return set(), [
-                DiagnosticError(
-                    code=ERR_DEP_CORRUPT_FILE,
-                    file_path=STABLE_ID_RESOLUTION_PATH,
-                    target="#/resolutions",
-                    message="Field 'resolutions' must be a JSON list in stable_id_resolution.json",
-                )
-            ]
-        return {
-            str(r.get("legacyId")).strip()
-            for r in resolutions
-            if isinstance(r, dict) and r.get("status") in ("tombstoned", "tombstone", "superseded") and r.get("legacyId")
-        }, []
-    except Exception as exc:
-        return set(), [
-            DiagnosticError(
-                code=ERR_DEP_CORRUPT_FILE,
-                file_path=STABLE_ID_RESOLUTION_PATH,
-                target="#",
-                message=f"Could not load tombstoned IDs: {exc}",
-            )
-        ]
+def render_constitution_mirror(data: dict[str, Any]) -> str:
+    lines = [MIRROR_HEADER, MIRROR_SEPARATOR]
+    for path, value in flatten_constitution(data).items():
+        lines.append(f"| `{path}` | `{json.dumps(value, ensure_ascii=False)}` |")
+    return "\n".join(lines)
 
 
 def extract_markdown_class_sections(md_text: str) -> tuple[dict[str, tuple[str, str]], list[str]]:
-    """Extracts Class F* sections from docs/DEPENDENCY_CONSTITUTION.md, detecting duplicates.
-
-    Returns: (classes_dict: {id: (name, body)}, duplicate_ids: [id, ...])
-    """
-    pattern = re.compile(r"^###\s+2\.\d+\s+Class\s+(F[0-4])\s*[—–-]\s*(.+)$", re.MULTILINE)
-    matches = list(pattern.finditer(md_text))
+    """Strict ``### 2.N Class Fk — Title`` sections: ({class_id: (title, body)}, duplicate_ids)."""
+    lines = md_text.split("\n")
     classes: dict[str, tuple[str, str]] = {}
     duplicates: list[str] = []
-    for i, match in enumerate(matches):
-        class_suffix, class_name = match.groups()
-        class_id = f"DEP-CLASS-{class_suffix}"
+    index = 0
+    while index < len(lines):
+        match = CLASS_HEADING_RE.fullmatch(lines[index])
+        if not match:
+            index += 1
+            continue
+        class_id = f"DEP-CLASS-F{match.group(2)}"
+        end = index + 1
+        while end < len(lines) and not lines[end].startswith("#"):
+            end += 1
+        body = "\n".join(lines[index + 1:end]).strip()
         if class_id in classes:
             duplicates.append(class_id)
-        start = match.end()
-        end = matches[i + 1].start() if i + 1 < len(matches) else len(md_text)
-        body = md_text[start:end].strip()
-        classes[class_id] = (class_name.strip(), body)
+        else:
+            classes[class_id] = (match.group(3), body)
+        index = end
     return classes, duplicates
 
 
+def check_constitution_markdown(result: ValidationResult, auth: authority.Authority, md_path: Path) -> None:
+    rel = CONSTITUTION_MD_PATH
+    data, problems = authority.read_input_bytes(md_path, rel)
+    if data is None:
+        result.extend(problems)
+        return
+    text, problems = authority.decode_utf8(data, rel)
+    if text is None:
+        result.extend(problems)
+        return
+    if "\r" in text:
+        result.add_error(ERR_DEP_CONST_DRIFT, rel, "#", "constitution mirror contains carriage returns; the mirror is LF-only")
+    lines = text.split("\n")
+
+    # Rogue or duplicate class headings, and binding lines outside class sections.
+    in_class = False
+    for number, line in enumerate(lines, 1):
+        if line.startswith("#"):
+            in_class = bool(CLASS_HEADING_RE.fullmatch(line))
+            if not in_class and ROGUE_CLASS_HEADING_RE.match(line):
+                result.add_error(ERR_DEP_CONST_DRIFT, rel, f"line/{number}", f"rogue class heading outside the '### 2.N Class Fk — Title' form: {line!r}")
+        elif line.startswith(BINDING_PREFIX) and not in_class:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"line/{number}", f"machine row binding outside a class section: {line!r}")
+
+    sections, duplicates = extract_markdown_class_sections(text)
+    for class_id in duplicates:
+        result.add_error(ERR_DEP_CONST_DRIFT, rel, f"#{class_id}", f"Duplicate class section header {class_id!r} found in {rel}")
+
+    constitution = auth.constitution
+    if constitution is None:
+        return
+    classes = constitution.get("classes")
+    json_rows = [row for row in classes if isinstance(row, dict) and authority.is_str(row.get("id"))] if isinstance(classes, list) else []
+    json_ids = [row["id"] for row in json_rows]
+    json_by_id: dict[str, dict[str, Any]] = {}
+    for row in json_rows:
+        json_by_id.setdefault(row["id"], row)
+    if isinstance(classes, list) and len(json_ids) != len(sections):
+        result.add_error(ERR_DEP_CONST_DRIFT, rel, "#", f"markdown has {len(sections)} class sections but the JSON has {len(json_ids)} class rows")
+    for class_id, row in json_by_id.items():
+        section = sections.get(class_id)
+        if section is None:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"#{class_id}", f"Class section {class_id!r} is missing from {rel}")
+            continue
+        title, body = section
+        pinned_title = CANONICAL_CONSTITUTION_MARKDOWN_TITLES.get(class_id)
+        if pinned_title is not None and title != pinned_title:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"#{class_id}/title", f"Class section {class_id!r} title drifted: pinned {pinned_title!r}, got {title!r}")
+        bindings = [line for line in body.split("\n") if line.startswith(BINDING_PREFIX)]
+        if not bindings:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"#{class_id}/body", f"Class section {class_id!r} contains hollow or placeholder text: no machine row binding line")
+            continue
+        if len(bindings) > 1:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"#{class_id}/body", f"Class section {class_id!r} declares {len(bindings)} machine row bindings; exactly one is allowed")
+        match = BINDING_RE.fullmatch(bindings[0])
+        if match is None:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"#{class_id}/body", f"Class section {class_id!r} machine row is malformed: {bindings[0]!r}")
+            continue
+        bound_id, name, admission = match.groups()
+        if bound_id != class_id:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"#{class_id}/body", f"Class section {class_id!r} binds machine row {bound_id!r}")
+        for key, value in (("name", name), ("admission", admission)):
+            if key in row and row[key] != value:
+                result.add_error(ERR_DEP_CONST_DRIFT, rel, f"#{class_id}/{key}", f"Class section {class_id!r} {key} mismatch with JSON: markdown={value!r}, json={row[key]!r}")
+    for class_id in sections:
+        if class_id not in json_by_id:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"#{class_id}", f"markdown class section {class_id!r} has no JSON class row")
+
+    headers = [i for i, line in enumerate(lines) if line == MIRROR_HEADER]
+    if len(headers) != 1:
+        result.add_error(ERR_DEP_CONST_DRIFT, rel, "#", f"constitution mirror must contain exactly one machine mirror table (header {MIRROR_HEADER!r}); found {len(headers)}")
+        return
+    start = headers[0]
+    if start + 1 >= len(lines) or lines[start + 1] != MIRROR_SEPARATOR:
+        result.add_error(ERR_DEP_CONST_DRIFT, rel, f"line/{start + 2}", f"machine mirror separator must be exactly {MIRROR_SEPARATOR!r}")
+        return
+    mirrored: dict[str, Any] = {}
+    index = start + 2
+    while index < len(lines) and lines[index].startswith("|"):
+        number = index + 1
+        match = MIRROR_ROW_RE.fullmatch(lines[index])
+        index += 1
+        if match is None:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"line/{number}", f"machine mirror row must be `field` | `json-literal`: {lines[number - 1]!r}")
+            continue
+        path, literal = match.groups()
+        value, problems = authority.parse_json_text(literal, rel)
+        if problems:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"line/{number}", f"machine mirror value for {path!r} is not a JSON literal: {literal!r}")
+            continue
+        if path in mirrored:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"line/{number}", f"duplicate machine mirror row {path!r}")
+            continue
+        mirrored[path] = value
+    expected = flatten_constitution(constitution)
+    for path, value in expected.items():
+        if path not in mirrored:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"mirror/{path}", f"machine mirror lacks {path!r}")
+        elif not authority._typed_equal(mirrored[path], value):
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"mirror/{path}", f"machine mirror {path!r} mismatch: markdown={mirrored[path]!r}, json={value!r}")
+    for path in mirrored:
+        if path not in expected:
+            result.add_error(ERR_DEP_CONST_DRIFT, rel, f"mirror/{path}", f"machine mirror row {path!r} has no JSON counterpart")
+
+
+# ---------------------------------------------------------------------------------------------
+# Tombstones
+# ---------------------------------------------------------------------------------------------
+
+
+def load_tombstoned_ids(root: Path) -> tuple[set[str], list[DiagnosticError]]:
+    """Retired dependency-class identifiers; a missing or corrupt resolution file fails closed."""
+    auth = authority.Authority(root=root)
+    authority._load_resolutions(auth, root / STABLE_ID_RESOLUTION_PATH)
+    retired = {
+        row["legacyId"]
+        for row in auth.resolutions or []
+        if isinstance(row.get("legacyId"), str) and {row.get("status"), row.get("disposition")} & authority.RETIRING_VALUES
+    }
+    return retired, list(auth.issues)
+
+
+# ---------------------------------------------------------------------------------------------
+# DEP-CLASS-F0 toolchain identity
+# ---------------------------------------------------------------------------------------------
+
+
+def _run(cmd: list[str], root: Path) -> tuple[subprocess.CompletedProcess[str] | None, str | None]:
+    try:
+        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=TOOLCHAIN_COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        return None, f"{' '.join(cmd[3:5]) or cmd[0]} timed out after {TOOLCHAIN_COMMAND_TIMEOUT_SECONDS}s"
+    except (OSError, ValueError) as exc:
+        return None, f"{' '.join(cmd[3:5]) or cmd[0]} execution error: {exc}"
+    return proc, None
+
+
+def registered_host_scopes(root: Path, result: ValidationResult) -> set[str] | None:
+    data, _raw, problems = authority.load_json_document(root / RELEASE_QUALIFICATION_PATH, RELEASE_QUALIFICATION_PATH)
+    result.extend(problems)
+    if data is None:
+        return None
+    scopes: set[str] = set()
+    for value in data.values():
+        for row in value if isinstance(value, list) else []:
+            if isinstance(row, dict) and row.get("kind") == "native_release" and authority.is_str(row.get("scope")):
+                scopes.add(row["scope"])
+    if not scopes:
+        result.add_error(ERR_DEP_CORRUPT_FILE, RELEASE_QUALIFICATION_PATH, "#", "no native_release platform scopes are registered")
+        return None
+    return scopes
+
+
+def host_platform_scope(host: str) -> str | None:
+    """``<arch>-<vendor>-<os>[-<env>]`` -> the ``<os>-<arch>`` scope vocabulary of release_qualification.json."""
+    parts = host.split("-")
+    if len(parts) < 3 or not all(re.fullmatch(r"[a-z0-9_.]+", part) for part in parts):
+        return None
+    arch = {"aarch64": "arm64"}.get(parts[0], parts[0])
+    os_name = next((name for name in ("linux", "darwin", "windows") if name in parts[1:]), None)
+    return f"{os_name}-{arch}" if os_name else None
+
+
+def parse_rustc_verbose(stdout: str) -> tuple[dict[str, str] | None, str | None]:
+    lines = [line for line in stdout.split("\n") if line]
+    if not lines:
+        return None, "rustc -Vv produced no output"
+    first = re.fullmatch(r"rustc (\S+) \(([0-9a-f]{7,40}) (\d{4}-\d{2}-\d{2})\)", lines[0])
+    if first is None:
+        return None, f"rustc -Vv first line is not 'rustc <release> (<hash> <date>)': {lines[0]!r}"
+    fields: dict[str, str] = {}
+    for line in lines[1:]:
+        key, sep, value = line.partition(": ")
+        if not sep or key in fields:
+            return None, f"rustc -Vv line is malformed or repeated: {line!r}"
+        fields[key] = value
+    missing = [key for key in ("binary", "commit-hash", "commit-date", "host", "release") if key not in fields]
+    if missing:
+        return None, f"rustc -Vv lacks {missing}"
+    if fields["release"] != first.group(1) or fields["commit-date"] != first.group(3) or not fields["commit-hash"].startswith(first.group(2)):
+        return None, "rustc -Vv header line disagrees with its release/commit fields"
+    if not re.fullmatch(r"[0-9a-f]{40}", fields["commit-hash"]):
+        return None, f"rustc -Vv commit-hash {fields['commit-hash']!r} is not a full 40-hex hash"
+    return fields, None
+
+
 def validate_toolchain_identity(root: Path, result: ValidationResult) -> str | None:
-    """Fails closed if rust-toolchain.toml is missing, unparseable, or channel != REQUIRED_RUST_CHANNEL."""
-    toolchain_file = root / RUST_TOOLCHAIN_PATH
-    if not toolchain_file.is_file():
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            RUST_TOOLCHAIN_PATH,
-            "#",
-            f"Toolchain file missing at {RUST_TOOLCHAIN_PATH}",
-        )
+    """Toolchain file + ``rustc -Vv`` identity. Returns the verified channel, or None when unusable."""
+    rel = RUST_TOOLCHAIN_PATH
+    if (root / LEGACY_RUST_TOOLCHAIN_PATH).exists():
+        result.add_error(ERR_DEP_CONST_INVARIANT, LEGACY_RUST_TOOLCHAIN_PATH, "#", "a legacy rust-toolchain override file exists beside rust-toolchain.toml; rustup would prefer it over the pinned channel")
+    data, _raw, problems = authority.load_toml_document(root / rel, rel)
+    if data is None:
+        result.extend(problems)
         return None
-
-    try:
-        raw_text = toolchain_file.read_text(encoding="utf-8")
-        if not raw_text.strip():
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                RUST_TOOLCHAIN_PATH,
-                "#",
-                "Toolchain file is empty",
-            )
-            return None
-        import tomllib
-        tc = tomllib.loads(raw_text)
-    except Exception as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            RUST_TOOLCHAIN_PATH,
-            "#",
-            f"Failed to parse rust-toolchain.toml: {exc}",
-        )
+    for key in data:
+        if key != "toolchain":
+            result.add_error(ERR_DEP_CORRUPT_FILE, rel, f"#/{key}", f"unexpected top-level key {key!r} in {rel}")
+    toolchain = data.get("toolchain")
+    if not isinstance(toolchain, dict):
+        result.add_error(ERR_DEP_CORRUPT_FILE, rel, "#/toolchain", f"{rel} lacks a [toolchain] table")
         return None
-
-    if not isinstance(tc, dict):
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            RUST_TOOLCHAIN_PATH,
-            "#",
-            "Toolchain TOML root must be a table",
-        )
+    for key in toolchain:
+        if key not in TOOLCHAIN_FILE_KEYS:
+            result.add_error(ERR_DEP_CORRUPT_FILE, rel, f"#/toolchain/{key}", f"unexpected [toolchain] key {key!r}; it would override the pinned toolchain source")
+    channel = toolchain.get("channel")
+    channel_match = NIGHTLY_CHANNEL_RE.fullmatch(channel) if isinstance(channel, str) else None
+    channel_date = _date(channel_match.group(1)) if channel_match else None
+    if channel_date is None:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/channel", f"Toolchain channel must be a dated nightly (production.toolchain latest-accepted-pinned-nightly), found {channel!r}")
         return None
-
-    toolchain_sec = tc.get("toolchain")
-    if not isinstance(toolchain_sec, dict):
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            RUST_TOOLCHAIN_PATH,
-            "#/toolchain",
-            "Missing [toolchain] section in rust-toolchain.toml",
-        )
+    if channel not in PINNED_TOOLCHAIN_IDENTITIES:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/channel", f"Toolchain channel {channel!r} has no pinned rustc identity; accepted channels: {sorted(PINNED_TOOLCHAIN_IDENTITIES)}")
         return None
+    profile = toolchain.get("profile")
+    if profile != TOOLCHAIN_PROFILE_WITHOUT_IMPLICIT_COMPONENTS:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/profile", f"Toolchain profile must be {TOOLCHAIN_PROFILE_WITHOUT_IMPLICIT_COMPONENTS!r} so no unregistered component is installed, found {profile!r}")
+    components = toolchain.get("components")
+    localq = authority.Authority(root=root)
+    authority._load_local_qualification(localq, root / LOCAL_QUALIFICATION_PATH)
+    result.extend(localq.issues)
+    registered = authority.str_list(authority.as_dict(authority.as_dict(localq.local_qualification).get("toolchain")).get("components"))
+    if not isinstance(components, list) or not all(isinstance(c, str) for c in components) or len(set(components)) != len(components):
+        result.add_error(ERR_DEP_CORRUPT_FILE, rel, "#/toolchain/components", f"[toolchain].components must be a list of unique strings, found {components!r}")
+    elif localq.local_qualification is not None and set(components) != set(registered):
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/components", f"toolchain components {sorted(components)} differ from the registered components {sorted(registered)} in {LOCAL_QUALIFICATION_PATH}")
+    if "targets" in toolchain:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/toolchain/targets", f"toolchain targets {toolchain.get('targets')!r} are not registered anywhere; no extra target may be installed")
 
-    channel = toolchain_sec.get("channel")
-    if channel != REQUIRED_RUST_CHANNEL:
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            RUST_TOOLCHAIN_PATH,
-            "#/toolchain/channel",
-            f"Toolchain channel must be {REQUIRED_RUST_CHANNEL!r}, found {channel!r}",
-        )
+    proc, error = _run(["rustup", "run", channel, "rustc", "-Vv"], root)
+    if error is not None or proc is None:
+        result.add_error(ERR_DEP_EXEC_FAILED, rel, "#", f"Unable to execute rustc -Vv for {channel}: {error}")
         return None
-
-    profile = toolchain_sec.get("profile")
-    if profile != "minimal":
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            RUST_TOOLCHAIN_PATH,
-            "#/toolchain/profile",
-            f"Toolchain profile must be 'minimal', found {profile!r}",
-        )
-
-    # Validate rustc -Vv reports pinned nightly channel
-    cmd = ["rustup", "run", REQUIRED_RUST_CHANNEL, "rustc", "-Vv"]
-    try:
-        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=CARGO_METADATA_TIMEOUT_SECONDS)
-        if proc.returncode != 0:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                RUST_TOOLCHAIN_PATH,
-                "#",
-                f"rustc -Vv failed with exit code {proc.returncode}: {proc.stderr.strip()}",
-            )
-        elif "nightly" not in proc.stdout:
-            result.add_error(
-                ERR_DEP_CONST_INVARIANT,
-                RUST_TOOLCHAIN_PATH,
-                "#",
-                f"rustc -Vv does not report nightly release: {proc.stdout.strip()}",
-            )
-    except Exception as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            RUST_TOOLCHAIN_PATH,
-            "#",
-            f"Unable to execute rustc -Vv: {exc}",
-        )
-
+    if proc.returncode != 0:
+        result.add_error(ERR_DEP_EXEC_FAILED, rel, "#", f"rustc -Vv failed with exit code {proc.returncode}: {(proc.stderr or '').strip()[:300]}")
+        return None
+    fields, parse_error = parse_rustc_verbose(proc.stdout or "")
+    if fields is None:
+        result.add_error(ERR_DEP_EXEC_FAILED, rel, "#", f"rustc -Vv output is unparseable: {parse_error}")
+        return None
+    if not fields["release"].endswith("-nightly"):
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/release", f"rustc -Vv reports release {fields['release']!r}, not the nightly release channel")
+    pinned = PINNED_TOOLCHAIN_IDENTITIES[channel]
+    for key in ("release", "commit-hash", "commit-date"):
+        if fields[key] != pinned[key]:
+            result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"#/rustc/{key}", f"rustc -Vv {key} {fields[key]!r} differs from the pinned identity {pinned[key]!r} of {channel}")
+    commit_date = _date(fields["commit-date"])
+    if commit_date is None or commit_date > channel_date:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/commit-date", f"rustc commit-date {fields['commit-date']!r} is later than the pinned channel date {channel_date}")
+    scopes = registered_host_scopes(root, result)
+    scope = host_platform_scope(fields["host"])
+    if scopes is not None and scope not in scopes:
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/host", f"rustc host {fields['host']!r} (platform {scope!r}) is not a registered native_release platform {sorted(scopes)} in {RELEASE_QUALIFICATION_PATH}")
     return channel
 
 
-def load_real_cargo_metadata(root: Path, channel: str = REQUIRED_RUST_CHANNEL) -> tuple[dict[str, Any] | None, str | None]:
-    """Invokes cargo metadata --locked --offline --all-features to fetch real Cargo metadata."""
-    cmd = [
-        "rustup",
-        "run",
-        channel,
-        "cargo",
-        "metadata",
-        "--locked",
-        "--offline",
-        "--all-features",
-        "--format-version",
-        "1",
-    ]
+def _date(value: str) -> _dt.date | None:
     try:
-        proc = subprocess.run(
-            cmd,
-            cwd=root,
-            capture_output=True,
-            text=True,
-            timeout=CARGO_METADATA_TIMEOUT_SECONDS,
-        )
-        if proc.returncode != 0:
-            return None, f"cargo metadata failed with exit code {proc.returncode}: {proc.stderr.strip() or proc.stdout.strip()}"
-        try:
-            data = json.loads(proc.stdout, object_pairs_hook=pairs_hook_reject_duplicates)
-            return data, None
-        except Exception as exc:
-            return None, f"cargo metadata output is not valid JSON: {exc}"
+        return _dt.date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+# ---------------------------------------------------------------------------------------------
+# DEP-CLASS-F0 closure census over cargo metadata
+# ---------------------------------------------------------------------------------------------
+
+
+def load_real_cargo_metadata(root: Path, channel: str = REQUIRED_RUST_CHANNEL) -> tuple[dict[str, Any] | None, str | None]:
+    """``cargo metadata --locked --offline --all-features`` (every feature, every target platform)."""
+    cmd = ["rustup", "run", channel, "cargo", "metadata", "--locked", "--offline", "--all-features", "--format-version", "1"]
+    try:
+        proc = subprocess.run(cmd, cwd=root, capture_output=True, text=True, timeout=CARGO_METADATA_TIMEOUT_SECONDS)
     except subprocess.TimeoutExpired:
         return None, f"cargo metadata timed out after {CARGO_METADATA_TIMEOUT_SECONDS}s"
-    except Exception as exc:
+    except (OSError, ValueError) as exc:
         return None, f"cargo metadata execution error: {exc}"
+    if proc.returncode != 0:
+        return None, f"cargo metadata failed with exit code {proc.returncode}: {((proc.stderr or '') or (proc.stdout or '')).strip()[:300]}"
+    stdout = proc.stdout or ""
+    if len(stdout.encode("utf-8", "replace")) > authority.MAX_INPUT_FILE_BYTES:
+        return None, f"cargo metadata output exceeds the operational bound of {authority.MAX_INPUT_FILE_BYTES} bytes"
+    data, problems = authority.parse_json_text(stdout, "cargo metadata")
+    if problems:
+        return None, f"cargo metadata output is not valid JSON: {problems[0].message}"
+    if not isinstance(data, dict):
+        return None, "cargo metadata output is not valid JSON object"
+    return data, None
+
+
+DYNAMIC_CRATE_TYPES = frozenset({"cdylib", "dylib", "staticlib"})
+
+
+def _metadata_violation(result: ValidationResult, target: str, message: str, file_path: str = "Cargo.lock") -> None:
+    result.add_error(ERR_DEP_CONST_METADATA_VIOLATION, file_path, target, message)
 
 
 def validate_cargo_metadata_for_f0(
@@ -473,150 +495,212 @@ def validate_cargo_metadata_for_f0(
     root: Path,
     allow_data: dict[str, Any] | None = None,
 ) -> None:
-    """Inspects real Cargo metadata structure for constitutional language/stdlib conformance (DEP-CLASS-F0).
-
-    Safe against non-dict metadata root, null packages/workspace_members, and non-dict workspace metadata.
-    Enforces closed universe, edition 2024, no native links, no build scripts or proc macros.
-    """
+    """Closure census of real Cargo metadata for DEP-CLASS-F0; every shape problem is a finding."""
     if not isinstance(metadata, dict):
-        result.add_error(
-            ERR_DEP_CONST_METADATA_VIOLATION,
-            "Cargo.lock",
-            "#",
-            "Cargo metadata root must be a JSON object",
-        )
+        _metadata_violation(result, "#", "Cargo metadata root must be a JSON object")
         return
+    auth = authority.load_authority(root)
+    view = authority.class_view_from_policy(allow_data, fallback=auth)
+    admitted_projects = auth.admitted_projects()
+    language = auth.production().get("language")
+    edition_match = authority.CONSTITUTION_LANGUAGE_RE.fullmatch(language) if isinstance(language, str) else None
+    expected_edition = edition_match.group(1) if edition_match else None
+    expected_language = language.split("-", 1)[0] if edition_match else None
+    if expected_edition is None:
+        _metadata_violation(result, "#/production/language", f"cannot derive the Rust edition from the constitution production language {language!r}", CONSTITUTION_JSON_PATH)
+    if view is None:
+        _metadata_violation(result, "#", "the dependency authority cannot drive classification; the closure census fails closed", DEPENDENCIES_JSON_PATH)
+
+    fss_meta = authority.as_dict(metadata.get("metadata")).get("fss")
+    prod_lang = fss_meta.get("production_language") if isinstance(fss_meta, dict) else None
+    if expected_language is not None and prod_lang != expected_language:
+        _metadata_violation(result, "#/metadata/fss/production_language", f"Cargo metadata production_language must be {expected_language!r}, found: {prod_lang!r}", "Cargo.toml")
 
     raw_members = metadata.get("workspace_members")
-    workspace_members = set(raw_members) if isinstance(raw_members, list) else set()
+    members: set[str] = set()
+    if not isinstance(raw_members, list) or not raw_members:
+        _metadata_violation(result, "#/workspace_members", f"workspace_members must be a non-empty list of package ids, found {raw_members!r}")
+    else:
+        for member in raw_members:
+            if authority.is_str(member):
+                members.add(member)
+            else:
+                _metadata_violation(result, "#/workspace_members", f"workspace member id must be a string, found {member!r}")
     raw_packages = metadata.get("packages")
-    packages = raw_packages if isinstance(raw_packages, list) else []
-
-    # 1. Inspect workspace metadata production_language
-    meta_obj = metadata.get("metadata")
-    fss_meta = meta_obj.get("fss") if isinstance(meta_obj, dict) else None
-    prod_lang = fss_meta.get("production_language") if isinstance(fss_meta, dict) else None
-    if prod_lang != "rust":
-        result.add_error(
-            ERR_DEP_CONST_METADATA_VIOLATION,
-            "Cargo.toml",
-            "#/metadata/fss/production_language",
-            f"Cargo metadata production_language must be 'rust', found: {prod_lang!r}",
-        )
-
-    # 2. Extract allowed and forbidden closure sets from allowlist
-    forbidden_crates = set()
-    allowed_fundamental = {"serde", "serde_json"}
-    allowed_families: list[str] = []
-    not_admitted_candidates: set[str] = set()
-
-    if allow_data and isinstance(allow_data, dict):
-        forb_sec = allow_data.get("forbidden", {})
-        if isinstance(forb_sec, dict):
-            forbidden_crates = set(forb_sec.get("crates", []))
-
-        fund_sec = allow_data.get("fundamental", {})
-        if isinstance(fund_sec, dict) and isinstance(fund_sec.get("allowed_subject_to_audit"), list):
-            allowed_fundamental = set(fund_sec.get("allowed_subject_to_audit", []))
-
-        inhouse_sec = allow_data.get("in_house", {})
-        if isinstance(inhouse_sec, dict) and isinstance(inhouse_sec.get("allowed_families"), list):
-            allowed_families = list(inhouse_sec.get("allowed_families", []))
-
-        exc_sec = allow_data.get("exception_candidates", {})
-        if isinstance(exc_sec, dict) and isinstance(exc_sec.get("not_admitted_without_dep_record_adr_and_release_evidence"), list):
-            not_admitted_candidates = set(exc_sec.get("not_admitted_without_dep_record_adr_and_release_evidence", []))
-
-    # 3. Inspect workspace member packages and non-member closure packages
-    for pkg in packages:
+    if not isinstance(raw_packages, list):
+        _metadata_violation(result, "#/packages", f"packages must be a list, found {type(raw_packages).__name__}")
+        raw_packages = []
+    packages: dict[str, dict[str, Any]] = {}
+    for index, pkg in enumerate(raw_packages):
         if not isinstance(pkg, dict):
+            _metadata_violation(result, f"#/packages[{index}]", f"package entry must be an object, found {type(pkg).__name__}")
             continue
-        pkg_id = pkg.get("id")
-        pkg_name = pkg.get("name", "<unknown>")
+        pkg_id, name = pkg.get("id"), pkg.get("name")
+        if not authority.is_str(pkg_id) or not authority.is_str(name):
+            _metadata_violation(result, f"#/packages[{index}]", f"package entry lacks a string id/name: id={pkg_id!r}, name={name!r}")
+            continue
+        if pkg_id in packages:
+            _metadata_violation(result, f"#/packages[{index}]", f"package id {pkg_id!r} appears twice")
+            continue
+        for key in ("version", "source", "targets", "edition", "links"):
+            if key not in pkg:
+                _metadata_violation(result, f"#{name}/{key}", f"package '{name}' lacks metadata field {key!r}")
+        if pkg.get("source") is not None and not authority.is_str(pkg.get("source")):
+            _metadata_violation(result, f"#{name}/source", f"package '{name}' source must be a string or null")
+        packages[pkg_id] = pkg
+    for member in sorted(members - set(packages)):
+        _metadata_violation(result, "#/workspace_members", f"workspace member {member!r} has no package entry")
+
+    # Production reachability over the resolve graph: normal and build edges are production.
+    production: set[str] | None = None
+    development: set[str] = set()
+    resolve = metadata.get("resolve")
+    nodes = resolve.get("nodes") if isinstance(resolve, dict) else None
+    if not isinstance(nodes, list):
+        _metadata_violation(result, "#/resolve", "cargo metadata has no resolve graph; production reachability is unproven, so every package is treated as production")
+    else:
+        edges: dict[str, list[tuple[str, bool]]] = {}
+        for node in nodes:
+            if not isinstance(node, dict) or not authority.is_str(node.get("id")) or not isinstance(node.get("deps", []), list):
+                _metadata_violation(result, "#/resolve/nodes", f"malformed resolve node {str(node)[:120]!r}")
+                continue
+            out: list[tuple[str, bool]] = []
+            for dep in node.get("deps", []):
+                kinds = dep.get("dep_kinds") if isinstance(dep, dict) else None
+                if not isinstance(dep, dict) or not authority.is_str(dep.get("pkg")) or not isinstance(kinds, list) or not kinds:
+                    _metadata_violation(result, "#/resolve/nodes", f"malformed resolve edge from {node['id']!r}: {str(dep)[:120]!r}")
+                    continue
+                is_prod_edge = any(isinstance(k, dict) and k.get("kind") in (None, "build") for k in kinds)
+                out.append((dep["pkg"], is_prod_edge))
+            edges[node["id"]] = out
+        production = set()
+        stack = [m for m in members]
+        while stack:
+            current = stack.pop()
+            if current in production:
+                continue
+            production.add(current)
+            stack.extend(pkg for pkg, is_prod in edges.get(current, []) if is_prod)
+        stack = [pkg for member in members for pkg, is_prod in edges.get(member, []) if not is_prod]
+        while stack:
+            current = stack.pop()
+            if current in production or current in development:
+                continue
+            development.add(current)
+            stack.extend(pkg for pkg, _ in edges.get(current, []))
+        for pkg_id in sorted((production | development) - set(packages)):
+            _metadata_violation(result, "#/resolve", f"resolve graph references unknown package id {pkg_id!r}")
+
+    for pkg_id, pkg in sorted(packages.items()):
+        name = pkg["name"]
+        is_member = pkg_id in members
+        if production is None:
+            is_prod = True
+        elif is_member or pkg_id in production:
+            is_prod = True
+        elif pkg_id in development:
+            is_prod = False
+        else:
+            _metadata_violation(result, f"#{name}", f"package '{name}' ({pkg_id}) is not reachable from any workspace member")
+            is_prod = True
+        manifest = str(pkg.get("manifest_path", "Cargo.lock")) if isinstance(pkg.get("manifest_path"), str) else "Cargo.lock"
         targets = pkg.get("targets", [])
         if not isinstance(targets, list):
+            _metadata_violation(result, f"#{name}/targets", f"package '{name}' targets must be a list")
             targets = []
-
-        # Reject custom-build (build.rs) and proc-macro targets in production closure
-        has_custom_build = any(
-            isinstance(t, dict) and "custom-build" in t.get("kind", [])
-            for t in targets
-        )
-        if has_custom_build:
-            result.add_error(
-                ERR_DEP_CONST_METADATA_VIOLATION,
-                str(pkg.get("manifest_path", "Cargo.lock")),
-                f"#{pkg_name}/targets/custom-build",
-                f"Package '{pkg_name}' declares custom-build (build.rs) target violating pure-Rust DEP-CLASS-F0",
-            )
-
-        has_proc_macro = any(
-            isinstance(t, dict) and "proc-macro" in t.get("kind", [])
-            for t in targets
-        )
-        if has_proc_macro:
-            result.add_error(
-                ERR_DEP_CONST_METADATA_VIOLATION,
-                str(pkg.get("manifest_path", "Cargo.lock")),
-                f"#{pkg_name}/targets/proc-macro",
-                f"Package '{pkg_name}' declares proc-macro target violating pure-Rust DEP-CLASS-F0",
-            )
-
-        if pkg_id in workspace_members:
+        kinds: set[str] = set()
+        crate_types: set[str] = set()
+        for target in targets:
+            if not isinstance(target, dict):
+                _metadata_violation(result, f"#{name}/targets", f"package '{name}' has a non-object target")
+                continue
+            for field_name, bucket in (("kind", kinds), ("crate_types", crate_types)):
+                values = target.get(field_name, [])
+                if not isinstance(values, list) or not all(isinstance(v, str) for v in values):
+                    _metadata_violation(result, f"#{name}/targets/{field_name}", f"package '{name}' target {field_name} must be a list of strings, found {values!r}")
+                    continue
+                bucket.update(values)
+        if "custom-build" in kinds:
+            _metadata_violation(result, f"#{name}/targets/custom-build", f"Package '{name}' declares custom-build (build.rs) target violating pure-Rust DEP-CLASS-F0", manifest)
+        if "proc-macro" in kinds or "proc-macro" in crate_types:
+            _metadata_violation(result, f"#{name}/targets/proc-macro", f"Package '{name}' declares proc-macro target violating pure-Rust DEP-CLASS-F0", manifest)
+        dynamic = sorted((kinds | crate_types) & DYNAMIC_CRATE_TYPES)
+        if dynamic:
+            _metadata_violation(result, f"#{name}/targets/crate_types", f"Package '{name}' declares dynamic/C-ABI crate types {dynamic} violating DEP-CLASS-F0 (no dynamic loading or C FFI)", manifest)
+        links = pkg.get("links")
+        if is_member:
             edition = pkg.get("edition")
-            if edition != "2024":
-                result.add_error(
-                    ERR_DEP_CONST_METADATA_VIOLATION,
-                    str(pkg.get("manifest_path", "Cargo.toml")),
-                    f"#{pkg_name}/edition",
-                    f"workspace package '{pkg_name}' must declare edition '2024' (DEP-CLASS-F0), found: {edition!r}",
-                )
-            links = pkg.get("links")
-            if links:
-                result.add_error(
-                    ERR_DEP_CONST_METADATA_VIOLATION,
-                    str(pkg.get("manifest_path", "Cargo.toml")),
-                    f"#{pkg_name}/links",
-                    f"workspace package '{pkg_name}' illegally declares native links '{links}' violating pure-Rust DEP-CLASS-F0",
-                )
-        else:
-            # Non-member package in closure
-            if pkg_name in forbidden_crates:
-                result.add_error(
-                    ERR_DEP_CONST_METADATA_VIOLATION,
-                    "Cargo.lock",
-                    f"#{pkg_name}",
-                    f"Forbidden crate '{pkg_name}' detected in dependency closure violating DEP-CLASS-F0",
-                )
-            elif pkg_name in not_admitted_candidates:
-                result.add_error(
-                    ERR_DEP_CONST_METADATA_VIOLATION,
-                    "Cargo.lock",
-                    f"#{pkg_name}",
-                    f"Exception candidate '{pkg_name}' is not admitted without DEP record and ADR violating DEP-CLASS-F0",
-                )
-            else:
-                # Must be admitted under fundamental or in-house families
-                is_admitted = (
-                    pkg_name in allowed_fundamental
-                    or any(fnmatch.fnmatch(pkg_name, fam) for fam in allowed_families)
-                )
-                if not is_admitted:
-                    result.add_error(
-                        ERR_DEP_CONST_METADATA_VIOLATION,
-                        "Cargo.lock",
-                        f"#{pkg_name}",
-                        f"Unadmitted external crate '{pkg_name}' detected in dependency closure violating pure-Rust closed universe",
-                    )
+            if expected_edition is not None and edition != expected_edition:
+                _metadata_violation(result, f"#{name}/edition", f"workspace package '{name}' must declare edition '{expected_edition}' (DEP-CLASS-F0), found: {edition!r}", manifest)
+            if links is not None:
+                _metadata_violation(result, f"#{name}/links", f"workspace package '{name}' illegally declares native links {links!r} violating pure-Rust DEP-CLASS-F0", manifest)
+            continue
+        if links is not None:
+            _metadata_violation(result, f"#{name}/links", f"Non-member package '{name}' in closure declares native links {links!r} violating pure-Rust DEP-CLASS-F0", manifest)
+        if view is None:
+            continue
+        outcome = authority.classify_package(name, view, is_production=is_prod, is_member=False, admitted_projects=admitted_projects)
+        lane = "production" if is_prod else "development-only"
+        if outcome.kind == "pending":
+            result.add_error(ERR_DEP_PENDING_DECISION, "Cargo.lock", f"#{name}", f"crate '{name}' is in the {lane} closure while {outcome.reason}")
+        elif outcome.kind == "forbidden":
+            _metadata_violation(result, f"#{name}", f"Forbidden crate '{name}' detected in the {lane} dependency closure violating DEP-CLASS-F0")
+        elif outcome.kind == "unclassified":
+            _metadata_violation(result, f"#{name}", f"Unadmitted external crate '{name}' detected in the {lane} dependency closure violating the pure-Rust closed universe")
+        elif outcome.kind == "scope" and outcome.row in view.table_rows.get("exception_candidates", ()):
+            _metadata_violation(result, f"#{name}", f"Exception candidate '{name}' is not admitted without DEP record and ADR ({outcome.row}) violating DEP-CLASS-F0")
+        elif outcome.kind in ("gate", "scope", "unassigned"):
+            _metadata_violation(result, f"#{name}", f"crate '{name}' is not admitted in the {lane} closure: {outcome.reason}")
 
-            links = pkg.get("links")
-            if links:
-                result.add_error(
-                    ERR_DEP_CONST_METADATA_VIOLATION,
-                    str(pkg.get("manifest_path", "Cargo.lock")),
-                    f"#{pkg_name}/links",
-                    f"Non-member package '{pkg_name}' in closure declares native links '{links}' violating pure-Rust DEP-CLASS-F0",
-                )
+
+# ---------------------------------------------------------------------------------------------
+# Unstable features
+# ---------------------------------------------------------------------------------------------
+
+UNSTABLE_FEATURE_RE = re.compile(r"#\s*!\s*\[\s*feature\s*\(")
+
+
+def scan_unstable_features(root: Path, result: ValidationResult) -> int:
+    """Refuses ``#![feature(...)]`` in FSS Rust sources: no unstable-feature registry exists yet."""
+    import dependency_audit  # local import: dependency_audit imports this checker's authority module
+
+    crates = root / "crates"
+    if not crates.is_dir():
+        return 0
+    count = 0
+    for path in sorted(crates.rglob("*.rs")):
+        if "target" in path.relative_to(crates).parts or not path.is_file():
+            continue
+        count += 1
+        rel = path.relative_to(root).as_posix()
+        data, problems = authority.read_input_bytes(path, rel)
+        text, decode_problems = (authority.decode_utf8(data, rel) if data is not None else (None, []))
+        if text is None:
+            result.extend(problems or decode_problems)
+            continue
+        masked, _ = dependency_audit.mask_rust_source(text)
+        for match in UNSTABLE_FEATURE_RE.finditer(masked):
+            line = masked.count("\n", 0, match.start()) + 1
+            result.add_error(ERR_DEP_UNSTABLE_FEATURE, rel, f"line/{line}", f"{rel}:{line}: #![feature] enables an unstable feature, but no registered unstable-feature allowlist exists (DEPENDENCY_CONSTITUTION 2.1 requires enabled unstable features to be recorded)")
+    return count
+
+
+# ---------------------------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------------------------
+
+
+def check_error_registration(result: ValidationResult, root: Path) -> None:
+    rel = authority.ERRORS_MD_PATH
+    data, problems = authority.read_input_bytes(root / rel, rel)
+    text, decode_problems = (authority.decode_utf8(data, rel) if data is not None else (None, []))
+    if text is None:
+        result.extend(problems or decode_problems)
+        return
+    registered = set(re.findall(r"^\| `(ERR-[A-Z0-9-]+)` \|", text, flags=re.MULTILINE))
+    for code in CONSTITUTION_CHECKER_ERROR_CODES:
+        if code not in registered:
+            result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, f"#/{code}", f"diagnostic {code} emitted by the constitution checker is not registered in {rel}")
 
 
 def validate_dependency_constitution(
@@ -624,723 +708,51 @@ def validate_dependency_constitution(
     cargo_metadata: dict[str, Any] | None = None,
     skip_cargo_metadata: bool = False,
 ) -> ValidationResult:
-    """Validates architecture/dependency_constitution.json against SWARM RULE and Cargo metadata."""
+    """Validates the constitution, its mirror, the authority crosswalk and (unless skipped) DEP-CLASS-F0."""
     result = ValidationResult()
-    json_path = root / CONSTITUTION_JSON_PATH
-    md_path = root / CONSTITUTION_MD_PATH
-
-    # 1. Existence and valid JSON
-    if not json_path.is_file():
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#",
-            f"Dependency constitution file missing at {CONSTITUTION_JSON_PATH}",
-        )
-        return result
-
-    try:
-        raw_bytes = json_path.read_bytes()
-    except OSError as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#",
-            f"Could not read dependency constitution JSON: {exc}",
-        )
-        return result
-
-    if not raw_bytes.strip():
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#",
-            "Dependency constitution file is 0 bytes / empty",
-        )
-        return result
-
-    try:
-        raw_text = raw_bytes.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#",
-            f"Invalid UTF-8 in dependency constitution JSON: {exc}",
-        )
-        return result
-
-    try:
-        data = json.loads(raw_text, object_pairs_hook=pairs_hook_reject_duplicates)
-    except (json.JSONDecodeError, RecursionError, ValueError) as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#",
-            f"Dependency constitution JSON decode failed: {exc}",
-        )
-        return result
-
-    if not isinstance(data, dict):
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#",
-            "Dependency constitution root must be a JSON object",
-        )
-        return result
-
-    # 2. Reject unexpected keys (top-level, production, class rows)
-    for k in data:
-        if k not in ALLOWED_TOP_LEVEL_FIELDS:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                CONSTITUTION_JSON_PATH,
-                f"#/{k}",
-                f"Unexpected top-level key '{k}' in dependency constitution",
-            )
-
-    prod = data.get("production")
-    if isinstance(prod, dict):
-        for pk in prod:
-            if pk not in ALLOWED_PRODUCTION_FIELDS:
-                result.add_error(
-                    ERR_DEP_CORRUPT_FILE,
-                    CONSTITUTION_JSON_PATH,
-                    f"#/production/{pk}",
-                    f"Unexpected key '{pk}' in production object",
-                )
-
-    cls_list = data.get("classes")
-    if isinstance(cls_list, list):
-        for idx, dep in enumerate(cls_list):
-            if isinstance(dep, dict):
-                for rk in dep:
-                    if rk not in ALLOWED_CLASS_FIELDS:
-                        result.add_error(
-                            ERR_DEP_CORRUPT_FILE,
-                            CONSTITUTION_JSON_PATH,
-                            f"#/classes/{idx}/{rk}",
-                            f"Unexpected key '{rk}' in class row at index {idx}",
-                        )
-
-    # 3. Mandatory top-level fields
-    for field_name in MANDATORY_TOP_LEVEL_FIELDS:
-        if field_name not in data or data[field_name] is None:
-            result.add_error(
-                ERR_DEP_MISSING_FIELD,
-                CONSTITUTION_JSON_PATH,
-                f"#/{field_name}",
-                f"Missing mandatory top-level field '{field_name}'",
-            )
-        elif isinstance(data[field_name], str):
-            val = data[field_name]
-            if not val:
-                result.add_error(
-                    ERR_DEP_MISSING_FIELD,
-                    CONSTITUTION_JSON_PATH,
-                    f"#/{field_name}",
-                    f"Mandatory top-level field '{field_name}' must not be empty",
-                )
-            elif val != val.strip():
-                result.add_error(
-                    ERR_DEP_CORRUPT_FILE,
-                    CONSTITUTION_JSON_PATH,
-                    f"#/{field_name}",
-                    f"Field '{field_name}' contains illegal leading/trailing whitespace",
-                )
-        elif field_name in ("schema", "asOf", "generation", "freezeDigest", "normativePolicy"):
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                CONSTITUTION_JSON_PATH,
-                f"#/{field_name}",
-                f"Top-level field '{field_name}' must be a string, got {type(data[field_name]).__name__}",
-            )
-
-    # Validate releaseEvidence structure
-    if "releaseEvidence" in data:
-        raw_ev = data.get("releaseEvidence")
-        if not isinstance(raw_ev, list) or len(raw_ev) == 0:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                CONSTITUTION_JSON_PATH,
-                "#/releaseEvidence",
-                "releaseEvidence must be a non-empty list of strings",
-            )
-        else:
-            for idx, ev_item in enumerate(raw_ev):
-                if not isinstance(ev_item, str) or not ev_item:
-                    result.add_error(
-                        ERR_DEP_CORRUPT_FILE,
-                        CONSTITUTION_JSON_PATH,
-                        f"#/releaseEvidence/{idx}",
-                        f"releaseEvidence item at index {idx} must be a non-empty string",
-                    )
-                elif ev_item != ev_item.strip():
-                    result.add_error(
-                        ERR_DEP_CORRUPT_FILE,
-                        CONSTITUTION_JSON_PATH,
-                        f"#/releaseEvidence/{idx}",
-                        f"releaseEvidence item at index {idx} contains whitespace padding",
-                    )
-
-    if not result.passed and any(e.code in (ERR_DEP_MISSING_FIELD, ERR_DEP_CORRUPT_FILE) for e in result.errors):
-        return result
-
-    generation = str(data.get("generation", ""))
-    declared_freeze_digest = str(data.get("freezeDigest", ""))
-    result.freeze_digest = declared_freeze_digest
-
-    # 4. Generation binding
-    if generation not in EXPECTED_FREEZE_DIGESTS:
-        result.add_error(
-            ERR_DEP_GENERATION_MISMATCH,
-            CONSTITUTION_JSON_PATH,
-            "#/generation",
-            f"Dependency constitution generation '{generation}' is unrecognized; expected one of {list(EXPECTED_FREEZE_DIGESTS.keys())}",
-        )
-
-    # 5. Freeze digest verification
-    expected_digest = EXPECTED_FREEZE_DIGESTS.get(generation)
-    try:
-        computed_digest = compute_canonical_constitution_digest(data)
-    except Exception as exc:
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#/freezeDigest",
-            f"Failed to compute canonical constitution digest: {exc}",
-        )
-        return result
-
-    if declared_freeze_digest != computed_digest:
-        result.add_error(
-            ERR_DEP_DIGEST_MISMATCH,
-            CONSTITUTION_JSON_PATH,
-            "#/freezeDigest",
-            f"Dependency constitution freezeDigest mismatch: declared '{declared_freeze_digest}', computed '{computed_digest}'",
-        )
-
-    if expected_digest is not None and computed_digest != expected_digest:
-        result.add_error(
-            ERR_DEP_FREEZE_DIVERGENCE,
-            CONSTITUTION_JSON_PATH,
-            "#/freezeDigest",
-            f"Dependency constitution content diverged from pinned baseline for generation '{generation}': computed '{computed_digest}', expected '{expected_digest}'",
-        )
-
-    # 6. Production requirements verification
-    production = data.get("production", {})
-    if not isinstance(production, dict):
-        result.add_error(
-            ERR_DEP_MISSING_FIELD,
-            CONSTITUTION_JSON_PATH,
-            "#/production",
-            "Top-level 'production' field must be a JSON object",
-        )
-    else:
-        for pk in production:
-            if pk not in ALLOWED_PRODUCTION_FIELDS:
-                result.add_error(
-                    ERR_DEP_CORRUPT_FILE,
-                    CONSTITUTION_JSON_PATH,
-                    f"#/production/{pk}",
-                    f"Unexpected key '{pk}' in production object",
-                )
-        for p_field in MANDATORY_PRODUCTION_FIELDS:
-            if p_field not in production:
-                result.add_error(
-                    ERR_DEP_MISSING_FIELD,
-                    CONSTITUTION_JSON_PATH,
-                    f"#/production/{p_field}",
-                    f"Missing mandatory production field '{p_field}'",
-                )
-            else:
-                pval = production[p_field]
-                if isinstance(pval, str) and pval != pval.strip():
-                    result.add_error(
-                        ERR_DEP_CORRUPT_FILE,
-                        CONSTITUTION_JSON_PATH,
-                        f"#/production/{p_field}",
-                        f"Production field '{p_field}' contains illegal whitespace padding",
-                    )
-                elif pval != REQUIRED_PRODUCTION_VALUES[p_field]:
-                    result.add_error(
-                        ERR_DEP_CONST_INVARIANT,
-                        CONSTITUTION_JSON_PATH,
-                        f"#/production/{p_field}",
-                        f"Production invariant violation for '{p_field}': expected {REQUIRED_PRODUCTION_VALUES[p_field]!r}, got {pval!r}",
-                    )
-
-    # 7. Classes validation
-    classes = data.get("classes", [])
-    if not isinstance(classes, list):
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_JSON_PATH,
-            "#/classes",
-            "Top-level 'classes' field must be a JSON list",
-        )
-        return result
-
-    result.class_count = len(classes)
-    if len(classes) != len(CANONICAL_CONSTITUTION_CLASSES):
-        result.add_error(
-            ERR_DEP_REGISTRY_DRIFT,
-            CONSTITUTION_JSON_PATH,
-            "#/classes",
-            f"Expected {len(CANONICAL_CONSTITUTION_CLASSES)} classes, found {len(classes)}",
-        )
-
-    seen_ids: set[str] = set()
-    seen_lower_ids: dict[str, str] = {}
-    tombstoned_ids, tomb_errs = load_tombstoned_ids(root)
-    for terr in tomb_errs:
-        result.add_error(terr.code, terr.file_path, terr.target, terr.message)
-
-    for idx, dep in enumerate(classes):
-        target = f"#/classes/{idx}"
-        if not isinstance(dep, dict):
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                CONSTITUTION_JSON_PATH,
-                target,
-                f"Class entry {idx} is not a JSON object",
-            )
-            continue
-
-        for rk in dep:
-            if rk not in ALLOWED_CLASS_FIELDS:
-                result.add_error(
-                    ERR_DEP_CORRUPT_FILE,
-                    CONSTITUTION_JSON_PATH,
-                    f"{target}/{rk}",
-                    f"Unexpected key '{rk}' in class row at index {idx}",
-                )
-
-        dep_id = dep.get("id")
-        target = f"#/classes/{dep_id or idx}"
-        if not isinstance(dep_id, str) or not dep_id:
-            result.add_error(
-                ERR_DEP_MISSING_FIELD,
-                CONSTITUTION_JSON_PATH,
-                f"{target}/id",
-                f"Class row at index {idx} missing mandatory 'id' field",
-            )
-            continue
-
-        if dep_id != dep_id.strip():
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                CONSTITUTION_JSON_PATH,
-                f"{target}/id",
-                f"Class ID '{dep_id}' contains illegal whitespace padding",
-            )
-
-        for rf in MANDATORY_CLASS_FIELDS:
-            rval = dep.get(rf)
-            if rval is None or not isinstance(rval, str) or not rval:
-                result.add_error(
-                    ERR_DEP_MISSING_FIELD,
-                    CONSTITUTION_JSON_PATH,
-                    f"{target}/{rf}",
-                    f"Class row missing or empty mandatory field '{rf}'",
-                )
-            elif rval != rval.strip():
-                result.add_error(
-                    ERR_DEP_CORRUPT_FILE,
-                    CONSTITUTION_JSON_PATH,
-                    f"{target}/{rf}",
-                    f"Class row field '{rf}' contains illegal whitespace padding",
-                )
-
-        if not DEP_CLASS_ID_PATTERN.match(dep_id):
-            result.add_error(
-                ERR_DEP_CONST_INVARIANT,
-                CONSTITUTION_JSON_PATH,
-                f"{target}/id",
-                f"Class ID '{dep_id}' does not conform to pattern DEP-CLASS-F[0-4]",
-            )
-
-        if dep_id in seen_ids:
-            result.add_error(
-                ERR_DEP_STABLE_ID_REUSED,
-                CONSTITUTION_JSON_PATH,
-                f"{target}/id",
-                f"Duplicate class ID '{dep_id}' in classes list",
-            )
-        seen_ids.add(dep_id)
-
-        lower_id = dep_id.lower()
-        if lower_id in seen_lower_ids and seen_lower_ids[lower_id] != dep_id:
-            result.add_error(
-                ERR_DEP_STABLE_ID_REUSED,
-                CONSTITUTION_JSON_PATH,
-                f"{target}/id",
-                f"Case-colliding class ID '{dep_id}' conflicts with '{seen_lower_ids[lower_id]}'",
-            )
-        seen_lower_ids[lower_id] = dep_id
-
-        if dep_id in tombstoned_ids:
-            result.add_error(
-                ERR_DEP_STABLE_ID_REUSED,
-                CONSTITUTION_JSON_PATH,
-                f"{target}/id",
-                f"Attempted to resurrect tombstoned identifier '{dep_id}'",
-            )
-
-        if dep_id in CANONICAL_CONSTITUTION_CLASSES:
-            canonical = CANONICAL_CONSTITUTION_CLASSES[dep_id]
-            for check_key in ("name", "admission"):
-                val = dep.get(check_key)
-                if val != canonical[check_key]:
-                    result.add_error(
-                        ERR_DEP_CONST_INVARIANT,
-                        CONSTITUTION_JSON_PATH,
-                        f"{target}/{check_key}",
-                        f"Class '{dep_id}' {check_key} mismatch: expected '{canonical[check_key]}', got '{val}'",
-                    )
-
-    # 8. DEP-CLASS-F0 & F4 Specific Invariant Checks
-    f0_entry = next((c for c in classes if isinstance(c, dict) and c.get("id") == "DEP-CLASS-F0"), None)
-    if f0_entry is None:
-        result.add_error(
-            ERR_DEP_CONST_INVARIANT,
-            CONSTITUTION_JSON_PATH,
-            "#/classes/DEP-CLASS-F0",
-            "Mandatory constitutional class 'DEP-CLASS-F0' is missing from classes",
-        )
-    else:
-        if f0_entry.get("admission") != "constitutional":
-            result.add_error(
-                ERR_DEP_CONST_INVARIANT,
-                CONSTITUTION_JSON_PATH,
-                "#/classes/DEP-CLASS-F0/admission",
-                f"DEP-CLASS-F0 admission must be 'constitutional', found: {f0_entry.get('admission')!r}",
-            )
-        if f0_entry.get("name") != "rust-language-and-stdlib":
-            result.add_error(
-                ERR_DEP_CONST_INVARIANT,
-                CONSTITUTION_JSON_PATH,
-                "#/classes/DEP-CLASS-F0/name",
-                f"DEP-CLASS-F0 name must be 'rust-language-and-stdlib', found: {f0_entry.get('name')!r}",
-            )
-
-    f4_entry = next((c for c in classes if isinstance(c, dict) and c.get("id") == "DEP-CLASS-F4"), None)
-    if f4_entry is not None:
-        if f4_entry.get("admission") != "non-production-quarantine-only":
-            result.add_error(
-                ERR_DEP_CONST_INVARIANT,
-                CONSTITUTION_JSON_PATH,
-                "#/classes/DEP-CLASS-F4/admission",
-                f"DEP-CLASS-F4 admission must be 'non-production-quarantine-only', found: {f4_entry.get('admission')!r}",
-            )
-
-    # 9. Cross-checks against architecture/dependencies.json
-    dep_json_path = root / DEPENDENCIES_JSON_PATH
-    if dep_json_path.is_file():
-        try:
-            dep_bytes = dep_json_path.read_bytes()
-            dep_data = json.loads(dep_bytes.decode("utf-8"), object_pairs_hook=pairs_hook_reject_duplicates)
-            for dep_row in dep_data.get("dependencies", []):
-                if isinstance(dep_row, dict):
-                    c_class = dep_row.get("constitutionClass")
-                    d_id = dep_row.get("id", "<unknown>")
-                    scope = dep_row.get("scope")
-
-                    if not c_class or c_class not in CANONICAL_CONSTITUTION_CLASSES:
-                        result.add_error(
-                            ERR_DEP_CONST_INVARIANT,
-                            DEPENDENCIES_JSON_PATH,
-                            f"row/{d_id}/constitutionClass",
-                            f"Dependency '{d_id}' missing or unknown constitutionClass: {c_class!r}",
-                        )
-
-                    if scope not in VALID_DEPENDENCY_SCOPES:
-                        result.add_error(
-                            ERR_DEP_CONST_INVARIANT,
-                            DEPENDENCIES_JSON_PATH,
-                            f"row/{d_id}/scope",
-                            f"Dependency '{d_id}' has invalid scope {scope!r}; must be one of {sorted(VALID_DEPENDENCY_SCOPES)}",
-                        )
-
-                    if c_class == "DEP-CLASS-F3" and scope == "Production":
-                        result.add_error(
-                            ERR_DEP_CONST_INVARIANT,
-                            DEPENDENCIES_JSON_PATH,
-                            f"row/{d_id}/scope",
-                            f"Dependency '{d_id}' mapped to external fundamental class DEP-CLASS-F3 cannot have unreserved Production scope",
-                        )
-
-                    if c_class == "DEP-CLASS-F4" and scope in ("Production", "Production subject to audit"):
-                        result.add_error(
-                            ERR_DEP_CONST_INVARIANT,
-                            DEPENDENCIES_JSON_PATH,
-                            f"row/{d_id}/scope",
-                            f"Dependency '{d_id}' mapped to quarantine class DEP-CLASS-F4 cannot have Production scope: {scope!r}",
-                        )
-        except Exception as exc:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                DEPENDENCIES_JSON_PATH,
-                "#",
-                f"Could not read dependencies.json during constitution cross-check: {exc}",
-            )
-
-    # 10. Cross-checks against architecture/dependency_allowlist.toml
-    allow_path = root / ALLOWLIST_TOML_PATH
-    allow_data: dict[str, Any] | None = None
-    if allow_path.is_file():
-        try:
-            import tomllib
-            allow_data = tomllib.loads(allow_path.read_text(encoding="utf-8"))
-            pol = allow_data.get("policy", {})
-
-            # Validate all 16 policy flags against REQUIRED_ALLOWLIST_POLICY
-            for flag_name, expected_val in REQUIRED_ALLOWLIST_POLICY.items():
-                actual_val = pol.get(flag_name)
-                if actual_val != expected_val:
-                    result.add_error(
-                        ERR_DEP_CONST_INVARIANT,
-                        ALLOWLIST_TOML_PATH,
-                        f"#/policy/{flag_name}",
-                        f"dependency_allowlist.toml policy.{flag_name} must be {expected_val!r}, found {actual_val!r}",
-                    )
-
-            # Cross-check allowlist flags against constitution production object
-            if isinstance(prod, dict):
-                crosswalk_checks = [
-                    ("closed_universe", "closedUniverse", prod.get("closedUniverse") is True),
-                    ("c_or_cpp_ffi_allowed", "cCppFfi", not prod.get("cCppFfi", True)),
-                    ("dynamic_loading_allowed", "dynamicLoading", not prod.get("dynamicLoading", True)),
-                    ("foreign_runtime_production_boundary_allowed", "foreignExecutables", not prod.get("foreignExecutables", True)),
-                    ("release_resolution_must_be_locked_and_offline", "lockedOfflineReleaseResolution", prod.get("lockedOfflineReleaseResolution") is True),
-                    ("runtime_acquisition_allowed", "runtimeAcquisition", not prod.get("runtimeAcquisition", True)),
-                    ("serde_may_not_define_durable_bytes", "serdeDurableFormatAuthority", not prod.get("serdeDurableFormatAuthority", True)),
-                    ("asupersync_is_only_async_runtime", "asyncRuntime", prod.get("asyncRuntime") == "asupersync-only"),
-                    ("fss_crates_must_forbid_unsafe", "unsafe", prod.get("unsafe") == "forbidden-in-all-fss-crates"),
-                ]
-                for flag_name, prod_field, consistent in crosswalk_checks:
-                    if prod_field in prod and not consistent:
-                        result.add_error(
-                            ERR_DEP_CONST_INVARIANT,
-                            ALLOWLIST_TOML_PATH,
-                            f"#/policy/{flag_name}",
-                            f"Allowlist policy '{flag_name}' is inconsistent with constitution production settings",
-                        )
-
-            # Check table contents
-            forb_crates = allow_data.get("forbidden", {}).get("crates", [])
-            if not isinstance(forb_crates, list) or len(forb_crates) == 0:
-                result.add_error(
-                    ERR_DEP_CONST_INVARIANT,
-                    ALLOWLIST_TOML_PATH,
-                    "#/forbidden/crates",
-                    "dependency_allowlist.toml [forbidden] crates must be a non-empty list",
-                )
-
-            fund_allowed = allow_data.get("fundamental", {}).get("allowed_subject_to_audit", [])
-            if not isinstance(fund_allowed, list) or len(fund_allowed) == 0:
-                result.add_error(
-                    ERR_DEP_CONST_INVARIANT,
-                    ALLOWLIST_TOML_PATH,
-                    "#/fundamental/allowed_subject_to_audit",
-                    "dependency_allowlist.toml [fundamental] allowed_subject_to_audit must be a non-empty list",
-                )
-
-            lab_excluded = allow_data.get("laboratory_oracles", {}).get("excluded_from_production_release_closure", [])
-            if not isinstance(lab_excluded, list) or "ffmpeg" not in lab_excluded or "ffprobe" not in lab_excluded:
-                result.add_error(
-                    ERR_DEP_CONST_INVARIANT,
-                    ALLOWLIST_TOML_PATH,
-                    "#/laboratory_oracles/excluded_from_production_release_closure",
-                    "laboratory_oracles.excluded_from_production_release_closure must contain ffmpeg and ffprobe",
-                )
-
-            in_house_families = allow_data.get("in_house", {}).get("allowed_families", [])
-            if isinstance(in_house_families, list) and ("ffmpeg" in in_house_families or "ffprobe" in in_house_families):
-                result.add_error(
-                    ERR_DEP_CONST_INVARIANT,
-                    ALLOWLIST_TOML_PATH,
-                    "#/in_house/allowed_families",
-                    "in_house.allowed_families illegally contains ffmpeg or ffprobe",
-                )
-        except Exception as exc:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                ALLOWLIST_TOML_PATH,
-                "#",
-                f"Could not read dependency_allowlist.toml during constitution cross-check: {exc}",
-            )
-
-    # 11. Substantive Markdown mirror verification
-    if not md_path.is_file():
-        result.add_error(
-            ERR_DEP_CORRUPT_FILE,
-            CONSTITUTION_MD_PATH,
-            "#",
-            f"Markdown documentation missing at {CONSTITUTION_MD_PATH}",
-        )
-    else:
-        try:
-            md_bytes = md_path.read_bytes()
-            if len(md_bytes) == 0:
-                result.add_error(
-                    ERR_DEP_CORRUPT_FILE,
-                    CONSTITUTION_MD_PATH,
-                    "#",
-                    "Markdown documentation is 0 bytes / empty",
-                )
-                md_text = ""
-            else:
-                md_text = md_bytes.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                CONSTITUTION_MD_PATH,
-                "#",
-                f"Invalid UTF-8 in constitution markdown: {exc}",
-            )
-            md_text = ""
-        except OSError as exc:
-            result.add_error(
-                ERR_DEP_CORRUPT_FILE,
-                CONSTITUTION_MD_PATH,
-                "#",
-                f"Could not read constitution markdown: {exc}",
-            )
-            md_text = ""
-
-        if md_text:
-            if not md_text.strip():
-                result.add_error(
-                    ERR_DEP_CORRUPT_FILE,
-                    CONSTITUTION_MD_PATH,
-                    "#",
-                    "Markdown documentation contains only whitespace",
-                )
-            else:
-                md_classes, duplicate_ids = extract_markdown_class_sections(md_text)
-                for dup_id in duplicate_ids:
-                    result.add_error(
-                        ERR_DEP_REGISTRY_DRIFT,
-                        CONSTITUTION_MD_PATH,
-                        f"#{dup_id}",
-                        f"Duplicate class section header '{dup_id}' found in {CONSTITUTION_MD_PATH}",
-                    )
-
-                for canon_id, canon_info in CANONICAL_CONSTITUTION_CLASSES.items():
-                    if canon_id not in md_classes:
-                        result.add_error(
-                            ERR_DEP_REGISTRY_DRIFT,
-                            CONSTITUTION_MD_PATH,
-                            f"#{canon_id}",
-                            f"Class section '{canon_id}' is missing from {CONSTITUTION_MD_PATH}",
-                        )
-                    else:
-                        c_name, c_body = md_classes[canon_id]
-                        expected_title = CANONICAL_CONSTITUTION_MARKDOWN_TITLES.get(canon_id, canon_info["name"])
-                        if c_name != expected_title:
-                            result.add_error(
-                                ERR_DEP_REGISTRY_DRIFT,
-                                CONSTITUTION_MD_PATH,
-                                f"#{canon_id}/name",
-                                f"Class section '{canon_id}' title drifted: expected '{expected_title}', got '{c_name}'",
-                            )
-
-                        # Semantic content verification (reject lorem/hollow body, verify class keywords)
-                        body_lower = c_body.lower()
-                        if not c_body.strip() or "lorem" in body_lower or "placeholder" in body_lower:
-                            result.add_error(
-                                ERR_DEP_REGISTRY_DRIFT,
-                                CONSTITUTION_MD_PATH,
-                                f"#{canon_id}/body",
-                                f"Class section '{canon_id}' in {CONSTITUTION_MD_PATH} contains hollow or placeholder text",
-                            )
-                        elif canon_id == "DEP-CLASS-F0" and ("rustc" not in body_lower or "nightly" not in body_lower):
-                            result.add_error(
-                                ERR_DEP_REGISTRY_DRIFT,
-                                CONSTITUTION_MD_PATH,
-                                f"#{canon_id}/body",
-                                f"Class section '{canon_id}' body does not document rustc/nightly toolchain identity",
-                            )
-                        elif canon_id == "DEP-CLASS-F1" and "asupersync" not in body_lower:
-                            result.add_error(
-                                ERR_DEP_REGISTRY_DRIFT,
-                                CONSTITUTION_MD_PATH,
-                                f"#{canon_id}/body",
-                                f"Class section '{canon_id}' body does not document Asupersync concurrency ownership",
-                            )
-                        elif canon_id == "DEP-CLASS-F2" and "franken" not in body_lower:
-                            result.add_error(
-                                ERR_DEP_REGISTRY_DRIFT,
-                                CONSTITUTION_MD_PATH,
-                                f"#{canon_id}/body",
-                                f"Class section '{canon_id}' body does not document Franken-suite crate admission",
-                            )
-                        elif canon_id == "DEP-CLASS-F3" and ("fundamental" not in body_lower or "serde" not in body_lower):
-                            result.add_error(
-                                ERR_DEP_REGISTRY_DRIFT,
-                                CONSTITUTION_MD_PATH,
-                                f"#{canon_id}/body",
-                                f"Class section '{canon_id}' body does not document fundamental crate / serde bounds",
-                            )
-                        elif canon_id == "DEP-CLASS-F4" and not any(k in body_lower for k in ("laboratory", "oracle", "quarantine")):
-                            result.add_error(
-                                ERR_DEP_REGISTRY_DRIFT,
-                                CONSTITUTION_MD_PATH,
-                                f"#{canon_id}/body",
-                                f"Class section '{canon_id}' body does not document laboratory oracle quarantine",
-                            )
-
-    # 12. Toolchain identity and Cargo metadata inspection
+    auth = authority.load_authority(root)
+    result.extend(auth.issues)
+    constitution = auth.constitution or {}
+    classes = constitution.get("classes")
+    result.class_count = len(classes) if isinstance(classes, list) else 0
+    declared = constitution.get("freezeDigest")
+    result.freeze_digest = declared if isinstance(declared, str) else (auth.constitution_digest or "")
+    check_constitution_markdown(result, auth, root / CONSTITUTION_MD_PATH)
     if not skip_cargo_metadata:
+        check_error_registration(result, root)
         channel = validate_toolchain_identity(root, result)
         if cargo_metadata is None:
-            active_channel = channel or REQUIRED_RUST_CHANNEL
-            cargo_metadata, meta_err = load_real_cargo_metadata(root, active_channel)
+            cargo_metadata, meta_err = load_real_cargo_metadata(root, channel or REQUIRED_RUST_CHANNEL)
             if meta_err is not None:
-                result.add_error(
-                    ERR_DEP_CORRUPT_FILE,
-                    "Cargo.lock",
-                    "#",
-                    f"Unable to load real Cargo metadata for DEP-CLASS-F0 verification: {meta_err}",
-                )
+                result.add_error(ERR_DEP_EXEC_FAILED, "Cargo.lock", "#", f"Unable to load real Cargo metadata for DEP-CLASS-F0 verification: {meta_err}")
         if cargo_metadata is not None:
-            validate_cargo_metadata_for_f0(result, cargo_metadata, root, allow_data)
-
+            validate_cargo_metadata_for_f0(result, cargo_metadata, root)
+        scan_unstable_features(root, result)
     return result
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Check dependency constitution and class registry")
+    parser = argparse.ArgumentParser(description="Check the dependency constitution and DEP-CLASS-F0")
     parser.add_argument("--root", type=Path, default=ROOT, help="Repository root path")
     parser.add_argument("--json", action="store_true", help="Output JSON results")
-    parser.add_argument("--skip-cargo-metadata", action="store_true", help="Skip cargo metadata call")
+    parser.add_argument("--skip-cargo-metadata", action="store_true", help="Skip toolchain identity, cargo metadata and source scans")
     args = parser.parse_args()
 
     res = validate_dependency_constitution(args.root, skip_cargo_metadata=args.skip_cargo_metadata)
-
     if args.json:
-        output = {
+        print(json.dumps({
             "passed": res.passed,
             "classCount": res.class_count,
             "freezeDigest": res.freeze_digest,
-            "errors": [
-                {"code": e.code, "file": e.file_path, "target": e.target, "message": e.message}
-                for e in res.errors
-            ],
-        }
-        print(json.dumps(output, indent=2))
+            "errors": [{"code": e.code, "file": e.file_path, "target": e.target, "message": e.message} for e in res.errors],
+        }, indent=2))
         return 0 if res.passed else 1
-
     if res.passed:
         print(f"Dependency constitution OK: {res.class_count} classes verified ({res.freeze_digest})")
         return 0
-    else:
-        for err in res.errors:
-            print(f"[{err.code}] {err.file_path} ({err.target}): {err.message}", file=sys.stderr)
-        return 1
+    for err in res.errors:
+        print(f"[{err.code}] {err.file_path} ({err.target}): {err.message}", file=sys.stderr)
+    return 1
 
 
 if __name__ == "__main__":
