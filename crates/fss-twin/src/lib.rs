@@ -192,3 +192,6 @@ pub mod stream;
 
 /// Observation-driven routing and camera-handoff composition.
 pub mod observed_handoff;
+
+/// Mask-safe native lens correction into the existing pinhole image domain.
+pub mod rectification;
