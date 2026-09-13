@@ -113,3 +113,33 @@ accepted-toolchain build, full qualification, real recordings, automatic route
 extraction, track fitting, continuous reachable envelope, and live Asupersync/agent
 integration remain outstanding. This is an implemented reference portion of
 BTI-006/BTI-007, not completion of BTI-008 or FSS-098/099.
+
+## Executable two-route property example
+
+The `predict_handoff` example constructs a synthetic Z-up support mesh, two
+properly rotated downward-looking cameras, and two alternative routes from the
+same initial contact position. A person profile favors the stone path 4:1 without
+removing the protected grass route; a bear profile retains equal heuristic masses.
+The two classes use explicitly different eight-point body samples. All camera,
+region, and timing output comes from `forecast_routes` and
+`predict_camera_handoffs`, not hard-coded output rows.
+
+```sh
+cargo run --locked --offline -p fss-geometry --example predict_handoff
+python3 -B scripts/test_motion_handoff_replay.py
+```
+
+The Python driver runs the actual Rust executable twice, requires identical JSONL,
+and checks four coupled route/class outcomes against a separate analytic camera
+projection. The expected nominal captures occur at four seconds, with explicitly
+supplied availability delays of 0.2-0.4 seconds. These are synthetic fixtures, not
+measurements or predictions for any real property. The development-only replay
+schema is not a replacement for the registered `fss/1` agent envelope.
+
+No Rust executable was run in the authoring environment: the driver reports
+`NOT_RUN` with a nonzero exit when Cargo is absent. Its Python validation functions
+were checked independently against one valid analytic transcript and thirteen
+corrupted transcripts; this verifies the checker, not the Rust implementation.
+Neither the example nor a successful future fixture run qualifies a real detector,
+camera, imported Blender package, or property. Recorded-camera integration remains
+part of the broader open tasks.
