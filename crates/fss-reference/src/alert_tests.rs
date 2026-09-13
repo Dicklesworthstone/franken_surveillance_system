@@ -618,3 +618,180 @@ fn retry_of_already_current_revision_is_idempotent_and_exact_equal() -> Result<(
     let _ = fs::remove_file(path);
     Ok(())
 }
+
+#[test]
+fn retry_after_unrelated_batch_returns_original_receipt_and_anchor() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("retry-unrelated-batch");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let event_id = EventId::parse("event:alert:retry-unrelated")?;
+    let a = observation(
+        "capture:alert:retry-unrelated-a",
+        "sensor:alert:retry-unrelated-a",
+        61,
+        "power:alert:alpha",
+        &mut objects,
+        &mut authority,
+    )?;
+    let decision = evaluate_unknown_presence(event_id, vec![a])?;
+    let receipt = publish_reference_event(&decision, &mut objects, &mut authority)?;
+
+    // An unrelated authority batch lands after the event publication, advancing the ledger anchor.
+    let _e = observation(
+        "capture:alert:retry-unrelated-e",
+        "sensor:alert:retry-unrelated-e",
+        62,
+        "power:alert:epsilon",
+        &mut objects,
+        &mut authority,
+    )?;
+    let anchor_before = authority.current().anchor.clone();
+    let batches_before = authority.batches().len();
+
+    // The current ledger anchor is now strictly different from the event's commit anchor.
+    assert_ne!(anchor_before, receipt.authority_anchor);
+
+    // Retrying the exact event revision returns the original receipt and committed anchor (kills mutant M2).
+    let retry = publish_reference_event(&decision, &mut objects, &mut authority)?;
+    assert_eq!(retry, receipt);
+    assert_eq!(retry.authority_anchor, receipt.authority_anchor);
+    assert_ne!(retry.authority_anchor, anchor_before);
+
+    // Ledger is completely unchanged by the idempotent retry:
+    assert_eq!(authority.current().anchor, anchor_before);
+    assert_eq!(authority.batches().len(), batches_before);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn retry_after_crash_reopen_recovers_original_receipt_and_anchor() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("retry-crash-reopen");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let event_id = EventId::parse("event:alert:retry-reopen")?;
+    let a = observation(
+        "capture:alert:retry-reopen-a",
+        "sensor:alert:retry-reopen-a",
+        71,
+        "power:alert:alpha",
+        &mut objects,
+        &mut authority,
+    )?;
+    let decision = evaluate_unknown_presence(event_id, vec![a])?;
+    let receipt = publish_reference_event(&decision, &mut objects, &mut authority)?;
+    let batches = authority.batches().len();
+
+    // Drop the authority ledger and reopen from disk (simulating crash recovery).
+    drop(authority);
+    let mut reopened =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    assert_eq!(reopened.batches().len(), batches);
+
+    // Retry against the reopened ledger returns the exact original receipt and anchor.
+    let retry = publish_reference_event(&decision, &mut objects, &mut reopened)?;
+    assert_eq!(retry, receipt);
+    assert_eq!(retry.authority_anchor, receipt.authority_anchor);
+    assert_eq!(reopened.batches().len(), batches);
+
+    // With a fresh object store (in-memory store lost in the crash), the retry must not
+    // silently succeed with unverified model receipts, and must not touch authority.
+    let mut fresh = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let lost = publish_reference_event(&decision, &mut fresh, &mut reopened);
+    assert!(lost.is_err(), "{lost:?}");
+    assert_eq!(reopened.batches().len(), batches);
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn retry_same_revision2_different_content_refused_exact_retried() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("retry-rev2-diff");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
+    let mut authority =
+        DurableReferenceLedger::open(&path, "site:alert", IncompleteTailPolicy::Reject)?;
+    let event_id = EventId::parse("event:alert:retry-rev2")?;
+    let a = observation(
+        "capture:alert:retry-rev2-a",
+        "sensor:alert:retry-rev2-a",
+        81,
+        "power:alert:alpha",
+        &mut objects,
+        &mut authority,
+    )?;
+    let first = evaluate_unknown_presence(event_id.clone(), vec![a])?;
+    let _r1 = publish_reference_event(&first, &mut objects, &mut authority)?;
+
+    let c = observation(
+        "capture:alert:retry-rev2-c",
+        "sensor:alert:retry-rev2-c",
+        82,
+        "power:alert:gamma",
+        &mut objects,
+        &mut authority,
+    )?;
+    let d = observation(
+        "capture:alert:retry-rev2-d",
+        "sensor:alert:retry-rev2-d",
+        83,
+        "power:alert:delta",
+        &mut objects,
+        &mut authority,
+    )?;
+    let f = observation(
+        "capture:alert:retry-rev2-f",
+        "sensor:alert:retry-rev2-f",
+        84,
+        "power:alert:phi",
+        &mut objects,
+        &mut authority,
+    )?;
+
+    let rev2 = successor(
+        &first.event,
+        &evaluate_unknown_presence(event_id.clone(), vec![c.clone(), d])?,
+    )?;
+    let r2 = publish_reference_event(&rev2, &mut objects, &mut authority)?;
+
+    // Same revision number 2, correct supersedes (rev1), but different evidence.
+    let rev2_alt = successor(
+        &first.event,
+        &evaluate_unknown_presence(event_id, vec![c, f])?,
+    )?;
+    assert_eq!(rev2_alt.event.revision, rev2.event.revision);
+    assert_eq!(rev2_alt.event.supersedes, rev2.event.supersedes);
+    assert_ne!(
+        rev2_alt.event.revision_digest(),
+        rev2.event.revision_digest()
+    );
+
+    let batches = authority.batches().len();
+    let anchor = authority.current().anchor.clone();
+    let res = publish_reference_event(&rev2_alt, &mut objects, &mut authority);
+    assert!(
+        matches!(
+            res,
+            Err(ReferenceError::Contract(
+                fss_core::ContractError::SupersessionMismatch
+            ))
+        ),
+        "{res:?}"
+    );
+    assert_eq!(authority.batches().len(), batches);
+    assert_eq!(authority.current().anchor, anchor);
+
+    // Original revision 2 still retries idempotently.
+    assert_eq!(
+        publish_reference_event(&rev2, &mut objects, &mut authority)?,
+        r2
+    );
+    let _ = fs::remove_file(path);
+    Ok(())
+}
