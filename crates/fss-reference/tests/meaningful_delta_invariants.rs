@@ -10,10 +10,11 @@ use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
     ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, CoverageContinuity,
     CoverageStopReason, CoverageWitness, EffectJournal, EventId, HypothesisDisposition,
-    IdempotencyKey, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, LedgerAnchor,
-    MeaningfulDeltaClass, MissionId, MissionLifecycleState, ObligationId, OperationId, PrincipalId,
-    ProbabilityInterval, ProvenanceClass, ReconciliationBasis, ResourcePressure, SensorId,
-    SessionId, SilenceCertificate, SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
+    IdempotencyKey, KnowledgeCell, KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis,
+    LedgerAnchor, MeaningfulDeltaClass, MissionId, MissionLifecycleState, ObligationId,
+    OperationId, PrincipalId, ProbabilityInterval, ProvenanceClass, ReconciliationBasis,
+    ResourcePressure, SensorId, SessionId, SilenceCertificate, SituationCapsule, SituationFrame,
+    TimestampNs, WorldEnvelope,
 };
 
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
@@ -379,7 +380,7 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
     } else {
         Vec::new()
     };
-    let mut knowledge_cells = vec![KnowledgeCell {
+    let mut knowledge_cells = vec![KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:premise".to_owned(),
         statement: variant.premise_statement.clone(),
         knowledge_state: variant.premise_state,
@@ -389,7 +390,7 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
         contradictions: variant.premise_contradictions.clone(),
         valid_until: None,
         state_basis: None,
-    }];
+    })?];
     if let Some(effect_state) = variant.effect_state {
         let statement = match &variant.effect_statement {
             Some(custom) => custom.clone(),
@@ -403,7 +404,7 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
                 _ => "The external effect has another explicit typed state.".to_owned(),
             },
         };
-        knowledge_cells.push(KnowledgeCell {
+        knowledge_cells.push(KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:effect:meaningful-delta:outcome".to_owned(),
             statement,
             knowledge_state: effect_state,
@@ -417,10 +418,10 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
                     ContentDigest::sha256(b"effect-outcome"),
                 ))
             }),
-        });
+        })?);
     }
     knowledge_cells.extend(variant.custom_cells.iter().cloned());
-    knowledge_cells.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
+    knowledge_cells.sort_by(|left, right| left.claim_id().cmp(right.claim_id()));
 
     let next = affordances
         .iter()
@@ -464,8 +465,8 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
         proof_roots.insert(ContentDigest::sha256(b"effect-outcome"));
     }
     for cell in &variant.custom_cells {
-        proof_roots.extend(cell.evidence.iter().cloned());
-        proof_roots.extend(cell.contradictions.iter().cloned());
+        proof_roots.extend(cell.evidence().iter().cloned());
+        proof_roots.extend(cell.contradictions().iter().cloned());
     }
     let situation = ReferenceSituation::new(capsule, proof_roots);
     project_reference_situation(
@@ -1287,10 +1288,12 @@ fn test_f4_real_situation_f3_contradictory_evidence_on_estimated_premise_invalid
     let contradiction = ContentDigest::sha256(b"real-contradiction-root");
     situation2.proof_roots.insert(contradiction);
     for cell in &mut situation2.capsule.frame.knowledge_cells {
-        if cell.knowledge_state == KnowledgeState::Estimated
-            || cell.knowledge_state == KnowledgeState::Known
+        if cell.knowledge_state() == KnowledgeState::Estimated
+            || cell.knowledge_state() == KnowledgeState::Known
         {
-            cell.contradictions.push(contradiction);
+            let mut params = cell.to_params();
+            params.contradictions.push(contradiction);
+            *cell = KnowledgeCell::new(params)?;
         }
     }
     // The edited copy is no longer the situation its compile path sealed, so it is published as a
@@ -1491,16 +1494,16 @@ fn test_inv056_rejected_event_without_coverage_witness_cannot_claim_absence()
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .find(|cell| cell.claim_id().ends_with(":absence-certification"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
     assert_eq!(
-        absence.knowledge_state,
+        absence.knowledge_state(),
         KnowledgeState::Unknown,
         "Absence without CoverageWitness must remain Unknown!"
     );
     assert!(
         absence
-            .statement
+            .statement()
             .contains("Physical absence is not certified"),
         "Absence statement must indicate absence is uncertified!"
     );
@@ -1567,19 +1570,19 @@ fn test_inv056_rejected_event_with_stale_generation_coverage_witness_fails_certi
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .find(|cell| cell.claim_id().ends_with(":absence-certification"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
     assert_eq!(
-        absence.knowledge_state,
+        absence.knowledge_state(),
         KnowledgeState::Unknown,
         "Absence with mismatched generation CoverageWitness must remain Unknown!"
     );
     assert!(
         absence
-            .statement
+            .statement()
             .contains("conflicts with observed generation"),
         "Absence statement must name generation conflict! Statement: {}",
-        absence.statement
+        absence.statement()
     );
     assert!(
         situation
@@ -1636,17 +1639,17 @@ fn test_inv056_rejected_event_with_gapped_coverage_witness_fails_certification()
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .find(|cell| cell.claim_id().ends_with(":absence-certification"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
     assert_eq!(
-        absence.knowledge_state,
+        absence.knowledge_state(),
         KnowledgeState::Unknown,
         "Absence with gapped CoverageWitness must remain Unknown!"
     );
     assert!(
-        absence.statement.contains("continuity is Gapped"),
+        absence.statement().contains("continuity is Gapped"),
         "Absence statement must name continuity gap! Statement: {}",
-        absence.statement
+        absence.statement()
     );
     assert!(
         situation
@@ -1703,19 +1706,19 @@ fn test_inv056_rejected_event_with_out_of_domain_coverage_witness_fails_certific
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .find(|cell| cell.claim_id().ends_with(":absence-certification"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
     assert_eq!(
-        absence.knowledge_state,
+        absence.knowledge_state(),
         KnowledgeState::Unknown,
         "Absence with out-of-domain CoverageWitness must remain Unknown!"
     );
     assert!(
         absence
-            .statement
+            .statement()
             .contains("does not match authorized domain"),
         "Absence statement must name domain mismatch! Statement: {}",
-        absence.statement
+        absence.statement()
     );
     assert!(
         situation
@@ -1777,24 +1780,24 @@ fn test_inv056_rejected_event_with_valid_coverage_witness_certifies_absence()
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .find(|cell| cell.claim_id().ends_with(":absence-certification"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
     assert_eq!(
-        absence.knowledge_state,
+        absence.knowledge_state(),
         KnowledgeState::Known,
         "Absence with complete continuous CoverageWitness over authorized domain and generation must be Known!"
     );
     assert_eq!(
-        absence.hypothesis,
+        absence.hypothesis(),
         Some(HypothesisDisposition::Refuted),
         "Absence hypothesis disposition must be Refuted!"
     );
     assert!(
         absence
-            .statement
+            .statement()
             .contains("Physical absence is certified across authorized domain"),
         "Absence statement must indicate certified absence! Statement: {}",
-        absence.statement
+        absence.statement()
     );
     assert!(
         situation.proof_roots.contains(&witness.witness_digest()),
@@ -1855,11 +1858,11 @@ fn test_inv056_failing_wrong_domain_witness_must_not_certify_absence() -> Result
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .find(|cell| cell.claim_id().ends_with(":absence-certification"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
 
     assert_eq!(
-        absence.knowledge_state,
+        absence.knowledge_state(),
         KnowledgeState::Unknown,
         "A witness for an unrelated domain must NOT certify absence!"
     );
@@ -2031,11 +2034,11 @@ fn test_inv056_failing_wrong_predicate_must_not_certify_person_absence()
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .find(|cell| cell.claim_id().ends_with(":absence-certification"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
 
     assert_eq!(
-        absence.knowledge_state,
+        absence.knowledge_state(),
         KnowledgeState::Unknown,
         "Witness with predicate 'no_vehicle_present' must not certify absence of unknown persons!"
     );
@@ -2085,11 +2088,11 @@ fn test_inv056_failing_stale_anchor_commit_sequence_must_not_certify_absence()
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":absence-certification"))
+        .find(|cell| cell.claim_id().ends_with(":absence-certification"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
 
     assert_eq!(
-        absence.knowledge_state,
+        absence.knowledge_state(),
         KnowledgeState::Unknown,
         "Witness with stale anchor commit sequence must not certify absence!"
     );

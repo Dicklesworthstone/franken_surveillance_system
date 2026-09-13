@@ -51,7 +51,8 @@ pub use abstraction::{
 
 pub use agent::{
     ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
-    HandoffPublishParams, KnowledgeCell, KnowledgeStateBasis, LABORATORY_PROVENANCE_MARKER,
+    HandoffPublishParams, KnowledgeCell, KnowledgeCellParams, KnowledgeStateBasis,
+    LABORATORY_PROVENANCE_MARKER,
     MissionLifecycleState, PossibleWorld, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
     ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule, SituationFrame,
     StaleBasis, UnknownReason, WorldEnvelope,

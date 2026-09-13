@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, ContentDigest, ContractError, EffectState,
-    KnowledgeCell, KnowledgeState, KnowledgeStateBasis, OperationReceipt, ProvenanceClass,
-    ReconciliationBasis,
+    KnowledgeCell, KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, OperationReceipt,
+    ProvenanceClass, ReconciliationBasis,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -238,7 +238,7 @@ fn annotate_operation_receipt(
         .frame
         .evidence_handles
         .insert(format!("fss://proof/{digest}"));
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: format!(
             "{EFFECT_CLAIM_PREFIX}{operation_id}{}",
             EffectCellKind::LocalState.claim_suffix()
@@ -248,7 +248,10 @@ fn annotate_operation_receipt(
             operation_receipt.state.as_str()
         ),
         knowledge_state,
-        provenance: ProvenanceClass::Derived,
+        // Local effect journal receipts are classified as Observed under PROV-001 because
+        // they constitute direct canonical effect evidence of local runtime state, distinguishing
+        // them from cognitive derivations and allowing effect reconciliation.
+        provenance: ProvenanceClass::Observed,
         hypothesis: None,
         evidence: vec![digest],
         contradictions: Vec::new(),
@@ -256,8 +259,7 @@ fn annotate_operation_receipt(
         state_basis: (knowledge_state == KnowledgeState::Indeterminate).then(|| {
             KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(digest))
         }),
-    }
-    .validated()?;
+    })?;
     // The caller validated the receipt against the plan (and against the published outcome, when
     // there is one), so the cell is compiled from verified material in every state. Binding it
     // also keeps an indeterminate local state from being dropped or relabeled later (fss-6sph6).
@@ -382,7 +384,7 @@ fn finalize_projection(situation: &mut ReferenceSituation) -> Result<(), Referen
         .capsule
         .frame
         .knowledge_cells
-        .sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
+        .sort_by(|left, right| left.claim_id().cmp(right.claim_id()));
     situation
         .capsule
         .affordances

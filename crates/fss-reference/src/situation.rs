@@ -6,10 +6,10 @@ use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder,
     Completeness, ContentDigest, ContractBasis, CoverageContinuity, CoverageStopReason,
     CoverageWitness, EffectState, EventKind, EventState, HandoffCapsule, HandoffId,
-    HandoffPublishParams, HypothesisDisposition, KnowledgeCell, KnowledgeState,
-    KnowledgeStateBasis, LedgerAnchor, MissionId, ObjectId, ObligationId, PossibleWorld,
-    PrincipalId, ProvenanceClass, ReconciliationBasis, SessionId, SituationCapsule, SituationFrame,
-    TimestampNs, WorldEnvelope,
+    HandoffPublishParams, HypothesisDisposition, KnowledgeCell, KnowledgeCellParams,
+    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, MissionId, ObjectId, ObligationId,
+    PossibleWorld, PrincipalId, ProvenanceClass, ReconciliationBasis, SessionId, SituationCapsule,
+    SituationFrame, TimestampNs, WorldEnvelope,
 };
 use fss_core::{EventId, OperationId};
 use fss_ledger::DurableReferenceLedger;
@@ -239,12 +239,12 @@ impl ReferenceSituation {
             operation_id.as_str(),
             kind.claim_suffix()
         );
-        if cell.claim_id != expected_claim
-            || outcome.is_some() != (cell.knowledge_state == KnowledgeState::Known)
+        if cell.claim_id() != expected_claim
+            || outcome.is_some() != (cell.knowledge_state() == KnowledgeState::Known)
         {
             return Err(ReferenceError::InvalidSpec("situation_effect_binding"));
         }
-        let claim_id = cell.claim_id.as_str();
+        let claim_id = cell.claim_id();
         cell.validate()?;
         let binding = EffectCellBinding {
             kind,
@@ -453,20 +453,20 @@ impl ReferenceSituation {
         let cells = &self.capsule.frame.knowledge_cells;
         if !cells
             .iter()
-            .all(|cell| claim_id_is_well_formed(&cell.claim_id))
+            .all(|cell| claim_id_is_well_formed(cell.claim_id()))
         {
             return Err(ReferenceError::InvalidSpec("situation_claim_id_grammar"));
         }
         if cells
             .iter()
-            .any(|cell| reserved_namespace_without_tail(&cell.claim_id))
+            .any(|cell| reserved_namespace_without_tail(cell.claim_id()))
         {
             return Err(ReferenceError::InvalidSpec(
                 "situation_reserved_claim_without_tail",
             ));
         }
         for (claim_id, binding) in &self.effect_bindings {
-            let mut matching = cells.iter().filter(|cell| &cell.claim_id == claim_id);
+            let mut matching = cells.iter().filter(|cell| cell.claim_id() == claim_id);
             let cell = matching
                 .next()
                 .ok_or(ReferenceError::InvalidSpec("situation_effect_cell_dropped"))?;
@@ -481,7 +481,7 @@ impl ReferenceSituation {
                 ));
             }
             if !cell
-                .evidence
+                .evidence()
                 .iter()
                 .all(|root| self.proof_roots.contains(root))
             {
@@ -494,19 +494,19 @@ impl ReferenceSituation {
         // indeterminate effect. A bound claim appears exactly once and matches its binding, as
         // checked above.
         for cell in cells {
-            if self.effect_bindings.contains_key(&cell.claim_id) {
+            if self.effect_bindings.contains_key(cell.claim_id()) {
                 continue;
             }
-            if cell.claim_id.starts_with(EFFECT_CLAIM_PREFIX) {
+            if cell.claim_id().starts_with(EFFECT_CLAIM_PREFIX) {
                 return Err(ReferenceError::InvalidSpec(
-                    if cell.knowledge_state == KnowledgeState::Known {
+                    if cell.knowledge_state() == KnowledgeState::Known {
                         "situation_effect_known_unbound"
                     } else {
                         "situation_effect_cell_unbound"
                     },
                 ));
             }
-            if cell.claim_id.starts_with(OBLIGATION_CLAIM_PREFIX) {
+            if cell.claim_id().starts_with(OBLIGATION_CLAIM_PREFIX) {
                 return Err(ReferenceError::InvalidSpec(
                     "situation_obligation_cell_unbound",
                 ));
@@ -644,7 +644,7 @@ pub fn compile_reference_situation(
         }
     }
 
-    let policy_cell = KnowledgeCell {
+    let policy_cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: policy_claim_id.clone(),
         statement: policy_statement(request.decision.event.state, request.decision.action)
             .to_owned(),
@@ -655,25 +655,21 @@ pub fn compile_reference_situation(
         contradictions: Vec::new(),
         valid_until: None,
         state_basis: None,
-    }
-    .validated()?;
+    })?;
     let mut knowledge_cells = vec![policy_cell];
     let physical_state =
         physical_knowledge_state(request.decision.event.state, &supporting, &contradicting);
-    knowledge_cells.push(
-        KnowledgeCell {
-            claim_id: physical_claim_id.clone(),
-            statement: physical_statement(request.decision.event.state).to_owned(),
-            knowledge_state: physical_state,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: Some(policy_hypothesis(request.decision.event.state)),
-            evidence: supporting.clone(),
-            contradictions: contradicting.clone(),
-            valid_until: None,
-            state_basis: reconciliation_basis_for(physical_state, event_revision_digest),
-        }
-        .validated()?,
-    );
+    knowledge_cells.push(KnowledgeCell::new(KnowledgeCellParams {
+        claim_id: physical_claim_id.clone(),
+        statement: physical_statement(request.decision.event.state).to_owned(),
+        knowledge_state: physical_state,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: Some(policy_hypothesis(request.decision.event.state)),
+        evidence: supporting.clone(),
+        contradictions: contradicting.clone(),
+        valid_until: None,
+        state_basis: reconciliation_basis_for(physical_state, event_revision_digest),
+    })?);
     // A tamper report is neutral for the physical claim but is evidence against sensor integrity:
     // it is surfaced as its own contradicted claim, never dropped.
     if let Some(integrity_cell) =
@@ -732,20 +728,17 @@ pub fn compile_reference_situation(
                 (
                     true,
                     None,
-                    Some(
-                        KnowledgeCell {
-                            claim_id: absence_claim_id.clone(),
-                            statement,
-                            knowledge_state: KnowledgeState::Known,
-                            provenance: ProvenanceClass::Derived,
-                            hypothesis: Some(HypothesisDisposition::Refuted),
-                            evidence: vec![event_revision_digest, witness.witness_digest()],
-                            contradictions: Vec::new(),
-                            valid_until: None,
-                            state_basis: None,
-                        }
-                        .validated()?,
-                    ),
+                    Some(KnowledgeCell::new(KnowledgeCellParams {
+                        claim_id: absence_claim_id.clone(),
+                        statement,
+                        knowledge_state: KnowledgeState::Known,
+                        provenance: ProvenanceClass::Derived,
+                        hypothesis: Some(HypothesisDisposition::Refuted),
+                        evidence: vec![event_revision_digest, witness.witness_digest()],
+                        contradictions: Vec::new(),
+                        valid_until: None,
+                        state_basis: None,
+                    })?),
                 )
             } else {
                 let reason = if !matches_generation {
@@ -805,20 +798,17 @@ pub fn compile_reference_situation(
                 (
                     false,
                     Some(reason),
-                    Some(
-                        KnowledgeCell {
-                            claim_id: absence_claim_id.clone(),
-                            statement,
-                            knowledge_state: KnowledgeState::Unknown,
-                            provenance: ProvenanceClass::Derived,
-                            hypothesis: None,
-                            evidence: vec![event_revision_digest],
-                            contradictions: Vec::new(),
-                            valid_until: None,
-                            state_basis: None,
-                        }
-                        .validated()?,
-                    ),
+                    Some(KnowledgeCell::new(KnowledgeCellParams {
+                        claim_id: absence_claim_id.clone(),
+                        statement,
+                        knowledge_state: KnowledgeState::Unknown,
+                        provenance: ProvenanceClass::Derived,
+                        hypothesis: None,
+                        evidence: vec![event_revision_digest],
+                        contradictions: Vec::new(),
+                        valid_until: None,
+                        state_basis: None,
+                    })?),
                 )
             }
         } else {
@@ -829,7 +819,7 @@ pub fn compile_reference_situation(
                 false,
                 Some(reason),
                 Some(
-                    KnowledgeCell {
+                    KnowledgeCell::new(KnowledgeCellParams {
                         claim_id: absence_claim_id.clone(),
                         statement: "Physical absence is not certified because no complete continuous CoverageWitness is present in this reference projection.".to_owned(),
                         knowledge_state: KnowledgeState::Unknown,
@@ -839,8 +829,7 @@ pub fn compile_reference_situation(
                         contradictions: Vec::new(),
                         valid_until: None,
                         state_basis: None,
-                    }
-                    .validated()?,
+                    })?,
                 ),
             )
         }
@@ -873,7 +862,7 @@ pub fn compile_reference_situation(
             ),
             _ => return Err(ReferenceError::InvalidSpec("situation_effect_state")),
         };
-        let cell = KnowledgeCell {
+        let cell = KnowledgeCell::new(KnowledgeCellParams {
             claim_id: format!(
                 "{EFFECT_CLAIM_PREFIX}{}{}",
                 operation.intent.operation_id.as_str(),
@@ -887,8 +876,7 @@ pub fn compile_reference_situation(
             contradictions: Vec::new(),
             valid_until: None,
             state_basis: reconciliation_basis_for(knowledge_state, operation.receipt_digest()),
-        }
-        .validated()?;
+        })?;
         knowledge_cells.push(cell.clone());
         // `validate_request` bound this outcome to the authority object and recomputed its root
         // from the body, so the cell is compiled from verified material (fss-6sph6).
@@ -1656,7 +1644,7 @@ fn situation_identity(
     }
     encoder.digest(worlds.envelope_digest()?);
     let mut cells = knowledge.to_vec();
-    cells.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
+    cells.sort_by(|left, right| left.claim_id().cmp(right.claim_id()));
     encoder.u64(cells.len() as u64);
     for cell in &cells {
         encoder.digest(cell.cell_digest());
@@ -1831,7 +1819,7 @@ pub(crate) fn sensor_integrity_cell(
         return Ok(None);
     }
     Ok(Some(
-        KnowledgeCell {
+        KnowledgeCell::new(KnowledgeCellParams {
             claim_id: sensor_integrity_claim_id(event_name),
             statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
             knowledge_state: KnowledgeState::Unknown,
@@ -1841,8 +1829,7 @@ pub(crate) fn sensor_integrity_cell(
             contradictions: tamper,
             valid_until: None,
             state_basis: None,
-        }
-        .validated()?,
+        })?,
     ))
 }
 

@@ -4,10 +4,10 @@ use std::error::Error;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest, ContractBasis,
     ContractBasisRegistryBytes, ContractError, Generation, HandoffId, KnowledgeCell,
-    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, MissionId, ObligationId, PrincipalId,
-    PrivacyGeneration, ProvenanceClass, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
-    RedactionMarker, RedactionReason, ResourcePressure, SessionId, SituationCapsule,
-    SituationFrame, StaleBasis, TimestampNs, WorldEnvelope,
+    KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, MissionId,
+    ObligationId, PrincipalId, PrivacyGeneration, ProvenanceClass, REDACTED_STATEMENT_MARKER,
+    ReconciliationBasis, RedactionMarker, RedactionReason, ResourcePressure, SessionId,
+    SituationCapsule, SituationFrame, StaleBasis, TimestampNs, WorldEnvelope,
 };
 
 use crate::{
@@ -81,7 +81,7 @@ pub(crate) fn situation_with_cells(
         reversible: true,
         branch_predicate: None,
     };
-    let known = KnowledgeCell {
+    let known = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:policy".to_owned(),
         statement: "Policy currently withholds an effect.".to_owned(),
         knowledge_state: KnowledgeState::Known,
@@ -91,8 +91,8 @@ pub(crate) fn situation_with_cells(
         contradictions: Vec::new(),
         valid_until: None,
         state_basis: None,
-    };
-    let conflicted = KnowledgeCell {
+    })?;
+    let conflicted = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:presence".to_owned(),
         statement: "Presence remains conflicted.".to_owned(),
         knowledge_state: KnowledgeState::Conflicted,
@@ -102,7 +102,7 @@ pub(crate) fn situation_with_cells(
         contradictions: vec![ContentDigest::sha256(b"contradiction")],
         valid_until: None,
         state_basis: None,
-    };
+    })?;
     let mut knowledge_cells = vec![known, conflicted];
     knowledge_cells.extend(extra_cells);
     let why = if long_optional_why {
@@ -287,8 +287,11 @@ fn handoff_root_covers_the_complete_publication() -> Result<(), Box<dyn Error>> 
 fn redacted_cells_never_disclose_their_statement() -> Result<(), Box<dyn Error>> {
     let secret = "SECRET-alice-is-home";
     let mut reference = situation(false)?;
-    reference.capsule.frame.knowledge_cells.push(
-        KnowledgeCell {
+    reference
+        .capsule
+        .frame
+        .knowledge_cells
+        .push(KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:resident".to_owned(),
             statement: secret.to_owned(),
             knowledge_state: KnowledgeState::Redacted,
@@ -301,9 +304,7 @@ fn redacted_cells_never_disclose_their_statement() -> Result<(), Box<dyn Error>>
                 reason: RedactionReason::PrivacyProjection,
                 privacy_generation: PrivacyGeneration::parse("privacy:projection:v7")?,
             })),
-        }
-        .validated()?,
-    );
+        })?);
 
     let projected = project_reference_situation(reference, &spec(10_000))?;
     let epistemic = projected
@@ -350,7 +351,7 @@ fn cell(
         | KnowledgeState::NotObservable
         | KnowledgeState::NotApplicable => None,
     };
-    Ok(KnowledgeCell {
+    Ok(KnowledgeCell::new(KnowledgeCellParams {
         claim_id: claim_id.to_owned(),
         statement: statement.to_owned(),
         knowledge_state,
@@ -360,8 +361,7 @@ fn cell(
         contradictions: Vec::new(),
         valid_until: None,
         state_basis,
-    }
-    .validated()?)
+    })?)
 }
 
 /// Every knowledge state, spelled out so a new variant forces this test to be revisited.
@@ -398,13 +398,13 @@ fn every_knowledge_state_cell_lands_in_an_explicit_context_item() -> Result<(), 
     );
     for cell in &cells {
         let carried = publication.context_pack.items.iter().any(|item| {
-            item.basis.contains(&cell.claim_id) && item.epistemic_state == cell.knowledge_state
+            item.basis.contains(cell.claim_id()) && item.epistemic_state == cell.knowledge_state()
         });
         assert!(
             carried,
             "{} cell {} vanished from the context pack without an omission or redundancy record",
-            cell.knowledge_state.as_str(),
-            cell.claim_id
+            cell.knowledge_state().as_str(),
+            cell.claim_id()
         );
     }
     let not_applicable = publication
@@ -476,15 +476,17 @@ fn over_budget_not_applicable_cell_is_a_receipted_hydratable_omission() -> Resul
 }
 
 #[test]
-fn duplicate_not_applicable_cells_leave_a_redundancy_record() -> Result<(), Box<dyn Error>> {
+fn duplicate_not_applicable_cells_are_deduplicated_with_redundancy_record()
+-> Result<(), Box<dyn Error>> {
     let statement = "Door-lock telemetry does not apply to this camera-only zone.";
     let first = cell(
         "claim:not-applicable:a",
         statement,
         KnowledgeState::NotApplicable,
     )?;
-    let mut second = first.clone();
-    second.claim_id = "claim:not-applicable:b".to_owned();
+    let mut params = first.to_params();
+    params.claim_id = "claim:not-applicable:b".to_owned();
+    let second = KnowledgeCell::new(params)?;
     let publication = project_reference_situation(
         situation_with_cells(false, vec![first, second])?,
         &spec(10_000),
@@ -510,7 +512,7 @@ fn duplicate_not_applicable_cells_leave_a_redundancy_record() -> Result<(), Box<
 
 /// A cell whose state names a typed basis, deliberately built without that basis.
 fn basisless_cell(knowledge_state: KnowledgeState) -> KnowledgeCell {
-    KnowledgeCell {
+    KnowledgeCell::new_unvalidated_for_test(KnowledgeCellParams {
         claim_id: format!("claim:basisless:{}", knowledge_state.as_str()),
         statement: format!(
             "A {} proposition carried without its typed basis.",
@@ -523,7 +525,7 @@ fn basisless_cell(knowledge_state: KnowledgeState) -> KnowledgeCell {
         contradictions: Vec::new(),
         valid_until: None,
         state_basis: None,
-    }
+    })
 }
 
 /// Asserts that a frame carrying `refused` is rejected with exactly `expected` by
@@ -619,7 +621,7 @@ fn assert_every_capsule_entry_point_refuses(
         for (index, output) in outputs.iter().enumerate() {
             // The output itself is never printed: on failure it would carry the withheld text.
             assert!(
-                !output.contains(refused.statement.as_str()),
+                !output.contains(refused.statement()),
                 "entry-point output #{index} disclosed the withheld statement"
             );
         }
@@ -660,7 +662,7 @@ pub(crate) fn withheld_cell(
     secret: &str,
     contradictions: Vec<ContentDigest>,
 ) -> Result<KnowledgeCell, Box<dyn Error>> {
-    Ok(KnowledgeCell {
+    Ok(KnowledgeCell::new(KnowledgeCellParams {
         claim_id: claim_id.to_owned(),
         statement: secret.to_owned(),
         knowledge_state: KnowledgeState::Redacted,
@@ -673,8 +675,7 @@ pub(crate) fn withheld_cell(
             reason: RedactionReason::PrivacyProjection,
             privacy_generation: PrivacyGeneration::parse("privacy:projection:v7")?,
         })),
-    }
-    .validated()?)
+    })?)
 }
 
 /// Projects two redacted cells (`claim:r1`, `claim:r2`) that differ only in withheld content.
@@ -778,13 +779,14 @@ fn redacted_contradiction_item_never_discloses_its_statement() -> Result<(), Box
 fn misattached_redaction_cell(
     knowledge_state: KnowledgeState,
 ) -> Result<KnowledgeCell, Box<dyn Error>> {
-    let mut cell = withheld_cell(
+    let cell = withheld_cell(
         &format!("claim:misattached:{}", knowledge_state.as_str()),
         "SECRET-misattached-redaction",
         Vec::new(),
     )?;
-    cell.knowledge_state = knowledge_state;
-    Ok(cell)
+    let mut params = cell.to_params();
+    params.knowledge_state = knowledge_state;
+    Ok(KnowledgeCell::new_unvalidated_for_test(params))
 }
 
 #[test]

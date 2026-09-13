@@ -15,7 +15,7 @@ use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
 use crate::evidence::SensorCapsule;
 use crate::ids::{PrivacyGeneration, validate_id};
 use crate::sensor_capsule::{OmissionReason, SourceCustody};
-use crate::{ContentDigest, Generation, KnowledgeCell, LedgerAnchor};
+use crate::{ContentDigest, Generation, KnowledgeCell, KnowledgeCellParams, LedgerAnchor};
 
 use super::AgentAbstractionLayer;
 
@@ -520,8 +520,7 @@ impl SourceEvidenceRecord {
                 ),
             },
         };
-
-        KnowledgeCell {
+        let params = KnowledgeCellParams {
             claim_id: self.evidence_id.clone(),
             statement,
             knowledge_state,
@@ -531,7 +530,9 @@ impl SourceEvidenceRecord {
             contradictions: vec![],
             valid_until: None,
             state_basis,
-        }
+        };
+        KnowledgeCell::new(params.clone())
+            .unwrap_or_else(|_| KnowledgeCell::new_unvalidated(params))
     }
 
     /// Serializes this record to canonical bytes.
