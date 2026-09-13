@@ -2668,6 +2668,8 @@ pub enum ContractError {
     UnknownEntryTag(u8),
     /// A transition requires retained evidence.
     EvidenceRequired,
+    /// A witnessed revision retains evidence but no edge that counts as support for it.
+    SupportingEvidenceRequired,
     /// A transition requires independent corroboration.
     CorroborationRequired,
     /// Canonical ordering is violated.
@@ -2754,6 +2756,7 @@ impl ContractError {
             Self::UnknownClockBasis(_) => "unknown_clock_basis",
             Self::UnknownEntryTag(_) => "unknown_entry_tag",
             Self::EvidenceRequired => "evidence_required",
+            Self::SupportingEvidenceRequired => "supporting_evidence_required",
             Self::CorroborationRequired => "corroboration_required",
             Self::NonCanonicalOrdering => "noncanonical_ordering",
             Self::StaleAnchor => "stale_anchor",

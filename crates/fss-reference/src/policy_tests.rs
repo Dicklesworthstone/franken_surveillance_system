@@ -1,14 +1,18 @@
 use std::error::Error;
 use std::fs;
 
-use fss_core::{CapsuleId, CaptureInterval, EventId, EventState, ProbabilityInterval, SensorId};
+use fss_core::{
+    CapsuleId, CaptureInterval, EventId, EventState, EvidenceEdgeRelation, ProbabilityInterval,
+    SensorId,
+};
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectError, ObjectLimits};
 
 use crate::{
-    DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, ReferenceError,
-    ReferenceModelObservation, ReferencePolicyAction, VirtualCameraSpec, evaluate_unknown_presence,
-    execute_mock_model, publish_reference_event, run_reference_capture,
+    DeliveryDirective, DeliveryPlan, MockModelOutcome, MockModelScript, MockModelSpec,
+    MockSemanticLabel, ReferenceError, ReferenceModelObservation, ReferencePolicyAction,
+    VirtualCameraSpec, evaluate_unknown_presence, execute_mock_model, publish_reference_event,
+    run_reference_capture,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -188,7 +192,120 @@ fn contradictory_animal_finding_forces_indeterminate_hold() -> Result<(), Box<dy
     )?;
     assert_eq!(decision.event.state, EventState::Indeterminate);
     assert_eq!(decision.action, ReferencePolicyAction::Hold);
-    assert!(decision.event.evidence.iter().any(|edge| !edge.supports));
+    assert!(
+        decision
+            .event
+            .evidence
+            .iter()
+            .any(|edge| edge.relation == EvidenceEdgeRelation::Contradicts && !edge.supports)
+    );
+
+    let _ = fs::remove_file(path);
+    Ok(())
+}
+
+/// A model observation over a capture that dropped its last packet, so an exact-delivery model
+/// abstains instead of emitting a finding.
+fn abstaining_observation(
+    objects: &mut InMemoryObjectStore,
+    ledger: &mut DurableReferenceLedger,
+) -> Result<ReferenceModelObservation, Box<dyn Error>> {
+    let spec = VirtualCameraSpec {
+        capture_id: CapsuleId::parse("capture:policy:abstain")?,
+        sensor_id: SensorId::parse("sensor:policy:abstain")?,
+        seed: 90,
+        packet_count: 3,
+        packet_bytes: 32,
+        start_ns: 90_000,
+        period_ns: 1_000_000,
+        uncertainty_ns: 1_000,
+    };
+    let lossy = DeliveryPlan::new(vec![
+        DeliveryDirective::exact(1),
+        DeliveryDirective::exact(2),
+    ])?;
+    let capture = run_reference_capture(&spec, &lossy, objects, ledger)?;
+    let model = MockModelSpec::new(
+        "mock:sensor:policy:abstain:v1",
+        MockModelScript::RequireExactDelivery {
+            label: MockSemanticLabel::PersonLike,
+            probability: ProbabilityInterval::new(0.99, 1.0)?,
+        },
+    )?;
+    let result = execute_mock_model(&model, &capture, objects)?;
+    if !matches!(result.outcome, MockModelOutcome::Abstained { .. }) {
+        return Err(format!("expected an abstention, got {:?}", result.outcome).into());
+    }
+    let first = capture
+        .source_packets
+        .first()
+        .ok_or(ReferenceError::InvalidSpec("source_packet_count"))?;
+    let last = capture
+        .source_packets
+        .last()
+        .ok_or(ReferenceError::InvalidSpec("source_packet_count"))?;
+    let interval = CaptureInterval::new(first.capture.earliest, last.capture.latest)?;
+    Ok(ReferenceModelObservation::new(
+        result,
+        "power:abstain",
+        interval,
+    )?)
+}
+
+#[test]
+fn unresolved_observations_are_neutral_edges_never_contradictions() -> Result<(), Box<dyn Error>> {
+    let path = temp_journal("neutral");
+    let _ = fs::remove_file(&path);
+    let mut objects = InMemoryObjectStore::new(ObjectLimits::new(256, 4 * 1024 * 1024));
+    let mut ledger =
+        DurableReferenceLedger::open(&path, "site:policy", IncompleteTailPolicy::Reject)?;
+    let person = capture_and_model(
+        "capture:policy:n1",
+        "sensor:policy:n1",
+        70,
+        MockSemanticLabel::PersonLike,
+        "power:n1",
+        &mut objects,
+        &mut ledger,
+    )?;
+    let unknown = capture_and_model(
+        "capture:policy:n2",
+        "sensor:policy:n2",
+        71,
+        MockSemanticLabel::Unknown,
+        "power:n2",
+        &mut objects,
+        &mut ledger,
+    )?;
+    let tamper = capture_and_model(
+        "capture:policy:n3",
+        "sensor:policy:n3",
+        72,
+        MockSemanticLabel::TamperLike,
+        "power:n3",
+        &mut objects,
+        &mut ledger,
+    )?;
+    let abstained = abstaining_observation(&mut objects, &mut ledger)?;
+
+    let decision = evaluate_unknown_presence(
+        EventId::parse("event:unknown-person:neutral")?,
+        vec![person, unknown, tamper, abstained],
+    )?;
+    // Unresolved observations hold the event indeterminate; none of them counts against it.
+    assert_eq!(decision.event.state, EventState::Indeterminate);
+    assert_eq!(decision.action, ReferencePolicyAction::Hold);
+    decision.event.verify()?;
+    let analysis = decision.event.analyze_corroboration();
+    assert_eq!(analysis.supporting_count, 1);
+    assert_eq!(analysis.contradicting_count, 0);
+    let neutral = decision
+        .event
+        .evidence
+        .iter()
+        .filter(|edge| edge.relation == EvidenceEdgeRelation::DerivedFrom && !edge.supports)
+        .count();
+    assert_eq!(neutral, 3);
 
     let _ = fs::remove_file(path);
     Ok(())

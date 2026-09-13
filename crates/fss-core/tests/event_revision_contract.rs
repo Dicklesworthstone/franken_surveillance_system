@@ -927,7 +927,7 @@ fn test_failing_evidence_graph_accepts_supersession_cycle() -> Result<(), Box<dy
         digest: d1,
         class: EvidenceClass::Derived,
         failure_domain: "domain:test".to_string(),
-        supports: true,
+        supports: false,
         relation: EvidenceEdgeRelation::Supersedes,
         capsule_digest: None,
         identity_digest: None,
@@ -936,7 +936,7 @@ fn test_failing_evidence_graph_accepts_supersession_cycle() -> Result<(), Box<dy
         digest: d2,
         class: EvidenceClass::Derived,
         failure_domain: "domain:test".to_string(),
-        supports: true,
+        supports: false,
         relation: EvidenceEdgeRelation::Supersedes,
         capsule_digest: None,
         identity_digest: None,
@@ -1195,7 +1195,7 @@ fn test_graph_edge_individual_digest_validation() -> Result<(), Box<dyn Error>> 
         digest: graph.root_digest, // targets self
         class: EvidenceClass::Derived,
         failure_domain: "domain:test".to_string(),
-        supports: true,
+        supports: false,
         relation: EvidenceEdgeRelation::Supersedes,
         capsule_digest: None,
         identity_digest: None,
@@ -1224,14 +1224,21 @@ fn test_witnessed_requires_a_supporting_edge() -> Result<(), Box<dyn Error>> {
         sample_evidence("cam-east-1", false),
         sample_evidence("cam-west-1", false),
     ];
-    assert_eq!(event.validate(), Err(ContractError::EvidenceRequired));
+    assert_eq!(
+        event.validate(),
+        Err(ContractError::SupportingEvidenceRequired)
+    );
     let Err(err) = event.verify() else {
         return Err("expected error".into());
     };
     assert!(matches!(
         err,
-        EventDecodeError::Contract(ContractError::EvidenceRequired)
+        EventDecodeError::Contract(ContractError::SupportingEvidenceRequired)
     ));
+
+    // No evidence at all is a different cause and keeps its own variant.
+    event.evidence = Vec::new();
+    assert_eq!(event.validate(), Err(ContractError::EvidenceRequired));
 
     // Positive case: one supporting edge alongside a contradicting one is a valid witness.
     event.evidence = vec![
@@ -1239,5 +1246,90 @@ fn test_witnessed_requires_a_supporting_edge() -> Result<(), Box<dyn Error>> {
         sample_evidence("cam-west-1", false),
     ];
     event.verify()?;
+    Ok(())
+}
+
+#[test]
+fn test_supports_flag_must_agree_with_relation_for_every_variant() -> Result<(), Box<dyn Error>> {
+    let relations: Vec<EvidenceEdgeRelation> = (0..=u8::MAX)
+        .filter_map(|tag| EvidenceEdgeRelation::from_u8(tag).ok())
+        .collect();
+    if relations.len() != 8 {
+        return Err(format!("expected 8 edge relations, found {}", relations.len()).into());
+    }
+    for relation in relations {
+        // Only `Supports` may be flagged supporting; every other relation must be supports=false.
+        let admissible_flag = relation == EvidenceEdgeRelation::Supports;
+        for supports in [true, false] {
+            let mut edge = sample_evidence("cam-east-1", supports);
+            edge.relation = relation;
+            let verdict = edge.verify();
+            if supports == admissible_flag {
+                verdict?;
+                assert_eq!(
+                    edge.counts_as_support(),
+                    relation == EvidenceEdgeRelation::Supports,
+                    "{relation:?}"
+                );
+                assert_eq!(
+                    edge.counts_as_contradiction(),
+                    relation == EvidenceEdgeRelation::Contradicts,
+                    "{relation:?}"
+                );
+            } else {
+                assert!(
+                    matches!(
+                        verdict,
+                        Err(EventDecodeError::Contradiction {
+                            field: "evidence.supports",
+                            ..
+                        })
+                    ),
+                    "{relation:?} with supports={supports}: {verdict:?}"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_neutral_relations_neither_witness_nor_contradict() -> Result<(), Box<dyn Error>> {
+    let mut event = sample_genesis_event()?;
+    event.state = EventState::Witnessed;
+    for relation in [
+        EvidenceEdgeRelation::Invalidates,
+        EvidenceEdgeRelation::Explains,
+        EvidenceEdgeRelation::DerivedFrom,
+    ] {
+        // The reviewer's probe: a neutral relation flagged supporting is refused outright.
+        let mut edge = sample_evidence("cam-east-1", true);
+        edge.relation = relation;
+        event.evidence = vec![edge.clone()];
+        assert!(
+            matches!(
+                event.verify(),
+                Err(EventDecodeError::Contradiction {
+                    field: "evidence.supports",
+                    ..
+                })
+            ),
+            "{relation:?}"
+        );
+        // Correctly flagged it is neutral: it cannot witness the candidate on its own...
+        edge.supports = false;
+        event.evidence = vec![edge.clone()];
+        assert_eq!(
+            event.validate(),
+            Err(ContractError::SupportingEvidenceRequired),
+            "{relation:?}"
+        );
+        // ...and beside real support it is counted as neither support nor contradiction.
+        event.evidence = vec![sample_evidence("cam-west-1", true), edge];
+        event.verify()?;
+        let analysis = event.analyze_corroboration();
+        assert_eq!(analysis.supporting_count, 1, "{relation:?}");
+        assert_eq!(analysis.contradicting_count, 0, "{relation:?}");
+    }
     Ok(())
 }

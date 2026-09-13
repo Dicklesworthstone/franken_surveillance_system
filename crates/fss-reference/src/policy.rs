@@ -120,7 +120,7 @@ pub fn evaluate_unknown_presence(
             latest = observation.interval.latest;
         }
 
-        let supports = match &observation.result.outcome {
+        let relation = match &observation.result.outcome {
             MockModelOutcome::Finding {
                 label: MockSemanticLabel::PersonLike,
                 ..
@@ -128,34 +128,34 @@ pub fn evaluate_unknown_presence(
                 support_domains.insert(observation.failure_domain.clone());
                 support_capture_roots.insert(observation.result.input_capture_root);
                 support_sensors.insert(observation.result.sensor_id.clone());
-                true
+                EvidenceEdgeRelation::Supports
             }
+            // A benign alternative explanation is evidence against unknown-person presence.
             MockModelOutcome::Finding {
                 label: MockSemanticLabel::AnimalLike,
                 ..
             } => {
                 contradictory += 1;
-                false
+                EvidenceEdgeRelation::Contradicts
             }
+            // Unknown and abstention say nothing about presence, and TamperLike is a separate
+            // sensor-integrity risk (tampering can hide a person, not refute one): each is retained
+            // as a neutral derivation edge that holds the event unresolved without contradicting it.
             MockModelOutcome::Finding {
                 label: MockSemanticLabel::TamperLike | MockSemanticLabel::Unknown,
                 ..
             }
             | MockModelOutcome::Abstained { .. } => {
                 unresolved += 1;
-                false
+                EvidenceEdgeRelation::DerivedFrom
             }
         };
         evidence.push(EventEvidence {
             digest: result_digest,
             class: EvidenceClass::Derived,
             failure_domain: observation.failure_domain.clone(),
-            supports,
-            relation: if supports {
-                EvidenceEdgeRelation::Supports
-            } else {
-                EvidenceEdgeRelation::Contradicts
-            },
+            supports: relation.required_supports_flag(),
+            relation,
             capsule_digest: None,
             identity_digest: None,
         });
