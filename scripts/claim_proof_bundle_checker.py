@@ -447,24 +447,33 @@ SLO_MAX_AGE_RANGE_DAYS = (1, 36500)
 # A positive SLO target grammar (review S1), the tightest that accepts every live
 # registries/SLOS.md target; tests pin that every live target parses. Tokens are whitespace-
 # separated and compared exactly:
-#   TARGET  := [STATISTIC] SUBJECT* CLAUSE ("and" CLAUSE)* CONTEXT*
+#   TARGET  := [STATISTIC] SUBJECT-PHRASE CLAUSE ("and" CLAUSE)* CONTEXT-PHRASE
 #   CLAUSE  := COMPARATOR NUMBER UNIT        (UNIT: slo_validate.REGISTERED_UNITS; '%' may be glued)
 # A target with no comparator character declares no threshold. Anything else is unbound.
 SLO_TARGET_STATISTICS: frozenset[str] = frozenset({"p50", "p90", "p95", "p99", "p99.9"})
 SLO_TARGET_COMPARATORS: dict[str, str] = {"≤": "<=", "<": "<", "≥": ">=", ">": ">"}
-SLO_TARGET_SUBJECT_WORDS: frozenset[str] = frozenset({
-    "glass-to-glass", "live-proxy", "latency", "first", "event", "hypothesis", "alert", "dispatch",
-    "bounded", "event-status", "query", "initial", "agent", "answer", "cold", "mission",
-    "orientation", "reaches", "a", "useful", "`SituationCapsule`", "SituationCapsule", "in",
-    "material", "committed", "delta", "available", "to", "subscribed", "local",
+SLO_TARGET_SUBJECT_PHRASES: frozenset[tuple[str, ...]] = frozenset({
+    (),
+    ("glass-to-glass", "live-proxy", "latency"),
+    ("first", "event", "hypothesis"),
+    ("alert", "dispatch"),
+    ("bounded", "event-status", "query"),
+    ("initial", "agent", "answer"),
+    ("cold", "mission", "orientation", "reaches", "a", "useful", "`SituationCapsule`", "in"),
+    ("cold", "mission", "orientation", "reaches", "a", "useful", "SituationCapsule", "in"),
+    ("material", "committed", "delta", "available", "to", "a", "subscribed", "local", "agent"),
 })
-SLO_TARGET_CONTEXT_WORDS: frozenset[str] = frozenset({
-    "on", "LAN", "after", "first", "observable", "threat", "evidence", "policy", "corroboration",
-    "without", "model", "refinement", ",", "resumable", "qualified", "observation-window",
-    "continuity", "for", "wired/reference", "sensors",
+SLO_TARGET_CONTEXT_PHRASES: frozenset[tuple[str, ...]] = frozenset({
+    (),
+    ("on", "LAN"),
+    ("after", "first", "observable", "threat", "evidence"),
+    ("after", "policy", "corroboration"),
+    ("without", "model", "refinement"),
+    (",", "refinement", "resumable"),
+    ("qualified", "observation-window", "continuity", "for", "wired/reference", "sensors"),
 })
 SLO_TARGET_COMPARATOR_CHARS = frozenset("≤≥<>=")
-_SLO_TARGET_NUMBER_RE = re.compile(r"(\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?")
+_SLO_TARGET_NUMBER_RE = re.compile(r"(?:0|[1-9]\d{0,2}(?:,\d{3})+|[1-9]\d*)(?:\.\d+)?")  # no leading zeros
 # slo_validate findings that make the SLO target definitions themselves untrustworthy.
 SLO_STRUCTURAL_CODES: frozenset[str] = frozenset({
     slo_validate.CODE_INVALID_SLO_ID,
@@ -1088,7 +1097,7 @@ def load_operation_cost_registry(root: Path) -> tuple[CostRegistry | None, list[
         return None, findings
     try:
         data = tomllib.loads(text)
-    except (ValueError, OverflowError) as exc:  # TOMLDecodeError, or an integer beyond the digit limit
+    except (ValueError, OverflowError, RecursionError) as exc:  # TOMLDecodeError, a digit-limit integer, or nesting too deep
         return None, _registry_invalid(OPERATION_COST_REGISTRY_FILE, f"Registry '{OPERATION_COST_REGISTRY_FILE}' is not valid TOML: {exc}")
     generation = _nonempty_str(data.get("generation"))
     if generation is None:
@@ -1184,8 +1193,10 @@ def load_slo_registry(root: Path) -> tuple[dict[str, slo_validate.SloRow], list[
 
 
 def _slo_target_tokens(target: str) -> list[str]:
+    """Tokens separated by ASCII spaces only (a non-breaking space never separates), with a
+    trailing comma split off its token."""
     tokens: list[str] = []
-    for token in target.split():
+    for token in (t for t in target.strip(" ").split(" ") if t):
         if len(token) > 1 and token.endswith(","):
             tokens.extend([token[:-1], ","])
         else:
@@ -1194,21 +1205,23 @@ def _slo_target_tokens(target: str) -> list[str]:
 
 
 def _parse_slo_target(target: str) -> tuple[list[SloThreshold], str | None]:
-    """Reads an SLO target cell with the positive grammar above. Returns (thresholds, None), or
-    ([], reason) when the target contains a comparator but is not a sentence of the grammar."""
+    """Reads an SLO target cell with the positional grammar above: the words before the first
+    comparator must be one subject phrase and the words after the last clause one context phrase,
+    exactly as in the live targets. Returns (thresholds, None), or ([], reason) when the target
+    contains a comparator but is not a sentence of the grammar."""
     if not any(ch in SLO_TARGET_COMPARATOR_CHARS for ch in target):
         return [], None
     tokens = _slo_target_tokens(target)
     units = sorted(slo_validate.REGISTERED_UNITS, key=lambda u: -len(u.split()))
-    n, pos = len(tokens), 0
-    if pos < n and tokens[pos] in SLO_TARGET_STATISTICS:
-        pos += 1
-    while pos < n and tokens[pos] not in SLO_TARGET_COMPARATORS:
-        if tokens[pos] not in SLO_TARGET_SUBJECT_WORDS:
-            return [], f"'{tokens[pos][:24]}' is not a subject word of the SLO target grammar"
-        pos += 1
-    if pos == n:
+    n = len(tokens)
+    pos = 1 if tokens and tokens[0] in SLO_TARGET_STATISTICS else 0
+    first = next((k for k in range(pos, n) if tokens[k] in SLO_TARGET_COMPARATORS), None)
+    if first is None:
         return [], "no comparator stands alone as a token"
+    subject = tuple(tokens[pos:first])
+    if subject not in SLO_TARGET_SUBJECT_PHRASES:
+        return [], f"{' '.join(subject)[:60]!r} is not a subject phrase of the SLO target grammar"
+    pos = first
     thresholds: list[SloThreshold] = []
     while True:
         comparator = SLO_TARGET_COMPARATORS[tokens[pos]]
@@ -1237,9 +1250,9 @@ def _parse_slo_target(target: str) -> tuple[list[SloThreshold], str | None]:
             pos += 1
             continue
         break
-    for token in tokens[pos:]:
-        if token not in SLO_TARGET_CONTEXT_WORDS:
-            return [], f"'{token[:24]}' is not a context word of the SLO target grammar"
+    context = tuple(tokens[pos:])
+    if context not in SLO_TARGET_CONTEXT_PHRASES:
+        return [], f"{' '.join(context)[:60]!r} is not a context phrase of the SLO target grammar"
     return thresholds, None
 
 
@@ -1381,6 +1394,65 @@ def _check_slo_window(
         ))
 
 
+def _slo_row_thresholds(
+    claim_id: str,
+    slo_rows: dict[str, slo_validate.SloRow],
+    path_str: str,
+    loc: str,
+    params: dict[str, Any],
+    findings: list[ClaimFinding],
+) -> tuple[list[SloThreshold] | None, str]:
+    """Every conjunct (threshold) of the authoritative SLO row's target, with the target text."""
+    def unbound(message: str) -> None:
+        findings.append(_finding(ERR_SLO_TARGET_UNBOUND, path_str, f"{loc}.target", message, params))
+
+    row = slo_rows.get(claim_id)
+    if row is None:
+        unbound(f"Claim '{claim_id}' is not a row of {SLO_REGISTRY_FILE}; its target cannot be resolved")
+        return None, ""
+    if row.is_tombstone:
+        unbound(f"SLO '{claim_id}' is tombstoned; it has no active target")
+        return None, ""
+    thresholds, defect = _parse_slo_target(row.target)
+    if defect is not None:
+        unbound(f"SLO '{claim_id}' target '{row.target[:120]}' is outside the SLO target grammar: {defect}")
+        return None, ""
+    if thresholds and not slo_validate.validate_target_units(row.target, False):
+        thresholds = []
+    if not thresholds:
+        unbound(f"SLO '{claim_id}' target '{row.target}' declares no numeric threshold a measurement can establish")
+        return None, ""
+    return thresholds, row.target
+
+
+def _match_measurement_threshold(
+    thresholds: list[SloThreshold],
+    row_target: str,
+    claim_id: str,
+    meas: dict[str, Any],
+    path_str: str,
+    loc: str,
+    params: dict[str, Any],
+    findings: list[ClaimFinding],
+) -> int | None:
+    """The index of the one conjunct measured in the measurement's exact unit."""
+    def unbound(message: str) -> None:
+        findings.append(_finding(ERR_SLO_TARGET_UNBOUND, path_str, f"{loc}.target", message, params))
+
+    unit = _exact_text(meas.get("unit"))
+    if unit is None:
+        unbound(f"Measurement declares no exact unit (got {meas.get('unit')!r}); SLO '{claim_id}' thresholds are in {sorted({t.unit for t in thresholds})}")
+        return None
+    matching = [k for k, t in enumerate(thresholds) if t.unit == unit]
+    if len(matching) != 1:
+        unbound(
+            f"Measurement unit '{unit}' selects {len(matching)} thresholds of SLO '{claim_id}' target "
+            f"'{row_target}' (units {sorted({t.unit for t in thresholds})}); units are never converted"
+        )
+        return None
+    return matching[0]
+
+
 def _resolve_slo_threshold(
     claim_id: str,
     slo_rows: dict[str, slo_validate.SloRow],
@@ -1390,38 +1462,26 @@ def _resolve_slo_threshold(
     params: dict[str, Any],
     findings: list[ClaimFinding],
 ) -> SloThreshold | None:
-    """The single threshold of the authoritative SLO row measured in the measurement's unit."""
-    def unbound(message: str) -> None:
-        findings.append(_finding(ERR_SLO_TARGET_UNBOUND, path_str, f"{loc}.target", message, params))
-
-    row = slo_rows.get(claim_id)
-    if row is None:
-        unbound(f"Claim '{claim_id}' is not a row of {SLO_REGISTRY_FILE}; its target cannot be resolved")
-        return None
-    if row.is_tombstone:
-        unbound(f"SLO '{claim_id}' is tombstoned; it has no active target")
-        return None
-    thresholds, defect = _parse_slo_target(row.target)
-    if defect is not None:
-        unbound(f"SLO '{claim_id}' target '{row.target[:120]}' is outside the SLO target grammar: {defect}")
-        return None
-    if thresholds and not slo_validate.validate_target_units(row.target, False):
-        thresholds = []
+    """The one conjunct of the SLO row measured in the measurement's unit. A conjunctive target
+    needs one measurement per conjunct; _verify_slo_claim_evidence enforces that."""
+    thresholds, row_target = _slo_row_thresholds(claim_id, slo_rows, path_str, loc, params, findings)
     if not thresholds:
-        unbound(f"SLO '{claim_id}' target '{row.target}' declares no numeric threshold a measurement can establish")
         return None
-    unit = _exact_text(meas.get("unit"))
-    if unit is None:
-        unbound(f"Measurement declares no exact unit (got {meas.get('unit')!r}); SLO '{claim_id}' thresholds are in {sorted({t.unit for t in thresholds})}")
-        return None
-    matching = [t for t in thresholds if t.unit == unit]
-    if len(matching) != 1:
-        unbound(
-            f"Measurement unit '{unit}' selects {len(matching)} thresholds of SLO '{claim_id}' target "
-            f"'{row.target}' (units {sorted({t.unit for t in thresholds})}); units are never converted"
-        )
-        return None
-    return matching[0]
+    index = _match_measurement_threshold(thresholds, row_target, claim_id, meas, path_str, loc, params, findings)
+    return thresholds[index] if index is not None else None
+
+
+def _open_document_entry(root: Path, entry: dict[str, Any], role: str, schema: str) -> tuple[dict[str, Any] | None, str]:
+    """Opens one retained artifact entry as a JSON document of this schema."""
+    raw, reason = _open_retained_file(root, _artifact_locator(entry), entry.get("digest"))
+    if raw is None:
+        return None, f"'{role}' artifact {reason}"
+    doc = _json_object(raw)
+    if doc is None:
+        return None, f"'{role}' artifact is not a JSON object"
+    if doc.get("schema") != schema:
+        return None, f"'{role}' artifact schema {doc.get('schema')!r} is not '{schema}'"
+    return doc, ""
 
 
 def _slo_freshness_bound(
@@ -1470,9 +1530,10 @@ def _verify_slo_claim_evidence(
 
     - the SLO registry (via slo_validate.parse_slos) and operation-cost registry, fail-closed;
     - one retained, digest-bound fss.environment_manifest.v1 the measurement is bound to;
-    - one retained, digest-bound fss.slo_measurement.v1 with status 'passed', bound to the
-      claim's SLO id, a registered operation associated with that SLO, the bundle generation,
-      and the operation-cost registry generation;
+    - one retained, digest-bound fss.slo_measurement.v1 per conjunct of the SLO target (a
+      conjunctive target needs every conjunct measured, each exactly once), each with status
+      'passed', bound to the claim's SLO id, a registered operation associated with that SLO, the
+      bundle generation, and the operation-cost registry generation;
     - a real validity window (ISO-8601, ordered, not future, not older than the operation-cost row's
       measurement_max_age_days; an unset bound fails closed)
       evaluated against the injected ``now``;
@@ -1514,12 +1575,75 @@ def _verify_slo_claim_evidence(
     else:
         env_digest = str(_role_artifacts(bundle_data, "environment_manifest")[0]["digest"]).strip().lower()
 
-    meas, meas_reason = _open_role_document(bundle_data, root, "measurement_artifact", SLO_MEASUREMENT_SCHEMA)
-    if meas is None:
+    entries = _role_artifacts(bundle_data, "measurement_artifact")
+    if not entries:
         findings.append(_finding(ERR_CLAIM_LEVEL_EXCEEDED, path_str, "artifacts",
-                                 f"SLO claim requires a retained measurement: {meas_reason}", params))
+                                 "SLO claim requires a retained measurement: requires at least one retained "
+                                 "'measurement_artifact' artifact, found 0", params))
         return
-    loc = f"artifact[{_artifact_locator(_role_artifacts(bundle_data, 'measurement_artifact')[0])}]"
+    measurements: list[tuple[str, dict[str, Any]]] = []
+    for entry in entries:
+        doc, reason = _open_document_entry(root, entry, "measurement_artifact", SLO_MEASUREMENT_SCHEMA)
+        if doc is None:
+            findings.append(_finding(ERR_CLAIM_LEVEL_EXCEEDED, path_str, "artifacts",
+                                     f"SLO claim requires a retained measurement: {reason}", params))
+            continue
+        measurements.append((f"artifact[{_artifact_locator(entry)}]", doc))
+    if not measurements:
+        return
+
+    # Target and comparator come only from the authoritative SLO row; a conjunctive target needs
+    # exactly one measurement per conjunct (review round 3).
+    thresholds: list[SloThreshold] | None = None
+    row_target = ""
+    if not slo_registry_findings:
+        thresholds, row_target = _slo_row_thresholds(claim_id, slo_rows, path_str, measurements[0][0], params, findings)
+    max_age: timedelta | None = None
+    if cost_registry is not None:
+        max_age = _slo_freshness_bound(cost_registry, claim_id, path_str, measurements[0][0], params, findings)
+    measured: dict[int, list[str]] = {}
+    for loc, meas in measurements:
+        index = None
+        if thresholds:
+            index = _match_measurement_threshold(thresholds, row_target, claim_id, meas, path_str, loc, params, findings)
+            if index is not None:
+                measured.setdefault(index, []).append(loc)
+        _verify_slo_measurement(
+            meas, loc, thresholds[index] if index is not None else None, claim_id, params, path_str,
+            cost_registry, bundle_generation, env_digest, max_age, now, findings,
+        )
+    for index, threshold in enumerate(thresholds or []):
+        conjunct = f"'{threshold.comparator} {threshold.value} {threshold.unit}'"
+        locs = measured.get(index, [])
+        if not locs:
+            findings.append(_finding(
+                ERR_SLO_TARGET_UNBOUND, path_str, "artifacts",
+                f"Conjunct {conjunct} of SLO '{claim_id}' has no measurement; every conjunct of the target needs its own",
+                {**params, "conjunct": conjunct},
+            ))
+        elif len(locs) > 1:
+            findings.append(_finding(
+                ERR_SLO_TARGET_UNBOUND, path_str, "artifacts",
+                f"Conjunct {conjunct} of SLO '{claim_id}' is measured {len(locs)} times ({locs}); exactly one measurement per conjunct",
+                {**params, "conjunct": conjunct},
+            ))
+
+
+def _verify_slo_measurement(
+    meas: dict[str, Any],
+    loc: str,
+    threshold: SloThreshold | None,
+    claim_id: str,
+    params: dict[str, Any],
+    path_str: str,
+    cost_registry: CostRegistry | None,
+    bundle_generation: str | None,
+    env_digest: str | None,
+    max_age: timedelta | None,
+    now: datetime,
+    findings: list[ClaimFinding],
+) -> None:
+    """Checks one retained measurement against the conjunct (threshold) it measures."""
     if _scan_nan_inf_negative({k: v for k, v in meas.items() if k != "actual"}, path_str, loc, findings):
         return  # the actual itself is judged below, as ERR-CLAIM-SLO-ACTUAL-INVALID-001
 
@@ -1537,7 +1661,6 @@ def _verify_slo_claim_evidence(
                                  f"Measurement binds SLO '{meas_slo}', expected '{claim_id}'",
                                  {**params, "bound_slo": meas_slo}))
     meas_op = _nonempty_str(meas.get("operation_id"))
-    op_row: dict[str, Any] | None = None
     if meas_op is None:
         findings.append(_finding(ERR_CLAIM_BINDING_MISMATCH, path_str, f"{loc}.operation_id",
                                  "Measurement names no 'operation_id' from the operation-cost registry", params))
@@ -1580,15 +1703,8 @@ def _verify_slo_claim_evidence(
                                  f"Measurement binds environment manifest '{bound_env}', not the retained '{env_digest}'",
                                  params))
 
-    max_age: timedelta | None = None
-    if cost_registry is not None:
-        max_age = _slo_freshness_bound(cost_registry, claim_id, path_str, loc, params, findings)
     _check_slo_window(meas, now, max_age, path_str, loc, params, findings)
 
-    # Target and comparator come only from the authoritative SLO row.
-    threshold = None
-    if not slo_registry_findings:
-        threshold = _resolve_slo_threshold(claim_id, slo_rows, meas, path_str, loc, params, findings)
     target_aliases = sorted(k for k in meas if k != "target" and k.lower().startswith("target"))
     if target_aliases:
         findings.append(_finding(ERR_SLO_TARGET_UNBOUND, path_str, f"{loc}.target",
