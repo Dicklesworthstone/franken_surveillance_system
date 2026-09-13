@@ -342,6 +342,13 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
         trigger="dependency class row has no active consumer in repository",
         remediation="verify dependency class usage or record explicit consumer drift",
     ),
+    "DEP-AUD-045": DiagnosticDef(
+        code="DEP-AUD-045",
+        severity="warning",
+        owner="security-policy",
+        trigger="fundamental crate is pending owner decision fss-ndxis",
+        remediation="keep crate quarantined until user decision fss-ndxis is resolved; never admit as production authority",
+    ),
 }
 
 
@@ -1951,25 +1958,38 @@ def classify_dependency_package(
     policy: dict[str, Any],
     member_names: set[str],
     is_production: bool = True,
+    admitted_in_house: set[str] | None = None,
 ) -> tuple[str | None, str | None, str | None]:
     """Classifies a package into exactly one DEP class.
 
     Returns (dep_class_id, violation_code, reason).
     """
     in_house_patterns = list(policy.get("in_house", {}).get("allowed_families", []))
-    fundamental_crates = set(policy.get("fundamental", {}).get("allowed_subject_to_audit", ["serde", "serde_json"]))
+    fundamental_crates = set(policy.get("fundamental", {}).get("allowed_subject_to_audit", []))
     lab_oracles = set(policy.get("laboratory_oracles", {}).get("excluded_from_production_release_closure", []))
     lab_oracle_crates = lab_oracles | {"opencv", "ffmpeg-next", "ffmpeg", "ffprobe", "ort", "tch", "onnxruntime", "pytorch", "networkx"}
     exception_candidates = set(policy.get("exception_candidates", {}).get("not_admitted_without_dep_record_adr_and_release_evidence", []))
     forbidden_crates = set(policy.get("forbidden", {}).get("crates", []))
 
-    # 1. DEP-OWNED-001: Owned runtime and Franken-suite families
-    if package_name in member_names or any(fnmatch.fnmatchcase(package_name, pat) for pat in in_house_patterns):
-        return "DEP-OWNED-001", None, None
+    # Forbidden crates are NEVER exception candidates!
+    if package_name in forbidden_crates:
+        if is_production:
+            return None, "DEP-AUD-030", f"forbidden package is reachable: {package_name}"
+        return None, "DEP-AUD-043", f"forbidden package '{package_name}' cannot be admitted into any dependency class"
 
-    # 2. DEP-FUND-001: serde / serde_json
-    if package_name in fundamental_crates:
-        return "DEP-FUND-001", None, None
+    # 1. DEP-OWNED-001: Owned runtime and Franken-suite families
+    # Exclude workspace members themselves from being categorized as external packages
+    if package_name not in member_names:
+        matches_family = any(fnmatch.fnmatchcase(package_name, pat) for pat in in_house_patterns)
+        if matches_family:
+            # Per-mechanism import gate verification:
+            if admitted_in_house is not None and package_name not in admitted_in_house and not any(fnmatch.fnmatchcase(package_name, pat) for pat in ("asupersync*", "frankensqlite*", "frankenfs*")):
+                return None, "DEP-AUD-043", f"in-house family package '{package_name}' lacks per-mechanism import gate in architecture/franken_imports.json"
+            return "DEP-OWNED-001", None, None
+
+    # 2. DEP-FUND-001: serde / serde_json - NEUTRAL pending fss-ndxis
+    if package_name in fundamental_crates or package_name in ("serde", "serde_json"):
+        return "DEP-FUND-001", "DEP-AUD-045", f"fundamental crate '{package_name}' (DEP-FUND-001) is pending owner decision fss-ndxis; quarantined"
 
     # 3. DEP-LAB-001: Pinned codec/model/vendor/reference executables
     if package_name in lab_oracle_crates:
@@ -1984,10 +2004,14 @@ def classify_dependency_package(
         return "DEP-ORACLE-001", None, None
 
     # 5. DEP-EXCEPTION-001: Any other external crate
-    if package_name in exception_candidates or package_name in forbidden_crates:
+    if package_name in exception_candidates:
         if is_production:
             return "DEP-EXCEPTION-001", "DEP-AUD-043", f"unadmitted exception candidate package '{package_name}' (DEP-EXCEPTION-001) lacks approved DEP record and ADR"
         return "DEP-EXCEPTION-001", None, None
+
+    # Skip workspace members themselves from unclassified external check
+    if package_name in member_names:
+        return "DEP-OWNED-001", None, None
 
     # Unclassified external crate
     return None, "DEP-AUD-042", f"package '{package_name}' does not map to any recognized dependency constitution class"
@@ -1999,19 +2023,45 @@ def audit_dependency_classes(
     policy: dict[str, Any],
     member_names: set[str],
     resolved: list[dict[str, Any]],
+    direct: list[dict[str, Any]] | None = None,
     warn_unconsumed: bool = False,
 ) -> dict[str, Any]:
     """Classifies every Cargo.lock / resolved package into exactly one DEP class and computes consumer census."""
     all_package_names: set[str] = {str(row.get("name", "")) for row in resolved if row.get("name")}
     lock_file = root / "Cargo.lock"
-    if lock_file.is_file():
+    if not lock_file.is_file():
+        add(findings, "error", "DEP-AUD-010", "Cargo.lock", "Cargo.lock is missing", root=root)
+        return {"census": {}, "unconsumed": []}
+    try:
+        lock_data = load_toml(lock_file)
+        for pkg in lock_data.get("package", []):
+            if isinstance(pkg, dict) and pkg.get("name"):
+                all_package_names.add(str(pkg["name"]))
+    except Exception as exc:
+        add(findings, "error", "DEP-AUD-010", "Cargo.lock", f"Cargo.lock is corrupt or invalid: {exc}", root=root)
+        return {"census": {}, "unconsumed": []}
+
+    admitted_in_house: set[str] = set()
+    imports_file = root / "architecture/franken_imports.json"
+    if imports_file.is_file():
         try:
-            lock_data = load_toml(lock_file)
-            for pkg in lock_data.get("package", []):
-                if isinstance(pkg, dict) and pkg.get("name"):
-                    all_package_names.add(str(pkg["name"]))
+            imp_data = json.loads(imports_file.read_text(encoding="utf-8"))
+            for imp in imp_data.get("imports", []):
+                if isinstance(imp, dict) and imp.get("project"):
+                    admitted_in_house.add(str(imp["project"]))
         except Exception:
             pass
+
+    production_deps: set[str] = set()
+    dev_only_deps: set[str] = set()
+    if direct is not None:
+        for dep in direct:
+            d_name = dep.get("name")
+            d_sec = dep.get("section")
+            if d_sec in ("dependencies", "build-dependencies"):
+                production_deps.add(d_name)
+            elif d_sec == "dev-dependencies":
+                dev_only_deps.add(d_name)
 
     classified: dict[str, list[str]] = {
         "DEP-OWNED-001": [],
@@ -2021,8 +2071,34 @@ def audit_dependency_classes(
         "DEP-EXCEPTION-001": [],
     }
 
+    class_consumers: dict[str, set[str]] = {
+        "DEP-OWNED-001": set(),
+        "DEP-FUND-001": set(),
+        "DEP-LAB-001": set(),
+        "DEP-ORACLE-001": set(),
+        "DEP-EXCEPTION-001": set(),
+    }
+
+    if direct is not None:
+        for dep in direct:
+            d_name = dep.get("name")
+            consumer = dep.get("manifest")
+            c_id, _, _ = classify_dependency_package(d_name, policy, member_names, is_production=True, admitted_in_house=admitted_in_house)
+            if c_id and consumer:
+                class_consumers[c_id].add(consumer)
+
     for pkg_name in sorted(all_package_names):
-        dep_id, code, reason = classify_dependency_package(pkg_name, policy, member_names, is_production=True)
+        if pkg_name in member_names:
+            continue
+
+        if direct is not None and pkg_name in dev_only_deps and pkg_name not in production_deps:
+            is_prod = False
+        else:
+            is_prod = True
+
+        dep_id, code, reason = classify_dependency_package(
+            pkg_name, policy, member_names, is_production=is_prod, admitted_in_house=admitted_in_house
+        )
         if dep_id is not None:
             classified[dep_id].append(pkg_name)
         if code == "DEP-AUD-042":
@@ -2045,6 +2121,26 @@ def audit_dependency_classes(
                 root=root,
                 params={"package": pkg_name, "class": dep_id, "reason": reason},
             )
+        elif code == "DEP-AUD-045":
+            add(
+                findings,
+                "warning",
+                "DEP-AUD-045",
+                "Cargo.lock",
+                f"fundamental crate is pending owner decision fss-ndxis: {pkg_name} ({reason})",
+                root=root,
+                params={"package": pkg_name, "class": dep_id, "reason": reason},
+            )
+        elif code == "DEP-AUD-030":
+            add(
+                findings,
+                "error",
+                "DEP-AUD-030",
+                "Cargo.lock",
+                f"forbidden package is reachable: {pkg_name}",
+                root=root,
+                params={"package": pkg_name},
+            )
 
     census: dict[str, dict[str, Any]] = {}
     dep_order = [
@@ -2056,7 +2152,8 @@ def audit_dependency_classes(
     ]
     for dep_id in dep_order:
         pkgs = sorted(classified[dep_id])
-        has_consumer = len(pkgs) > 0
+        consumer_count = len(class_consumers.get(dep_id, set())) if direct is not None else len(pkgs)
+        has_consumer = len(pkgs) > 0 or consumer_count > 0
         drift_reason: str | None = None
         if not has_consumer:
             if dep_id == "DEP-FUND-001":
@@ -2079,7 +2176,7 @@ def audit_dependency_classes(
                 )
         census[dep_id] = {
             "id": dep_id,
-            "consumerCount": len(pkgs),
+            "consumerCount": consumer_count,
             "packages": pkgs,
             "hasRealConsumer": has_consumer,
             "drift": drift_reason,
@@ -2221,7 +2318,7 @@ def audit_workspace(
     if require_metadata and not metadata_available:
         add(findings, "error", "DEP-AUD-040", "Cargo.lock", f"offline pinned-nightly metadata is required: {metadata_error}", root=root, params={"error": str(metadata_error)})
 
-    dep_class_result = audit_dependency_classes(findings, root=root, policy=policy, member_names=member_names, resolved=resolved)
+    dep_class_result = audit_dependency_classes(findings, root=root, policy=policy, member_names=member_names, resolved=resolved, direct=direct)
 
     error_count = sum(f.severity == "error" for f in findings)
     try:

@@ -151,6 +151,7 @@ MANDATORY_ARCHITECTURE_FILES = (
     "architecture/decision_cards.json",
     "architecture/crate_topology.json",
     "architecture/dependency_constitution.json",
+    "architecture/dependencies.json",
     "architecture/operation_cost_registry.toml",
 )
 
@@ -1260,8 +1261,8 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
     if len(models_md_map) == 0:
         emit(ERR_COUNT_MISMATCH, "registries/MODELS.md", "#", "models registry must not be empty")
 
-    # 2.15 Dependency Constitution vs DEPENDENCIES.md
-    dep_doc = parsed_json["architecture/dependency_constitution.json"]
+    # 2.15 Dependency Constitution & Dependencies Registry vs DEPENDENCIES.md
+    dep_doc = parsed_json.get("architecture/dependency_constitution.json", {})
     if "classes" not in dep_doc:
         emit(ERR_CORRUPT_FILE, "architecture/dependency_constitution.json", "#", "missing mandatory 'classes' root key")
         dep_classes = []
@@ -1275,9 +1276,29 @@ def validate_consistency(repo_root: Path = ROOT) -> tuple[bool, list[Finding], d
     if not normative_policy_path or not (repo_root / normative_policy_path).is_file():
         emit(ERR_MISSING_FILE, str(normative_policy_path or "normativePolicy"), "#", "normativePolicy file declared in dependency constitution does not exist")
 
+    dep_registry_doc = parsed_json.get("architecture/dependencies.json", {})
+    dep_registry_rows = dep_registry_doc.get("dependencies", []) if isinstance(dep_registry_doc, dict) else []
+    dep_registry_map = build_arch_map("architecture/dependencies.json", dep_registry_rows)
+    if len(dep_registry_map) == 0:
+        emit(ERR_COUNT_MISMATCH, "architecture/dependencies.json", "#/dependencies", "dependencies registry must not be empty")
+
+    # Cross-check: every dependency row must have constitutionClass referencing a valid constitution class
+    for dep_id, dep_row in dep_registry_map.items():
+        c_class = dep_row.get("constitutionClass")
+        if not c_class:
+            emit(ERR_CORRUPT_FILE, "architecture/dependencies.json", f"#{dep_id}/constitutionClass", f"dependency '{dep_id}' missing mandatory constitutionClass reference")
+        elif c_class not in dep_classes_map:
+            emit(ERR_TARGET_NOT_FOUND, "architecture/dependencies.json", f"#{dep_id}/constitutionClass", f"dependency '{dep_id}' references unknown constitution class '{c_class}'")
+
     dep_md_map = extract_md_rows_by_id("registries/DEPENDENCIES.md", "DEP-")
     if len(dep_md_map) == 0:
         emit(ERR_COUNT_MISMATCH, "registries/DEPENDENCIES.md", "#", "dependencies registry must not be empty")
+
+    if len(dep_md_map) != len(dep_registry_map):
+        emit(ERR_COUNT_MISMATCH, "registries/DEPENDENCIES.md", "#", f"markdown mirror row count ({len(dep_md_map)}) differs from dependencies.json ({len(dep_registry_map)})")
+    for dep_id in dep_registry_map:
+        if dep_id not in dep_md_map:
+            emit(ERR_TARGET_NOT_FOUND, "registries/DEPENDENCIES.md", f"#{dep_id}", f"dependency '{dep_id}' present in dependencies.json is missing from registries/DEPENDENCIES.md")
 
     # 2.16 Crate Topology vs Crates on Disk
     topo_doc = parsed_json["architecture/crate_topology.json"]

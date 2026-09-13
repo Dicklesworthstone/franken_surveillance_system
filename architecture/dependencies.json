@@ -1,35 +1,40 @@
 {
   "schema": "fss.dependencies.v1",
   "generation": "gen:fss1:dependencies-v1",
-  "freezeDigest": "sha256:bb8a0b35e312015c2b286844c1d047166b64d5798319f3cfd3a61a5b5cce1da0",
+  "freezeDigest": "sha256:857dd73b26f36babae2e5670674b35344efcdecbd42c0b74d9f7a827a0ad27cb",
   "sourceDocument": "registries/DEPENDENCIES.md",
   "dependencies": [
     {
       "id": "DEP-OWNED-001",
+      "constitutionClass": "DEP-CLASS-F2",
       "class": "Owned runtime and Franken-suite families",
       "rule": "admitted after per-mechanism integration gate",
       "scope": "Production"
     },
     {
       "id": "DEP-FUND-001",
+      "constitutionClass": "DEP-CLASS-F3",
       "class": "serde / serde_json",
       "rule": "control-plane schemas only; never durable bytes or authority",
       "scope": "Production subject to audit"
     },
     {
       "id": "DEP-LAB-001",
+      "constitutionClass": "DEP-CLASS-F4",
       "class": "Pinned codec/model/vendor/reference executables",
       "rule": "sealed fixture/oracle lanes only; no production invocation path and absent from release closure",
       "scope": "Development/migration only"
     },
     {
       "id": "DEP-ORACLE-001",
+      "constitutionClass": "DEP-CLASS-F4",
       "class": "Python/reference ecosystems",
       "rule": "held-out conformance and lab fixtures only; absent from release closure",
       "scope": "Development only"
     },
     {
       "id": "DEP-EXCEPTION-001",
+      "constitutionClass": "DEP-CLASS-F3",
       "class": "Any other external crate",
       "rule": "requires DEP record, ADR, source/feature census, semantic owner, substitute prohibition, and removal plan",
       "scope": "Not admitted"

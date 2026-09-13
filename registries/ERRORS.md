@@ -249,6 +249,7 @@ or drifted IDs are rejected by the policy lane (`scripts/check-policy.py`).
 | `DEP-AUD-042` | error | unclassified crate in Cargo.lock or resolved dependencies | classify crate into an authorized dependency class before qualification | `GATE-000`, `QL-POLICY-001` | classify crate before re-running qualification |
 | `DEP-AUD-043` | error | misclassified crate reachable from production or invalid scope boundary | ensure laboratory and oracle crates are not reachable from production | `GATE-000`, `QL-POLICY-001` | correct dependency classification before re-running qualification |
 | `DEP-AUD-044` | warning | dependency class row has no active consumer in repository | verify dependency class usage or record explicit consumer drift | `GATE-000`, `QL-POLICY-001` | reconcile dependency consumer status before re-running qualification |
+| `DEP-AUD-045` | warning | fundamental crate is pending owner decision fss-ndxis | keep crate quarantined until user decision fss-ndxis is resolved; never admit as production authority | `GATE-000`, `QL-POLICY-001` | await decision fss-ndxis before re-running qualification |
 
 ## Process exit identity registry (EXIT)
 
