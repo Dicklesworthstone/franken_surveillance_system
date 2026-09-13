@@ -103,6 +103,7 @@ ERR_BOUND_TIGHTER_THAN_DERIVATION = "ERR-CLAIM-BOUND-TIGHTER-THAN-DERIVATION-001
 ERR_BOUND_SENSITIVITY_MISSING = "ERR-CLAIM-BOUND-SENSITIVITY-MISSING-001"
 ERR_BOUND_VALUE_OUT_OF_DOMAIN = "ERR-CLAIM-BOUND-VALUE-OUT-OF-DOMAIN-001"
 ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE = "ERR-CLAIM-BOUND-DERIVATION-NOT-RECOMPUTABLE-001"
+ERR_BOUND_DIMENSION_MISMATCH = "ERR-CLAIM-BOUND-DIMENSION-MISMATCH-001"
 ERR_SLO_TARGET_UNBOUND = "ERR-CLAIM-SLO-TARGET-UNBOUND-001"
 ERR_SLO_COMPARATOR_OVERRIDE = "ERR-CLAIM-SLO-COMPARATOR-OVERRIDE-001"
 ERR_SLO_ACTUAL_INVALID = "ERR-CLAIM-SLO-ACTUAL-INVALID-001"
@@ -254,6 +255,10 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_BOUND_VALUE_OUT_OF_DOMAIN: {
         "trigger": "A 'bounded_model' claimed, derived, or input value lies outside its registered unit's domain (negative for any registered unit, above 100 for percent units, above 1 for auprc)",
         "remediation": "Correct the value or its unit; a bound outside its unit's domain bounds nothing",
+    },
+    ERR_BOUND_DIMENSION_MISMATCH: {
+        "trigger": "A 'bounded_model' derivation formula is dimensionally inconsistent: + or - combines different units, or the units propagated through * and / differ from the derivation's units (count units are dimensionless; bare numbers adopt the other operand's unit)",
+        "remediation": "Correct the formula or the recorded input units; units are never converted implicitly",
     },
     ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE: {
         "trigger": "A 'bounded_model' derivation records no usable inputs {name: {value, units}} or no arithmetic formula over them, the formula is not the derived expression's right-hand side, uses anything beyond + - * / on recorded inputs and numbers, or does not recompute the derived value",
@@ -2465,11 +2470,21 @@ def _finite_number(value: Any) -> float | None:
     return number if math.isfinite(number) else None
 
 
+# Words that carry no content on their own; a substantive entry needs two other distinct words.
+PLACEHOLDER_WORDS: frozenset[str] = frozenset({
+    "none", "na", "tbd", "tba", "todo", "unknown", "null", "nil", "nothing", "not", "applicable", "fixme", "xxx",
+})
+_CONTENT_WORD_RE = re.compile(r"[^\W\d_]{2,}")
+MIN_CONTENT_WORDS = 2
+
+
 def _substantive(value: Any) -> bool:
+    """Text that says something: punctuation never disguises a placeholder, and it needs at
+    least two distinct words of two or more letters that are not placeholder words."""
     if not isinstance(value, str):
         return False
-    text = value.strip()
-    return text.casefold() not in PLACEHOLDER_TEXT and sum(ch.isalnum() for ch in text) >= 3
+    words = {word.casefold() for word in _CONTENT_WORD_RE.findall(value)}
+    return len(words - PLACEHOLDER_WORDS) >= MIN_CONTENT_WORDS
 
 
 def _unit_domain_violation(value: float, unit: str) -> str | None:
@@ -2483,13 +2498,12 @@ def _unit_domain_violation(value: float, unit: str) -> str | None:
 
 def _evaluate_formula(formula: str, inputs: dict[str, float]) -> float:
     """Recomputes a derivation formula: + - * / and unary +/- over recorded inputs and numbers.
-    Anything else (calls, attributes, names that are not inputs, powers) is refused."""
-    if len(formula) > _FORMULA_MAX_LENGTH:
-        raise _FormulaError(f"formula exceeds {_FORMULA_MAX_LENGTH} characters")
-    try:
-        tree = ast.parse(formula, mode="eval")
-    except (SyntaxError, ValueError, RecursionError) as exc:
-        raise _FormulaError(f"formula is not arithmetic: {exc}") from exc
+    Anything else (calls, attributes, names that are not inputs, powers) is refused, every
+    intermediate result must be finite, a product or quotient of nonzero operands must not
+    underflow to zero, and the formula must name at least one recorded input."""
+    tree = _parse_formula(formula)
+    if not any(isinstance(node, ast.Name) for node in ast.walk(tree)):
+        raise _FormulaError("formula names no recorded input; its derived value would be self-asserted")
 
     def evaluate(node: ast.AST) -> float:
         if isinstance(node, ast.Expression):
@@ -2497,14 +2511,20 @@ def _evaluate_formula(formula: str, inputs: dict[str, float]) -> float:
         if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Sub, ast.Mult, ast.Div)):
             left, right = evaluate(node.left), evaluate(node.right)
             if isinstance(node.op, ast.Add):
-                return left + right
-            if isinstance(node.op, ast.Sub):
-                return left - right
-            if isinstance(node.op, ast.Mult):
-                return left * right
-            if right == 0.0:
-                raise _FormulaError("formula divides by zero")
-            return left / right
+                result = left + right
+            elif isinstance(node.op, ast.Sub):
+                result = left - right
+            elif isinstance(node.op, ast.Mult):
+                result = left * right
+            else:
+                if right == 0.0:
+                    raise _FormulaError("formula divides by zero")
+                result = left / right
+            if not math.isfinite(result):
+                raise _FormulaError(f"formula intermediate result {ast.unparse(node)[:60]!r} is not finite")
+            if result == 0.0 and isinstance(node.op, (ast.Mult, ast.Div)) and left != 0.0 and right != 0.0:
+                raise _FormulaError(f"formula intermediate result {ast.unparse(node)[:60]!r} underflows to zero")
+            return result
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, (ast.UAdd, ast.USub)):
             operand = evaluate(node.operand)
             return -operand if isinstance(node.op, ast.USub) else operand
@@ -2526,6 +2546,84 @@ def _evaluate_formula(formula: str, inputs: dict[str, float]) -> float:
     if not math.isfinite(result):
         raise _FormulaError("formula result is not finite")
     return result
+
+
+def _parse_formula(formula: str) -> ast.Expression:
+    if len(formula) > _FORMULA_MAX_LENGTH:
+        raise _FormulaError(f"formula exceeds {_FORMULA_MAX_LENGTH} characters")
+    try:
+        return ast.parse(formula, mode="eval")
+    except (SyntaxError, ValueError, RecursionError) as exc:
+        raise _FormulaError(f"formula is not arithmetic: {exc}") from exc
+
+
+class _DimensionError(_FormulaError):
+    """A derivation formula whose units do not propagate consistently."""
+
+
+# Registered units that count entities are dimensionless (a count has dimension one); every
+# other registered unit is its own dimension and is never converted into another.
+BOUND_COUNT_UNITS: frozenset[str] = frozenset({
+    "frames", "tasks", "processes", "descriptors", "calls", "operations", "tokens", "output tokens",
+    "semantic calls", "access_units", "object operation",
+})
+
+
+def _unit_dimension(unit: str) -> dict[str, int]:
+    return {} if unit in BOUND_COUNT_UNITS else {unit: 1}
+
+
+def _format_dimension(dimension: dict[str, int] | None) -> str:
+    if dimension is None:
+        return "a bare number"
+    return "*".join(f"{u}^{p}" if p != 1 else u for u, p in sorted(dimension.items())) or "dimensionless"
+
+
+def _check_formula_dimensions(formula: str, input_units: dict[str, str], result_unit: str) -> None:
+    """Propagates units through + - * /: + and - need equal dimensions, * and / add and subtract
+    exponents, a bare number adopts the other operand's dimension under + and - and is
+    dimensionless under * and /. The result must have the dimension of result_unit."""
+    tree = _parse_formula(formula)
+
+    def combine(a: dict[str, int], b: dict[str, int], sign: int) -> dict[str, int]:
+        out = dict(a)
+        for unit, power in b.items():
+            out[unit] = out.get(unit, 0) + sign * power
+            if out[unit] == 0:
+                del out[unit]
+        return out
+
+    def dimension(node: ast.AST) -> dict[str, int] | None:  # None: a bare number
+        if isinstance(node, ast.Expression):
+            return dimension(node.body)
+        if isinstance(node, ast.BinOp):
+            left, right = dimension(node.left), dimension(node.right)
+            if isinstance(node.op, (ast.Add, ast.Sub)):
+                if left is None or right is None:
+                    return right if left is None else left
+                if left != right:
+                    raise _DimensionError(
+                        f"formula {ast.unparse(node)[:60]!r} combines {_format_dimension(left)} with {_format_dimension(right)}"
+                    )
+                return left
+            if left is None and right is None:
+                return None
+            return combine(left or {}, right or {}, 1 if isinstance(node.op, ast.Mult) else -1)
+        if isinstance(node, ast.UnaryOp):
+            return dimension(node.operand)
+        if isinstance(node, ast.Name):
+            if node.id not in input_units:
+                raise _FormulaError(f"formula names '{node.id}', which is not a recorded input")
+            return _unit_dimension(input_units[node.id])
+        return None
+
+    result = dimension(tree)
+    expected = _unit_dimension(result_unit)
+    if result is not None and result != expected:
+        raise _DimensionError(
+            f"formula yields {_format_dimension(result)}, not the derivation's units '{result_unit}' ({_format_dimension(expected)})"
+        )
+
 
 
 def _verify_bounded_model_claim_evidence(
@@ -2705,6 +2803,7 @@ def _verify_bounded_model_claim_evidence(
         ))
     else:
         inputs = {}
+        input_units_map: dict[str, str] = {}
         for name, entry in raw_inputs.items():
             where = f"{d_loc}.inputs.{name}"
             number = _finite_number(entry.get("value")) if isinstance(entry, dict) else None
@@ -2722,6 +2821,7 @@ def _verify_bounded_model_claim_evidence(
                 inputs = None
             elif inputs is not None:
                 inputs[name] = number
+                input_units_map[name] = input_units
     formula = _exact_text(derivation.get("formula"))
     if formula is None:
         findings.append(_finding(
@@ -2731,8 +2831,12 @@ def _verify_bounded_model_claim_evidence(
         ))
     else:
         if d_expression is not None and d_comparator is not None:
-            _, separator, rhs = d_expression.partition(f" {d_comparator} ")
-            if not separator or " ".join(rhs.split()) != " ".join(formula.split()):
+            _, separator, rhs = d_expression.partition(d_comparator)
+            try:
+                same_tree = bool(separator) and ast.dump(_parse_formula(rhs.strip())) == ast.dump(_parse_formula(formula))
+            except _FormulaError:
+                same_tree = False
+            if not same_tree:
                 findings.append(_finding(
                     ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE, path_str, f"{d_loc}.formula",
                     f"{label} derivation formula {formula!r} is not the right-hand side of its expression {d_expression!r}",
@@ -2751,6 +2855,14 @@ def _verify_bounded_model_claim_evidence(
                         {**params, "recomputed_value": recomputed, "derived_value": d_value},
                     ))
                     d_value = None
+            # Units are independent of the numbers: check them even when recomputation failed.
+            if d_units is not None:
+                try:
+                    _check_formula_dimensions(formula, input_units_map, d_units)
+                except _DimensionError as exc:
+                    findings.append(_finding(ERR_BOUND_DIMENSION_MISMATCH, path_str, f"{d_loc}.formula", f"{label} derivation {exc}", params))
+                except _FormulaError:
+                    pass  # not arithmetic over recorded inputs: already reported by the recomputation
 
     # 6. Sensitivity analysis and invalidators say something.
     sensitivity = derivation.get("sensitivity")
