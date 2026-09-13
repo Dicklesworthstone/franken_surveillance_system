@@ -1,0 +1,1346 @@
+{
+  "asOf": "2026-09-12",
+  "capabilities": [
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-CANCEL-001",
+      "name": "cap_agent_cancel_001",
+      "plane": "lifecycle effect"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-CASE-WRITE-001",
+      "name": "cap_agent_case_write_001",
+      "plane": "agent cognition"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-EXPLAIN-001",
+      "name": "cap_agent_explain_001",
+      "plane": "cognition read"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-FEEDBACK-001",
+      "name": "cap_agent_feedback_001",
+      "plane": "advisory write"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-HANDOFF-WRITE-001",
+      "name": "cap_agent_handoff_write_001",
+      "plane": "agent continuity write"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-PLAN-COMMIT-001",
+      "name": "cap_agent_plan_commit_001",
+      "plane": "effect orchestration"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-PLAN-PREPARE-001",
+      "name": "cap_agent_plan_prepare_001",
+      "plane": "cognition/prepare"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-QUERY-001",
+      "name": "cap_agent_query_001",
+      "plane": "cognition read"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-SESSION-OPEN-001",
+      "name": "cap_agent_session_open_001",
+      "plane": "agent control"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-SESSION-READ-001",
+      "name": "cap_agent_session_read_001",
+      "plane": "agent control"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-AGENT-SITUATION-READ-001",
+      "name": "cap_agent_situation_read_001",
+      "plane": "cognition read"
+    },
+    {
+      "description": "Declared agent operating capability",
+      "id": "CAP-REPAIR-PREPARE-001",
+      "name": "cap_repair_prepare_001",
+      "plane": "authority read"
+    }
+  ],
+  "discovery": {
+    "capabilities": {
+      "cli": "fss capabilities --json",
+      "description": "Report all supported device, model, and agent capabilities in typed JSON"
+    },
+    "operations": {
+      "cli": "fss operations --json",
+      "description": "Report all registered fss/1 operations with request/response schemas and crosswalk targets"
+    },
+    "robot_docs": {
+      "cli": "fss robot-docs guide",
+      "description": "Output complete self-describing robot documentation for autonomous agent drivers"
+    },
+    "schemas": {
+      "cli": "fss schema list --json",
+      "description": "List all authoritative schema identifiers, files, and compatibility rules"
+    },
+    "views": {
+      "cli": "fss views --json",
+      "description": "Report all registered agent views with token budgets and required section keys"
+    }
+  },
+  "errors": [
+    {
+      "description": "recommended next move lost a precondition, capability, lease, or validity interval",
+      "guidance": "refresh/replan; never execute cached recommendation",
+      "id": "ERR-AGENT-AFFORDANCE-INVALIDATED-001"
+    },
+    {
+      "description": "natural-language request has multiple materially different interpretations",
+      "guidance": "return interpretations; choose only a registered safe-read default or request clarification",
+      "id": "ERR-AGENT-AMBIGUOUS-001"
+    },
+    {
+      "description": "investigation cannot discriminate remaining hypotheses within declared budget",
+      "guidance": "return residual uncertainty and explicit next probe/approval options",
+      "id": "ERR-AGENT-CASE-BUDGET-001"
+    },
+    {
+      "description": "requested decision-complete context cannot fit or lacks required evidence",
+      "guidance": "return bounded partial with omissions/expansion handles; never imply completeness",
+      "id": "ERR-AGENT-CONTEXT-INCOMPLETE-001"
+    },
+    {
+      "description": "handoff root is incomplete, expired, unauthorized, schema/generation-incompatible, or cannot be safely rebased",
+      "guidance": "reject, migrate, or open a new session with an explicit invalidation report; never silently resume",
+      "id": "ERR-AGENT-HANDOFF-INVALID-001"
+    },
+    {
+      "description": "learning proposal lacks evidence, applicability, counterexamples, or validation path",
+      "guidance": "retain as rejected/advisory; do not activate",
+      "id": "ERR-AGENT-LEARNING-UNSUPPORTED-001"
+    },
+    {
+      "description": "no safe, authorized, useful next action exists under current evidence/budget",
+      "guidance": "explain blocking clamps and return wait/escalate/stop reason",
+      "id": "ERR-AGENT-NO-AFFORDANCE-001"
+    },
+    {
+      "description": "presentation attempted an unregistered verb/view or changed semantic meaning",
+      "guidance": "reject and repair registry/transport drift",
+      "id": "ERR-AGENT-PROTOCOL-001"
+    },
+    {
+      "description": "continuation cannot advance coherently from its exact basis",
+      "guidance": "request a fresh situation capsule; do not splice generations",
+      "id": "ERR-AGENT-RESNAPSHOT-001"
+    },
+    {
+      "description": "external effects/obligations prevent a truthful resumed terminal state",
+      "guidance": "resume in reconciliation mode; no effect retry before lookup/proof",
+      "id": "ERR-AGENT-RESUME-INDETERMINATE-001"
+    },
+    {
+      "description": "session, workspace, or resumed handoff basis no longer satisfies required anchor/generation/freshness semantics",
+      "guidance": "rebase and enumerate every invalidated assumption, alias, grant, lease, plan, continuation, and affordance before proceeding",
+      "id": "ERR-AGENT-SESSION-STALE-001"
+    },
+    {
+      "description": "requested multi-agent work scope overlaps an incompatible live claim, lease, or fence",
+      "guidance": "narrow, wait, delegate, release, or supersede with explicit authority; never last-writer-wins",
+      "id": "ERR-AGENT-WORK-CLAIM-CONFLICT-001"
+    },
+    {
+      "description": "principal lacks exact capability",
+      "guidance": "do not retry without new authority",
+      "id": "ERR-AUTH-DENIED-001"
+    },
+    {
+      "description": "declared work budget exhausted",
+      "guidance": "return bounded partial/abstention",
+      "id": "ERR-BUDGET-EXHAUSTED-001"
+    },
+    {
+      "description": "runtime error occurred during validated command execution",
+      "guidance": "inspect diagnostic and address failure cause",
+      "id": "ERR-CLI-RUNTIME-FAILURE-001"
+    },
+    {
+      "description": "capture interval too wide for requested operation",
+      "guidance": "degrade/abstain/recalibrate",
+      "id": "ERR-CLOCK-UNCERTAIN-001"
+    },
+    {
+      "description": "dispatch outcome cannot be determined",
+      "guidance": "reconcile before retry",
+      "id": "ERR-EFFECT-INDETERMINATE-001"
+    },
+    {
+      "description": "canonical root references unavailable required evidence",
+      "guidance": "repair; no adjudication requiring it",
+      "id": "ERR-EVIDENCE-MISSING-001"
+    },
+    {
+      "description": "same key used with different request digest",
+      "guidance": "reject permanently",
+      "id": "ERR-IDEMPOTENCY-CONFLICT-001"
+    },
+    {
+      "description": "effect lease fence is not current",
+      "guidance": "re-prepare under fresh lease",
+      "id": "ERR-LEASE-STALE-001"
+    },
+    {
+      "description": "operation execution failed with expected domain error",
+      "guidance": "inspect error details and apply recovery guidance",
+      "id": "ERR-OP-EXECUTION-FAILED-001"
+    },
+    {
+      "description": "operation budget or deadline expired before completion",
+      "guidance": "retry with higher budget or backoff",
+      "id": "ERR-OP-TIMEOUT-001"
+    },
+    {
+      "description": "plan anchor changed before commit",
+      "guidance": "re-plan; never auto-commit changed intent",
+      "id": "ERR-PRECONDITION-STALE-001"
+    },
+    {
+      "description": "region/process failed to drain",
+      "guidance": "block shutdown/upgrade claim; force isolation path",
+      "id": "ERR-QUIESCENCE-001"
+    },
+    {
+      "description": "semantic decision fingerprint differs from proof",
+      "guidance": "block claim/release",
+      "id": "ERR-REPLAY-DIVERGED-001"
+    },
+    {
+      "description": "gaps/jitter exceed contract",
+      "guidance": "degrade coverage; bounded recovery",
+      "id": "ERR-STREAM-CONTINUITY-001"
+    }
+  ],
+  "freezeDigest": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
+  "operations": [
+    {
+      "cliCommand": "fss session open",
+      "defaultView": "AVIEW-002",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-AUTH-DENIED-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-001",
+      "libraryEntryPoint": "fss_agent_session::session_open",
+      "mcpToolName": "session_open",
+      "mode": "session_control",
+      "name": "session.open",
+      "owner": "fss-agent-session",
+      "primaryErrorId": "ERR-AUTH-DENIED-001",
+      "purpose": "negotiate principal, mission, authority, privacy projection, budgets, views, and the initial SituationCapsule",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_mission.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-SESSION-OPEN-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.situation_capsule.v1"
+      ],
+      "retryClasses": [
+        "never_unchanged",
+        "backoff",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss session resume",
+      "defaultView": "AVIEW-006",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-AGENT-HANDOFF-INVALID-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-AGENT-RESUME-INDETERMINATE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-002",
+      "libraryEntryPoint": "fss_agent_session::session_resume",
+      "mcpToolName": "session_resume",
+      "mode": "session_control",
+      "name": "session.resume",
+      "owner": "fss-agent-session",
+      "primaryErrorId": "ERR-AGENT-HANDOFF-INVALID-001",
+      "purpose": "restore an explicit workspace/handoff root, compare it with current state, and enumerate stale or invalidated assumptions",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_handoff_capsule.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-SESSION-READ-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.situation_capsule.v1"
+      ],
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss session orient",
+      "defaultView": "AVIEW-002",
+      "durable": false,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-003",
+      "libraryEntryPoint": "fss_situation::session_orient",
+      "mcpToolName": "session_orient",
+      "mode": "read",
+      "name": "session.orient",
+      "owner": "fss-situation",
+      "primaryErrorId": "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+      "purpose": "return the smallest sufficient current SituationCapsule for the mission, authority, and budget",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-SITUATION-READ-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.situation_capsule.v1"
+      ],
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss session follow",
+      "defaultView": "AVIEW-001",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-AGENT-RESNAPSHOT-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-STREAM-CONTINUITY-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-004",
+      "libraryEntryPoint": "fss_context_pack::session_follow",
+      "mcpToolName": "session_follow",
+      "mode": "read_wait",
+      "name": "session.follow",
+      "owner": "fss-context-pack",
+      "primaryErrorId": "ERR-AGENT-RESNAPSHOT-001",
+      "purpose": "stream meaningful deltas and obligation progress from an exact continuation cursor",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-SITUATION-READ-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_meaningful_delta.v1",
+        "fss.situation_capsule.v1"
+      ],
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss query",
+      "defaultView": "AVIEW-003",
+      "durable": false,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-AGENT-AMBIGUOUS-001",
+        "ERR-AGENT-CONTEXT-INCOMPLETE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-005",
+      "libraryEntryPoint": "fss_query_plan::query",
+      "mcpToolName": "query",
+      "mode": "read_compile",
+      "name": "query",
+      "owner": "fss-query-plan",
+      "primaryErrorId": "ERR-AGENT-AMBIGUOUS-001",
+      "purpose": "execute a bounded typed or natural-language-compiled read over one anchor with completeness and cost receipts",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-QUERY-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss investigate",
+      "defaultView": "AVIEW-003",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-AGENT-CASE-BUDGET-001",
+        "ERR-AGENT-AMBIGUOUS-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-006",
+      "libraryEntryPoint": "fss_investigation::investigate",
+      "mcpToolName": "investigate",
+      "mode": "cognition_write",
+      "name": "investigate",
+      "owner": "fss-investigation",
+      "primaryErrorId": "ERR-AGENT-CASE-BUDGET-001",
+      "purpose": "create or advance a durable case with competing hypotheses, evidence tasks, work claims, discriminators, and stop rules",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.investigation_state.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-CASE-WRITE-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.investigation_state.v1",
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "retryClasses": [
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss plan",
+      "defaultView": "AVIEW-007",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-PRECONDITION-STALE-001",
+        "ERR-AGENT-NO-AFFORDANCE-001",
+        "ERR-AGENT-AFFORDANCE-INVALIDATED-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-007",
+      "libraryEntryPoint": "fss_agent_plan::plan",
+      "mcpToolName": "plan",
+      "mode": "plan_prepare",
+      "name": "plan",
+      "owner": "fss-agent-plan",
+      "primaryErrorId": "ERR-PRECONDITION-STALE-001",
+      "purpose": "compile a desired outcome or information objective into an immutable witnessed contingent plan without crossing the effect boundary",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_objective_contract.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-PLAN-PREPARE-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_control_plan.v1"
+      ],
+      "retryClasses": [
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss commit",
+      "defaultView": "AVIEW-005",
+      "durable": true,
+      "effectful": true,
+      "errorIdentities": [
+        "ERR-EFFECT-INDETERMINATE-001",
+        "ERR-IDEMPOTENCY-CONFLICT-001",
+        "ERR-LEASE-STALE-001",
+        "ERR-PRECONDITION-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-008",
+      "libraryEntryPoint": "fss_effect::commit",
+      "mcpToolName": "commit",
+      "mode": "effect_commit",
+      "name": "commit",
+      "owner": "fss-effect",
+      "primaryErrorId": "ERR-EFFECT-INDETERMINATE-001",
+      "purpose": "revalidate and start the exact prepared plan under idempotency, leases, fencing, approval, and terminal-proof obligations",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_control_plan.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-PLAN-COMMIT-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.operation_receipt.v1",
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "retryClasses": [
+        "never_unchanged",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss wait",
+      "defaultView": "AVIEW-005",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-OP-TIMEOUT-001",
+        "ERR-LEASE-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-009",
+      "libraryEntryPoint": "fss_obligation::wait",
+      "mcpToolName": "wait",
+      "mode": "read_wait",
+      "name": "wait",
+      "owner": "fss-obligation",
+      "primaryErrorId": "ERR-OP-TIMEOUT-001",
+      "purpose": "observe cases, plans, effects, transfers, and obligations until a predicate, deadline, or meaningful delta fires",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-SITUATION-READ-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1",
+        "fss.operation_receipt.v1"
+      ],
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "backoff",
+        "reconciliation_required",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss cancel",
+      "defaultView": "AVIEW-005",
+      "durable": true,
+      "effectful": true,
+      "errorIdentities": [
+        "ERR-QUIESCENCE-001",
+        "ERR-LEASE-STALE-001",
+        "ERR-EFFECT-INDETERMINATE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-010",
+      "libraryEntryPoint": "fss_obligation::cancel",
+      "mcpToolName": "cancel",
+      "mode": "lifecycle_effect",
+      "name": "cancel",
+      "owner": "fss-obligation",
+      "primaryErrorId": "ERR-QUIESCENCE-001",
+      "purpose": "request, drain, reconcile or compensate, and finalize owned work without erasing its durable record",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-CANCEL-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.operation_receipt.v1",
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "retryClasses": [
+        "never_unchanged",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss explain",
+      "defaultView": "AVIEW-007",
+      "durable": false,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-REPLAY-DIVERGED-001",
+        "ERR-EVIDENCE-MISSING-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-BUDGET-EXHAUSTED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-011",
+      "libraryEntryPoint": "fss_explain::explain",
+      "mcpToolName": "explain",
+      "mode": "read_compute",
+      "name": "explain",
+      "owner": "fss-explain",
+      "primaryErrorId": "ERR-REPLAY-DIVERGED-001",
+      "purpose": "answer why, why-not, what-changed, or what-if with a minimal evidence/decision subgraph and expansion handles",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-EXPLAIN-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1"
+      ],
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "rebase_required",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss handoff",
+      "defaultView": "AVIEW-006",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-AGENT-HANDOFF-INVALID-001",
+        "ERR-AGENT-SESSION-STALE-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-012",
+      "libraryEntryPoint": "fss_handoff::handoff",
+      "mcpToolName": "handoff",
+      "mode": "continuity_publish",
+      "name": "handoff",
+      "owner": "fss-handoff",
+      "primaryErrorId": "ERR-AGENT-HANDOFF-INVALID-001",
+      "purpose": "publish a root-last portable capsule containing mission, workspace, cases, plans, obligations, budgets, authority, uncertainty, and continuations",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_session_capsule.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-HANDOFF-WRITE-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_handoff_capsule.v1"
+      ],
+      "retryClasses": [
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss feedback",
+      "defaultView": "AVIEW-007",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-AGENT-LEARNING-UNSUPPORTED-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-013",
+      "libraryEntryPoint": "fss_learning::feedback",
+      "mcpToolName": "feedback",
+      "mode": "advisory_write",
+      "name": "feedback",
+      "owner": "fss-learning",
+      "primaryErrorId": "ERR-AGENT-LEARNING-UNSUPPORTED-001",
+      "purpose": "record a correction, outcome signal, adjudication, or evidence-linked learning proposal without silently changing active truth or policy",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_feedback_proposal.v1",
+      "requiredCapabilities": [
+        "CAP-AGENT-FEEDBACK-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_feedback_proposal.v1",
+        "fss.experience_capsule.v1"
+      ],
+      "retryClasses": [
+        "refresh_and_retry",
+        "rebase_required",
+        "backoff",
+        "reconciliation_required",
+        "operator_action_required"
+      ],
+      "status": "specified"
+    },
+    {
+      "cliCommand": "fss doctor",
+      "defaultView": "AVIEW-004",
+      "durable": true,
+      "effectful": false,
+      "errorIdentities": [
+        "ERR-CLI-RUNTIME-FAILURE-001",
+        "ERR-CLOCK-UNCERTAIN-001",
+        "ERR-STREAM-CONTINUITY-001",
+        "ERR-AUTH-DENIED-001",
+        "ERR-OP-EXECUTION-FAILED-001"
+      ],
+      "exitIdentities": [
+        "EXIT-OK-000",
+        "EXIT-CLI-RUNTIME-FAILURE-001"
+      ],
+      "gate": "QL-AGENT-001",
+      "id": "AOP-014",
+      "libraryEntryPoint": "fss_doctor::doctor",
+      "mcpToolName": "doctor",
+      "mode": "diagnostic_prepare",
+      "name": "doctor",
+      "owner": "fss-doctor",
+      "primaryErrorId": "ERR-CLI-RUNTIME-FAILURE-001",
+      "purpose": "diagnose deployment, evidence, cognition, workspace, cases, obligations, and protocol consistency and produce sealed repair affordances",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "requestPayloadSchema": "fss.agent_query_plan.v1",
+      "requiredCapabilities": [
+        "CAP-REPAIR-PREPARE-001"
+      ],
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "responsePayloadSchemas": [
+        "fss.agent_cognitive_envelope.v1",
+        "fss.evidence_bundle.v1"
+      ],
+      "retryClasses": [
+        "safe_read_retry",
+        "refresh_and_retry",
+        "backoff",
+        "resume_from_continuation"
+      ],
+      "status": "specified"
+    }
+  ],
+  "registryGeneration": "gen:fss1:public-v1",
+  "resources": [
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-001",
+      "name": "deployment.anchor",
+      "owner": "fss-anchor",
+      "payloadSchema": "fss.evidence_anchor.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/anchor/{anchor}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-002",
+      "name": "deployment.situation",
+      "owner": "fss-situation",
+      "payloadSchema": "fss.situation_capsule.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/situation/{capsule}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-003",
+      "name": "deployment.sensor",
+      "owner": "fss-sensor",
+      "payloadSchema": "fss.sensor_capsule.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/sensor/{sensor}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-004",
+      "name": "deployment.zone",
+      "owner": "fss-zone",
+      "payloadSchema": "fss.agent_situation_frame.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/zone/{zone}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-005",
+      "name": "deployment.event_revision",
+      "owner": "fss-event",
+      "payloadSchema": "fss.event_hypothesis.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/event/{event}/revision/{revision}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-006",
+      "name": "deployment.case_revision",
+      "owner": "fss-investigation",
+      "payloadSchema": "fss.investigation_state.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/case/{case}/revision/{revision}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-007",
+      "name": "deployment.hypothesis",
+      "owner": "fss-investigation",
+      "payloadSchema": "fss.agent_hypothesis_workspace.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/hypothesis/{hypothesis}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-008",
+      "name": "deployment.evidence",
+      "owner": "fss-evidence",
+      "payloadSchema": "fss.evidence_bundle.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/evidence/{digest}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-009",
+      "name": "deployment.plan",
+      "owner": "fss-agent-plan",
+      "payloadSchema": "fss.agent_control_plan.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/plan/{plan}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-010",
+      "name": "deployment.obligation",
+      "owner": "fss-obligation",
+      "payloadSchema": "fss.prepared_effect.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://deployment/{deployment}/obligation/{obligation}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-011",
+      "name": "mission.revision",
+      "owner": "fss-mission",
+      "payloadSchema": "fss.agent_mission.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://mission/{mission}/revision/{revision}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-012",
+      "name": "session.workspace",
+      "owner": "fss-agent-session",
+      "payloadSchema": "fss.agent_session_capsule.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://session/{session}/workspace/{workspace}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-013",
+      "name": "session.handoff",
+      "owner": "fss-handoff",
+      "payloadSchema": "fss.agent_handoff_capsule.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://session/{session}/handoff/{root}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-014",
+      "name": "experience",
+      "owner": "fss-learning",
+      "payloadSchema": "fss.experience_capsule.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://experience/{capsule}"
+    },
+    {
+      "compatibilityClass": "backward_compatible",
+      "id": "ARES-015",
+      "name": "doctor",
+      "owner": "fss-doctor",
+      "payloadSchema": "fss.doctor.v1",
+      "requestEnvelope": "fss.agent_request_envelope.v1",
+      "responseEnvelope": "fss.agent_response_envelope.v1",
+      "status": "specified",
+      "uriTemplate": "fss://doctor/{bundle}"
+    }
+  ],
+  "schema": "fss.robot_docs.v1",
+  "schemas": [
+    {
+      "authority": "semantic response",
+      "compatibilityRule": "anchor, knowledge/provenance status, coverage, omissions, budget, evidence, affordances, and continuity remain explicit",
+      "file": "schemas/agent_cognitive_envelope.v1.json",
+      "id": "SCHEMA-AGENT-COGNITIVE-ENVELOPE-001",
+      "schema": "fss.agent_cognitive_envelope.v1"
+    },
+    {
+      "authority": "semantic compatibility",
+      "compatibilityRule": "protocol, schema/ontology/operation/view/capability/error/cost registry digests, producer release, and accepted nightly remain exact",
+      "file": "schemas/agent_contract_basis.v1.json",
+      "id": "SCHEMA-AGENT-CONTRACT-BASIS-001",
+      "schema": "fss.agent_contract_basis.v1"
+    },
+    {
+      "authority": "control plan",
+      "compatibilityRule": "step types, witnesses, effect boundaries, contingencies, budgets, and decision digest remain immutable",
+      "file": "schemas/agent_control_plan.v1.json",
+      "id": "SCHEMA-AGENT-PLAN-001",
+      "schema": "fss.agent_control_plan.v1"
+    },
+    {
+      "authority": "advisory feedback",
+      "compatibilityRule": "correction or outcome signal is evidence-linked and cannot directly mutate active policy",
+      "file": "schemas/agent_feedback_proposal.v1.json",
+      "id": "SCHEMA-AGENT-FEEDBACK-001",
+      "schema": "fss.agent_feedback_proposal.v1"
+    },
+    {
+      "authority": "handoff custody",
+      "compatibilityRule": "mission, situation, cases, plans, obligations, unknowns, authority, budgets, continuation, and expiry remain complete",
+      "file": "schemas/agent_handoff_capsule.v1.json",
+      "id": "SCHEMA-AGENT-HANDOFF-001",
+      "schema": "fss.agent_handoff_capsule.v1"
+    },
+    {
+      "authority": "investigation cognition",
+      "compatibilityRule": "competing hypotheses and support, contradiction, missing evidence, predictions, and falsifiers remain addressable",
+      "file": "schemas/agent_hypothesis_workspace.v1.json",
+      "id": "SCHEMA-AGENT-HYPOTHESIS-001",
+      "schema": "fss.agent_hypothesis_workspace.v1"
+    },
+    {
+      "authority": "follow/continuity",
+      "compatibilityRule": "terminal, contradiction, coverage, plan-invalidation, and effect-uncertainty deltas cannot be coalesced away",
+      "file": "schemas/agent_meaningful_delta.v1.json",
+      "id": "SCHEMA-AGENT-DELTA-001",
+      "schema": "fss.agent_meaningful_delta.v1"
+    },
+    {
+      "authority": "mission/workspace",
+      "compatibilityRule": "mission revisions preserve scope, constraints, budgets, capability projection, and terminal criteria",
+      "file": "schemas/agent_mission.v1.json",
+      "id": "SCHEMA-AGENT-MISSION-001",
+      "schema": "fss.agent_mission.v1"
+    },
+    {
+      "authority": "control intent",
+      "compatibilityRule": "hard constraints, budgets, authority, success, failure, stop predicates, and terminal proof are immutable",
+      "file": "schemas/agent_objective_contract.v1.json",
+      "id": "SCHEMA-AGENT-OBJECTIVE-001",
+      "schema": "fss.agent_objective_contract.v1"
+    },
+    {
+      "authority": "query cognition",
+      "compatibilityRule": "compiled interpretation, targets, authority, privacy, cost, and output view are reviewable and bounded",
+      "file": "schemas/agent_query_plan.v1.json",
+      "id": "SCHEMA-AGENT-QUERY-001",
+      "schema": "fss.agent_query_plan.v1"
+    },
+    {
+      "authority": "transport request",
+      "compatibilityRule": "contract basis, operation, lifecycle, anchor/workspace preconditions, view, targets, typed payload, budget, authority/privacy request, continuation, idempotency, and taint remain explicit",
+      "file": "schemas/agent_request_envelope.v1.json",
+      "id": "SCHEMA-AGENT-REQUEST-001",
+      "schema": "fss.agent_request_envelope.v1"
+    },
+    {
+      "authority": "transport response",
+      "compatibilityRule": "operation, session, anchors, outcome, payload, errors, budgets, proof, continuation, and safe retry remain explicit",
+      "file": "schemas/agent_response_envelope.v1.json",
+      "id": "SCHEMA-AGENT-RESPONSE-001",
+      "schema": "fss.agent_response_envelope.v1"
+    },
+    {
+      "authority": "workspace continuity",
+      "compatibilityRule": "workspace revisions are immutable and resume records stale and invalidated state",
+      "file": "schemas/agent_session_capsule.v1.json",
+      "id": "SCHEMA-AGENT-WORKSPACE-001",
+      "schema": "fss.agent_session_capsule.v1"
+    },
+    {
+      "authority": "situation projection",
+      "compatibilityRule": "task-relative selection changes only through a new frame and selection witness",
+      "file": "schemas/agent_situation_frame.v1.json",
+      "id": "SCHEMA-AGENT-SITUATION-001",
+      "schema": "fss.agent_situation_frame.v1"
+    },
+    {
+      "authority": "agent world model",
+      "compatibilityRule": "nominal estimate, certified core and absences, material alternatives, adversarial residuals, unresolved dimensions, discriminators, and selection witness remain separate and anchor-pinned",
+      "file": "schemas/agent_world_envelope.v1.json",
+      "id": "SCHEMA-AGENT-WORLD-ENVELOPE-001",
+      "schema": "fss.agent_world_envelope.v1"
+    },
+    {
+      "authority": "diagnostics",
+      "compatibilityRule": "bounded and secret-free",
+      "file": "CLI output",
+      "id": "SCHEMA-DOCTOR-001",
+      "schema": "fss.doctor.v1"
+    },
+    {
+      "authority": "authority",
+      "compatibilityRule": "immutable revisions; evidence required after hypothesis",
+      "file": "schemas/event_hypothesis.v1.json",
+      "id": "SCHEMA-EVENT-HYPOTHESIS-001",
+      "schema": "fss.event_hypothesis.v1"
+    },
+    {
+      "authority": "authority",
+      "compatibilityRule": "no mixed generations; additions require new epoch semantics",
+      "file": "schemas/evidence_anchor.v1.json",
+      "id": "SCHEMA-EVIDENCE-ANCHOR-001",
+      "schema": "fss.evidence_anchor.v1"
+    },
+    {
+      "authority": "authority/export",
+      "compatibilityRule": "old proof bundles remain replayable or explicitly unsupported",
+      "file": "schemas/evidence_bundle.v1.json",
+      "id": "SCHEMA-EVIDENCE-BUNDLE-001",
+      "schema": "fss.evidence_bundle.v1"
+    },
+    {
+      "authority": "operational memory",
+      "compatibilityRule": "episode signature, signals, failures, costs, applicability, decay, and privacy remain auditable",
+      "file": "schemas/experience_capsule.v1.json",
+      "id": "SCHEMA-AGENT-EXPERIENCE-001",
+      "schema": "fss.experience_capsule.v1"
+    },
+    {
+      "authority": "investigation cognition",
+      "compatibilityRule": "case revisions preserve question, decision, hypotheses, probes, stop rules, and residual uncertainty",
+      "file": "schemas/investigation_state.v1.json",
+      "id": "SCHEMA-AGENT-INVESTIGATION-001",
+      "schema": "fss.investigation_state.v1"
+    },
+    {
+      "authority": "effect truth",
+      "compatibilityRule": "state monotonicity; idempotency identity preserved",
+      "file": "schemas/operation_receipt.v1.json",
+      "id": "SCHEMA-OPERATION-RECEIPT-001",
+      "schema": "fss.operation_receipt.v1"
+    },
+    {
+      "authority": "effect truth",
+      "compatibilityRule": "immutable prepared operation; intent, obligation, and predicate preserved",
+      "file": "schemas/prepared_effect.v1.json",
+      "id": "SCHEMA-PREPARED-EFFECT-001",
+      "schema": "fss.prepared_effect.v1"
+    },
+    {
+      "authority": "context projection",
+      "compatibilityRule": "selected and omitted classes, critical preservation, stop reason, and expansion slots remain explicit",
+      "file": "schemas/semantic_compression_receipt.v1.json",
+      "id": "SCHEMA-AGENT-COMPRESSION-001",
+      "schema": "fss.semantic_compression_receipt.v1"
+    },
+    {
+      "authority": "authority",
+      "compatibilityRule": "append/supersede; no silent timestamp/source reinterpretation",
+      "file": "schemas/sensor_capsule.v1.json",
+      "id": "SCHEMA-SENSOR-CAPSULE-001",
+      "schema": "fss.sensor_capsule.v1"
+    },
+    {
+      "authority": "agent driver projection",
+      "compatibilityRule": "frame, meaningful delta, obligations, resources, affordances, context, and compression proof remain one anchor-pinned publication",
+      "file": "schemas/situation_capsule.v1.json",
+      "id": "SCHEMA-AGENT-SITUATION-CAPSULE-001",
+      "schema": "fss.situation_capsule.v1"
+    }
+  ],
+  "semanticProtocol": "fss/1",
+  "views": [
+    {
+      "gate": "QL-AGENT-001",
+      "id": "AVIEW-001",
+      "maximumTokens": 300,
+      "name": "pulse",
+      "owner": "fss-context-pack",
+      "purpose": "tiny high-severity meaningful delta, sensor-health, coverage-loss, effect-uncertainty, and obligation heartbeat",
+      "requiredSections": [
+        "criticalChanges",
+        "coverageChanges",
+        "effectUncertainty",
+        "urgentObligations",
+        "continuity"
+      ],
+      "status": "specified",
+      "targetTokens": 120
+    },
+    {
+      "gate": "QL-AGENT-001",
+      "id": "AVIEW-002",
+      "maximumTokens": 1600,
+      "name": "brief",
+      "owner": "fss-situation",
+      "purpose": "primary mission SituationCapsule answering what is established, what materially different worlds remain possible, what changed, why it matters, and what is robustly or conditionally safe to do next",
+      "requiredSections": [
+        "now",
+        "certified",
+        "possible",
+        "changed",
+        "why",
+        "unknown",
+        "atRisk",
+        "controlEnvelope",
+        "next"
+      ],
+      "status": "specified",
+      "targetTokens": 800
+    },
+    {
+      "gate": "QL-AGENT-001",
+      "id": "AVIEW-003",
+      "maximumTokens": 5000,
+      "name": "case",
+      "owner": "fss-investigation",
+      "purpose": "investigation question, competing hypotheses, evidence, contradictions, unknowns, discriminators, and stop rule",
+      "requiredSections": [
+        "question",
+        "hypotheses",
+        "evidence",
+        "contradictions",
+        "unknowns",
+        "discriminators",
+        "stopRule"
+      ],
+      "status": "specified",
+      "targetTokens": 3000
+    },
+    {
+      "gate": "QL-AGENT-001",
+      "id": "AVIEW-004",
+      "maximumTokens": 16000,
+      "name": "forensic",
+      "owner": "fss-context-pack",
+      "purpose": "broad exact evidence graph, source spans, receipts, alternative derivations, and replay handles",
+      "requiredSections": [
+        "evidenceGraph",
+        "sourceHandles",
+        "receipts",
+        "derivations",
+        "replay"
+      ],
+      "status": "specified",
+      "targetTokens": 8000
+    },
+    {
+      "gate": "QL-AGENT-001",
+      "id": "AVIEW-005",
+      "maximumTokens": 1200,
+      "name": "operation",
+      "owner": "fss-obligation",
+      "purpose": "one durable plan/effect/task, progress, expected terminal proof, obligations, and reconciliation",
+      "requiredSections": [
+        "state",
+        "progress",
+        "proofExpected",
+        "obligations",
+        "reconciliation"
+      ],
+      "status": "specified",
+      "targetTokens": 600
+    },
+    {
+      "gate": "QL-AGENT-001",
+      "id": "AVIEW-006",
+      "maximumTokens": 3200,
+      "name": "handoff",
+      "owner": "fss-handoff",
+      "purpose": "minimum sufficient state for another agent to resume without rediscovery or hidden staleness",
+      "requiredSections": [
+        "mission",
+        "situation",
+        "cases",
+        "plans",
+        "obligations",
+        "unknowns",
+        "budgets",
+        "authority",
+        "next"
+      ],
+      "status": "specified",
+      "targetTokens": 1800
+    },
+    {
+      "gate": "QL-AGENT-001",
+      "id": "AVIEW-007",
+      "maximumTokens": 1800,
+      "name": "decision_diff",
+      "owner": "fss-explain",
+      "purpose": "why a conclusion, priority, hypothesis, plan, or preferred affordance changed",
+      "requiredSections": [
+        "basisBefore",
+        "basisAfter",
+        "changedEvidence",
+        "invalidatedAssumptions",
+        "decisionImpact",
+        "whatWouldReverse"
+      ],
+      "status": "specified",
+      "targetTokens": 900
+    },
+    {
+      "gate": "QL-AGENT-001",
+      "id": "AVIEW-008",
+      "maximumTokens": 3000,
+      "name": "epistemic_map",
+      "owner": "fss-knowledge",
+      "purpose": "known/estimated/unknown/conflicted/stale/not-observable/redacted/indeterminate map plus certified core, material alternative worlds, adversarial residuals, and discriminators",
+      "requiredSections": [
+        "states",
+        "certifiedCore",
+        "certifiedAbsences",
+        "materialAlternatives",
+        "adversarialResiduals",
+        "coverage",
+        "contradictions",
+        "gaps",
+        "redactions",
+        "nextDiscriminators"
+      ],
+      "status": "specified",
+      "targetTokens": 1500
+    }
+  ]
+}
