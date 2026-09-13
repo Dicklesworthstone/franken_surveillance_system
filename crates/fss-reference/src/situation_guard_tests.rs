@@ -409,9 +409,7 @@ fn receipt_in_state(
                 Some("provider_timeout".to_owned()),
             ),
         ],
-        EffectState::Cancelled => {
-            return Err("a cancelled receipt carries a result digest the guard refuses".into());
-        }
+        EffectState::Cancelled => vec![(EffectState::Cancelled, Some(observed), None)],
     };
     let mut now = 100;
     for (next, digest, error) in steps {
@@ -434,12 +432,28 @@ fn receipt_in_state(
 /// and no canonical outcome.
 fn local_receipt_delta(state: EffectState) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>> {
     let name = format!("local-{}", state.as_str().replace('_', "-"));
-    let mut harness = GuardHarness::new(&name)?;
-    let (decision, receipt) = harness.corroborated(&name)?;
+    local_receipt_delta_via(&name, |journal, plan| {
+        let operation_receipt = receipt_in_state(journal, plan, state)?;
+        assert_eq!(operation_receipt.state, state);
+        Ok(operation_receipt)
+    })
+}
+
+type ReceiptResult = Result<fss_core::OperationReceipt, Box<dyn Error>>;
+
+/// Like [`local_receipt_delta`], with the local receipt produced by `build` from the prepared plan.
+fn local_receipt_delta_via<F>(
+    name: &str,
+    build: F,
+) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>>
+where
+    F: FnOnce(&mut EffectJournal, &ReferenceAlertPlan) -> ReceiptResult,
+{
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
     let mut journal = EffectJournal::new();
-    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, &name)?;
-    let operation_receipt = receipt_in_state(&mut journal, &plan, state)?;
-    assert_eq!(operation_receipt.state, state);
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+    let operation_receipt = build(&mut journal, &plan)?;
     let capabilities = ["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE];
 
     let mut basis_request = request(&decision, &receipt, &capabilities)?;
@@ -509,7 +523,11 @@ fn non_terminal_local_receipt_without_outcome_is_effect_uncertainty_not_terminal
 /// Control: a terminal local receipt is a proved terminal postcondition.
 #[test]
 fn terminal_local_receipt_is_a_terminal_effect() -> Result<(), Box<dyn Error>> {
-    for state in [EffectState::Verified, EffectState::Failed] {
+    for state in [
+        EffectState::Verified,
+        EffectState::Failed,
+        EffectState::Cancelled,
+    ] {
         let delta = local_receipt_delta(state)?;
         assert!(
             delta
@@ -530,5 +548,186 @@ fn terminal_local_receipt_is_a_terminal_effect() -> Result<(), Box<dyn Error>> {
         );
         delta.validate()?;
     }
+    Ok(())
+}
+
+// fss-deir9 F3/F4: the guard accepts exactly the receipts the effect journal produces.
+
+/// The receipt the journal reaches through reconciliation: committed, indeterminate with a
+/// reason, then observed and reconciled to verified, keeping the reason as provenance.
+fn reconciled_verified_receipt(
+    journal: &mut EffectJournal,
+    plan: &ReferenceAlertPlan,
+) -> ReceiptResult {
+    let operation_id = &plan.intent.operation_id;
+    let observed = fss_core::ContentDigest::sha256(b"situation-guard-reconciled-observation");
+    let _ = journal.transition(
+        operation_id,
+        EffectState::Committed,
+        TimestampNs(101),
+        None,
+        None,
+    )?;
+    let _ = journal.mark_indeterminate(operation_id, TimestampNs(102), "provider_timeout")?;
+    let _ = journal.transition(
+        operation_id,
+        EffectState::Observed,
+        TimestampNs(103),
+        Some(observed),
+        None,
+    )?;
+    let reconciled = journal
+        .reconcile_verified(operation_id, observed, TimestampNs(104))?
+        .clone();
+    assert_eq!(reconciled.state, EffectState::Verified);
+    assert_eq!(reconciled.error_code.as_deref(), Some("provider_timeout"));
+    Ok(reconciled)
+}
+
+#[test]
+fn reconciled_verified_receipt_compiles_to_a_terminal_effect() -> Result<(), Box<dyn Error>> {
+    let delta = local_receipt_delta_via("reconciled-verified", reconciled_verified_receipt)?;
+    assert!(
+        delta
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition),
+        "a reconciled verified receipt is terminal: {:?}",
+        delta.classes
+    );
+    assert!(
+        !delta
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change.contains(":local-state")),
+        "a reconciled verified receipt carries no local-state uncertainty: {:?}",
+        delta.effect_uncertainty_changes
+    );
+    delta.validate()?;
+    Ok(())
+}
+
+#[test]
+fn cancelled_receipt_must_carry_the_journal_cancellation_proof() -> Result<(), Box<dyn Error>> {
+    let name = "cancelled-proofless";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+    // The journal refuses to cancel without a cancellation proof digest ...
+    let refused = journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Cancelled,
+        TimestampNs(101),
+        None,
+        None,
+    );
+    assert!(
+        matches!(refused, Err(fss_core::ContractError::EvidenceRequired)),
+        "{refused:?}"
+    );
+    // ... so the guard refuses the same digest-less receipt built by hand.
+    let mut forged = journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?
+        .clone();
+    forged.state = EffectState::Cancelled;
+    forged.updated_at = TimestampNs(101);
+    let mut projection_request = request(
+        &decision,
+        &receipt,
+        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+    )?;
+    projection_request.alert_plan = Some(&plan);
+    let compiled = compile_reference_situation_with_operation_receipt(
+        projection_request,
+        &forged,
+        &harness.authority,
+    );
+    assert!(
+        matches!(
+            compiled,
+            Err(ReferenceError::InvalidSpec(
+                "situation_operation_receipt_integrity"
+            ))
+        ),
+        "{compiled:?}"
+    );
+    harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn indeterminate_without_a_reason_is_refused_by_journal_and_guard() -> Result<(), Box<dyn Error>> {
+    let name = "indeterminate-reasonless";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+    let operation_id = &plan.intent.operation_id;
+    let committed = journal
+        .transition(
+            operation_id,
+            EffectState::Committed,
+            TimestampNs(101),
+            None,
+            None,
+        )?
+        .clone();
+    let validated = journal.validate_transition(
+        operation_id,
+        EffectState::Indeterminate,
+        TimestampNs(102),
+        None,
+        None,
+    );
+    assert!(
+        matches!(validated, Err(fss_core::ContractError::EvidenceRequired)),
+        "validate_transition: {validated:?}"
+    );
+    let refused = journal.transition(
+        operation_id,
+        EffectState::Indeterminate,
+        TimestampNs(102),
+        None,
+        None,
+    );
+    assert!(
+        matches!(refused, Err(fss_core::ContractError::EvidenceRequired)),
+        "transition: {refused:?}"
+    );
+
+    let capabilities = ["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE];
+    let mut forged = committed;
+    forged.state = EffectState::Indeterminate;
+    forged.updated_at = TimestampNs(102);
+    let mut forged_request = request(&decision, &receipt, &capabilities)?;
+    forged_request.alert_plan = Some(&plan);
+    let compiled = compile_reference_situation_with_operation_receipt(
+        forged_request,
+        &forged,
+        &harness.authority,
+    );
+    assert!(
+        matches!(
+            compiled,
+            Err(ReferenceError::InvalidSpec(
+                "situation_operation_receipt_integrity"
+            ))
+        ),
+        "guard: {compiled:?}"
+    );
+
+    // With a reason both the journal and the guard accept the indeterminate receipt.
+    let marked = journal
+        .mark_indeterminate(operation_id, TimestampNs(102), "provider_timeout")?
+        .clone();
+    let mut marked_request = request(&decision, &receipt, &capabilities)?;
+    marked_request.alert_plan = Some(&plan);
+    let _ = compile_reference_situation_with_operation_receipt(
+        marked_request,
+        &marked,
+        &harness.authority,
+    )?;
+    harness.cleanup();
     Ok(())
 }

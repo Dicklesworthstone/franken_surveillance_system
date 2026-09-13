@@ -189,16 +189,14 @@ fn validate_operation_receipt(
                 && receipt.result_digest.is_none()
                 && receipt.error_code.is_none()
         }
+        // Reconciliation keeps the indeterminate reason as provenance
+        // (`EffectJournal::reconcile_verified`), so an observed or verified receipt may carry one.
         EffectState::Observed | EffectState::Verified => {
-            receipt.committed_at.is_some()
-                && receipt.result_digest.is_some()
-                && receipt.error_code.is_none()
+            receipt.committed_at.is_some() && receipt.result_digest.is_some()
         }
-        EffectState::Cancelled => {
-            receipt.committed_at.is_none()
-                && receipt.result_digest.is_none()
-                && receipt.error_code.is_none()
-        }
+        // The journal cancels only a prepared operation and only with a cancellation proof digest;
+        // a reason is optional (`EffectJournal::transition`).
+        EffectState::Cancelled => receipt.committed_at.is_none() && receipt.result_digest.is_some(),
         EffectState::Failed => receipt.result_digest.is_some() && receipt.error_code.is_some(),
         EffectState::Indeterminate => {
             receipt.committed_at.is_some() && receipt.error_code.is_some()

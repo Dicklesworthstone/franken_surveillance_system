@@ -2319,6 +2319,12 @@ impl EffectJournal {
             {
                 return Err(ContractError::EvidenceRequired);
             }
+            // An indeterminate outcome must name why it is unproved, as `mark_indeterminate`
+            // requires, so no reason-less indeterminate receipt exists for projection to refuse.
+            if next == EffectState::Indeterminate && error_code.as_deref().is_none_or(str::is_empty)
+            {
+                return Err(ContractError::EvidenceRequired);
+            }
             if next == EffectState::Committed && receipt.committed_at.is_none() {
                 receipt.committed_at = Some(now);
             }
@@ -2553,6 +2559,10 @@ impl EffectJournal {
         if next == EffectState::Failed
             && (result_digest.is_none() || error_code.is_none_or(str::is_empty))
         {
+            return Err(ContractError::EvidenceRequired);
+        }
+        // Mirrors `transition`: an indeterminate outcome must name why it is unproved.
+        if next == EffectState::Indeterminate && error_code.is_none_or(str::is_empty) {
             return Err(ContractError::EvidenceRequired);
         }
         Ok(receipt)
