@@ -210,12 +210,68 @@ fn test_observed_anti_laundering_from_weaker_provenance_rejected() -> Result<(),
 }
 
 #[test]
-fn test_provenance_class_relative_evidentiary_strength() -> Result<(), Box<dyn Error>> {
-    assert!(ProvenanceClass::Observed.strength() > ProvenanceClass::Derived.strength());
-    assert!(ProvenanceClass::Derived.strength() > ProvenanceClass::Predicted.strength());
-    assert!(ProvenanceClass::Derived.strength() > ProvenanceClass::Remembered.strength());
-    assert!(ProvenanceClass::Derived.strength() > ProvenanceClass::VendorClaimed.strength());
-    assert!(ProvenanceClass::Observed.strength() > ProvenanceClass::OperatorAsserted.strength());
+fn test_provenance_anti_laundering_transition_matrix_and_wire_codes() -> Result<(), Box<dyn Error>>
+{
+    // 1. Single-byte canonical wire codes round-trip for all 7 classes
+    let classes = [
+        (ProvenanceClass::Observed, 1),
+        (ProvenanceClass::Derived, 2),
+        (ProvenanceClass::Predicted, 3),
+        (ProvenanceClass::Remembered, 4),
+        (ProvenanceClass::OperatorAsserted, 5),
+        (ProvenanceClass::VendorClaimed, 6),
+        (ProvenanceClass::Policy, 7),
+    ];
+    for (class, code) in classes {
+        assert_eq!(class.to_code(), code);
+        assert_eq!(ProvenanceClass::from_code(code)?, class);
+    }
+    assert_eq!(
+        ProvenanceClass::from_code(0),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_code(8),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // 2. Explicit source-class anti-laundering transition rules (Constitution §8.3 & PROV-001..007)
+    // Predicted evidence cannot be reused under any non-predicted class
+    assert!(ProvenanceClass::Predicted.may_launder_evidence_into(ProvenanceClass::Observed));
+    assert!(ProvenanceClass::Predicted.may_launder_evidence_into(ProvenanceClass::Derived));
+    assert!(ProvenanceClass::Predicted.may_launder_evidence_into(ProvenanceClass::Remembered));
+    assert!(
+        ProvenanceClass::Predicted.may_launder_evidence_into(ProvenanceClass::OperatorAsserted)
+    );
+    assert!(ProvenanceClass::Predicted.may_launder_evidence_into(ProvenanceClass::VendorClaimed));
+    assert!(ProvenanceClass::Predicted.may_launder_evidence_into(ProvenanceClass::Policy));
+    assert!(!ProvenanceClass::Predicted.may_launder_evidence_into(ProvenanceClass::Predicted));
+
+    // Remembered operational memory cannot be relabeled as live Observed, Derived, or OperatorAsserted
+    assert!(ProvenanceClass::Remembered.may_launder_evidence_into(ProvenanceClass::Observed));
+    assert!(ProvenanceClass::Remembered.may_launder_evidence_into(ProvenanceClass::Derived));
+    assert!(
+        ProvenanceClass::Remembered.may_launder_evidence_into(ProvenanceClass::OperatorAsserted)
+    );
+    assert!(!ProvenanceClass::Remembered.may_launder_evidence_into(ProvenanceClass::Remembered));
+    assert!(!ProvenanceClass::Remembered.may_launder_evidence_into(ProvenanceClass::Predicted));
+    assert!(!ProvenanceClass::Remembered.may_launder_evidence_into(ProvenanceClass::Policy));
+
+    // Vendor claims cannot be laundered into independent Observed or Derived truth
+    assert!(ProvenanceClass::VendorClaimed.may_launder_evidence_into(ProvenanceClass::Observed));
+    assert!(ProvenanceClass::VendorClaimed.may_launder_evidence_into(ProvenanceClass::Derived));
+    assert!(
+        !ProvenanceClass::VendorClaimed.may_launder_evidence_into(ProvenanceClass::VendorClaimed)
+    );
+    assert!(!ProvenanceClass::VendorClaimed.may_launder_evidence_into(ProvenanceClass::Remembered));
+
+    // Observed, Derived, OperatorAsserted, Policy may not launder into other classes
+    assert!(!ProvenanceClass::Observed.may_launder_evidence_into(ProvenanceClass::Derived));
+    assert!(!ProvenanceClass::Observed.may_launder_evidence_into(ProvenanceClass::Remembered));
+    assert!(!ProvenanceClass::Derived.may_launder_evidence_into(ProvenanceClass::Observed));
+    assert!(
+        !ProvenanceClass::OperatorAsserted.may_launder_evidence_into(ProvenanceClass::Observed)
+    );
 
     Ok(())
 }
@@ -995,14 +1051,14 @@ fn test_predicted_orthogonality_across_epistemic_states() -> Result<(), Box<dyn 
             state_basis: basis_for(state)?,
         };
 
-        // Per PROV-003 and Constitution §8.2, a prediction is a counterfactual or
-        // forward expectation, never current truth. It is strictly forbidden from claiming
-        // the Known knowledge state.
+        // Per Constitution §8.2 and the recorded PROV-003 registry drift in registries/AGENT_CONTRACTS.md,
+        // a prediction is a counterfactual or forward expectation, never current truth.
+        // It is strictly forbidden from claiming the Known knowledge state.
         if state == KnowledgeState::Known {
             assert_eq!(
                 cell.validate(),
                 Err(ContractError::PredictedKnownForbidden),
-                "PROV-003: Predicted cell must refuse KnowledgeState::Known as a prediction is never current truth"
+                "Constitution §8.2 / PROV-003 drift: Predicted cell must refuse KnowledgeState::Known as a prediction is never current truth"
             );
             assert_eq!(
                 cell.validated(),
@@ -1053,11 +1109,11 @@ fn test_predicted_cannot_authorize_irreversible_effects_even_when_known()
         state_basis: None,
     };
 
-    // Per PROV-003 and Constitution §8.2, a prediction is never current truth and cannot claim Known
+    // Per Constitution §8.2 and the recorded PROV-003 registry drift, a prediction is never current truth and cannot claim Known
     assert_eq!(
         predicted_known_cell.validate(),
         Err(ContractError::PredictedKnownForbidden),
-        "Predicted cell claiming Known state must be refused"
+        "Predicted cell claiming Known state must be refused per Constitution §8.2"
     );
     assert_eq!(
         predicted_known_cell.clone().validated(),
@@ -1466,6 +1522,15 @@ fn test_remembered_cannot_authorize_irreversible_effects_even_when_known()
         Err(ContractError::EvidenceLaunderingDetected),
         "Relabeling remembered evidence to Observed without fresh observation must be rejected"
     );
+    assert!(
+        !laundered_observed.is_irreversible_effect_premise(now),
+        "Laundered observed cell must NOT authorize irreversible effects"
+    );
+    assert_eq!(
+        laundered_observed.validate(),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "Laundered cell must fail validation"
+    );
 
     let laundered_derived = KnowledgeCell {
         statement: "Derived cooling loop valve 4 as closed".to_string(),
@@ -1476,6 +1541,15 @@ fn test_remembered_cannot_authorize_irreversible_effects_even_when_known()
         laundered_derived.verify_no_evidence_laundering(&remembered_known_cell),
         Err(ContractError::EvidenceLaunderingDetected),
         "Relabeling remembered evidence to Derived without fresh computation must be rejected"
+    );
+    assert!(
+        !laundered_derived.is_irreversible_effect_premise(now),
+        "Laundered derived cell must NOT authorize irreversible effects"
+    );
+    assert_eq!(
+        laundered_derived.validate(),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "Laundered cell must fail validation"
     );
 
     Ok(())
@@ -2627,6 +2701,237 @@ fn test_fss_nozug_knowledge_cell_constructor_and_getters_integrity() -> Result<(
     assert_eq!(
         KnowledgeCell::new(predicted_params),
         Err(ContractError::PredictedKnownForbidden)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_mutant_m3_laundering_any_versus_all_mixed_evidence() -> Result<(), Box<dyn Error>> {
+    let prior_prediction_digest = ContentDigest::sha256(b"prior_model_prediction_output_digest");
+    let fresh_sensor_digest = ContentDigest::sha256(b"fresh_live_telemetry_camera_digest");
+
+    let predicted_cell = KnowledgeCell {
+        claim_id: "claim:predicted:trajectory".to_string(),
+        statement: "Trajectory predicted forward".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![prior_prediction_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    };
+
+    // Construct an Observed cell that mixes fresh evidence with a laundered prediction digest.
+    // Under .any(), finding ANY laundered digest triggers refusal.
+    // Under a buggy .all() mutant, having fresh_sensor_digest not in prior would bypass the check!
+    let mixed_observed_cell = KnowledgeCell {
+        claim_id: "claim:sensor:mixed:001".to_string(),
+        statement: "Sensor observation mixed with prediction".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![fresh_sensor_digest, prior_prediction_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    assert_eq!(
+        mixed_observed_cell.verify_no_evidence_laundering(&predicted_cell),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "Kills mutant M3: mixing fresh evidence with laundered evidence MUST be refused via .any()"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_mutant_m4_downgrade_and_peer_evidence_sharing_permitted() -> Result<(), Box<dyn Error>> {
+    let sensor_digest = ContentDigest::sha256(b"physical_sensor_capture_001");
+    let operator_digest = ContentDigest::sha256(b"signed_operator_dispatch_command");
+
+    let observed_cell = KnowledgeCell {
+        claim_id: "claim:camera:frame:001".to_string(),
+        statement: "Camera 1 frame captured".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![sensor_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    // 1. Downgrade: Observed -> Derived (Deriving fused belief from canonical sensor input)
+    let derived_cell = KnowledgeCell {
+        claim_id: "claim:derived:fusion:001".to_string(),
+        statement: "Multi-sensor fusion from camera 1".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![sensor_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    assert_eq!(
+        derived_cell.verify_no_evidence_laundering(&observed_cell),
+        Ok(()),
+        "Kills mutant M4: deriving belief from canonical sensor observation is valid downgrade"
+    );
+
+    // 2. Downgrade: Observed -> Remembered (Memory recording past observation)
+    let remembered_cell = KnowledgeCell {
+        claim_id: "claim:remembered:archive:001".to_string(),
+        statement: "Archived observation from prior shift".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Remembered,
+        hypothesis: None,
+        evidence: vec![sensor_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    assert_eq!(
+        remembered_cell.verify_no_evidence_laundering(&observed_cell),
+        Ok(()),
+        "Kills mutant M4: advisory memory citing past observation is valid downgrade"
+    );
+
+    // 3. Downgrade: Observed -> Predicted (Prediction conditioned on past observation)
+    let predicted_cell = KnowledgeCell {
+        claim_id: "claim:predicted:future:002".to_string(),
+        statement: "Forecast conditioned on camera observation".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![sensor_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    };
+    assert_eq!(
+        predicted_cell.verify_no_evidence_laundering(&observed_cell),
+        Ok(()),
+        "Kills mutant M4: prediction citing sensor input is valid downgrade"
+    );
+
+    // 4. Peer sharing: Observed -> Observed (Two sensors or corroborating observations)
+    let corroborating_observed = KnowledgeCell {
+        claim_id: "claim:sensor:corroboration:001".to_string(),
+        statement: "Corroborating sensor analysis".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![sensor_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    assert_eq!(
+        corroborating_observed.verify_no_evidence_laundering(&observed_cell),
+        Ok(()),
+        "Kills mutant M4: same-class Observed sharing evidence is valid"
+    );
+
+    // 5. PROV-001 Operator Evidence under Observed: OperatorAsserted -> Observed
+    let operator_cell = KnowledgeCell {
+        claim_id: "claim:operator:command:001".to_string(),
+        statement: "Operator commanded valve isolation".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::OperatorAsserted,
+        hypothesis: None,
+        evidence: vec![operator_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    let observed_operator_action = KnowledgeCell {
+        claim_id: "claim:observed:operator_action:001".to_string(),
+        statement: "Observed signed operator action".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![operator_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    assert_eq!(
+        observed_operator_action.verify_no_evidence_laundering(&operator_cell),
+        Ok(()),
+        "PROV-001 explicitly includes operator evidence under Observed; no false positive"
+    );
+
+    // 6. Sensor sharing: Derived -> Observed sharing sensor input
+    assert_eq!(
+        observed_cell.verify_no_evidence_laundering(&derived_cell),
+        Ok(()),
+        "Observed cell sharing sensor input with Derived belief is valid; no false positive"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_situation_frame_and_delta_refuse_laundered_evidence_collection()
+-> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let digest = ContentDigest::sha256(b"episode_memory_reused_in_situation");
+    let anchor = LedgerAnchor::genesis("site:collection-laundering-test");
+
+    let remembered_cell = KnowledgeCell {
+        claim_id: "claim:remembered:prior_gate".to_string(),
+        statement: "Gate was locked in prior shift".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Remembered,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    let laundered_cell = KnowledgeCell {
+        claim_id: "claim:gate:current_lock".to_string(),
+        statement: "Gate is observed locked".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![digest], // Reusing remembered digest without fresh observation!
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    // A SituationFrame containing both cells MUST fail validate()
+    let frame = SituationFrame {
+        frame_id: "frame:001".to_string(),
+        objective_id: "obj:001".to_string(),
+        anchor: anchor.clone(),
+        world_envelope: WorldEnvelope {
+            envelope_id: "env:001".to_string(),
+            objective_id: "obj:001".to_string(),
+            anchor: anchor.clone(),
+            supported_worlds: vec![],
+            unsafe_worlds: vec![],
+        },
+        knowledge_cells: vec![remembered_cell.clone(), laundered_cell.clone()],
+        now: vec![],
+        changed: vec![],
+        why: vec![],
+        unknown: vec![],
+        at_risk: vec![],
+        next: vec![],
+        evidence_handles: BTreeSet::new(),
+    };
+
+    assert_eq!(
+        frame.validate(),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "SituationFrame must refuse a knowledge cell collection containing laundered evidence"
     );
 
     Ok(())

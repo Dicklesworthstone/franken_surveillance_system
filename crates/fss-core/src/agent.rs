@@ -568,6 +568,15 @@ impl KnowledgeCell {
         {
             return Err(ContractError::PredictedKnownForbidden);
         }
+        if (self.claim_id.starts_with("claim:predicted:")
+            && self.provenance != ProvenanceClass::Predicted)
+            || (self.claim_id.starts_with("claim:remembered:")
+                && self.provenance != ProvenanceClass::Remembered)
+            || (self.claim_id.starts_with("claim:vendor_claimed:")
+                && self.provenance != ProvenanceClass::VendorClaimed)
+        {
+            return Err(ContractError::EvidenceLaunderingDetected);
+        }
         if matches!(
             self.provenance,
             ProvenanceClass::Observed | ProvenanceClass::Derived
@@ -596,7 +605,7 @@ impl KnowledgeCell {
         &self,
         prior: &KnowledgeCell,
     ) -> Result<(), ContractError> {
-        if self.provenance.strength() > prior.provenance.strength()
+        if prior.provenance.may_launder_evidence_into(self.provenance)
             && self.evidence.iter().any(|e| prior.evidence.contains(e))
         {
             return Err(ContractError::EvidenceLaunderingDetected);
@@ -1071,8 +1080,12 @@ impl SituationFrame {
         {
             return Err(ContractError::StaleAnchor);
         }
-        for cell in &self.knowledge_cells {
+        for (i, cell) in self.knowledge_cells.iter().enumerate() {
             cell.validate()?;
+            for prior in &self.knowledge_cells[..i] {
+                cell.verify_no_evidence_laundering(prior)?;
+                prior.verify_no_evidence_laundering(cell)?;
+            }
         }
         self.world_envelope.validate()
     }

@@ -459,7 +459,7 @@ impl CanonicalEncode for MeaningfulDelta {
 
 fn validate_changed_cells(cells: &[KnowledgeCell]) -> Result<(), ContractError> {
     let mut claims = BTreeSet::new();
-    for cell in cells {
+    for (i, cell) in cells.iter().enumerate() {
         if cell.claim_id.is_empty()
             || cell.statement.is_empty()
             || !claims.insert(cell.claim_id.as_str())
@@ -467,6 +467,10 @@ fn validate_changed_cells(cells: &[KnowledgeCell]) -> Result<(), ContractError> 
             return Err(ContractError::NonCanonicalOrdering);
         }
         cell.validate()?;
+        for prior in &cells[..i] {
+            cell.verify_no_evidence_laundering(prior)?;
+            prior.verify_no_evidence_laundering(cell)?;
+        }
     }
     Ok(())
 }

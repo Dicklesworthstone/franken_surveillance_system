@@ -416,18 +416,60 @@ impl ProvenanceClass {
         matches!(self, Self::VendorClaimed)
     }
 
-    /// Returns the relative evidentiary strength of this provenance class.
+    /// Returns whether reusing evidence from `self` (source provenance) under `target`
+    /// constitutes evidence or confidence laundering without fresh observation or derivation.
     ///
-    /// Higher strength classes require more direct physical or deterministic proof.
-    /// Per Constitution §8.3, the same evidence digest cannot be reused under a
-    /// stronger provenance class without fresh live observation.
+    /// CONSTITUTIONAL AND REGISTRY RULES (Constitution §8.3, PROV-001..007, AGENTS.md):
+    /// - PROV-001 (observed): Directly supported by canonical sensor, device, operator, or effect evidence.
+    ///   Sharing canonical evidence between Observed, Derived, and OperatorAsserted is permitted.
+    /// - PROV-002 (derived): Deterministically computed from named canonical inputs.
+    ///   Sharing sensor inputs between Derived and Observed is permitted.
+    /// - PROV-003 (predicted): Counterfactual or forward expectations (never current truth).
+    ///   Predicted evidence digests can NEVER be reused under non-predicted classes
+    ///   (Observed, Derived, Remembered, OperatorAsserted, VendorClaimed, Policy).
+    /// - PROV-004 (remembered): Advisory operational memory from prior episodes that must be
+    ///   revalidated against live evidence. Cannot be relabeled as live Observed, Derived, or
+    ///   OperatorAsserted without fresh live evidence.
+    /// - PROV-006 (vendor_claimed): Boundary metadata not treated as independent physical truth.
+    ///   Cannot be laundered into independent physical Observed or deterministic Derived truth.
     #[must_use]
-    pub const fn strength(self) -> u8 {
+    pub const fn may_launder_evidence_into(self, target: Self) -> bool {
         match self {
-            Self::Predicted | Self::Remembered | Self::VendorClaimed => 1,
-            Self::Policy | Self::OperatorAsserted => 2,
-            Self::Derived => 3,
-            Self::Observed => 4,
+            Self::Predicted => !matches!(target, Self::Predicted),
+            Self::Remembered => matches!(
+                target,
+                Self::Observed | Self::Derived | Self::OperatorAsserted
+            ),
+            Self::VendorClaimed => matches!(target, Self::Observed | Self::Derived),
+            Self::Observed | Self::Derived | Self::OperatorAsserted | Self::Policy => false,
+        }
+    }
+
+    /// Encodes this provenance class into its canonical 1-based wire byte tag.
+    #[must_use]
+    pub const fn to_code(self) -> u8 {
+        match self {
+            Self::Observed => 1,
+            Self::Derived => 2,
+            Self::Predicted => 3,
+            Self::Remembered => 4,
+            Self::OperatorAsserted => 5,
+            Self::VendorClaimed => 6,
+            Self::Policy => 7,
+        }
+    }
+
+    /// Decodes a [`ProvenanceClass`] from its canonical 1-based wire byte tag.
+    pub const fn from_code(code: u8) -> Result<Self, ContractError> {
+        match code {
+            1 => Ok(Self::Observed),
+            2 => Ok(Self::Derived),
+            3 => Ok(Self::Predicted),
+            4 => Ok(Self::Remembered),
+            5 => Ok(Self::OperatorAsserted),
+            6 => Ok(Self::VendorClaimed),
+            7 => Ok(Self::Policy),
+            _ => Err(ContractError::InvalidIdentifier),
         }
     }
 }

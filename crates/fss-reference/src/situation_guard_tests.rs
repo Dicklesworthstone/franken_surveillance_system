@@ -1829,14 +1829,14 @@ fn sealed_publication_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Pinned v4 seal digest of the fixed compiled publication below.
+/// Pinned v5 seal digest of the fixed compiled publication below.
 const GOLDEN_SEAL_DIGEST: &str =
     "sha256:568a66468f819f4b34783f437ba70250071168c939538bf12b157386b67cb746";
-/// Pinned v4 publication digest of the fixed compiled publication below.
+/// Pinned v5 publication digest of the fixed compiled publication below.
 const GOLDEN_PUBLICATION_DIGEST: &str =
     "sha256:0526025393284eaae0dd36b290e767783dc4daad664ed94c29ccc943560e37cb";
 
-/// Review round 4 F5: the seal digest and the v2 publication digest of a fixed compiled
+/// Review round 4 F5: the seal digest and the v5 publication digest of a fixed compiled
 /// publication are pinned, so any change to either encoding has to change these goldens on purpose.
 #[test]
 fn compiled_publication_digests_are_pinned() -> Result<(), Box<dyn Error>> {
@@ -1962,10 +1962,10 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Pinned v4 seal digest of the fixed compiled publication with effect bindings below.
+/// Pinned v5 seal digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
     "sha256:40e98673d2d6b106e695ae3559d544aa44c8b53a299fb1db5440a3fb9d481ab7";
-/// Pinned v4 publication digest of the fixed compiled publication with effect bindings below.
+/// Pinned v5 publication digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
     "sha256:b5d866d05ee5790f9a9a935ba3d5a1240dc33bdcbfe81a2640954168876d4de6";
 
