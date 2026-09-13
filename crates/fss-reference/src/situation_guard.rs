@@ -9,9 +9,10 @@ use fss_core::{
 };
 use fss_ledger::DurableReferenceLedger;
 
+use crate::situation::EFFECT_CLAIM_PREFIX;
 use crate::{DurableEffectJournal, ReferenceAlertPlan, ReferenceError};
 
-pub use crate::situation::{ReferenceSituation, ReferenceSituationRequest};
+pub use crate::situation::{EffectCellKind, ReferenceSituation, ReferenceSituationRequest};
 
 /// Required capability to reconcile an in-flight or indeterminate effect.
 pub const CAPABILITY_EFFECT_RECONCILE: &str = "capability:effect.reconcile";
@@ -223,25 +224,36 @@ fn annotate_operation_receipt(
         .frame
         .evidence_handles
         .insert(format!("fss://proof/{digest}"));
-    situation.capsule.frame.knowledge_cells.push(
-        KnowledgeCell {
-            claim_id: format!("claim:effect:{operation_id}:local-state"),
-            statement: format!(
-                "The exact local effect journal receipt records state {}.",
-                operation_receipt.state.as_str()
-            ),
-            knowledge_state,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: None,
-            evidence: vec![digest],
-            contradictions: Vec::new(),
-            valid_until: None,
-            state_basis: (knowledge_state == KnowledgeState::Indeterminate).then(|| {
-                KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(digest))
-            }),
-        }
-        .validated()?,
-    );
+    let cell = KnowledgeCell {
+        claim_id: format!(
+            "{EFFECT_CLAIM_PREFIX}{operation_id}{}",
+            EffectCellKind::LocalState.claim_suffix()
+        ),
+        statement: format!(
+            "The exact local effect journal receipt records state {}.",
+            operation_receipt.state.as_str()
+        ),
+        knowledge_state,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: (knowledge_state == KnowledgeState::Indeterminate).then(|| {
+            KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(digest))
+        }),
+    }
+    .validated()?;
+    // The caller validated the receipt against the plan (and against the published outcome, when
+    // there is one), so the cell is compiled from verified material in every state. Binding it
+    // also keeps an indeterminate local state from being dropped or relabeled later (fss-6sph6).
+    situation.bind_effect_cell(
+        EffectCellKind::LocalState,
+        &operation_receipt.intent.operation_id,
+        operation_receipt.state,
+        &cell,
+    )?;
+    situation.capsule.frame.knowledge_cells.push(cell);
     situation.capsule.frame.now.push(format!(
         "Local operation {operation_id} is {}.",
         operation_receipt.state.as_str()

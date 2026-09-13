@@ -1,7 +1,8 @@
 //! Deterministic agent-facing projection of the reference evidence/effect spine.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
+use fss_core::OperationId;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder,
     Completeness, ContentDigest, ContractBasis, CoverageContinuity, CoverageStopReason,
@@ -25,6 +26,8 @@ const CAPABILITY_ALERT_PREPARE: &str = "capability:alert.prepare";
 const CAPABILITY_ALERT_COMMIT: &str = "capability:alert.commit";
 const CAPABILITY_EFFECT_RECONCILE: &str = "capability:effect.reconcile";
 const CAPABILITY_SESSION_WAIT: &str = "capability:session.wait";
+/// Claim-identity namespace of every effect proposition.
+pub(crate) const EFFECT_CLAIM_PREFIX: &str = "claim:effect:";
 
 /// Exact inputs used to compile one bounded situation projection.
 #[derive(Clone, Debug)]
@@ -59,6 +62,72 @@ pub struct ReferenceSituationRequest<'a> {
     pub created_at: TimestampNs,
 }
 
+/// Which effect proposition a compiled effect cell states.
+///
+/// The kind is typed on the binding rather than read back from the claim identity (fss-6sph6).
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum EffectCellKind {
+    /// `claim:effect:{operation}:local-state`: the state of the exact local journal receipt.
+    LocalState,
+    /// `claim:effect:{operation}:outcome`: the canonically published effect outcome.
+    Outcome,
+}
+
+impl EffectCellKind {
+    pub(crate) const fn claim_suffix(self) -> &'static str {
+        match self {
+            Self::LocalState => ":local-state",
+            Self::Outcome => ":outcome",
+        }
+    }
+}
+
+/// Typed terminal outcome of the operation a proved effect cell states (fss-6sph6).
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub(crate) enum EffectOutcome {
+    /// The operation is terminally verified.
+    Succeeded,
+    /// The operation is terminally failed.
+    Failed,
+    /// The operation was cancelled before it crossed the boundary.
+    Cancelled,
+}
+
+impl EffectOutcome {
+    /// The terminal outcome an operation in `state` proves, or `None` for a non-terminal state.
+    /// The match is exhaustive so a new state must be classified here.
+    pub(crate) const fn of(state: EffectState) -> Option<Self> {
+        match state {
+            EffectState::Verified => Some(Self::Succeeded),
+            EffectState::Failed => Some(Self::Failed),
+            EffectState::Cancelled => Some(Self::Cancelled),
+            EffectState::Prepared
+            | EffectState::Committed
+            | EffectState::AdapterAccepted
+            | EffectState::Observed
+            | EffectState::Indeterminate => None,
+        }
+    }
+
+    /// Stable label for delta reports.
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+        }
+    }
+}
+
+/// One effect cell a compile path produced from material it verified.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EffectCellBinding {
+    kind: EffectCellKind,
+    operation_id: OperationId,
+    outcome: Option<EffectOutcome>,
+    cell_digest: ContentDigest,
+}
+
 /// A compiled situation plus every proof root needed for a self-contained handoff.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferenceSituation {
@@ -66,16 +135,137 @@ pub struct ReferenceSituation {
     pub capsule: SituationCapsule,
     /// Exact proof roots required to verify the handoff without re-running projection.
     pub proof_roots: BTreeSet<ContentDigest>,
+    /// Effect cells bound to verified material, keyed by claim identity.
+    ///
+    /// Private, so only this crate's compile paths bind a cell, after checking the outcome or the
+    /// receipt it came from. A proof root alone never proves an effect: any caller can add one to
+    /// `proof_roots` (fss-6sph6).
+    effect_bindings: BTreeMap<String, EffectCellBinding>,
 }
 
 impl ReferenceSituation {
+    /// Builds a situation that binds no effect cell to verified material.
+    ///
+    /// It may carry effect cells in any unproved state, but [`Self::verify`] refuses one that is
+    /// `known`: only a compile path that checked the outcome or receipt can bind a terminal effect.
+    #[must_use]
+    pub fn new(capsule: SituationCapsule, proof_roots: BTreeSet<ContentDigest>) -> Self {
+        Self {
+            capsule,
+            proof_roots,
+            effect_bindings: BTreeMap::new(),
+        }
+    }
+
+    /// Returns the kind of the bound effect cell `claim_id`, or `None` when no compile path bound
+    /// a cell under that claim identity.
+    #[must_use]
+    pub fn effect_cell_kind(&self, claim_id: &str) -> Option<EffectCellKind> {
+        self.effect_bindings
+            .get(claim_id)
+            .map(|binding| binding.kind)
+    }
+
+    /// Returns the operation and, when terminal, the typed outcome of the bound effect cell
+    /// `claim_id`, so effect cells group by operation rather than by claim identity.
+    pub(crate) fn effect_operation(
+        &self,
+        claim_id: &str,
+    ) -> Option<(&OperationId, Option<EffectOutcome>)> {
+        self.effect_bindings
+            .get(claim_id)
+            .map(|binding| (&binding.operation_id, binding.outcome))
+    }
+
+    /// Records `cell` as compiled, as a `kind` cell, from the verified material of `operation_id`
+    /// in `state`. Callers push the same cell into the capsule, so [`Self::verify`] can refuse a
+    /// later drop or relabel of it. The cell is `known` exactly when `state` is terminal.
+    pub(crate) fn bind_effect_cell(
+        &mut self,
+        kind: EffectCellKind,
+        operation_id: &OperationId,
+        state: EffectState,
+        cell: &KnowledgeCell,
+    ) -> Result<(), ReferenceError> {
+        let outcome = EffectOutcome::of(state);
+        let expected_claim = format!(
+            "{EFFECT_CLAIM_PREFIX}{}{}",
+            operation_id.as_str(),
+            kind.claim_suffix()
+        );
+        if cell.claim_id != expected_claim
+            || outcome.is_some() != (cell.knowledge_state == KnowledgeState::Known)
+        {
+            return Err(ReferenceError::InvalidSpec("situation_effect_binding"));
+        }
+        let claim_id = cell.claim_id.as_str();
+        cell.validate()?;
+        let binding = EffectCellBinding {
+            kind,
+            operation_id: operation_id.clone(),
+            outcome,
+            cell_digest: cell.cell_digest(),
+        };
+        if self
+            .effect_bindings
+            .insert(claim_id.to_owned(), binding)
+            .is_some()
+        {
+            return Err(ReferenceError::InvalidSpec("situation_effect_binding"));
+        }
+        Ok(())
+    }
+
     /// Revalidates the capsule and returns its deterministic decision fingerprint.
+    ///
+    /// Refuses a `known` effect cell that no compile path bound, and a bound effect cell that was
+    /// dropped, duplicated, relabeled, or whose evidence roots were removed from `proof_roots`.
     pub fn verify(&self) -> Result<ContentDigest, ReferenceError> {
         self.capsule.validate()?;
         if self.proof_roots.is_empty() {
             return Err(fss_core::ContractError::IncompletePublicationGraph.into());
         }
+        self.verify_effect_bindings()?;
         Ok(self.capsule.decision_fingerprint()?)
+    }
+
+    fn verify_effect_bindings(&self) -> Result<(), ReferenceError> {
+        let cells = &self.capsule.frame.knowledge_cells;
+        for (claim_id, binding) in &self.effect_bindings {
+            let mut matching = cells.iter().filter(|cell| &cell.claim_id == claim_id);
+            let cell = matching
+                .next()
+                .ok_or(ReferenceError::InvalidSpec("situation_effect_cell_dropped"))?;
+            if matching.next().is_some() {
+                return Err(ReferenceError::InvalidSpec(
+                    "situation_effect_cell_duplicated",
+                ));
+            }
+            if cell.cell_digest() != binding.cell_digest {
+                return Err(ReferenceError::InvalidSpec(
+                    "situation_effect_cell_relabeled",
+                ));
+            }
+            if !cell
+                .evidence
+                .iter()
+                .all(|root| self.proof_roots.contains(root))
+            {
+                return Err(fss_core::ContractError::IncompletePublicationGraph.into());
+            }
+        }
+        // A `known` effect asserts a terminal outcome, so it must be a bound cell (KSTATE-001). A
+        // bound claim appears exactly once and matches its binding, as checked above.
+        if cells.iter().any(|cell| {
+            cell.claim_id.starts_with(EFFECT_CLAIM_PREFIX)
+                && cell.knowledge_state == KnowledgeState::Known
+                && !self.effect_bindings.contains_key(&cell.claim_id)
+        }) {
+            return Err(ReferenceError::InvalidSpec(
+                "situation_effect_known_unbound",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -349,6 +539,7 @@ pub fn compile_reference_situation(
         proof_roots.insert(digest);
     }
 
+    let mut outcome_cell = None;
     if let Some(outcome) = request.alert_outcome {
         let operation = &outcome.outcome.operation_receipt;
         let (knowledge_state, statement) = match operation.state {
@@ -366,23 +557,26 @@ pub fn compile_reference_situation(
             ),
             _ => return Err(ReferenceError::InvalidSpec("situation_effect_state")),
         };
-        knowledge_cells.push(
-            KnowledgeCell {
-                claim_id: format!(
-                    "claim:effect:{}:outcome",
-                    operation.intent.operation_id.as_str()
-                ),
-                statement: statement.to_owned(),
-                knowledge_state,
-                provenance: ProvenanceClass::Observed,
-                hypothesis: None,
-                evidence: operation.result_digest.into_iter().collect(),
-                contradictions: Vec::new(),
-                valid_until: None,
-                state_basis: reconciliation_basis_for(knowledge_state, operation.receipt_digest()),
-            }
-            .validated()?,
-        );
+        let cell = KnowledgeCell {
+            claim_id: format!(
+                "{EFFECT_CLAIM_PREFIX}{}{}",
+                operation.intent.operation_id.as_str(),
+                EffectCellKind::Outcome.claim_suffix()
+            ),
+            statement: statement.to_owned(),
+            knowledge_state,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: operation.result_digest.into_iter().collect(),
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: reconciliation_basis_for(knowledge_state, operation.receipt_digest()),
+        }
+        .validated()?;
+        knowledge_cells.push(cell.clone());
+        // `validate_request` bound this outcome to the authority object and recomputed its root
+        // from the body, so the cell is compiled from verified material (fss-6sph6).
+        outcome_cell = Some((operation.intent.operation_id.clone(), operation.state, cell));
     }
 
     let (world_envelope, mut unknown, mut at_risk) = compile_worlds(WorldCompilationParams {
@@ -650,10 +844,11 @@ pub fn compile_reference_situation(
         mission_state: None,
     };
     capsule.validate()?;
-    Ok(ReferenceSituation {
-        capsule,
-        proof_roots,
-    })
+    let mut situation = ReferenceSituation::new(capsule, proof_roots);
+    if let Some((operation_id, state, cell)) = &outcome_cell {
+        situation.bind_effect_cell(EffectCellKind::Outcome, operation_id, *state, cell)?;
+    }
+    Ok(situation)
 }
 
 /// Seals a root-closed handoff from a verified reference situation.

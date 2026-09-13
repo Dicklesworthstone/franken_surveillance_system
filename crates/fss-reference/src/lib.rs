@@ -135,7 +135,7 @@ pub use policy::{
 };
 pub use situation_guard::{
     CAPABILITY_EFFECT_RECONCILE, EFFECT_RECONCILE_AFFORDANCE, EFFECT_STATUS_AFFORDANCE,
-    ReferenceSituation, ReferenceSituationRequest, compile_reference_situation,
+    EffectCellKind, ReferenceSituation, ReferenceSituationRequest, compile_reference_situation,
     compile_reference_situation_with_durable_journal,
     compile_reference_situation_with_operation_receipt, seal_reference_handoff,
 };

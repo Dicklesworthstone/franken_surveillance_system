@@ -381,10 +381,7 @@ fn synthetic_situation(
         mission_state: None,
     };
     capsule.validate()?;
-    Ok(ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence]),
-    })
+    Ok(ReferenceSituation::new(capsule, BTreeSet::from([evidence])))
 }
 
 // ---------------------------------------------------------------------------

@@ -969,6 +969,63 @@ fn forged_result_digest_is_refused() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// fss-6sph6: the compile path binds a verified outcome cell with its typed kind, and a proved
+/// outcome cannot be relabeled (for example from delivered to failed) or re-wrapped without that
+/// binding.
+#[test]
+fn verified_outcome_cell_is_bound_and_cannot_be_relabeled() -> Result<(), Box<dyn Error>> {
+    let (harness, decision, event_receipt, plan, outcome) = verified_outcome_fixture("bound")?;
+    let mut compile_request = request(
+        &decision,
+        &event_receipt,
+        capabilities(&["capability:alert.commit"]),
+    )?;
+    compile_request.alert_plan = Some(&plan);
+    compile_request.alert_outcome = Some(&outcome);
+    compile_request.previous_anchor = Some(event_receipt.authority_anchor.clone());
+    let situation = compile_reference_situation(compile_request, &harness.authority)?;
+    situation.verify()?;
+    let claim_id = format!("claim:effect:{}:outcome", plan.intent.operation_id.as_str());
+    assert_eq!(
+        situation.effect_cell_kind(&claim_id),
+        Some(crate::EffectCellKind::Outcome)
+    );
+
+    let mut relabeled = situation.clone();
+    for cell in &mut relabeled.capsule.frame.knowledge_cells {
+        if cell.claim_id == claim_id {
+            cell.statement =
+                "Alert delivery is terminally failed by retained non-delivery proof.".to_owned();
+        }
+    }
+    let refused = relabeled.verify();
+    assert!(
+        matches!(
+            refused,
+            Err(ReferenceError::InvalidSpec(
+                "situation_effect_cell_relabeled"
+            ))
+        ),
+        "{refused:?}"
+    );
+
+    let unbound =
+        crate::ReferenceSituation::new(situation.capsule.clone(), situation.proof_roots.clone());
+    assert_eq!(unbound.effect_cell_kind(&claim_id), None);
+    let refused = unbound.verify();
+    assert!(
+        matches!(
+            refused,
+            Err(ReferenceError::InvalidSpec(
+                "situation_effect_known_unbound"
+            ))
+        ),
+        "{refused:?}"
+    );
+    harness.cleanup();
+    Ok(())
+}
+
 #[test]
 fn compiled_corroborated_cell_with_contradicting_edge_is_conflicted() -> Result<(), Box<dyn Error>>
 {

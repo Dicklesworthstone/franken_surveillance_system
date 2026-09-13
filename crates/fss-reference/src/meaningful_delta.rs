@@ -9,6 +9,7 @@ use fss_core::{
     TimestampNs, WorldEnvelope,
 };
 
+use crate::situation::{EFFECT_CLAIM_PREFIX, EffectOutcome};
 use crate::{ReferenceError, ReferenceSituationPublication};
 
 /// Returns whether a premise that a plan relied on at `prior` is invalidated by its `current`
@@ -61,6 +62,11 @@ enum IndeterminateEffectSuccessor {
 /// The bar a proved effect outcome clears in one publication: the full irreversible-effect premise
 /// at the capsule's `created_at`, with every evidence root among the publication's retained proof
 /// roots, so a caller-supplied digest that nothing retains cannot prove an outcome (fss-deir9).
+///
+/// A proof root alone is not the binding: both publications pass `verify` before any bar is
+/// applied, and `ReferenceSituation::verify` refuses a `known` effect cell that no compile path
+/// bound to a verified outcome or receipt, so a hand-built situation cannot assert its own proof
+/// root into a terminal effect (fss-6sph6).
 #[derive(Clone, Copy)]
 struct ProofBar<'a> {
     now: TimestampNs,
@@ -153,6 +159,8 @@ pub fn classify_reference_meaningful_delta(
     let result_frame = &result_capsule.frame;
     let basis_bar = ProofBar::of(basis);
     let result_bar = ProofBar::of(result);
+    let basis_proved = proved_operations(basis, basis_bar);
+    let result_proved = proved_operations(result, result_bar);
     let mut classes = BTreeSet::new();
     let changed_cells = changed_cells(&basis_frame.knowledge_cells, &result_frame.knowledge_cells);
     let mut invalidated_assumptions = Vec::new();
@@ -286,6 +294,15 @@ pub fn classify_reference_meaningful_delta(
                     ));
                 }
             }
+            // Another retained cell still proves the same operation with the same outcome, so the
+            // premise's content is unchanged even though this cell left the frame (fss-6sph6).
+            None if is_effect_claim(prior)
+                && operation_proof_retained(
+                    basis,
+                    &prior.claim_id,
+                    &basis_proved,
+                    &result_proved,
+                ) => {}
             None => invalidated_assumptions.push(format!(
                 "{state_label} premise {} disappeared from the result frame",
                 prior.claim_id
@@ -324,8 +341,13 @@ pub fn classify_reference_meaningful_delta(
             Some(current) => match indeterminate_effect_successor(current, result_bar) {
                 IndeterminateEffectSuccessor::Resolved => {
                     effect_resolved = true;
+                    let outcome = result
+                        .situation
+                        .effect_operation(claim_id)
+                        .and_then(|(_, outcome)| outcome)
+                        .map_or("unbound", EffectOutcome::as_str);
                     effect_uncertainty_changes.push(format!(
-                        "effect uncertainty resolved: {claim_id} became known with retained outcome evidence"
+                        "effect uncertainty resolved: {claim_id} became known with retained {outcome} outcome evidence"
                     ));
                 }
                 IndeterminateEffectSuccessor::Unresolved => {
@@ -339,6 +361,14 @@ pub fn classify_reference_meaningful_delta(
                     ));
                 }
             },
+            // Effects are proved per operation: another retained cell proves this cell's operation,
+            // so the cell was superseded by a proved outcome rather than dropped (fss-6sph6).
+            None if operation_proved(basis, claim_id, &result_proved) => {
+                effect_resolved = true;
+                effect_uncertainty_changes.push(format!(
+                    "effect uncertainty resolved: indeterminate effect {claim_id} left the result frame and another retained cell proves its operation"
+                ));
+            }
             None => {
                 effect_uncertainty_changes.push(format!(
                     "effect uncertainty remains: indeterminate effect {claim_id} disappeared from the result frame without a proved outcome"
@@ -389,6 +419,18 @@ pub fn classify_reference_meaningful_delta(
         {
             continue;
         }
+        // Effects are proved per operation (fss-6sph6). A dropped proved cell whose operation
+        // another retained cell still proves with the same outcome takes no proof out of the frame,
+        // and a dropped unproved cell whose operation the result proves was superseded by that
+        // proof, which the terminal-transition rule reports.
+        let superseded = if basis_bar.proves(prior) {
+            operation_proof_retained(basis, &prior.claim_id, &basis_proved, &result_proved)
+        } else {
+            operation_proved(basis, &prior.claim_id, &result_proved)
+        };
+        if superseded {
+            continue;
+        }
         let claim_id = &prior.claim_id;
         if basis_bar.proves(prior) {
             effect_uncertainty_changes.push(format!(
@@ -418,6 +460,21 @@ pub fn classify_reference_meaningful_delta(
             let state = cell.knowledge_state.as_str();
             effect_uncertainty_changes.push(format!(
                 "effect uncertainty remains: effect {claim_id} is {state} without a proved outcome"
+            ));
+        }
+    }
+    // An operation proved in both publications with different typed outcomes (for example
+    // succeeded, then failed) contradicts its own terminal proof, which is never silent
+    // (fss-6sph6).
+    for (operation, basis_outcomes) in &basis_proved {
+        if let Some(result_outcomes) = result_proved.get(operation)
+            && result_outcomes != basis_outcomes
+        {
+            classes.insert(MeaningfulDeltaClass::Contradiction);
+            effect_uncertainty_changes.push(format!(
+                "effect outcome contradicted: operation {operation} was proved {} and is now proved {}",
+                outcome_labels(basis_outcomes),
+                outcome_labels(result_outcomes)
             ));
         }
     }
@@ -461,16 +518,14 @@ pub fn classify_reference_meaningful_delta(
     // basis-indeterminate effect is terminal only when it resolved above. Any other effect cell is
     // terminal when it newly clears the bar, never through a bare `known` state or a hypothesis
     // disposition, so an effect laundered through another state still needs a proved outcome.
+    // "Newly" is per operation: a cell added to an operation the basis already proved is not a
+    // second terminal transition (fss-6sph6).
     let effect_terminalized = effect_resolved
         || result_frame.knowledge_cells.iter().any(|cell| {
             is_effect_claim(cell)
                 && !basis_indeterminate.contains(cell.claim_id.as_str())
                 && result_bar.proves(cell)
-                && basis_frame
-                    .knowledge_cells
-                    .iter()
-                    .find(|b| b.claim_id == cell.claim_id)
-                    .is_none_or(|b| !basis_bar.proves(b))
+                && !operation_proved(result, &cell.claim_id, &basis_proved)
         });
     // An effect cell is terminal only through the premise bar applied above, so a terminal
     // hypothesis disposition on any effect cell never terminalizes it here.
@@ -746,8 +801,79 @@ fn contradiction_changed(
     })
 }
 
+/// Returns whether `cell` states an effect proposition.
+///
+/// Compiled effect cells are also typed by their binding (`ReferenceSituation::effect_cell_kind`),
+/// but an unbound cell in the namespace is still an effect claim whose outcome is unproved, so the
+/// namespace test stays the conservative classifier here rather than dropping such a cell out of
+/// every effect rule (fss-6sph6).
 fn is_effect_claim(cell: &KnowledgeCell) -> bool {
-    cell.claim_id.starts_with("claim:effect:")
+    cell.claim_id.starts_with(EFFECT_CLAIM_PREFIX)
+}
+
+/// Typed terminal outcomes of every operation an effect cell proves in `publication` under `bar`,
+/// keyed by the operation its compile path bound (fss-6sph6).
+///
+/// `verify` refuses an unbound `known` effect cell, so only a bound cell clears the bar and every
+/// proved cell has a typed operation; effects group by that operation, never by claim identity.
+fn proved_operations<'a>(
+    publication: &'a ReferenceSituationPublication,
+    bar: ProofBar<'_>,
+) -> BTreeMap<&'a str, BTreeSet<EffectOutcome>> {
+    let situation = &publication.situation;
+    let mut proved: BTreeMap<&str, BTreeSet<EffectOutcome>> = BTreeMap::new();
+    for cell in &situation.capsule.frame.knowledge_cells {
+        if !is_effect_claim(cell) || !bar.proves(cell) {
+            continue;
+        }
+        if let Some((operation_id, Some(outcome))) = situation.effect_operation(&cell.claim_id) {
+            proved
+                .entry(operation_id.as_str())
+                .or_default()
+                .insert(outcome);
+        }
+    }
+    proved
+}
+
+/// Returns whether the operation bound to `claim_id` in `publication` is one of `proved`.
+fn operation_proved(
+    publication: &ReferenceSituationPublication,
+    claim_id: &str,
+    proved: &BTreeMap<&str, BTreeSet<EffectOutcome>>,
+) -> bool {
+    publication
+        .situation
+        .effect_operation(claim_id)
+        .is_some_and(|(operation_id, _)| proved.contains_key(operation_id.as_str()))
+}
+
+/// Returns whether the operation bound to the basis cell `claim_id` is proved in both publications
+/// with the same typed outcomes, so dropping or adding one of its cells is neither a transition
+/// nor an alarm (fss-6sph6).
+fn operation_proof_retained(
+    basis: &ReferenceSituationPublication,
+    claim_id: &str,
+    basis_proved: &BTreeMap<&str, BTreeSet<EffectOutcome>>,
+    result_proved: &BTreeMap<&str, BTreeSet<EffectOutcome>>,
+) -> bool {
+    basis
+        .situation
+        .effect_operation(claim_id)
+        .is_some_and(|(operation_id, _)| {
+            let operation = operation_id.as_str();
+            basis_proved
+                .get(operation)
+                .is_some_and(|outcomes| result_proved.get(operation) == Some(outcomes))
+        })
+}
+
+fn outcome_labels(outcomes: &BTreeSet<EffectOutcome>) -> String {
+    outcomes
+        .iter()
+        .map(|outcome| outcome.as_str())
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 /// Returns whether `cell` is an effect claim in `KSTATE-001` `known` that does not clear the full

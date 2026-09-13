@@ -114,10 +114,7 @@ fn situation() -> Result<ReferenceSituation, ContractError> {
         mission_state: None,
     };
     capsule.validate()?;
-    Ok(ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence]),
-    })
+    Ok(ReferenceSituation::new(capsule, BTreeSet::from([evidence])))
 }
 
 fn projection_spec() -> ReferenceProjectionSpec {

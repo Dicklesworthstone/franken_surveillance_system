@@ -466,10 +466,7 @@ fn publication(variant: &Variant) -> Result<ReferenceSituationPublication, Box<d
         proof_roots.extend(cell.evidence.iter().cloned());
         proof_roots.extend(cell.contradictions.iter().cloned());
     }
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots,
-    };
+    let situation = ReferenceSituation::new(capsule, proof_roots);
     project_reference_situation(
         situation,
         &ReferenceProjectionSpec {
@@ -639,48 +636,46 @@ fn test_f4_obligation_terminalization_emits_terminal_transition() -> Result<(), 
     Ok(())
 }
 
-/// F4: Effect terminalization emits TerminalTransition and is non-coalescible.
+/// Asserts that projecting a hand-built `known` effect is refused because no compile path bound it
+/// to a verified outcome or receipt (fss-6sph6).
+fn assert_hand_built_known_effect_refused(
+    projected: Result<ReferenceSituationPublication, Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
+    match projected {
+        Ok(publication) => Err(format!(
+            "a hand-built known effect was published: {}",
+            publication.publication_digest
+        )
+        .into()),
+        Err(error) => {
+            if matches!(
+                error.downcast_ref::<ReferenceError>(),
+                Some(ReferenceError::InvalidSpec(
+                    "situation_effect_known_unbound"
+                ))
+            ) {
+                Ok(())
+            } else {
+                Err(format!("unexpected refusal: {error}").into())
+            }
+        }
+    }
+}
+
+/// F4: A hand-built effect cannot terminalize itself: a `known` effect in a situation built by hand
+/// is refused at projection (fss-6sph6). The compiled terminal effect transition and its
+/// non-coalescing are pinned by `test_f4_real_situation_f2_terminal_effect_transition_non_coalescible`.
 #[test]
-fn test_f4_effect_terminalization_emits_terminal_transition() -> Result<(), Box<dyn Error>> {
+fn test_f4_hand_built_effect_terminalization_is_refused() -> Result<(), Box<dyn Error>> {
     let mut v1 = Variant::baseline()?;
     v1.sequence = 1;
     v1.effect_state = Some(KnowledgeState::Indeterminate);
+    publication(&v1)?.verify()?;
 
     let mut v2 = Variant::baseline()?;
     v2.sequence = 2;
     v2.effect_state = Some(KnowledgeState::Known);
-
-    let pub1 = publication(&v1)?;
-    let pub2 = publication(&v2)?;
-    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
-
-    assert!(
-        delta
-            .classes
-            .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "Effect terminalization must emit TerminalTransition!"
-    );
-    assert!(
-        delta.is_non_coalescible(),
-        "Effect terminal transition must be non-coalescible!"
-    );
-    let mut v3 = Variant::baseline()?;
-    v3.sequence = 3;
-    v3.pressure = ResourcePressure::Elevated;
-    let pub3 = publication(&v3)?;
-    let delta2 = classify_reference_meaningful_delta(&pub2, &pub3)?;
-    assert!(
-        delta
-            .coalesce(
-                &delta2,
-                "delta:coalesced",
-                "continuation:coalesced",
-                ContentDigest::sha256(b"coalesced"),
-            )
-            .is_err()
-    );
-    delta.validate()?;
-    Ok(())
+    assert_hand_built_known_effect_refused(publication(&v2))
 }
 
 /// F4: Mission terminalization (mission active -> concluded) emits TerminalTransition.
@@ -984,27 +979,13 @@ fn test_neutral_statement_with_typed_terminal_state_emits_terminal_transition()
         "Typed terminal event hypothesis with neutral statement MUST emit TerminalTransition!"
     );
 
-    // 2. Effect: neutral statement + KnowledgeState::Known -> MUST emit TerminalTransition
-    let mut v2_base = Variant::baseline()?;
-    v2_base.sequence = 3;
-    v2_base.effect_state = Some(KnowledgeState::Indeterminate);
-    v2_base.effect_statement = Some("Operation in progress.".to_owned());
-
+    // 2. Effect: a hand-built `known` effect is refused whatever its statement (fss-6sph6); the
+    // compiled typed terminal effect is pinned by the F2 real-situation test.
     let mut v2_term = Variant::baseline()?;
     v2_term.sequence = 4;
     v2_term.effect_state = Some(KnowledgeState::Known);
     v2_term.effect_statement = Some("Routine effect log entry posted.".to_owned());
-
-    let pub2_base = publication(&v2_base)?;
-    let pub2_term = publication(&v2_term)?;
-    let delta_effect = classify_reference_meaningful_delta(&pub2_base, &pub2_term)?;
-
-    assert!(
-        delta_effect
-            .classes
-            .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "Typed terminal effect claim with neutral statement MUST emit TerminalTransition!"
-    );
+    assert_hand_built_known_effect_refused(publication(&v2_term))?;
 
     // 3. Mission: neutral statement + MissionLifecycleState::Closed -> MUST emit TerminalTransition
     let mut v3_base = Variant::baseline()?;
@@ -1108,56 +1089,16 @@ fn test_f1_unchanged_degraded_epistemic_cell_must_not_produce_silence_certificat
     Ok(())
 }
 
-/// F2: Terminal effect failure with non-standard phrasing must emit TerminalTransition and refuse coalesce().
+/// F2: A hand-built terminal effect failure is refused at projection whatever its phrasing
+/// (fss-6sph6). The compiled terminal transition is pinned by the F2 real-situation test.
 #[test]
-fn test_f2_terminal_effect_failure_without_magic_substring_must_not_coalesce()
--> Result<(), Box<dyn Error>> {
-    let mut v1 = Variant::baseline()?;
-    v1.sequence = 1;
-    v1.effect_state = None;
-
+fn test_f2_hand_built_terminal_effect_failure_is_refused() -> Result<(), Box<dyn Error>> {
     let mut v2 = Variant::baseline()?;
     v2.sequence = 2;
     v2.effect_state = Some(KnowledgeState::Known);
     v2.effect_statement =
         Some("The external dispatch was permanently refused due to expired lease.".to_owned());
-
-    let mut v3 = Variant::baseline()?;
-    v3.sequence = 3;
-    v3.pressure = ResourcePressure::Elevated;
-
-    let pub1 = publication(&v1)?;
-    let pub2 = publication(&v2)?;
-    let pub3 = publication(&v3)?;
-    pub1.verify()?;
-    pub2.verify()?;
-    pub3.verify()?;
-
-    let delta1 = classify_reference_meaningful_delta(&pub1, &pub2)?;
-    let delta2 = classify_reference_meaningful_delta(&pub2, &pub3)?;
-
-    assert!(
-        delta1
-            .classes
-            .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "Terminal effect transition must emit TerminalTransition regardless of statement phrasing!"
-    );
-    assert!(
-        delta1.is_non_coalescible(),
-        "Terminal delta must be non-coalescible!"
-    );
-    let coalesce_result = delta1.coalesce(
-        &delta2,
-        "delta:coalesced",
-        "continuation:coalesced",
-        ContentDigest::sha256(b"coalesced"),
-    );
-    assert!(
-        coalesce_result.is_err(),
-        "Coalescing a terminal effect transition must be rejected!"
-    );
-    delta1.validate()?;
-    Ok(())
+    assert_hand_built_known_effect_refused(publication(&v2))
 }
 
 /// F4: Real situation compilation and publication validation for F1 (degraded budget pressure).

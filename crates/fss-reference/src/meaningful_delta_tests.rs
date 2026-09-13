@@ -30,6 +30,8 @@ struct Variant {
     effect_hypothesis: Option<HypothesisDisposition>,
     effect_valid_until: Option<TimestampNs>,
     effect_evidence_retained: bool,
+    effect_bound: bool,
+    effect_terminal_state: fss_core::EffectState,
     created_at: Option<TimestampNs>,
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
@@ -54,6 +56,8 @@ impl Variant {
             effect_hypothesis: None,
             effect_valid_until: None,
             effect_evidence_retained: true,
+            effect_bound: true,
+            effect_terminal_state: fss_core::EffectState::Verified,
             created_at: None,
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
@@ -164,6 +168,13 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
                 KnowledgeState::Indeterminate => {
                     "The external effect may have happened and requires reconciliation."
                 }
+                // A compiled outcome cell states its terminal outcome, so a flipped outcome is a
+                // changed cell, as it is in real compilation.
+                KnowledgeState::Known
+                    if variant.effect_terminal_state == fss_core::EffectState::Failed =>
+                {
+                    "The external effect reached a retained failed outcome."
+                }
                 KnowledgeState::Known => "The external effect reached a retained terminal outcome.",
                 _ => "The external effect has another explicit typed state.",
             }
@@ -234,10 +245,35 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
     {
         proof_roots.insert(ContentDigest::sha256(b"effect-outcome"));
     }
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots,
-    };
+    let mut situation = ReferenceSituation::new(capsule, proof_roots);
+    // The fixture stands in for a compile path that verified the effect outcome, unless a test
+    // withholds the binding to plant a hand-built effect (fss-6sph6).
+    if variant.effect_bound {
+        let effect_cells: Vec<_> = situation
+            .capsule
+            .frame
+            .knowledge_cells
+            .iter()
+            .filter(|cell| cell.claim_id == EFFECT_CLAIM)
+            .cloned()
+            .collect();
+        let operation_id = fss_core::OperationId::parse("meaningful-delta")?;
+        for cell in &effect_cells {
+            // A `known` fixture cell stands for the terminal state the variant names; any other
+            // state stands for a dispatched, unresolved operation.
+            let state = if cell.knowledge_state == KnowledgeState::Known {
+                variant.effect_terminal_state
+            } else {
+                fss_core::EffectState::Committed
+            };
+            situation.bind_effect_cell(
+                crate::EffectCellKind::Outcome,
+                &operation_id,
+                state,
+                cell,
+            )?;
+        }
+    }
     project_reference_situation(
         situation,
         &ReferenceProjectionSpec {
@@ -877,7 +913,7 @@ fn indeterminate_effect_becoming_known_with_evidence_alone_is_terminal()
     assert_eq!(
         delta.effect_uncertainty_changes,
         vec![format!(
-            "effect uncertainty resolved: {EFFECT_CLAIM} became known with retained outcome evidence"
+            "effect uncertainty resolved: {EFFECT_CLAIM} became known with retained succeeded outcome evidence"
         )]
     );
     assert_eq!(delta.priority, DeltaPriority::Critical);
@@ -1584,22 +1620,40 @@ fn validity_window_is_inclusive_at_the_result_anchor() -> Result<(), Box<dyn Err
     Ok(())
 }
 
+/// Returns whether `result` is a refusal carrying exactly `expected`.
+fn refused_with(
+    result: &Result<crate::ReferenceSituationPublication, Box<dyn Error>>,
+    expected: &crate::ReferenceError,
+) -> bool {
+    let Err(error) = result else {
+        return false;
+    };
+    // `ReferenceError` has no `PartialEq`, so compare the stable rendered refusal.
+    error
+        .downcast_ref::<crate::ReferenceError>()
+        .is_some_and(|actual| actual.to_string() == expected.to_string())
+}
+
+/// A bound effect cell whose evidence root is not among the proof roots would publish a proved
+/// effect without its proof as a handoff child, so projection refuses it (fss-6sph6 moved the
+/// fss-deir9 proof-root check from classification to the publication graph).
 #[test]
-fn known_effect_whose_evidence_is_not_a_proof_root_is_not_terminal() -> Result<(), Box<dyn Error>> {
-    let delta = effect_transition_delta(
-        Some(KnowledgeState::Unknown),
-        Some(KnowledgeState::Known),
-        |variant| variant.effect_evidence_retained = false,
-    )?;
-    assert_unproved_known_effect_not_terminal(&delta, "unknown->known with unretained evidence")?;
-    let resolution = indeterminate_effect_delta(Some(KnowledgeState::Known), |variant| {
+fn known_effect_whose_evidence_is_not_a_proof_root_is_refused() -> Result<(), Box<dyn Error>> {
+    let expected =
+        crate::ReferenceError::Contract(fss_core::ContractError::IncompletePublicationGraph);
+    for prior in [None, Some(KnowledgeState::Indeterminate)] {
+        let mut variant = Variant::baseline()?;
+        variant.sequence = 2;
+        variant.effect_state = Some(KnowledgeState::Known);
         variant.effect_evidence_retained = false;
-    })?;
-    assert_effect_unresolved(
-        &resolution,
-        &became(KnowledgeState::Known),
-        Some(&degraded_to(KnowledgeState::Known)),
-    )
+        let projected = publication(&variant);
+        assert!(
+            refused_with(&projected, &expected),
+            "prior {prior:?}: {:?}",
+            projected.map(|publication| publication.publication_digest)
+        );
+    }
+    Ok(())
 }
 
 /// Guards the "basis did not already pass" condition: an effect that already carried a proved
@@ -1695,35 +1749,112 @@ fn proved_effect_removed_is_an_effect_change_and_coverage_loss() -> Result<(), B
     Ok(())
 }
 
-/// Pins the current proof-root trust boundary (fss-deir9 G2, not yet closed).
+/// The proof-root trust boundary is closed (fss-deir9 G2, fss-6sph6).
 ///
-/// `ReferenceSituation` has public fields and `project_reference_situation` is public, while
-/// `ReferenceSituationPublication::verify` only checks that the publication is self-consistent.
-/// So a caller that builds a situation by hand can make any digest a proof root, and a `known`
-/// effect citing it clears the proof bar. The only binding of an effect's evidence to retained
-/// material is `verify_outcome_body` on the compile path. This fixture does exactly that: its
-/// effect evidence is an arbitrary digest that no receipt produced. When proof roots are bound
-/// to verified receipts, this test must flip to assert refusal.
+/// This test used to pin that a situation built by hand could make any digest a proof root, and a
+/// `known` effect citing it cleared the proof bar. The effect evidence here is still an arbitrary
+/// digest that no receipt produced, and the situation still lists it as a proof root, but no compile
+/// path bound the cell to a verified outcome or receipt. So projection refuses it; so does
+/// publication `verify`, when the unbound situation is swapped into an otherwise verified
+/// publication; and so does classification.
 #[test]
-fn hand_built_proof_roots_are_trusted_by_projection_and_classification()
+fn hand_built_proof_roots_are_refused_by_projection_and_classification()
 -> Result<(), Box<dyn Error>> {
+    let expected = crate::ReferenceError::InvalidSpec("situation_effect_known_unbound");
     let mut basis_variant = Variant::baseline()?;
     basis_variant.effect_state = None;
     let basis = publication(&basis_variant)?;
     let mut result_variant = basis_variant.clone();
     result_variant.sequence = 2;
     result_variant.effect_state = Some(KnowledgeState::Known);
-    let result = publication(&result_variant)?;
+    result_variant.effect_bound = false;
+
+    // Route 1: projection of the hand-built situation.
+    let projected = publication(&result_variant);
+    assert!(
+        refused_with(&projected, &expected),
+        "{:?}",
+        projected.map(|publication| publication.publication_digest)
+    );
+
+    // Route 2: the same capsule and proof roots, re-wrapped without the binding, inside a
+    // publication whose digest still matches (the digest covers the capsule, not the binding).
+    result_variant.effect_bound = true;
+    let mut forged = publication(&result_variant)?;
     let arbitrary = ContentDigest::sha256(b"effect-outcome");
-    assert!(result.situation.proof_roots.contains(&arbitrary));
-    result.verify()?;
+    assert!(forged.situation.proof_roots.contains(&arbitrary));
+    forged.situation = ReferenceSituation::new(
+        forged.situation.capsule.clone(),
+        forged.situation.proof_roots.clone(),
+    );
+    assert_eq!(forged.computed_digest()?, forged.publication_digest);
+    let verified = forged.verify();
+    assert!(
+        matches!(
+            verified,
+            Err(crate::ReferenceError::InvalidSpec(
+                "situation_effect_known_unbound"
+            ))
+        ),
+        "{verified:?}"
+    );
+
+    // Route 3: classification verifies both sides first.
+    let classified = classify_reference_meaningful_delta(&basis, &forged);
+    assert!(
+        matches!(
+            classified,
+            Err(crate::ReferenceError::InvalidSpec(
+                "situation_effect_known_unbound"
+            ))
+        ),
+        "{:?}",
+        classified.map(|delta| delta.classes)
+    );
+    Ok(())
+}
+
+/// fss-6sph6: the typed terminal outcome is part of the proof, so an otherwise identical proved
+/// effect whose operation flips from succeeded to failed is a contradiction, never silence.
+#[test]
+fn proved_effect_whose_typed_outcome_flips_is_a_contradiction() -> Result<(), Box<dyn Error>> {
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.effect_state = Some(KnowledgeState::Known);
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = basis_variant.clone();
+    result_variant.sequence = 2;
+    result_variant.effect_terminal_state = fss_core::EffectState::Failed;
+    let result = publication(&result_variant)?;
     let delta = classify_reference_meaningful_delta(&basis, &result)?;
+    let expected = "effect outcome contradicted: operation meaningful-delta was proved succeeded and is now proved failed";
+    assert!(delta.silence_certificate.is_none(), "{:?}", delta.classes);
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::Contradiction),
+        "{:?}",
+        delta.classes
+    );
     assert!(
         delta
             .classes
-            .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "the hand-built proof root is currently trusted: {:?}",
+            .contains(&MeaningfulDeltaClass::EffectUncertainty),
+        "{:?}",
         delta.classes
     );
+    assert!(
+        delta
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change == expected),
+        "missing {expected:?} in {:?}",
+        delta.effect_uncertainty_changes
+    );
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        delta.classes
+    );
+    delta.validate()?;
     Ok(())
 }

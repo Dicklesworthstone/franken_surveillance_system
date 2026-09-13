@@ -141,10 +141,7 @@ pub(crate) fn situation_with_cells(
         mission_state: None,
     };
     capsule.validate()?;
-    Ok(ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence]),
-    })
+    Ok(ReferenceSituation::new(capsule, BTreeSet::from([evidence])))
 }
 
 fn spec(target_tokens: u64) -> ReferenceProjectionSpec {

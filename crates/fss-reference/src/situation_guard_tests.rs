@@ -731,3 +731,470 @@ fn indeterminate_without_a_reason_is_refused_by_journal_and_guard() -> Result<()
     harness.cleanup();
     Ok(())
 }
+
+/// Compiles a situation bound to a `Committed` local receipt with no canonical outcome, so its
+/// `local-state` effect cell is `indeterminate`, and returns that cell's claim identity.
+fn indeterminate_local_situation(
+    name: &str,
+) -> Result<(GuardHarness, crate::ReferenceSituation, String), Box<dyn Error>> {
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+    let operation_receipt = receipt_in_state(&mut journal, &plan, EffectState::Committed)?;
+    let mut compile_request = request(
+        &decision,
+        &receipt,
+        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+    )?;
+    compile_request.alert_plan = Some(&plan);
+    let situation = compile_reference_situation_with_operation_receipt(
+        compile_request,
+        &operation_receipt,
+        &harness.authority,
+    )?;
+    let claim_id = format!("claim:effect:operation:situation-guard:{name}:local-state");
+    let cell = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id == claim_id)
+        .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
+    assert_eq!(
+        cell.knowledge_state,
+        fss_core::KnowledgeState::Indeterminate
+    );
+    assert_eq!(
+        situation.effect_cell_kind(&claim_id),
+        Some(crate::EffectCellKind::LocalState)
+    );
+    situation.verify()?;
+    Ok((harness, situation, claim_id))
+}
+
+/// Asserts that `situation` is refused with `expected` by situation `verify`, by projection, and
+/// by publication `verify` once the tampered situation is swapped into a verified publication.
+fn assert_effect_tamper_refused(
+    genuine: &crate::ReferenceSituation,
+    tampered: crate::ReferenceSituation,
+    expected: &ReferenceError,
+) -> Result<(), Box<dyn Error>> {
+    let same = |result: &Result<_, ReferenceError>| {
+        result
+            .as_ref()
+            .err()
+            .is_some_and(|error: &ReferenceError| error.to_string() == expected.to_string())
+    };
+    let verified = tampered.verify();
+    assert!(same(&verified), "situation verify: {verified:?}");
+    let projected = crate::project_reference_situation(tampered.clone(), &guard_projection_spec()?)
+        .map(|publication| publication.publication_digest);
+    assert!(same(&projected), "projection: {projected:?}");
+    let mut publication =
+        crate::project_reference_situation(genuine.clone(), &guard_projection_spec()?)?;
+    publication.situation = tampered;
+    let published = publication.verify();
+    assert!(same(&published), "publication verify: {published:?}");
+    Ok(())
+}
+
+/// fss-6sph6: an indeterminate compiled effect cannot be dropped from the situation, so a
+/// projection cannot lose the reconciliation obligation without a terminal proof.
+#[test]
+fn compiled_indeterminate_effect_cannot_be_dropped() -> Result<(), Box<dyn Error>> {
+    let (harness, genuine, claim_id) = indeterminate_local_situation("drop-effect")?;
+    let mut tampered = genuine.clone();
+    tampered
+        .capsule
+        .frame
+        .knowledge_cells
+        .retain(|cell| cell.claim_id != claim_id);
+    assert_effect_tamper_refused(
+        &genuine,
+        tampered,
+        &ReferenceError::InvalidSpec("situation_effect_cell_dropped"),
+    )?;
+    harness.cleanup();
+    Ok(())
+}
+
+/// fss-6sph6: an indeterminate compiled effect cannot be relabeled, neither as an unproved state
+/// that would park it nor as `known` that would terminalize it.
+#[test]
+fn compiled_indeterminate_effect_cannot_be_relabeled() -> Result<(), Box<dyn Error>> {
+    let (harness, genuine, claim_id) = indeterminate_local_situation("relabel-effect")?;
+    for state in [
+        fss_core::KnowledgeState::Unknown,
+        fss_core::KnowledgeState::NotApplicable,
+        fss_core::KnowledgeState::Known,
+    ] {
+        let mut tampered = genuine.clone();
+        for cell in &mut tampered.capsule.frame.knowledge_cells {
+            if cell.claim_id == claim_id {
+                cell.knowledge_state = state;
+                cell.state_basis = None;
+            }
+        }
+        assert_effect_tamper_refused(
+            &genuine,
+            tampered,
+            &ReferenceError::InvalidSpec("situation_effect_cell_relabeled"),
+        )?;
+    }
+    harness.cleanup();
+    Ok(())
+}
+
+/// fss-6sph6: a second cell under a bound effect claim cannot shadow the compiled one.
+#[test]
+fn compiled_effect_cannot_be_shadowed_by_a_duplicate_claim() -> Result<(), Box<dyn Error>> {
+    let (harness, genuine, claim_id) = indeterminate_local_situation("shadow-effect")?;
+    let mut tampered = genuine.clone();
+    let mut shadow = tampered
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id == claim_id)
+        .cloned()
+        .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
+    shadow.knowledge_state = fss_core::KnowledgeState::Known;
+    shadow.state_basis = None;
+    tampered.capsule.frame.knowledge_cells.push(shadow);
+    assert_effect_tamper_refused(
+        &genuine,
+        tampered,
+        &ReferenceError::InvalidSpec("situation_effect_cell_duplicated"),
+    )?;
+    harness.cleanup();
+    Ok(())
+}
+
+/// fss-6sph6: a bound effect's evidence root cannot be dropped from the proof roots, which would
+/// seal a handoff without the receipt it cites.
+#[test]
+fn compiled_effect_evidence_cannot_leave_the_proof_roots() -> Result<(), Box<dyn Error>> {
+    let (harness, genuine, claim_id) = indeterminate_local_situation("root-effect")?;
+    let evidence = genuine
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id == claim_id)
+        .map(|cell| cell.evidence.clone())
+        .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
+    assert!(!evidence.is_empty());
+    let mut tampered = genuine.clone();
+    for root in &evidence {
+        tampered.proof_roots.remove(root);
+    }
+    assert_effect_tamper_refused(
+        &genuine,
+        tampered,
+        &ReferenceError::Contract(fss_core::ContractError::IncompletePublicationGraph),
+    )?;
+    harness.cleanup();
+    Ok(())
+}
+
+/// Compiles and projects a guarded publication for `plan`, bound to `operation_receipt` when one
+/// is given and carrying the canonical `outcome` when one is given.
+fn guarded_publication(
+    harness: &GuardHarness,
+    decision: &ReferencePolicyDecision,
+    receipt: &ReferenceEventReceipt,
+    plan: &ReferenceAlertPlan,
+    operation_receipt: Option<&fss_core::OperationReceipt>,
+    outcome: Option<&crate::ReferenceAlertOutcomeReceipt>,
+) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+    let mut compile_request = request(
+        decision,
+        receipt,
+        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+    )?;
+    compile_request.alert_plan = Some(plan);
+    compile_request.alert_outcome = outcome;
+    let situation = match operation_receipt {
+        Some(operation_receipt) => compile_reference_situation_with_operation_receipt(
+            compile_request,
+            operation_receipt,
+            &harness.authority,
+        )?,
+        None => compile_reference_situation(compile_request, &harness.authority)?,
+    };
+    Ok(crate::project_reference_situation(
+        situation,
+        &guard_projection_spec()?,
+    )?)
+}
+
+/// One real alert lifecycle: publications bound to the prepared and to the dispatched receipt
+/// (compiled before the outcome exists), and the verified receipt with its published outcome.
+struct Lifecycle {
+    harness: GuardHarness,
+    decision: ReferencePolicyDecision,
+    receipt: ReferenceEventReceipt,
+    plan: ReferenceAlertPlan,
+    prepared: crate::ReferenceSituationPublication,
+    dispatched: crate::ReferenceSituationPublication,
+    verified_receipt: fss_core::OperationReceipt,
+    outcome: crate::ReferenceAlertOutcomeReceipt,
+}
+
+impl Lifecycle {
+    fn new(name: &str) -> Result<Self, Box<dyn Error>> {
+        let mut harness = GuardHarness::new(name)?;
+        let (decision, receipt) = harness.corroborated(name)?;
+        let mut journal = EffectJournal::new();
+        let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+        let current = |journal: &EffectJournal| {
+            journal
+                .operation(&plan.intent.operation_id)
+                .cloned()
+                .ok_or(fss_core::ContractError::NotFound)
+        };
+        let prepared_receipt = current(&journal)?;
+        let prepared = guarded_publication(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&prepared_receipt),
+            None,
+        )?;
+        let mut provider = crate::ReferenceAlertProvider::with_provider_id(format!(
+            "provider:test:situation-guard:{name}"
+        ));
+        let _ = crate::dispatch_reference_alert(
+            &plan,
+            crate::ReferenceProviderBehavior::Deliver,
+            TimestampNs(101),
+            TimestampNs(102),
+            &mut journal,
+            &mut provider,
+        )?;
+        let dispatched_receipt = current(&journal)?;
+        let dispatched = guarded_publication(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&dispatched_receipt),
+            None,
+        )?;
+        let provider_receipt = provider
+            .lookup(&plan.intent)?
+            .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+        let _ = crate::observe_reference_alert(
+            &plan,
+            provider_receipt.receipt_digest(),
+            TimestampNs(103),
+            &mut journal,
+            &provider,
+        )?;
+        let _ = crate::verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;
+        let verified_receipt = current(&journal)?;
+        let outcome = crate::publish_reference_alert_outcome(
+            &plan,
+            &journal,
+            &mut harness.objects,
+            &mut harness.authority,
+            &provider,
+        )?;
+        Ok(Self {
+            harness,
+            decision,
+            receipt,
+            plan,
+            prepared,
+            dispatched,
+            verified_receipt,
+            outcome,
+        })
+    }
+
+    /// The verified publication, bound to the verified local receipt when `with_receipt`.
+    fn verified(
+        &self,
+        with_receipt: bool,
+    ) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+        guarded_publication(
+            &self.harness,
+            &self.decision,
+            &self.receipt,
+            &self.plan,
+            with_receipt.then_some(&self.verified_receipt),
+            Some(&self.outcome),
+        )
+    }
+}
+
+fn mentions_local_state(changes: &[String]) -> bool {
+    changes.iter().any(|change| change.contains(":local-state"))
+}
+
+/// fss-6sph6 F1: dropping the local-state cell of an operation that the outcome cell still proves,
+/// with the same outcome, is neither a proved-effect alarm nor an invalidated premise.
+#[test]
+fn dropping_a_cell_of_a_still_proved_operation_is_not_an_alarm() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("f1-drop")?;
+    let basis = lifecycle.verified(true)?;
+    let result = lifecycle.verified(false)?;
+    let delta = crate::classify_reference_meaningful_delta(&basis, &result)?;
+    // Both sides stay `Partial` for reasons unrelated to the effect, so coverage loss is judged by
+    // what it names, not by its class.
+    for class in [
+        fss_core::MeaningfulDeltaClass::TerminalTransition,
+        fss_core::MeaningfulDeltaClass::PlanInvalidation,
+        fss_core::MeaningfulDeltaClass::EffectUncertainty,
+    ] {
+        assert!(!delta.classes.contains(&class), "{class:?} in {:?}", delta);
+    }
+    assert!(
+        !mentions_local_state(&delta.invalidated_assumptions),
+        "{delta:?}"
+    );
+    assert!(!mentions_local_state(&delta.coverage_changes), "{delta:?}");
+    delta.validate()?;
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-6sph6 F1 mirror: adding a local-state cell to an operation the basis already proved is not
+/// a second terminal transition.
+#[test]
+fn adding_a_cell_to_an_already_proved_operation_is_not_terminal() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("f1-add")?;
+    let basis = lifecycle.verified(false)?;
+    let result = lifecycle.verified(true)?;
+    let delta = crate::classify_reference_meaningful_delta(&basis, &result)?;
+    for class in [
+        fss_core::MeaningfulDeltaClass::TerminalTransition,
+        fss_core::MeaningfulDeltaClass::EffectUncertainty,
+    ] {
+        assert!(!delta.classes.contains(&class), "{class:?} in {:?}", delta);
+    }
+    delta.validate()?;
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-6sph6 F1: an indeterminate local-state cell superseded by a proved outcome for the same
+/// operation resolves it; the operation is terminal and nothing reports it as still uncertain.
+#[test]
+fn proved_outcome_resolves_the_indeterminate_local_cell_it_supersedes() -> Result<(), Box<dyn Error>>
+{
+    let lifecycle = Lifecycle::new("f1-resolve")?;
+    let delta = crate::classify_reference_meaningful_delta(
+        &lifecycle.dispatched,
+        &lifecycle.verified(false)?,
+    )?;
+    assert!(
+        delta
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition),
+        "{delta:?}"
+    );
+    assert!(
+        delta.effect_uncertainty_changes.iter().any(|change| change
+            .starts_with("effect uncertainty resolved: indeterminate effect ")
+            && change.contains(":local-state")),
+        "{delta:?}"
+    );
+    assert!(
+        !delta
+            .effect_uncertainty_changes
+            .iter()
+            .any(|change| change.starts_with("effect uncertainty remains: ")),
+        "{delta:?}"
+    );
+    assert!(!mentions_local_state(&delta.coverage_changes), "{delta:?}");
+    delta.validate()?;
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-6sph6 F1: an unproved (prepared) local-state cell superseded by a proved outcome for the
+/// same operation is not reported as an unproved effect that disappeared.
+#[test]
+fn proved_outcome_supersedes_the_unproved_local_cell() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("f1-supersede")?;
+    let delta = crate::classify_reference_meaningful_delta(
+        &lifecycle.prepared,
+        &lifecycle.verified(false)?,
+    )?;
+    assert!(
+        delta
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition),
+        "{delta:?}"
+    );
+    assert!(
+        !mentions_local_state(&delta.effect_uncertainty_changes),
+        "{delta:?}"
+    );
+    assert!(!mentions_local_state(&delta.coverage_changes), "{delta:?}");
+    delta.validate()?;
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-6sph6 F2: the same operation proved succeeded in the basis and failed in the result is a
+/// contradiction of its terminal proof, never a near-silent material change.
+#[test]
+fn terminal_outcome_flip_of_one_operation_is_a_contradiction() -> Result<(), Box<dyn Error>> {
+    let name = "f2-flip";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let mut verified_journal = EffectJournal::new();
+    let mut failed_journal = EffectJournal::new();
+    let plan = prepare(
+        &decision,
+        &receipt,
+        &harness.authority,
+        &mut verified_journal,
+        name,
+    )?;
+    let failed_plan = prepare(
+        &decision,
+        &receipt,
+        &harness.authority,
+        &mut failed_journal,
+        name,
+    )?;
+    assert_eq!(plan, failed_plan);
+    let verified = receipt_in_state(&mut verified_journal, &plan, EffectState::Verified)?;
+    let failed = receipt_in_state(&mut failed_journal, &plan, EffectState::Failed)?;
+    let basis = guarded_publication(&harness, &decision, &receipt, &plan, Some(&verified), None)?;
+    let result = guarded_publication(&harness, &decision, &receipt, &plan, Some(&failed), None)?;
+    let delta = crate::classify_reference_meaningful_delta(&basis, &result)?;
+    let expected = format!(
+        "effect outcome contradicted: operation {} was proved succeeded and is now proved failed",
+        plan.intent.operation_id.as_str()
+    );
+    assert!(delta.silence_certificate.is_none(), "{delta:?}");
+    for class in [
+        fss_core::MeaningfulDeltaClass::Contradiction,
+        fss_core::MeaningfulDeltaClass::EffectUncertainty,
+    ] {
+        assert!(
+            delta.classes.contains(&class),
+            "{class:?} missing: {delta:?}"
+        );
+    }
+    assert!(
+        delta.effect_uncertainty_changes.contains(&expected),
+        "missing {expected:?} in {:?}",
+        delta.effect_uncertainty_changes
+    );
+    assert!(
+        !delta
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition),
+        "{delta:?}"
+    );
+    delta.validate()?;
+    harness.cleanup();
+    Ok(())
+}

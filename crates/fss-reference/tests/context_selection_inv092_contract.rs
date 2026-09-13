@@ -180,10 +180,7 @@ fn test_inv092_tiny_budget_fails_closed_never_drops_protected_world() -> Result<
     };
     capsule.validate()?;
 
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence_digest]),
-    };
+    let situation = ReferenceSituation::new(capsule, BTreeSet::from([evidence_digest]));
 
     // 1. Ample budget: protected world is retained in context pack.
     let ample_publication = project_reference_situation(situation.clone(), &test_spec(10_000)?)?;
@@ -323,10 +320,7 @@ fn test_inv092_duplicate_contradiction_deduplicated_with_recorded_reason()
     };
     capsule.validate()?;
 
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence_digest]),
-    };
+    let situation = ReferenceSituation::new(capsule, BTreeSet::from([evidence_digest]));
 
     let publication = project_reference_situation(situation, &test_spec(10_000)?)?;
     assert_eq!(publication.verify()?, publication.publication_digest);
@@ -474,10 +468,7 @@ fn test_inv092_warning_looking_redundant_is_preserved_while_exact_duplicate_is_d
     };
     capsule.validate()?;
 
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence_digest]),
-    };
+    let situation = ReferenceSituation::new(capsule, BTreeSet::from([evidence_digest]));
 
     let publication = project_reference_situation(situation, &test_spec(10_000)?)?;
     assert_eq!(publication.verify()?, publication.publication_digest);
@@ -609,10 +600,7 @@ fn test_inv092_planted_negative_verify_rejects_omitted_critical_item() -> Result
     };
     capsule.validate()?;
 
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence_digest]),
-    };
+    let situation = ReferenceSituation::new(capsule, BTreeSet::from([evidence_digest]));
 
     let publication = project_reference_situation(situation, &test_spec(10_000)?)?;
     assert_eq!(publication.verify()?, publication.publication_digest);
@@ -758,10 +746,8 @@ fn test_contradiction_dedup_must_not_drop_independent_sensor_evidence() -> Resul
         created_at: TimestampNs(1_000_000),
         mission_state: None,
     };
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence_cam1, evidence_cam2]),
-    };
+    let situation =
+        ReferenceSituation::new(capsule, BTreeSet::from([evidence_cam1, evidence_cam2]));
 
     let publ = project_reference_situation(situation, &test_spec(10_000)?)?;
 
@@ -849,10 +835,7 @@ fn test_contradiction_basis_must_include_positive_evidence() -> Result<(), Box<d
         created_at: TimestampNs(1_000_000),
         mission_state: None,
     };
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence_digest]),
-    };
+    let situation = ReferenceSituation::new(capsule, BTreeSet::from([evidence_digest]));
 
     let publ = project_reference_situation(situation, &test_spec(10_000)?)?;
     let contra_item = publ
@@ -926,10 +909,7 @@ fn test_redundancy_record_must_not_be_self_referential() -> Result<(), Box<dyn E
         created_at: TimestampNs(1_000_000),
         mission_state: None,
     };
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence_digest]),
-    };
+    let situation = ReferenceSituation::new(capsule, BTreeSet::from([evidence_digest]));
 
     let publ = project_reference_situation(situation, &test_spec(10_000)?)?;
     let records = publ.redundancy_records();
@@ -1010,10 +990,7 @@ fn test_single_contradiction_does_not_double_count_tokens() -> Result<(), Box<dy
         created_at: TimestampNs(1_000_000),
         mission_state: None,
     };
-    let situation = ReferenceSituation {
-        capsule,
-        proof_roots: BTreeSet::from([evidence_digest]),
-    };
+    let situation = ReferenceSituation::new(capsule, BTreeSet::from([evidence_digest]));
 
     let publ = project_reference_situation(situation, &test_spec(10_000)?)?;
 
