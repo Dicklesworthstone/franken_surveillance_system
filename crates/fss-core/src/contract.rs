@@ -2615,6 +2615,14 @@ pub enum ContractError {
     ReconciliationBasisRequired,
     /// A reconciliation basis dropped the occurred or the not-occurred branch.
     ReconciliationBranchesIncomplete,
+    /// A derived abstraction layer or cognition type illegally claimed authority or effect ownership.
+    DerivedLayerAuthorityForbidden,
+    /// A derived belief lacks an anchor to canonical evidence.
+    DerivedBeliefMissingAnchor,
+    /// A derived belief illegally claimed the `known` knowledge state.
+    DerivedBeliefKnownForbidden,
+    /// An unknown abstraction layer identifier or name was encountered.
+    UnknownAbstractionLayer(String),
 }
 
 impl ContractError {
@@ -2654,6 +2662,10 @@ impl ContractError {
             Self::StaleBasisNotOlder => "stale_basis_not_older",
             Self::ReconciliationBasisRequired => "reconciliation_basis_required",
             Self::ReconciliationBranchesIncomplete => "reconciliation_branches_incomplete",
+            Self::DerivedLayerAuthorityForbidden => "derived_layer_authority_forbidden",
+            Self::DerivedBeliefMissingAnchor => "derived_belief_missing_anchor",
+            Self::DerivedBeliefKnownForbidden => "derived_belief_known_forbidden",
+            Self::UnknownAbstractionLayer(_) => "unknown_abstraction_layer",
         }
     }
 }

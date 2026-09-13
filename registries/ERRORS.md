@@ -194,6 +194,15 @@ operation states rather than generic errors.
 | `ERR-DEP-GENERATION-MISMATCH-001` | dependency registry generation diverged from baseline generation | assign expected generation to dependency registry |
 | `ERR-DEP-CONST-INVARIANT-001` | dependency constitution semantic invariant violated | enforce constitutional admission rule and production closed-universe invariants |
 | `ERR-DEP-CONST-METADATA-VIOLATION-001` | Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0 | ensure all workspace crates compile under rust-2024 without foreign links |
+| `ERR-AGT-REGISTRY-DRIFT-001` | agent abstraction registry row drift between machine registry and markdown mirror | synchronize architecture/agent_abstraction_stack.json and registries/AGENT_ABSTRACTIONS.md |
+| `ERR-AGT-STABLE-ID-REUSED-001` | agent abstraction layer stable identifier was reused, duplicated, renumbered, or tombstoned | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-AGT-MISSING-FIELD-001` | agent abstraction layer row or root metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in agent abstraction layer row |
+| `ERR-AGT-CORRUPT-FILE-001` | agent abstraction registry or markdown documentation file is missing or corrupt | repair or restore agent abstraction registry file |
+| `ERR-AGT-DIGEST-MISMATCH-001` | agent abstraction registry digest does not match canonical encoding of metadata and rows | recompute canonical agent abstraction registry digest |
+| `ERR-AGT-FREEZE-DIVERGENCE-001` | agent abstraction registry digest diverged from pinned baseline freeze digest | restore frozen agent abstraction registry or bump generation |
+| `ERR-AGT-GENERATION-MISMATCH-001` | agent abstraction registry generation diverged from baseline generation | assign expected generation to agent abstraction registry |
+| `ERR-AGT-INVARIANT-VIOLATION-001` | agent abstraction layer invariant or prohibition violated | enforce layer semantic invariants and constitutional prohibitions |
+| `ERR-AGT-ILLEGAL-AUTHORITY-001` | derived beliefs or non-authority abstraction layer illegally claims authority or authorizes effects | preserve cognition plane boundary; derived layers cannot claim authority or authorize effects |
 
 
 

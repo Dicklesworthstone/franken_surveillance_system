@@ -13,6 +13,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+import agent_abstraction_checker
 import capability_registry_checker
 import dependency_audit
 import dependency_constitution_checker
@@ -856,6 +857,11 @@ def main() -> int:
     dependency_constitution_result = dependency_constitution_checker.validate_dependency_constitution(ROOT)
     if not dependency_constitution_result.passed:
         for err in dependency_constitution_result.errors:
+            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
+
+    agent_abstraction_registry_result = agent_abstraction_checker.validate_agent_abstraction_registry(ROOT)
+    if not agent_abstraction_registry_result.passed:
+        for err in agent_abstraction_registry_result.errors:
             fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
 
 
