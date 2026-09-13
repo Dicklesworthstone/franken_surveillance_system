@@ -185,7 +185,7 @@ operation states rather than generic errors.
 | `ERR-NEG-ENTRY-TOMBSTONED-001` | attempted operation on or with a permanently tombstoned negative entry | do not operate on tombstoned negative-evidence entries |
 | `ERR-NEG-REVIVAL-UNMET-001` | candidate retry or promotion attempted without meeting revival condition | satisfy documented revival condition before promoting candidate |
 | `ERR-NEG-VALIDATION-FAILED-001` | negative evidence entry semantic validation failed | provide valid required fields conforming to negative evidence contract |
-| `ERR-DEP-REGISTRY-DRIFT-001` | dependency registry row drift between machine registry and markdown mirror | synchronize architecture/dependencies.json and registries/DEPENDENCIES.md |
+| `ERR-DEP-REGISTRY-DRIFT-001` | dependency registry or constitution drift between machine registry and markdown mirror | synchronize architecture/dependencies.json, architecture/dependency_constitution.json, and documentation |
 | `ERR-DEP-STABLE-ID-REUSED-001` | dependency class stable identifier was reused, duplicated, renumbered, or tombstoned | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-DEP-MISSING-FIELD-001` | dependency class row or root metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in dependency class row |
 | `ERR-DEP-CORRUPT-FILE-001` | dependency registry or markdown documentation file is missing or corrupt | repair or restore dependency registry file |
