@@ -180,3 +180,6 @@ impl PropertyTwin {
         Some((object, self.features.get(object.feature as usize)?))
     }
 }
+
+/// Native reference-image atlas, descriptor matching, and camera localization.
+pub mod localization;
