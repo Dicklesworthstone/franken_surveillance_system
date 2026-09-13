@@ -65,6 +65,9 @@ AUTHORITY_FILES = (
     "architecture/local_qualification.toml",
     "architecture/stable_id_resolution.json",
     "architecture/agent_contracts.json",
+    "architecture/crate_topology.json",
+    "docs/DEPENDENCY_CONSTITUTION.md",
+    "DEPENDENCY_CONSTITUTION.md",
     "registries/DEPENDENCIES.md",
     "registries/ERRORS.md",
     "scripts/dependency_audit.py",
@@ -90,6 +93,35 @@ I = ERR_DEP_CONST_INVARIANT
 A = ERR_DEP_ALLOWLIST_DIGEST_DIVERGED
 T = ERR_DEP_TRACE_UNRESOLVED
 X = ERR_DEP_TOMBSTONE_INVALID
+
+
+# Members whose crate_topology.json status is not a present status (skeleton/implemented/qualified).
+# This is the owner's pending topology decision on main (fss-packet, and fss-geometry added by the origin
+# merge); check-policy reports the same pair as "not marked present". Update this one line when the owner
+# registers them, never by bumping a member count.
+LIVE_MEMBERS_NOT_MARKED_PRESENT = {"fss-packet", "fss-geometry"}
+PRESENT_TOPOLOGY_STATUSES = {"skeleton", "implemented", "qualified"}
+
+
+def live_workspace_members(root: Path) -> set[str]:
+    """Package names of the root [workspace].members manifests (the live member set, never a count)."""
+    import tomllib as _tomllib
+    members = _tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["members"]
+    return {_tomllib.loads((root / member / "Cargo.toml").read_text(encoding="utf-8"))["package"]["name"] for member in members}
+
+
+def topology_statuses(root: Path) -> dict[str, str]:
+    import json as _json
+    topology = _json.loads((root / "architecture/crate_topology.json").read_text(encoding="utf-8"))
+    return {crate["name"]: crate.get("status") for layer in topology["layers"] for crate in layer["crates"]}
+
+
+def assert_live_members_match_topology(test: "unittest.TestCase", members: set[str], root: Path) -> None:
+    """Every live member is declared in the topology; the members not marked present are exactly the
+    owner's pending set."""
+    statuses = topology_statuses(root)
+    test.assertEqual(sorted(members - set(statuses)), [], "workspace members undeclared in architecture/crate_topology.json")
+    test.assertEqual({m for m in members if statuses.get(m) not in PRESENT_TOPOLOGY_STATUSES}, LIVE_MEMBERS_NOT_MARKED_PRESENT)
 
 
 def copy_authority(dest: Path) -> Path:
@@ -218,6 +250,8 @@ class TestDependencyRegistryChecker(AuthorityCase):
             "constitution": {M, D, F},
             "policy": {M, D, F},
             "contractBasis": {M, D, F},
+            "ownerRationale": {M, D, F},
+            "futureOwner": {M, D, F},
             "dependencies": {M, D, F, I, R},
         }
         self.assertEqual(set(expected), set(MANDATORY_TOP_LEVEL_FIELDS))
@@ -544,7 +578,7 @@ class TestDependencyRegistryChecker(AuthorityCase):
             return st
 
         with mock.patch.object(Path, "stat", lying_stat), mock.patch.object(dependency_authority, "MAX_INPUT_FILE_BYTES", 256):
-            data, problems = dependency_authority.read_input_bytes(self.path(DJ), DJ)
+            data, problems = dependency_authority.read_input_bytes(self.path(DJ), DJ, self.tmp_root)
         self.assertIsNone(data)
         self.assertEqual([(e.code, "exceeds the operational input bound of 256 bytes" in e.message) for e in problems], [(C, True)])
 
@@ -939,11 +973,15 @@ class TestDependencyClassification(unittest.TestCase):
         self.assertTrue(owned["hasRealConsumer"])
         self.assertIsNone(owned["drift"])
 
+        # Live half: the member set comes from the live Cargo.toml and is held to crate_topology.json (the
+        # authority), not to a count, so a new member is never silently admitted.
+        live = live_workspace_members(ROOT)
+        assert_live_members_match_topology(self, live, ROOT)
         findings = []
-        res = dependency_audit.audit_dependency_classes(findings, ROOT, {"in_house": {"allowed_families": ["fss-*"]}}, members, [{"name": m, "version": "0.0.1"} for m in members])
+        res = dependency_audit.audit_dependency_classes(findings, ROOT, {"in_house": {"allowed_families": ["fss-*"]}}, live, [{"name": m, "version": "0.0.1"} for m in live])
         self.assertEqual(findings, [])
         owned = res["census"]["DEP-OWNED-001"]
-        self.assertEqual((owned["consumerCount"], owned["packages"], owned["memberPackages"]), (0, [], sorted(members)))
+        self.assertEqual((owned["consumerCount"], owned["packages"], owned["memberPackages"]), (0, [], sorted(live)))
         self.assertTrue(owned["hasRealConsumer"])
 
     # Restored test (e4ec37f): unconsumed rows drift
@@ -1333,8 +1371,8 @@ class TestRoundTwoAuthorityHardening(AuthorityCase):
             self.assertEqual(flag_findings, [("DEP-AUD-001", "c_or_cpp_ffi_allowed")])
         check_policy = load_check_policy()
         constitution = json.loads((ROOT / CJ).read_text(encoding="utf-8"))
-        localq = dependency_authority.load_toml_document(ROOT / "architecture/local_qualification.toml", "lq")[0]
-        toolchain = dependency_authority.load_toml_document(ROOT / "rust-toolchain.toml", "tc")[0]["toolchain"]
+        localq = dependency_authority.load_toml_document(ROOT / "architecture/local_qualification.toml", "lq", ROOT)[0]
+        toolchain = dependency_authority.load_toml_document(ROOT / "rust-toolchain.toml", "tc", ROOT)[0]["toolchain"]
         policy = dependency_audit.load_toml(ROOT / AL)
         check_policy.errors = []
         check_policy.dependency_policy_consistency(constitution, localq, toolchain, policy, live)
@@ -1626,12 +1664,148 @@ class TestStrictMarkdownMirror(AuthorityCase):
                 targets = [e.target for e in result.errors]
                 if label.startswith(("e10a", "e10b")):
                     # the ASCII rogue id is also caught by the rogue-id scan at its line
-                    self.assertEqual(sorted(targets), ["#/rendering", "line/26"])
+                    self.assertEqual(sorted(targets), ["#/rendering", f"line/{base.count(chr(10)) + 2}"])
                 else:
                     self.assertEqual(targets, ["#/rendering"])  # the former bypasses: only the rendering check sees them
         # CRLF was already refused (LF-only rule, then no parsable table); it stays exactly that.
         self.write(MD, base.replace("\n", "\r\n"))
         self.assertCodes({R, C})
+
+
+class TestRoundThreeRootAnchoredReads(AuthorityCase):
+    """Round-3 review, fss-x4a.30.88.1: a (root-anchored symlink refusal), b (bounded reads), h (owner)."""
+
+    def _symlink_dir(self, rel: str) -> None:
+        outside = Path(self.tmp_dir.name).parent / (Path(self.tmp_dir.name).name + "-outside-" + rel.replace("/", "_"))
+        self.addCleanup(shutil.rmtree, outside, True)
+        shutil.move(str(self.path(rel)), outside)
+        self.path(rel).symlink_to(outside, target_is_directory=True)
+
+    # a) every path component is checked against the repository root
+    def test_readers_require_the_root(self) -> None:
+        import inspect
+        for fn in (dependency_authority.read_input_bytes, dependency_authority.load_json_document, dependency_authority.load_toml_document):
+            with self.subTest(fn=fn.__name__):
+                self.assertIs(inspect.signature(fn).parameters["root"].default, inspect.Parameter.empty)
+
+    def test_symlinked_registries_directory_with_clean_content_is_refused(self) -> None:
+        self.assertCodes(set())
+        self._symlink_dir("registries")
+        result = self.assertCodes({C})
+        self.assertEqual(sorted({e.file_path for e in result.errors}), ["registries/DEPENDENCIES.md", "registries/ERRORS.md"])
+        self.assertTrue(all("symbolic link" in e.message for e in result.errors), [e.message for e in result.errors])
+
+    def test_symlinked_docs_directory_is_refused(self) -> None:
+        import dependency_constitution_checker as constitution_checker
+        self.assertEqual(constitution_checker.validate_dependency_constitution(self.tmp_root, skip_cargo_metadata=True).errors, [])
+        self._symlink_dir("docs")
+        result = constitution_checker.validate_dependency_constitution(self.tmp_root, skip_cargo_metadata=True)
+        self.assertEqual(sorted((e.code, e.file_path) for e in result.errors), [(C, "docs/DEPENDENCY_CONSTITUTION.md")])
+        self.assertIn("symbolic link", result.errors[0].message)
+        # the registry checker cannot resolve the future owner through the symlinked directory either
+        result = self.assertCodes({T})
+        self.assertEqual([e.target for e in result.errors], ["#/futureOwner"])
+
+    # b) the serde audit, load_toml and the closure scanner use the bounded strict readers
+    def test_serde_lock_read_is_bounded_and_refuses_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            make_workspace(root)
+            real = root / "real.lock"
+            real.write_bytes((root / "Cargo.lock").read_bytes())
+            policy = dependency_audit.load_toml(ROOT / AL)
+            for label in ("symlink", "oversized", "not a file"):
+                with self.subTest(label):
+                    lock = root / "Cargo.lock"
+                    if lock.is_dir():
+                        lock.rmdir()
+                    else:
+                        lock.unlink()
+                    if label == "symlink":
+                        lock.symlink_to(real)
+                    elif label == "oversized":
+                        lock.write_bytes(b"#" * (dependency_authority.MAX_INPUT_FILE_BYTES + 1))
+                    else:
+                        lock.mkdir()
+                    findings: list[Any] = []
+                    dependency_audit.serde_durable_bytes_audit(findings, root=root, direct_rows=[], manifests=[], policy=policy)
+                    self.assertEqual([f.code for f in findings], ["DEP-AUD-011"])
+                    self.assertIn("serde-family absence is unproven", findings[0].message)
+
+    def test_load_toml_refuses_symlinked_directories_and_oversize(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ws"
+            root.mkdir()
+            make_workspace(root)
+            self.assertEqual(dependency_audit.load_toml(root / "crates/fss-a/Cargo.toml", root)["package"]["name"], "fss-a")
+            (root / "empty.toml").write_text("", encoding="utf-8")
+            self.assertEqual(dependency_audit.load_toml(root / "empty.toml", root), {})
+            outside = Path(tmp) / "outside-crates"
+            shutil.move(str(root / "crates"), outside)
+            (root / "crates").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                dependency_audit.load_toml(root / "crates/fss-a/Cargo.toml", root)
+            (root / "big.toml").write_bytes(b"#" * (dependency_authority.MAX_INPUT_FILE_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, "operational input bound"):
+                dependency_audit.load_toml(root / "big.toml", root)
+
+    def test_closure_scanner_allowlist_and_lock_reads_are_bounded(self) -> None:
+        import dependency_closure_scanner as scanner
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ws"
+            root.mkdir()
+            make_workspace(root)
+            (root / AL).write_bytes((ROOT / AL).read_bytes())
+            allow, problems = scanner.load_allowlist(root / AL, root)
+            self.assertIsNotNone(allow, problems)
+            packages, problems = scanner.parse_cargo_lock(root / "Cargo.lock", root)
+            self.assertIsNotNone(packages, problems)
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            for rel in (AL, "Cargo.lock"):
+                (outside / Path(rel).name).write_bytes((root / rel).read_bytes())
+                (root / rel).unlink()
+                (root / rel).symlink_to(outside / Path(rel).name)
+            allow, problems = scanner.load_allowlist(root / AL, root)
+            self.assertIsNone(allow)
+            self.assertEqual([p.code for p in problems], [scanner.ERR_EMPTY_ALLOWLIST])
+            self.assertIn("symbolic link", problems[0].message)
+            packages, problems = scanner.parse_cargo_lock(root / "Cargo.lock", root)
+            self.assertIsNone(packages)
+            self.assertEqual([p.code for p in problems], [scanner.ERR_METADATA_UNREADABLE])
+            self.assertIn("symbolic link", problems[0].message)
+            (root / "Cargo.lock").unlink()
+            (root / "Cargo.lock").write_bytes(b"#" * (dependency_authority.MAX_INPUT_FILE_BYTES + 1))
+            packages, problems = scanner.parse_cargo_lock(root / "Cargo.lock", root)
+            self.assertIsNone(packages)
+            self.assertIn("operational input bound", problems[0].message)
+
+    # h) the owner decision is recorded and machine-checked in the registry
+    def test_owner_rationale_is_recorded_and_checked(self) -> None:
+        live = json.loads((ROOT / DJ).read_text(encoding="utf-8"))
+        self.assertEqual(live["futureOwner"], "fss-qualify")
+        self.assertIn("scripts/dependency_audit.py", live["ownerRationale"])
+        self.assertIn("`fss-qualify`", (ROOT / "docs/DEPENDENCY_CONSTITUTION.md").read_text(encoding="utf-8"))
+        self.assertTrue(all(row["owner"] == "scripts/dependency_audit.py" for row in live["dependencies"]))
+        # the future owner becomes a declared crate: the registry says the owners must move
+        topology = json.loads(self.text("architecture/crate_topology.json"))
+        topology["layers"][0]["crates"].append({"name": "fss-qualify", "status": "planned"})
+        self.write("architecture/crate_topology.json", json.dumps(topology, indent=2))
+        result = self.assertCodes({T})
+        self.assertEqual([e.target for e in result.errors], ["#/futureOwner"])
+        self.assertIn("move the row owners", result.errors[0].message)
+        shutil.copy2(ROOT / "architecture/crate_topology.json", self.path("architecture/crate_topology.json"))
+        for label, change, target in (
+            ("future owner not in the constitution", {"futureOwner": "fss-elsewhere", "ownerRationale": live["ownerRationale"].replace("fss-qualify", "fss-elsewhere")}, "#/futureOwner"),
+            ("rationale omits the owner", {"ownerRationale": live["ownerRationale"].replace("scripts/dependency_audit.py", "the audit")}, "#/ownerRationale"),
+        ):
+            with self.subTest(label):
+                data = copy.deepcopy(live)
+                data.update(change)
+                self.save(data, redigest=True)
+                self.write(MD, render_dependencies_markdown(data))
+                result = self.assertCodes({T, F})
+                self.assertEqual([e.target for e in result.errors if e.code == T], [target])
 
 
 if __name__ == "__main__":

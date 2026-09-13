@@ -30,6 +30,9 @@ import sys
 import tomllib
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import dependency_authority  # noqa: E402  (bounded strict readers)
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -130,6 +133,22 @@ def sanitize_path(path: Path | str, root: Path) -> str:
         return str(path).replace("\\", "/")
 
 
+def _bounded_text(path: Path, root: Path) -> str:
+    """Reads a closure input through dependency_authority's bounded, symlink-refusing reader.
+
+    Symlinked (the file or any directory between ``root`` and it), non-regular, oversized or non-UTF-8
+    inputs raise OSError, which every caller already turns into its registered finding.
+    """
+    rel = sanitize_path(path, root)
+    data, problems = dependency_authority.read_input_bytes(path, rel, root, allow_empty=True)
+    if data is None:
+        raise OSError("; ".join(p.message for p in problems))
+    text, problems = dependency_authority.decode_utf8(data, rel)
+    if text is None:
+        raise OSError("; ".join(p.message for p in problems))
+    return text
+
+
 def is_forbidden_dji_sdk(name: str) -> bool:
     """True if crate or dependency name declares or implies DJI Mobile/Flip SDK (NEG-001)."""
     lower = name.lower()
@@ -161,7 +180,7 @@ def audit_adapter_registry(adapter_path: Path, root: Path) -> list[ClosureFindin
         return findings
 
     try:
-        content = adapter_path.read_text(encoding="utf-8")
+        content = _bounded_text(adapter_path, root)
     except OSError as exc:
         findings.append(
             ClosureFinding(
@@ -292,7 +311,7 @@ def load_allowlist(allowlist_path: Path, root: Path) -> tuple[dict[str, Any] | N
         return None, findings
 
     try:
-        content = allowlist_path.read_text(encoding="utf-8")
+        content = _bounded_text(allowlist_path, root)
     except OSError as exc:
         findings.append(
             ClosureFinding(
@@ -399,7 +418,7 @@ def parse_cargo_lock(lock_path: Path, root: Path) -> tuple[dict[str, list[dict[s
         return None, findings
 
     try:
-        content = lock_path.read_text(encoding="utf-8")
+        content = _bounded_text(lock_path, root)
     except OSError as exc:
         findings.append(
             ClosureFinding(
@@ -473,7 +492,7 @@ def parse_root_manifest(
         return None, set(), None, {}, findings
 
     try:
-        content = manifest_path.read_text(encoding="utf-8")
+        content = _bounded_text(manifest_path, root)
         data = tomllib.loads(content)
     except (OSError, tomllib.TOMLDecodeError) as exc:
         findings.append(
@@ -496,7 +515,7 @@ def parse_root_manifest(
                 member_manifest = root / member / "Cargo.toml"
                 if member_manifest.is_file():
                     try:
-                        m_data = tomllib.loads(member_manifest.read_text(encoding="utf-8"))
+                        m_data = tomllib.loads(_bounded_text(member_manifest, root))
                         m_name = m_data.get("package", {}).get("name")
                         if isinstance(m_name, str):
                             member_names.add(m_name)
@@ -559,7 +578,7 @@ def run_cargo_metadata(root: Path, manifest_path: Path) -> tuple[dict[str, Any] 
         rustup_exc: Exception | None = None
         if toolchain_file.is_file() and shutil.which("rustup"):
             try:
-                tc_data = tomllib.loads(toolchain_file.read_text(encoding="utf-8"))
+                tc_data = tomllib.loads(_bounded_text(toolchain_file, root))
                 channel = tc_data.get("toolchain", {}).get("channel")
                 if channel:
                     rustup_cmd = ["rustup", "run", channel] + cmd_locked
@@ -617,7 +636,7 @@ def scan_manifest_dependencies(
         return findings
 
     try:
-        data = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
+        data = tomllib.loads(_bounded_text(manifest_path, root))
     except (OSError, tomllib.TOMLDecodeError):
         # Already reported
         return findings

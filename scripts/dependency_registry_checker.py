@@ -81,7 +81,9 @@ REGISTRY_CHECKER_ERROR_CODES: tuple[str, ...] = authority.AUTHORITY_ERROR_CODES
 MD_NULL = "—"  # em dash marks a JSON null
 META_HEADER = "| Field | Value |"
 META_SEPARATOR = "|---|---|"
-META_FIELDS: tuple[str, ...] = ("schema", "generation", "freezeDigest", "sourceDocument", "constitution", "policy", "contractBasis")
+META_FIELDS: tuple[str, ...] = ("schema", "generation", "freezeDigest", "sourceDocument", "constitution", "policy", "contractBasis", "ownerRationale", "futureOwner")
+CRATE_TOPOLOGY_PATH = "architecture/crate_topology.json"
+CONSTITUTION_DOC_PATH = "docs/DEPENDENCY_CONSTITUTION.md"
 ROW_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("id", "ID", "code"),
     ("constitutionClass", "Constitution Class", "code"),
@@ -282,10 +284,10 @@ def parse_dependencies_markdown(text: str, rel: str = DEPENDENCIES_MD_PATH) -> t
     return meta, rows, out
 
 
-def extract_markdown_dependencies(md_path: Path) -> tuple[dict[str, dict[str, Any]], list[DiagnosticError]]:
+def extract_markdown_dependencies(md_path: Path, root: Path = ROOT) -> tuple[dict[str, dict[str, Any]], list[DiagnosticError]]:
     """Compatibility wrapper: parsed rows keyed by id, plus every parse finding."""
     rel = DEPENDENCIES_MD_PATH
-    data, problems = authority.read_input_bytes(md_path, rel)
+    data, problems = authority.read_input_bytes(md_path, rel, root)
     if data is None:
         return {}, problems
     text, problems = authority.decode_utf8(data, rel)
@@ -300,7 +302,7 @@ def extract_markdown_dependencies(md_path: Path) -> tuple[dict[str, dict[str, An
 
 def _compare_markdown(result: ValidationResult, auth: authority.Authority, md_path: Path) -> None:
     rel = DEPENDENCIES_MD_PATH
-    data, problems = authority.read_input_bytes(md_path, rel)
+    data, problems = authority.read_input_bytes(md_path, rel, auth.root)
     if data is None:
         result.extend(problems)
         return
@@ -366,7 +368,7 @@ def _compare_markdown(result: ValidationResult, auth: authority.Authority, md_pa
 
 
 def _read_text(root: Path, rel: str) -> str | None:
-    data, problems = authority.read_input_bytes(root / rel, rel)
+    data, problems = authority.read_input_bytes(root / rel, rel, root)
     if data is None:
         return None
     text, problems = authority.decode_utf8(data, rel)
@@ -375,7 +377,7 @@ def _read_text(root: Path, rel: str) -> str | None:
 
 def _registered_error_codes(root: Path, result: ValidationResult) -> set[str] | None:
     rel = ERRORS_MD_PATH
-    data, problems = authority.read_input_bytes(root / rel, rel)
+    data, problems = authority.read_input_bytes(root / rel, rel, root)
     if data is None:
         result.extend(problems)
         return None
@@ -399,7 +401,7 @@ def check_traces(result: ValidationResult, auth: authority.Authority, emitted_co
         return
     basis = registry.get("contractBasis")
     if authority.is_str(basis):
-        contracts, _raw, problems = authority.load_json_document(root / AGENT_CONTRACTS_PATH, AGENT_CONTRACTS_PATH)
+        contracts, _raw, problems = authority.load_json_document(root / AGENT_CONTRACTS_PATH, AGENT_CONTRACTS_PATH, root)
         result.extend(problems)
         if contracts is not None:
             declared = authority.as_dict(contracts.get("semanticObjects")).get("ContractBasis")
@@ -412,6 +414,23 @@ def check_traces(result: ValidationResult, auth: authority.Authority, emitted_co
         if path not in cache:
             cache[path] = _read_text(root, path) if _safe_relative(path) else None
         return cache[path]
+
+    # The ownership decision is recorded in the registry itself: the rows are owned by the enforcing
+    # module until the future owner named by the constitution (DEP-INV-002) is a declared crate.
+    future = registry.get("futureOwner")
+    if authority.is_str(future):
+        constitution_text = text_of(CONSTITUTION_DOC_PATH)
+        if constitution_text is None or f"`{future}`" not in constitution_text:
+            result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, "#/futureOwner", f"futureOwner {future!r} is not named in {CONSTITUTION_DOC_PATH}; the future owner must come from the constitution (DEP-INV-002)")
+        topology, _raw, problems = authority.load_json_document(root / CRATE_TOPOLOGY_PATH, CRATE_TOPOLOGY_PATH, root)
+        result.extend(problems)
+        declared = {crate.get("name") for layer in authority.as_dict(topology).get("layers", []) or [] if isinstance(layer, dict) for crate in layer.get("crates", []) or [] if isinstance(crate, dict)} if isinstance(authority.as_dict(topology).get("layers"), list) else set()
+        if future in declared:
+            result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, "#/futureOwner", f"futureOwner {future!r} is now declared in {CRATE_TOPOLOGY_PATH}; move the row owners to it and retire futureOwner")
+        rationale = registry.get("ownerRationale")
+        owners = sorted({row["owner"] for row in auth.rows() if authority.is_str(row.get("owner"))})
+        if authority.is_str(rationale) and (future not in rationale or CRATE_TOPOLOGY_PATH not in rationale or any(owner not in rationale for owner in owners)):
+            result.add_error(ERR_DEP_TRACE_UNRESOLVED, rel, "#/ownerRationale", f"ownerRationale must name the current owner(s) {owners}, the futureOwner {future!r} and {CRATE_TOPOLOGY_PATH}")
 
     for row in auth.rows():
         dep_id = row["id"]
@@ -446,14 +465,17 @@ def _safe_relative(path: str) -> bool:
 # ---------------------------------------------------------------------------------------------
 
 
-def compute_allowlist_freeze_digest(allowlist_path: Path) -> str:
-    """sha256 of the allowlist bytes (the pinned value is BASELINE_ALLOWLIST_FREEZE_DIGEST)."""
-    return authority.sha256_prefixed(allowlist_path.read_bytes())
+def compute_allowlist_freeze_digest(allowlist_path: Path, root: Path = ROOT) -> str:
+    data, problems = authority.read_input_bytes(allowlist_path, ALLOWLIST_TOML_PATH, root)
+    if data is None:
+        raise ValueError("; ".join(p.message for p in problems))
+    return authority.sha256_prefixed(data)
 
 
-def compute_constitution_freeze_digest(constitution_path: Path) -> str:
-    """Canonical constitution digest of the file (the pinned value is BASELINE_CONSTITUTION_FREEZE_DIGEST)."""
-    data = json.loads(constitution_path.read_text(encoding="utf-8"), object_pairs_hook=pairs_hook_reject_duplicates)
+def compute_constitution_freeze_digest(constitution_path: Path, root: Path = ROOT) -> str:
+    data, _raw, problems = authority.load_json_document(constitution_path, CONSTITUTION_JSON_PATH, root)
+    if data is None:
+        raise ValueError("; ".join(p.message for p in problems))
     return authority.compute_canonical_constitution_digest(data)
 
 

@@ -49,6 +49,8 @@ AUTHORITY_FILES = (
     "architecture/local_qualification.toml",
     "architecture/stable_id_resolution.json",
     "architecture/agent_contracts.json",
+    "architecture/crate_topology.json",
+    "docs/DEPENDENCY_CONSTITUTION.md",
     "registries/DEPENDENCIES.md",
     "registries/ERRORS.md",
     "scripts/dependency_audit.py",

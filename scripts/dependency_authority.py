@@ -86,7 +86,7 @@ AUTHORITY_ERROR_CODES: tuple[str, ...] = (
 # also need a generation bump because each generation has exactly one pinned digest.
 # ---------------------------------------------------------------------------------------------
 BASELINE_DEPENDENCIES_GENERATION = "gen:fss1:dependencies-v2"
-BASELINE_DEPENDENCIES_FREEZE_DIGEST = "sha256:51cdeb2f41e92f6627c83285777af1c1c3a8fd7f4cae34d4dec2906b57fb75a7"
+BASELINE_DEPENDENCIES_FREEZE_DIGEST = "sha256:8f198c9ce7b3eca519c678beb4bde773fe42d8bc93b55b9f0af375d38208a9c1"
 EXPECTED_DEPENDENCIES_DIGESTS: dict[str, str] = {
     BASELINE_DEPENDENCIES_GENERATION: BASELINE_DEPENDENCIES_FREEZE_DIGEST,
 }
@@ -185,12 +185,15 @@ def _symlinked_ancestor(path: Path, root: Path) -> str | None:
     return None
 
 
-def read_input_bytes(path: Path, rel: str, root: Path | None = None) -> tuple[bytes | None, list[DiagnosticError]]:
+def read_input_bytes(path: Path, rel: str, root: Path, *, allow_empty: bool = False) -> tuple[bytes | None, list[DiagnosticError]]:
     """Reads at most MAX_INPUT_FILE_BYTES + 1 bytes of a regular, non-symlinked file.
 
-    Missing, symlinked (the file itself, or a directory between ``root`` and it), non-regular, oversized,
-    unreadable or blank inputs are CORRUPT-FILE. The final component is opened with O_NOFOLLOW and the
-    open descriptor is re-checked, so a symlink swapped in after lstat is refused too.
+    ``root`` is mandatory: every directory between the repository root and the input is checked, so a
+    symlinked ``docs/`` or ``registries/`` directory is refused even when the file itself is regular.
+    Missing, symlinked, non-regular, oversized, unreadable or (unless ``allow_empty``, for formats where
+    an empty file is valid such as Cargo manifests) blank inputs are CORRUPT-FILE. The final component is
+    opened with O_NOFOLLOW and the open descriptor is re-checked, so a symlink swapped in after lstat is
+    refused too.
     """
     limit = MAX_INPUT_FILE_BYTES
     try:
@@ -202,7 +205,7 @@ def read_input_bytes(path: Path, rel: str, root: Path | None = None) -> tuple[by
             return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is a symbolic link; authority inputs must be regular files inside the repository")]
         if not stat.S_ISREG(st.st_mode):
             return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is not a regular file")]
-        ancestor = _symlinked_ancestor(path, root) if root is not None else None
+        ancestor = _symlinked_ancestor(path, root)
         if ancestor is not None:
             return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is not read: {ancestor}")]
         if path.stat().st_size > limit:
@@ -216,7 +219,7 @@ def read_input_bytes(path: Path, rel: str, root: Path | None = None) -> tuple[by
         return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"could not read {rel}: {exc}")]
     if len(data) > limit:
         return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} exceeds the operational input bound of {limit} bytes")]
-    if not data.strip():
+    if not allow_empty and not data.strip():
         return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is empty (0 bytes or whitespace only)")]
     return data, []
 
@@ -253,7 +256,7 @@ def parse_json_text(text: str, rel: str) -> tuple[Any, list[DiagnosticError]]:
         return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} is not valid JSON: {exc}")]
 
 
-def load_json_document(path: Path, rel: str, root: Path | None = None) -> tuple[Any, bytes | None, list[DiagnosticError]]:
+def load_json_document(path: Path, rel: str, root: Path) -> tuple[Any, bytes | None, list[DiagnosticError]]:
     data, problems = read_input_bytes(path, rel, root)
     if data is None:
         return None, None, problems
@@ -268,8 +271,8 @@ def load_json_document(path: Path, rel: str, root: Path | None = None) -> tuple[
     return value, data, []
 
 
-def load_toml_document(path: Path, rel: str, root: Path | None = None) -> tuple[dict[str, Any] | None, bytes | None, list[DiagnosticError]]:
-    data, problems = read_input_bytes(path, rel, root)
+def load_toml_document(path: Path, rel: str, root: Path, *, allow_empty: bool = False) -> tuple[dict[str, Any] | None, bytes | None, list[DiagnosticError]]:
+    data, problems = read_input_bytes(path, rel, root, allow_empty=allow_empty)
     if data is None:
         return None, None, problems
     text, problems = decode_utf8(data, rel)
@@ -541,6 +544,8 @@ REGISTRY_SPEC = Obj({
     "constitution": Str(),
     "policy": Str(),
     "contractBasis": Str(),
+    "ownerRationale": Str(),
+    "futureOwner": Str(),
     "dependencies": List(REGISTRY_ROW_SPEC),
 })
 REGISTRY_SCHEMA = "fss.dependencies.v2"

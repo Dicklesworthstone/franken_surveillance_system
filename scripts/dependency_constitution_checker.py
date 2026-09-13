@@ -217,7 +217,7 @@ def extract_markdown_class_sections(md_text: str) -> tuple[dict[str, tuple[str, 
 
 def check_constitution_markdown(result: ValidationResult, auth: authority.Authority, md_path: Path) -> None:
     rel = CONSTITUTION_MD_PATH
-    data, problems = authority.read_input_bytes(md_path, rel)
+    data, problems = authority.read_input_bytes(md_path, rel, auth.root)
     if data is None:
         result.extend(problems)
         return
@@ -358,7 +358,7 @@ def _run(cmd: list[str], root: Path) -> tuple[subprocess.CompletedProcess[str] |
 
 
 def registered_host_scopes(root: Path, result: ValidationResult) -> set[str] | None:
-    data, _raw, problems = authority.load_json_document(root / RELEASE_QUALIFICATION_PATH, RELEASE_QUALIFICATION_PATH)
+    data, _raw, problems = authority.load_json_document(root / RELEASE_QUALIFICATION_PATH, RELEASE_QUALIFICATION_PATH, root)
     result.extend(problems)
     if data is None:
         return None
@@ -929,7 +929,7 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
 
 def check_error_registration(result: ValidationResult, root: Path) -> None:
     rel = authority.ERRORS_MD_PATH
-    data, problems = authority.read_input_bytes(root / rel, rel)
+    data, problems = authority.read_input_bytes(root / rel, rel, root)
     text, decode_problems = (authority.decode_utf8(data, rel) if data is not None else (None, []))
     if text is None:
         result.extend(problems or decode_problems)
