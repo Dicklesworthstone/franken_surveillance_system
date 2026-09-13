@@ -38,12 +38,12 @@ pub mod test_event;
 mod time;
 
 pub use abstraction::{
-    evaluate_negative_read, AgentAbstractionLayer, DerivedBelief, DerivedBeliefParams,
-    NegativeReadClaim, NegativeReadOutcome, SourceEvidenceParams, SourceEvidenceRecord,
-    WorldFact, WorldFactKind,
     AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
-    AGENT_ABSTRACTIONS_FREEZE_DIGEST, AGENT_ABSTRACTIONS_GENERATION, CANONICAL_LAYERS,
-    MAX_DERIVED_BELIEF_CONTRADICTIONS, MAX_DERIVED_BELIEF_EVIDENCE,
+    AGENT_ABSTRACTIONS_FREEZE_DIGEST, AGENT_ABSTRACTIONS_GENERATION, AgentAbstractionLayer,
+    CANONICAL_LAYERS, DerivationInputs, DerivedBelief, DerivedBeliefParams,
+    MAX_DERIVED_BELIEF_CONTRADICTIONS, MAX_DERIVED_BELIEF_EVIDENCE, NegativeReadClaim,
+    NegativeReadOutcome, SourceEvidenceParams, SourceEvidenceRecord, WorldFact, WorldFactKind,
+    evaluate_negative_read,
 };
 
 pub use agent::{

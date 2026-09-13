@@ -4,6 +4,7 @@
 //! Cognition plane types:
 //! - [`DerivedBelief`]
 //! - [`DerivedBeliefParams`]
+//! - [`DerivationInputs`]
 
 use crate::belief::BeliefInterval;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
@@ -72,6 +73,32 @@ pub struct DerivedBeliefParams {
     pub contradictions: Vec<ContentDigest>,
     /// Receipt digest witnessing the deterministic derivation calculation.
     pub derivation_receipt: ContentDigest,
+}
+
+/// Borrowed derivation inputs hashed into a [`DerivedBelief`] derivation receipt.
+///
+/// Every field that the receipt witnesses is named here, so the receipt computation takes one
+/// typed input instead of a long positional argument list.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DerivationInputs<'a> {
+    /// Stable proposition identity.
+    pub belief_id: &'a str,
+    /// Exact ledger anchor the derivation is pinned to.
+    pub anchor: &'a LedgerAnchor,
+    /// Generation identifier for the derivation model/engine.
+    pub generation: Generation,
+    /// Compact human-readable statement.
+    pub statement: &'a str,
+    /// Epistemic state.
+    pub knowledge_state: KnowledgeState,
+    /// Epistemic provenance.
+    pub provenance: ProvenanceClass,
+    /// Bounded uncertainty interval.
+    pub uncertainty: &'a BeliefInterval,
+    /// Evidence roots supporting the derivation.
+    pub supporting_evidence: &'a [ContentDigest],
+    /// Contradicting evidence roots.
+    pub contradictions: &'a [ContentDigest],
 }
 
 impl DerivedBelief {
@@ -209,36 +236,31 @@ impl DerivedBelief {
     }
 
     /// Computes the deterministic canonical derivation receipt from derivation inputs.
+    ///
+    /// The encoding order (domain tag, identity, anchor, generation, statement, state,
+    /// provenance, uncertainty, evidence, contradictions) is part of the receipt identity.
     pub fn compute_derivation_receipt(
-        belief_id: &str,
-        anchor: &LedgerAnchor,
-        generation: Generation,
-        statement: &str,
-        knowledge_state: KnowledgeState,
-        provenance: ProvenanceClass,
-        uncertainty: BeliefInterval,
-        supporting_evidence: &[ContentDigest],
-        contradictions: &[ContentDigest],
+        inputs: &DerivationInputs<'_>,
     ) -> Result<ContentDigest, ContractError> {
-        let ev_len = u32::try_from(supporting_evidence.len())
+        let ev_len = u32::try_from(inputs.supporting_evidence.len())
             .map_err(|_| ContractError::ArithmeticOverflow)?;
-        let contra_len = u32::try_from(contradictions.len())
+        let contra_len = u32::try_from(inputs.contradictions.len())
             .map_err(|_| ContractError::ArithmeticOverflow)?;
         let mut encoder = CanonicalEncoder::new();
         encoder.text("fss.derived_belief.receipt.v1");
-        encoder.text(belief_id);
-        anchor.encode_canonical(&mut encoder);
-        encoder.u64(generation.0);
-        encoder.text(statement);
-        knowledge_state.encode_canonical(&mut encoder);
-        provenance.encode_canonical(&mut encoder);
-        uncertainty.encode_canonical(&mut encoder);
+        encoder.text(inputs.belief_id);
+        inputs.anchor.encode_canonical(&mut encoder);
+        encoder.u64(inputs.generation.0);
+        encoder.text(inputs.statement);
+        inputs.knowledge_state.encode_canonical(&mut encoder);
+        inputs.provenance.encode_canonical(&mut encoder);
+        inputs.uncertainty.encode_canonical(&mut encoder);
         encoder.u32(ev_len);
-        for d in supporting_evidence {
+        for d in inputs.supporting_evidence {
             encoder.digest(*d);
         }
         encoder.u32(contra_len);
-        for d in contradictions {
+        for d in inputs.contradictions {
             encoder.digest(*d);
         }
         Ok(ContentDigest::sha256(&encoder.finish()))
@@ -313,8 +335,8 @@ impl CanonicalDecode for DerivedBelief {
         let uncertainty = BeliefInterval::decode_canonical(decoder)?;
 
         let raw_evidence_len = decoder.u32()?;
-        let evidence_len = usize::try_from(raw_evidence_len)
-            .map_err(|_| ContractError::ArithmeticOverflow)?;
+        let evidence_len =
+            usize::try_from(raw_evidence_len).map_err(|_| ContractError::ArithmeticOverflow)?;
         let max_evidence_possible = decoder.remaining() / 33;
         if evidence_len > MAX_DERIVED_BELIEF_EVIDENCE || evidence_len > max_evidence_possible {
             return Err(ContractError::ArithmeticOverflow);
@@ -325,8 +347,8 @@ impl CanonicalDecode for DerivedBelief {
         }
 
         let raw_contra_len = decoder.u32()?;
-        let contra_len = usize::try_from(raw_contra_len)
-            .map_err(|_| ContractError::ArithmeticOverflow)?;
+        let contra_len =
+            usize::try_from(raw_contra_len).map_err(|_| ContractError::ArithmeticOverflow)?;
         let max_contra_possible = decoder.remaining() / 33;
         if contra_len > MAX_DERIVED_BELIEF_CONTRADICTIONS || contra_len > max_contra_possible {
             return Err(ContractError::ArithmeticOverflow);

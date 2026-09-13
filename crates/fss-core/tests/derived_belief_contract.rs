@@ -18,9 +18,9 @@ use std::error::Error;
 use fss_core::belief::BeliefInterval;
 use fss_core::{
     AgentAbstractionLayer, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-    ContentDigest, ContractError, DerivedBelief, DerivedBeliefParams, Generation, KnowledgeState,
-    LedgerAnchor, Plane, ProvenanceClass, TimestampNs, MAX_DERIVED_BELIEF_CONTRADICTIONS,
-    MAX_DERIVED_BELIEF_EVIDENCE,
+    ContentDigest, ContractError, DerivationInputs, DerivedBelief, DerivedBeliefParams, Generation,
+    KnowledgeState, LedgerAnchor, MAX_DERIVED_BELIEF_CONTRADICTIONS, MAX_DERIVED_BELIEF_EVIDENCE,
+    Plane, ProvenanceClass, TimestampNs,
 };
 
 fn sample_anchor() -> LedgerAnchor {
@@ -305,8 +305,7 @@ fn test_planted_negative_derived_belief_zero_receipt_forbidden() -> Result<(), B
     let uncertainty = sample_uncertainty()?;
     let evidence_root = ContentDigest::sha256(b"evidence_packet_001");
     let zero_receipt = ContentDigest::sha256(b"");
-    let zero_bytes_receipt =
-        ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0u8; 32]);
+    let zero_bytes_receipt = ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0u8; 32]);
 
     let res = DerivedBelief::new(DerivedBeliefParams {
         belief_id: "belief:track:zero_receipt".into(),
@@ -353,7 +352,9 @@ fn test_planted_negative_derived_belief_stale_anchor_fails() -> Result<(), Box<d
     })?;
 
     // Stale anchor fails with exact error StaleAnchor
-    let err = belief.validate_anchor_freshness(1).unwrap_err();
+    let Err(err) = belief.validate_anchor_freshness(1) else {
+        return Err("validate_anchor_freshness must refuse a stale anchor".into());
+    };
     assert_eq!(err, ContractError::StaleAnchor);
 
     Ok(())
@@ -366,17 +367,17 @@ fn test_derived_belief_rebuild_and_receipt_determinism() -> Result<(), Box<dyn E
     let evidence_root = ContentDigest::sha256(b"evidence_packet_001");
     let contra_root = ContentDigest::sha256(b"contra_packet_002");
 
-    let receipt = DerivedBelief::compute_derivation_receipt(
-        "belief:track:rebuildable:001",
-        &anchor,
-        Generation(5),
-        "Rebuildable derived proposition",
-        KnowledgeState::Estimated,
-        ProvenanceClass::Derived,
-        uncertainty.clone(),
-        &[evidence_root],
-        &[contra_root],
-    )?;
+    let receipt = DerivedBelief::compute_derivation_receipt(&DerivationInputs {
+        belief_id: "belief:track:rebuildable:001",
+        anchor: &anchor,
+        generation: Generation(5),
+        statement: "Rebuildable derived proposition",
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Derived,
+        uncertainty: &uncertainty,
+        supporting_evidence: &[evidence_root],
+        contradictions: &[contra_root],
+    })?;
 
     let belief = DerivedBelief::new(DerivedBeliefParams {
         belief_id: "belief:track:rebuildable:001".into(),
@@ -575,6 +576,57 @@ fn test_derived_belief_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
 
     assert_eq!(belief, decoded);
     assert_eq!(belief.canonical_digest(), decoded.canonical_digest());
+
+    Ok(())
+}
+
+#[test]
+fn test_derivation_receipt_encoding_order_is_pinned() -> Result<(), Box<dyn Error>> {
+    // Independent oracle: re-encode the receipt fields by hand in the documented order
+    // (domain tag, identity, anchor, generation, statement, state, provenance, uncertainty,
+    // evidence, contradictions). Any reordering or dropped field changes the digest.
+    let anchor = sample_anchor();
+    let uncertainty = sample_uncertainty()?;
+    let evidence = [
+        ContentDigest::sha256(b"ev-a"),
+        ContentDigest::sha256(b"ev-b"),
+    ];
+    let contradictions = [ContentDigest::sha256(b"contra-a")];
+    let inputs = DerivationInputs {
+        belief_id: "belief:pin:001",
+        anchor: &anchor,
+        generation: Generation(7),
+        statement: "Pinned receipt layout",
+        knowledge_state: KnowledgeState::Conflicted,
+        provenance: ProvenanceClass::Derived,
+        uncertainty: &uncertainty,
+        supporting_evidence: &evidence,
+        contradictions: &contradictions,
+    };
+
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.derived_belief.receipt.v1");
+    encoder.text("belief:pin:001");
+    anchor.encode_canonical(&mut encoder);
+    encoder.u64(7);
+    encoder.text("Pinned receipt layout");
+    KnowledgeState::Conflicted.encode_canonical(&mut encoder);
+    ProvenanceClass::Derived.encode_canonical(&mut encoder);
+    uncertainty.encode_canonical(&mut encoder);
+    encoder.u32(2);
+    for digest in evidence {
+        encoder.digest(digest);
+    }
+    encoder.u32(1);
+    for digest in contradictions {
+        encoder.digest(digest);
+    }
+    let expected = ContentDigest::sha256(&encoder.finish_checked()?);
+
+    assert_eq!(
+        DerivedBelief::compute_derivation_receipt(&inputs)?,
+        expected
+    );
 
     Ok(())
 }
