@@ -34,6 +34,7 @@ ERR_PROV_FREEZE_DIVERGENCE = "ERR-PROV-FREEZE-DIVERGENCE-001"
 ERR_PROV_GENERATION_MISMATCH = "ERR-PROV-GENERATION-MISMATCH-001"
 ERR_PROV_SEMANTIC_INVARIANT = "ERR-PROV-SEMANTIC-INVARIANT-001"
 
+AGENT_CONTRACTS_JSON_PATH = "architecture/agent_contracts.json"
 PROVENANCE_CLASSES_JSON_PATH = "architecture/provenance_classes.json"
 AGENT_CONTRACTS_MD_PATH = "registries/AGENT_CONTRACTS.md"
 
@@ -84,7 +85,29 @@ BASELINE_PROVENANCE_CLASSES: dict[str, dict[str, str]] = {
 }
 
 # Provenance classes forbidden from authorizing irreversible effects
-NON_AUTHORIZING_CLASSES = {"predicted", "remembered", "vendor_claimed"}
+NON_AUTHORIZING_CLASSES: frozenset[str] = frozenset({"predicted", "remembered", "vendor_claimed"})
+
+# Provenance classes permitted to authorize irreversible effects (when knowledge state is known, subject to capability and policy)
+AUTHORIZING_CLASSES: frozenset[str] = frozenset({"observed", "derived", "operator_asserted", "policy"})
+
+ALL_PROVENANCE_CLASSES: frozenset[str] = NON_AUTHORIZING_CLASSES | AUTHORIZING_CLASSES
+
+# States requiring evidence for observed / derived provenance
+STATES_REQUIRING_EVIDENCE: frozenset[str] = frozenset({
+    "known",
+    "estimated",
+    "conflicted",
+    "stale",
+})
+
+# States where empty evidence is legitimate and expected (honest absence or non-positive assertion)
+STATES_PERMITTING_EMPTY_EVIDENCE: frozenset[str] = frozenset({
+    "unknown",
+    "not_observable",
+    "not_applicable",
+    "redacted",
+    "indeterminate",
+})
 
 MANDATORY_TOP_LEVEL_FIELDS: tuple[str, ...] = (
     "schema",
@@ -96,12 +119,21 @@ MANDATORY_TOP_LEVEL_FIELDS: tuple[str, ...] = (
     "registryDigest",
     "provenanceClasses",
 )
+ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(MANDATORY_TOP_LEVEL_FIELDS)
 
 MANDATORY_ROW_FIELDS: tuple[str, ...] = (
     "id",
     "class",
     "meaning",
 )
+ALLOWED_ROW_KEYS: frozenset[str] = frozenset(MANDATORY_ROW_FIELDS)
+
+AGENT_CONTRACTS_MANDATORY_ROW_FIELDS: tuple[str, ...] = (
+    "id",
+    "name",
+    "meaning",
+)
+AGENT_CONTRACTS_ALLOWED_ROW_KEYS: frozenset[str] = frozenset(AGENT_CONTRACTS_MANDATORY_ROW_FIELDS)
 
 PROV_ID_PATTERN = re.compile(r"^PROV-\d{3}$")
 
@@ -126,12 +158,48 @@ class ValidationResult:
         self.errors.append(DiagnosticError(code=code, file_path=file_path, target=target, message=message))
 
 
-def canonicalize_value(val: Any) -> Any:
-    if isinstance(val, dict):
-        return {k: canonicalize_value(v) for k, v in sorted(val.items())}
-    if isinstance(val, list):
-        return [canonicalize_value(item) for item in val]
-    return val
+def canonicalize_value(root_val: Any, max_depth: int = 32) -> Any:
+    """Iteratively canonicalizes nested dicts and lists with sorted keys without recursion.
+
+    Raises ValueError if nesting depth exceeds max_depth or if unsupported types/cycles are found.
+    """
+    if not isinstance(root_val, (dict, list)):
+        return root_val
+
+    if isinstance(root_val, dict):
+        result_root: Any = {}
+        stack: list[tuple[Any, Any, list, int]] = [
+            (root_val, result_root, sorted(root_val.keys(), reverse=True), 1)
+        ]
+    else:
+        result_root = [None] * len(root_val)
+        stack = [
+            (root_val, result_root, list(reversed(range(len(root_val)))), 1)
+        ]
+
+    while stack:
+        src, dst, pending, depth = stack[-1]
+        if depth > max_depth:
+            raise ValueError(f"Maximum nesting depth of {max_depth} exceeded")
+        if not pending:
+            stack.pop()
+            continue
+
+        key = pending.pop()
+        val = src[key]
+
+        if isinstance(val, dict):
+            new_dict: dict[str, Any] = {}
+            dst[key] = new_dict
+            stack.append((val, new_dict, sorted(val.keys(), reverse=True), depth + 1))
+        elif isinstance(val, list):
+            new_list: list[Any] = [None] * len(val)
+            dst[key] = new_list
+            stack.append((val, new_list, list(reversed(range(len(val)))), depth + 1))
+        else:
+            dst[key] = val
+
+    return result_root
 
 
 def compute_canonical_provenance_digest(
@@ -147,18 +215,35 @@ def compute_canonical_provenance_digest(
 
     Binds top-level metadata (schema, asOf, generation, semanticProtocol,
     constitutionalDocument, humanContracts) and deterministically sorted
-    provenanceClasses rows.
+    provenanceClasses rows byte-exact.
     """
     if isinstance(data_or_classes, dict):
         data = data_or_classes
-        schema_val = str(data.get("schema", "")).strip()
-        as_of_val = str(data.get("asOf", "")).strip()
-        generation_val = str(data.get("generation", "")).strip()
-        proto_val = str(data.get("semanticProtocol", "")).strip()
-        doc_val = str(data.get("constitutionalDocument", "")).strip()
-        contracts_val = str(data.get("humanContracts", "")).strip()
-        raw_classes = data.get("provenanceClasses", [])
-    else:
+        # Reject unknown top-level keys
+        unknown_keys = set(data.keys()) - ALLOWED_TOP_LEVEL_KEYS
+        if unknown_keys:
+            raise ValueError(f"Unknown top-level key(s) in provenance registry: {sorted(unknown_keys)}")
+
+        schema_val = data.get("schema")
+        as_of_val = data.get("asOf")
+        generation_val = data.get("generation")
+        proto_val = data.get("semanticProtocol")
+        doc_val = data.get("constitutionalDocument")
+        contracts_val = data.get("humanContracts")
+
+        for fname, fval in [
+            ("schema", schema_val),
+            ("asOf", as_of_val),
+            ("generation", generation_val),
+            ("semanticProtocol", proto_val),
+            ("constitutionalDocument", doc_val),
+            ("humanContracts", contracts_val),
+        ]:
+            if not isinstance(fval, str) or len(fval) == 0:
+                raise TypeError(f"Top-level field '{fname}' must be a non-empty string, got {type(fval).__name__}")
+
+        raw_classes = data.get("provenanceClasses")
+    elif isinstance(data_or_classes, list):
         schema_val = schema
         as_of_val = as_of
         generation_val = generation
@@ -166,8 +251,21 @@ def compute_canonical_provenance_digest(
         doc_val = constitutional_document
         contracts_val = human_contracts
         raw_classes = data_or_classes
+    else:
+        raise TypeError(f"Input must be a dict or list, got {type(data_or_classes).__name__}")
 
-    sorted_classes = sorted(raw_classes, key=lambda r: str(r.get("id", "")))
+    # Type-check provenanceClasses before sorting
+    if not isinstance(raw_classes, list):
+        raise TypeError(f"provenanceClasses must be a list, got {type(raw_classes).__name__}")
+
+    for idx, r in enumerate(raw_classes):
+        if not isinstance(r, dict):
+            raise TypeError(f"provenanceClasses row at index {idx} must be a dict, got {type(r).__name__}")
+        pid = r.get("id")
+        if not isinstance(pid, str) or len(pid) == 0:
+            raise TypeError(f"provenanceClasses row at index {idx} missing non-empty string 'id'")
+
+    sorted_classes = sorted(raw_classes, key=lambda r: str(r["id"]))
     canonical_payload = {
         "asOf": as_of_val,
         "constitutionalDocument": doc_val,
@@ -181,9 +279,17 @@ def compute_canonical_provenance_digest(
     return f"sha256:{hashlib.sha256(canonical_bytes).hexdigest()}"
 
 
-def extract_markdown_provenance_classes(md_path: Path) -> dict[str, tuple[str, str]]:
-    """Extracts provenance classes from markdown table: {id: (class_name, meaning)}."""
+def extract_markdown_provenance_classes(md_path: Path) -> tuple[dict[str, tuple[str, str]], list[str]]:
+    """Extracts provenance classes from markdown table.
+
+    Returns:
+        (rows_dict, duplicate_ids_list)
+        where rows_dict is {id: (class_name, meaning)} with first-row-retained semantics,
+        and duplicate_ids_list records any IDs that appeared more than once.
+    """
     rows: dict[str, tuple[str, str]] = {}
+    seen_ids: set[str] = set()
+    duplicates: list[str] = []
     lines = md_path.read_text(encoding="utf-8").splitlines()
     for line in lines:
         stripped = line.strip()
@@ -193,16 +299,125 @@ def extract_markdown_provenance_classes(md_path: Path) -> dict[str, tuple[str, s
                 pid = parts[0].replace("`", "").strip()
                 cls = parts[1].replace("`", "").strip()
                 meaning = parts[2].strip()
-                rows[pid] = (cls, meaning)
-    return rows
+                if pid in seen_ids:
+                    duplicates.append(pid)
+                else:
+                    seen_ids.add(pid)
+                    rows[pid] = (cls, meaning)
+    return rows, duplicates
+
+
+def validate_provenance_authorization(
+    provenance_class: str,
+    knowledge_state: str,
+    is_irreversible: bool = False,
+) -> tuple[bool, str | None]:
+    """Validates whether a provenance class may authorize an effect.
+
+    Non-authorizing classes (predicted, remembered, vendor_claimed) can NEVER
+    authorize irreversible effects, regardless of knowledge state or confidence score.
+    Irreversible effects additionally require knowledge state 'known'.
+    """
+    if is_irreversible:
+        if provenance_class in NON_AUTHORIZING_CLASSES:
+            return (
+                False,
+                f"Provenance class '{provenance_class}' is non-authorizing and cannot authorize irreversible effects (ERR-PROV-SEMANTIC-INVARIANT-001)",
+            )
+        if knowledge_state != "known":
+            return (
+                False,
+                f"Irreversible effects require knowledge state 'known', got '{knowledge_state}'",
+            )
+    return True, None
+
+
+def validate_state_aware_evidence(
+    provenance_class: str,
+    knowledge_state: str,
+    evidence_count: int,
+) -> tuple[bool, str | None]:
+    """Enforces the state-aware evidence invariant for provenance classes.
+
+    Observed and Derived provenance require evidence/derivation inputs only when
+    the proposition is positively/negatively asserted (known, estimated, conflicted, stale).
+    Honest Unknown, NotObservable, NotApplicable, Redacted, or Indeterminate cells
+    legitimately have Observed provenance with zero evidence.
+    """
+    if provenance_class == "observed":
+        if knowledge_state in STATES_REQUIRING_EVIDENCE and evidence_count == 0:
+            return (
+                False,
+                f"Observed provenance requires non-empty evidence when knowledge state is '{knowledge_state}' (ERR-PROV-SEMANTIC-INVARIANT-001)",
+            )
+    elif provenance_class == "derived":
+        if knowledge_state in STATES_REQUIRING_EVIDENCE and evidence_count == 0:
+            return (
+                False,
+                f"Derived provenance requires derivation inputs/witness when knowledge state is '{knowledge_state}' (ERR-PROV-SEMANTIC-INVARIANT-001)",
+            )
+    return True, None
+
+
+def validate_cell_provenance_invariants(
+    provenance_class: str,
+    knowledge_state: str,
+    evidence_count: int = 0,
+    authorizes_irreversible_effect: bool = False,
+    file_path: str = PROVENANCE_CLASSES_JSON_PATH,
+    target: str = "#",
+) -> list[DiagnosticError]:
+    """Validates cell-level semantic invariants across knowledge state, provenance class, and evidence."""
+    errors: list[DiagnosticError] = []
+
+    if provenance_class not in ALL_PROVENANCE_CLASSES:
+        errors.append(
+            DiagnosticError(
+                code=ERR_PROV_SEMANTIC_INVARIANT,
+                file_path=file_path,
+                target=f"{target}/provenance_class",
+                message=f"Unknown provenance class '{provenance_class}'",
+            )
+        )
+
+    # Invariant 1: Irreversible effect authorization
+    auth_ok, auth_msg = validate_provenance_authorization(
+        provenance_class, knowledge_state, is_irreversible=authorizes_irreversible_effect
+    )
+    if not auth_ok:
+        errors.append(
+            DiagnosticError(
+                code=ERR_PROV_SEMANTIC_INVARIANT,
+                file_path=file_path,
+                target=f"{target}/authorization",
+                message=auth_msg or "Illegal effect authorization",
+            )
+        )
+
+    # Invariant 2: State-aware evidence requirement
+    ev_ok, ev_msg = validate_state_aware_evidence(
+        provenance_class, knowledge_state, evidence_count
+    )
+    if not ev_ok:
+        errors.append(
+            DiagnosticError(
+                code=ERR_PROV_SEMANTIC_INVARIANT,
+                file_path=file_path,
+                target=f"{target}/evidence",
+                message=ev_msg or "Missing required evidence",
+            )
+        )
+
+    return errors
 
 
 def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
     result = ValidationResult()
     json_path = repo_root / PROVENANCE_CLASSES_JSON_PATH
     md_path = repo_root / AGENT_CONTRACTS_MD_PATH
+    ac_json_path = repo_root / AGENT_CONTRACTS_JSON_PATH
 
-    # Check existence
+    # Check existence of required files
     if not json_path.is_file():
         result.add_error(
             ERR_PROV_CORRUPT_FILE,
@@ -219,7 +434,14 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
             "#",
             f"Agent contracts markdown file does not exist: {md_path}",
         )
-        return result
+
+    if not ac_json_path.is_file():
+        result.add_error(
+            ERR_PROV_CORRUPT_FILE,
+            AGENT_CONTRACTS_JSON_PATH,
+            "#",
+            f"Agent contracts umbrella JSON file does not exist: {ac_json_path}",
+        )
 
     # Parse JSON
     try:
@@ -242,6 +464,23 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
         )
         return result
 
+    # Reject unknown top-level keys
+    for k in sorted(data.keys()):
+        if k not in ALLOWED_TOP_LEVEL_KEYS:
+            if "authoriz" in k.lower() or "effect" in k.lower() or "irreversible" in k.lower():
+                result.add_error(
+                    ERR_PROV_SEMANTIC_INVARIANT,
+                    PROVENANCE_CLASSES_JSON_PATH,
+                    f"#/{k}",
+                    f"Semantic invariant violation: unauthorized effect authorization configuration in key '{k}'",
+                )
+            result.add_error(
+                ERR_PROV_CORRUPT_FILE,
+                PROVENANCE_CLASSES_JSON_PATH,
+                f"#/{k}",
+                f"Unknown top-level key: '{k}'",
+            )
+
     # Validate top-level mandatory fields
     for field_name in MANDATORY_TOP_LEVEL_FIELDS:
         val = data.get(field_name)
@@ -252,7 +491,7 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
                 f"#/{field_name}",
                 f"Provenance-class registry missing mandatory top-level field '{field_name}'",
             )
-        elif field_name != "provenanceClasses" and (not isinstance(val, str) or not val.strip()):
+        elif field_name != "provenanceClasses" and (not isinstance(val, str) or len(val) == 0):
             result.add_error(
                 ERR_PROV_MISSING_FIELD,
                 PROVENANCE_CLASSES_JSON_PATH,
@@ -260,8 +499,8 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
                 f"Provenance-class registry top-level field '{field_name}' must be a non-empty string",
             )
 
-    generation = str(data.get("generation", "")).strip()
-    if not generation:
+    generation = data.get("generation")
+    if not generation or not isinstance(generation, str):
         result.add_error(
             ERR_PROV_GENERATION_MISMATCH,
             PROVENANCE_CLASSES_JSON_PATH,
@@ -276,11 +515,15 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
             f"Provenance-class registry generation mismatch: declared '{generation}', expected '{BASELINE_GENERATION}'",
         )
 
-    declared_digest = str(data.get("registryDigest", "")).strip()
-    result.registry_digest = declared_digest
+    declared_digest = data.get("registryDigest")
+    if isinstance(declared_digest, str):
+        result.registry_digest = declared_digest
+    else:
+        declared_digest = ""
+        result.registry_digest = ""
 
     # Pinned freeze digest check against EXPECTED_FREEZE_DIGESTS
-    expected_pinned_digest = EXPECTED_FREEZE_DIGESTS.get(generation)
+    expected_pinned_digest = EXPECTED_FREEZE_DIGESTS.get(str(generation))
     if expected_pinned_digest is not None:
         if declared_digest != expected_pinned_digest:
             result.add_error(
@@ -297,16 +540,6 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
             f"Provenance-class registry digest has no pinned freeze digest for generation '{generation}'",
         )
 
-    # Computed canonical digest check
-    computed_digest = compute_canonical_provenance_digest(data)
-    if declared_digest != computed_digest:
-        result.add_error(
-            ERR_PROV_DIGEST_MISMATCH,
-            PROVENANCE_CLASSES_JSON_PATH,
-            "#/registryDigest",
-            f"Registry digest mismatch: declared '{declared_digest}', computed '{computed_digest}'",
-        )
-
     classes_list = data.get("provenanceClasses")
     if not isinstance(classes_list, list):
         result.add_error(
@@ -319,9 +552,11 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
 
     result.provenance_class_count = len(classes_list)
 
-    # Check each row for mandatory fields and valid IDs
+    # Check each row for valid structure, unknown keys, mandatory fields, and semantic invariants
     seen_ids: set[str] = set()
     json_classes: dict[str, dict[str, Any]] = {}
+    has_row_corruption = False
+
     for idx, row in enumerate(classes_list):
         if not isinstance(row, dict):
             result.add_error(
@@ -330,10 +565,34 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
                 f"#/provenanceClasses/{idx}",
                 f"Provenance-class entry at index {idx} is not an object",
             )
+            has_row_corruption = True
             continue
 
+        # Iterative depth bounding check
+        try:
+            canonicalize_value(row, max_depth=32)
+        except ValueError as exc:
+            result.add_error(
+                ERR_PROV_CORRUPT_FILE,
+                PROVENANCE_CLASSES_JSON_PATH,
+                f"#/provenanceClasses/{idx}",
+                f"Excessive nesting or corrupt row structure: {exc}",
+            )
+            has_row_corruption = True
+            continue
+
+        # Refuse unknown row keys
+        for rk in sorted(row.keys()):
+            if rk not in ALLOWED_ROW_KEYS:
+                result.add_error(
+                    ERR_PROV_CORRUPT_FILE,
+                    PROVENANCE_CLASSES_JSON_PATH,
+                    f"#/provenanceClasses/{idx}/{rk}",
+                    f"Unknown row field '{rk}' in provenance class entry {idx}",
+                )
+
         pid = row.get("id")
-        if not pid or not isinstance(pid, str) or not pid.strip():
+        if not pid or not isinstance(pid, str) or len(pid) == 0:
             result.add_error(
                 ERR_PROV_MISSING_FIELD,
                 PROVENANCE_CLASSES_JSON_PATH,
@@ -342,7 +601,6 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
             )
             continue
 
-        pid = pid.strip()
         if not PROV_ID_PATTERN.match(pid):
             result.add_error(
                 ERR_PROV_STABLE_ID_REUSED,
@@ -364,13 +622,32 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
         # Check row mandatory fields
         for field_name in MANDATORY_ROW_FIELDS:
             val = row.get(field_name)
-            if val is None or not isinstance(val, str) or not val.strip():
+            if val is None or not isinstance(val, str) or len(val) == 0:
                 result.add_error(
                     ERR_PROV_MISSING_FIELD,
                     PROVENANCE_CLASSES_JSON_PATH,
                     f"#/provenanceClasses/{pid}/{field_name}",
                     f"Provenance-class '{pid}' missing or empty mandatory field '{field_name}'",
                 )
+
+        # Semantic Invariants on row
+        cls_name = row.get("class")
+        if cls_name and isinstance(cls_name, str):
+            if cls_name not in ALL_PROVENANCE_CLASSES:
+                result.add_error(
+                    ERR_PROV_SEMANTIC_INVARIANT,
+                    PROVENANCE_CLASSES_JSON_PATH,
+                    f"#/provenanceClasses/{pid}/class",
+                    f"Provenance class '{cls_name}' ({pid}) is not a registered canonical provenance class",
+                )
+            if cls_name in NON_AUTHORIZING_CLASSES:
+                if row.get("may_authorize_irreversible_effect") in (True, "yes", "true", "yes, subject to capability and policy"):
+                    result.add_error(
+                        ERR_PROV_SEMANTIC_INVARIANT,
+                        PROVENANCE_CLASSES_JSON_PATH,
+                        f"#/provenanceClasses/{pid}/may_authorize_irreversible_effect",
+                        f"Non-authorizing provenance class '{cls_name}' ({pid}) illegally authorizes irreversible effects",
+                    )
 
     # Check baseline presence and immutability when at BASELINE_GENERATION
     expected_baseline_ids = set(BASELINE_PROVENANCE_CLASSES.keys())
@@ -406,63 +683,219 @@ def validate_provenance_registry(repo_root: Path = ROOT) -> ValidationResult:
                             f"Provenance-class '{pid}' field '{k}' diverged from baseline without generation bump: declared '{act_val}', expected '{exp_val}'",
                         )
 
+    # Computed canonical digest check (byte-exact, safe from tracebacks)
+    if not has_row_corruption:
+        try:
+            computed_digest = compute_canonical_provenance_digest(data)
+            if declared_digest != computed_digest:
+                result.add_error(
+                    ERR_PROV_DIGEST_MISMATCH,
+                    PROVENANCE_CLASSES_JSON_PATH,
+                    "#/registryDigest",
+                    f"Registry digest mismatch: declared '{declared_digest}', computed '{computed_digest}'",
+                )
+        except Exception as exc:
+            result.add_error(
+                ERR_PROV_CORRUPT_FILE,
+                PROVENANCE_CLASSES_JSON_PATH,
+                "#/provenanceClasses",
+                f"Failed to compute canonical digest: {exc}",
+            )
+
     # Parse and cross-check against Markdown mirror
-    try:
-        md_classes = extract_markdown_provenance_classes(md_path)
-    except Exception as exc:
-        result.add_error(
-            ERR_PROV_CORRUPT_FILE,
-            AGENT_CONTRACTS_MD_PATH,
-            "#",
-            f"Failed to extract provenance-class rows from markdown: {exc}",
-        )
-        return result
-
-    # Check count parity
-    if len(json_classes) != len(md_classes):
-        result.add_error(
-            ERR_PROV_REGISTRY_DRIFT,
-            PROVENANCE_CLASSES_JSON_PATH,
-            "#/provenanceClasses",
-            f"Provenance-class count mismatch: JSON has {len(json_classes)}, Markdown has {len(md_classes)}",
-        )
-
-    # Check all MD rows are present in JSON and mirror-equal
-    for pid, (md_cls, md_meaning) in md_classes.items():
-        if pid not in json_classes:
+    if md_path.is_file():
+        try:
+            md_classes, md_duplicates = extract_markdown_provenance_classes(md_path)
+        except Exception as exc:
             result.add_error(
-                ERR_PROV_REGISTRY_DRIFT,
-                PROVENANCE_CLASSES_JSON_PATH,
-                f"#/provenanceClasses/{pid}",
-                f"Provenance-class '{pid}' present in Markdown but missing in JSON",
-            )
-            continue
-
-        j_row = json_classes[pid]
-        if j_row.get("class") != md_cls:
-            result.add_error(
-                ERR_PROV_REGISTRY_DRIFT,
-                PROVENANCE_CLASSES_JSON_PATH,
-                f"#/provenanceClasses/{pid}/class",
-                f"Provenance-class '{pid}' class mismatch: JSON '{j_row.get('class')}', MD '{md_cls}'",
-            )
-        if j_row.get("meaning") != md_meaning:
-            result.add_error(
-                ERR_PROV_REGISTRY_DRIFT,
-                PROVENANCE_CLASSES_JSON_PATH,
-                f"#/provenanceClasses/{pid}/meaning",
-                f"Provenance-class '{pid}' meaning mismatch: JSON '{j_row.get('meaning')}', MD '{md_meaning}'",
-            )
-
-    # Check all JSON rows are in MD
-    for pid in json_classes:
-        if pid not in md_classes:
-            result.add_error(
-                ERR_PROV_REGISTRY_DRIFT,
+                ERR_PROV_CORRUPT_FILE,
                 AGENT_CONTRACTS_MD_PATH,
-                f"#{pid}",
-                f"Provenance-class '{pid}' present in JSON but missing in Markdown",
+                "#",
+                f"Failed to extract provenance-class rows from markdown: {exc}",
             )
+            md_classes, md_duplicates = {}, []
+
+        # Refuse duplicate IDs in markdown mirror
+        for dup_id in md_duplicates:
+            result.add_error(
+                ERR_PROV_STABLE_ID_REUSED,
+                AGENT_CONTRACTS_MD_PATH,
+                f"#{dup_id}",
+                f"Duplicate provenance-class ID '{dup_id}' in markdown mirror",
+            )
+
+        # Check count parity between JSON and Markdown
+        if len(json_classes) != len(md_classes):
+            result.add_error(
+                ERR_PROV_REGISTRY_DRIFT,
+                PROVENANCE_CLASSES_JSON_PATH,
+                "#/provenanceClasses",
+                f"Provenance-class count mismatch: JSON has {len(json_classes)}, Markdown has {len(md_classes)}",
+            )
+
+        # Check all MD rows are present in JSON and mirror-equal
+        for pid, (md_cls, md_meaning) in md_classes.items():
+            if pid not in json_classes:
+                result.add_error(
+                    ERR_PROV_REGISTRY_DRIFT,
+                    PROVENANCE_CLASSES_JSON_PATH,
+                    f"#/provenanceClasses/{pid}",
+                    f"Provenance-class '{pid}' present in Markdown but missing in JSON",
+                )
+                continue
+
+            j_row = json_classes[pid]
+            if j_row.get("class") != md_cls:
+                result.add_error(
+                    ERR_PROV_REGISTRY_DRIFT,
+                    PROVENANCE_CLASSES_JSON_PATH,
+                    f"#/provenanceClasses/{pid}/class",
+                    f"Provenance-class '{pid}' class mismatch: JSON '{j_row.get('class')}', MD '{md_cls}'",
+                )
+            if j_row.get("meaning") != md_meaning:
+                result.add_error(
+                    ERR_PROV_REGISTRY_DRIFT,
+                    PROVENANCE_CLASSES_JSON_PATH,
+                    f"#/provenanceClasses/{pid}/meaning",
+                    f"Provenance-class '{pid}' meaning mismatch: JSON '{j_row.get('meaning')}', MD '{md_meaning}'",
+                )
+
+        # Check all JSON rows are in MD
+        for pid in json_classes:
+            if pid not in md_classes:
+                result.add_error(
+                    ERR_PROV_REGISTRY_DRIFT,
+                    AGENT_CONTRACTS_MD_PATH,
+                    f"#{pid}",
+                    f"Provenance-class '{pid}' present in JSON but missing in Markdown",
+                )
+
+    # Parse and cross-check against umbrella architecture/agent_contracts.json
+    if ac_json_path.is_file():
+        try:
+            ac_data = json.loads(ac_json_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            result.add_error(
+                ERR_PROV_CORRUPT_FILE,
+                AGENT_CONTRACTS_JSON_PATH,
+                "#",
+                f"Failed to parse agent contracts JSON: {exc}",
+            )
+            ac_data = None
+
+        if ac_data is not None:
+            if not isinstance(ac_data, dict):
+                result.add_error(
+                    ERR_PROV_CORRUPT_FILE,
+                    AGENT_CONTRACTS_JSON_PATH,
+                    "#",
+                    "Agent contracts umbrella registry root must be a JSON object",
+                )
+            else:
+                ac_classes_list = ac_data.get("provenanceClasses")
+                if not isinstance(ac_classes_list, list):
+                    result.add_error(
+                        ERR_PROV_CORRUPT_FILE,
+                        AGENT_CONTRACTS_JSON_PATH,
+                        "#/provenanceClasses",
+                        "Missing or non-array 'provenanceClasses' in agent contracts umbrella",
+                    )
+                else:
+                    ac_classes: dict[str, dict[str, Any]] = {}
+                    ac_seen_ids: set[str] = set()
+                    for ac_idx, ac_row in enumerate(ac_classes_list):
+                        if not isinstance(ac_row, dict):
+                            result.add_error(
+                                ERR_PROV_CORRUPT_FILE,
+                                AGENT_CONTRACTS_JSON_PATH,
+                                f"#/provenanceClasses/{ac_idx}",
+                                f"Agent contracts provenance-class entry at index {ac_idx} is not an object",
+                            )
+                            continue
+                        ac_pid = ac_row.get("id")
+                        if not ac_pid or not isinstance(ac_pid, str) or len(ac_pid) == 0:
+                            result.add_error(
+                                ERR_PROV_MISSING_FIELD,
+                                AGENT_CONTRACTS_JSON_PATH,
+                                f"#/provenanceClasses/{ac_idx}/id",
+                                f"Agent contracts provenance entry at index {ac_idx} missing 'id'",
+                            )
+                            continue
+                        if ac_pid in ac_seen_ids:
+                            result.add_error(
+                                ERR_PROV_STABLE_ID_REUSED,
+                                AGENT_CONTRACTS_JSON_PATH,
+                                f"#/provenanceClasses/{ac_idx}/id",
+                                f"Duplicate provenance-class ID in agent contracts: {ac_pid}",
+                            )
+                        ac_seen_ids.add(ac_pid)
+                        ac_classes[ac_pid] = ac_row
+
+                        for rk in sorted(ac_row.keys()):
+                            if rk not in AGENT_CONTRACTS_ALLOWED_ROW_KEYS:
+                                result.add_error(
+                                    ERR_PROV_CORRUPT_FILE,
+                                    AGENT_CONTRACTS_JSON_PATH,
+                                    f"#/provenanceClasses/{ac_pid}/{rk}",
+                                    f"Unknown row field '{rk}' in agent contracts provenance row '{ac_pid}'",
+                                )
+                        for req_f in AGENT_CONTRACTS_MANDATORY_ROW_FIELDS:
+                            f_val = ac_row.get(req_f)
+                            if not isinstance(f_val, str) or len(f_val) == 0:
+                                result.add_error(
+                                    ERR_PROV_MISSING_FIELD,
+                                    AGENT_CONTRACTS_JSON_PATH,
+                                    f"#/provenanceClasses/{ac_pid}/{req_f}",
+                                    f"Agent contracts provenance '{ac_pid}' missing mandatory field '{req_f}'",
+                                )
+
+                    # Cross-check 1:1 between provenance_classes.json and agent_contracts.json
+                    if len(json_classes) != len(ac_classes):
+                        result.add_error(
+                            ERR_PROV_REGISTRY_DRIFT,
+                            PROVENANCE_CLASSES_JSON_PATH,
+                            "#/provenanceClasses",
+                            f"Provenance class count mismatch between provenance_classes.json ({len(json_classes)}) and agent_contracts.json ({len(ac_classes)})",
+                        )
+
+                    for pid, j_row in json_classes.items():
+                        if pid not in ac_classes:
+                            result.add_error(
+                                ERR_PROV_REGISTRY_DRIFT,
+                                AGENT_CONTRACTS_JSON_PATH,
+                                f"#/provenanceClasses/{pid}",
+                                f"Provenance class '{pid}' present in provenance_classes.json but missing in agent_contracts.json",
+                            )
+                            continue
+                        ac_row = ac_classes[pid]
+                        # In provenance_classes.json it is 'class', in agent_contracts.json it is 'name'
+                        j_cls = j_row.get("class")
+                        ac_name = ac_row.get("name")
+                        if j_cls != ac_name:
+                            result.add_error(
+                                ERR_PROV_REGISTRY_DRIFT,
+                                AGENT_CONTRACTS_JSON_PATH,
+                                f"#/provenanceClasses/{pid}/name",
+                                f"Provenance class '{pid}' name mismatch: provenance_classes.json class '{j_cls}', agent_contracts.json name '{ac_name}'",
+                            )
+                        j_meaning = j_row.get("meaning")
+                        ac_meaning = ac_row.get("meaning")
+                        if j_meaning != ac_meaning:
+                            result.add_error(
+                                ERR_PROV_REGISTRY_DRIFT,
+                                AGENT_CONTRACTS_JSON_PATH,
+                                f"#/provenanceClasses/{pid}/meaning",
+                                f"Provenance class '{pid}' meaning mismatch between provenance_classes.json and agent_contracts.json",
+                            )
+
+                    for ac_pid in ac_classes:
+                        if ac_pid not in json_classes:
+                            result.add_error(
+                                ERR_PROV_REGISTRY_DRIFT,
+                                PROVENANCE_CLASSES_JSON_PATH,
+                                f"#/provenanceClasses/{ac_pid}",
+                                f"Provenance class '{ac_pid}' present in agent_contracts.json but missing in provenance_classes.json",
+                            )
 
     return result
 
