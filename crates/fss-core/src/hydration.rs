@@ -4,9 +4,10 @@ use core::fmt;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    BudgetVector, CanonicalEncode, CanonicalEncoder, CaptureInterval, Completeness, ContentDigest,
-    ContinuationCursor, ContinuationError, ContinuationScope, ContractBasis, ContractError,
-    LedgerAnchor, RecoveryClass, SessionId, TimestampNs,
+    BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
+    CaptureInterval, Completeness, ContentDigest, ContinuationCursor, ContinuationError,
+    ContinuationScope, ContractBasis, ContractError, LedgerAnchor, RecoveryClass, SessionId,
+    TimestampNs,
 };
 
 const MAX_TEXT_BYTES: usize = 4 * 1024;
@@ -19,12 +20,20 @@ pub const HYDRATION_VIEW_ID: &str = "AVIEW-HYDRATION";
 mod admission;
 mod artifact;
 mod error;
+pub mod h4;
 mod handle;
 mod receipt;
 mod request;
 
 pub use artifact::HydrationArtifact;
 pub use error::HydrationError;
+pub use h4::{
+    AlternateSystem, H4LaboratoryExpansion, H4LaboratoryExpansionParams, H4_CONTENT,
+    H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA, IntermediateArtifact,
+    LaboratoryQuarantine, OracleComparison, ReplayBundleRef, MAX_H4_ALTERNATE_SYSTEMS,
+    MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN,
+    MAX_H4_ORACLE_COMPARISONS, MAX_H4_PROOF_ROOTS,
+};
 pub use handle::{SemanticHandle, SemanticHandleSpec};
 pub use receipt::{HydrationReceipt, HydrationReceiptSpec, HydrationResponse};
 pub use request::{HydrationRequest, HydrationRequestSpec};
@@ -95,6 +104,19 @@ impl CanonicalEncode for HydrationLevel {
     }
 }
 
+impl CanonicalDecode for HydrationLevel {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.text()? {
+            "H0" => Ok(Self::H0),
+            "H1" => Ok(Self::H1),
+            "H2" => Ok(Self::H2),
+            "H3" => Ok(Self::H3),
+            "H4" => Ok(Self::H4),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
 /// Availability state of the exact subject named by a semantic handle descriptor.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum HandleAvailability {
@@ -147,6 +169,21 @@ impl CanonicalEncode for HandleAvailability {
     }
 }
 
+impl CanonicalDecode for HandleAvailability {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.text()? {
+            "available" => Ok(Self::Available),
+            "superseded" => Ok(Self::Superseded),
+            "deleted" => Ok(Self::Deleted),
+            "expired" => Ok(Self::Expired),
+            "corrupt" => Ok(Self::Corrupt),
+            "privacy_transformed" => Ok(Self::PrivacyTransformed),
+            "not_observable" => Ok(Self::NotObservable),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
 /// Why H4 laboratory material is being requested.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum HydrationPurpose {
@@ -179,6 +216,18 @@ impl CanonicalEncode for HydrationPurpose {
     }
 }
 
+impl CanonicalDecode for HydrationPurpose {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.text()? {
+            "routine" => Ok(Self::Routine),
+            "incident_adjudication" => Ok(Self::IncidentAdjudication),
+            "qualification" => Ok(Self::Qualification),
+            "debugging" => Ok(Self::Debugging),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
 /// Policy governing H4 laboratory expansion.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LaboratoryAccess {
@@ -205,6 +254,17 @@ impl LaboratoryAccess {
 impl CanonicalEncode for LaboratoryAccess {
     fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for LaboratoryAccess {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        match decoder.text()? {
+            "unavailable" => Ok(Self::Unavailable),
+            "qualification_only" => Ok(Self::QualificationOnly),
+            "qualification_or_debug_grant" => Ok(Self::QualificationOrDebugGrant),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
     }
 }
 
