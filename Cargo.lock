@@ -15,6 +15,10 @@ name = "fss-core"
 version = "0.0.1"
 
 [[package]]
+name = "fss-geometry"
+version = "0.0.1"
+
+[[package]]
 name = "fss-ledger"
 version = "0.0.1"
 dependencies = [

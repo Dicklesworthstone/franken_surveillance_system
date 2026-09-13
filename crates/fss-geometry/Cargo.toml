@@ -1,0 +1,10 @@
+[package]
+name = "fss-geometry"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license-file = "../../LICENSE"
+description = "Bounded safe-Rust property geometry and camera registration reference kernels"
+
+[lints]
+workspace = true
