@@ -1,0 +1,244 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/negative_evidence_report.v1.json",
+  "title": "NegativeEvidenceReport v1",
+  "description": "JSON report emitted by `fss negative-evidence <init|list|verify|append> --json`. It is not an agent response envelope: the command has no AOP registry row, so no operation, anchor, contract-basis, or budget fields exist. Every field is derived from the ledger or the refusal. epistemicState is the knowledge state shared by every entry, or null when there are no entries or they differ (see knowledgeStateCounts).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "producer",
+    "command",
+    "outcome",
+    "errorId",
+    "detail",
+    "ledgerSource",
+    "ledgerPath",
+    "formatVersion",
+    "entryCount",
+    "rootDigest",
+    "verified",
+    "locallyCertified",
+    "notLocallyCertified",
+    "knowledgeStateCounts",
+    "epistemicState",
+    "appendedId",
+    "entries",
+    "degradation"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.negative_evidence_report.v1"
+    },
+    "producer": {
+      "type": "string",
+      "pattern": "^fss-cli:[0-9A-Za-z.+-]+$"
+    },
+    "command": {
+      "enum": ["init", "list", "verify", "append"]
+    },
+    "outcome": {
+      "enum": ["ok", "error"]
+    },
+    "errorId": {
+      "type": ["string", "null"],
+      "pattern": "^ERR-(NEG-[A-Z-]+|OP-EXECUTION-FAILED)-[0-9]{3}$"
+    },
+    "detail": {
+      "type": ["string", "null"],
+      "minLength": 1,
+      "maxLength": 16384
+    },
+    "ledgerSource": {
+      "enum": ["file", "built_in_seed_ledger"]
+    },
+    "ledgerPath": {
+      "type": ["string", "null"],
+      "minLength": 1
+    },
+    "formatVersion": {
+      "const": 2
+    },
+    "entryCount": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 1024
+    },
+    "rootDigest": {
+      "type": ["string", "null"],
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "verified": {
+      "type": ["boolean", "null"]
+    },
+    "locallyCertified": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "notLocallyCertified": {
+      "type": ["integer", "null"],
+      "minimum": 0
+    },
+    "knowledgeStateCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "known": { "$ref": "#/$defs/positiveCount" },
+        "estimated": { "$ref": "#/$defs/positiveCount" },
+        "unknown": { "$ref": "#/$defs/positiveCount" },
+        "conflicted": { "$ref": "#/$defs/positiveCount" },
+        "stale": { "$ref": "#/$defs/positiveCount" },
+        "not_observable": { "$ref": "#/$defs/positiveCount" },
+        "redacted": { "$ref": "#/$defs/positiveCount" },
+        "indeterminate": { "$ref": "#/$defs/positiveCount" },
+        "not_applicable": { "$ref": "#/$defs/positiveCount" }
+      }
+    },
+    "epistemicState": {
+      "anyOf": [{ "$ref": "#/$defs/knowledgeState" }, { "type": "null" }]
+    },
+    "appendedId": {
+      "anyOf": [{ "$ref": "#/$defs/negId" }, { "type": "null" }]
+    },
+    "entries": {
+      "type": "array",
+      "maxItems": 1024,
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "degradation": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": { "type": "string", "minLength": 1, "maxLength": 1024 }
+    }
+  },
+  "$defs": {
+    "positiveCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "knowledgeState": {
+      "enum": [
+        "known",
+        "estimated",
+        "unknown",
+        "conflicted",
+        "stale",
+        "not_observable",
+        "redacted",
+        "indeterminate",
+        "not_applicable"
+      ]
+    },
+    "provenance": {
+      "enum": [
+        "observed",
+        "derived",
+        "predicted",
+        "remembered",
+        "operator_asserted",
+        "vendor_claimed",
+        "policy"
+      ]
+    },
+    "negId": {
+      "type": "string",
+      "pattern": "^NEG-([0-9]{3}|[1-9][0-9]{3,17})$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^(sha256|blake3):[0-9a-f]{64}$"
+    },
+    "text": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "setup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "corpus",
+        "deviceModel",
+        "firmwareVersion",
+        "platform",
+        "policy",
+        "command",
+        "artifactDigest"
+      ],
+      "properties": {
+        "corpus": { "$ref": "#/$defs/text" },
+        "deviceModel": { "$ref": "#/$defs/text" },
+        "firmwareVersion": { "$ref": "#/$defs/text" },
+        "platform": { "$ref": "#/$defs/text" },
+        "policy": { "$ref": "#/$defs/text" },
+        "command": { "$ref": "#/$defs/text" },
+        "artifactDigest": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "negId",
+        "dateCommit",
+        "hypothesis",
+        "reasoning",
+        "setup",
+        "measuredResult",
+        "decision",
+        "decisionText",
+        "sharedFailureDomains",
+        "revivalCondition",
+        "knowledgeState",
+        "provenanceClass",
+        "decisionProvenance",
+        "disposition",
+        "claimedDomain",
+        "certification",
+        "certificationSource",
+        "witnessCertifiesAbsence",
+        "supersedes",
+        "isTombstone",
+        "tombstoneReason",
+        "proofHash",
+        "evidenceReference",
+        "reproductionCommand"
+      ],
+      "properties": {
+        "negId": { "$ref": "#/$defs/negId" },
+        "dateCommit": { "$ref": "#/$defs/text" },
+        "hypothesis": { "$ref": "#/$defs/text" },
+        "reasoning": { "$ref": "#/$defs/text" },
+        "setup": { "$ref": "#/$defs/setup" },
+        "measuredResult": { "$ref": "#/$defs/text" },
+        "decision": { "enum": ["reject", "oracle", "narrow", "revisit"] },
+        "decisionText": { "$ref": "#/$defs/text" },
+        "sharedFailureDomains": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+        },
+        "revivalCondition": { "$ref": "#/$defs/text" },
+        "knowledgeState": { "$ref": "#/$defs/knowledgeState" },
+        "provenanceClass": { "$ref": "#/$defs/provenance" },
+        "decisionProvenance": { "$ref": "#/$defs/provenance" },
+        "disposition": {
+          "enum": ["live", "supported", "disfavored", "refuted", "resolved", "superseded"]
+        },
+        "claimedDomain": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "certification": { "enum": ["locally_certified", "not_locally_certified"] },
+        "certificationSource": { "type": ["string", "null"], "maxLength": 4096 },
+        "witnessCertifiesAbsence": { "type": "boolean" },
+        "supersedes": { "anyOf": [{ "$ref": "#/$defs/negId" }, { "type": "null" }] },
+        "isTombstone": { "type": "boolean" },
+        "tombstoneReason": {
+          "enum": ["deleted", "superseded", "revoked", "invalidated", "expired", "unknown", null]
+        },
+        "proofHash": { "anyOf": [{ "$ref": "#/$defs/digest" }, { "type": "null" }] },
+        "evidenceReference": { "type": ["string", "null"], "maxLength": 4096 },
+        "reproductionCommand": { "$ref": "#/$defs/text" }
+      }
+    }
+  }
+}

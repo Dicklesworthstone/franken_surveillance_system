@@ -186,6 +186,12 @@ operation states rather than generic errors.
 | `ERR-NEG-ENTRY-TOMBSTONED-001` | attempted operation on or with a permanently tombstoned negative entry | do not operate on tombstoned negative-evidence entries |
 | `ERR-NEG-REVIVAL-UNMET-001` | candidate retry or promotion attempted without meeting revival condition | satisfy documented revival condition before promoting candidate |
 | `ERR-NEG-VALIDATION-FAILED-001` | negative evidence entry semantic validation failed | provide valid required fields conforming to negative evidence contract |
+| `ERR-NEG-MALFORMED-ENTRY-001` | negative evidence ledger entry bytes carry an unknown tag, an invalid value, or a count beyond its declared bound | restore the ledger from a canonical backup; never guess field values |
+| `ERR-NEG-MISSING-PROOF-001` | locally certified negative evidence lacks a proof hash, a retained evidence reference, or the evidence its knowledge state requires | supply the proof hash and retained evidence reference, or record the entry as not locally certified |
+| `ERR-NEG-LEDGER-EXISTS-001` | negative evidence ledger init target already exists | choose a new path; init never overwrites a ledger |
+| `ERR-NEG-LEDGER-NOT-FOUND-001` | negative evidence ledger file does not exist | create the ledger with `fss negative-evidence init` before appending |
+| `ERR-NEG-LEDGER-LOCKED-001` | negative evidence ledger lock file is held by another writer or was left stale by a crashed writer | retry after the other writer finishes; remove a stale lock only after confirming no writer is running |
+| `ERR-NEG-CONCURRENT-MODIFICATION-001` | negative evidence ledger changed between read and publish on every bounded attempt | identify the concurrent writer, then retry the append explicitly |
 | `ERR-DEP-REGISTRY-DRIFT-001` | dependency registry row drift between machine registry and markdown mirror | synchronize architecture/dependencies.json and registries/DEPENDENCIES.md |
 | `ERR-DEP-STABLE-ID-REUSED-001` | dependency class stable identifier was reused, duplicated, renumbered, or tombstoned | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-DEP-MISSING-FIELD-001` | dependency class row or root metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in dependency class row |

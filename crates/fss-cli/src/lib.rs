@@ -42,7 +42,7 @@ pub use lab_cmd::{
     parse_lab_tokens,
 };
 pub use negative_evidence_cmd::{
-    NegativeEvidenceAction, execute_negative_evidence, format_agent_response_envelope,
+    NEGATIVE_EVIDENCE_REPORT_SCHEMA, NegativeEvidenceAction, execute_negative_evidence,
     help_text as negative_evidence_help_text, parse_negative_evidence_tokens,
 };
 pub use redact::{

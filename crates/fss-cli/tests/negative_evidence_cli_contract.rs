@@ -3,16 +3,18 @@
 //!
 //! Enforces:
 //! 1. Help, version, init, list, verify, and append command execution.
-//! 2. Bounded agent response envelopes shaped as `fss.agent_response_envelope.v1`, with
-//!    underivable contract values reported as null/degraded rather than invented.
-//! 3. Deterministic refusal of absence without a (complete) coverage witness.
+//! 2. `--json` emits `fss.negative_evidence_report.v1` exactly as the schema-validated goldens,
+//!    and never claims the agent response envelope.
+//! 3. Deterministic refusal of absence without a (complete) coverage witness or proof.
 //! 4. Refusal of corrupt checksum, magic, duplicate entry ID, and missing ledger files.
 //! 5. Exact exit identities: value errors are usage errors (exit 2), refusals exit 1.
+//! 6. Concurrent appends from real processes never lose an entry; stale locks are refused.
 
 use std::error::Error;
 use std::ffi::OsString;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -23,10 +25,13 @@ use fss_cli::{
 use fss_core::ContentDigest;
 use fss_core::negative_evidence::{
     INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST, NEGATIVE_EVIDENCE_LEDGER_MAGIC,
-    initial_negative_evidence_ledger,
+    NegativeEvidenceLedger, initial_negative_evidence_ledger,
 };
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+const CLI_DOMAIN: &str = "domain:negative-evidence:cli-test";
+const LEGACY_V1: &str = "../../tests/fixtures/negative_evidence_ledger_v1.bin";
 
 fn temp_file_path(prefix: &str) -> PathBuf {
     let nanos = SystemTime::now()
@@ -41,7 +46,36 @@ struct TempFileGuard(PathBuf);
 impl Drop for TempFileGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
+        if let Ok(lock) = sidecar(&self.0, ".lock") {
+            let _ = fs::remove_file(lock);
+        }
     }
+}
+
+fn sidecar(ledger: &Path, suffix: &str) -> Result<PathBuf, Box<dyn Error>> {
+    let name = ledger
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("non-unicode file name")?;
+    let parent = ledger.parent().ok_or("ledger has no parent")?;
+    Ok(parent.join(format!(".{name}{suffix}")))
+}
+
+fn assert_no_sidecars(ledger: &Path) -> Result<(), Box<dyn Error>> {
+    let name = ledger
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or("non-unicode file name")?;
+    let parent = ledger.parent().ok_or("ledger has no parent")?;
+    for dir_entry in fs::read_dir(parent)? {
+        let entry_name = dir_entry?.file_name();
+        let entry_name = entry_name.to_string_lossy();
+        assert!(
+            !entry_name.starts_with(&format!(".{name}.")),
+            "leftover lock or temp file {entry_name}"
+        );
+    }
+    Ok(())
 }
 
 fn argv(parts: &[&str]) -> Vec<OsString> {
@@ -75,15 +109,28 @@ fn required_append_options(id: &str) -> Vec<String> {
     .collect()
 }
 
-/// A complete certifying coverage witness bound to `id`.
+fn anchor_text() -> String {
+    format!(
+        "site:fss:cli-test@0.1.0.0.0.0@{}",
+        ContentDigest::sha256(b"cli-test-state-root").to_text()
+    )
+}
+
+/// A complete certifying coverage witness bound to `id`, with separate observed coverage.
 fn witness_options(id: &str) -> Vec<String> {
     vec![
         "--coverage-domain".to_owned(),
-        "domain:negative-evidence:cli-test".to_owned(),
+        CLI_DOMAIN.to_owned(),
         "--coverage-generation".to_owned(),
         "1".to_owned(),
+        "--observed-domain".to_owned(),
+        CLI_DOMAIN.to_owned(),
+        "--observed-generation".to_owned(),
+        "1".to_owned(),
+        "--coverage-anchor".to_owned(),
+        anchor_text(),
         "--negative-predicate".to_owned(),
-        format!("architectural-violation-absence:{id}"),
+        format!("absence-certified:{CLI_DOMAIN}:{id}"),
         "--continuity".to_owned(),
         "continuous".to_owned(),
         "--completeness".to_owned(),
@@ -93,12 +140,32 @@ fn witness_options(id: &str) -> Vec<String> {
     ]
 }
 
+fn proof_options() -> Vec<String> {
+    vec![
+        "--proof-hash".to_owned(),
+        ContentDigest::sha256(b"cli-test-proof").to_text(),
+        "--evidence-ref".to_owned(),
+        "proof-bundle:cli-test".to_owned(),
+    ]
+}
+
 fn append_argv(path: &str, extra: &[Vec<String>]) -> Vec<OsString> {
     let mut args = argv(&["negative-evidence", "append", "--path", path]);
     for group in extra {
         args.extend(group.iter().map(OsString::from));
     }
     args
+}
+
+fn full_append_argv(path: &str, id: &str) -> Vec<OsString> {
+    append_argv(
+        path,
+        &[
+            required_append_options(id),
+            witness_options(id),
+            proof_options(),
+        ],
+    )
 }
 
 fn seeded_ledger_file(prefix: &str) -> Result<(TempFileGuard, String), Box<dyn Error>> {
@@ -121,6 +188,21 @@ fn parse_error(args: Vec<OsString>) -> Result<CliError, Box<dyn Error>> {
     }
 }
 
+fn run(args: Vec<OsString>) -> Result<(String, u8), Box<dyn Error>> {
+    let cmd = parse_fss_args(args).map_err(|e| format!("parse failed: {e:?}"))?;
+    let (output, exit_id) = execute_fss_with_exit(cmd);
+    Ok((output, exit_id.code))
+}
+
+fn replace_option(args: &mut [OsString], flag: &str, value: &str) -> Result<(), Box<dyn Error>> {
+    let pos = args
+        .iter()
+        .position(|a| a == flag)
+        .ok_or_else(|| format!("{flag} not present"))?;
+    args[pos + 1] = OsString::from(value);
+    Ok(())
+}
+
 #[test]
 fn test_cli_help_action() -> Result<(), Box<dyn Error>> {
     let cmd = parse_fss_args([OsString::from("negative-evidence"), OsString::from("help")])
@@ -137,6 +219,8 @@ fn test_cli_help_action() -> Result<(), Box<dyn Error>> {
     assert!(!output.contains("Reject"));
     assert!(!output.contains("--no-witness"));
     assert!(!output.contains("--entry-json"));
+    assert!(output.contains("--observed-domain"));
+    assert!(output.contains("--proof-hash"));
     Ok(())
 }
 
@@ -151,8 +235,9 @@ fn test_cli_list_default_and_json() -> Result<(), Box<dyn Error>> {
     assert!(output.contains("NEG-002"));
     assert!(output.contains("NEG-003"));
     assert!(output.contains("not-locally-certified"));
+    assert!(output.contains("Knowledge: unknown (finding: vendor_claimed, decision: policy)"));
 
-    // JSON envelope list
+    // JSON report list
     let cmd_json = parse_fss_args([
         OsString::from("negative-evidence"),
         OsString::from("list"),
@@ -161,38 +246,84 @@ fn test_cli_list_default_and_json() -> Result<(), Box<dyn Error>> {
     .map_err(|e| format!("parse failed: {e:?}"))?;
     let (json_output, exit_id_json) = execute_fss_with_exit(cmd_json);
     assert_eq!(exit_id_json.code, 0);
-    assert!(json_output.contains("\"schema\":\"fss.agent_response_envelope.v1\""));
+    assert!(json_output.contains("\"schema\":\"fss.negative_evidence_report.v1\""));
     assert!(json_output.contains("\"outcome\":\"ok\""));
     assert!(json_output.contains("\"entryCount\":3"));
     assert!(json_output.contains(INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST));
+    assert!(json_output.contains("\"epistemicState\":\"unknown\""));
     Ok(())
 }
 
 #[test]
-fn test_cli_json_envelope_does_not_fabricate_contract_values() -> Result<(), Box<dyn Error>> {
-    let cmd = parse_fss_args(argv(&["negative-evidence", "verify", "--json"]))
-        .map_err(|e| format!("parse failed: {e:?}"))?;
-    let (output, exit_id) = execute_fss_with_exit(cmd);
-    assert_eq!(exit_id.code, 0);
-    assert!(output.contains("\"operationId\":null"));
-    assert!(!output.contains("AOP-"));
-    assert!(output.contains("\"operationRegistryDigest\":null"));
-    assert!(output.contains("\"schemaCatalogDigest\":null"));
-    // sha256 of empty input and the former local schema-catalog constant must not reappear.
-    assert!(!output.contains("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
-    assert!(!output.contains("631ac85e5dada50bd38afbc915d651dae69756fca252c65a16f9d994854c775b"));
-    assert!(output.contains("\"inputAnchor\":null"));
-    assert!(
-        output.contains("\"budgets\":{\"requested\":null,\"consumed\":null,\"remaining\":null}")
+fn test_cli_report_does_not_claim_the_agent_envelope() -> Result<(), Box<dyn Error>> {
+    for args in [
+        argv(&["negative-evidence", "verify", "--json"]),
+        argv(&["negative-evidence", "list", "--json"]),
+        argv(&["negative-evidence", "verify", "--path", LEGACY_V1, "--json"]),
+    ] {
+        let (output, _) = run(args)?;
+        for fabricated in [
+            "fss.agent_response_envelope.v1",
+            "operationId",
+            "AOP-",
+            "AVIEW-",
+            "CAP-AGENT",
+            "principalId",
+            "requestId",
+            "traceId",
+            "policy:gen:initial",
+            "createdAtNs",
+            "budgets",
+        ] {
+            assert!(!output.contains(fabricated), "{fabricated} in {output}");
+        }
+        assert!(output.contains("not_an_agent_response_envelope"));
+    }
+    Ok(())
+}
+
+#[test]
+fn test_cli_json_reports_match_schema_goldens() -> Result<(), Box<dyn Error>> {
+    // tests/test_negative_evidence_report_schema.py validates these goldens against
+    // schemas/negative_evidence_report.v1.json, so the CLI output is schema-valid.
+    let goldens = [
+        (
+            argv(&["negative-evidence", "list", "--json"]),
+            include_str!("../../../tests/fixtures/negative_evidence_report/list_builtin.json"),
+        ),
+        (
+            argv(&["negative-evidence", "verify", "--json"]),
+            include_str!("../../../tests/fixtures/negative_evidence_report/verify_builtin.json"),
+        ),
+        (
+            argv(&["negative-evidence", "verify", "--path", LEGACY_V1, "--json"]),
+            include_str!(
+                "../../../tests/fixtures/negative_evidence_report/verify_legacy_v1_refused.json"
+            ),
+        ),
+    ];
+    for (args, golden) in goldens {
+        let (output, _) = run(args)?;
+        assert_eq!(output.trim_end(), golden.trim_end());
+    }
+
+    let (guard, path) = seeded_ledger_file("golden_append")?;
+    let mut args = full_append_argv(&path, "NEG-004");
+    args.push(OsString::from("--json"));
+    let (output, code) = run(args)?;
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(
+        output.replace(&path, "<LEDGER_PATH>").trim_end(),
+        include_str!("../../../tests/fixtures/negative_evidence_report/append_witnessed.json")
+            .trim_end()
     );
-    assert!(output.contains("operation_unregistered"));
-    assert!(output.contains("budget_unmetered"));
+    drop(guard);
     Ok(())
 }
 
 #[test]
 fn test_cli_verify_default_and_json() -> Result<(), Box<dyn Error>> {
-    // Plaintext verify
+    // Plaintext verify: with no locally certified entries, no coverage guarantee is claimed.
     let cmd = parse_fss_args([
         OsString::from("negative-evidence"),
         OsString::from("verify"),
@@ -201,8 +332,8 @@ fn test_cli_verify_default_and_json() -> Result<(), Box<dyn Error>> {
     let (output, exit_id) = execute_fss_with_exit(cmd);
     assert_eq!(exit_id.code, 0);
     assert!(output.contains("Ledger verified"));
-    assert!(output.contains("continuous coverage guarantees intact"));
-    assert!(output.contains("3 entries are not locally certified"));
+    assert!(output.contains("none locally certified"));
+    assert!(!output.contains("guarantees intact"));
     assert!(output.contains(INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST));
 
     // JSON verify
@@ -214,9 +345,9 @@ fn test_cli_verify_default_and_json() -> Result<(), Box<dyn Error>> {
     .map_err(|e| format!("parse failed: {e:?}"))?;
     let (json_output, exit_id_json) = execute_fss_with_exit(cmd_json);
     assert_eq!(exit_id_json.code, 0);
-    assert!(json_output.contains("\"schema\":\"fss.agent_response_envelope.v1\""));
+    assert!(json_output.contains("\"schema\":\"fss.negative_evidence_report.v1\""));
     assert!(json_output.contains("\"verified\":true"));
-    assert!(json_output.contains("\"formatVersion\":1"));
+    assert!(json_output.contains("\"formatVersion\":2"));
     assert!(json_output.contains("\"notLocallyCertified\":3"));
     Ok(())
 }
@@ -248,7 +379,7 @@ fn test_cli_verify_corrupted_file_refusal() -> Result<(), Box<dyn Error>> {
     assert!(output.contains("Verification failed"));
     assert!(output.contains("ERR-NEG-CHECKSUM-MISMATCH-001"));
 
-    // Verify JSON mode reports error envelope
+    // Verify JSON mode reports the refusal
     let cmd_json = parse_fss_args([
         OsString::from("negative-evidence"),
         OsString::from("verify"),
@@ -280,51 +411,16 @@ fn test_cli_append_with_witness_and_verify() -> Result<(), Box<dyn Error>> {
         .to_str()
         .ok_or_else(|| "non-unicode path".to_string())?;
 
-    // Append a new valid entry NEG-004 carrying a complete certifying witness
-    let cmd = parse_fss_args([
-        OsString::from("negative-evidence"),
-        OsString::from("append"),
-        OsString::from("--path"),
-        OsString::from(path_str),
-        OsString::from("--id"),
-        OsString::from("NEG-004"),
-        OsString::from("--date-commit"),
-        OsString::from("2026-09-12 test-fixture"),
-        OsString::from("--decision"),
-        OsString::from("reject"),
-        OsString::from("--disposition"),
-        OsString::from("refuted"),
-        OsString::from("--hypothesis"),
-        OsString::from("Proprietary cloud notification endpoint is reliable"),
-        OsString::from("--reasoning"),
-        OsString::from("Endpoint is uncertified and subject to vendor rate limiting"),
-        OsString::from("--result"),
-        OsString::from("Observed 40% packet drops during peak load"),
-        OsString::from("--revival"),
-        OsString::from("Official SLA offering 99.99% availability guarantee"),
-        OsString::from("--failure-domain"),
-        OsString::from("vendor-cloud"),
-        OsString::from("--coverage-domain"),
-        OsString::from("domain:negative-evidence:cli-test"),
-        OsString::from("--coverage-generation"),
-        OsString::from("1"),
-        OsString::from("--negative-predicate"),
-        OsString::from("architectural-violation-absence:NEG-004"),
-        OsString::from("--continuity"),
-        OsString::from("continuous"),
-        OsString::from("--completeness"),
-        OsString::from("complete"),
-        OsString::from("--stop-reason"),
-        OsString::from("complete"),
-        OsString::from("--json"),
-    ])
-    .map_err(|e| format!("parse failed: {e:?}"))?;
-
-    let (output, exit_id) = execute_fss_with_exit(cmd);
-    assert_eq!(exit_id.code, 0, "{output}");
+    // Append a new valid entry NEG-004 carrying a complete certifying witness and proof
+    let mut args = full_append_argv(path_str, "NEG-004");
+    args.push(OsString::from("--json"));
+    let (output, code) = run(args)?;
+    assert_eq!(code, 0, "{output}");
     assert!(output.contains("\"outcome\":\"ok\""));
     assert!(output.contains("\"entryCount\":4"));
     assert!(output.contains("NEG-004"));
+    assert!(output.contains("\"knowledgeState\":\"known\""));
+    assert!(output.contains("\"provenanceClass\":\"operator_asserted\""));
 
     // Verify updated ledger file
     let verify_cmd = parse_fss_args([
@@ -340,20 +436,8 @@ fn test_cli_append_with_witness_and_verify() -> Result<(), Box<dyn Error>> {
     assert!(verify_output.contains("4 entries"));
     assert!(verify_output.contains("all 1 locally certified entries"));
 
-    // The write went through a same-directory temp file that no longer exists.
-    let file_name = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or("non-unicode file name")?;
-    let parent = path.parent().ok_or("temp file has no parent")?;
-    for dir_entry in fs::read_dir(parent)? {
-        let name = dir_entry?.file_name();
-        let name = name.to_string_lossy();
-        assert!(
-            !name.starts_with(&format!(".{file_name}.tmp-")),
-            "leftover temp file {name}"
-        );
-    }
+    // The write went through a same-directory temp file and a lock that no longer exist.
+    assert_no_sidecars(&path)?;
     Ok(())
 }
 
@@ -362,8 +446,11 @@ fn test_cli_append_refuses_omitted_coverage_witness() -> Result<(), Box<dyn Erro
     let (guard, path_str) = seeded_ledger_file("nowitness_ledger")?;
     let before = fs::read(&guard.0)?;
 
-    // Every required option is present; the coverage witness options are omitted entirely.
-    let mut args = append_argv(&path_str, &[required_append_options("NEG-005")]);
+    // Every other option is present; the coverage witness options are omitted entirely.
+    let mut args = append_argv(
+        &path_str,
+        &[required_append_options("NEG-005"), proof_options()],
+    );
     args.push(OsString::from("--json"));
     let cmd = parse_fss_args(args).map_err(|e| format!("parse failed: {e:?}"))?;
 
@@ -383,11 +470,11 @@ fn test_cli_append_refuses_incomplete_coverage_witness() -> Result<(), Box<dyn E
     let before = fs::read(&guard.0)?;
     let partial = vec![
         "--negative-predicate".to_owned(),
-        "architectural-violation-absence:NEG-005".to_owned(),
+        format!("absence-certified:{CLI_DOMAIN}:NEG-005"),
     ];
     let cmd = parse_fss_args(append_argv(
         &path_str,
-        &[required_append_options("NEG-005"), partial],
+        &[required_append_options("NEG-005"), partial, proof_options()],
     ))
     .map_err(|e| format!("parse failed: {e:?}"))?;
 
@@ -395,6 +482,59 @@ fn test_cli_append_refuses_incomplete_coverage_witness() -> Result<(), Box<dyn E
     assert_eq!(exit_id.code, 1);
     assert!(output.contains("ERR-NEG-MISSING-COVERAGE-001"));
     assert!(output.contains("incomplete coverage witness; missing --coverage-domain"));
+    assert!(output.contains("--observed-domain"));
+    assert_eq!(fs::read(&guard.0)?, before);
+    Ok(())
+}
+
+#[test]
+fn test_cli_append_refuses_missing_proof() -> Result<(), Box<dyn Error>> {
+    let (guard, path_str) = seeded_ledger_file("noproof_ledger")?;
+    let before = fs::read(&guard.0)?;
+    for proof in [
+        vec![],
+        vec![
+            "--proof-hash".to_owned(),
+            ContentDigest::sha256(b"p").to_text(),
+        ],
+        vec!["--evidence-ref".to_owned(), "proof-bundle:x".to_owned()],
+    ] {
+        let (output, code) = run(append_argv(
+            &path_str,
+            &[
+                required_append_options("NEG-005"),
+                witness_options("NEG-005"),
+                proof,
+            ],
+        ))?;
+        assert_eq!(code, 1, "{output}");
+        assert!(output.contains("ERR-NEG-MISSING-PROOF-001"), "{output}");
+        assert_eq!(
+            fs::read(&guard.0)?,
+            before,
+            "known is never stamped without proof"
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_cli_observed_coverage_is_separate_from_claimed() -> Result<(), Box<dyn Error>> {
+    let (guard, path_str) = seeded_ledger_file("observed_ledger")?;
+    let before = fs::read(&guard.0)?;
+    for (flag, value) in [
+        ("--observed-domain", "domain:negative-evidence:elsewhere"),
+        ("--observed-generation", "2"),
+    ] {
+        let mut args = full_append_argv(&path_str, "NEG-005");
+        replace_option(&mut args, flag, value)?;
+        let (output, code) = run(args)?;
+        assert_eq!(code, 1, "{flag}: {output}");
+        assert!(
+            output.contains("ERR-NEG-UNCERTIFIED-COVERAGE-001"),
+            "{flag}: {output}"
+        );
+    }
     assert_eq!(fs::read(&guard.0)?, before);
     Ok(())
 }
@@ -402,13 +542,7 @@ fn test_cli_append_refuses_incomplete_coverage_witness() -> Result<(), Box<dyn E
 #[test]
 fn test_cli_removed_options_are_unknown() -> Result<(), Box<dyn Error>> {
     for flag in ["--no-witness", "--entry-json", "--entry-file"] {
-        let mut args = append_argv(
-            "ledger.bin",
-            &[
-                required_append_options("NEG-005"),
-                witness_options("NEG-005"),
-            ],
-        );
+        let mut args = full_append_argv("ledger.bin", "NEG-005");
         args.push(OsString::from(flag));
         args.push(OsString::from("value"));
         let err = parse_error(args)?;
@@ -462,19 +596,13 @@ fn test_cli_value_errors_are_usage_errors() -> Result<(), Box<dyn Error>> {
         ("--completeness", "mostly"),
         ("--stop-reason", "interrupted"),
         ("--coverage-generation", "0"),
+        ("--observed-generation", "0"),
+        ("--coverage-anchor", "site-without-counters"),
+        ("--coverage-anchor", "site@1.2.3@sha256:00"),
+        ("--proof-hash", "not-a-digest"),
     ] {
-        let mut args = append_argv(
-            "ledger.bin",
-            &[
-                required_append_options("NEG-005"),
-                witness_options("NEG-005"),
-            ],
-        );
-        let pos = args
-            .iter()
-            .position(|a| a == flag)
-            .ok_or_else(|| format!("{flag} not present"))?;
-        args[pos + 1] = OsString::from(bad);
+        let mut args = full_append_argv("ledger.bin", "NEG-005");
+        replace_option(&mut args, flag, bad)?;
         let err = parse_error(args)?;
         assert_eq!(err.error_id(), ERR_CLI_MALFORMED_VALUE, "{flag} {bad}");
         assert_eq!(err.exit_identity().code, 2, "{flag} {bad}");
@@ -487,20 +615,12 @@ fn test_cli_append_refuses_missing_ledger_file() -> Result<(), Box<dyn Error>> {
     let path = temp_file_path("missing_ledger");
     let _guard = TempFileGuard(path.clone());
     let path_str = path.to_str().ok_or("non-unicode path")?;
-    let cmd = parse_fss_args(append_argv(
-        path_str,
-        &[
-            required_append_options("NEG-009"),
-            witness_options("NEG-009"),
-        ],
-    ))
-    .map_err(|e| format!("parse failed: {e:?}"))?;
-
-    let (output, exit_id) = execute_fss_with_exit(cmd);
-    assert_eq!(exit_id.code, 1);
-    assert!(output.contains("does not exist"));
+    let (output, code) = run(full_append_argv(path_str, "NEG-009"))?;
+    assert_eq!(code, 1);
+    assert!(output.contains("ERR-NEG-LEDGER-NOT-FOUND-001"), "{output}");
     assert!(output.contains("negative-evidence init"));
     assert!(!path.exists(), "a refused append must not create a ledger");
+    assert_no_sidecars(&path)?;
     Ok(())
 }
 
@@ -510,34 +630,124 @@ fn test_cli_init_creates_seed_ledger_and_never_overwrites() -> Result<(), Box<dy
     let _guard = TempFileGuard(path.clone());
     let path_str = path.to_str().ok_or("non-unicode path")?;
 
-    let cmd = parse_fss_args(argv(&["negative-evidence", "init", "--path", path_str]))
-        .map_err(|e| format!("parse failed: {e:?}"))?;
-    let (output, exit_id) = execute_fss_with_exit(cmd);
-    assert_eq!(exit_id.code, 0, "{output}");
+    let (output, code) = run(argv(&["negative-evidence", "init", "--path", path_str]))?;
+    assert_eq!(code, 0, "{output}");
     let bytes = fs::read(&path)?;
     assert_eq!(
         ContentDigest::sha256(&bytes).to_text(),
         INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST
     );
 
-    let again = parse_fss_args(argv(&["negative-evidence", "init", "--path", path_str]))
-        .map_err(|e| format!("parse failed: {e:?}"))?;
-    let (again_output, again_exit) = execute_fss_with_exit(again);
-    assert_eq!(again_exit.code, 1);
+    let (again_output, again_code) = run(argv(&[
+        "negative-evidence",
+        "init",
+        "--path",
+        path_str,
+        "--json",
+    ]))?;
+    assert_eq!(again_code, 1);
+    assert!(
+        again_output.contains("ERR-NEG-LEDGER-EXISTS-001"),
+        "{again_output}"
+    );
     assert!(again_output.contains("already exists"));
     assert_eq!(fs::read(&path)?, bytes);
 
     // The initialized ledger accepts a witnessed append.
-    let append = parse_fss_args(append_argv(
-        path_str,
-        &[
-            required_append_options("NEG-004"),
-            witness_options("NEG-004"),
-        ],
-    ))
-    .map_err(|e| format!("parse failed: {e:?}"))?;
-    let (append_output, append_exit) = execute_fss_with_exit(append);
-    assert_eq!(append_exit.code, 0, "{append_output}");
+    let (append_output, append_code) = run(full_append_argv(path_str, "NEG-004"))?;
+    assert_eq!(append_code, 0, "{append_output}");
+    assert_no_sidecars(&path)?;
+    Ok(())
+}
+
+#[test]
+fn test_cli_stale_lock_is_refused_and_never_broken() -> Result<(), Box<dyn Error>> {
+    let (guard, path_str) = seeded_ledger_file("stale_lock_ledger")?;
+    let before = fs::read(&guard.0)?;
+    let lock = sidecar(&guard.0, ".lock")?;
+    fs::write(&lock, b"pid 1\n")?;
+
+    let (output, code) = run(full_append_argv(&path_str, "NEG-004"))?;
+    assert_eq!(code, 1);
+    assert!(output.contains("ERR-NEG-LEDGER-LOCKED-001"), "{output}");
+    assert!(output.contains("never removed automatically"));
+    assert!(lock.exists(), "a stale lock must not be broken");
+    assert_eq!(fs::read(&guard.0)?, before);
+    Ok(())
+}
+
+#[test]
+fn test_cli_concurrent_appends_never_lose_entries() -> Result<(), Box<dyn Error>> {
+    let bin = env!("CARGO_BIN_EXE_fss");
+    let mut both_succeeded = 0;
+    for iteration in 0..20 {
+        let (guard, path) = seeded_ledger_file(&format!("concurrent_{iteration}"))?;
+        let spawn = |id: &str| {
+            Command::new(bin)
+                .args(full_append_argv(&path, id))
+                .arg("--json")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+        };
+        let first = spawn("NEG-004")?;
+        let second = spawn("NEG-100")?;
+        let outputs = [
+            ("NEG-004", first.wait_with_output()?),
+            ("NEG-100", second.wait_with_output()?),
+        ];
+
+        let ledger = NegativeEvidenceLedger::decode_canonical(&fs::read(&guard.0)?)?;
+        ledger.verify()?;
+        for seed in ["NEG-001", "NEG-002", "NEG-003"] {
+            assert!(
+                ledger.contains(seed),
+                "iteration {iteration}: seed {seed} lost"
+            );
+        }
+        let mut successes = 0;
+        for (id, output) in &outputs {
+            let text = format!(
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            match output.status.code() {
+                Some(0) => {
+                    successes += 1;
+                    assert!(
+                        ledger.contains(id),
+                        "iteration {iteration}: {id} exited 0 but is missing: {text}"
+                    );
+                }
+                Some(1) => {
+                    // A clean refusal: the other writer held the lock, or it already appended
+                    // the higher identifier.
+                    assert!(
+                        text.contains("ERR-NEG-LEDGER-LOCKED-001")
+                            || text.contains("ERR-NEG-NON-CANONICAL-ORDER-001"),
+                        "iteration {iteration}: unexpected refusal for {id}: {text}"
+                    );
+                    assert!(
+                        !ledger.contains(id),
+                        "iteration {iteration}: refused {id} landed"
+                    );
+                }
+                other => {
+                    return Err(
+                        format!("iteration {iteration}: {id} exited {other:?}: {text}").into(),
+                    );
+                }
+            }
+        }
+        assert_eq!(ledger.len(), 3 + successes, "iteration {iteration}");
+        if successes == 2 {
+            both_succeeded += 1;
+        }
+        assert_no_sidecars(&guard.0)?;
+    }
+    // Diagnostic only; either outcome per iteration is correct.
+    eprintln!("concurrent appends: both succeeded in {both_succeeded}/20 iterations");
     Ok(())
 }
 
@@ -554,18 +764,10 @@ fn test_cli_append_refuses_duplicate_id() -> Result<(), Box<dyn Error>> {
         .ok_or_else(|| "non-unicode path".to_string())?;
 
     // Attempt to append duplicate NEG-001
-    let cmd = parse_fss_args(append_argv(
-        path_str,
-        &[
-            required_append_options("NEG-001"),
-            witness_options("NEG-001"),
-        ],
-    ))
-    .map_err(|e| format!("parse failed: {e:?}"))?;
-
-    let (output, exit_id) = execute_fss_with_exit(cmd);
-    assert_eq!(exit_id.code, 1);
+    let (output, code) = run(full_append_argv(path_str, "NEG-001"))?;
+    assert_eq!(code, 1);
     assert!(output.contains("ERR-NEG-DUPLICATE-ID-001"));
+    assert_no_sidecars(&path)?;
     Ok(())
 }
 

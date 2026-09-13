@@ -61,6 +61,7 @@
 | `SCHEMA-AGENT-HANDOFF-001` | `fss.agent_handoff_capsule.v1` | `schemas/agent_handoff_capsule.v1.json` | handoff custody | mission, situation, cases, plans, obligations, unknowns, authority, budgets, continuation, and expiry remain complete |
 | `SCHEMA-AGENT-COGNITIVE-ENVELOPE-001` | `fss.agent_cognitive_envelope.v1` | `schemas/agent_cognitive_envelope.v1.json` | semantic response | anchor, knowledge/provenance status, coverage, omissions, budget, evidence, affordances, and continuity remain explicit |
 | `SCHEMA-AGENT-RESPONSE-001` | `fss.agent_response_envelope.v1` | `schemas/agent_response_envelope.v1.json` | transport response | operation, session, anchors, outcome, payload, errors, budgets, proof, continuation, and safe retry remain explicit |
+| `SCHEMA-NEGATIVE-EVIDENCE-REPORT-001` | `fss.negative_evidence_report.v1` | `schemas/negative_evidence_report.v1.json` | cli report | ledger entries, verification result, epistemic state derived from entry knowledge states, and degradation stay explicit; not an agent response envelope |
 | `SCHEMA-CAPABILITIES-001` | `fss.capabilities.v1` | `CLI output` | product boundary | additions compatible; changed meaning requires new schema |
 | `SCHEMA-DOCTOR-001` | `fss.doctor.v1` | `CLI output` | diagnostics | bounded and secret-free |
 | `SCHEMA-STATUS-001` | `fss.status.v1` | `CLI output` | product boundary | status fields cannot imply unsupported readiness |
