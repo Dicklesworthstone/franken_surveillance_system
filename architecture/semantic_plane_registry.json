@@ -62,6 +62,7 @@
     "crates/fss-core/src/hydration/admission.rs": "support",
     "crates/fss-core/src/hydration/artifact.rs": "support",
     "crates/fss-core/src/hydration/error.rs": "support",
+    "crates/fss-core/src/hydration/h2.rs": "support",
     "crates/fss-core/src/hydration/handle.rs": "support",
     "crates/fss-core/src/hydration/receipt.rs": "support",
     "crates/fss-core/src/hydration/request.rs": "support",

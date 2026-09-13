@@ -542,6 +542,91 @@ pub enum Completeness {
     Stale,
 }
 
+impl Completeness {
+    /// Returns the stable schema spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Complete => "complete",
+            Self::Bounded => "bounded",
+            Self::Partial => "partial",
+            Self::Unknown => "unknown",
+            Self::NotObservable => "not_observable",
+            Self::Unauthorized => "unauthorized",
+            Self::Stale => "stale",
+        }
+    }
+
+    /// Parses completeness from its schema spelling.
+    pub fn from_name(name: &str) -> Result<Self, ContractError> {
+        match name {
+            "complete" => Ok(Self::Complete),
+            "bounded" => Ok(Self::Bounded),
+            "partial" => Ok(Self::Partial),
+            "unknown" => Ok(Self::Unknown),
+            "not_observable" => Ok(Self::NotObservable),
+            "unauthorized" => Ok(Self::Unauthorized),
+            "stale" => Ok(Self::Stale),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+
+    /// Numeric code (1..=7) used across chronicle/projection envelopes.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Complete => 1,
+            Self::Bounded => 2,
+            Self::Partial => 3,
+            Self::Unknown => 4,
+            Self::NotObservable => 5,
+            Self::Unauthorized => 6,
+            Self::Stale => 7,
+        }
+    }
+
+    /// Resolves completeness from numeric code (1..=7).
+    pub fn from_code(code: u8) -> Result<Self, ContractError> {
+        match code {
+            1 => Ok(Self::Complete),
+            2 => Ok(Self::Bounded),
+            3 => Ok(Self::Partial),
+            4 => Ok(Self::Unknown),
+            5 => Ok(Self::NotObservable),
+            6 => Ok(Self::Unauthorized),
+            7 => Ok(Self::Stale),
+            _ => Err(ContractError::UnknownEntryTag(code)),
+        }
+    }
+}
+
+impl CanonicalEncode for Completeness {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for Completeness {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        Self::from_name(text)
+    }
+}
+
+impl fmt::Display for Completeness {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for Completeness {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_name(s)
+    }
+}
+
 /// Four-valued runtime completion plus explicit partial and indeterminate states.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RuntimeOutcome {
@@ -2747,6 +2832,8 @@ pub enum ContractError {
     HypothesisMissingFalsifier,
     /// An investigation hypothesis cannot claim the `known` knowledge state (AGT-LAYER-006, INV-104).
     HypothesisKnownForbidden,
+    /// Spatial extent, bounding box, waypoint coordinates, or crop geometry is invalid.
+    InvalidSpatialExtent,
 }
 
 impl ContractError {
@@ -2803,6 +2890,7 @@ impl ContractError {
             Self::CompetingHypothesesRequired => "competing_hypotheses_required",
             Self::HypothesisMissingFalsifier => "hypothesis_missing_falsifier",
             Self::HypothesisKnownForbidden => "hypothesis_known_forbidden",
+            Self::InvalidSpatialExtent => "invalid_spatial_extent",
         }
     }
 }
