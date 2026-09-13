@@ -17,7 +17,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
-use std::io::{ErrorKind, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 
 use fss_core::negative_evidence::{
@@ -858,6 +858,52 @@ fn resolve_ledger_path(path: &str) -> Result<PathBuf, NegativeEvidenceError> {
     })
 }
 
+/// Returns the hard-link count of an open file, or `None` where the platform does not expose it.
+#[cfg(unix)]
+fn link_count(metadata: &fs::Metadata) -> Option<u64> {
+    use std::os::unix::fs::MetadataExt;
+    Some(metadata.nlink())
+}
+
+/// Returns the hard-link count of an open file, or `None` where the platform does not expose it.
+#[cfg(not(unix))]
+fn link_count(_metadata: &fs::Metadata) -> Option<u64> {
+    None
+}
+
+/// Reads the resolved ledger through one open handle and refuses it unless the file has exactly
+/// one hard link. Renaming the new ledger into place updates a single name, so any other hard
+/// link would keep the old ledger (a fork); symlinks were already resolved. The count comes from
+/// the same open handle the bytes are read from. Where no link count is available the append
+/// fails closed.
+fn read_single_link_ledger(real: &Path, given: &str) -> Result<Vec<u8>, NegativeEvidenceError> {
+    let io_error = |err: std::io::Error| {
+        if err.kind() == ErrorKind::NotFound {
+            NegativeEvidenceError::LedgerNotFound {
+                path: given.to_owned(),
+            }
+        } else {
+            NegativeEvidenceError::Io(format!("failed to read ledger file '{given}': {err}"))
+        }
+    };
+    let mut file = fs::File::open(real).map_err(io_error)?;
+    let metadata = file.metadata().map_err(io_error)?;
+    let Some(links) = link_count(&metadata) else {
+        return Err(NegativeEvidenceError::Io(format!(
+            "cannot determine the hard-link count of ledger '{given}' on this platform; refusing to append"
+        )));
+    };
+    if links != 1 {
+        return Err(NegativeEvidenceError::LedgerHardLinked {
+            path: given.to_owned(),
+            links,
+        });
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(io_error)?;
+    Ok(bytes)
+}
+
 fn load_ledger(path: Option<&str>) -> Result<NegativeEvidenceLedger, NegativeEvidenceError> {
     match path {
         Some(file_path) => NegativeEvidenceLedger::decode_canonical(&read_ledger_bytes(file_path)?),
@@ -1197,7 +1243,7 @@ fn append_entry(
     })?;
     let _lock = LedgerLock::acquire(&real_path)?;
     for _ in 0..MAX_APPEND_ATTEMPTS {
-        let original = read_ledger_bytes(real)?;
+        let original = read_single_link_ledger(&real_path, &args.path)?;
         let mut ledger = NegativeEvidenceLedger::decode_canonical(&original)?;
         ledger.append(entry.clone())?;
         ledger.verify()?;
