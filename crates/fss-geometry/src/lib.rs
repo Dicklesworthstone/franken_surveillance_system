@@ -14,6 +14,7 @@ mod mesh;
 mod linear;
 mod refine;
 mod registration;
+mod motion;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -21,6 +22,10 @@ pub use camera::{PinholeIntrinsics, Ray, RigidPose};
 pub use mesh::{GeometryBasis, IndexedTriangle, MeshLimits, SurfaceHit, TriangleMesh};
 pub use registration::{Correspondence, LandmarkResidual, PoseCandidate, PoseSearch,
     PoseSolverOptions, PoseValidation, estimate_camera_pose};
+
+pub use motion::{ForecastBasis, MAX_FORECAST_NS, MAX_MOTION_ROUTES, MAX_ROUTE_POINTS,
+    MotionForecast, MotionHypothesis, MotionKnot, RouteCandidate, RouteEnd, RoutePriors,
+    RouteSurface, forecast_routes};
 
 /// Stable, non-disclosing failures at the numerical boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
