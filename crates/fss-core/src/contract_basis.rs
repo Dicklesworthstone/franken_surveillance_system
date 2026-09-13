@@ -13,16 +13,20 @@
 //! `registries/ERRORS.md`:
 //! - `ERR-AGENT-PROTOCOL-001`: Protocol, schema, ontology, registry mismatch or unregistered surface
 //! - `ERR-AGENT-SESSION-STALE-001`: Stale basis referencing superseded generations or older anchors
-//! - `ERR-SCHEMA-UNSUPPORTED-001`: Unknown durable binary format version, corrupt magic, or length violation
-//! - `ERR-NEG-CHECKSUM-MISMATCH-001`: Corrupt trailing checksum verification failure
+//! - `ERR-AGENT-BASIS-BAD-MAGIC-001`: Binary magic header mismatch
+//! - `ERR-AGENT-BASIS-VERSION-001`: Unsupported format version
+//! - `ERR-AGENT-BASIS-TRUNCATED-001`: Premature truncation
+//! - `ERR-AGENT-BASIS-OVERSIZED-001`: Over-limit envelope or payload size
+//! - `ERR-AGENT-BASIS-TRAILING-BYTES-001`: Extraneous trailing bytes
+//! - `ERR-AGENT-BASIS-CHECKSUM-MISMATCH-001`: Checksum verification failure
+//! - `ERR-AGENT-BASIS-INVALID-ID-001`: Identifier syntax, length, or character pattern violation
+//! - `ERR-AGENT-BASIS-ALGORITHM-001`: Unsupported digest algorithm (Blake3 prohibited; Sha256 required)
 
 use core::fmt;
 use std::error::Error;
 
-use crate::agent::{ContractBasis, ContractBasisRegistryBytes};
-use crate::canonical::{
-    CanonicalDecode, CanonicalDecoder, CanonicalEncode,
-};
+use crate::agent::{ContractBasis, ContractBasisRegistryBytes, StaleBasis};
+use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode};
 use crate::contract::ContractError;
 use crate::digest::{ContentDigest, DigestAlgorithm, Sha256Hasher};
 use crate::evidence::LedgerAnchor;
@@ -50,9 +54,9 @@ pub const REFERENCE_CONTRACT_BASIS_GENERATION: &str = "gen:fss1:reference-v1";
 
 /// Pinned freeze digest of the schema catalog for the reference generation (`registries/SCHEMAS.md`).
 pub const REFERENCE_SCHEMA_CATALOG_DIGEST: &str =
-    "sha256:a82134f79c3922ebdd2ee7f0ab2a10528f6289c19000cb64f67385d7ebc6a577";
+    "sha256:8362b1cfc134361b39c912a932bf11cbd9f5e296fc313364ff8299500cdd4005";
 
-/// Pinned freeze digest of the public operation registry (`gen:fss1:public-v1`).
+/// Pinned freeze digest of the public operation registry (`architecture/fss1_public_registry.json`).
 pub const REFERENCE_OPERATION_REGISTRY_DIGEST: &str =
     "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8";
 
@@ -60,25 +64,37 @@ pub const REFERENCE_OPERATION_REGISTRY_DIGEST: &str =
 pub const REFERENCE_VIEW_REGISTRY_DIGEST: &str =
     "sha256:a757a7698a79e1c72fb71d6aefa80df264a1896e8ac7f0ad455c411b2f3f5704";
 
-/// Pinned freeze digest of the capability registry (`gen:fss1:capabilities-v1`).
+/// Pinned freeze digest of the capability registry (`architecture/capabilities.json`).
 pub const REFERENCE_CAPABILITY_REGISTRY_DIGEST: &str =
     "sha256:5056fe20103a6c9a157fdb0e29bf5371384b976e874bf2964ff817fb202f045a";
 
 /// Pinned freeze digest of the error registry (`registries/ERRORS.md`).
 pub const REFERENCE_ERROR_REGISTRY_DIGEST: &str =
-    "sha256:94b31547a77d2b1b598acca17e320d7100633f46d4a7a89caee3c230fe204b63";
+    "sha256:efcaa94aafa97317509af3d3915969606ad7ba7e524c054f6457da5ca46cb956";
 
-/// Pinned freeze digest of the operation cost registry (`gen:fss1:operation-cost-v1`).
+/// Pinned freeze digest of the operation cost registry (`gen:fss1:operation-cost-v2`).
 pub const REFERENCE_COST_REGISTRY_DIGEST: &str =
-    "sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe527ccf83b9";
+    "sha256:c86017d6a6674322613e8b88eb6c3ba994df2c9d071cb8b7045ea31c0f37bc3b";
 
 /// Pinned canonical semantic basis digest of the reference contract basis.
 pub const REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST: &str =
-    "sha256:fa54646d17da5fc021e5bc1b39647064030d00ea76eebf7f09a315963de07d0f";
+    "sha256:8869c192103bb1ccb2a15f601c70bc5509ef9918feedbec8970027d643f4e81d";
 
 /// Pinned binary freeze digest of the serialized canonical binary reference contract basis.
 pub const REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST: &str =
-    "sha256:a28c7480524a6e5763a433ebe2ebcfe1df771cd8f6e29998f37ee6d68d4516ab";
+    "sha256:8139b093c68d629fc0444ea6889261fb3c5337356e04bc84eafabc5bec3dea60";
+
+/// Known superseded operation cost registry digest (v1).
+pub const SUPERSEDED_COST_REGISTRY_DIGEST_V1: &str =
+    "sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe527ccf83b9";
+
+/// Known superseded schema catalog digest (v0).
+pub const SUPERSEDED_SCHEMA_CATALOG_DIGEST_V0: &str =
+    "sha256:a82134f79c3922ebdd2ee7f0ab2a10528f6289c19000cb64f67385d7ebc6a577";
+
+/// Known superseded error registry digest (v0).
+pub const SUPERSEDED_ERROR_REGISTRY_DIGEST_V0: &str =
+    "sha256:a46efb76ccbeec024c26ea8b8b5a2d2abe7d1e0d24c9bda511abd90595a530f7";
 
 /// Maximum byte size of a canonical contract-basis binary payload (64 KiB).
 pub const MAX_CONTRACT_BASIS_BINARY_BYTES: usize = 64 * 1024;
@@ -89,11 +105,93 @@ pub const MIN_CONTRACT_BASIS_BINARY_BYTES: usize = 48;
 /// Maximum character length of an identifier field (e.g. producer release, ontology).
 pub const MAX_IDENTIFIER_LEN: usize = 256;
 
+/// Maximum character length of the accepted nightly toolchain identifier.
+pub const MAX_NIGHTLY_LEN: usize = 128;
+
 /// Maximum character length of a single compatibility note.
 pub const MAX_NOTE_LEN: usize = 1024;
 
 /// Maximum number of compatibility notes allowed in negotiation.
 pub const MAX_NOTES_COUNT: usize = 64;
+
+/// Returns whether an identifier string conforms to schema pattern `^[A-Za-z0-9][A-Za-z0-9:._+/-]*$`.
+#[must_use]
+pub fn is_valid_schema_id(s: &str) -> bool {
+    let mut bytes = s.bytes();
+    let Some(first) = bytes.next() else {
+        return false;
+    };
+    if !first.is_ascii_alphanumeric() {
+        return false;
+    }
+    bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b':' | b'.' | b'_' | b'+' | b'/' | b'-'))
+}
+
+/// Extracts a declared digest string by key (e.g. `"freezeDigest"` or `registry_digest`)
+/// from raw file bytes, falling back to raw SHA-256 of the bytes if the key is absent.
+#[must_use]
+pub fn extract_registry_digest(bytes: &[u8], key: &[u8]) -> ContentDigest {
+    if let Some(pos) = bytes.windows(key.len()).position(|window| window == key) {
+        let after = &bytes[pos + key.len()..];
+        let mut i = 0;
+        while i < after.len()
+            && (after[i] == b':' || after[i] == b'=' || after[i].is_ascii_whitespace())
+        {
+            i += 1;
+        }
+        if i < after.len() && after[i] == b'"' {
+            i += 1;
+            let start = i;
+            while i < after.len() && after[i] != b'"' {
+                i += 1;
+            }
+            if i < after.len() {
+                if let Ok(digest_str) = core::str::from_utf8(&after[start..i]) {
+                    if let Ok(digest) = ContentDigest::parse(digest_str) {
+                        return digest;
+                    }
+                }
+            }
+        }
+    }
+    ContentDigest::sha256(bytes)
+}
+
+/// Checks if a digest matches a known historical or tombstoned generation.
+#[must_use]
+pub fn is_known_superseded_digest(digest: &ContentDigest) -> Option<(&'static str, &'static str)> {
+    if let Ok(d) = ContentDigest::parse(SUPERSEDED_COST_REGISTRY_DIGEST_V1) {
+        if *digest == d {
+            return Some(("cost", "gen:fss1:operation-cost-v1"));
+        }
+    }
+    if let Ok(d) = ContentDigest::parse(SUPERSEDED_SCHEMA_CATALOG_DIGEST_V0) {
+        if *digest == d {
+            return Some(("schema_catalog", "schemas:v0"));
+        }
+    }
+    if let Ok(d) = ContentDigest::parse(SUPERSEDED_ERROR_REGISTRY_DIGEST_V0) {
+        if *digest == d {
+            return Some(("error", "errors:v0"));
+        }
+    }
+    None
+}
+
+/// Returns whether a candidate ontology generation is older than current.
+fn is_superseded_generation(candidate: &str, current: &str) -> bool {
+    if let (Some(c_v), Some(curr_v)) = (candidate.rfind(":v"), current.rfind(":v")) {
+        if candidate[..c_v] == current[..curr_v] {
+            if let (Ok(c_num), Ok(curr_num)) = (
+                candidate[c_v + 2..].parse::<u64>(),
+                current[curr_v + 2..].parse::<u64>(),
+            ) {
+                return c_num < curr_num;
+            }
+        }
+    }
+    false
+}
 
 /// Exact set of cryptographic digests covering all six canonical registries.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,14 +214,7 @@ impl RegistryDigestSet {
     /// Computes canonical digests directly from exact raw registry byte slices.
     #[must_use]
     pub fn from_registry_bytes(spec: ContractBasisRegistryBytes<'_>) -> Self {
-        Self {
-            schema_catalog_digest: ContentDigest::sha256(spec.schema_catalog),
-            operation_registry_digest: ContentDigest::sha256(spec.operations),
-            view_registry_digest: ContentDigest::sha256(spec.views),
-            capability_registry_digest: ContentDigest::sha256(spec.capabilities),
-            error_registry_digest: ContentDigest::sha256(spec.errors),
-            cost_registry_digest: ContentDigest::sha256(spec.costs),
-        }
+        compute_registry_digests(spec)
     }
 
     /// Assembles a complete `ContractBasis` from this digest set and metadata.
@@ -294,7 +385,7 @@ impl ContractBasisRefusal {
                 "fetch current operation cost registry from architecture/operation_cost_registry.toml"
             }
             Self::InvalidProducerRelease { .. } => {
-                "provide a non-empty, valid producer release identifier"
+                "provide a non-empty, valid producer release identifier matching schema regex"
             }
             Self::IncompatibleNightly { .. } => {
                 "use the pinned nightly toolchain matching the server contract basis"
@@ -307,28 +398,52 @@ impl fmt::Display for ContractBasisRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::IncompatibleProtocol { expected, actual } => {
-                write!(f, "incompatible protocol: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible protocol: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleOntology { expected, actual } => {
-                write!(f, "incompatible ontology: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible ontology: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleSchemaCatalog { expected, actual } => {
-                write!(f, "incompatible schema catalog digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible schema catalog digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleOperationRegistry { expected, actual } => {
-                write!(f, "incompatible operation registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible operation registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleViewRegistry { expected, actual } => {
-                write!(f, "incompatible view registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible view registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleCapabilityRegistry { expected, actual } => {
-                write!(f, "incompatible capability registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible capability registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleErrorRegistry { expected, actual } => {
-                write!(f, "incompatible error registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible error registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::IncompatibleCostRegistry { expected, actual } => {
-                write!(f, "incompatible cost registry digest: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible cost registry digest: expected {expected}, got {actual}"
+                )
             }
             Self::StaleBasis { reason } => {
                 write!(f, "stale basis: {reason}")
@@ -337,7 +452,10 @@ impl fmt::Display for ContractBasisRefusal {
                 write!(f, "invalid producer release: {reason}")
             }
             Self::IncompatibleNightly { required, actual } => {
-                write!(f, "incompatible nightly toolchain: required {required}, got {actual:?}")
+                write!(
+                    f,
+                    "incompatible nightly toolchain: required {required}, got {actual:?}"
+                )
             }
         }
     }
@@ -362,7 +480,7 @@ pub enum StaleBasisReason {
         /// Tombstoned digest referenced.
         tombstoned_digest: ContentDigest,
     },
-    /// Candidate anchor is not strictly older than the active anchor, or lineages diverge.
+    /// Candidate anchor is older than the active anchor, or lineages/epochs diverge.
     StaleAnchor {
         /// Detailed description of the anchor comparison violation.
         detail: String,
@@ -461,6 +579,13 @@ pub enum ContractBasisError {
         /// Name of the invalid field.
         field: &'static str,
     },
+    /// Digest algorithm is not permitted (Sha256 required, Blake3 prohibited).
+    UnsupportedDigestAlgorithm {
+        /// Offending algorithm.
+        algorithm: DigestAlgorithm,
+        /// Affected registry field.
+        field: &'static str,
+    },
     /// Incompatible semantic protocol.
     IncompatibleProtocol {
         /// Expected protocol.
@@ -480,16 +605,20 @@ impl ContractBasisError {
             Self::IncompatibleBasis { refusal } => refusal.error_code(),
             Self::StaleBasis { .. } => "ERR-AGENT-SESSION-STALE-001",
             Self::IncompatibleProtocol { .. } => "ERR-AGENT-PROTOCOL-001",
-            Self::BadMagic { .. }
-            | Self::UnknownVersion { .. }
-            | Self::Truncated { .. }
-            | Self::InputOversized { .. }
-            | Self::TrailingBytes { .. } => "ERR-SCHEMA-UNSUPPORTED-001",
-            Self::ChecksumMismatch { .. } => "ERR-NEG-CHECKSUM-MISMATCH-001",
-            Self::InvalidIdentifier { .. } => "ERR-AGENT-PROTOCOL-001",
+            Self::BadMagic { .. } => "ERR-AGENT-BASIS-BAD-MAGIC-001",
+            Self::UnknownVersion { .. } => "ERR-AGENT-BASIS-VERSION-001",
+            Self::Truncated { .. } => "ERR-AGENT-BASIS-TRUNCATED-001",
+            Self::InputOversized { .. } => "ERR-AGENT-BASIS-OVERSIZED-001",
+            Self::TrailingBytes { .. } => "ERR-AGENT-BASIS-TRAILING-BYTES-001",
+            Self::ChecksumMismatch { .. } => "ERR-AGENT-BASIS-CHECKSUM-MISMATCH-001",
+            Self::InvalidIdentifier { .. } => "ERR-AGENT-BASIS-INVALID-ID-001",
+            Self::UnsupportedDigestAlgorithm { .. } => "ERR-AGENT-BASIS-ALGORITHM-001",
             Self::Contract(err) => match err {
-                ContractError::StaleBasisRequired
-                | ContractError::StaleBasisNotOlder => "ERR-AGENT-SESSION-STALE-001",
+                ContractError::StaleBasisRequired | ContractError::StaleBasisNotOlder => {
+                    "ERR-AGENT-SESSION-STALE-001"
+                }
+                ContractError::UnsupportedDigestAlgorithm => "ERR-AGENT-BASIS-ALGORITHM-001",
+                ContractError::InvalidIdentifier => "ERR-AGENT-BASIS-INVALID-ID-001",
                 _ => "ERR-AGENT-PROTOCOL-001",
             },
         }
@@ -503,19 +632,40 @@ impl fmt::Display for ContractBasisError {
                 write!(f, "bad magic header: expected {expected:?}, got {actual:?}")
             }
             Self::UnknownVersion { expected, actual } => {
-                write!(f, "unknown format version: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "unknown format version: expected {expected}, got {actual}"
+                )
             }
-            Self::Truncated { expected_len, actual_len } => {
-                write!(f, "truncated input: expected at least {expected_len} bytes, got {actual_len}")
+            Self::Truncated {
+                expected_len,
+                actual_len,
+            } => {
+                write!(
+                    f,
+                    "truncated input: expected at least {expected_len} bytes, got {actual_len}"
+                )
             }
             Self::InputOversized { limit, actual_len } => {
-                write!(f, "input oversized: limit is {limit} bytes, got {actual_len}")
+                write!(
+                    f,
+                    "input oversized: limit is {limit} bytes, got {actual_len}"
+                )
             }
-            Self::TrailingBytes { expected_len, actual_len } => {
-                write!(f, "trailing bytes: expected {expected_len} bytes, got {actual_len}")
+            Self::TrailingBytes {
+                expected_len,
+                actual_len,
+            } => {
+                write!(
+                    f,
+                    "trailing bytes: expected {expected_len} bytes, got {actual_len}"
+                )
             }
             Self::ChecksumMismatch { expected, actual } => {
-                write!(f, "checksum mismatch: expected {expected}, computed {actual}")
+                write!(
+                    f,
+                    "checksum mismatch: expected {expected}, computed {actual}"
+                )
             }
             Self::IncompatibleBasis { refusal } => {
                 write!(f, "incompatible contract basis: {refusal}")
@@ -526,8 +676,17 @@ impl fmt::Display for ContractBasisError {
             Self::InvalidIdentifier { field } => {
                 write!(f, "invalid identifier in field '{field}'")
             }
+            Self::UnsupportedDigestAlgorithm { algorithm, field } => {
+                write!(
+                    f,
+                    "unsupported digest algorithm {algorithm} for field '{field}'"
+                )
+            }
             Self::IncompatibleProtocol { expected, actual } => {
-                write!(f, "incompatible protocol: expected {expected}, got {actual}")
+                write!(
+                    f,
+                    "incompatible protocol: expected {expected}, got {actual}"
+                )
             }
             Self::Contract(err) => write!(f, "contract error: {err}"),
         }
@@ -569,11 +728,18 @@ impl CanonicalDecode for ContractBasis {
     }
 }
 
-fn parse_reference_digest(s: &str) -> ContentDigest {
-    match ContentDigest::parse(s) {
-        Ok(digest) => digest,
-        Err(_) => ContentDigest::new(DigestAlgorithm::Sha256, [0u8; 32]),
+/// Parses a reference digest string, requiring valid SHA-256 and never falling back to dummy zeros.
+pub fn parse_reference_digest(s: &str) -> Result<ContentDigest, ContractBasisError> {
+    let digest = ContentDigest::parse(s).map_err(|_| ContractBasisError::InvalidIdentifier {
+        field: "reference_digest",
+    })?;
+    if digest.algorithm() != DigestAlgorithm::Sha256 {
+        return Err(ContractBasisError::UnsupportedDigestAlgorithm {
+            algorithm: digest.algorithm(),
+            field: "reference_digest",
+        });
     }
+    Ok(digest)
 }
 
 /// Constructs the canonical normative reference `ContractBasis` for the frozen baseline.
@@ -581,13 +747,19 @@ fn parse_reference_digest(s: &str) -> ContentDigest {
 pub fn reference_contract_basis() -> ContractBasis {
     ContractBasis {
         semantic_protocol: CANONICAL_SEMANTIC_PROTOCOL.to_owned(),
-        schema_catalog_digest: parse_reference_digest(REFERENCE_SCHEMA_CATALOG_DIGEST),
+        schema_catalog_digest: parse_reference_digest(REFERENCE_SCHEMA_CATALOG_DIGEST)
+            .expect("valid reference schema catalog digest"),
         ontology_generation_id: CANONICAL_ONTOLOGY_GENERATION_ID.to_owned(),
-        operation_registry_digest: parse_reference_digest(REFERENCE_OPERATION_REGISTRY_DIGEST),
-        view_registry_digest: parse_reference_digest(REFERENCE_VIEW_REGISTRY_DIGEST),
-        capability_registry_digest: parse_reference_digest(REFERENCE_CAPABILITY_REGISTRY_DIGEST),
-        error_registry_digest: parse_reference_digest(REFERENCE_ERROR_REGISTRY_DIGEST),
-        cost_registry_digest: parse_reference_digest(REFERENCE_COST_REGISTRY_DIGEST),
+        operation_registry_digest: parse_reference_digest(REFERENCE_OPERATION_REGISTRY_DIGEST)
+            .expect("valid reference operation registry digest"),
+        view_registry_digest: parse_reference_digest(REFERENCE_VIEW_REGISTRY_DIGEST)
+            .expect("valid reference view registry digest"),
+        capability_registry_digest: parse_reference_digest(REFERENCE_CAPABILITY_REGISTRY_DIGEST)
+            .expect("valid reference capability registry digest"),
+        error_registry_digest: parse_reference_digest(REFERENCE_ERROR_REGISTRY_DIGEST)
+            .expect("valid reference error registry digest"),
+        cost_registry_digest: parse_reference_digest(REFERENCE_COST_REGISTRY_DIGEST)
+            .expect("valid reference cost registry digest"),
         producer_release_id: CANONICAL_PRODUCER_RELEASE_ID.to_owned(),
         accepted_nightly: None,
     }
@@ -596,7 +768,17 @@ pub fn reference_contract_basis() -> ContractBasis {
 /// Computes the exact set of registry digests from raw registry byte slices.
 #[must_use]
 pub fn compute_registry_digests(spec: ContractBasisRegistryBytes<'_>) -> RegistryDigestSet {
-    RegistryDigestSet::from_registry_bytes(spec)
+    RegistryDigestSet {
+        schema_catalog_digest: ContentDigest::sha256(spec.schema_catalog),
+        operation_registry_digest: extract_registry_digest(spec.operations, br#""freezeDigest""#),
+        view_registry_digest: ContentDigest::sha256(spec.views),
+        capability_registry_digest: extract_registry_digest(
+            spec.capabilities,
+            br#""registryDigest""#,
+        ),
+        error_registry_digest: ContentDigest::sha256(spec.errors),
+        cost_registry_digest: extract_registry_digest(spec.costs, b"registry_digest"),
+    }
 }
 
 /// Validates structural invariants of a `ContractBasis`.
@@ -607,29 +789,47 @@ pub fn validate_contract_basis(basis: &ContractBasis) -> Result<(), ContractBasi
             actual: basis.semantic_protocol.clone(),
         });
     }
-    if basis.producer_release_id.trim().is_empty()
+    if basis.producer_release_id.is_empty()
         || basis.producer_release_id.len() > MAX_IDENTIFIER_LEN
+        || !is_valid_schema_id(&basis.producer_release_id)
     {
         return Err(ContractBasisError::InvalidIdentifier {
             field: "producer_release_id",
         });
     }
-    if basis.ontology_generation_id.trim().is_empty()
+    if basis.ontology_generation_id.is_empty()
         || basis.ontology_generation_id.len() > MAX_IDENTIFIER_LEN
+        || !is_valid_schema_id(&basis.ontology_generation_id)
     {
         return Err(ContractBasisError::InvalidIdentifier {
             field: "ontology_generation_id",
         });
     }
-    if basis
-        .accepted_nightly
-        .as_deref()
-        .is_some_and(|nightly| nightly.trim().is_empty() || nightly.len() > MAX_IDENTIFIER_LEN)
-    {
-        return Err(ContractBasisError::InvalidIdentifier {
-            field: "accepted_nightly",
-        });
+    if let Some(nightly) = &basis.accepted_nightly {
+        if nightly.is_empty() || nightly.len() > MAX_NIGHTLY_LEN || !is_valid_schema_id(nightly) {
+            return Err(ContractBasisError::InvalidIdentifier {
+                field: "accepted_nightly",
+            });
+        }
     }
+
+    // F8: Reject Blake3-tagged registry digests; Sha256 required
+    for (name, digest) in [
+        ("schema_catalog", basis.schema_catalog_digest),
+        ("operation", basis.operation_registry_digest),
+        ("view", basis.view_registry_digest),
+        ("capability", basis.capability_registry_digest),
+        ("error", basis.error_registry_digest),
+        ("cost", basis.cost_registry_digest),
+    ] {
+        if digest.algorithm() != DigestAlgorithm::Sha256 {
+            return Err(ContractBasisError::UnsupportedDigestAlgorithm {
+                algorithm: digest.algorithm(),
+                field: name,
+            });
+        }
+    }
+
     basis.validate().map_err(ContractBasisError::Contract)?;
     Ok(())
 }
@@ -649,18 +849,20 @@ pub fn encode_canonical_binary(basis: &ContractBasis) -> Result<Vec<u8>, Contrac
         .try_canonical_bytes()
         .map_err(ContractBasisError::Contract)?;
 
-    let mut payload = Vec::with_capacity(16 + inner_bytes.len() + 32);
-    payload.extend_from_slice(&CONTRACT_BASIS_MAGIC);
-    payload.extend_from_slice(&CONTRACT_BASIS_FORMAT_VERSION.to_be_bytes());
-    payload.extend_from_slice(&(inner_bytes.len() as u32).to_be_bytes());
-    payload.extend_from_slice(&inner_bytes);
-
-    if payload.len() + 32 > MAX_CONTRACT_BASIS_BINARY_BYTES {
+    // F8: Check size limit before casting inner_len to u32
+    let inner_len = inner_bytes.len();
+    if inner_len > (MAX_CONTRACT_BASIS_BINARY_BYTES - 48) || inner_len > u32::MAX as usize {
         return Err(ContractBasisError::InputOversized {
             limit: MAX_CONTRACT_BASIS_BINARY_BYTES,
-            actual_len: payload.len() + 32,
+            actual_len: 16 + inner_len + 32,
         });
     }
+
+    let mut payload = Vec::with_capacity(16 + inner_len + 32);
+    payload.extend_from_slice(&CONTRACT_BASIS_MAGIC);
+    payload.extend_from_slice(&CONTRACT_BASIS_FORMAT_VERSION.to_be_bytes());
+    payload.extend_from_slice(&(inner_len as u32).to_be_bytes());
+    payload.extend_from_slice(&inner_bytes);
 
     // Domain-separated trailing SHA-256 checksum over domain `fss.agent_contract_basis.v1`
     let mut hasher = Sha256Hasher::new();
@@ -750,11 +952,22 @@ pub fn decode_canonical_binary(bytes: &[u8]) -> Result<ContractBasis, ContractBa
 
     // 6. Decode canonical inner payload
     let mut decoder = CanonicalDecoder::new(&inner[..declared_len]);
-    let basis = ContractBasis::decode_canonical(&mut decoder).map_err(ContractBasisError::Contract)?;
-    decoder.ensure_finished().map_err(ContractBasisError::Contract)?;
+    let basis =
+        ContractBasis::decode_canonical(&mut decoder).map_err(ContractBasisError::Contract)?;
+    decoder
+        .ensure_finished()
+        .map_err(ContractBasisError::Contract)?;
 
     validate_contract_basis(&basis)?;
     Ok(basis)
+}
+
+fn truncate_note(s: String, max_len: usize) -> String {
+    if s.len() <= max_len {
+        s
+    } else {
+        s[..max_len].to_string()
+    }
 }
 
 /// Evaluates whether a candidate `ContractBasis` is compatible with this server/peer basis.
@@ -766,6 +979,18 @@ pub fn check_compatibility(
     expected: &ContractBasis,
     candidate: &ContractBasis,
 ) -> CompatibilityResult {
+    // 0. Fully validate both expected and candidate basis
+    if let Err(err) = validate_contract_basis(expected) {
+        return CompatibilityResult::Incompatible(ContractBasisRefusal::InvalidProducerRelease {
+            reason: format!("expected basis invalid: {err}"),
+        });
+    }
+    if let Err(err) = validate_contract_basis(candidate) {
+        return CompatibilityResult::Incompatible(ContractBasisRefusal::InvalidProducerRelease {
+            reason: format!("candidate basis invalid: {err}"),
+        });
+    }
+
     // 1. Semantic protocol must match exactly ("fss/1")
     if candidate.semantic_protocol != expected.semantic_protocol {
         return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleProtocol {
@@ -774,32 +999,72 @@ pub fn check_compatibility(
         });
     }
 
-    // 2. Ontology generation must match
+    // 2. Ontology generation must match; if superseded, return StaleBasis
     if candidate.ontology_generation_id != expected.ontology_generation_id {
+        if is_superseded_generation(
+            &candidate.ontology_generation_id,
+            &expected.ontology_generation_id,
+        ) {
+            return CompatibilityResult::Incompatible(ContractBasisRefusal::StaleBasis {
+                reason: StaleBasisReason::SupersededGeneration {
+                    registry: "ontology",
+                    current_generation: expected.ontology_generation_id.clone(),
+                    basis_generation: candidate.ontology_generation_id.clone(),
+                },
+            });
+        }
         return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleOntology {
             expected: expected.ontology_generation_id.clone(),
             actual: candidate.ontology_generation_id.clone(),
         });
     }
 
-    // 3. Schema catalog digest must match
+    // 3. Schema catalog digest must match; check if candidate references known superseded digest
     if candidate.schema_catalog_digest != expected.schema_catalog_digest {
-        return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleSchemaCatalog {
-            expected: expected.schema_catalog_digest,
-            actual: candidate.schema_catalog_digest,
-        });
+        if let Some((reg, _)) = is_known_superseded_digest(&candidate.schema_catalog_digest) {
+            return CompatibilityResult::Incompatible(ContractBasisRefusal::StaleBasis {
+                reason: StaleBasisReason::TombstonedRegistryDigest {
+                    registry: reg,
+                    tombstoned_digest: candidate.schema_catalog_digest,
+                },
+            });
+        }
+        return CompatibilityResult::Incompatible(
+            ContractBasisRefusal::IncompatibleSchemaCatalog {
+                expected: expected.schema_catalog_digest,
+                actual: candidate.schema_catalog_digest,
+            },
+        );
     }
 
     // 4. Operation registry digest must match
     if candidate.operation_registry_digest != expected.operation_registry_digest {
-        return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleOperationRegistry {
-            expected: expected.operation_registry_digest,
-            actual: candidate.operation_registry_digest,
-        });
+        if let Some((reg, _)) = is_known_superseded_digest(&candidate.operation_registry_digest) {
+            return CompatibilityResult::Incompatible(ContractBasisRefusal::StaleBasis {
+                reason: StaleBasisReason::TombstonedRegistryDigest {
+                    registry: reg,
+                    tombstoned_digest: candidate.operation_registry_digest,
+                },
+            });
+        }
+        return CompatibilityResult::Incompatible(
+            ContractBasisRefusal::IncompatibleOperationRegistry {
+                expected: expected.operation_registry_digest,
+                actual: candidate.operation_registry_digest,
+            },
+        );
     }
 
     // 5. View registry digest must match
     if candidate.view_registry_digest != expected.view_registry_digest {
+        if let Some((reg, _)) = is_known_superseded_digest(&candidate.view_registry_digest) {
+            return CompatibilityResult::Incompatible(ContractBasisRefusal::StaleBasis {
+                reason: StaleBasisReason::TombstonedRegistryDigest {
+                    registry: reg,
+                    tombstoned_digest: candidate.view_registry_digest,
+                },
+            });
+        }
         return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleViewRegistry {
             expected: expected.view_registry_digest,
             actual: candidate.view_registry_digest,
@@ -808,22 +1073,50 @@ pub fn check_compatibility(
 
     // 6. Capability registry digest must match
     if candidate.capability_registry_digest != expected.capability_registry_digest {
-        return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleCapabilityRegistry {
-            expected: expected.capability_registry_digest,
-            actual: candidate.capability_registry_digest,
-        });
+        if let Some((reg, _)) = is_known_superseded_digest(&candidate.capability_registry_digest) {
+            return CompatibilityResult::Incompatible(ContractBasisRefusal::StaleBasis {
+                reason: StaleBasisReason::TombstonedRegistryDigest {
+                    registry: reg,
+                    tombstoned_digest: candidate.capability_registry_digest,
+                },
+            });
+        }
+        return CompatibilityResult::Incompatible(
+            ContractBasisRefusal::IncompatibleCapabilityRegistry {
+                expected: expected.capability_registry_digest,
+                actual: candidate.capability_registry_digest,
+            },
+        );
     }
 
     // 7. Error registry digest must match
     if candidate.error_registry_digest != expected.error_registry_digest {
-        return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleErrorRegistry {
-            expected: expected.error_registry_digest,
-            actual: candidate.error_registry_digest,
-        });
+        if let Some((reg, _)) = is_known_superseded_digest(&candidate.error_registry_digest) {
+            return CompatibilityResult::Incompatible(ContractBasisRefusal::StaleBasis {
+                reason: StaleBasisReason::TombstonedRegistryDigest {
+                    registry: reg,
+                    tombstoned_digest: candidate.error_registry_digest,
+                },
+            });
+        }
+        return CompatibilityResult::Incompatible(
+            ContractBasisRefusal::IncompatibleErrorRegistry {
+                expected: expected.error_registry_digest,
+                actual: candidate.error_registry_digest,
+            },
+        );
     }
 
     // 8. Cost registry digest must match
     if candidate.cost_registry_digest != expected.cost_registry_digest {
+        if let Some((reg, _)) = is_known_superseded_digest(&candidate.cost_registry_digest) {
+            return CompatibilityResult::Incompatible(ContractBasisRefusal::StaleBasis {
+                reason: StaleBasisReason::TombstonedRegistryDigest {
+                    registry: reg,
+                    tombstoned_digest: candidate.cost_registry_digest,
+                },
+            });
+        }
         return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleCostRegistry {
             expected: expected.cost_registry_digest,
             actual: candidate.cost_registry_digest,
@@ -837,7 +1130,7 @@ pub fn check_compatibility(
         });
     }
 
-    // 10. Check nightly compatibility if specified on both
+    // 10. Check nightly compatibility: if server requires nightly, client must provide exact match
     match (&expected.accepted_nightly, &candidate.accepted_nightly) {
         (Some(expected_nightly), Some(candidate_nightly))
             if expected_nightly != candidate_nightly =>
@@ -845,6 +1138,12 @@ pub fn check_compatibility(
             return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleNightly {
                 required: expected_nightly.clone(),
                 actual: Some(candidate_nightly.clone()),
+            });
+        }
+        (Some(expected_nightly), None) => {
+            return CompatibilityResult::Incompatible(ContractBasisRefusal::IncompatibleNightly {
+                required: expected_nightly.clone(),
+                actual: None,
             });
         }
         _ => {}
@@ -856,16 +1155,21 @@ pub fn check_compatibility(
     } else {
         let mut notes = Vec::new();
         if candidate.producer_release_id != expected.producer_release_id {
-            notes.push(format!(
+            let note = format!(
                 "producer release divergence: server={}, client={}",
                 expected.producer_release_id, candidate.producer_release_id
-            ));
+            );
+            notes.push(truncate_note(note, MAX_NOTE_LEN));
         }
         if candidate.accepted_nightly != expected.accepted_nightly {
-            notes.push(format!(
+            let note = format!(
                 "accepted nightly divergence: server={:?}, client={:?}",
                 expected.accepted_nightly, candidate.accepted_nightly
-            ));
+            );
+            notes.push(truncate_note(note, MAX_NOTE_LEN));
+        }
+        if notes.len() > MAX_NOTES_COUNT {
+            notes.truncate(MAX_NOTES_COUNT);
         }
         CompatibilityResult::CompatibleWithNotes { notes }
     }
@@ -879,6 +1183,12 @@ pub fn negotiate_basis(
     server_basis: &ContractBasis,
     client_basis: &ContractBasis,
 ) -> Result<ContractBasis, ContractBasisError> {
+    validate_contract_basis(server_basis)?;
+    validate_contract_basis(client_basis)?;
+
+    // Check freshness against known tombstones and current server basis
+    check_basis_freshness(client_basis, server_basis, &[])?;
+
     match check_compatibility(server_basis, client_basis) {
         CompatibilityResult::Identical => Ok(server_basis.clone()),
         CompatibilityResult::CompatibleWithNotes { .. } => {
@@ -899,6 +1209,9 @@ pub fn check_basis_freshness(
     current_basis: &ContractBasis,
     tombstoned_digests: &[ContentDigest],
 ) -> Result<(), ContractBasisError> {
+    validate_contract_basis(basis)?;
+
+    // Check passed-in tombstoned digests
     for tombstone in tombstoned_digests {
         if basis.operation_registry_digest == *tombstone {
             return Err(ContractBasisError::StaleBasis {
@@ -950,12 +1263,43 @@ pub fn check_basis_freshness(
         }
     }
 
+    // Check statically known superseded digests
+    for (_name, digest) in [
+        ("schema_catalog", basis.schema_catalog_digest),
+        ("operation", basis.operation_registry_digest),
+        ("view", basis.view_registry_digest),
+        ("capability", basis.capability_registry_digest),
+        ("error", basis.error_registry_digest),
+        ("cost", basis.cost_registry_digest),
+    ] {
+        if let Some((reg, _)) = is_known_superseded_digest(&digest) {
+            return Err(ContractBasisError::StaleBasis {
+                reason: StaleBasisReason::TombstonedRegistryDigest {
+                    registry: reg,
+                    tombstoned_digest: digest,
+                },
+            });
+        }
+    }
+
+    // Check ontology generation
     if basis.ontology_generation_id != current_basis.ontology_generation_id {
-        return Err(ContractBasisError::StaleBasis {
-            reason: StaleBasisReason::SupersededGeneration {
-                registry: "ontology",
-                current_generation: current_basis.ontology_generation_id.clone(),
-                basis_generation: basis.ontology_generation_id.clone(),
+        if is_superseded_generation(
+            &basis.ontology_generation_id,
+            &current_basis.ontology_generation_id,
+        ) {
+            return Err(ContractBasisError::StaleBasis {
+                reason: StaleBasisReason::SupersededGeneration {
+                    registry: "ontology",
+                    current_generation: current_basis.ontology_generation_id.clone(),
+                    basis_generation: basis.ontology_generation_id.clone(),
+                },
+            });
+        }
+        return Err(ContractBasisError::IncompatibleBasis {
+            refusal: ContractBasisRefusal::IncompatibleOntology {
+                expected: current_basis.ontology_generation_id.clone(),
+                actual: basis.ontology_generation_id.clone(),
             },
         });
     }
@@ -963,38 +1307,95 @@ pub fn check_basis_freshness(
     Ok(())
 }
 
-/// Refuses a stale basis anchor that is not strictly older than the active anchor,
-/// or that originates from a divergent site lineage.
+/// Refuses a stale basis anchor that is strictly older than the active anchor,
+/// has divergent site lineage, or differs in state root or sub-epoch vector (KSTATE-005 semantics).
 ///
 /// Fails closed with `ContractBasisError::StaleBasis` (`ERR-AGENT-SESSION-STALE-001`).
 pub fn refuse_stale_anchor(
-    valid_at: &LedgerAnchor,
+    candidate: &LedgerAnchor,
     current: &LedgerAnchor,
 ) -> Result<(), ContractBasisError> {
-    if valid_at.site_lineage != current.site_lineage {
+    if candidate.site_lineage != current.site_lineage {
         return Err(ContractBasisError::StaleBasis {
             reason: StaleBasisReason::StaleAnchor {
                 detail: format!(
-                    "site lineage divergence: valid_at lineage '{}' != current '{}'",
-                    valid_at.site_lineage, current.site_lineage
+                    "site lineage divergence: candidate lineage '{}' != current '{}'",
+                    candidate.site_lineage, current.site_lineage
                 ),
             },
         });
     }
-    if (valid_at.ledger_epoch, valid_at.commit_sequence)
-        >= (current.ledger_epoch, current.commit_sequence)
-    {
+
+    // KSTATE-005: candidate is strictly older than current -> stale!
+    let older = StaleBasis::OlderAnchor {
+        valid_at: Box::new(candidate.clone()),
+        current: Box::new(current.clone()),
+    };
+    if older.validate().is_ok() {
         return Err(ContractBasisError::StaleBasis {
             reason: StaleBasisReason::StaleAnchor {
                 detail: format!(
-                    "valid_at anchor ({}, {}) is not strictly older than current ({}, {})",
-                    valid_at.ledger_epoch,
-                    valid_at.commit_sequence,
+                    "candidate anchor ({}, {}) is strictly older than current ({}, {})",
+                    candidate.ledger_epoch,
+                    candidate.commit_sequence,
                     current.ledger_epoch,
                     current.commit_sequence
                 ),
             },
         });
     }
+
+    // Sub-epoch vector freshness check
+    if candidate.adapter_registry_epoch < current.adapter_registry_epoch
+        || candidate.schema_epoch < current.schema_epoch
+        || candidate.policy_epoch < current.policy_epoch
+        || candidate.privacy_epoch < current.privacy_epoch
+    {
+        return Err(ContractBasisError::StaleBasis {
+            reason: StaleBasisReason::StaleAnchor {
+                detail: format!(
+                    "candidate sub-epoch vector ({}, {}, {}, {}) is older than current ({}, {}, {}, {})",
+                    candidate.adapter_registry_epoch,
+                    candidate.schema_epoch,
+                    candidate.policy_epoch,
+                    candidate.privacy_epoch,
+                    current.adapter_registry_epoch,
+                    current.schema_epoch,
+                    current.policy_epoch,
+                    current.privacy_epoch
+                ),
+            },
+        });
+    }
+
+    // State root divergence check
+    if candidate.state_root != current.state_root {
+        return Err(ContractBasisError::StaleBasis {
+            reason: StaleBasisReason::StaleAnchor {
+                detail: format!(
+                    "state root divergence: candidate '{}' != current '{}'",
+                    candidate.state_root, current.state_root
+                ),
+            },
+        });
+    }
+
+    // Future anchor check
+    if (candidate.ledger_epoch, candidate.commit_sequence)
+        > (current.ledger_epoch, current.commit_sequence)
+    {
+        return Err(ContractBasisError::StaleBasis {
+            reason: StaleBasisReason::StaleAnchor {
+                detail: format!(
+                    "candidate anchor ({}, {}) is ahead of current ({}, {})",
+                    candidate.ledger_epoch,
+                    candidate.commit_sequence,
+                    current.ledger_epoch,
+                    current.commit_sequence
+                ),
+            },
+        });
+    }
+
     Ok(())
 }

@@ -57,6 +57,14 @@ operation states rather than generic errors.
 | `ERR-AGENT-CASE-BUDGET-001` | investigation cannot discriminate remaining hypotheses within declared budget | return residual uncertainty and explicit next probe/approval options |
 | `ERR-AGENT-PROTOCOL-001` | presentation attempted an unregistered verb/view or changed semantic meaning | reject and repair registry/transport drift |
 | `ERR-AGENT-HIDDEN-STATE-001` | required mission state exists only in conversation or caller memory | persist typed mission/workspace/case/plan/finding/handoff state before proceeding |
+| `ERR-AGENT-BASIS-BAD-MAGIC-001` | ContractBasis binary envelope magic header does not match CONTRACT_BASIS_MAGIC | verify binary envelope format or use canonical encoder |
+| `ERR-AGENT-BASIS-VERSION-001` | ContractBasis binary envelope format version is unsupported | upgrade client or server to matching format version |
+| `ERR-AGENT-BASIS-TRUNCATED-001` | ContractBasis binary envelope ended prematurely before declared length or minimum envelope size | retransmit complete binary envelope without truncation |
+| `ERR-AGENT-BASIS-OVERSIZED-001` | ContractBasis binary payload or envelope exceeds maximum permitted byte limit | reduce payload size within configured bound or check framing |
+| `ERR-AGENT-BASIS-TRAILING-BYTES-001` | ContractBasis binary envelope contains unexpected trailing bytes after declared payload | strip extraneous trailing bytes and ensure canonical framing |
+| `ERR-AGENT-BASIS-CHECKSUM-MISMATCH-001` | ContractBasis binary envelope trailing checksum verification failed | recompute checksum or retransmit uncorrupted envelope |
+| `ERR-AGENT-BASIS-INVALID-ID-001` | ContractBasis identifier field failed pattern, length, or character set validation | provide identifier matching ^[A-Za-z0-9][A-Za-z0-9:._+/-]*$ within length limit |
+| `ERR-AGENT-BASIS-ALGORITHM-001` | ContractBasis registry digest specifies unsupported algorithm (Blake3 prohibited; Sha256 required) | compute registry digest with canonical SHA-256 algorithm |
 | `ERR-CLI-UNKNOWN-COMMAND-001` | command token is not a recognized CLI command or verb | do not retry without valid command name |
 | `ERR-CLI-UNKNOWN-OPTION-001` | option flag is unrecognized for binary or active command | do not retry without valid option flag |
 | `ERR-CLI-MISSING-VALUE-001` | required option or positional argument value is missing | provide required value before retry |

@@ -228,13 +228,9 @@ impl AgentAbstractionLayer {
     pub const fn prohibition(self) -> &'static str {
         match self {
             Self::RuntimeAuthorityAndCustody => "Cannot infer mission meaning or physical truth.",
-            Self::SourceEvidence => {
-                "Cannot promote decode or model output into source evidence."
-            }
+            Self::SourceEvidence => "Cannot promote decode or model output into source evidence.",
             Self::WorldFactsAndCoverage => "Cannot include unqualified cognition as fact.",
-            Self::DerivedBeliefs => {
-                "Cannot authorize effects or certify absence beyond coverage."
-            }
+            Self::DerivedBeliefs => "Cannot authorize effects or certify absence beyond coverage.",
             Self::SituationCapsule => {
                 "Cannot hide decision-changing omissions or rebase evidence identities."
             }

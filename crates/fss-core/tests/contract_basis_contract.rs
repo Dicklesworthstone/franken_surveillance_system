@@ -13,18 +13,16 @@
 use std::error::Error;
 
 use fss_core::contract_basis::{
-    check_basis_freshness, check_compatibility, compute_registry_digests,
+    CANONICAL_ONTOLOGY_GENERATION_ID, CANONICAL_PRODUCER_RELEASE_ID, CANONICAL_SEMANTIC_PROTOCOL,
+    CONTRACT_BASIS_FORMAT_VERSION, CONTRACT_BASIS_MAGIC, CompatibilityResult, ContractBasisError,
+    ContractBasisRefusal, MAX_CONTRACT_BASIS_BINARY_BYTES, REFERENCE_CAPABILITY_REGISTRY_DIGEST,
+    REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST, REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST,
+    REFERENCE_CONTRACT_BASIS_GENERATION, REFERENCE_COST_REGISTRY_DIGEST,
+    REFERENCE_ERROR_REGISTRY_DIGEST, REFERENCE_OPERATION_REGISTRY_DIGEST,
+    REFERENCE_SCHEMA_CATALOG_DIGEST, REFERENCE_VIEW_REGISTRY_DIGEST, SCHEMA_CONTRACT_BASIS,
+    StaleBasisReason, check_basis_freshness, check_compatibility, compute_registry_digests,
     decode_canonical_binary, encode_canonical_binary, negotiate_basis, reference_contract_basis,
-    refuse_stale_anchor, validate_contract_basis, CompatibilityResult,
-    ContractBasisError, ContractBasisRefusal, StaleBasisReason,
-    CANONICAL_ONTOLOGY_GENERATION_ID, CANONICAL_PRODUCER_RELEASE_ID,
-    CANONICAL_SEMANTIC_PROTOCOL, CONTRACT_BASIS_FORMAT_VERSION, CONTRACT_BASIS_MAGIC,
-    MAX_CONTRACT_BASIS_BINARY_BYTES,
-    REFERENCE_CAPABILITY_REGISTRY_DIGEST, REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST,
-    REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST, REFERENCE_CONTRACT_BASIS_GENERATION,
-    REFERENCE_COST_REGISTRY_DIGEST, REFERENCE_ERROR_REGISTRY_DIGEST,
-    REFERENCE_OPERATION_REGISTRY_DIGEST, REFERENCE_SCHEMA_CATALOG_DIGEST,
-    REFERENCE_VIEW_REGISTRY_DIGEST, SCHEMA_CONTRACT_BASIS,
+    refuse_stale_anchor, validate_contract_basis,
 };
 use fss_core::{
     CanonicalDecode, CanonicalEncode, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
@@ -37,7 +35,10 @@ fn test_reference_contract_basis_golden_fixture_and_pinned_digests() -> Result<(
 
     // 1. Verify exact fields of the reference contract basis
     assert_eq!(basis.semantic_protocol, CANONICAL_SEMANTIC_PROTOCOL);
-    assert_eq!(basis.ontology_generation_id, CANONICAL_ONTOLOGY_GENERATION_ID);
+    assert_eq!(
+        basis.ontology_generation_id,
+        CANONICAL_ONTOLOGY_GENERATION_ID
+    );
     assert_eq!(basis.producer_release_id, CANONICAL_PRODUCER_RELEASE_ID);
     assert_eq!(basis.accepted_nightly, None);
 
@@ -219,11 +220,15 @@ fn test_planted_bypass_incompatible_protocol() -> Result<(), Box<dyn Error>> {
     assert_ne!(candidate.basis_digest(), server_basis.basis_digest());
 
     // Planted mutant check 2: validation rejects non-fss/1
-    let val_err = validate_contract_basis(&candidate).err().ok_or("expected error")?;
+    let val_err = validate_contract_basis(&candidate)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(val_err.error_id(), "ERR-AGENT-PROTOCOL-001");
 
     // Planted mutant check 3: binary encode fails closed
-    let enc_err = encode_canonical_binary(&candidate).err().ok_or("expected error")?;
+    let enc_err = encode_canonical_binary(&candidate)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(enc_err.error_id(), "ERR-AGENT-PROTOCOL-001");
 
     // Planted mutant check 4: check_compatibility refuses
@@ -243,7 +248,9 @@ fn test_planted_bypass_incompatible_protocol() -> Result<(), Box<dyn Error>> {
     }
 
     // Planted mutant check 5: negotiate_basis fails closed
-    let neg_err = negotiate_basis(&server_basis, &candidate).err().ok_or("expected error")?;
+    let neg_err = negotiate_basis(&server_basis, &candidate)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(neg_err.error_id(), "ERR-AGENT-PROTOCOL-001");
 
     Ok(())
@@ -262,12 +269,18 @@ fn test_planted_bypass_incompatible_registries() -> Result<(), Box<dyn Error>> {
     match c1 {
         CompatibilityResult::Incompatible(refusal) => {
             assert_eq!(refusal.error_code(), "ERR-AGENT-PROTOCOL-001");
-            assert!(matches!(refusal, ContractBasisRefusal::IncompatibleSchemaCatalog { .. }));
+            assert!(matches!(
+                refusal,
+                ContractBasisRefusal::IncompatibleSchemaCatalog { .. }
+            ));
         }
         other => return Err(format!("expected Incompatible, got {other:?}").into()),
     }
     assert_eq!(
-        negotiate_basis(&server_basis, &b1).err().ok_or("err")?.error_id(),
+        negotiate_basis(&server_basis, &b1)
+            .err()
+            .ok_or("err")?
+            .error_id(),
         "ERR-AGENT-PROTOCOL-001"
     );
 
@@ -279,7 +292,10 @@ fn test_planted_bypass_incompatible_registries() -> Result<(), Box<dyn Error>> {
     match c2 {
         CompatibilityResult::Incompatible(refusal) => {
             assert_eq!(refusal.error_code(), "ERR-AGENT-PROTOCOL-001");
-            assert!(matches!(refusal, ContractBasisRefusal::IncompatibleOperationRegistry { .. }));
+            assert!(matches!(
+                refusal,
+                ContractBasisRefusal::IncompatibleOperationRegistry { .. }
+            ));
         }
         other => return Err(format!("expected Incompatible, got {other:?}").into()),
     }
@@ -292,7 +308,10 @@ fn test_planted_bypass_incompatible_registries() -> Result<(), Box<dyn Error>> {
     match c3 {
         CompatibilityResult::Incompatible(refusal) => {
             assert_eq!(refusal.error_code(), "ERR-AGENT-PROTOCOL-001");
-            assert!(matches!(refusal, ContractBasisRefusal::IncompatibleViewRegistry { .. }));
+            assert!(matches!(
+                refusal,
+                ContractBasisRefusal::IncompatibleViewRegistry { .. }
+            ));
         }
         other => return Err(format!("expected Incompatible, got {other:?}").into()),
     }
@@ -305,7 +324,10 @@ fn test_planted_bypass_incompatible_registries() -> Result<(), Box<dyn Error>> {
     match c4 {
         CompatibilityResult::Incompatible(refusal) => {
             assert_eq!(refusal.error_code(), "ERR-AGENT-PROTOCOL-001");
-            assert!(matches!(refusal, ContractBasisRefusal::IncompatibleCapabilityRegistry { .. }));
+            assert!(matches!(
+                refusal,
+                ContractBasisRefusal::IncompatibleCapabilityRegistry { .. }
+            ));
         }
         other => return Err(format!("expected Incompatible, got {other:?}").into()),
     }
@@ -318,7 +340,10 @@ fn test_planted_bypass_incompatible_registries() -> Result<(), Box<dyn Error>> {
     match c5 {
         CompatibilityResult::Incompatible(refusal) => {
             assert_eq!(refusal.error_code(), "ERR-AGENT-PROTOCOL-001");
-            assert!(matches!(refusal, ContractBasisRefusal::IncompatibleErrorRegistry { .. }));
+            assert!(matches!(
+                refusal,
+                ContractBasisRefusal::IncompatibleErrorRegistry { .. }
+            ));
         }
         other => return Err(format!("expected Incompatible, got {other:?}").into()),
     }
@@ -331,7 +356,10 @@ fn test_planted_bypass_incompatible_registries() -> Result<(), Box<dyn Error>> {
     match c6 {
         CompatibilityResult::Incompatible(refusal) => {
             assert_eq!(refusal.error_code(), "ERR-AGENT-PROTOCOL-001");
-            assert!(matches!(refusal, ContractBasisRefusal::IncompatibleCostRegistry { .. }));
+            assert!(matches!(
+                refusal,
+                ContractBasisRefusal::IncompatibleCostRegistry { .. }
+            ));
         }
         other => return Err(format!("expected Incompatible, got {other:?}").into()),
     }
@@ -378,7 +406,10 @@ fn test_planted_bypass_stale_basis_tombstoned_registry() -> Result<(), Box<dyn E
 
     match err {
         ContractBasisError::StaleBasis { reason } => match reason {
-            StaleBasisReason::TombstonedRegistryDigest { registry, tombstoned_digest: td } => {
+            StaleBasisReason::TombstonedRegistryDigest {
+                registry,
+                tombstoned_digest: td,
+            } => {
                 assert_eq!(registry, "operation");
                 assert_eq!(td, tombstoned_digest);
             }
@@ -402,7 +433,11 @@ fn test_planted_bypass_stale_basis_superseded_ontology() -> Result<(), Box<dyn E
 
     match err {
         ContractBasisError::StaleBasis { reason } => match reason {
-            StaleBasisReason::SupersededGeneration { registry, current_generation, basis_generation } => {
+            StaleBasisReason::SupersededGeneration {
+                registry,
+                current_generation,
+                basis_generation,
+            } => {
                 assert_eq!(registry, "ontology");
                 assert_eq!(current_generation, CANONICAL_ONTOLOGY_GENERATION_ID);
                 assert_eq!(basis_generation, "ontology:legacy:v0");
@@ -470,7 +505,9 @@ fn test_planted_bypass_binary_bad_magic() -> Result<(), Box<dyn Error>> {
     let new_checksum = hasher.finalize()?;
     bytes[payload_len..].copy_from_slice(&new_checksum);
 
-    let err = decode_canonical_binary(&bytes).err().ok_or("expected error")?;
+    let err = decode_canonical_binary(&bytes)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(err.error_id(), "ERR-SCHEMA-UNSUPPORTED-001");
     match err {
         ContractBasisError::BadMagic { expected, actual } => {
@@ -500,7 +537,9 @@ fn test_planted_bypass_binary_unknown_version() -> Result<(), Box<dyn Error>> {
     let new_checksum = hasher.finalize()?;
     bytes[payload_len..].copy_from_slice(&new_checksum);
 
-    let err = decode_canonical_binary(&bytes).err().ok_or("expected error")?;
+    let err = decode_canonical_binary(&bytes)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(err.error_id(), "ERR-SCHEMA-UNSUPPORTED-001");
     match err {
         ContractBasisError::UnknownVersion { expected, actual } => {
@@ -522,7 +561,9 @@ fn test_planted_bypass_binary_corrupt_checksum() -> Result<(), Box<dyn Error>> {
     let last = tampered.len() - 1;
     tampered[last] ^= 0x01;
 
-    let err = decode_canonical_binary(&tampered).err().ok_or("expected checksum error")?;
+    let err = decode_canonical_binary(&tampered)
+        .err()
+        .ok_or("expected checksum error")?;
     assert_eq!(err.error_id(), "ERR-NEG-CHECKSUM-MISMATCH-001");
     assert!(matches!(err, ContractBasisError::ChecksumMismatch { .. }));
 
@@ -535,7 +576,9 @@ fn test_planted_bypass_binary_truncated_input() -> Result<(), Box<dyn Error>> {
 
     // Case 1: length below minimum envelope size (48 bytes)
     let too_short = &fixture_bytes[..40];
-    let err1 = decode_canonical_binary(too_short).err().ok_or("expected error")?;
+    let err1 = decode_canonical_binary(too_short)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(err1.error_id(), "ERR-SCHEMA-UNSUPPORTED-001");
     assert!(matches!(err1, ContractBasisError::Truncated { .. }));
 
@@ -550,7 +593,9 @@ fn test_planted_bypass_binary_truncated_input() -> Result<(), Box<dyn Error>> {
     let new_checksum = hasher.finalize()?;
     truncated_inner[payload_len..].copy_from_slice(&new_checksum);
 
-    let err2 = decode_canonical_binary(&truncated_inner).err().ok_or("expected error")?;
+    let err2 = decode_canonical_binary(&truncated_inner)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(err2.error_id(), "ERR-SCHEMA-UNSUPPORTED-001");
     assert!(matches!(err2, ContractBasisError::Truncated { .. }));
 
@@ -576,7 +621,9 @@ fn test_planted_bypass_binary_trailing_bytes() -> Result<(), Box<dyn Error>> {
     let new_checksum = hasher.finalize()?;
     with_trailing[payload_len..].copy_from_slice(&new_checksum);
 
-    let err = decode_canonical_binary(&with_trailing).err().ok_or("expected error")?;
+    let err = decode_canonical_binary(&with_trailing)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(err.error_id(), "ERR-SCHEMA-UNSUPPORTED-001");
     assert!(matches!(err, ContractBasisError::TrailingBytes { .. }));
 
@@ -586,7 +633,9 @@ fn test_planted_bypass_binary_trailing_bytes() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_planted_bypass_binary_oversized() -> Result<(), Box<dyn Error>> {
     let oversized = vec![0u8; MAX_CONTRACT_BASIS_BINARY_BYTES + 1];
-    let err = decode_canonical_binary(&oversized).err().ok_or("expected error")?;
+    let err = decode_canonical_binary(&oversized)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(err.error_id(), "ERR-SCHEMA-UNSUPPORTED-001");
     assert!(matches!(err, ContractBasisError::InputOversized { .. }));
 
@@ -598,14 +647,19 @@ fn test_planted_bypass_empty_producer_release_id() -> Result<(), Box<dyn Error>>
     let mut basis = reference_contract_basis();
     basis.producer_release_id = "   ".to_owned();
 
-    let err = validate_contract_basis(&basis).err().ok_or("expected error")?;
+    let err = validate_contract_basis(&basis)
+        .err()
+        .ok_or("expected error")?;
     assert_eq!(err.error_id(), "ERR-AGENT-PROTOCOL-001");
 
     let compat = check_compatibility(&reference_contract_basis(), &basis);
     match compat {
         CompatibilityResult::Incompatible(refusal) => {
             assert_eq!(refusal.error_code(), "ERR-AGENT-PROTOCOL-001");
-            assert!(matches!(refusal, ContractBasisRefusal::InvalidProducerRelease { .. }));
+            assert!(matches!(
+                refusal,
+                ContractBasisRefusal::InvalidProducerRelease { .. }
+            ));
         }
         other => return Err(format!("expected Incompatible, got {other:?}").into()),
     }

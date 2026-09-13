@@ -99,15 +99,17 @@ impl ContractBasis {
     /// Builds a deterministic reference basis from exact registry bytes.
     #[must_use]
     pub fn from_registry_bytes(spec: ContractBasisRegistryBytes<'_>) -> Self {
+        let digests = crate::contract_basis::compute_registry_digests(spec);
         Self {
-            semantic_protocol: "fss/1".to_owned(),
-            schema_catalog_digest: ContentDigest::sha256(spec.schema_catalog),
-            ontology_generation_id: "ontology:reference:v1".to_owned(),
-            operation_registry_digest: ContentDigest::sha256(spec.operations),
-            view_registry_digest: ContentDigest::sha256(spec.views),
-            capability_registry_digest: ContentDigest::sha256(spec.capabilities),
-            error_registry_digest: ContentDigest::sha256(spec.errors),
-            cost_registry_digest: ContentDigest::sha256(spec.costs),
+            semantic_protocol: crate::contract_basis::CANONICAL_SEMANTIC_PROTOCOL.to_owned(),
+            schema_catalog_digest: digests.schema_catalog_digest,
+            ontology_generation_id: crate::contract_basis::CANONICAL_ONTOLOGY_GENERATION_ID
+                .to_owned(),
+            operation_registry_digest: digests.operation_registry_digest,
+            view_registry_digest: digests.view_registry_digest,
+            capability_registry_digest: digests.capability_registry_digest,
+            error_registry_digest: digests.error_registry_digest,
+            cost_registry_digest: digests.cost_registry_digest,
             producer_release_id: spec.producer_release_id.to_owned(),
             accepted_nightly: spec.accepted_nightly.map(ToOwned::to_owned),
         }
@@ -115,8 +117,28 @@ impl ContractBasis {
 
     /// Validates that required identity invariants are satisfied.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.producer_release_id.is_empty() {
+        if self.semantic_protocol != crate::contract_basis::CANONICAL_SEMANTIC_PROTOCOL {
             return Err(ContractError::InvalidIdentifier);
+        }
+        if self.producer_release_id.is_empty()
+            || self.producer_release_id.len() > crate::contract_basis::MAX_IDENTIFIER_LEN
+            || !crate::contract_basis::is_valid_schema_id(&self.producer_release_id)
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if self.ontology_generation_id.is_empty()
+            || self.ontology_generation_id.len() > crate::contract_basis::MAX_IDENTIFIER_LEN
+            || !crate::contract_basis::is_valid_schema_id(&self.ontology_generation_id)
+        {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if let Some(nightly) = &self.accepted_nightly {
+            if nightly.is_empty()
+                || nightly.len() > crate::contract_basis::MAX_NIGHTLY_LEN
+                || !crate::contract_basis::is_valid_schema_id(nightly)
+            {
+                return Err(ContractError::InvalidIdentifier);
+            }
         }
         Ok(())
     }
