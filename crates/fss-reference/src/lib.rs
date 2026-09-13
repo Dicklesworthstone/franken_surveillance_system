@@ -22,6 +22,7 @@ mod extrinsics;
 mod hydration;
 pub mod ingest;
 mod meaningful_delta;
+pub mod media_fixture;
 mod model;
 mod outcome;
 mod packet_fault;

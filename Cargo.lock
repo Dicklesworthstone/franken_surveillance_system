@@ -63,6 +63,7 @@ dependencies = [
  "fss-core",
  "fss-ledger",
  "fss-object",
+ "fss-packet",
  "fss-publication",
 ]
 
