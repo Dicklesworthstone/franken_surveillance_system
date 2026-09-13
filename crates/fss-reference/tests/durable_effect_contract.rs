@@ -21,8 +21,8 @@ use fss_reference::{
     ReferenceError, ReferenceEventReceipt, ReferenceModelObservation, ReferencePolicyAction,
     ReferencePolicyDecision, ReferenceProviderBehavior, ReferenceSituationRequest,
     VirtualCameraSpec, compile_reference_situation_with_durable_journal, evaluate_unknown_presence,
-    execute_mock_model, prepare_reference_alert, publish_reference_event, run_reference_capture,
-    seal_reference_handoff,
+    execute_mock_model, prepare_reference_alert, publish_reference_event,
+    revalidate_alert_event_authority, run_reference_capture, seal_reference_handoff,
 };
 
 fn temp_journal(name: &str) -> std::path::PathBuf {
@@ -59,7 +59,7 @@ fn sample_intent(op_name: &str, key_name: &str) -> Result<EffectIntent, Box<dyn 
 
 fn setup_alert_plan(
     ledger_path: &std::path::Path,
-) -> Result<(ReferenceAlertPlan, EffectJournal), Box<dyn Error>> {
+) -> Result<(ReferenceAlertPlan, EffectJournal, DurableReferenceLedger), Box<dyn Error>> {
     let mut objects = InMemoryObjectStore::new(ObjectLimits::new(512, 8 * 1024 * 1024));
     let mut authority = DurableReferenceLedger::open(
         ledger_path,
@@ -150,7 +150,7 @@ fn setup_alert_plan(
         &mut journal,
     )?;
 
-    Ok((plan, journal))
+    Ok((plan, journal, authority))
 }
 
 struct AlertTestContext {
@@ -376,7 +376,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _init_journal) = setup_alert_plan(&ledger_path)?;
+    let (plan, _init_journal, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:lose_ack");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
@@ -391,6 +391,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
 
         let outcome = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
             TimestampNs(110),
             TimestampNs(120),
@@ -414,6 +415,7 @@ fn test_planted_negative_lose_ack_reopen_refuses_second_commit_before_provider_t
         // Must be REFUSED before provider is touched!
         let commit_res = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),
@@ -444,7 +446,7 @@ fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_prov
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:durable:reopen");
 
     // Session 1: Prepare and dispatch with LoseAckAfterDelivery
@@ -458,6 +460,7 @@ fn test_planted_negative_reconciliation_after_reopen_closes_obligation_with_prov
         )?;
         let outcome = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
             TimestampNs(110),
             TimestampNs(120),
@@ -598,7 +601,7 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_redispatch");
 
@@ -614,6 +617,13 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
         )?;
         assert_eq!(prep_receipt.state, EffectState::Prepared);
 
+        let token = revalidate_alert_event_authority(
+            &plan,
+            &authority,
+            TimestampNs(105),
+            &mut journal,
+        )?;
+
         let commit_receipt = journal.transition(
             &plan.intent.operation_id,
             EffectState::Committed,
@@ -624,7 +634,7 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
         assert_eq!(commit_receipt.state, EffectState::Committed);
         // Process crash occurs here: external provider dispatch executed, but crash happened before
         // journal recorded adapter acceptance or completion. State remains Committed on disk.
-        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+        let _ = provider.dispatch(&token, &plan.intent, ReferenceProviderBehavior::Deliver);
     }
 
     // Session 2: System reboots; journal is replayed from disk.
@@ -643,6 +653,7 @@ fn test_crash_after_commit_recovery_via_redispatch() -> Result<(), Box<dyn Error
         // Recovery: Re-dispatching MUST be refused with ReconciliationRequired to prevent duplicate external effect!
         let redispatch_res = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),
@@ -694,12 +705,19 @@ fn test_crash_after_commit_recovery_via_reconcile() -> Result<(), Box<dyn Error>
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, mut journal_mem, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_reconcile");
 
+    let token = revalidate_alert_event_authority(
+        &plan,
+        &authority,
+        TimestampNs(105),
+        &mut journal_mem,
+    )?;
+
     // Provider external dispatch succeeded, but crash occurred before journal recorded AdapterAccepted
-    let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+    let _ = provider.dispatch(&token, &plan.intent, ReferenceProviderBehavior::Deliver);
     let provider_proof = provider
         .lookup(&plan.intent)?
         .ok_or("missing provider receipt")?
@@ -750,7 +768,7 @@ fn test_crash_after_commit_recovery_via_reconcile_failed() -> Result<(), Box<dyn
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, _) = setup_alert_plan(&ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:crash_commit_fail");
 
@@ -810,7 +828,7 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider =
         ReferenceAlertProvider::with_provider_id("provider:test:durable:reconcile_accepted");
 
@@ -825,6 +843,7 @@ fn test_reconcile_alert_accepts_adapter_accepted_after_restart() -> Result<(), B
         )?;
         let outcome = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(110),
             TimestampNs(120),
@@ -896,6 +915,7 @@ fn test_inv_111_crash_with_open_indeterminate_obligation_reopens_with_reconcile_
 
         let outcome = journal.dispatch_alert(
             &plan,
+            &ctx.authority,
             ReferenceProviderBehavior::LoseAckAfterDelivery,
             TimestampNs(31_000),
             TimestampNs(32_000),
@@ -1149,6 +1169,7 @@ fn test_inv_111_obligation_classification_states() -> Result<(), Box<dyn Error>>
     // 3. Dispatch and reconcile to Verified
     let _ = journal.dispatch_alert(
         &plan,
+        &ctx.authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(31_000),
         TimestampNs(32_000),
@@ -1219,7 +1240,7 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, authority) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:redispatch");
 
     // Session 1: Committed on disk; external dispatch occurred before crash
@@ -1231,6 +1252,12 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
             "delivery_acknowledged_by_provider",
             TimestampNs(100),
         )?;
+        let token = revalidate_alert_event_authority(
+            &plan,
+            &authority,
+            TimestampNs(105),
+            &mut journal,
+        )?;
         let _ = journal.transition(
             &plan.intent.operation_id,
             EffectState::Committed,
@@ -1238,7 +1265,7 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
             None,
             None,
         )?;
-        let _ = provider.dispatch(&plan.intent, ReferenceProviderBehavior::Deliver);
+        let _ = provider.dispatch(&token, &plan.intent, ReferenceProviderBehavior::Deliver);
     }
 
     // Session 2: System reboots; journal is in Committed state.
@@ -1247,6 +1274,7 @@ fn test_finding_f1_crash_after_commit_blind_duplicate_redispatch_fails()
         let mut journal = DurableEffectJournal::open(&path, IncompleteTailPolicy::Reject)?;
         let redispatch_res = journal.dispatch_alert(
             &plan,
+            &authority,
             ReferenceProviderBehavior::Deliver,
             TimestampNs(200),
             TimestampNs(210),
@@ -1447,7 +1475,7 @@ fn test_finding_f4_reconcile_alert_must_not_drop_provider_failure() -> Result<()
     let _ = fs::remove_file(&path);
     let _ = fs::remove_file(&ledger_path);
 
-    let (plan, _) = setup_alert_plan(&ledger_path)?;
+    let (plan, _, _) = setup_alert_plan(&ledger_path)?;
     let mut provider = ReferenceAlertProvider::with_provider_id("provider:test:finding:fail_drop");
 
     // Session 1: Indeterminate with terminal provider failure
@@ -1570,6 +1598,7 @@ fn test_finding_f6_delta_payload_mismatch_fails_closed_to_ledger_conflict()
     })?;
     let _ = journal.dispatch_alert(
         &plan,
+        &ctx.authority,
         ReferenceProviderBehavior::Deliver,
         TimestampNs(31_000),
         TimestampNs(32_000),

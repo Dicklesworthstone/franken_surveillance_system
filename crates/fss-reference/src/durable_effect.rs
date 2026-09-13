@@ -598,6 +598,7 @@ impl DurableEffectJournal {
     pub fn dispatch_alert(
         &mut self,
         plan: &ReferenceAlertPlan,
+        authority: &DurableReferenceLedger,
         behavior: ReferenceProviderBehavior,
         committed_at: TimestampNs,
         outcome_at: TimestampNs,
@@ -610,16 +611,7 @@ impl DurableEffectJournal {
             .ok_or(ContractError::NotFound)?;
 
         match current_state {
-            EffectState::Prepared => {
-                // Step 1: Durably commit first. Refuses blind retry if already Indeterminate!
-                self.transition(
-                    &plan.intent.operation_id,
-                    EffectState::Committed,
-                    committed_at,
-                    None,
-                    None,
-                )?;
-            }
+            EffectState::Prepared => {}
             EffectState::Committed => {
                 // A Committed operation across restart cannot be blindly re-dispatched to the external provider!
                 // It must be reconciled or resolved via reconcile_alert.
@@ -632,8 +624,27 @@ impl DurableEffectJournal {
             _ => return Err(ContractError::InvalidEffectTransition.into()),
         }
 
-        // Step 2: Provider interaction only after durable commitment:
-        match provider.dispatch(&plan.intent, behavior) {
+        // Revalidate event authority against the durable reference ledger before commit or dispatch.
+        // On refusal due to stale/tamper authority, transitions this journal durably to Cancelled
+        // and returns Err(ReferenceError::StaleEventAuthority).
+        let token = crate::alert::revalidate_alert_event_authority(
+            plan,
+            authority,
+            committed_at,
+            self,
+        )?;
+
+        // Step 1: Durably commit first. Refuses blind retry if already Indeterminate!
+        self.transition(
+            &plan.intent.operation_id,
+            EffectState::Committed,
+            committed_at,
+            None,
+            None,
+        )?;
+
+        // Step 2: Provider interaction only after durable commitment and revalidation:
+        match provider.dispatch(&token, &plan.intent, behavior) {
             ProviderDispatch::Delivered(_proof) => {
                 let receipt = self.transition(
                     &plan.intent.operation_id,
@@ -867,6 +878,34 @@ impl DurableEffectJournal {
             provider,
         )?;
         Ok(receipt)
+    }
+}
+
+impl crate::alert::AlertEffectTransitioner for DurableEffectJournal {
+    fn operation(&self, operation_id: &OperationId) -> Option<&OperationReceipt> {
+        self.operation(operation_id)
+    }
+
+    fn transition_cancelled(
+        &mut self,
+        operation_id: &OperationId,
+        now: TimestampNs,
+        proof: ContentDigest,
+        reason: String,
+    ) -> Result<(), ReferenceError> {
+        self.transition(
+            operation_id,
+            EffectState::Cancelled,
+            now,
+            Some(proof),
+            Some(reason),
+        )
+        .map(|_| ())
+        .map_err(|e| match e {
+            DurableEffectError::Reference(ref_err) => ref_err,
+            DurableEffectError::Contract(contract_err) => ReferenceError::Contract(contract_err),
+            _ => ReferenceError::InvalidSpec("durable_transition_failed"),
+        })
     }
 }
 

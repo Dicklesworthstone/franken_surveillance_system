@@ -109,6 +109,8 @@ pub enum ReferenceError {
         /// The documented bound the value violates.
         requirement: &'static str,
     },
+    /// Event authority in the ledger is stale or has moved since the alert plan was prepared.
+    StaleEventAuthority,
 }
 
 impl fmt::Display for ReferenceError {
@@ -215,6 +217,9 @@ impl fmt::Display for ReferenceError {
                     "invalid clock estimator configuration: {parameter} = {value} ({requirement})"
                 )
             }
+            Self::StaleEventAuthority => {
+                formatter.write_str("event authority in the ledger is stale or has moved")
+            }
         }
     }
 }
@@ -240,7 +245,8 @@ impl Error for ReferenceError {
             | Self::OutlierDominatedFit { .. }
             | Self::StaleEstimatePastValidity { .. }
             | Self::ContradictedEstimate { .. }
-            | Self::InvalidEstimatorConfig { .. } => None,
+            | Self::InvalidEstimatorConfig { .. }
+            | Self::StaleEventAuthority => None,
         }
     }
 }
