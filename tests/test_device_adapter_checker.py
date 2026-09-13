@@ -431,6 +431,66 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         d2 = compute_canonical_adapter_digest(payload2)
         self.assertNotEqual(d1, d2)
 
+    def test_32_markdown_duplicate_row_with_dashes_fails(self) -> None:
+        """Kills mutant N4: duplicate row containing '---' is not skipped and fails closed."""
+        md_p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
+        content = md_p.read_text(encoding="utf-8")
+        dup_row = "| `ADP-REPLAY-001` | replay---variant | T0 | specified | `GATE-010` |\n"
+        md_p.write_text(content + dup_row, encoding="utf-8")
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertEqual(set(codes), {ERR_ADAPTER_REGISTRY_DRIFT})
+        self.assertTrue(any("Duplicate adapter ID in markdown mirror: 'ADP-REPLAY-001'" in e.message for e in res.errors))
+
+    def test_33_markdown_rogue_row_with_dashes_fails(self) -> None:
+        """Kills mutant N4: rogue row containing '---' is not skipped and fails closed."""
+        md_p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
+        content = md_p.read_text(encoding="utf-8")
+        rogue_row = "| `ADP-ROGUE-001` | rogue---adapter | T0 | specified | `GATE-010` |\n"
+        md_p.write_text(content + rogue_row, encoding="utf-8")
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertEqual(set(codes), {ERR_ADAPTER_REGISTRY_DRIFT})
+        self.assertTrue(any("Markdown contains adapter 'ADP-ROGUE-001' not in active JSON adapters" in e.message for e in res.errors))
+
+    def test_34_markdown_rogue_row_with_id_and_surface_in_data_fails(self) -> None:
+        """Kills mutant N4: data row containing 'ID' and 'Surface' is not skipped and fails closed."""
+        md_p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
+        content = md_p.read_text(encoding="utf-8")
+        rogue_row = "| `ADP-ROGUE-002` | Camera ID Surface Mapper | T0 | specified | `GATE-010` |\n"
+        md_p.write_text(content + rogue_row, encoding="utf-8")
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertEqual(set(codes), {ERR_ADAPTER_REGISTRY_DRIFT})
+        self.assertTrue(any("Markdown contains adapter 'ADP-ROGUE-002' not in active JSON adapters" in e.message for e in res.errors))
+
+    def test_35_markdown_rogue_row_before_table_fails(self) -> None:
+        """Rejects rogue pipe row before table header."""
+        md_p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
+        content = md_p.read_text(encoding="utf-8")
+        rogue_md = "| rogue row before table |\n" + content
+        md_p.write_text(rogue_md, encoding="utf-8")
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertEqual(set(codes), {ERR_ADAPTER_REGISTRY_DRIFT})
+        self.assertTrue(any("before device adapter table header" in e.message for e in res.errors))
+
+    def test_36_markdown_rogue_row_after_table_fails(self) -> None:
+        """Rejects rogue pipe row after table ends."""
+        md_p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
+        content = md_p.read_text(encoding="utf-8")
+        rogue_md = content + "\n## Trailing Section\n\n| rogue row after table |\n"
+        md_p.write_text(rogue_md, encoding="utf-8")
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertEqual(set(codes), {ERR_ADAPTER_REGISTRY_DRIFT})
+        self.assertTrue(any("after table end" in e.message for e in res.errors))
+
 
 if __name__ == "__main__":
     unittest.main()
