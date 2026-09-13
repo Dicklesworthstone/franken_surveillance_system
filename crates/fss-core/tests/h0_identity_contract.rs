@@ -121,18 +121,18 @@ fn test_h0_normative_constants_and_properties() -> Result<(), Box<dyn Error>> {
     assert_eq!(level.level_id(), "H0");
     assert_eq!(level.level_name(), "identity");
     assert_eq!(level.content(), H0_CONTENT);
-    assert_eq!(level.owner(), "fss-core");
+    assert_eq!(level.owner(), Some("fss-core"));
     assert_eq!(level.ordinal(), 0);
 
-    // Verify all registered crate owners from architecture/crate_topology.json
-    assert_eq!(HydrationLevel::H0.owner(), "fss-core");
-    assert_eq!(HydrationLevel::H1.owner(), "fss-situation/fss-context-pack");
+    // Verify registered crate owners: H0 and H1 assigned, H2-H4 unassigned (Item 7)
+    assert_eq!(HydrationLevel::H0.owner(), Some("fss-core"));
     assert_eq!(
-        HydrationLevel::H2.owner(),
-        "fss-privacy/fss-media-transform"
+        HydrationLevel::H1.owner(),
+        Some("fss-situation/fss-context-pack")
     );
-    assert_eq!(HydrationLevel::H3.owner(), "fss-chronicle");
-    assert_eq!(HydrationLevel::H4.owner(), "fss-lab");
+    assert_eq!(HydrationLevel::H2.owner(), None);
+    assert_eq!(HydrationLevel::H3.owner(), None);
+    assert_eq!(HydrationLevel::H4.owner(), None);
 
     // 4. FromStr exact resolution (Item 2: exact match only, no aliases, no trim)
     assert_eq!("H0".parse::<HydrationLevel>()?, HydrationLevel::H0);
@@ -298,6 +298,40 @@ fn test_h0_extraction_from_semantic_handle() -> Result<(), Box<dyn Error>> {
     };
     assert_eq!(err, HydrationError::HandleRebound);
 
+    // Planted negatives: tamper fields ONLY caught by handle.verify() (Item 1 mutant kill)
+    // 1. Tampered privacy_class (leaves identity_digest unchanged, fails descriptor_digest)
+    let mut tampered_privacy = handle.clone();
+    tampered_privacy.privacy_class = "privacy:tampered".to_string();
+    let Err(err) = tampered_privacy.to_h0_identity() else {
+        return Err("expected error on tampered privacy class".into());
+    };
+    assert_eq!(err, HydrationError::Contract(ContractError::DigestMismatch));
+
+    // 2. Tampered retention_until (leaves identity_digest unchanged, fails descriptor_digest)
+    let mut tampered_retention = handle.clone();
+    tampered_retention.retention_until = TimestampNs(9_999_999);
+    let Err(err) = tampered_retention.to_h0_identity() else {
+        return Err("expected error on tampered retention".into());
+    };
+    assert_eq!(err, HydrationError::Contract(ContractError::DigestMismatch));
+
+    // 3. Tampered estimated_costs entry (leaves identity_digest unchanged, fails descriptor_digest)
+    let mut tampered_cost = handle.clone();
+    let mut modified_costs = tampered_cost.estimated_costs.clone();
+    let modified_budget = BudgetVector::builder()
+        .latency_ms(99)
+        .tokens(50)
+        .bytes(512)
+        .cpu_millis(10)
+        .privacy_exposure(0.05)
+        .build()?;
+    modified_costs.insert(HydrationLevel::H0, modified_budget);
+    tampered_cost.estimated_costs = modified_costs;
+    let Err(err) = tampered_cost.to_h0_identity() else {
+        return Err("expected error on tampered estimated cost".into());
+    };
+    assert_eq!(err, HydrationError::Contract(ContractError::DigestMismatch));
+
     Ok(())
 }
 
@@ -318,6 +352,14 @@ fn test_h0_planted_negative_validation_failures() -> Result<(), Box<dyn Error>> 
         "unredacted_media",
         "model_weights",
         "vlm_features",
+        "raw_payload",
+        "decoded_image",
+        "full_resolution_media",
+        "original_encoded_packets",
+        "object_bytes",
+        "pixel_buffer",
+        "keyframe_crops",
+        "r\u{0430}w_bytes",
     ] {
         let mut p = base.clone();
         p.semantic_type = format!("evidence_{prohibited}");
@@ -339,6 +381,70 @@ fn test_h0_planted_negative_validation_failures() -> Result<(), Box<dyn Error>> 
             HydrationError::Contract(ContractError::ProhibitedEvidencePromotion)
         );
     }
+
+    // Prohibited terms screened in subject_id, source_id, privacy_class, spatial_scope, applied_transform
+    // Cyrillic homoglyph in subject_id
+    let mut p_homo_sub = base.clone();
+    p_homo_sub.subject_id = "evidence:sensor:r\u{0430}w_bytes:1".to_string();
+    let digest = H0Identity::compute_identity_digest(
+        &p_homo_sub.subject_id,
+        p_homo_sub.subject_digest,
+        &p_homo_sub.semantic_type,
+        &p_homo_sub.source_id,
+        p_homo_sub.capture_interval,
+        p_homo_sub.spatial_scope.as_deref(),
+        p_homo_sub.applied_transform.as_deref(),
+    )?;
+    p_homo_sub.handle_id = format!("semantic-handle:{digest}");
+    let Err(err) = H0Identity::new(p_homo_sub) else {
+        return Err("expected error for Cyrillic raw_bytes homoglyph in subject_id".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::ProhibitedEvidencePromotion)
+    );
+
+    // Prohibited term in source_id
+    let mut p_src_proh = base.clone();
+    p_src_proh.source_id = "sensor:decoded_image:01".to_string();
+    let digest = H0Identity::compute_identity_digest(
+        &p_src_proh.subject_id,
+        p_src_proh.subject_digest,
+        &p_src_proh.semantic_type,
+        &p_src_proh.source_id,
+        p_src_proh.capture_interval,
+        p_src_proh.spatial_scope.as_deref(),
+        p_src_proh.applied_transform.as_deref(),
+    )?;
+    p_src_proh.handle_id = format!("semantic-handle:{digest}");
+    let Err(err) = H0Identity::new(p_src_proh) else {
+        return Err("expected error for prohibited term in source_id".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::ProhibitedEvidencePromotion)
+    );
+
+    // Prohibited term in privacy_class
+    let mut p_priv_proh = base.clone();
+    p_priv_proh.privacy_class = "privacy:raw_payload:unredacted".to_string();
+    let digest = H0Identity::compute_identity_digest(
+        &p_priv_proh.subject_id,
+        p_priv_proh.subject_digest,
+        &p_priv_proh.semantic_type,
+        &p_priv_proh.source_id,
+        p_priv_proh.capture_interval,
+        p_priv_proh.spatial_scope.as_deref(),
+        p_priv_proh.applied_transform.as_deref(),
+    )?;
+    p_priv_proh.handle_id = format!("semantic-handle:{digest}");
+    let Err(err) = H0Identity::new(p_priv_proh) else {
+        return Err("expected error for prohibited term in privacy_class".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::ProhibitedEvidencePromotion)
+    );
 
     // Prohibited in spatial_scope
     let mut p_scope = base.clone();
@@ -381,6 +487,22 @@ fn test_h0_planted_negative_validation_failures() -> Result<(), Box<dyn Error>> 
         err,
         HydrationError::Contract(ContractError::ProhibitedEvidencePromotion)
     );
+
+    // Allowed false-positive test: "straw_bytes_metric" must NOT be treated as prohibited
+    let mut p_allowed = base.clone();
+    p_allowed.spatial_scope = Some("zone:straw_bytes_metric".to_string());
+    let digest_allowed = H0Identity::compute_identity_digest(
+        &p_allowed.subject_id,
+        p_allowed.subject_digest,
+        &p_allowed.semantic_type,
+        &p_allowed.source_id,
+        p_allowed.capture_interval,
+        p_allowed.spatial_scope.as_deref(),
+        p_allowed.applied_transform.as_deref(),
+    )?;
+    p_allowed.handle_id = format!("semantic-handle:{digest_allowed}");
+    let allowed_res = H0Identity::new(p_allowed);
+    assert!(allowed_res.is_ok());
 
     // 2. Zero subject digest
     let mut p_zero = base.clone();
@@ -494,13 +616,24 @@ fn test_h0_planted_negative_validation_failures() -> Result<(), Box<dyn Error>> 
         HydrationError::Contract(ContractError::InvertedTimeInterval)
     );
 
-    // 5. Control and ANSI characters rejected (Item 4)
+    // 5. Control, C1, and bidi characters rejected (Item 4, N-3)
     for bad_str in &[
         "invalid\x00null",
         "invalid\x1b[31mansi",
         "invalid\nnewline",
         "invalid\ttab",
         "invalid\rcarriage",
+        "invalid\u{0080}c1_start",
+        "invalid\u{009F}c1_end",
+        "invalid\u{202A}bidi_lre",
+        "invalid\u{202B}bidi_rle",
+        "invalid\u{202C}bidi_pdf",
+        "invalid\u{202D}bidi_lro",
+        "invalid\u{202E}bidi_rlo",
+        "invalid\u{2066}bidi_lri",
+        "invalid\u{2067}bidi_rli",
+        "invalid\u{2068}bidi_fsi",
+        "invalid\u{2069}bidi_pdi",
     ] {
         let mut p_ctrl = base.clone();
         p_ctrl.subject_id = (*bad_str).to_string();
@@ -513,11 +646,44 @@ fn test_h0_planted_negative_validation_failures() -> Result<(), Box<dyn Error>> 
         );
     }
 
-    // 6. Empty anchor site lineage
+    // 6. Anchor site lineage validation (Item 4, N-2)
+    // Empty site_lineage fails
     let mut p_anc = base.clone();
     p_anc.anchor.site_lineage = "".to_string();
     let Err(err) = H0Identity::new(p_anc) else {
         return Err("expected error for empty site_lineage".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 70 KB site_lineage fails
+    let mut p_anc_70k = base.clone();
+    p_anc_70k.anchor.site_lineage = "a".repeat(70_000);
+    let Err(err) = H0Identity::new(p_anc_70k) else {
+        return Err("expected error for 70 KB site_lineage".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 6b. ContractBasis validation (Item 4, N-4)
+    let mut p_cb_empty_prod = base.clone();
+    p_cb_empty_prod.contract_basis.producer_release_id = "".to_string();
+    let Err(err) = H0Identity::new(p_cb_empty_prod) else {
+        return Err("expected error for empty producer_release_id".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    let mut p_cb_empty_ont = base.clone();
+    p_cb_empty_ont.contract_basis.ontology_generation_id = "   ".to_string();
+    let Err(err) = H0Identity::new(p_cb_empty_ont) else {
+        return Err("expected error for empty ontology_generation_id".into());
     };
     assert_eq!(
         err,
@@ -595,7 +761,10 @@ fn test_h0_canonical_decode_invariants_and_planted_corruptions() -> Result<(), B
     let Err(err) = H0Identity::decode_canonical(&mut dec) else {
         return Err("expected error for wrong schema".into());
     };
-    assert_eq!(err, ContractError::InvalidIdentifier);
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
 
     // 2. Non-canonical ordering in capabilities set
     // Build a payload with capabilities out of order: ["z_cap", "a_cap"]
@@ -651,23 +820,27 @@ fn test_h0_canonical_decode_invariants_and_planted_corruptions() -> Result<(), B
     let Err(ord_err) = H0Identity::decode_canonical(&mut dec_caps) else {
         return Err("expected error for non-canonical ordering".into());
     };
-    assert_eq!(ord_err, ContractError::NonCanonicalOrdering);
+    assert_eq!(
+        ord_err,
+        HydrationError::Contract(ContractError::NonCanonicalOrdering)
+    );
 
-    // 3. Truncated payload
+    // 3. Truncated payload returns Truncated (Item 6)
     let truncated = &valid_bytes[..valid_bytes.len() / 2];
     let mut dec_trunc = CanonicalDecoder::new(truncated);
     let Err(trunc_err) = H0Identity::decode_canonical(&mut dec_trunc) else {
         return Err("expected error for truncated payload".into());
     };
-    assert_eq!(trunc_err, ContractError::InvalidDigest);
+    assert_eq!(trunc_err, HydrationError::Truncated);
 
     // 4. Mutant kill: decode_canonical validates and catches prohibited types (structural check)
-    let proh_type = "raw_bytes_stream";
+    let proh_type = "evidence_bundle";
+    let proh_source_id = "sensor:raw_payload_stream";
     let proh_digest = H0Identity::compute_identity_digest(
         identity.subject_id(),
         identity.subject_digest(),
         proh_type,
-        identity.source_id(),
+        proh_source_id,
         None,
         None,
         None,
@@ -680,7 +853,7 @@ fn test_h0_canonical_decode_invariants_and_planted_corruptions() -> Result<(), B
     prohibited_encoder.text(identity.subject_id());
     prohibited_encoder.digest(identity.subject_digest());
     prohibited_encoder.text(proh_type);
-    prohibited_encoder.text(identity.source_id());
+    prohibited_encoder.text(proh_source_id);
     prohibited_encoder.bool(false);
     prohibited_encoder.bool(false);
     prohibited_encoder.bool(false);
@@ -708,7 +881,10 @@ fn test_h0_canonical_decode_invariants_and_planted_corruptions() -> Result<(), B
     let Err(proh_err) = H0Identity::decode_canonical(&mut dec_proh) else {
         return Err("expected error for prohibited evidence promotion".into());
     };
-    assert_eq!(proh_err, ContractError::ProhibitedEvidencePromotion);
+    assert_eq!(
+        proh_err,
+        HydrationError::Contract(ContractError::ProhibitedEvidencePromotion)
+    );
 
     // 5. Inverted retention decoded from binary returns InvertedTimeInterval (Item 7)
     let mut inv_ret_encoder = CanonicalEncoder::new();
@@ -756,9 +932,12 @@ fn test_h0_canonical_decode_invariants_and_planted_corruptions() -> Result<(), B
     let Err(inv_err) = H0Identity::decode_canonical(&mut dec_inv_ret) else {
         return Err("expected error for inverted retention".into());
     };
-    assert_eq!(inv_err, ContractError::InvertedTimeInterval);
+    assert_eq!(
+        inv_err,
+        HydrationError::Contract(ContractError::InvertedTimeInterval)
+    );
 
-    // 6. decode_text_set over-count returns ArithmeticOverflow (Item 7)
+    // 6. decode_text_set over-count returns CapacityExceeded (Item 6 & 7)
     let mut over_caps_encoder = CanonicalEncoder::new();
     over_caps_encoder.text(H0_SCHEMA);
     over_caps_encoder.text(identity.handle_id());
@@ -793,7 +972,44 @@ fn test_h0_canonical_decode_invariants_and_planted_corruptions() -> Result<(), B
     let Err(over_err) = H0Identity::decode_canonical(&mut dec_over) else {
         return Err("expected error for over-count capabilities".into());
     };
-    assert_eq!(over_err, ContractError::ArithmeticOverflow);
+    assert_eq!(over_err, HydrationError::CapacityExceeded);
+
+    // 7. HandleRebound during decode preserves HandleRebound variant (Item 6)
+    let mut rebound_encoder = CanonicalEncoder::new();
+    rebound_encoder.text(H0_SCHEMA);
+    rebound_encoder.text("semantic-handle:tampered-not-bound-to-digest");
+    rebound_encoder.text(identity.subject_id());
+    rebound_encoder.digest(identity.subject_digest());
+    rebound_encoder.text(identity.semantic_type());
+    rebound_encoder.text(identity.source_id());
+    rebound_encoder.bool(false);
+    rebound_encoder.bool(false);
+    rebound_encoder.bool(false);
+    identity
+        .availability()
+        .encode_canonical(&mut rebound_encoder);
+    identity
+        .estimated_cost()
+        .encode_canonical(&mut rebound_encoder);
+    identity.anchor().encode_canonical(&mut rebound_encoder);
+    identity
+        .contract_basis()
+        .encode_canonical(&mut rebound_encoder);
+    rebound_encoder.u64(0);
+    rebound_encoder.text(identity.privacy_class());
+    identity
+        .published_at()
+        .encode_canonical(&mut rebound_encoder);
+    identity
+        .retention_until()
+        .encode_canonical(&mut rebound_encoder);
+
+    let rebound_bytes = rebound_encoder.finish_checked()?;
+    let mut dec_rebound = CanonicalDecoder::new(&rebound_bytes);
+    let Err(rebound_err) = H0Identity::decode_canonical(&mut dec_rebound) else {
+        return Err("expected error for rebound handle in decode".into());
+    };
+    assert_eq!(rebound_err, HydrationError::HandleRebound);
 
     Ok(())
 }
@@ -870,6 +1086,27 @@ fn test_handle_availability_all_variants_and_roundtrip() -> Result<(), Box<dyn E
         assert_eq!(err, ContractError::InvalidIdentifier);
     }
 
+    // Decode-level negative tests for HandleAvailability (Item 3)
+    for bad in &[
+        " available\t",
+        "available ",
+        " available",
+        "Available",
+        "AVAILABLE",
+        "superseded ",
+        "deleted\n",
+        "\u{FEFF}available",
+        "\u{FF41}\u{FF56}\u{FF41}\u{FF49}\u{FF4C}\u{FF41}\u{FF42}\u{FF4C}\u{FF45}",
+        "nonexistent_state",
+    ] {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text(bad);
+        let bytes = encoder.finish_checked()?;
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        let res = HandleAvailability::decode_canonical(&mut decoder);
+        assert_eq!(res, Err(ContractError::InvalidIdentifier));
+    }
+
     Ok(())
 }
 
@@ -904,6 +1141,31 @@ fn test_hydration_level_codec_and_monotonicity() -> Result<(), Box<dyn Error>> {
         decoded.encode_canonical(&mut re_encoder);
         let re_bytes = re_encoder.finish_checked()?;
         assert_eq!(bytes, re_bytes);
+    }
+
+    // Decode-level negative tests for HydrationLevel (Item 3)
+    for bad in &[
+        "h0",
+        " H0 ",
+        "H0\t",
+        "\u{FEFF}H0",
+        "\u{FF28}\u{FF10}",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "H0\n",
+        "H0 ",
+        " H0",
+        "identity",
+        "H5",
+    ] {
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text(bad);
+        let bytes = encoder.finish_checked()?;
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        let res = HydrationLevel::decode_canonical(&mut decoder);
+        assert_eq!(res, Err(ContractError::InvalidIdentifier));
     }
 
     Ok(())
@@ -985,7 +1247,10 @@ fn test_h0_mutant_kills_m3_m5b_m8() -> Result<(), Box<dyn Error>> {
     let Err(dup_err) = H0Identity::decode_canonical(&mut dec_dup) else {
         return Err("expected error for duplicate capabilities in decode".into());
     };
-    assert_eq!(dup_err, ContractError::NonCanonicalOrdering);
+    assert_eq!(
+        dup_err,
+        HydrationError::Contract(ContractError::NonCanonicalOrdering)
+    );
 
     // M8: Expiry boundary (> vs >= in is_expired_at)
     // At now == retention_until, the descriptor is NOT yet expired (> boundary).
@@ -1005,7 +1270,7 @@ fn test_h0_text_bounding_and_digest_collision_resistance() -> Result<(), Box<dyn
 
     // 70,000-byte string fails text bounding in valid_text (Item 1)
     let oversized = "a".repeat(70_000);
-    let mut p_oversized = base;
+    let mut p_oversized = base.clone();
     p_oversized.source_id = oversized;
     let Err(err) = H0Identity::new(p_oversized) else {
         return Err("expected error for 70,000-byte text in H0Identity".into());
@@ -1021,6 +1286,21 @@ fn test_h0_text_bounding_and_digest_collision_resistance() -> Result<(), Box<dyn
     assert!(encoder.has_error());
     let Err(err) = encoder.finish_checked() else {
         return Err("expected error on finish_checked for oversized text".into());
+    };
+    assert_eq!(err, ContractError::InvalidIdentifier);
+
+    // Calling public compute_identity_digest with a 70 KB field asserts exact Err(ContractError::InvalidIdentifier) (Item 2 mutant kill)
+    let oversized = "a".repeat(70_000);
+    let Err(err) = H0Identity::compute_identity_digest(
+        &oversized,
+        base.subject_digest,
+        &base.semantic_type,
+        &base.source_id,
+        base.capture_interval,
+        base.spatial_scope.as_deref(),
+        base.applied_transform.as_deref(),
+    ) else {
+        return Err("expected error from compute_identity_digest with 70 KB field".into());
     };
     assert_eq!(err, ContractError::InvalidIdentifier);
 
@@ -1099,7 +1379,8 @@ fn test_h0_golden_digest_and_canonical_bytes() -> Result<(), Box<dyn Error>> {
     identity.encode_canonical(&mut encoder);
     let canonical_bytes = encoder.finish_checked()?;
 
-    // Assert exact canonical byte vector length and sha256
+    // Assert exact canonical byte vector length (Item 8) and sha256
+    assert_eq!(canonical_bytes.len(), 877);
     let bytes_digest = ContentDigest::sha256(&canonical_bytes);
     let id_digest = identity.canonical_digest()?;
 

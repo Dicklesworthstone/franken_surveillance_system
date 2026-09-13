@@ -115,7 +115,7 @@ impl ContractBasis {
 
     /// Validates that required identity invariants are satisfied.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.producer_release_id.is_empty() {
+        if self.producer_release_id.is_empty() || self.ontology_generation_id.is_empty() {
             return Err(ContractError::InvalidIdentifier);
         }
         Ok(())

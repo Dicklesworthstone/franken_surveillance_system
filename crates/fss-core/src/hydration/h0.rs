@@ -99,28 +99,109 @@ pub struct H0Identity {
     retention_until: TimestampNs,
 }
 
+/// Normative allowlist of registered semantic types permitted at hydration level H0.
+pub const REGISTERED_H0_SEMANTIC_TYPES: &[&str] = &[
+    "evidence_bundle",
+    "evidence_packet",
+    "semantic_context_expansion",
+    "belief_candidate",
+    "situation_frame",
+    "negative_evidence_witness",
+    "observation_record",
+    "event_record",
+    "telemetry_record",
+    "sensor_metadata",
+    "device_state",
+    "control_action",
+    "audit_record",
+    "identity_manifest",
+];
+
+fn map_homoglyphs(c: char) -> char {
+    match c {
+        '\u{0430}' | '\u{0410}' => 'a', // Cyrillic a
+        '\u{0435}' | '\u{0415}' => 'e', // Cyrillic e
+        '\u{043E}' | '\u{041E}' => 'o', // Cyrillic o
+        '\u{0440}' | '\u{0420}' => 'p', // Cyrillic r -> p
+        '\u{0441}' | '\u{0421}' => 'c', // Cyrillic s -> c
+        '\u{0443}' | '\u{0423}' => 'y', // Cyrillic u -> y
+        '\u{0445}' | '\u{0425}' => 'x', // Cyrillic kh -> x
+        '\u{0456}' | '\u{0406}' => 'i', // Cyrillic i
+        '\u{0458}' | '\u{0408}' => 'j', // Cyrillic je
+        '\u{0455}' | '\u{0405}' => 's', // Cyrillic dze
+        other => other.to_ascii_lowercase(),
+    }
+}
+
 fn contains_prohibited_terms(s: &str) -> bool {
-    let normalized: String = s
-        .chars()
-        .filter(|c| c.is_alphanumeric())
-        .flat_map(char::to_lowercase)
+    let mapped: String = s.chars().map(map_homoglyphs).collect();
+    let tokens: Vec<&str> = mapped
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
         .collect();
-    const PROHIBITED_ROOTS: &[&str] = &[
-        "rawbyte",
+
+    const PROHIBITED_SINGLE: &[&str] = &[
         "rawbytes",
+        "rawbyte",
+        "rawpayload",
         "decodedframe",
+        "decodedimage",
+        "decodedmedia",
         "payloadstream",
         "unredactedmedia",
         "modelweight",
         "modelweights",
         "vlmfeature",
         "vlmfeatures",
+        "pixelbuffer",
+        "keyframe",
+        "keyframecrops",
+        "keyframecrop",
+        "objectbytes",
+        "objectbyte",
     ];
-    for root in PROHIBITED_ROOTS {
-        if normalized.contains(root) {
+
+    for &tok in &tokens {
+        for &prohibited in PROHIBITED_SINGLE {
+            if tok == prohibited {
+                return true;
+            }
+        }
+    }
+
+    for window in tokens.windows(2) {
+        let (a, b) = (window[0], window[1]);
+        if (a == "raw"
+            && (b == "bytes"
+                || b == "byte"
+                || b == "payload"
+                || b == "media"
+                || b == "packet"
+                || b == "packets"))
+            || (a == "decoded" && (b == "frame" || b == "image" || b == "media" || b == "data"))
+            || (a == "payload" && (b == "stream" || b == "bytes" || b == "data"))
+            || (a == "unredacted" && (b == "media" || b == "frame" || b == "stream"))
+            || (a == "model" && (b == "weights" || b == "weight"))
+            || (a == "vlm" && (b == "features" || b == "feature"))
+            || (a == "full" && b == "resolution")
+            || (a == "pixel" && (b == "buffer" || b == "buffers"))
+            || (a == "keyframe" && (b == "crop" || b == "crops"))
+            || (a == "object" && (b == "bytes" || b == "byte"))
+            || (a == "original" && (b == "packets" || b == "packet"))
+        {
             return true;
         }
     }
+
+    for window in tokens.windows(3) {
+        let (a, b, c) = (window[0], window[1], window[2]);
+        if (a == "full" && b == "resolution" && c == "media")
+            || (a == "original" && b == "encoded" && (c == "packets" || c == "packet"))
+        {
+            return true;
+        }
+    }
+
     false
 }
 
@@ -234,6 +315,15 @@ impl H0Identity {
             return Err(ContractError::InvalidIdentifier.into());
         }
 
+        self.contract_basis.validate()?;
+        if self.contract_basis.ontology_generation_id.trim().is_empty()
+            || !valid_text(&self.contract_basis.ontology_generation_id)
+            || self.contract_basis.producer_release_id.trim().is_empty()
+            || !valid_text(&self.contract_basis.producer_release_id)
+        {
+            return Err(ContractError::InvalidIdentifier.into());
+        }
+
         // Bounded text validation with control character checks and non-whitespace check
         if !valid_text(&self.handle_id)
             || self.handle_id.trim().is_empty()
@@ -294,8 +384,8 @@ impl H0Identity {
             return Err(ContractError::InvertedTimeInterval.into());
         }
 
-        // Anchor check
-        if self.anchor.site_lineage.trim().is_empty() {
+        // Anchor check: site_lineage must be valid bounded text and non-empty
+        if !valid_text(&self.anchor.site_lineage) || self.anchor.site_lineage.trim().is_empty() {
             return Err(ContractError::InvalidIdentifier.into());
         }
 
@@ -315,7 +405,14 @@ impl H0Identity {
     /// Verifies that H0 exposes metadata only and contains no raw payload bytes or decode artifacts.
     #[must_use]
     pub fn is_pure_metadata(&self) -> bool {
-        if contains_prohibited_terms(&self.semantic_type) {
+        if !REGISTERED_H0_SEMANTIC_TYPES.contains(&self.semantic_type.as_str()) {
+            return false;
+        }
+        if contains_prohibited_terms(&self.semantic_type)
+            || contains_prohibited_terms(&self.subject_id)
+            || contains_prohibited_terms(&self.source_id)
+            || contains_prohibited_terms(&self.privacy_class)
+        {
             return false;
         }
         if let Some(ref scope) = self.spatial_scope
@@ -477,10 +574,101 @@ impl H0Identity {
     }
 
     /// Decodes an [`H0Identity`] from canonical binary bytes and verifies no trailing bytes exist.
-    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, ContractError> {
+    pub fn from_canonical_bytes(bytes: &[u8]) -> Result<Self, HydrationError> {
         let mut decoder = CanonicalDecoder::new(bytes);
         let identity = Self::decode_canonical(&mut decoder)?;
-        decoder.ensure_finished()?;
+        decoder
+            .ensure_finished()
+            .map_err(HydrationError::Contract)?;
+        Ok(identity)
+    }
+
+    /// Decodes an [`H0Identity`] from a canonical binary decoder.
+    pub fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, HydrationError> {
+        let schema = decoder.text().map_err(|_| HydrationError::Truncated)?;
+        if schema != H0_SCHEMA {
+            return Err(HydrationError::Contract(ContractError::InvalidIdentifier));
+        }
+        let handle_id = decoder
+            .text()
+            .map_err(|_| HydrationError::Truncated)?
+            .to_string();
+        let subject_id = decoder
+            .text()
+            .map_err(|_| HydrationError::Truncated)?
+            .to_string();
+        let subject_digest = decoder.digest().map_err(|err| match err {
+            ContractError::UnsupportedDigestAlgorithm => HydrationError::Contract(err),
+            _ => HydrationError::Truncated,
+        })?;
+        let semantic_type = decoder
+            .text()
+            .map_err(|_| HydrationError::Truncated)?
+            .to_string();
+        let source_id = decoder
+            .text()
+            .map_err(|_| HydrationError::Truncated)?
+            .to_string();
+        let capture_interval = decode_optional_interval(decoder).map_err(|err| match err {
+            ContractError::InvertedTimeInterval => HydrationError::Contract(err),
+            _ => HydrationError::Truncated,
+        })?;
+        let spatial_scope = decode_optional_text(decoder)
+            .map_err(|_| HydrationError::Truncated)?
+            .map(|s| s.to_string());
+        let applied_transform = decode_optional_text(decoder)
+            .map_err(|_| HydrationError::Truncated)?
+            .map(|s| s.to_string());
+        let availability =
+            HandleAvailability::decode_canonical(decoder).map_err(|err| match err {
+                ContractError::InvalidIdentifier => HydrationError::Contract(err),
+                _ => HydrationError::Truncated,
+            })?;
+        let estimated_cost = <BudgetVector as CanonicalDecode>::decode_canonical(decoder).map_err(
+            |err| match err {
+                ContractError::InvalidBudget(b) => {
+                    HydrationError::Contract(ContractError::InvalidBudget(b))
+                }
+                _ => HydrationError::Truncated,
+            },
+        )?;
+        let anchor = LedgerAnchor::decode_canonical(decoder).map_err(|err| match err {
+            ContractError::InvalidIdentifier => HydrationError::Contract(err),
+            _ => HydrationError::Truncated,
+        })?;
+        let contract_basis = ContractBasis::decode_canonical(decoder).map_err(|err| match err {
+            ContractError::InvalidIdentifier => HydrationError::Contract(err),
+            _ => HydrationError::Truncated,
+        })?;
+        let required_capabilities = decode_text_set(decoder)?;
+        let privacy_class = decoder
+            .text()
+            .map_err(|_| HydrationError::Truncated)?
+            .to_string();
+        let published_at =
+            TimestampNs::decode_canonical(decoder).map_err(|_| HydrationError::Truncated)?;
+        let retention_until =
+            TimestampNs::decode_canonical(decoder).map_err(|_| HydrationError::Truncated)?;
+
+        let identity = Self {
+            handle_id,
+            subject_id,
+            subject_digest,
+            semantic_type,
+            source_id,
+            capture_interval,
+            spatial_scope,
+            applied_transform,
+            availability,
+            estimated_cost,
+            anchor,
+            contract_basis,
+            required_capabilities,
+            privacy_class,
+            published_at,
+            retention_until,
+        };
+        identity.validate()?;
         Ok(identity)
     }
 }
@@ -504,56 +692,5 @@ impl CanonicalEncode for H0Identity {
         encoder.text(&self.privacy_class);
         self.published_at.encode_canonical(encoder);
         self.retention_until.encode_canonical(encoder);
-    }
-}
-
-impl CanonicalDecode for H0Identity {
-    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
-        let schema = decoder.text()?;
-        if schema != H0_SCHEMA {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        let handle_id = decoder.text()?.to_string();
-        let subject_id = decoder.text()?.to_string();
-        let subject_digest = decoder.digest()?;
-        let semantic_type = decoder.text()?.to_string();
-        let source_id = decoder.text()?.to_string();
-        let capture_interval = decode_optional_interval(decoder)?;
-        let spatial_scope = decode_optional_text(decoder)?.map(|s| s.to_string());
-        let applied_transform = decode_optional_text(decoder)?.map(|s| s.to_string());
-        let availability = HandleAvailability::decode_canonical(decoder)?;
-        let estimated_cost = <BudgetVector as CanonicalDecode>::decode_canonical(decoder)?;
-        let anchor = LedgerAnchor::decode_canonical(decoder)?;
-        let contract_basis = ContractBasis::decode_canonical(decoder)?;
-        let required_capabilities = decode_text_set(decoder)?;
-        let privacy_class = decoder.text()?.to_string();
-        let published_at = TimestampNs::decode_canonical(decoder)?;
-        let retention_until = TimestampNs::decode_canonical(decoder)?;
-
-        let identity = Self {
-            handle_id,
-            subject_id,
-            subject_digest,
-            semantic_type,
-            source_id,
-            capture_interval,
-            spatial_scope,
-            applied_transform,
-            availability,
-            estimated_cost,
-            anchor,
-            contract_basis,
-            required_capabilities,
-            privacy_class,
-            published_at,
-            retention_until,
-        };
-        identity.validate().map_err(|e| match e {
-            HydrationError::Contract(c) => c,
-            HydrationError::HandleRebound => ContractError::InvalidIdentifier,
-            HydrationError::CapacityExceeded => ContractError::ArithmeticOverflow,
-            _ => ContractError::InvalidIdentifier,
-        })?;
-        Ok(identity)
     }
 }

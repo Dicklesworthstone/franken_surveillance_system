@@ -103,15 +103,13 @@ impl HydrationLevel {
         }
     }
 
-    /// Returns the owning subsystem for this hydration level.
+    /// Returns the owning subsystem for this hydration level if registered.
     #[must_use]
-    pub const fn owner(self) -> &'static str {
+    pub const fn owner(self) -> Option<&'static str> {
         match self {
-            Self::H0 => "fss-core",
-            Self::H1 => "fss-situation/fss-context-pack",
-            Self::H2 => "fss-privacy/fss-media-transform",
-            Self::H3 => "fss-chronicle",
-            Self::H4 => "fss-lab",
+            Self::H0 => Some("fss-core"),
+            Self::H1 => Some("fss-situation/fss-context-pack"),
+            Self::H2 | Self::H3 | Self::H4 => None,
         }
     }
 
@@ -366,7 +364,12 @@ fn validate_contiguous_levels(levels: &BTreeSet<HydrationLevel>) -> Result<(), H
 pub(crate) fn valid_text(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_TEXT_BYTES
-        && !value.bytes().any(|byte| byte.is_ascii_control())
+        && !value.chars().any(|c| {
+            c.is_ascii_control()
+                || ('\u{0080}'..='\u{009F}').contains(&c)
+                || ('\u{202A}'..='\u{202E}').contains(&c)
+                || ('\u{2066}'..='\u{2069}').contains(&c)
+        })
 }
 
 pub(crate) fn encode_optional_interval(
@@ -450,23 +453,28 @@ pub(crate) fn encode_text_set(values: &BTreeSet<String>, encoder: &mut Canonical
 
 pub(crate) fn decode_text_set(
     decoder: &mut CanonicalDecoder<'_>,
-) -> Result<BTreeSet<String>, ContractError> {
-    let count_u64 = decoder.u64()?;
-    let count = usize::try_from(count_u64).map_err(|_| ContractError::ArithmeticOverflow)?;
-    if count > MAX_REQUEST_SET_ITEMS || decoder.remaining() < count {
-        return Err(ContractError::ArithmeticOverflow);
+) -> Result<BTreeSet<String>, HydrationError> {
+    let count_u64 = decoder.u64().map_err(|_| HydrationError::Truncated)?;
+    let count = usize::try_from(count_u64).map_err(|_| HydrationError::CapacityExceeded)?;
+    if count > MAX_REQUEST_SET_ITEMS {
+        return Err(HydrationError::CapacityExceeded);
+    }
+    if decoder.remaining() < count {
+        return Err(HydrationError::Truncated);
     }
     let mut set = BTreeSet::new();
     let mut prev: Option<&str> = None;
     for _ in 0..count {
-        let text = decoder.text()?;
-        if text.trim().is_empty() {
-            return Err(ContractError::InvalidIdentifier);
+        let text = decoder.text().map_err(|_| HydrationError::Truncated)?;
+        if text.trim().is_empty() || !valid_text(text) {
+            return Err(HydrationError::Contract(ContractError::InvalidIdentifier));
         }
         if let Some(p) = prev
             && p >= text
         {
-            return Err(ContractError::NonCanonicalOrdering);
+            return Err(HydrationError::Contract(
+                ContractError::NonCanonicalOrdering,
+            ));
         }
         prev = Some(text);
         set.insert(text.to_string());

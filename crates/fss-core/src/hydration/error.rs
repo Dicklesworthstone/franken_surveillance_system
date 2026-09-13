@@ -31,6 +31,8 @@ pub enum HydrationError {
     ContinuationCrossSession,
     /// A progressive cursor was already consumed by a prior hydration request.
     ContinuationAlreadyConsumed,
+    /// A canonical binary input was truncated or missing required bytes.
+    Truncated,
 }
 
 impl HydrationError {
@@ -52,6 +54,7 @@ impl HydrationError {
             Self::ContinuationUnissued => "hydration_continuation_unissued",
             Self::ContinuationCrossSession => "hydration_continuation_cross_session",
             Self::ContinuationAlreadyConsumed => "hydration_continuation_already_consumed",
+            Self::Truncated => "hydration_truncated",
         }
     }
 
@@ -73,7 +76,8 @@ impl HydrationError {
             | Self::HandleRebound
             | Self::LevelUnavailable
             | Self::ContinuationUnissued
-            | Self::ContinuationCrossSession => RecoveryClass::NeverUnchanged,
+            | Self::ContinuationCrossSession
+            | Self::Truncated => RecoveryClass::NeverUnchanged,
         }
     }
 }
@@ -100,7 +104,8 @@ impl std::error::Error for HydrationError {
             | Self::ContinuationExpired
             | Self::ContinuationUnissued
             | Self::ContinuationCrossSession
-            | Self::ContinuationAlreadyConsumed => None,
+            | Self::ContinuationAlreadyConsumed
+            | Self::Truncated => None,
         }
     }
 }
