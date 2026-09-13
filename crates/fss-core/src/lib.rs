@@ -43,8 +43,8 @@ pub use abstraction::{
     CANONICAL_LAYERS, DERIVED_BELIEF_DOMAIN, DERIVED_BELIEF_RECEIPT_DOMAIN, DerivationInputs,
     DerivedBelief, DerivedBeliefParams, MAX_DERIVED_BELIEF_CONTRADICTIONS,
     MAX_DERIVED_BELIEF_EVIDENCE, NegativeReadClaim, NegativeReadOutcome,
-    SourceEvidenceClassification, SourceEvidenceParams, SourceEvidenceRecord, WorldFact,
-    WorldFactKind, evaluate_negative_read,
+    SourceEvidenceClassification, SourceEvidenceParams, SourceEvidenceRecord,
+    SOURCE_EVIDENCE_RECORD_FORMAT_VERSION, WorldFact, WorldFactKind, evaluate_negative_read,
 };
 
 pub use agent::{

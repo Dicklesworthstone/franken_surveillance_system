@@ -256,6 +256,22 @@ operation states rather than generic errors.
 | `ERR-CLAIM-PROOF-UNSOUND-ESCAPE-001` | proof claim formal artifact contains a known unsound escape (Lean axiom, compiler trust, lcProof, kernel bypass, metaprogramming, a #-command, an import outside Init/Std/Lean; TLA+ AXIOM, ASSUMPTION or non-sequent ASSUME, or EXTENDS/INSTANCE of a non-standard module) | remove the escape; declare assumptions in the bundle and model |
 | `ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001` | promoted proof bundle passed the static pre-filter, but a proof is verified only by a qualification receipt from running the prover, and no such receipt mechanism is defined yet | a user decision: define the prover-run receipt; until then no proof claim is verified |
 | `ERR-CLAIM-GENERATION-UNBOUND-001` | promoted proof or bounded_model claim is cited by no claim row declaring its current generation (Generation column), or its citing rows conflict | declare the claim row's current generation and bind the bundle to exactly it |
+| `ERR-SOURCE-EVIDENCE-MISSING-ANCHOR-001` | source evidence record missing authoritative anchor | attach authoritative anchor; do not retry unchanged |
+| `ERR-SOURCE-EVIDENCE-OMISSION-REQUIRED-001` | not-retained source evidence must declare an explicit omission reason | supply explicit omission reason; do not retry unchanged |
+| `ERR-SOURCE-EVIDENCE-RETAINED-WITH-OMISSION-001` | retained source evidence cannot declare an omission reason | remove omission reason or mark not-retained |
+| `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-CAPSULE-BYTES-001` | not-retained source evidence capsule cannot claim non-zero source bytes, non-zero frame count, or non-zero source digest | zero capsule bytes/digest/frames or mark retained |
+| `ERR-SOURCE-EVIDENCE-BYTE-COUNT-MISMATCH-001` | capsule source bytes does not match custody source bytes | align capsule and custody byte count |
+| `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` | retained source custody storage handle is empty, whitespace, or contains invalid characters | provide non-empty sanitized storage handle |
+| `ERR-SOURCE-EVIDENCE-STATEMENT-MALFORMED-001` | source evidence statement is empty or exceeds 512 bytes | constrain statement to 1..=512 UTF-8 bytes |
+| `ERR-SOURCE-EVIDENCE-CAPSULE-REQUIRED-001` | sensor capsule classification requires a sensor capsule payload | provide sensor capsule or change classification |
+| `ERR-SOURCE-EVIDENCE-WITNESS-REQUIRED-001` | continuity witness classification requires a continuity witness digest | provide continuity witness or change classification |
+| `ERR-SOURCE-EVIDENCE-WITNESS-EQUALS-SOURCE-DIGEST-001` | continuity witness cannot equal source digest | supply distinct continuity witness |
+| `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-WITNESS-001` | source evidence not retained cannot bind a continuity witness | omit witness or retain source evidence |
+| `ERR-SOURCE-EVIDENCE-UNKNOWN-CLASSIFICATION-001` | unknown source evidence classification string token | supply a registered classification token |
+| `ERR-SOURCE-EVIDENCE-UNKNOWN-OMISSION-REASON-001` | unknown omission reason string token | supply a registered omission reason token |
+| `ERR-SOURCE-EVIDENCE-UNKNOWN-CUSTODY-TAG-001` | unknown source custody binary wire tag | supply a registered custody tag |
+| `ERR-SOURCE-EVIDENCE-UNSUPPORTED-VERSION-001` | unsupported source evidence binary wire format version | encode with current supported format version |
+| `ERR-CLOCK-BASIS-UNKNOWN-NAME-001` | clock basis name is unrecognized | supply a registered clock basis name |
 
 
 
@@ -323,4 +339,27 @@ Stable process exit identities map command-line interface outcomes to determinis
 | `EXIT-CLI-INVALID-UNICODE-002` | 2 | invalid UTF-8 argument | supply valid UTF-8 argument bytes |
 | `EXIT-CLI-UNEXPECTED-POSITIONAL-002` | 2 | unexpected positional argument | remove unexpected positional arguments |
 | `EXIT-CLI-TRAILING-ARGUMENT-002` | 2 | trailing argument after grammar exhaustion | remove trailing arguments |
+
+## Contract error codes (`fss-core`)
+
+Canonical machine error codes returned by `ContractError::code()` (AGT-LAYER-002, INV-003):
+
+| Error code | Meaning | Stable identity |
+|---|---|---|
+| `source_evidence_missing_anchor` | Source evidence record missing authoritative anchor | `ERR-SOURCE-EVIDENCE-MISSING-ANCHOR-001` |
+| `source_evidence_omission_required` | Not-retained source evidence must declare an explicit omission reason | `ERR-SOURCE-EVIDENCE-OMISSION-REQUIRED-001` |
+| `source_evidence_retained_with_omission` | Retained source evidence cannot declare an omission reason | `ERR-SOURCE-EVIDENCE-RETAINED-WITH-OMISSION-001` |
+| `source_evidence_not_retained_with_capsule_bytes` | Not-retained source evidence capsule cannot claim non-zero source bytes, non-zero frame count, or non-zero source digest | `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-CAPSULE-BYTES-001` |
+| `source_evidence_byte_count_mismatch` | Capsule source bytes does not match custody source bytes | `ERR-SOURCE-EVIDENCE-BYTE-COUNT-MISMATCH-001` |
+| `source_evidence_empty_storage_handle` | Retained source custody storage handle is empty, whitespace, or contains invalid characters | `ERR-SOURCE-EVIDENCE-EMPTY-STORAGE-HANDLE-001` |
+| `source_evidence_statement_malformed` | Source evidence statement is empty or exceeds 512 bytes | `ERR-SOURCE-EVIDENCE-STATEMENT-MALFORMED-001` |
+| `source_evidence_capsule_required` | Sensor capsule classification requires a sensor capsule payload | `ERR-SOURCE-EVIDENCE-CAPSULE-REQUIRED-001` |
+| `source_evidence_witness_required` | Continuity witness classification requires a continuity witness digest | `ERR-SOURCE-EVIDENCE-WITNESS-REQUIRED-001` |
+| `source_evidence_witness_equals_source_digest` | Continuity witness cannot equal source digest | `ERR-SOURCE-EVIDENCE-WITNESS-EQUALS-SOURCE-DIGEST-001` |
+| `source_evidence_not_retained_with_witness` | Source evidence not retained cannot bind a continuity witness | `ERR-SOURCE-EVIDENCE-NOT-RETAINED-WITH-WITNESS-001` |
+| `source_evidence_unsupported_version` | Unsupported source evidence binary wire format version | `ERR-SOURCE-EVIDENCE-UNSUPPORTED-VERSION-001` |
+| `unknown_source_evidence_classification` | Unknown source evidence classification string token | `ERR-SOURCE-EVIDENCE-UNKNOWN-CLASSIFICATION-001` |
+| `unknown_omission_reason` | Unknown omission reason string token | `ERR-SOURCE-EVIDENCE-UNKNOWN-OMISSION-REASON-001` |
+| `unknown_source_custody_tag` | Unknown source custody binary wire tag | `ERR-SOURCE-EVIDENCE-UNKNOWN-CUSTODY-TAG-001` |
+| `unknown_clock_basis_name` | Clock basis name is unrecognized | `ERR-CLOCK-BASIS-UNKNOWN-NAME-001` |
 

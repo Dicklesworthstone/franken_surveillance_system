@@ -657,6 +657,17 @@ subsystem_generation!(
     PrivacyGeneration,
     "An immutable privacy projection generation identifier."
 );
+
+impl PrivacyGeneration {
+    /// Canonical default privacy projection generation string.
+    pub const CANONICAL_V1: &str = "privacy:projection:v1";
+
+    /// Returns a canonical default privacy projection generation instance.
+    #[must_use]
+    pub fn canonical_v1() -> Self {
+        Self(String::from(Self::CANONICAL_V1))
+    }
+}
 subsystem_generation!(
     FirmwareGeneration,
     "An immutable device firmware build and release generation identifier."

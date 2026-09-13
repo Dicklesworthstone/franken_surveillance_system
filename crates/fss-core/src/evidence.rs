@@ -181,6 +181,10 @@ impl CanonicalDecode for SensorCapsule {
         let frame_count = decoder.u32()?;
         let gap_before = decoder.bool()?;
 
+        if capture.earliest > capture.latest || receive_time < capture.earliest {
+            return Err(ContractError::InvertedTimeInterval);
+        }
+
         Ok(Self {
             capsule_id,
             sensor_id,
