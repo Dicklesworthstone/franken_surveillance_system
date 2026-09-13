@@ -40,6 +40,7 @@
     "docs/deep-dives/INDEX.md",
     "architecture/dependency_allowlist.toml",
     "architecture/dependency_constitution.json",
+    "architecture/dependencies.json",
     "architecture/franken_imports.json",
     "architecture/model_runtime_registry.json",
     "architecture/invariants.json",

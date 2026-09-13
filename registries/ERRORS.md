@@ -159,6 +159,13 @@ operation states rather than generic errors.
 | `ERR-GRAPH-MISSING-OUTPUT-WITNESS-001` | graph algorithm row lacks declared output-size witness with bounds | declare output-size witness with bounds or record explicit owner drift |
 | `ERR-GRAPH-PROJECTION-MISMATCH-001` | graph algorithm projections differ between machine source and registry markdown mirror | reconcile machine source and registry markdown projections |
 | `ERR-GRAPH-STABLE-ID-DRIFT-001` | graph algorithm stable identifier renumbered or superseded row not tombstoned | restore stable algorithm identity and retain superseded rows as tombstones |
+| `ERR-DEP-REGISTRY-DRIFT-001` | dependency registry row drift between machine registry and markdown mirror | synchronize architecture/dependencies.json and registries/DEPENDENCIES.md |
+| `ERR-DEP-STABLE-ID-REUSED-001` | dependency class stable identifier was reused, duplicated, renumbered, or tombstoned | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-DEP-MISSING-FIELD-001` | dependency class row or root metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in dependency class row |
+| `ERR-DEP-CORRUPT-FILE-001` | dependency registry or markdown documentation file is missing or corrupt | repair or restore dependency registry file |
+| `ERR-DEP-DIGEST-MISMATCH-001` | dependency registry digest does not match canonical encoding of metadata and rows | recompute canonical dependency registry digest |
+| `ERR-DEP-FREEZE-DIVERGENCE-001` | dependency registry digest diverged from pinned baseline freeze digest | restore frozen dependency registry or bump generation |
+| `ERR-DEP-GENERATION-MISMATCH-001` | dependency registry generation diverged from baseline generation | assign expected generation to dependency registry |
 
 
 
@@ -202,6 +209,9 @@ or drifted IDs are rejected by the policy lane (`scripts/check-policy.py`).
 | `DEP-AUD-033` | error | a resolved Git package source is not commit-resolved | pin and lock an immutable exact commit with source/provenance evidence | `GATE-000`, `QL-POLICY-001` | lock exact commit revision before re-running qualification |
 | `DEP-AUD-040` | error | required pinned-nightly offline Cargo metadata is unavailable | restore exact toolchain/cache/lock/sibling closure and rerun; policy-only execution cannot certify release | `GATE-000`, `QL-POLICY-001` | restore toolchain/cache before re-running qualification |
 | `DEP-AUD-041` | warning | target census drift between reference model and cargo metadata | reconcile target roots with cargo metadata to ensure no target is hidden or missing | `GATE-000`, `QL-POLICY-001` | reconcile target roots before re-running qualification |
+| `DEP-AUD-042` | error | unclassified crate in Cargo.lock or resolved dependencies | classify crate into an authorized dependency class before qualification | `GATE-000`, `QL-POLICY-001` | classify crate before re-running qualification |
+| `DEP-AUD-043` | error | misclassified crate reachable from production or invalid scope boundary | ensure laboratory and oracle crates are not reachable from production | `GATE-000`, `QL-POLICY-001` | correct dependency classification before re-running qualification |
+| `DEP-AUD-044` | warning | dependency class row has no active consumer in repository | verify dependency class usage or record explicit consumer drift | `GATE-000`, `QL-POLICY-001` | reconcile dependency consumer status before re-running qualification |
 
 ## Process exit identity registry (EXIT)
 
