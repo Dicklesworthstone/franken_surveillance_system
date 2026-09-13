@@ -153,6 +153,13 @@ operation states rather than generic errors.
 | `ERR-KSTATE-FREEZE-DIVERGENCE-001` | knowledge state registry digest diverged from pinned baseline freeze digest | restore frozen knowledge state registry or bump generation |
 | `ERR-KSTATE-GENERATION-MISMATCH-001` | knowledge state registry generation diverged from baseline generation | assign expected generation to knowledge state registry |
 | `ERR-KSTATE-ILLEGAL-IRREVERSIBLE-AUTH-001` | non-known knowledge state illegally authorizes irreversible effect | restrict irreversible effect authorization strictly to known state |
+| `ERR-ADAPTER-REGISTRY-DRIFT-001` | adapter registry row drift between machine registry and markdown | synchronize architecture/device_adapters.json and registries/DEVICE_ADAPTERS.md |
+| `ERR-ADAPTER-STABLE-ID-REUSED-001` | adapter stable identifier was reused, renumbered, or resurrected | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-ADAPTER-SEMANTIC-INVARIANT-001` | adapter row violates semantic invariants (tier, state, gate) | fail closed; enforce normative row definitions |
+| `ERR-ADAPTER-CORRUPT-FILE-001` | device adapter registry file is corrupt or missing mandatory fields | repair or restore device adapter registry file |
+| `ERR-ADAPTER-DIGEST-MISMATCH-001` | device adapter canonical freeze digest does not match pinned generation digest | recompute canonical device adapter registry digest or bump generation |
+| `ERR-ADAPTER-GENERATION-MISMATCH-001` | adapter generation does not match current system generation | fail closed; assign expected generation to device adapter registry |
+| `ERR-ADAPTER-INVALID-TIER-001` | adapter tier is invalid or violates promotion rules | fail closed; reject unsupported tier |
 | `ERR-GRAPH-UNREGISTERED-PROJECTION-001` | graph algorithm specifies an unregistered or nonexistent graph projection ID | update algorithm projection to a registered projection ID from docs/GRAPH_ALGORITHM_ATLAS.md |
 | `ERR-GRAPH-MISSING-TIE-BREAK-001` | graph algorithm row lacks a deterministic CGSE tie-break rule | specify a deterministic CGSE tie-break policy in graph algorithm registry |
 | `ERR-GRAPH-MISSING-COMPLEXITY-WITNESS-001` | graph algorithm row lacks declared complexity witness operations | declare dominant operation complexity witness in graph algorithm registry |

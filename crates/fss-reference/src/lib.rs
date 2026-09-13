@@ -6,6 +6,7 @@
 //! end-to-end helper publishes source/delivery object graphs root-last and then commits one
 //! canonical authority delta through `fss-publication`.
 
+mod adapter_replay;
 mod alert;
 mod bundle;
 mod calibration;
@@ -55,6 +56,12 @@ mod situation_tests;
 #[cfg(test)]
 mod tests;
 
+pub use adapter_replay::{
+    ADP_REPLAY_CURRENT_STATE, ADP_REPLAY_GENERATION, ADP_REPLAY_PROMOTION_GATE,
+    ADP_REPLAY_PROTOCOL_PROFILE, ADP_REPLAY_ROW_ID, ADP_REPLAY_SURFACE, ADP_REPLAY_TIER,
+    ERR_REPLAY_DIVERGED, ReplayAdapter, ReplayAdapterConfig, ReplayAdapterError, ReplayAuditRecord,
+    ReplayExecutionOutput, ReplayExecutionRequest,
+};
 pub use alert::{
     PrepareAlertParams, ProviderDispatch, ProviderFailureReceipt, ProviderObservationReceipt,
     REFERENCE_ALERT_TERMINAL_PREDICATE, ReferenceAlertPlan, ReferenceAlertProvider,

@@ -1,0 +1,98 @@
+{
+  "schema": "fss.device_adapters.v1",
+  "asOf": "2026-08-31",
+  "semanticProtocol": "fss/1",
+  "generation": "gen:fss1:adapters-v1",
+  "registryDigest": "sha256:475127cbcbdff684e7f778ab25b1c7883cfdddafd6bf07f881da50c4f4cf0ff9",
+  "adapters": [
+    {
+      "id": "ADP-AOSU-P1MAX-LAB-001",
+      "surface": "AOSU P1 Max owner-auth lab",
+      "tier": "T3",
+      "currentState": "research target",
+      "promotionGate": "GATE-090",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-DJI-FLIP-LAB-001",
+      "surface": "DJI Flip manual capture/import lab (NEG-001 non-SDK)",
+      "tier": "T3/T4",
+      "currentState": "research target",
+      "promotionGate": "GATE-100",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-FILE-001",
+      "surface": "bounded media import",
+      "tier": "T0/T4",
+      "currentState": "specified",
+      "promotionGate": "GATE-010",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-INSTA-LINK-001",
+      "surface": "Insta360 Link via UVC/UAC",
+      "tier": "T1",
+      "currentState": "researched, unimplemented",
+      "promotionGate": "GATE-020",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-ONVIF-M-001",
+      "surface": "ONVIF Profile M metadata",
+      "tier": "T1",
+      "currentState": "specified",
+      "promotionGate": "GATE-030",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-ONVIF-T-001",
+      "surface": "ONVIF Profile T",
+      "tier": "T1",
+      "currentState": "specified",
+      "promotionGate": "GATE-030",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-REPLAY-001",
+      "surface": "deterministic replay",
+      "tier": "T0",
+      "currentState": "specified",
+      "promotionGate": "GATE-010",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-RTSP-001",
+      "surface": "RTSP/RTP",
+      "tier": "T1",
+      "currentState": "specified",
+      "promotionGate": "GATE-030",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-S3-IMPORT-001",
+      "surface": "S3-compatible import",
+      "tier": "T4",
+      "currentState": "specified",
+      "promotionGate": "GATE-040",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-UVC-001",
+      "surface": "UVC/UAC",
+      "tier": "T1",
+      "currentState": "specified",
+      "promotionGate": "GATE-020",
+      "generation": "gen:fss1:adapters-v1"
+    },
+    {
+      "id": "ADP-WYZE-V4-LAB-001",
+      "surface": "Wyze Cam v4 owner-auth lab",
+      "tier": "T3",
+      "currentState": "research target",
+      "promotionGate": "GATE-090",
+      "generation": "gen:fss1:adapters-v1"
+    }
+  ],
+  "tombstones": []
+}
