@@ -47,10 +47,14 @@ Fail-closed verification invariants:
 10. Crash freedom: JSON nested deeper than MAX_JSON_DEPTH levels, a NUL character in any path,
    and undecodable registry text are typed findings, never tracebacks; every walker over
    untrusted structure is iterative or depth-capped. Output escapes any character the output
-   encoding cannot carry (lone surrogates, non-ASCII under an ASCII locale) instead of failing.
+   encoding cannot carry (lone surrogates, non-ASCII under an ASCII locale) instead of failing;
+   a closed stdout ends quietly with the verdict as exit code; only regular files are read (a
+   FIFO, device, or socket is refused before any read could block).
 11. Exact field sets: the bundle (schema exactly fss.proof_bundle.v1), its artifact entries, and
    every evidence document a realized class reads are validated against an allowlist of keys,
-   compared byte for byte; any other key is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001.
+   compared byte for byte; any other key is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001. Every JSON
+   document is parsed refusing a key declared twice in one object, at any nesting level
+   (ERR-CLAIM-EVIDENCE-DUPLICATE-KEY-001), and artifact digests are compared byte for byte.
 """
 
 from __future__ import annotations
@@ -62,6 +66,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 import tomllib
 import unicodedata
@@ -131,6 +136,7 @@ ERR_SLO_CONJUNCT_INCOHERENT = "ERR-CLAIM-SLO-CONJUNCT-INCOHERENT-001"
 ERR_CLAIM_CLASS_UNRESOLVED = "ERR-CLAIM-CLASS-UNRESOLVED-001"
 ERR_EVIDENCE_FIELD_UNKNOWN = "ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001"
 ERR_BUNDLE_SCHEMA_INVALID = "ERR-CLAIM-PROOF-BUNDLE-SCHEMA-INVALID-001"
+ERR_EVIDENCE_DUPLICATE_KEY = "ERR-CLAIM-EVIDENCE-DUPLICATE-KEY-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
     ERR_PROOF_BUNDLE_NOT_FOUND: {
@@ -306,8 +312,12 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Retain a zone-qualified ISO-8601 measurement window that ended before the evaluation instant",
     },
     ERR_EVIDENCE_FIELD_UNKNOWN: {
-        "trigger": "An evidence document the checker reads (proof bundle, artifact entry, assumption, theorem, toolchain identity, formal model reference or manifest, proof check receipt, bound, derivation, or slo measurement) declares a key outside its exact field set; keys are compared byte for byte, with no case folding, stripping, or normalization",
+        "trigger": "An evidence document the checker reads declares a key outside its exact field set: the proof bundle, an artifact entry, an assumption, the theorem, the toolchain identity, the formal model reference, manifest, or model source, the proof check receipt, the bound, the derivation, a derivation input, a sensitivity entry, an slo measurement, or its measurement_window; or a qualification receipt declares a case, whitespace, or format-character variant of a field the checker relies on. Keys are compared byte for byte, with no case folding, stripping, or normalization",
         "remediation": "Remove the key or spell it exactly as its document's field set names it; an unrecognized field is never silently ignored",
+    },
+    ERR_EVIDENCE_DUPLICATE_KEY: {
+        "trigger": "A JSON document the checker reads (proof bundle, qualification receipt, retained evidence document, or registry) declares the same key twice in one object, at any nesting level; with a plain parser the last value would silently win",
+        "remediation": "Declare every key once; a document that says two things is never read as one of them",
     },
     ERR_BUNDLE_SCHEMA_INVALID: {
         "trigger": "A proof bundle's 'schema' is missing or not exactly 'fss.proof_bundle.v1', or its 'bundle_id' is present but not an exact token",
@@ -494,6 +504,10 @@ RECEIPT_REQUIRED_FIELDS = (
     "status",
 )
 RECEIPT_STATUSES: frozenset[str] = frozenset({"passed", "failed", "partial", "interrupted"})
+# The qualification receipt schema is owned elsewhere, so its full field set is not enforced here;
+# the fields this checker relies on may not be shadowed by a lookalike key (review round 6).
+RECEIPT_RELIED_FIELDS: frozenset[str] = frozenset(RECEIPT_REQUIRED_FIELDS)
+RECEIPT_COMMAND_RELIED_FIELDS: frozenset[str] = frozenset({"status"})
 RECEIPT_COMMAND_STATUSES: frozenset[str] = frozenset({"passed", "failed", "skipped"})
 
 # Claim class 'slo' (fss-x4a.30.87.5).
@@ -664,6 +678,67 @@ def _is_contained(path: Path, root: Path) -> bool:
 MAX_JSON_DEPTH = 128
 
 
+class _NotRegularFile(OSError):
+    """A path that is not a regular file (FIFO, character or block device, socket, directory)."""
+
+
+def _read_regular_file(path: Path) -> bytes:
+    """Reads a regular file and nothing else (review N4). The path is opened without blocking and
+    checked on the open handle, so a FIFO, device, or socket is refused before any read could
+    block forever, and nothing can be swapped in between the check and the read."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise _NotRegularFile(f"'{path}' is not a regular file (a FIFO, device, socket, or directory is never read)")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                return b"".join(chunks)
+            chunks.append(chunk)
+    finally:
+        os.close(fd)
+
+
+def _is_regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(os.stat(path).st_mode)
+    except (OSError, ValueError):
+        return False
+
+
+class _DuplicateKeyError(ValueError):
+    """A JSON object declares one key twice (review N1)."""
+
+    def __init__(self, key: str) -> None:
+        super().__init__(f"duplicate JSON key {key!r} (a plain parser keeps the last value silently)")
+        self.key = key
+
+
+def _reject_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    obj: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in obj:
+            raise _DuplicateKeyError(key)
+        obj[key] = value
+    return obj
+
+
+def _loads_json(text: str) -> Any:
+    """json.loads that refuses a duplicate key in any object at any nesting level (review N1):
+    with plain json.loads the last value wins, so a document could say two things (an 'actual'
+    of 99.0 and of 1.2) and be read as the convenient one."""
+    return json.loads(text, object_pairs_hook=_reject_duplicate_keys)
+
+
+def _duplicate_key_finding(path_str: str, location: str, what: str, key: str, params: dict[str, Any] | None = None) -> ClaimFinding:
+    return _finding(
+        ERR_EVIDENCE_DUPLICATE_KEY, path_str, location,
+        f"{what} declares the JSON key {key!r} more than once in one object; a document that says two things is never read as one of them",
+        {**(params or {}), "key": repr(key)},
+    )
+
+
 def _json_depth_exceeds(value: Any, limit: int = MAX_JSON_DEPTH) -> bool:
     """Whether a decoded JSON value nests deeper than limit containers (measured iteratively)."""
     stack: list[tuple[Any, int]] = [(value, 1)]
@@ -684,13 +759,15 @@ def _read_json_document(path: Path, display: str, kind: str) -> tuple[dict[str, 
     """Reads a non-empty JSON object; every failure is a typed finding."""
     label = kind[:1].upper() + kind[1:]
     try:
-        raw_bytes = path.read_bytes()
+        raw_bytes = _read_regular_file(path)
     except OSError as exc:
         return None, [_finding(ERR_UNREADABLE_INPUT, display, "file", f"Could not read {kind} '{display}': {exc}", {"error": str(exc)})]
     if len(raw_bytes.strip()) == 0:
         return None, [_finding(ERR_EMPTY_INPUT, display, "file", f"{label} '{display}' is empty (0 bytes); existence is not proof")]
     try:
-        data = json.loads(raw_bytes.decode("utf-8"))
+        data = _loads_json(raw_bytes.decode("utf-8"))
+    except _DuplicateKeyError as exc:
+        return None, [_duplicate_key_finding(display, "file", f"{label} '{display}'", exc.key)]
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:  # RecursionError: nesting too deep
         return None, [_finding(ERR_UNREADABLE_INPUT, display, "file", f"{label} '{display}' contains invalid JSON: {exc}", {"error": str(exc)})]
     if _json_depth_exceeds(data):
@@ -718,7 +795,7 @@ def load_authoritative_claims(claims_json_path: Path) -> tuple[dict[str, list[st
         return classes, prohibited, findings
 
     try:
-        raw_bytes = claims_json_path.read_bytes()
+        raw_bytes = _read_regular_file(claims_json_path)
     except OSError as exc:
         findings.append(_finding(ERR_UNREADABLE_INPUT, path_str, "root", f"Could not read authoritative claims registry '{claims_json_path}': {exc}"))
         return classes, prohibited, findings
@@ -728,7 +805,10 @@ def load_authoritative_claims(claims_json_path: Path) -> tuple[dict[str, list[st
         return classes, prohibited, findings
 
     try:
-        data = json.loads(raw_bytes.decode("utf-8"))
+        data = _loads_json(raw_bytes.decode("utf-8"))
+    except _DuplicateKeyError as exc:
+        findings.append(_duplicate_key_finding(path_str, "root", f"Authoritative claims registry '{claims_json_path}'", exc.key))
+        return classes, prohibited, findings
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:  # RecursionError: nesting too deep
         findings.append(_finding(ERR_UNREADABLE_INPUT, path_str, "root", f"Authoritative claims registry '{claims_json_path}' is invalid JSON: {exc}"))
         return classes, prohibited, findings
@@ -814,13 +894,16 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
     if not path.is_file():
         return unavailable(f"'{display}' does not exist or is not a regular file")
     try:
-        raw_bytes = path.read_bytes()
+        raw_bytes = _read_regular_file(path)
     except OSError as exc:
         return unavailable(f"could not read '{display}': {exc}", error=str(exc))
     if len(raw_bytes.strip()) == 0:
         return unavailable(f"'{display}' is empty (0 bytes)")
     try:
-        data = json.loads(raw_bytes.decode("utf-8-sig"))
+        data = _loads_json(raw_bytes.decode("utf-8-sig"))
+    except _DuplicateKeyError as exc:
+        _, unusable = unavailable(f"'{display}' declares the JSON key {exc.key!r} more than once", key=repr(exc.key))
+        return set(), [_duplicate_key_finding(display, "file", f"Stable-ID tombstone index '{display}'", exc.key)] + unusable
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:  # RecursionError: nesting too deep
         return unavailable(f"'{display}' is not valid JSON: {exc}", error=str(exc))
     if not isinstance(data, dict):
@@ -830,6 +913,16 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
     resolutions = data.get("resolutions")
     if not isinstance(resolutions, list) or len(resolutions) == 0:
         return unavailable(f"'{display}' contains no resolutions")
+    # stable_id_audit reads every registries/*.md, docs/adr/*.md, and architecture/*.json; any that is
+    # not a regular file (a FIFO would block its read forever) leaves the index unavailable (review N4).
+    irregular = sorted(
+        sanitize_path(p, root)
+        for folder, pattern in (("registries", "*.md"), ("docs/adr", "*.md"), ("architecture", "*.json"))
+        if (root / folder).is_dir()
+        for p in (root / folder).glob(pattern) if not _is_regular_file(p)
+    )
+    if irregular:
+        return unavailable(f"{irregular} are not regular files (a FIFO, device, socket, or directory is never read)")
     try:
         index = stable_id_audit._load_repository_index(root)
     except (stable_id_audit.AuditError, OSError, UnicodeDecodeError) as exc:
@@ -918,8 +1011,9 @@ def _check_artifacts(data: dict[str, Any], root: Path, path_str: str, findings: 
                     f"Bundle artifact {loc} sizeBytes {declared_size!r} is not a non-negative integer (schemas/evidence_bundle.v1.json)",
                 ))
             digest_val = art.get("digest")
-            digest_norm = digest_val.strip().lower() if isinstance(digest_val, str) else None
-            digest_ok = digest_norm is not None and SHA256_DIGEST_RE.match(digest_norm) is not None
+            # Byte-exact against the schema pattern (review N3): never stripped or lower-cased.
+            digest_norm = digest_val if isinstance(digest_val, str) and SHA256_DIGEST_RE.fullmatch(digest_val) else None
+            digest_ok = digest_norm is not None
             if not digest_ok:
                 findings.append(_finding(
                     ERR_BUNDLE_DIGEST_MISMATCH, path_str, f"{loc}.digest",
@@ -927,7 +1021,7 @@ def _check_artifacts(data: dict[str, Any], root: Path, path_str: str, findings: 
                 ))
 
             retention = art.get("retentionState")
-            if retention is not None:
+            if "retentionState" in art:  # a null retentionState is not an absent one (schema enum)
                 if not isinstance(retention, str) or retention not in RETENTION_STATES:
                     findings.append(_finding(
                         ERR_UNRECOGNIZED_STATE, path_str, f"{loc}.retentionState",
@@ -1009,7 +1103,7 @@ def _check_artifacts(data: dict[str, Any], root: Path, path_str: str, findings: 
             if not digest_ok:
                 continue
             try:
-                art_bytes = art_full_path.read_bytes()
+                art_bytes = _read_regular_file(art_full_path)
             except OSError as exc:
                 findings.append(_finding(
                     ERR_UNREADABLE_INPUT, path_str, loc,
@@ -1122,6 +1216,29 @@ def _rank_of(level: str) -> int | None:
     return READINESS_LEVEL_RANKS.get(level)
 
 
+def _key_fold(key: str) -> str:
+    """A key's lookalike class: NFKC, case-folded, with whitespace and control, format, and
+    surrogate characters removed ("Status", " status", "status\u200b", fullwidth "ｓtatus")."""
+    folded = unicodedata.normalize("NFKC", key).casefold()
+    return "".join(ch for ch in folded if not (ch.isspace() or unicodedata.category(ch) in ("Cc", "Cf", "Cs", "Zs", "Zl", "Zp")))
+
+
+def _refuse_lookalike_keys(
+    doc: dict[str, Any], relied: frozenset[str], what: str, where: str, path_str: str, findings: list[ClaimFinding],
+) -> None:
+    """In a document whose full field set this checker does not own, a key that folds to a field
+    the checker relies on but is not that field byte for byte is refused: it could shadow it."""
+    folded = {_key_fold(name): name for name in relied}
+    lookalikes = sorted((key for key in doc if isinstance(key, str) and key not in relied and _key_fold(key) in folded), key=repr)
+    if lookalikes:
+        findings.append(_finding(
+            ERR_EVIDENCE_FIELD_UNKNOWN, path_str, where,
+            f"{what} declares key(s) {lookalikes!r}, lookalikes of the field(s) "
+            f"{sorted({folded[_key_fold(k)] for k in lookalikes})} it relies on; only the exact field is read",
+            {"lookalike_fields": [repr(k) for k in lookalikes]},
+        ))
+
+
 def _verify_receipt_payload(
     data: dict[str, Any],
     path_str: str,
@@ -1132,6 +1249,7 @@ def _verify_receipt_payload(
 ) -> tuple[list[ClaimFinding], str | None]:
     """Checks a qualification receipt. Returns (findings, recognized status or None)."""
     findings: list[ClaimFinding] = []
+    _refuse_lookalike_keys(data, RECEIPT_RELIED_FIELDS, f"Qualification receipt '{path_str}'", "root", path_str, findings)
     missing = [k for k in RECEIPT_REQUIRED_FIELDS if k not in data]
     if missing:
         findings.append(_finding(
@@ -1149,6 +1267,8 @@ def _verify_receipt_payload(
         findings.append(_finding(ERR_UNREADABLE_INPUT, path_str, "commands", f"Qualification receipt '{path_str}' commands must be a non-empty list"))
     else:
         for idx, cmd in enumerate(commands):
+            if isinstance(cmd, dict):
+                _refuse_lookalike_keys(cmd, RECEIPT_COMMAND_RELIED_FIELDS, f"Qualification receipt '{path_str}' command {idx}", f"commands[{idx}]", path_str, findings)
             cmd_status = cmd.get("status") if isinstance(cmd, dict) else None
             if not isinstance(cmd_status, str) or cmd_status not in RECEIPT_COMMAND_STATUSES:
                 findings.append(_finding(
@@ -1225,7 +1345,7 @@ def _read_authority_text(path: Path, rel: str) -> tuple[str | None, list[ClaimFi
     if not path.is_file():
         return None, _registry_invalid(rel, f"Registry '{rel}' is missing or not a regular file")
     try:
-        text = path.read_bytes().decode("utf-8")
+        text = _read_regular_file(path).decode("utf-8")
     except OSError as exc:
         return None, _registry_invalid(rel, f"Registry '{rel}' could not be read: {exc}")
     except UnicodeDecodeError as exc:
@@ -1627,12 +1747,19 @@ def _resolve_slo_threshold(
     return thresholds[index] if index is not None else None
 
 
-def _open_document_entry(root: Path, entry: dict[str, Any], role: str, schema: str) -> tuple[dict[str, Any] | None, str]:
+def _open_document_entry(
+    root: Path, entry: dict[str, Any], role: str, schema: str,
+    findings: list[ClaimFinding] | None = None, path_str: str = "",
+) -> tuple[dict[str, Any] | None, str]:
     """Opens one retained artifact entry as a JSON document of this schema."""
     raw, reason = _open_retained_file(root, _artifact_locator(entry), entry.get("digest"))
     if raw is None:
         return None, f"'{role}' artifact {reason}"
-    doc = _json_object(raw)
+    doc, duplicate = _parse_json_object(raw)
+    if duplicate is not None:
+        if findings is not None:
+            findings.append(_duplicate_key_finding(path_str, f"artifacts[role={role}]", f"'{role}' artifact", duplicate, {"role": role}))
+        return None, f"'{role}' artifact declares the JSON key {duplicate!r} more than once"
     if doc is None:
         return None, f"'{role}' artifact is not a JSON object within {MAX_JSON_DEPTH} levels of nesting"
     if doc.get("schema") != schema:
@@ -1805,7 +1932,7 @@ def _verify_slo_claim_evidence(
                                  f"SLO claim proof bundle declares no exact generation (got {bundle_data.get('generation')!r}; never stripped)",
                                  params))
 
-    env_doc, env_reason = _open_role_document(bundle_data, root, "environment_manifest", SLO_ENVIRONMENT_SCHEMA)
+    env_doc, env_reason = _open_role_document(bundle_data, root, "environment_manifest", SLO_ENVIRONMENT_SCHEMA, findings=findings, path_str=path_str)
     env_digest: str | None = None
     if env_doc is None:
         findings.append(_finding(ERR_SLO_ENVIRONMENT_UNRETAINED, path_str, "artifacts",
@@ -1814,7 +1941,7 @@ def _verify_slo_claim_evidence(
         findings.append(_finding(ERR_SLO_ENVIRONMENT_UNRETAINED, path_str, "artifacts",
                                  "SLO claim environment manifest declares nothing beyond its schema", params))
     else:
-        env_digest = str(_role_artifacts(bundle_data, "environment_manifest")[0]["digest"]).strip().lower()
+        env_digest = _role_artifacts(bundle_data, "environment_manifest")[0]["digest"]  # opened: an exact digest
 
     entries = _role_artifacts(bundle_data, "measurement_artifact")
     if not entries:
@@ -1824,7 +1951,7 @@ def _verify_slo_claim_evidence(
         return
     measurements: list[tuple[str, dict[str, Any]]] = []
     for entry in entries:
-        doc, reason = _open_document_entry(root, entry, "measurement_artifact", SLO_MEASUREMENT_SCHEMA)
+        doc, reason = _open_document_entry(root, entry, "measurement_artifact", SLO_MEASUREMENT_SCHEMA, findings=findings, path_str=path_str)
         if doc is None:
             findings.append(_finding(ERR_CLAIM_LEVEL_EXCEEDED, path_str, "artifacts",
                                      f"SLO claim requires a retained measurement: {reason}", params))
@@ -2064,23 +2191,30 @@ def _open_retained_file(root: Path, rel_val: Any, declared_digest: Any) -> tuple
     if not full.is_file():
         return None, f"'{rel_val}' does not exist on disk as a regular file"
     try:
-        raw = full.read_bytes()
+        raw = _read_regular_file(full)
     except OSError as exc:
         return None, f"'{rel_val}' could not be read: {exc}"
-    digest = declared_digest.strip().lower() if isinstance(declared_digest, str) else None
-    if digest is None or SHA256_DIGEST_RE.match(digest) is None:
-        return None, f"'{rel_val}' is not bound by a 'sha256:<64 hex>' digest"
+    digest = declared_digest if isinstance(declared_digest, str) else None
+    if digest is None or SHA256_DIGEST_RE.fullmatch(digest) is None:  # byte-exact (review N3)
+        return None, f"'{rel_val}' is not bound by an exact 'sha256:<64 lowercase hex>' digest (got {declared_digest!r})"
     if compute_sha256(raw) != digest:
         return None, f"'{rel_val}' bytes do not match its declared digest"
     return raw, ""
 
 
-def _json_object(raw: bytes) -> dict[str, Any] | None:
+def _parse_json_object(raw: bytes) -> tuple[dict[str, Any] | None, str | None]:
+    """(object, None); (None, key) when an object declares key twice; (None, None) otherwise."""
     try:
-        doc = json.loads(raw.decode("utf-8"))
+        doc = _loads_json(raw.decode("utf-8"))
+    except _DuplicateKeyError as exc:
+        return None, exc.key
     except (UnicodeDecodeError, ValueError, RecursionError):  # RecursionError: nesting too deep
-        return None
-    return doc if isinstance(doc, dict) and not _json_depth_exceeds(doc) else None
+        return None, None
+    return (doc if isinstance(doc, dict) and not _json_depth_exceeds(doc) else None), None
+
+
+def _json_object(raw: bytes) -> dict[str, Any] | None:
+    return _parse_json_object(raw)[0]
 
 
 def _open_role_document(
@@ -2088,15 +2222,22 @@ def _open_role_document(
     root: Path,
     role: str,
     schema: str,
+    findings: list[ClaimFinding] | None = None,
+    path_str: str = "",
 ) -> tuple[dict[str, Any] | None, str]:
-    """Opens the single retained artifact with this role as a JSON document of this schema."""
+    """Opens the single retained artifact with this role as a JSON document of this schema; a
+    duplicate JSON key is reported into findings (when given) as well as refusing the document."""
     entries = _role_artifacts(bundle_data, role)
     if len(entries) != 1:
         return None, f"requires exactly one retained '{role}' artifact, found {len(entries)}"
     raw, reason = _open_retained_file(root, _artifact_locator(entries[0]), entries[0].get("digest"))
     if raw is None:
         return None, f"'{role}' artifact {reason}"
-    doc = _json_object(raw)
+    doc, duplicate = _parse_json_object(raw)
+    if duplicate is not None:
+        if findings is not None:
+            findings.append(_duplicate_key_finding(path_str, f"artifacts[role={role}]", f"'{role}' artifact", duplicate, {"role": role}))
+        return None, f"'{role}' artifact declares the JSON key {duplicate!r} more than once"
     if doc is None:
         return None, f"'{role}' artifact is not a JSON object within {MAX_JSON_DEPTH} levels of nesting"
     if doc.get("schema") != schema:
@@ -2874,7 +3015,7 @@ def _verify_proof_claim_evidence(
                 {**params, "model_generation": declared_model_gen, "claim_generation": bundle_generation},
             ))
 
-    manifest, reason = _open_role_document(bundle_data, root, "formal_model", FORMAL_MODEL_SCHEMA)
+    manifest, reason = _open_role_document(bundle_data, root, "formal_model", FORMAL_MODEL_SCHEMA, findings=findings, path_str=path_str)
     model_id: str | None = declared_model_id
     model_gen: str | None = declared_model_gen
     source_digest: str | None = None
@@ -2984,7 +3125,7 @@ def _verify_proof_claim_evidence(
                 )
 
     # 6. Check receipt bound to claim, model, theorem, toolchain, and artifact.
-    receipt, receipt_reason = _open_role_document(bundle_data, root, "proof_check_receipt", PROOF_CHECK_RECEIPT_SCHEMA)
+    receipt, receipt_reason = _open_role_document(bundle_data, root, "proof_check_receipt", PROOF_CHECK_RECEIPT_SCHEMA, findings=findings, path_str=path_str)
     if receipt is None:
         findings.append(_finding(ERR_PROOF_CHECK_RECEIPT_INVALID, path_str, "artifacts[role=proof_check_receipt]", f"{label} check receipt: {receipt_reason}", params))
         return
@@ -3397,7 +3538,7 @@ def _verify_bounded_model_claim_evidence(
         value = in_domain(value, units, "bound.value", "claimed bound")
 
     # 3. The derivation artifact, opened and bound to the claim.
-    derivation, reason = _open_role_document(bundle_data, root, "derivation", BOUND_DERIVATION_SCHEMA)
+    derivation, reason = _open_role_document(bundle_data, root, "derivation", BOUND_DERIVATION_SCHEMA, findings=findings, path_str=path_str)
     if derivation is None:
         findings.append(_finding(ERR_BOUND_DERIVATION_UNBOUND, path_str, "artifacts[role=derivation]", f"{label} derivation: {reason}", params))
         return
@@ -4091,7 +4232,7 @@ def scan_markdown_claim_tables(
     path_str = sanitize_path(md_path, root)
 
     try:
-        raw_text = md_path.read_bytes().decode("utf-8")
+        raw_text = _read_regular_file(md_path).decode("utf-8")
     except OSError as exc:
         return [_finding(ERR_UNREADABLE_INPUT, path_str, "file", f"Could not read markdown file '{path_str}': {exc}")]
     except UnicodeDecodeError as exc:
@@ -4460,7 +4601,7 @@ def audit_claim_kind_registry(
         return [_finding(ERR_UNREADABLE_INPUT, md_str, "file", f"Claims markdown source file not found: '{md_path}'")]
 
     try:
-        json_bytes = json_path.read_bytes()
+        json_bytes = _read_regular_file(json_path)
     except OSError as exc:
         return [_finding(ERR_UNREADABLE_INPUT, json_str, "file", f"Could not read claims registry '{json_path}': {exc}")]
 
@@ -4468,7 +4609,9 @@ def audit_claim_kind_registry(
         return [_finding(ERR_EMPTY_INPUT, json_str, "file", "Claims registry file is empty (0 bytes)")]
 
     try:
-        data = json.loads(json_bytes.decode("utf-8"))
+        data = _loads_json(json_bytes.decode("utf-8"))
+    except _DuplicateKeyError as exc:
+        return [_duplicate_key_finding(json_str, "file", f"Claims registry '{json_path}'", exc.key)]
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:  # RecursionError: nesting too deep
         return [_finding(ERR_UNREADABLE_INPUT, json_str, "file", f"Claims registry '{json_path}' is invalid JSON: {exc}")]
 
@@ -4668,7 +4811,7 @@ def audit_claim_kind_registry(
 
     # Parse markdown source
     try:
-        md_text = md_path.read_text(encoding="utf-8")
+        md_text = _read_regular_file(md_path).decode("utf-8")
     except (OSError, UnicodeDecodeError) as exc:
         findings.append(_finding(ERR_UNREADABLE_INPUT, md_str, "file", f"Could not read markdown source '{md_path}' as UTF-8 text: {exc}"))
         return findings
@@ -4980,26 +5123,8 @@ def _encoding_safe_streams() -> None:
             reconfigure(errors="backslashreplace")
 
 
-def main() -> int:
-    _encoding_safe_streams()
-    parser = argparse.ArgumentParser(
-        description="FSS-011 Claim/proof-bundle consistency checker."
-    )
-    parser.add_argument("--root", type=Path, default=ROOT, help="Repository root path")
-    parser.add_argument("--claims", type=Path, default=None, help="Path to architecture/claims.json")
-    parser.add_argument("--bundle", type=Path, default=None, help="Specific proof bundle to verify (relative to --root)")
-    parser.add_argument("--as-of", type=_parse_as_of, default=None, help="Evaluate expiry as of this ISO-8601 instant (default: now, UTC)")
-    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON report")
-    parser.add_argument("--quiet", action="store_true", help="Suppress non-error output")
-    args = parser.parse_args()
-
-    is_valid, findings, summary = audit_claim_proof_bundles(
-        root=args.root,
-        claims_json_path=args.claims,
-        target_bundle=args.bundle,
-        now=args.as_of if args.as_of is not None else datetime.now(timezone.utc),
-    )
-
+def _emit_report(args: argparse.Namespace, is_valid: bool, findings: list[ClaimFinding], summary: dict[str, Any]) -> None:
+    """Writes the JSON or text report to stdout."""
     if args.json:
         report = {
             "summary": summary,
@@ -5024,6 +5149,37 @@ def main() -> int:
                 if f.remediation:
                     print(f"    Remediation: {f.remediation}")
 
+
+def main() -> int:
+    _encoding_safe_streams()
+    parser = argparse.ArgumentParser(
+        description="FSS-011 Claim/proof-bundle consistency checker."
+    )
+    parser.add_argument("--root", type=Path, default=ROOT, help="Repository root path")
+    parser.add_argument("--claims", type=Path, default=None, help="Path to architecture/claims.json")
+    parser.add_argument("--bundle", type=Path, default=None, help="Specific proof bundle to verify (relative to --root)")
+    parser.add_argument("--as-of", type=_parse_as_of, default=None, help="Evaluate expiry as of this ISO-8601 instant (default: now, UTC)")
+    parser.add_argument("--json", action="store_true", help="Output machine-readable JSON report")
+    parser.add_argument("--quiet", action="store_true", help="Suppress non-error output")
+    args = parser.parse_args()
+
+    is_valid, findings, summary = audit_claim_proof_bundles(
+        root=args.root,
+        claims_json_path=args.claims,
+        target_bundle=args.bundle,
+        now=args.as_of if args.as_of is not None else datetime.now(timezone.utc),
+    )
+
+    try:
+        _emit_report(args, is_valid, findings, summary)
+        if sys.stdout is not None:
+            sys.stdout.flush()
+    except BrokenPipeError:
+        # The reader closed the pipe (review N5): the verdict stands and is the exit code; what is
+        # left unread goes to /dev/null so the interpreter's final flush cannot fail a second time.
+        devnull = os.open(os.devnull, os.O_WRONLY)
+        os.dup2(devnull, sys.stdout.fileno())
+        os.close(devnull)
     return 0 if is_valid else 1
 
 
