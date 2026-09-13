@@ -842,6 +842,7 @@ DEFAULT_MEASUREMENT_DATA = {
         "finished_at": "2026-09-01T01:00:00Z",
     },
     "unit": "s",
+    "statistic": "p95",  # SLO-DETECT-001 is a p95 target (round 4, B16)
     "actual": 1.2,
     "environment_manifest_digest": DEFAULT_ENVIRONMENT_DIGEST,
 }
@@ -2710,6 +2711,7 @@ def build_slo_fixture(
         "status": "passed",
         "measurement_window": {"started_at": "2026-09-01T00:00:00Z", "finished_at": "2026-09-01T01:00:00Z"},
         "unit": "s",
+        "statistic": "p95",  # SLO-DETECT-001 is a p95 target (round 4, B16)
         "actual": 1.2,
         "environment_manifest_digest": env_digest,
     }, measurement)
@@ -5187,7 +5189,8 @@ AGENT_OPERATION_ID = "COST-QUERY-001"  # operation_cost_registry.toml: slo_ids [
 
 def build_conjunct_fixture(root: Path, measurements: list[dict]) -> dict:
     """An slo claim for SLO-AGENT-001 retaining one measurement per entry of measurements."""
-    first = {"slo_id": AGENT_SLO_ID, "operation_id": AGENT_OPERATION_ID, **measurements[0]}
+    # SLO-AGENT-001 names no statistic, so its measurements declare none (round 4, B15).
+    first = {"slo_id": AGENT_SLO_ID, "operation_id": AGENT_OPERATION_ID, "statistic": _DROP, **measurements[0]}
     data = build_slo_fixture(root, measurement=first, bundle={"claim_id": AGENT_SLO_ID, "bundle_id": "BUNDLE-SLO-AGENT-001"})
     base = json.loads((root / SLO_MEASUREMENT_REL).read_text(encoding="utf-8"))
     for index, extra in enumerate(measurements[1:], start=2):
@@ -5423,6 +5426,105 @@ class TestRound4CrashFreedomAndHonesty(unittest.TestCase):
     def test_import_mathlib_is_refused(self) -> None:
         body = b"import Mathlib.Order.Basic\ntheorem RootLast : True := trivial\n"
         self.assertEqual(run_formal(LEAN_REL, body, lean=True), (False, [_code("ERR_PROOF_UNSOUND_ESCAPE")]))
+
+
+# ---------------------------------------------------------------------------
+# Round-4 review, 30.87.5: coherent conjuncts (B5, B14) and exact statistic (B15, B16), probe p10 B
+# ---------------------------------------------------------------------------
+
+
+def slo_window(started: str, finished: str) -> dict:
+    return {"measurement_window": {"started_at": started, "finished_at": finished}}
+
+
+class TestRound4SloCoherence(unittest.TestCase):
+    """Round-4 slo findings as planted tests with exact finding-id sets."""
+
+    INCOHERENT = "ERR-CLAIM-SLO-CONJUNCT-INCOHERENT-001"
+    STATISTIC = "ERR-CLAIM-SLO-STATISTIC-MISMATCH-001"
+    TOK = {"unit": "tokens", "actual": 700.0}
+    MS = {"unit": "ms", "actual": 200.0}
+
+    def run_conjuncts(self, measurements: list[dict]):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_slo_bundle(root, build_conjunct_fixture(root, measurements), claim_id=AGENT_SLO_ID)
+            return ok, error_code_set(findings)
+
+    def run_detect(self, measurement: dict):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_slo_bundle(root, build_slo_fixture(root, measurement=measurement))
+            return ok, error_code_set(findings)
+
+    # B5: one operation -----------------------------------------------------------------
+
+    def test_b5_conjuncts_measured_on_different_operations_are_incoherent(self) -> None:
+        # COST-GRAPH-001 and COST-QUERY-001 both list SLO-AGENT-001: each measurement alone is bound.
+        self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, "operation_id": "COST-GRAPH-001"}]), (False, [self.INCOHERENT]))
+        self.assertEqual(self.run_conjuncts([{**self.TOK, "operation_id": "COST-GRAPH-001"}, {**self.MS, "operation_id": "COST-GRAPH-001"}]), (True, []))
+
+    # B14: overlapping windows --------------------------------------------------------------
+    # The window is planted on the second measurement: build_conjunct_fixture copies the first
+    # measurement into every later one, so a window planted on the first is shared by both.
+
+    def test_b14_conjunct_windows_must_share_an_instant(self) -> None:
+        for label, window in (
+            ("29 days apart", slo_window("2026-08-04T00:00:00+00:00", "2026-08-04T01:00:00+00:00")),
+            ("touching after", slo_window("2026-09-01T01:00:00Z", "2026-09-01T02:00:00Z")),
+            ("touching before", slo_window("2026-08-31T23:00:00Z", "2026-09-01T00:00:00Z")),
+            ("same instants, other offset", slo_window("2026-09-01T02:00:00+01:00", "2026-09-01T03:00:00+01:00")),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, **window}]), (False, [self.INCOHERENT]))
+
+    def test_b14_overlapping_or_nested_windows_pass(self) -> None:
+        for label, window in (
+            ("nested", slo_window("2026-09-01T00:15:00Z", "2026-09-01T00:45:00Z")),
+            ("overlapping", slo_window("2026-08-31T23:30:00Z", "2026-09-01T00:30:00Z")),
+            ("same interval, other offset", slo_window("2026-09-01T01:00:00+01:00", "2026-09-01T02:00:00+01:00")),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, **window}]), (True, []))
+
+    # B15/B16: the exact statistic -----------------------------------------------------------
+
+    def test_b15_statistic_declared_for_a_target_that_names_none(self) -> None:
+        for statistic in ("p50", "p95"):
+            with self.subTest(statistic=statistic):
+                self.assertEqual(self.run_conjuncts([self.TOK, {**self.MS, "statistic": statistic}]), (False, [self.STATISTIC]))
+
+    def test_b16_statistic_must_be_exactly_the_targets(self) -> None:
+        for label, override in (
+            ("probe p10 B16", {"statistic": "p50", "percentile": 50}),
+            ("p50", {"statistic": "p50"}),
+            ("missing", {"statistic": _DROP}),
+            ("case", {"statistic": "P95"}),
+            ("padded", {"statistic": " p95"}),
+            ("number", {"statistic": 95}),
+            ("p99.9", {"statistic": "p99.9"}),
+            ("alias beside", {"statistic": "p95", "percentile": 95}),
+            ("alias instead", {"statistic": _DROP, "quantile": "p95"}),
+            ("case-variant key", {"statistic": "p95", "Statistic": "p50"}),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(self.run_detect(override), (False, [self.STATISTIC]))
+
+    def test_declared_target_statistic_passes(self) -> None:
+        self.assertEqual(self.run_detect({"statistic": "p95"}), (True, []))
+
+    def test_statistic_is_read_from_the_target(self) -> None:
+        self.assertEqual(cpb._slo_target_statistic("p95 first event hypothesis ≤ 1.5 s after first observable threat evidence"), "p95")
+        self.assertEqual(cpb._slo_target_statistic("p99.9 ≤ 750 ms"), "p99.9")
+        self.assertIsNone(cpb._slo_target_statistic("≤ 750 ms and ≤ 1 s"))
+
+    def test_round4_slo_ids_are_registered(self) -> None:
+        errors_md = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8")
+        for name, code in (("ERR_SLO_CONJUNCT_INCOHERENT", self.INCOHERENT), ("ERR_SLO_STATISTIC_MISMATCH", self.STATISTIC)):
+            with self.subTest(code=code):
+                self.assertEqual(_code(name), code)
+                self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+                self.assertEqual(errors_md.count(f"| `{code}` |"), 1)
 
 
 if __name__ == "__main__":
