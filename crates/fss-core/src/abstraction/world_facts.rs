@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, Plane, ProvenanceClass};
 use crate::evidence::CoverageWitness;
+use crate::ids::validate_id;
 use crate::{ContentDigest, Generation, LedgerAnchor};
 
 /// Categories of authoritative facts established or observed at one anchor (AGT-LAYER-003).
@@ -150,9 +151,7 @@ impl WorldFact {
 
     /// Validates constitutional invariants for this world fact (INV-063).
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.fact_id.is_empty() || self.fact_id.len() > 128 {
-            return Err(ContractError::InvalidIdentifier);
-        }
+        validate_id(&self.fact_id)?;
         if self.statement.is_empty() || self.statement.len() > 512 {
             return Err(ContractError::InvalidIdentifier);
         }
@@ -162,25 +161,14 @@ impl WorldFact {
         if self.generation.0 == 0 {
             return Err(ContractError::GenerationConflict);
         }
-        // Prohibition: "Cannot include unqualified cognition as fact."
-        // Typed provenance check: model predictions (Predicted) and advisory operational memory (Remembered)
-        // are cognition outputs and CANNOT be presented as authoritative facts.
-        match self.provenance {
-            ProvenanceClass::Predicted | ProvenanceClass::Remembered => {
-                return Err(ContractError::EvidenceRequired);
-            }
-            ProvenanceClass::Observed
-            | ProvenanceClass::Derived
-            | ProvenanceClass::OperatorAsserted
-            | ProvenanceClass::VendorClaimed
-            | ProvenanceClass::Policy => {}
+        if self.evidence_digest.bytes().iter().all(|&b| b == 0) {
+            return Err(ContractError::InvalidDigest);
         }
-        // Textual prohibition check against statement text claiming unqualified cognition
-        let lower = self.statement.to_lowercase();
-        if lower.contains("unqualified cognition")
-            || lower.contains("speculative")
-            || lower.contains("unverified hypothesis")
-        {
+        // Prohibition: "Cannot include unqualified cognition as fact."
+        // Provenance MUST be Observed directly from physical sensors or chronicle evidence.
+        // Derived beliefs, predicted cognition, remembered claims, and vendor claims
+        // cannot masquerade as authoritative world facts.
+        if self.provenance != ProvenanceClass::Observed {
             return Err(ContractError::EvidenceRequired);
         }
         Ok(())
@@ -259,30 +247,123 @@ pub struct NegativeReadClaim {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NegativeReadOutcome {
     /// Stable claim identifier.
-    pub claim_id: String,
+    claim_id: String,
     /// Certified negative predicate.
-    pub query_predicate: String,
+    query_predicate: String,
     /// Authoritative anchor.
-    pub anchor: LedgerAnchor,
+    anchor: LedgerAnchor,
     /// Certified domain set.
-    pub certified_domain: BTreeSet<String>,
+    certified_domain: BTreeSet<String>,
     /// Pinned witness digest proving absence.
-    pub witness_digest: ContentDigest,
+    witness_digest: ContentDigest,
     /// Generation at which coverage was certified.
-    pub generation: u64,
+    generation: u64,
 }
 
 impl NegativeReadOutcome {
-    /// Validates all invariants on the outcome.
+    /// Constructs a validated negative read outcome directly bound to a certified coverage witness.
+    pub fn from_witness(
+        claim_id: impl Into<String>,
+        query_predicate: impl Into<String>,
+        anchor: LedgerAnchor,
+        certified_domain: BTreeSet<String>,
+        witness: &CoverageWitness,
+        current_anchor: &LedgerAnchor,
+    ) -> Result<Self, ContractError> {
+        let claim_id = claim_id.into();
+        let query_predicate = query_predicate.into();
+        validate_id(&claim_id)?;
+        if query_predicate.is_empty() || query_predicate.len() > 128 {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if certified_domain.is_empty() || anchor.site_lineage.is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        if current_anchor.site_lineage.is_empty() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        // Witness must certify absence
+        witness.require_certified_absence()?;
+        // Anchors must match current anchor
+        if witness.anchor != anchor || anchor != *current_anchor {
+            return Err(ContractError::StaleAnchor);
+        }
+        // Stale basis check (KSTATE-005): witness anchor must not be older than current_anchor
+        if witness.anchor.site_lineage != current_anchor.site_lineage
+            || (witness.anchor.ledger_epoch, witness.anchor.commit_sequence)
+                < (current_anchor.ledger_epoch, current_anchor.commit_sequence)
+        {
+            return Err(ContractError::StaleAnchor);
+        }
+        if witness.negative_predicate != query_predicate {
+            return Err(ContractError::CoverageUncertified);
+        }
+        if !certified_domain.is_subset(&witness.observed_domain) {
+            return Err(ContractError::CoverageUncertified);
+        }
+
+        let outcome = Self {
+            claim_id,
+            query_predicate,
+            anchor,
+            certified_domain,
+            witness_digest: witness.witness_digest(),
+            generation: witness.authorized_generation,
+        };
+        outcome.validate()?;
+        Ok(outcome)
+    }
+
+    /// Returns the stable claim identifier.
+    #[must_use]
+    pub fn claim_id(&self) -> &str {
+        &self.claim_id
+    }
+
+    /// Returns the certified negative query predicate.
+    #[must_use]
+    pub fn query_predicate(&self) -> &str {
+        &self.query_predicate
+    }
+
+    /// Returns the authoritative anchor at which absence was certified.
+    #[must_use]
+    pub const fn anchor(&self) -> &LedgerAnchor {
+        &self.anchor
+    }
+
+    /// Returns the set of domains certified free of the predicate.
+    #[must_use]
+    pub const fn certified_domain(&self) -> &BTreeSet<String> {
+        &self.certified_domain
+    }
+
+    /// Returns the pinned digest of the coverage witness proving absence.
+    #[must_use]
+    pub const fn witness_digest(&self) -> ContentDigest {
+        self.witness_digest
+    }
+
+    /// Returns the generation at which coverage was certified.
+    #[must_use]
+    pub const fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Validates all constitutional invariants on the outcome.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.claim_id.is_empty()
-            || self.claim_id.len() > 128
-            || self.query_predicate.is_empty()
+        validate_id(&self.claim_id)?;
+        if self.query_predicate.is_empty()
             || self.query_predicate.len() > 128
             || self.certified_domain.is_empty()
             || self.anchor.site_lineage.is_empty()
         {
             return Err(ContractError::InvalidIdentifier);
+        }
+        for item in &self.certified_domain {
+            if item.is_empty() || item.len() > 128 {
+                return Err(ContractError::InvalidIdentifier);
+            }
         }
         if self.generation == 0 {
             return Err(ContractError::GenerationConflict);
@@ -320,7 +401,10 @@ impl CanonicalDecode for NegativeReadOutcome {
             if item.is_empty() {
                 return Err(ContractError::InvalidIdentifier);
             }
-            if certified_domain.last().is_some_and(|prev: &String| prev >= &item) {
+            if certified_domain
+                .last()
+                .is_some_and(|prev: &String| prev >= &item)
+            {
                 return Err(ContractError::NonCanonicalOrdering);
             }
             certified_domain.insert(item);
@@ -341,15 +425,21 @@ impl CanonicalDecode for NegativeReadOutcome {
     }
 }
 
-/// Evaluates a negative read claim against its coverage witness (INV-063).
+/// Evaluates a negative read claim against its coverage witness and caller's current anchor (INV-063).
 ///
 /// Reuses [`CoverageWitness::require_certified_absence`] from `evidence.rs:575`.
 /// Fails closed if the witness cannot certify absence, if the anchor does not match,
+/// if the witness is stale relative to the caller's current anchor (KSTATE-005),
 /// or if the target generation or domain bounds mismatch.
 pub fn evaluate_negative_read(
     claim: &NegativeReadClaim,
+    current_anchor: &LedgerAnchor,
 ) -> Result<NegativeReadOutcome, ContractError> {
-    if claim.claim_id.is_empty() || claim.query_predicate.is_empty() {
+    validate_id(&claim.claim_id)?;
+    if claim.query_predicate.is_empty() || claim.query_predicate.len() > 128 {
+        return Err(ContractError::InvalidIdentifier);
+    }
+    if current_anchor.site_lineage.is_empty() {
         return Err(ContractError::InvalidIdentifier);
     }
     let witness = claim
@@ -361,7 +451,15 @@ pub fn evaluate_negative_read(
     witness.require_certified_absence()?;
 
     // Compare anchor / generation / coverage window
-    if witness.anchor != claim.anchor {
+    if witness.anchor != claim.anchor || claim.anchor != *current_anchor {
+        return Err(ContractError::StaleAnchor);
+    }
+
+    // Refuse stale/older witnesses relative to caller's current anchor (KSTATE-005 StaleBasisNotOlder semantics)
+    if witness.anchor.site_lineage != current_anchor.site_lineage
+        || (witness.anchor.ledger_epoch, witness.anchor.commit_sequence)
+            < (current_anchor.ledger_epoch, current_anchor.commit_sequence)
+    {
         return Err(ContractError::StaleAnchor);
     }
 
@@ -377,14 +475,12 @@ pub fn evaluate_negative_read(
         return Err(ContractError::CoverageUncertified);
     }
 
-    let outcome = NegativeReadOutcome {
-        claim_id: claim.claim_id.clone(),
-        query_predicate: claim.query_predicate.clone(),
-        anchor: claim.anchor.clone(),
-        certified_domain: claim.target_domain.clone(),
-        witness_digest: witness.witness_digest(),
-        generation: claim.target_generation,
-    };
-    outcome.validate()?;
-    Ok(outcome)
+    NegativeReadOutcome::from_witness(
+        claim.claim_id.clone(),
+        claim.query_predicate.clone(),
+        claim.anchor.clone(),
+        claim.target_domain.clone(),
+        witness,
+        current_anchor,
+    )
 }
