@@ -48,3 +48,4 @@ Registry of canonical-digest domain tags used for domain separation in determini
 | `SCHEMA-DOMAIN-NEGATIVE-EVIDENCE-ENTRY-001` | `fss.negative_evidence.entry.v1` | Negative evidence evaluation | authority/negative-evidence | negative evidence entry canonical digest domain; binds stable ID, setup, results, decision, and witness |
 | `SCHEMA-DOMAIN-NEGATIVE-EVIDENCE-LEDGER-001` | `fss.negative_evidence.ledger.v1` | Negative evidence evaluation | authority/negative-evidence | negative evidence ledger canonical digest domain; trailing checksum domain tag over header and entries |
 
+| `SCHEMA-DOMAIN-DERIVED-BELIEF-RECEIPT-001` | `fss.derived_belief.receipt.v1` | Derived beliefs | derived/cognition | derivation receipt canonical digest domain; binds belief identity, ledger anchor, generation, statement, knowledge state, provenance, uncertainty, strictly ascending supporting evidence, and contradictions; a derived belief never claims authority or authorizes effects |
