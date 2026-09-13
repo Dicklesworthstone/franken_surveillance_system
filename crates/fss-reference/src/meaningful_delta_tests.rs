@@ -180,7 +180,15 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             }
             .to_owned(),
             knowledge_state: effect_state,
-            provenance: ProvenanceClass::Observed,
+            // PROV-001 refuses an observed cell asserting `known` without evidence, and a bound
+            // effect cell whose evidence is not a retained proof root is refused at verify. An
+            // evidence-less effect claim is therefore modeled as what it is: a provider claim
+            // (PROV-006) that no retained proof supports, valid but never a proved outcome.
+            provenance: if variant.effect_evidence {
+                ProvenanceClass::Observed
+            } else {
+                ProvenanceClass::VendorClaimed
+            },
             hypothesis: variant.effect_hypothesis,
             evidence: if variant.effect_evidence {
                 vec![ContentDigest::sha256(b"effect-outcome")]
@@ -1856,5 +1864,47 @@ fn proved_effect_whose_typed_outcome_flips_is_a_contradiction() -> Result<(), Bo
         delta.classes
     );
     delta.validate()?;
+    Ok(())
+}
+
+/// Pins why the unproved-known fixtures carry vendor-claimed provenance: PROV-001 refuses an
+/// observed effect cell asserting `known` without evidence, while the evidence-less provider claim
+/// stays valid and is never a proved outcome.
+#[test]
+fn evidence_less_known_effect_is_refused_as_observed_and_unproved_as_vendor_claim()
+-> Result<(), Box<dyn Error>> {
+    let observed = KnowledgeCell {
+        claim_id: EFFECT_CLAIM.to_owned(),
+        statement: "The external effect reached a retained terminal outcome.".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: Vec::new(),
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: None,
+    };
+    assert_eq!(
+        observed.validate(),
+        Err(fss_core::ContractError::EvidenceRequired)
+    );
+
+    let mut variant = Variant::baseline()?;
+    variant.effect_state = Some(KnowledgeState::Known);
+    variant.effect_evidence = false;
+    let projected = publication(&variant)?;
+    let now = projected.situation.capsule.created_at;
+    let effect = projected
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id == EFFECT_CLAIM)
+        .ok_or(crate::ReferenceError::InvalidSpec("missing_effect_cell"))?;
+    assert_eq!(effect.provenance, ProvenanceClass::VendorClaimed);
+    assert!(effect.evidence.is_empty());
+    assert_eq!(effect.validate(), Ok(()));
+    assert!(!effect.is_irreversible_effect_premise(now));
     Ok(())
 }
