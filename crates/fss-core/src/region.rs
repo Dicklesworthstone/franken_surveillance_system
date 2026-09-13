@@ -64,9 +64,7 @@
 use core::fmt;
 use std::collections::{BTreeMap, VecDeque};
 
-use crate::canonical::{
-    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-};
+use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{BudgetVector, ContractError, RecoveryClass};
 use crate::digest::ContentDigest;
 use crate::effect::{Obligation, ObligationState};
@@ -621,14 +619,10 @@ impl ContextAuthority {
     pub fn validate(&self) -> Result<(), ContractError> {
         validate_id(&self.trace_id)?;
         validate_id(&self.principal)?;
-        if !self.privacy_scope.is_empty() {
-            validate_id(&self.privacy_scope)?;
-        }
-        if !self.retention_scope.is_empty() {
-            validate_id(&self.retention_scope)?;
-        }
+        validate_id(&self.privacy_scope)?;
+        validate_id(&self.retention_scope)?;
         if self.capabilities.len() > MAX_CAPABILITIES_PER_CONTEXT {
-            return Err(ContractError::NonCanonicalOrdering);
+            return Err(ContractError::CountBoundExceeded);
         }
         for window in self.capabilities.windows(2) {
             if window[0] >= window[1] {
@@ -841,10 +835,9 @@ impl CanonicalDecode for ContextAuthority {
         let operation_id = OperationId::decode_canonical(decoder)?;
         let principal = decoder.text()?.to_string();
         let cap_count = decoder.u64()?;
-        if cap_count > MAX_CAPABILITIES_PER_CONTEXT as u64
-            || cap_count > decoder.remaining() as u64
+        if cap_count > MAX_CAPABILITIES_PER_CONTEXT as u64 || cap_count > decoder.remaining() as u64
         {
-            return Err(ContractError::NonCanonicalOrdering);
+            return Err(ContractError::CountBoundExceeded);
         }
         let cap_count = cap_count as usize;
         let mut capabilities = Vec::with_capacity(cap_count);

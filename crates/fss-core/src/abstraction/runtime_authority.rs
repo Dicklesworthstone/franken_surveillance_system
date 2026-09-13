@@ -9,20 +9,16 @@
 //! - Type alias [`RuntimeAuthorityRecord`]
 //! - Type alias [`RuntimeAuthorityAndCustody`]
 
-use core::fmt;
-use core::str::FromStr;
-use std::collections::BTreeSet;
-
 use crate::agent::ContractBasis;
-use crate::canonical::{
-    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
-};
+use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, Plane};
 use crate::digest::ContentDigest;
-use crate::effect::{Obligation, ObligationState};
-use crate::ids::{validate_id, Generation};
+use crate::effect::{Obligation, ObligationId, ObligationState};
+use crate::ids::{Generation, validate_id};
 use crate::region::{ContextAuthority, QuiescenceProof, RegionId, RegionKind, RegionState};
 pub use crate::sensor_capsule::SourceCustody;
+use core::fmt;
+use core::str::FromStr;
 
 use super::AgentAbstractionLayer;
 
@@ -419,7 +415,9 @@ impl RuntimeAuthorityAndCustodyRecord {
         // Strictly ascending order with no duplicates
         for window in self.grants.windows(2) {
             if window[0] == window[1] {
-                return Err(ContractError::DuplicateGrant(window[0].as_str().to_string()));
+                return Err(ContractError::DuplicateGrant(
+                    window[0].as_str().to_string(),
+                ));
             }
             if window[0] > window[1] {
                 return Err(ContractError::NonCanonicalOrdering);
@@ -502,11 +500,27 @@ impl RuntimeAuthorityAndCustodyRecord {
                 ));
             }
             if proof.indeterminate_obligations != 0 {
-                return Err(ContractError::IndeterminateObligationOnClosure(
-                    format!(
-                        "quiescence_proof.indeterminate_obligations={}",
-                        proof.indeterminate_obligations
-                    ),
+                return Err(ContractError::IndeterminateObligationOnClosure(format!(
+                    "quiescence_proof.indeterminate_obligations={}",
+                    proof.indeterminate_obligations
+                )));
+            }
+            if self.obligations.is_empty() && proof.total_obligations != 0 {
+                return Err(ContractError::ProofRegionMismatch(format!(
+                    "proof.total_obligations ({}) != 0 with empty record obligations",
+                    proof.total_obligations,
+                )));
+            }
+            if proof.total_obligations < self.obligations.len() as u64 {
+                return Err(ContractError::ProofRegionMismatch(format!(
+                    "proof.total_obligations ({}) < record.obligations ({})",
+                    proof.total_obligations,
+                    self.obligations.len(),
+                )));
+            }
+            if !self.obligations.is_empty() && proof.total_tasks == 0 {
+                return Err(ContractError::ProofRegionMismatch(
+                    "proof.total_tasks=0 with non-empty record obligations".to_string(),
                 ));
             }
             let expected_digest = QuiescenceProof::compute_digest(
@@ -569,14 +583,19 @@ impl RuntimeAuthorityAndCustodyRecord {
         }
 
         // 7. Obligations invariants
-        let mut seen_obs = BTreeSet::new();
-        for ob in &self.obligations {
-            validate_id(ob.obligation_id.as_str())?;
-            if !seen_obs.insert(ob.obligation_id.clone()) {
+        // Strictly ascending order with no duplicates
+        for window in self.obligations.windows(2) {
+            if window[0].obligation_id == window[1].obligation_id {
                 return Err(ContractError::DuplicateObligation(
-                    ob.obligation_id.to_string(),
+                    window[0].obligation_id.to_string(),
                 ));
             }
+            if window[0].obligation_id > window[1].obligation_id {
+                return Err(ContractError::NonCanonicalOrdering);
+            }
+        }
+        for ob in &self.obligations {
+            validate_id(ob.obligation_id.as_str())?;
             if ob.terminal_predicate.is_empty() || ob.terminal_predicate.len() > 512 {
                 return Err(ContractError::InvalidIdentifier);
             }
@@ -780,7 +799,7 @@ impl CanonicalDecode for RuntimeAuthorityAndCustodyRecord {
         let context = ContextAuthority::decode_canonical(decoder)?;
         let grant_count = decoder.u64()?;
         if grant_count > decoder.remaining() as u64 {
-            return Err(ContractError::NonCanonicalOrdering);
+            return Err(ContractError::CountBoundExceeded);
         }
         let grant_count = grant_count as usize;
         let mut grants = Vec::with_capacity(grant_count);
@@ -814,16 +833,29 @@ impl CanonicalDecode for RuntimeAuthorityAndCustodyRecord {
         let custody = SourceCustody::decode_canonical(decoder)?;
         let ob_count = decoder.u64()?;
         if ob_count > decoder.remaining() as u64 {
-            return Err(ContractError::NonCanonicalOrdering);
+            return Err(ContractError::CountBoundExceeded);
         }
         let ob_count = ob_count as usize;
         let mut obligations = Vec::with_capacity(ob_count);
+        let mut prev_ob: Option<ObligationId> = None;
         for _ in 0..ob_count {
-            obligations.push(Obligation::decode_canonical(decoder)?);
+            let ob = Obligation::decode_canonical(decoder)?;
+            if let Some(prev) = &prev_ob {
+                if ob.obligation_id == *prev {
+                    return Err(ContractError::DuplicateObligation(
+                        ob.obligation_id.to_string(),
+                    ));
+                }
+                if ob.obligation_id < *prev {
+                    return Err(ContractError::NonCanonicalOrdering);
+                }
+            }
+            prev_ob = Some(ob.obligation_id.clone());
+            obligations.push(ob);
         }
         let root_count = decoder.u64()?;
         if root_count > decoder.remaining() as u64 {
-            return Err(ContractError::NonCanonicalOrdering);
+            return Err(ContractError::CountBoundExceeded);
         }
         let root_count = root_count as usize;
         let mut object_roots = Vec::with_capacity(root_count);
@@ -840,7 +872,7 @@ impl CanonicalDecode for RuntimeAuthorityAndCustodyRecord {
         }
         let receipt_count = decoder.u64()?;
         if receipt_count > decoder.remaining() as u64 {
-            return Err(ContractError::NonCanonicalOrdering);
+            return Err(ContractError::CountBoundExceeded);
         }
         let receipt_count = receipt_count as usize;
         let mut receipt_roots = Vec::with_capacity(receipt_count);

@@ -2779,6 +2779,8 @@ pub enum ContractError {
     ProofRegionMismatch(String),
     /// A quiescence proof was attached to a region that is not closed.
     PrematureQuiescenceProof,
+    /// A decoded element count exceeds the remaining bytes or configured structural bound.
+    CountBoundExceeded,
 }
 
 impl ContractError {
@@ -2851,6 +2853,7 @@ impl ContractError {
             Self::RootRegionWithParent(_) => "root_region_with_parent",
             Self::ProofRegionMismatch(_) => "proof_region_mismatch",
             Self::PrematureQuiescenceProof => "premature_quiescence_proof",
+            Self::CountBoundExceeded => "count_bound_exceeded",
         }
     }
 }
