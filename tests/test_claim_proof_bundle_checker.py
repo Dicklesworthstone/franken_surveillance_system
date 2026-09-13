@@ -3026,8 +3026,8 @@ def build_proof_fixture(
         "schema": "fss.proof_check_receipt.v1",
         "claim_id": PROOF_CLAIM_ID,
         "status": "passed",
-        "checker": "tlc",
-        "checker_version": "2.19",
+        "checker": "tlaps",
+        "checker_version": "1.5.0",
         "model_id": PROOF_MODEL_ID,
         "model_generation": PROOF_GENERATION,
         "formal_artifact_digest": artifact_digest,
@@ -3058,7 +3058,7 @@ def build_proof_fixture(
             {"id": "ASSUME-PUT-ATOMIC", "statement": "each object-store PUT is atomic per object"},
             {"id": "ASSUME-FAIR-SCHEDULER", "statement": "the publisher is weakly fair"},
         ],
-        "toolchain_identity": {"checker": "tlc", "version": "2.19"},
+        "toolchain_identity": {"checker": "tlaps", "version": "1.5.0"},
         "artifacts": artifacts,
     }
     for key, value in (bundle or {}).items():
@@ -4372,6 +4372,123 @@ class TestSloReviewItems1to7(unittest.TestCase):
 
 def ERR_UNRECOGNIZED_STATE_CODE() -> str:
     return _code("ERR_UNRECOGNIZED_STATE")
+
+
+# ---------------------------------------------------------------------------
+# Review of c3a17fd..f0222b0, proof items P1-P4 (fss-x4a.30.87.2); probe p2_formal.py
+# ---------------------------------------------------------------------------
+
+TLA_MODULE_HEAD = b"---- MODULE PublicationProof ----\n"
+
+
+def run_formal(rel: str, raw: bytes, lean: bool = False, checker: str | None = None, version: str = "1.5.0"):
+    """Verifies the canonical proof claim with only its formal artifact replaced (probe p2's run)."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        root = Path(tmpdir)
+        kwargs = lean_fixture(artifact_rel=rel, artifact_bytes=raw) if lean else dict(artifact_rel=rel, artifact_bytes=raw)
+        if checker is not None:
+            kwargs["bundle"] = {"toolchain_identity": {"checker": checker, "version": version}}
+            kwargs["receipt"] = {"checker": checker, "checker_version": version}
+        data = build_proof_fixture(root, **kwargs)
+        ok, findings, _ = verify_class_bundle(root, data, PROOF_CLAIM_ID)
+        return ok, error_code_set(findings)
+
+
+LEAN_REL = "proofs/lean4/Publication.lean"
+TLA_REL = "proofs/tla/PublicationProof.tla"
+
+
+class TestProofLexerAndEscapes(unittest.TestCase):
+    """Probe p2_formal.py cases as planted tests with exact finding-id sets."""
+
+    def expect(self, cases: dict, language_lean: bool, rel: str) -> None:
+        for label, (raw, expected) in cases.items():
+            with self.subTest(case=label):
+                ok, codes = run_formal(rel, raw, lean=language_lean)
+                self.assertEqual(codes, sorted(expected), label)
+                self.assertEqual(ok, not expected, label)
+
+    def test_unsound_escape_id_is_registered(self) -> None:
+        code = "ERR-CLAIM-PROOF-UNSOUND-ESCAPE-001"
+        self.assertEqual(_code("ERR_PROOF_UNSOUND_ESCAPE"), code)
+        self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+        self.assertEqual((ROOT / "registries/ERRORS.md").read_text(encoding="utf-8").count(f"| `{code}` |"), 1)
+
+    def test_P1_P2_P3_lean_probe_cases(self) -> None:
+        unproven, escape = _code("ERR_PROOF_UNPROVEN_PLACEHOLDER"), _code("ERR_PROOF_UNSOUND_ESCAPE")
+        theorem, missing = _code("ERR_PROOF_THEOREM_UNBOUND"), _code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")
+        self.expect({
+            "L0 control": (b"theorem RootLast : True := by\n  trivial\n", []),
+            "L1 '--' in a string hides sorry": (b'theorem RootLast : 1 = 2 := by\n  have h : "--" = "--" := rfl; sorry\n', [unproven]),
+            "L2 _root_.sorryAx": (b"theorem RootLast : 1 = 2 := _root_.sorryAx _ false\n", [unproven]),
+            "L3 MVarId.admit via elab": (b'open Lean Elab Tactic in\nelab "cheat" : tactic => liftMetaTactic fun g => do g.admit; pure []\ntheorem RootLast : 1 = 2 := by cheat\n', [unproven, escape]),
+            "L4 axiom False": (b"axiom cheat : False\ntheorem RootLast : 1 = 2 := cheat.elim\n", [escape]),
+            "L5 nested block comment": (b"/- /- -/\ntheorem RootLast : True := trivial\n-/\n", [theorem]),
+            "L6 theorem inside a string": (b'def s := "\ntheorem RootLast : True := trivial\n"\n', [theorem]),
+            "L7 theorem after #exit": (b"#exit\ntheorem RootLast : True := trivial\n", [theorem]),
+            "L8 Cyrillic sorry lookalike": ("theorem RootLast : 1 = 2 := by\n  ѕorry\n".encode(), [unproven]),
+            "L9 admit in a tactic block": (b"theorem RootLast : 1 = 2 := by\n  admit\n", [unproven]),
+            "L10 Python saved as .lean": (b"import pytest\ntheorem RootLast = None\ndef test_root_last():\n    assert True\n", [missing]),
+            "L11 stop tactic": (b"theorem RootLast : 1 = 2 := by\n  stop\n  rfl\n", [unproven]),
+            "L12 '/-' in a string hides sorry": (b'theorem RootLast : "/-" = "/-" := by\n  sorry\ndef t := "-/"\n', [unproven]),
+            "L13 @sorryAx": (b"theorem RootLast : 1 = 2 := @sorryAx _ false\n", [unproven]),
+            "L14 decreasing_by sorry": (b"theorem RootLast : True := trivial\ndecreasing_by sorry\n", [unproven]),
+            "L15 guillemet-quoted sorry": ("theorem RootLast : 1 = 2 := «sorry»\n".encode(), [unproven]),
+            "L16 unterminated nested comment": (b"/- /- -/\ntheorem RootLast : True := trivial\n", [missing]),
+        }, True, LEAN_REL)
+
+    def test_P1_lean_lexer_does_not_over_refuse(self) -> None:
+        self.expect({
+            "sorry only in strings, char literals and nested comments": (
+                b'def msg := "sorry -- /- admit"\ndef c := \'-\'\n/- outer /- inner sorry -/ still comment admit -/\n'
+                b"-- stop\ntheorem RootLast : True := by\n  trivial\n", []),
+            "attributes, namespaces and a Greek binder": (
+                "namespace Pub\n@[simp] theorem RootLast (α : Type) : True := by\n  trivial\nend Pub\n".encode(), []),
+        }, True, LEAN_REL)
+
+    def test_P1_P2_tla_probe_cases(self) -> None:
+        unproven, escape = _code("ERR_PROOF_UNPROVEN_PLACEHOLDER"), _code("ERR_PROOF_UNSOUND_ESCAPE")
+        theorem, missing = _code("ERR_PROOF_THEOREM_UNBOUND"), _code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")
+        m = TLA_MODULE_HEAD
+        self.expect({
+            "T0 control": (m + b"THEOREM RootLast == TRUE\n====\n", []),
+            "T1 theorem in a nested (* comment": (m + b"(* (* *)\nTHEOREM RootLast == TRUE\n*)\n====\n", [theorem]),
+            "T2 '(*' in a string hides OMITTED": (m + b'THEOREM RootLast == "(*" = "(*"\nPROOF OMITTED\nLEMMA Z == "*)" = "*)"\n====\n', [unproven]),
+            "T3 theorem in a second module after ====": (m + b"====\n---- MODULE Other ----\nTHEOREM RootLast == TRUE\n====\n", [theorem]),
+            "T4 theorem in a nested module": (m + b"---- MODULE Inner ----\nTHEOREM RootLast == TRUE\n====\n====\n", [theorem]),
+            "T5a THEOREM and name on separate lines": (m + b"THEOREM\n  RootLast == TRUE\n====\n", [theorem]),
+            "T5b unicode definition sign": (m + "THEOREM RootLast ≜ TRUE\n====\n".encode(), [theorem]),
+            "T5c indented THEOREM": (m + b"   THEOREM RootLast == TRUE\n====\n", []),
+            "T6 ASSUME FALSE with PROOF OBVIOUS": (m + b"ASSUME FALSE\nTHEOREM RootLast == 1 = 2\nPROOF OBVIOUS\n====\n", [escape]),
+            "T6b AXIOM": (m + b"AXIOM FALSE\nTHEOREM RootLast == 1 = 2\nBY DEF RootLast\n====\n", [escape]),
+            "T7 lowercase omitted": (m + b"THEOREM RootLast == 1 = 2\nPROOF omitted\n====\n", [unproven]),
+            "T8 OMITTED": (m + b"THEOREM RootLast == 1 = 2\nPROOF OMITTED\n====\n", [unproven]),
+            "T9 text before the header": (b"junk\n" + m + b"THEOREM RootLast == TRUE\n====\n", [missing]),
+            "T10 sequent ASSUME inside a theorem": (m + b"THEOREM RootLast ==\n  ASSUME NEW x\n  PROVE x = x\nOBVIOUS\n====\n", []),
+            "T11 unterminated module": (m + b"THEOREM RootLast == TRUE\n", [missing]),
+        }, False, TLA_REL)
+
+    def test_P2_model_checkers_cannot_back_a_proof(self) -> None:
+        for checker in ("tlc", "apalache"):
+            with self.subTest(checker=checker):
+                ok, codes = run_formal(TLA_REL, TLA_MODULE_HEAD + b"THEOREM RootLast == TRUE\n====\n", checker=checker, version="2.19")
+                self.assertFalse(ok)
+                self.assertEqual(codes, [_code("ERR_PROOF_TOOLCHAIN_UNBOUND")])
+
+    def test_P4_disguised_test_paths(self) -> None:
+        body = TLA_MODULE_HEAD + b"THEOREM RootLast == TRUE\n====\n"
+        for rel in ("proofs/test_suite/Proof.tla", "proofs/__tests__/Proof.tla", "proofs/unit-tests/Proof.tla",
+                    "proofs/TestSpec.tla", "proofs/ProofTest.tla", "proofs/pytest_proof.tla", "proofs/spec.py.tla",
+                    "proofs/fuzz/Proof.tla", "proofs/spec/Proof.tla", "proofs/proof_tests/Proof.tla", "proofs/TESTS/Proof.tla"):
+            with self.subTest(path=rel):
+                ok, codes = run_formal(rel, body)
+                self.assertFalse(ok)
+                self.assertEqual(codes, [_code("ERR_PROOF_TESTS_ONLY")])
+        for rel in ("proofs/check/PublicationProof.tla", "proofs/tla/PublicationSpec.tla", "proofs/tla/Attestation.tla"):
+            with self.subTest(control=rel):
+                self.assertEqual(run_formal(rel, body), (True, []))
+        ok, codes = run_formal("proofs/Proof.TLA", body)
+        self.assertEqual((ok, codes), (False, [_code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")]))
 
 if __name__ == "__main__":
     unittest.main()
