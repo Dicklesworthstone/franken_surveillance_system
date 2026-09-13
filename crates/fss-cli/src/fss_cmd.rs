@@ -43,7 +43,7 @@ impl FssCommand {
 /// Returns the static help text for `fss`.
 #[must_use]
 pub const fn help_text() -> &'static str {
-    "Franken Surveillance System design skeleton\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json\n  fss status --json\n  fss negative-evidence <list|verify|append> [--path <file>] [--json]\n\nNo camera, drone, model, archive, or alert operation is implemented yet."
+    "Franken Surveillance System design skeleton\n\nUSAGE:\n  fss help\n  fss version\n  fss capabilities --json\n  fss doctor --json\n  fss status --json\n  fss negative-evidence <init|list|verify|append> [--path <file>] [--json]\n\nNo camera, drone, model, archive, or alert operation is implemented yet."
 }
 
 /// Parses OS-native arguments for `fss` with total validation and exact grammar exhaustion.
