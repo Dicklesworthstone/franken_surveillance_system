@@ -420,6 +420,7 @@ impl KnowledgeCell {
     #[must_use]
     pub fn is_irreversible_effect_premise(&self, now: TimestampNs) -> bool {
         self.knowledge_state.may_authorize_irreversible_effect()
+            && self.provenance.may_authorize_irreversible_effect()
             && self.validate().is_ok()
             && !self.evidence.is_empty()
             && self.contradictions.is_empty()
@@ -430,7 +431,11 @@ impl KnowledgeCell {
     ///
     /// A state whose registry meaning names a basis is refused without it, and a basis is
     /// refused on any state it does not belong to.
+    /// An `observed` cell must bind source evidence anchors.
     pub fn validate(&self) -> Result<(), ContractError> {
+        if self.provenance == ProvenanceClass::Observed && self.evidence.is_empty() {
+            return Err(ContractError::EvidenceRequired);
+        }
         match (
             &self.state_basis,
             required_basis_error(self.knowledge_state),
@@ -464,6 +469,12 @@ impl KnowledgeCell {
         } else {
             &self.statement
         }
+    }
+
+    /// Returns whether this knowledge cell has observed provenance (PROV-001).
+    #[must_use]
+    pub fn is_observed(&self) -> bool {
+        self.provenance == ProvenanceClass::Observed
     }
 
     /// Returns whether this knowledge cell is an estimated proposition.

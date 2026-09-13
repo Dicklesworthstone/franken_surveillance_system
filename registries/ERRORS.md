@@ -153,6 +153,14 @@ operation states rather than generic errors.
 | `ERR-KSTATE-FREEZE-DIVERGENCE-001` | knowledge state registry digest diverged from pinned baseline freeze digest | restore frozen knowledge state registry or bump generation |
 | `ERR-KSTATE-GENERATION-MISMATCH-001` | knowledge state registry generation diverged from baseline generation | assign expected generation to knowledge state registry |
 | `ERR-KSTATE-ILLEGAL-IRREVERSIBLE-AUTH-001` | non-known knowledge state illegally authorizes irreversible effect | restrict irreversible effect authorization strictly to known state |
+| `ERR-PROV-REGISTRY-DRIFT-001` | provenance registry row drift between machine registry and markdown | synchronize architecture/provenance_classes.json and registries/AGENT_CONTRACTS.md |
+| `ERR-PROV-STABLE-ID-REUSED-001` | provenance class stable identifier was reused or renumbered for a different entity | allocate a new unique stable identifier; never reuse stable IDs |
+| `ERR-PROV-MISSING-FIELD-001` | provenance class row lacks a mandatory field or is empty/corrupt | declare all mandatory fields in provenance class row |
+| `ERR-PROV-CORRUPT-FILE-001` | provenance registry or markdown documentation file is missing or corrupt | repair or restore provenance registry file |
+| `ERR-PROV-DIGEST-MISMATCH-001` | provenance registry digest does not match canonical encoding of metadata and rows | recompute canonical provenance registry digest |
+| `ERR-PROV-FREEZE-DIVERGENCE-001` | provenance registry digest diverged from pinned baseline freeze digest | restore frozen provenance registry or bump generation |
+| `ERR-PROV-GENERATION-MISMATCH-001` | provenance registry generation diverged from baseline generation | assign expected generation to provenance registry |
+| `ERR-PROV-SEMANTIC-INVARIANT-001` | provenance semantic invariant violation: non-permissible irreversible authorization, missing anchors, or score flattening | enforce provenance orthogonality and class-specific evidence/authorization gates |
 | `ERR-ADAPTER-REGISTRY-DRIFT-001` | adapter registry row drift between machine registry and markdown | synchronize architecture/device_adapters.json and registries/DEVICE_ADAPTERS.md |
 | `ERR-ADAPTER-STABLE-ID-REUSED-001` | adapter stable identifier was reused, renumbered, or resurrected | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-ADAPTER-SEMANTIC-INVARIANT-001` | adapter row violates semantic invariants (tier, state, gate) | fail closed; enforce normative row definitions |

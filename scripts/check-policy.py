@@ -20,6 +20,7 @@ import dependency_registry_checker
 import device_adapter_checker
 import frozen_registry_checker
 import knowledge_state_checker
+import provenance_registry_checker
 import slo_validate
 
 
@@ -835,6 +836,11 @@ def main() -> int:
     knowledge_state_registry_result = knowledge_state_checker.validate_knowledge_state_registry(ROOT)
     if not knowledge_state_registry_result.passed:
         for err in knowledge_state_registry_result.errors:
+            fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
+
+    provenance_registry_result = provenance_registry_checker.validate_provenance_registry(ROOT)
+    if not provenance_registry_result.passed:
+        for err in provenance_registry_result.errors:
             fail(f"[{err.code}] {err.file_path} ({err.target}): {err.message}")
 
     device_adapter_registry_result = device_adapter_checker.validate_device_adapter_registry(ROOT)

@@ -1,0 +1,46 @@
+{
+  "schema": "fss.provenance_classes.v1",
+  "asOf": "2026-08-31",
+  "generation": "gen:fss1:provenance-v1",
+  "semanticProtocol": "fss/1",
+  "constitutionalDocument": "AGENT_COGNITION_AND_CONTROL.md",
+  "humanContracts": "registries/AGENT_CONTRACTS.md",
+  "registryDigest": "sha256:2db44231489f586cddfab7b538101fbeac487ada3c0167e2f341f28a00aaafde",
+  "provenanceClasses": [
+    {
+      "id": "PROV-001",
+      "class": "observed",
+      "meaning": "Directly supported by canonical sensor, device, operator, or effect evidence."
+    },
+    {
+      "id": "PROV-002",
+      "class": "derived",
+      "meaning": "Deterministically computed from named canonical inputs under a registered algorithm and generation."
+    },
+    {
+      "id": "PROV-003",
+      "class": "predicted",
+      "meaning": "Counterfactual or forward prediction under an explicit branch/model and assumptions."
+    },
+    {
+      "id": "PROV-004",
+      "class": "remembered",
+      "meaning": "Advisory operational memory or prior episode material that must be revalidated against live evidence."
+    },
+    {
+      "id": "PROV-005",
+      "class": "operator_asserted",
+      "meaning": "A human/operator assertion with identity, time, scope, and later corroboration status."
+    },
+    {
+      "id": "PROV-006",
+      "class": "vendor_claimed",
+      "meaning": "Metadata or state asserted by a device/vendor boundary and not treated as independent physical truth."
+    },
+    {
+      "id": "PROV-007",
+      "class": "policy",
+      "meaning": "A rule, threshold, capability, or privacy decision from an exact policy generation."
+    }
+  ]
+}

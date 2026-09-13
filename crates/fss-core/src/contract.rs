@@ -276,6 +276,139 @@ pub enum ProvenanceClass {
     Policy,
 }
 
+impl ProvenanceClass {
+    /// Returns the stable canonical ID for this provenance class (e.g. `PROV-001`).
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Observed => "PROV-001",
+            Self::Derived => "PROV-002",
+            Self::Predicted => "PROV-003",
+            Self::Remembered => "PROV-004",
+            Self::OperatorAsserted => "PROV-005",
+            Self::VendorClaimed => "PROV-006",
+            Self::Policy => "PROV-007",
+        }
+    }
+
+    /// Returns the stable schema spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Observed => "observed",
+            Self::Derived => "derived",
+            Self::Predicted => "predicted",
+            Self::Remembered => "remembered",
+            Self::OperatorAsserted => "operator_asserted",
+            Self::VendorClaimed => "vendor_claimed",
+            Self::Policy => "policy",
+        }
+    }
+
+    /// Parses a provenance class from its stable ID (`PROV-001` .. `PROV-007`).
+    pub fn from_id(id: &str) -> Result<Self, ContractError> {
+        match id {
+            "PROV-001" => Ok(Self::Observed),
+            "PROV-002" => Ok(Self::Derived),
+            "PROV-003" => Ok(Self::Predicted),
+            "PROV-004" => Ok(Self::Remembered),
+            "PROV-005" => Ok(Self::OperatorAsserted),
+            "PROV-006" => Ok(Self::VendorClaimed),
+            "PROV-007" => Ok(Self::Policy),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+
+    /// Parses a provenance class from its schema spelling (`observed`, `derived`, etc.).
+    pub fn from_name(name: &str) -> Result<Self, ContractError> {
+        match name {
+            "observed" => Ok(Self::Observed),
+            "derived" => Ok(Self::Derived),
+            "predicted" => Ok(Self::Predicted),
+            "remembered" => Ok(Self::Remembered),
+            "operator_asserted" => Ok(Self::OperatorAsserted),
+            "vendor_claimed" => Ok(Self::VendorClaimed),
+            "policy" => Ok(Self::Policy),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+
+    /// Returns the exact normative meaning of this provenance class from the contract registry.
+    #[must_use]
+    pub const fn meaning(self) -> &'static str {
+        match self {
+            Self::Observed => {
+                "Directly supported by canonical sensor, device, operator, or effect evidence."
+            }
+            Self::Derived => {
+                "Deterministically computed from named canonical inputs under a registered algorithm and generation."
+            }
+            Self::Predicted => {
+                "Counterfactual or forward prediction under an explicit branch/model and assumptions."
+            }
+            Self::Remembered => {
+                "Advisory operational memory or prior episode material that must be revalidated against live evidence."
+            }
+            Self::OperatorAsserted => {
+                "A human/operator assertion with identity, time, scope, and later corroboration status."
+            }
+            Self::VendorClaimed => {
+                "Metadata or state asserted by a device/vendor boundary and not treated as independent physical truth."
+            }
+            Self::Policy => {
+                "A rule, threshold, capability, or privacy decision from an exact policy generation."
+            }
+        }
+    }
+
+    /// Returns whether this provenance class may support an irreversible effect premise.
+    ///
+    /// CONSTITUTIONAL HARD GATE:
+    /// `Predicted`, `Remembered`, and `VendorClaimed` may NEVER authorize an irreversible effect
+    /// on their own. Even with a `Known` epistemic state, advisory memory, model predictions,
+    /// and unverified vendor device assertions cannot authorize irreversible effects.
+    #[must_use]
+    pub const fn may_authorize_irreversible_effect(self) -> bool {
+        match self {
+            Self::Predicted | Self::Remembered | Self::VendorClaimed => false,
+            Self::Observed | Self::Derived | Self::OperatorAsserted | Self::Policy => true,
+        }
+    }
+
+    /// Returns whether this provenance class represents directly observed source evidence.
+    #[must_use]
+    pub const fn is_observed(self) -> bool {
+        matches!(self, Self::Observed)
+    }
+}
+
+impl CanonicalEncode for ProvenanceClass {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for ProvenanceClass {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        Self::from_name(text).or_else(|_| Self::from_id(text))
+    }
+}
+
+impl fmt::Display for ProvenanceClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for ProvenanceClass {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_name(s).or_else(|_| Self::from_id(s))
+    }
+}
+
 /// Disposition of a hypothesis within an investigation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum HypothesisDisposition {
