@@ -1805,3 +1805,62 @@ fn test_finding_4_alert_effect_record_canonical_domain_prefix_and_codec()
 
     Ok(())
 }
+
+fn sensor_tamper_evidence(domain: &str, tag: &str) -> EventEvidence {
+    let mut edge = sample_evidence(domain, false, tag);
+    edge.relation = EvidenceEdgeRelation::SensorTamper;
+    edge
+}
+
+#[test]
+fn test_sensor_tamper_vetoes_corroboration_transition_and_replay() -> Result<(), Box<dyn Error>> {
+    let genesis = sample_genesis_hypothesis("tamper-veto-001")?;
+    let mut lineage = EventLineage::new(genesis.clone())?;
+    let alpha = sample_evidence("power:alpha", true, "t1");
+    let witnessed = lineage
+        .transition(transition_params(
+            EventState::Witnessed,
+            vec![alpha.clone()],
+            None,
+            false,
+        ))?
+        .clone();
+    let beta = sample_evidence("power:beta", true, "t2");
+    // The reviewer's planted bypass: two independent supports plus a tamper report.
+    let planted = vec![
+        alpha.clone(),
+        beta.clone(),
+        sensor_tamper_evidence("power:gamma", "t3"),
+    ];
+    let refused = lineage
+        .transition(transition_params(
+            EventState::Corroborated,
+            planted.clone(),
+            None,
+            false,
+        ))
+        .err();
+    assert_eq!(refused, Some(EventTransitionError::SensorIntegrityRisk));
+    assert_eq!(lineage.current_state(), EventState::Witnessed);
+
+    // Replay refuses the same revision planted directly into an ordered revision list.
+    let planted_revision = EventHypothesis {
+        revision: witnessed.revision + 1,
+        supersedes: Some(witnessed.revision_digest()),
+        state: EventState::Corroborated,
+        evidence: planted,
+        ..witnessed.clone()
+    };
+    let replayed = EventLineage::from_revisions(vec![genesis, witnessed, planted_revision]).err();
+    assert_eq!(replayed, Some(EventTransitionError::SensorIntegrityRisk));
+
+    // Without the tamper report the transition succeeds.
+    lineage.transition(transition_params(
+        EventState::Corroborated,
+        vec![alpha, beta],
+        None,
+        false,
+    ))?;
+    assert_eq!(lineage.current_state(), EventState::Corroborated);
+    Ok(())
+}
