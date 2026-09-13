@@ -4,7 +4,9 @@
 //! by their existing owners; this module performs no I/O or external effects.
 
 mod model;
+mod localize;
 pub use model::LensDistortion;
+pub use localize::{RawLocalizationError, RectifiedLocalization, localize_raw_frame};
 
 use crate::localization::{ImageIdentity, LocalizationError};
 use crate::localization::native::GrayImage;
