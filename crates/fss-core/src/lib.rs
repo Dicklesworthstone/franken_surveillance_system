@@ -127,9 +127,10 @@ pub use hydration::{
     H2_OWNER, H2_SCHEMA, H2DecisionArtifact, H2DecisionArtifactParams, HYDRATION_VIEW_ID,
     HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
     HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec,
-    HydrationResponse, KeyframeArtifact, LaboratoryAccess, RedactedRegion, SemanticHandle,
-    SemanticHandleSpec, SynopsisClassification, SynopsisQuality, TrajectoryArtifact,
-    TrajectoryWaypoint,
+    HydrationResponse, KeyframeArtifact, LaboratoryAccess, MAX_H1_CAPABILITIES,
+    MAX_H1_CONTRADICTIONS, MAX_H1_FACTS, MAX_H1_KNOWLEDGE_STATES, MAX_H1_OMISSIONS,
+    MAX_H1_PROVENANCE_CLASSES, RedactedRegion, SemanticHandle, SemanticHandleSpec,
+    SynopsisClassification, SynopsisQuality, TrajectoryArtifact, TrajectoryWaypoint,
 };
 pub use identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, DeviceCapabilities,
