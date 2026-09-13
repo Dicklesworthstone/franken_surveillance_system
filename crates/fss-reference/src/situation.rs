@@ -289,12 +289,14 @@ pub fn compile_reference_situation(
     let policy_claim_id = format!("claim:event:{event_name}:policy-disposition");
     let absence_claim_id = format!("claim:event:{event_name}:absence-certification");
 
+    // Only true `Supports` / `Contradicts` edges weigh on the physical claim; neutral edges
+    // (abstentions, unknown findings, lineage) are retained as proof roots but count as neither.
     let supporting: Vec<_> = request
         .decision
         .event
         .evidence
         .iter()
-        .filter(|edge| edge.supports)
+        .filter(|edge| edge.counts_as_support())
         .map(|edge| edge.digest)
         .collect();
     let contradicting: Vec<_> = request
@@ -302,7 +304,7 @@ pub fn compile_reference_situation(
         .event
         .evidence
         .iter()
-        .filter(|edge| !edge.supports)
+        .filter(|edge| edge.counts_as_contradiction())
         .map(|edge| edge.digest)
         .collect();
 

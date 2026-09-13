@@ -589,11 +589,16 @@ fn physical_cell_mapping_is_pinned_for_every_evidence_mix() -> Result<(), Box<dy
         return Err(format!("expected 8 decodable event states, found {}", states.len()).into());
     }
     for state in states {
-        // (support only, contradiction only, neither). Exhaustive on purpose: a new `EventState`
-        // must choose all three before this compiles. Without a supporting root no state is
-        // estimated or known; indeterminate stays indeterminate rather than flattening to unknown.
-        let (support_only, contradiction_only, neither) = match state {
+        // (both ways, support only, contradiction only, neither). Exhaustive on purpose: a new
+        // `EventState` must choose all four before this compiles. Without a supporting root no
+        // state is estimated or known; indeterminate stays indeterminate rather than flattening to
+        // unknown. No typed basis retires a contradiction, so evidence pointing both ways is
+        // conflicted in every state.
+        let (both_ways, support_only, contradiction_only, neither) = match state {
+            // Unwitnessed support cannot yield an estimate (support only is unknown), but a retained
+            // disagreement is still a disagreement: flattening it to unknown would hide it.
             EventState::Hypothesized => (
+                KnowledgeState::Conflicted,
                 KnowledgeState::Unknown,
                 KnowledgeState::Unknown,
                 KnowledgeState::Unknown,
@@ -602,29 +607,32 @@ fn physical_cell_mapping_is_pinned_for_every_evidence_mix() -> Result<(), Box<dy
             | EventState::Adjudicated
             | EventState::AlertDelivered
             | EventState::Resolved => (
+                KnowledgeState::Conflicted,
                 KnowledgeState::Estimated,
                 KnowledgeState::Unknown,
                 KnowledgeState::Unknown,
             ),
             EventState::Corroborated => (
+                KnowledgeState::Conflicted,
                 KnowledgeState::Known,
                 KnowledgeState::Unknown,
                 KnowledgeState::Unknown,
             ),
             EventState::Indeterminate => (
+                KnowledgeState::Conflicted,
                 KnowledgeState::Indeterminate,
                 KnowledgeState::Indeterminate,
                 KnowledgeState::Indeterminate,
             ),
             EventState::Rejected => (
+                KnowledgeState::Conflicted,
                 KnowledgeState::Unknown,
                 KnowledgeState::Unknown,
                 KnowledgeState::Unknown,
             ),
         };
-        // No typed basis retires a contradiction, so both kinds of evidence is always conflicted.
         let rows: [(&[ContentDigest], &[ContentDigest], KnowledgeState); 4] = [
-            (&support, &contra, KnowledgeState::Conflicted),
+            (&support, &contra, both_ways),
             (&support, &none, support_only),
             (&none, &contra, contradiction_only),
             (&none, &none, neither),
@@ -1093,7 +1101,7 @@ fn contradiction_only_witnessed_revision_is_refused_at_compile() -> Result<(), B
     decision.event.event_id = EventId::parse("event:situation:contradiction-only-witnessed")?;
     assert_eq!(
         decision.event.validate(),
-        Err(ContractError::EvidenceRequired)
+        Err(ContractError::SupportingEvidenceRequired)
     );
     // Publication does not validate, so compile must refuse it rather than project an estimate.
     let event_receipt =
@@ -1109,11 +1117,137 @@ fn contradiction_only_witnessed_revision_is_refused_at_compile() -> Result<(), B
     assert!(
         matches!(
             compiled,
-            Err(ReferenceError::Contract(ContractError::EvidenceRequired))
+            Err(ReferenceError::Contract(
+                ContractError::SupportingEvidenceRequired
+            ))
         ),
         "{compiled:?}"
     );
 
     harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn neutral_only_witnessed_revision_is_refused_at_compile() -> Result<(), Box<dyn Error>> {
+    let mut harness = SituationHarness::new("neutral-only-witnessed")?;
+    let (mut decision, _) = harness.publish_decision(
+        "neutral-only-witnessed-policy",
+        &[(MockSemanticLabel::PersonLike, "power:alpha")],
+    )?;
+    assert_eq!(decision.event.state, EventState::Witnessed);
+    // A derivation edge carries no evidential direction, so it cannot witness the candidate.
+    for edge in &mut decision.event.evidence {
+        edge.supports = false;
+        edge.relation = EvidenceEdgeRelation::DerivedFrom;
+    }
+    decision.event.event_id = EventId::parse("event:situation:neutral-only-witnessed")?;
+    let event_receipt =
+        publish_reference_event(&decision, &mut harness.objects, &mut harness.authority)?;
+    let compiled = compile_reference_situation(
+        request(
+            &decision,
+            &event_receipt,
+            capabilities(&["capability:evidence.query", "capability:session.wait"]),
+        )?,
+        &harness.authority,
+    );
+    assert!(
+        matches!(
+            compiled,
+            Err(ReferenceError::Contract(
+                ContractError::SupportingEvidenceRequired
+            ))
+        ),
+        "{compiled:?}"
+    );
+
+    harness.cleanup();
+    Ok(())
+}
+
+/// Compiles a two-observation decision and returns its physical-presence cell.
+fn compiled_physical_cell(
+    name: &str,
+    second: MockSemanticLabel,
+) -> Result<(ReferencePolicyDecision, KnowledgeCell), Box<dyn Error>> {
+    let mut harness = SituationHarness::new(name)?;
+    let (decision, event_receipt) = harness.publish_decision(
+        name,
+        &[
+            (MockSemanticLabel::PersonLike, "power:alpha"),
+            (second, "power:beta"),
+        ],
+    )?;
+    let situation = compile_reference_situation(
+        request(
+            &decision,
+            &event_receipt,
+            capabilities(&["capability:evidence.query", "capability:session.wait"]),
+        )?,
+        &harness.authority,
+    )?;
+    let physical = situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":unknown-presence"))
+        .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?
+        .clone();
+    harness.cleanup();
+    Ok((decision, physical))
+}
+
+#[test]
+fn unknown_finding_keeps_the_physical_cell_indeterminate_with_its_basis()
+-> Result<(), Box<dyn Error>> {
+    let (decision, physical) =
+        compiled_physical_cell("person-unknown", MockSemanticLabel::Unknown)?;
+    assert_eq!(decision.event.state, EventState::Indeterminate);
+    // An unknown finding is an abstention on presence: never counted as a contradiction.
+    assert!(
+        !decision
+            .event
+            .evidence
+            .iter()
+            .any(|edge| edge.relation == EvidenceEdgeRelation::Contradicts)
+    );
+    assert_eq!(physical.knowledge_state, KnowledgeState::Indeterminate);
+    assert!(physical.state_basis.is_some());
+    assert_eq!(
+        physical.state_basis,
+        reconciliation_basis_for(
+            KnowledgeState::Indeterminate,
+            decision.event.revision_digest()
+        )
+    );
+    assert_eq!(physical.evidence.len(), 1);
+    assert!(physical.contradictions.is_empty());
+    Ok(())
+}
+
+#[test]
+fn tamper_finding_is_a_neutral_risk_signal_not_a_contradiction() -> Result<(), Box<dyn Error>> {
+    let (decision, physical) =
+        compiled_physical_cell("person-tamper", MockSemanticLabel::TamperLike)?;
+    // Tampering can hide a person as easily as fake one, so it holds the event unresolved
+    // without counting against presence.
+    assert_eq!(decision.event.state, EventState::Indeterminate);
+    let tamper_edges: Vec<_> = decision
+        .event
+        .evidence
+        .iter()
+        .filter(|edge| !edge.counts_as_support())
+        .collect();
+    assert_eq!(tamper_edges.len(), 1);
+    for edge in tamper_edges {
+        assert_eq!(edge.relation, EvidenceEdgeRelation::DerivedFrom);
+        assert!(!edge.supports);
+        assert!(!edge.counts_as_contradiction());
+    }
+    assert_eq!(physical.knowledge_state, KnowledgeState::Indeterminate);
+    assert!(physical.state_basis.is_some());
+    assert!(physical.contradictions.is_empty());
     Ok(())
 }
