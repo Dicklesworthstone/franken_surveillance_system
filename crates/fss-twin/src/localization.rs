@@ -484,3 +484,6 @@ pub struct LocalizationCamera {
     /// Exact image-domain chain identity expected on the query features.
     pub image_domain: [u8; 32],
 }
+
+/// Native grayscale extraction and the composed pixel-to-camera-pose path.
+pub mod native;
