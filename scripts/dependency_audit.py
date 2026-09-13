@@ -348,10 +348,10 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
     ),
     "DEP-AUD-045": DiagnosticDef(
         code="DEP-AUD-045",
-        severity="error",
+        severity="warning",
         owner="security-policy",
-        trigger="a crate recorded under an open owner decision in dependency_allowlist.toml [pending_owner_decisions] is declared in a manifest or present in Cargo.lock or resolved metadata",
-        remediation="keep the crate out of every manifest and Cargo.lock until the owner decision (for example fss-ndxis) is recorded; it is neither admitted nor rejected meanwhile",
+        trigger="fundamental crate is pending owner decision fss-ndxis",
+        remediation="keep crate quarantined until user decision fss-ndxis is resolved; never admit as production authority",
     ),
     "DEP-AUD-046": DiagnosticDef(
         code="DEP-AUD-046",
@@ -359,6 +359,13 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
         owner="security-policy",
         trigger="a dependency-class census input (Cargo.lock, architecture/franken_imports.json, or the dependency authority) is missing, empty, oversized, or structurally invalid",
         remediation="restore a valid locked Cargo.lock and valid dependency authority files; the class census fails closed without them",
+    ),
+    "DEP-AUD-047": DiagnosticDef(
+        code="DEP-AUD-047",
+        severity="error",
+        owner="security-policy",
+        trigger="a crate recorded under an open owner decision in dependency_allowlist.toml [pending_owner_decisions] is declared in a manifest or present in Cargo.lock or resolved metadata",
+        remediation="keep the crate out of every manifest and Cargo.lock until the owner decision (for example fss-ndxis) is recorded; it is neither admitted nor rejected meanwhile",
     ),
 }
 
@@ -829,6 +836,7 @@ def enumerate_dependencies(
                 features: list[str] = []
                 optional = False
                 workspace_inherited = False
+                suppress_017 = False  # string specs never reach the dict branch below; unset it raised UnboundLocalError
 
                 if not isinstance(specification, (dict, str)):
                     add(findings, "error", "DEP-AUD-011", manifest, f"dependency '{local_name}' in [{section}] must be a table or string", root=root, params={"manifest": manifest, "section": section, "local_name": local_name})
@@ -839,7 +847,6 @@ def enumerate_dependencies(
                     optional = bool(specification.get("optional", False))
                     default_features = specification.get("default-features")
                     features = [str(item) for item in specification.get("features", [])]
-                    suppress_017 = False
                     if specification.get("workspace") is True:
                         workspace_inherited = True
                         ws_spec = ws_dependencies.get(local_name) or ws_dependencies.get(package)
@@ -965,14 +972,16 @@ def enumerate_dependencies(
                 if package in forbidden:
                     add(findings, "error", "DEP-AUD-015", manifest, f"forbidden direct dependency: {package}", root=root, params={"package": package, "manifest": manifest})
                 elif pending is not None:
+                    pending_params = {"package": package, "manifest": manifest, "section": section, "decision": pending[0], "class": pending[1]}
+                    add(findings, "warning", "DEP-AUD-045", manifest, f"fundamental crate '{package}' ({pending[1]}) is pending owner decision {pending[0]}", root=root, params=pending_params)
                     add(
                         findings,
                         "error",
-                        "DEP-AUD-045",
+                        "DEP-AUD-047",
                         manifest,
                         f"direct dependency '{package}' ({pending[1]}) is pending owner decision {pending[0]}; it is neither admitted nor rejected until the owner decides",
                         root=root,
-                        params={"package": package, "manifest": manifest, "section": section, "decision": pending[0], "class": pending[1]},
+                        params=pending_params,
                     )
                 elif not is_allowed(package):
                     add(findings, "error", "DEP-AUD-016", manifest, f"direct dependency is outside the closed allowlist: {package}", root=root, params={"package": package, "manifest": manifest})
@@ -1208,13 +1217,26 @@ def _toml_key_line(text: str, key: str) -> int | None:
     return None
 
 
+def _allowlist_admits(name: str, policy: dict[str, Any] | None) -> bool:
+    """True when the allowlist admits the crate itself ([fundamental], not pending, not forbidden).
+
+    DEP-AUD-023's crate-level check yields to this, so the owner decision recorded in the allowlist
+    alone decides whether a serde-family crate may be declared; with no usable authority nothing is admitted.
+    """
+    view = class_view_for(policy or {})
+    if view is None:
+        return False
+    norm = dependency_authority.normalize_crate(name)
+    return norm in view.fundamental and norm not in view.pending and norm not in view.forbidden
+
+
 def _pending_note(name: str, policy: dict[str, Any] | None) -> str:
     """Names the open owner decision for a pending crate, so DEP-AUD-023 agrees with DEP-AUD-045."""
     view = class_view_for(policy or {})
     pending = view.pending.get(dependency_authority.normalize_crate(name)) if view is not None else None
     if pending is None:
         return ""
-    return f"; its admission ({pending[1]}) is pending owner decision {pending[0]}, so it is neither admitted nor rejected by the dependency classes (DEP-AUD-045)"
+    return f"; its admission ({pending[1]}) is pending owner decision {pending[0]}, so it is neither admitted nor rejected by the dependency classes (DEP-AUD-047)"
 
 
 def serde_durable_bytes_audit(
@@ -1243,7 +1265,7 @@ def serde_durable_bytes_audit(
         package = str(row.get("name", ""))
         local_name = str(row.get("localName", package))
         offending = package if is_serde_codec_crate(package) else local_name if is_serde_codec_crate(local_name) else None
-        if offending is None:
+        if offending is None or _allowlist_admits(package, policy):
             continue
         manifest_rel = str(row.get("manifest", ""))
         if manifest_rel not in manifest_text:
@@ -1275,7 +1297,7 @@ def serde_durable_bytes_audit(
             lock_packages = lock_data.get("package", [])
             for package in lock_packages if isinstance(lock_packages, list) else []:
                 name = package.get("name") if isinstance(package, dict) else None
-                if isinstance(name, str) and is_serde_codec_crate(name):
+                if isinstance(name, str) and is_serde_codec_crate(name) and not _allowlist_admits(name, policy):
                     line = None
                     name_line = re.compile(rf"""^\s*name\s*=\s*"{re.escape(name)}"\s*$""")
                     for number, text_line in enumerate(lock_text.splitlines(), 1):
@@ -1286,7 +1308,7 @@ def serde_durable_bytes_audit(
                     add(findings, "error", "DEP-AUD-023", lock_path, f"{location}: serde-family codec package '{name}' is in the locked closure{_pending_note(name, policy)}", root=root, params={"package": name, "path": "Cargo.lock", "line": line})
 
     for name in resolved_names or []:
-        if is_serde_codec_crate(name):
+        if is_serde_codec_crate(name) and not _allowlist_admits(name, policy):
             add(findings, "error", "DEP-AUD-023", lock_path, f"Cargo.lock: serde-family codec package '{name}' is resolved by cargo metadata{_pending_note(name, policy)}", root=root, params={"package": name, "path": "Cargo.lock", "line": None})
 
     files = fss_rust_source_files(root, manifests or [])
@@ -2032,7 +2054,7 @@ def classify_dependency_package(
     if outcome.kind in ("member", "admitted"):
         return outcome.row, None, None
     if outcome.kind == "pending":
-        return outcome.row, "DEP-AUD-045", outcome.reason
+        return outcome.row, "DEP-AUD-047", outcome.reason
     if outcome.kind == "forbidden":
         return None, "DEP-AUD-030" if is_production else "DEP-AUD-043", outcome.reason
     if outcome.kind == "unclassified":
@@ -2051,7 +2073,7 @@ def load_lock_graph(root: Path) -> tuple[dict[LockPackage, set[LockPackage]] | N
     """Parses Cargo.lock into a package graph. Missing, empty, oversized, or odd locks fail closed."""
     problems: list[str] = []
     lock_path = root / "Cargo.lock"
-    data, issues = dependency_authority.read_input_bytes(lock_path, "Cargo.lock")
+    data, issues = dependency_authority.read_input_bytes(lock_path, "Cargo.lock", root)
     if data is None:
         return None, [i.message for i in issues]
     text, issues = dependency_authority.decode_utf8(data, "Cargo.lock")
@@ -2120,7 +2142,7 @@ def load_import_gates(root: Path) -> tuple[frozenset[str] | None, list[str]]:
     """
     rel = dependency_authority.FRANKEN_IMPORTS_PATH
     path = root / rel if (root / rel).is_file() else ROOT / rel
-    auth = dependency_authority.Authority(root=root)
+    auth = dependency_authority.Authority(root=root if path == root / rel else ROOT)
     dependency_authority._load_imports(auth, path)
     if auth.issues:
         return None, [f"{e.target}: {e.message}" for e in auth.issues]
@@ -2148,7 +2170,8 @@ def audit_dependency_classes(
     Workspace members are identified by name AND a path source (no ``source``), so a registry package
     that shares a member's name is never mistaken for a member. Production reachability walks the
     Cargo.lock graph from the members' production manifest edges ([dependencies]/[build-dependencies],
-    target tables included); without manifest evidence every non-member package counts as production.
+    target tables included). A package reached only from dev edges is development-only; a package no
+    manifest edge reaches, and every package when there is no manifest evidence, counts as production.
     """
     empty = {"census": {}, "unconsumed": []}
     view = class_view_for(policy)
@@ -2192,6 +2215,7 @@ def audit_dependency_classes(
         by_name.setdefault(pkg.name, []).append(pkg)
 
     prod_reachable: set[LockPackage] | None = None
+    dev_reachable: set[LockPackage] = set()
     if direct is not None:
         roots = [
             pkg
@@ -2208,6 +2232,20 @@ def audit_dependency_classes(
                 continue
             prod_reachable.add(current)
             queue.extend(graph.get(current, ()))
+        dev_roots = [
+            pkg
+            for dep in direct
+            if dep.get("name") and not _is_production_section(str(dep.get("section", "")))
+            for pkg in by_name.get(str(dep.get("name")), [])
+            if not is_member(pkg)
+        ]
+        queue = list(dev_roots)
+        while queue:
+            current = queue.pop()
+            if current in dev_reachable or is_member(current):
+                continue
+            dev_reachable.add(current)
+            queue.extend(graph.get(current, ()))
 
     rows = list(view.row_order)
     admitted_by_row: dict[str, set[str]] = {row: set() for row in rows}
@@ -2220,21 +2258,24 @@ def audit_dependency_classes(
             if row:
                 members_by_row.setdefault(row, set()).add(pkg.name)
             continue
-        is_prod = True if prod_reachable is None else pkg in prod_reachable
+        # A locked package reached only through dev edges is development-only; one reached by no
+        # manifest edge at all is unexplained and counts as production (fail closed).
+        is_prod = True if prod_reachable is None else (pkg in prod_reachable or pkg not in dev_reachable)
         dep_id, code, reason = classify_dependency_package(
             pkg.name, policy, names, is_production=is_prod, admitted_in_house=admitted_projects, is_member=False, view=view
         )
         if code is None and dep_id is not None:
             admitted_by_row.setdefault(dep_id, set()).add(pkg.name)
             classified_name[pkg.name] = dep_id
-        elif code == "DEP-AUD-045" and dep_id is not None:
+        elif code == "DEP-AUD-047" and dep_id is not None:
             pending_by_row.setdefault(dep_id, set()).add(pkg.name)
         params = {"package": pkg.name, "version": pkg.version, "class": dep_id, "reason": reason, "production": is_prod}
         if code == "DEP-AUD-042":
             add(findings, "error", code, "Cargo.lock", f"unclassified crate in Cargo.lock or resolved dependencies: {pkg.name}", root=root, params=params)
         elif code == "DEP-AUD-043":
             add(findings, "error", code, "Cargo.lock", f"misclassified crate reachable from production or invalid scope boundary: {pkg.name} ({reason})", root=root, params=params)
-        elif code == "DEP-AUD-045":
+        elif code == "DEP-AUD-047":
+            add(findings, "warning", "DEP-AUD-045", "Cargo.lock", f"fundamental crate is pending owner decision: {pkg.name} ({reason})", root=root, params=params)
             add(findings, "error", code, "Cargo.lock", f"crate is pending an owner decision and is neither admitted nor rejected: {pkg.name} ({reason})", root=root, params=params)
         elif code == "DEP-AUD-030":
             add(findings, "error", code, "Cargo.lock", f"forbidden package is reachable: {pkg.name}", root=root, params=params)
@@ -2295,38 +2336,22 @@ def audit_workspace(
     release_script: Path | None = None,
 ) -> tuple[dict[str, Any], int]:
     findings: list[Finding] = []
-    try:
-        policy = load_toml(policy_path)
-    except Exception as exc:
-        fatal_report = {"schema": "fss.dependency_audit.v4", "fatal": str(exc)}
+    policy, policy_issues = dependency_authority.load_policy_document(policy_path, root)
+    if policy is None:
+        fatal_report = {"schema": "fss.dependency_audit.v4", "fatal": "; ".join(f"{e.code} {e.target}: {e.message}" for e in policy_issues)}
         return fatal_report, 2
 
-    rules = policy.get("policy", {})
-    required_true = {
-        "closed_universe",
-        "direct_crates_must_be_allowlisted",
-        "transitive_closure_must_be_censused",
-        "new_external_dependency_requires_dep_record_and_adr",
-        "fss_crates_must_forbid_unsafe",
-        "release_resolution_must_be_locked_and_offline",
-        "build_scripts_may_not_use_network",
-        "serde_may_not_define_durable_bytes",
-        "hosted_ci_is_not_release_authority",
-        "asupersync_is_only_async_runtime",
-    }
-    required_false = {
-        "fss_unsafe_exceptions_allowed",
-        "c_or_cpp_ffi_allowed",
-        "dynamic_loading_allowed",
-        "foreign_runtime_production_boundary_allowed",
-        "runtime_acquisition_allowed",
-    }
-    for key in sorted(required_true):
-        if rules.get(key) is not True:
-            add(findings, "error", "DEP-AUD-001", policy_path, f"policy.{key} must be true", root=root, params={"key": key, "expected": True, "actual": rules.get(key)})
-    for key in sorted(required_false):
-        if rules.get(key) is not False:
-            add(findings, "error", "DEP-AUD-002", policy_path, f"policy.{key} must be false", root=root, params={"key": key, "expected": False, "actual": rules.get(key)})
+    rules = policy.get("policy") if isinstance(policy.get("policy"), dict) else {}
+    # The required flag values come from the constitution and the local qualification contract
+    # (dependency_authority.expected_policy_flags), never from a table in this script.
+    expected_flags = dependency_authority.expected_policy_flags(dependency_authority.live_authority())
+    if expected_flags is None:
+        add(findings, "error", "DEP-AUD-046", policy_path, "the required dependency policy flags cannot be derived from the constitution and the local qualification contract", root=root)
+    else:
+        for key, value in sorted(expected_flags.items()):
+            if rules.get(key) is not value:
+                code = "DEP-AUD-001" if value else "DEP-AUD-002"
+                add(findings, "error", code, policy_path, f"policy.{key} must be {'true' if value else 'false'}", root=root, params={"key": key, "expected": value, "actual": rules.get(key)})
 
     root_manifest_path = root / "Cargo.toml"
     if not root_manifest_path.is_file():
