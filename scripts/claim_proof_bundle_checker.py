@@ -43,18 +43,24 @@ Fail-closed verification invariants:
    when every bundle its rows cite passes and at least one citing row's own status is promoted;
    a passing claim cited only below that is counted as unpromoted. A retained bundle that no row
    cites is counted once per content digest and is never verified. 'draft'/'absent' support
-   no readiness level at all.
+   no readiness level at all. A run that fails closed (any error) reports no claim verified, and
+   a malformed qualification receipt is counted as invalid, never as passed.
 10. Crash freedom: JSON nested deeper than MAX_JSON_DEPTH levels, a NUL character in any path,
    and undecodable registry text are typed findings, never tracebacks; every walker over
    untrusted structure is iterative or depth-capped. Output escapes any character the output
    encoding cannot carry (lone surrogates, non-ASCII under an ASCII locale) instead of failing;
-   a closed stdout ends quietly with the verdict as exit code; only regular files are read (a
-   FIFO, device, or socket is refused before any read could block).
+   a report that cannot be written (closed pipe, full disk, closed descriptor) fails closed with
+   exit 1 and no traceback. Only regular files of at most MAX_INPUT_BYTES are read (a FIFO,
+   device, or socket is refused before any read could block; the files the stable-ID tombstone
+   index reads through stable_id_audit are checked first), and every bundle or receipt path,
+   absolute or relative, must resolve inside the audited root.
 11. Exact field sets: the bundle (schema exactly fss.proof_bundle.v1), its artifact entries, and
    every evidence document a realized class reads are validated against an allowlist of keys,
    compared byte for byte; any other key is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001. Every JSON
    document is parsed refusing a key declared twice in one object, at any nesting level
-   (ERR-CLAIM-EVIDENCE-DUPLICATE-KEY-001), and artifact digests are compared byte for byte.
+   (ERR-CLAIM-EVIDENCE-DUPLICATE-KEY-001), including every architecture/*.json the stable-ID
+   tombstone index reads (the index is then unavailable), and artifact digests are compared byte
+   for byte. Qualification receipts are validated against their registered schema.
 """
 
 from __future__ import annotations
@@ -156,7 +162,7 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Re-qualify the claim against the current active generation and bind an explicit generation identity",
     },
     ERR_UNREADABLE_INPUT: {
-        "trigger": "An input file or directory could not be read, decoded, or parsed as valid JSON/Markdown, or is structurally malformed",
+        "trigger": "An input file or directory could not be read (including a file over the per-file byte cap, MAX_INPUT_BYTES), decoded, or parsed as valid JSON/Markdown, or is structurally malformed (including a qualification receipt that violates schemas/release_qualification_receipt.v1.json)",
         "remediation": "Fix file permissions, encoding, or JSON/Markdown syntax errors",
     },
     ERR_EMPTY_INPUT: {
@@ -316,7 +322,7 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "remediation": "Remove the key or spell it exactly as its document's field set names it; an unrecognized field is never silently ignored",
     },
     ERR_EVIDENCE_DUPLICATE_KEY: {
-        "trigger": "A JSON document the checker reads (proof bundle, qualification receipt, retained evidence document, or registry) declares the same key twice in one object, at any nesting level; with a plain parser the last value would silently win",
+        "trigger": "A JSON document the checker reads (proof bundle, qualification receipt, retained evidence document, or registry, including every architecture/*.json the stable-ID tombstone index reads, which is then unavailable) declares the same key twice in one object, at any nesting level; with a plain parser the last value would silently win",
         "remediation": "Declare every key once; a document that says two things is never read as one of them",
     },
     ERR_BUNDLE_SCHEMA_INVALID: {
@@ -682,20 +688,37 @@ class _NotRegularFile(OSError):
     """A path that is not a regular file (FIFO, character or block device, socket, directory)."""
 
 
+# Per-file byte cap (review round 8, F3). Every document, registry, and retained artifact this checker
+# reads is small (the largest repository file it reads is well under 1 MiB); a file over the cap is
+# refused (ERR-CLAIM-PROOF-UNREADABLE-INPUT-001, or the reading site's own refusal) rather than read,
+# and a file that keeps growing cannot hold the checker at a read. At most cap + 1 bytes are read.
+MAX_INPUT_BYTES = 32 * 1024 * 1024
+
+
+class _InputTooLarge(OSError):
+    """A regular file larger than MAX_INPUT_BYTES."""
+
+
 def _read_regular_file(path: Path) -> bytes:
-    """Reads a regular file and nothing else (review N4). The path is opened without blocking and
-    checked on the open handle, so a FIFO, device, or socket is refused before any read could
-    block forever, and nothing can be swapped in between the check and the read."""
+    """Reads a regular file of at most MAX_INPUT_BYTES and nothing else (review N4, F3). The path is
+    opened without blocking and checked on the open handle, so a FIFO, device, or socket is refused
+    before any read could block forever, and nothing can be swapped in between the check and the
+    read; no more than the cap plus one byte is ever read, so a huge or growing file is refused."""
+    limit = MAX_INPUT_BYTES
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_CLOEXEC", 0))
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
             raise _NotRegularFile(f"'{path}' is not a regular file (a FIFO, device, socket, or directory is never read)")
         chunks: list[bytes] = []
+        total = 0
         while True:
-            chunk = os.read(fd, 1 << 20)
+            chunk = os.read(fd, min(1 << 20, limit + 1 - total))
             if not chunk:
                 return b"".join(chunks)
             chunks.append(chunk)
+            total += len(chunk)
+            if total > limit:
+                raise _InputTooLarge(f"'{path}' is larger than the per-file cap of {limit} bytes; it is refused rather than read")
     finally:
         os.close(fd)
 
@@ -913,16 +936,32 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
     resolutions = data.get("resolutions")
     if not isinstance(resolutions, list) or len(resolutions) == 0:
         return unavailable(f"'{display}' contains no resolutions")
-    # stable_id_audit reads every registries/*.md, docs/adr/*.md, and architecture/*.json; any that is
-    # not a regular file (a FIFO would block its read forever) leaves the index unavailable (review N4).
-    irregular = sorted(
-        sanitize_path(p, root)
+    # stable_id_audit (not editable here) reads every registries/*.md, docs/adr/*.md, and
+    # architecture/*.json with its own readers: any that is not a regular file within the byte cap
+    # leaves the index unavailable (review N4, F3), and every JSON file it parses is parsed here first
+    # with duplicate keys refused, since its plain json.loads keeps the last value (review round 8, F1:
+    # {"status": "tombstoned", "status": "active"} would un-tombstone an identifier).
+    read_by_index = sorted(
+        p
         for folder, pattern in (("registries", "*.md"), ("docs/adr", "*.md"), ("architecture", "*.json"))
         if (root / folder).is_dir()
-        for p in (root / folder).glob(pattern) if not _is_regular_file(p)
+        for p in (root / folder).glob(pattern)
     )
+    irregular = sorted(sanitize_path(p, root) for p in read_by_index if not _is_regular_file(p))
     if irregular:
         return unavailable(f"{irregular} are not regular files (a FIFO, device, socket, or directory is never read)")
+    oversized = sorted(sanitize_path(p, root) for p in read_by_index if p.stat().st_size > MAX_INPUT_BYTES)
+    if oversized:
+        return unavailable(f"{oversized} are larger than the per-file cap of {MAX_INPUT_BYTES} bytes")
+    for json_path in (p for p in read_by_index if p.suffix == ".json"):
+        shown = sanitize_path(json_path, root)
+        try:
+            _loads_json(_read_regular_file(json_path).decode("utf-8-sig"))
+        except _DuplicateKeyError as exc:
+            _, unusable = unavailable(f"'{shown}' declares the JSON key {exc.key!r} more than once; the index would read only its last value", key=repr(exc.key))
+            return set(), [_duplicate_key_finding(shown, "file", f"Registry '{shown}' (read by the stable-ID tombstone index)", exc.key)] + unusable
+        except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+            return unavailable(f"'{shown}' cannot be read as JSON: {exc}", error=str(exc))
     try:
         index = stable_id_audit._load_repository_index(root)
     except (stable_id_audit.AuditError, OSError, UnicodeDecodeError) as exc:
@@ -1216,6 +1255,91 @@ def _rank_of(level: str) -> int | None:
     return READINESS_LEVEL_RANKS.get(level)
 
 
+RECEIPT_SCHEMA_FILE = "schemas/release_qualification_receipt.v1.json"
+# The JSON Schema keywords the registered receipt schema uses; a schema using any other keyword
+# cannot be interpreted here, so every receipt is then invalid (fail closed).
+_RECEIPT_SCHEMA_KEYWORDS: frozenset[str] = frozenset({
+    "$schema", "$id", "title", "description", "type", "const", "enum", "pattern", "minLength", "maxLength",
+    "minItems", "items", "required", "properties", "additionalProperties", "anyOf",
+})
+_JSON_TYPES: dict[str, Any] = {
+    "object": lambda v: isinstance(v, dict),
+    "array": lambda v: isinstance(v, list),
+    "string": lambda v: isinstance(v, str),
+    "integer": lambda v: isinstance(v, int) and not isinstance(v, bool),
+    "number": lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+    "boolean": lambda v: isinstance(v, bool),
+    "null": lambda v: v is None,
+}
+
+
+def _json_equal(a: Any, b: Any) -> bool:
+    return type(a) is type(b) and a == b
+
+
+def _schema_subset_check(value: Any, schema: Any, where: str, unknown: list[str], other: list[tuple[str, str]]) -> None:
+    """Checks value against the keyword subset of _RECEIPT_SCHEMA_KEYWORDS. Recursion follows the
+    schema's own structure (a fixed, shallow file), never the instance's depth."""
+    label = where or "root"
+    if not isinstance(schema, dict) or set(schema) - _RECEIPT_SCHEMA_KEYWORDS:
+        other.append((label, f"schema node uses keywords this checker does not interpret: {sorted(set(schema) - _RECEIPT_SCHEMA_KEYWORDS) if isinstance(schema, dict) else schema!r}"))
+        return
+    if "anyOf" in schema:
+        for alternative in schema["anyOf"]:
+            alt_unknown: list[str] = []
+            alt_other: list[tuple[str, str]] = []
+            _schema_subset_check(value, alternative, where, alt_unknown, alt_other)
+            if not alt_unknown and not alt_other:
+                return
+        other.append((label, f"matches none of its alternatives (got {value!r:.80})"))
+        return
+    if "const" in schema and not _json_equal(value, schema["const"]):
+        other.append((label, f"is {value!r:.80}, not {schema['const']!r}"))
+        return
+    if "enum" in schema and not any(_json_equal(value, option) for option in schema["enum"]):
+        other.append((label, f"is {value!r:.80}, not one of {schema['enum']}"))
+        return
+    expected = schema.get("type")
+    if expected is not None and not _JSON_TYPES.get(expected, lambda v: False)(value):
+        other.append((label, f"is a JSON {type(value).__name__} ({value!r:.60}), not a {expected}"))
+        return
+    if isinstance(value, str):
+        if len(value) < schema.get("minLength", 0) or len(value) > schema.get("maxLength", len(value)):
+            other.append((label, f"has length {len(value)} outside [{schema.get('minLength', 0)}, {schema.get('maxLength', 'inf')}]"))
+        pattern = schema.get("pattern")
+        if isinstance(pattern, str) and re.fullmatch(pattern.removeprefix("^").removesuffix("$"), value) is None:
+            other.append((label, f"{value!r:.80} does not match {pattern}"))
+    elif isinstance(value, list):
+        if len(value) < schema.get("minItems", 0):
+            other.append((label, f"has {len(value)} items, fewer than {schema['minItems']}"))
+        if isinstance(schema.get("items"), dict):
+            for idx, item in enumerate(value):
+                _schema_subset_check(item, schema["items"], f"{where}[{idx}]", unknown, other)
+    elif isinstance(value, dict):
+        properties = schema.get("properties", {})
+        for name in schema.get("required", []):
+            if name not in value:
+                other.append((label, f"lacks the required field '{name}'"))
+        if schema.get("additionalProperties") is False:
+            unknown.extend(f"{where}.{key}" if where else key for key in value if key not in properties)
+        for name, sub_schema in properties.items():
+            if name in value:
+                _schema_subset_check(value[name], sub_schema, f"{where}.{name}" if where else name, unknown, other)
+
+
+def _receipt_schema_violations(data: dict[str, Any]) -> tuple[list[str], list[tuple[str, str]]]:
+    """(unknown keys, other violations) of a qualification receipt against the registered schema
+    (schemas/release_qualification_receipt.v1.json, the repository's own copy)."""
+    try:
+        schema = _loads_json(_read_regular_file(ROOT / RECEIPT_SCHEMA_FILE).decode("utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError) as exc:
+        return [], [("root", f"cannot be validated: the registered schema {RECEIPT_SCHEMA_FILE} is unreadable ({exc})")]
+    unknown: list[str] = []
+    other: list[tuple[str, str]] = []
+    _schema_subset_check(data, schema, "", unknown, other)
+    return unknown, other
+
+
 def _key_fold(key: str) -> str:
     """A key's lookalike class: NFKC, case-folded, with whitespace and control, format, and
     surrogate characters removed ("Status", " status", "status\u200b", fullwidth "ｓtatus")."""
@@ -1250,6 +1374,21 @@ def _verify_receipt_payload(
     """Checks a qualification receipt. Returns (findings, recognized status or None)."""
     findings: list[ClaimFinding] = []
     _refuse_lookalike_keys(data, RECEIPT_RELIED_FIELDS, f"Qualification receipt '{path_str}'", "root", path_str, findings)
+    # The registered schema (review round 8, F5): unknown keys are unknown fields; every other
+    # violation makes the receipt malformed, except those the specific checks below already report
+    # (missing required fields, the run and command status vocabularies, an empty command list).
+    unknown, violations = _receipt_schema_violations(data)
+    if unknown:
+        findings.append(_finding(
+            ERR_EVIDENCE_FIELD_UNKNOWN, path_str, "root",
+            f"Qualification receipt '{path_str}' declares field(s) {unknown!r} outside {RECEIPT_SCHEMA_FILE}",
+            {"unknown_fields": [repr(key) for key in unknown]},
+        ))
+    malformed = [
+        f"{label} {text}" for label, text in violations
+        if not (label in ("status", "commands") or re.fullmatch(r"commands\[\d+\]\.status", label)
+                or (label == "root" and text.startswith("lacks the required field")))
+    ]
     missing = [k for k in RECEIPT_REQUIRED_FIELDS if k not in data]
     if missing:
         findings.append(_finding(
@@ -1277,6 +1416,22 @@ def _verify_receipt_payload(
                 ))
             else:
                 command_statuses.append(cmd_status)
+    started, finished = data.get("startedAt"), data.get("finishedAt")
+    stamps = {name: stamp for name, stamp in (("startedAt", started), ("finishedAt", finished))
+              if isinstance(stamp, dict) and all(_JSON_TYPES["integer"](stamp.get(k)) for k in ("earliestNs", "latestNs"))}
+    for name, stamp in stamps.items():
+        if stamp["earliestNs"] > stamp["latestNs"]:
+            malformed.append(f"{name} has earliestNs {stamp['earliestNs']} after latestNs {stamp['latestNs']}")
+    if len(stamps) == 2 and stamps["finishedAt"]["latestNs"] < stamps["startedAt"]["earliestNs"]:
+        malformed.append("finishedAt lies wholly before startedAt")
+    if recognized == "passed" and command_statuses and "passed" not in command_statuses:
+        malformed.append("a 'passed' receipt records no passed command (every command skipped)")
+    if malformed:
+        findings.append(_finding(
+            ERR_UNREADABLE_INPUT, path_str, "root",
+            f"Qualification receipt '{path_str}' is malformed against {RECEIPT_SCHEMA_FILE}: {malformed[:10]}",
+            {"violations": malformed[:10]},
+        ))
     if recognized == "passed" and "failed" in command_statuses:
         findings.append(_finding(
             ERR_CLAIM_LEVEL_EXCEEDED, path_str, "status",
@@ -3787,17 +3942,15 @@ def verify_proof_bundle(
         ))
         return False, findings, None
 
-    if bundle_path.is_absolute():
-        resolved_path = bundle_path
-    else:
-        resolved_path = root / bundle_path
-        if not _is_contained(resolved_path, root):
-            findings.append(_finding(
-                ERR_PROOF_BUNDLE_NOT_FOUND, path_str, "path",
-                f"Referenced proof bundle '{bundle_path}' resolves outside the repository root",
-                {"path": str(bundle_path)},
-            ))
-            return False, findings, None
+    # Absolute and relative paths alike must resolve (symlinks followed) inside the root (review O9).
+    resolved_path = bundle_path if bundle_path.is_absolute() else root / bundle_path
+    if not _is_contained(resolved_path, root):
+        findings.append(_finding(
+            ERR_PROOF_BUNDLE_NOT_FOUND, path_str, "path",
+            f"Referenced proof bundle '{bundle_path}' resolves outside the repository root",
+            {"path": str(bundle_path)},
+        ))
+        return False, findings, None
 
     if not resolved_path.exists():
         findings.append(_finding(ERR_PROOF_BUNDLE_NOT_FOUND, path_str, "path", f"Referenced proof bundle does not exist on disk: '{path_str}'", {"path": path_str}))
@@ -4081,6 +4234,12 @@ def inspect_qualification_receipt(receipt_path: Path, root: Path) -> tuple[list[
     """Inspects a retained (uncited) qualification receipt: integrity failures are errors,
     a well-formed non-passing receipt is a typed warning."""
     path_str = sanitize_path(receipt_path, root)
+    if not _is_contained(receipt_path, root):  # e.g. a symlink under qualification-artifacts (review O9)
+        return [_finding(
+            ERR_PROOF_BUNDLE_NOT_FOUND, path_str, "path",
+            f"Qualification receipt '{path_str}' resolves outside the repository root; it is not inspected",
+            {"path": path_str},
+        )], None
     data, findings = _read_json_document(receipt_path, path_str, "qualification receipt")
     if data is None:
         return findings, None
@@ -4984,7 +5143,7 @@ def audit_claim_proof_bundles(
 
     stats = _new_scan_stats()
     surfaces_scanned: list[str] = []
-    receipts = {"inspected": 0, "passed": 0, "nonpassing": 0}
+    receipts = {"inspected": 0, "passed": 0, "nonpassing": 0, "invalid": 0}
     # Class bindings come from the owning registries; an explicit binding (Python API only, never
     # a claim row or bundle) may add ids no registry covers but never overrides a registry.
     naive = _naive_instant_finding(now, "audit")
@@ -5061,9 +5220,11 @@ def audit_claim_proof_bundles(
                         receipts["inspected"] += 1
                         r_findings, r_status = inspect_qualification_receipt(f_path, root)
                         findings.extend(r_findings)
-                        if r_status == "passed" and not any(f.severity == "error" for f in r_findings):
+                        if any(f.severity == "error" for f in r_findings):
+                            receipts["invalid"] += 1  # malformed or unreadable: never counted as passed (review F5)
+                        elif r_status == "passed":
                             receipts["passed"] += 1
-                        elif r_status is not None and r_status != "passed":
+                        elif r_status is not None:
                             receipts["nonpassing"] += 1
                     elif name.endswith(BUNDLE_SUFFIXES):
                         resolved = _citation_key(root, f_path)
@@ -5089,7 +5250,9 @@ def audit_claim_proof_bundles(
         "status": "pass" if is_valid else "fail",
         "error_count": error_count,
         "warning_count": warning_count,
-        "verified_bundles_count": sum(1 for o in outcomes.values() if o["ok"] and o["promoted"]),
+        # A run that fails closed reports no claim verified, whatever passed its own checks (review F5).
+        "verified_bundles_count": sum(1 for o in outcomes.values() if o["ok"] and o["promoted"]) if is_valid else 0,
+        "verification_withheld": None if is_valid else f"the run failed closed with {error_count} error(s); no claim is reported verified",
         "unpromoted_bundles_count": sum(1 for o in outcomes.values() if o["ok"] and not o["promoted"]),
         "bundles_checked": len(outcomes),
         "authoritative_classes_count": len(known_classes),
@@ -5102,6 +5265,7 @@ def audit_claim_proof_bundles(
         "receipts_inspected": receipts["inspected"],
         "receipts_passed": receipts["passed"],
         "receipts_nonpassing": receipts["nonpassing"],
+        "receipts_invalid": receipts["invalid"],
     }
 
     return is_valid, findings, summary
@@ -5138,9 +5302,10 @@ def _emit_report(args: argparse.Namespace, is_valid: bool, findings: list[ClaimF
                 f"[{tag}] Claim/proof-bundle audit: {summary['claim_rows_evaluated']} claim rows on "
                 f"{len(summary['claim_surfaces_scanned'])} surfaces ({summary['promoted_claim_rows']} promoted), "
                 f"{summary['verified_bundles_count']}/{summary['bundles_checked']} claims verified "
-                f"(counted per claim, all classes; {summary['unpromoted_bundles_count']} unpromoted, not counted as verified), "
+                + (f"(withheld: {summary['verification_withheld']}; " if summary["verification_withheld"] else "(")
+                + f"counted per claim, all classes; {summary['unpromoted_bundles_count']} unpromoted, not counted as verified), "
                 f"{summary['receipts_inspected']} qualification receipts inspected "
-                f"({summary['receipts_nonpassing']} non-passing), "
+                f"({summary['receipts_nonpassing']} non-passing, {summary['receipts_invalid']} invalid), "
                 f"{summary['authoritative_classes_count']} claim classes, "
                 f"{summary['error_count']} errors, {summary['warning_count']} warnings"
             )
@@ -5150,18 +5315,57 @@ def _emit_report(args: argparse.Namespace, is_valid: bool, findings: list[ClaimF
                     print(f"    Remediation: {f.remediation}")
 
 
-def main() -> int:
-    _encoding_safe_streams()
+def _flush_or_silence(stream: Any) -> bool:
+    """Flushes a standard stream. If it cannot be written (a closed pipe, a full disk, a closed
+    descriptor), its descriptor is pointed at /dev/null so that neither this nor the interpreter's
+    final flush can raise, and the failure is reported (review round 8, F2)."""
+    if stream is None:
+        return True
+    try:
+        stream.flush()
+        return True
+    except (OSError, ValueError):  # ValueError: a stream object that is already closed
+        pass
+    try:
+        fd = stream.fileno()
+    except (OSError, ValueError):
+        return False
+    devnull = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(devnull, fd)
+    finally:
+        os.close(devnull)
+    return False
+
+
+def _finish_streams(exit_code: int) -> int:
+    """The exit code, or 1 when stdout or stderr could not be written: an undelivered report fails closed."""
+    stdout_ok = _flush_or_silence(sys.stdout)
+    stderr_ok = _flush_or_silence(sys.stderr)
+    return exit_code if stdout_ok and stderr_ok else 1
+
+
+def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="FSS-011 Claim/proof-bundle consistency checker."
     )
     parser.add_argument("--root", type=Path, default=ROOT, help="Repository root path")
     parser.add_argument("--claims", type=Path, default=None, help="Path to architecture/claims.json")
-    parser.add_argument("--bundle", type=Path, default=None, help="Specific proof bundle to verify (relative to --root)")
+    parser.add_argument("--bundle", type=Path, default=None, help="Specific proof bundle to verify (relative to --root; an absolute path must lie inside it)")
     parser.add_argument("--as-of", type=_parse_as_of, default=None, help="Evaluate expiry as of this ISO-8601 instant (default: now, UTC)")
     parser.add_argument("--json", action="store_true", help="Output machine-readable JSON report")
     parser.add_argument("--quiet", action="store_true", help="Suppress non-error output")
-    args = parser.parse_args()
+    return parser.parse_args()
+
+
+def main() -> int:
+    """Runs the audit and writes its report. A report that cannot be written (EPIPE, ENOSPC, a closed
+    descriptor), including argparse's own help or usage output, fails closed: exit 1, no traceback."""
+    _encoding_safe_streams()
+    try:
+        args = _parse_args()
+    except SystemExit as exc:  # --help or a usage error: argparse's code, unless its output failed
+        return _finish_streams(exc.code if isinstance(exc.code, int) else (0 if exc.code is None else 2))
 
     is_valid, findings, summary = audit_claim_proof_bundles(
         root=args.root,
@@ -5169,18 +5373,12 @@ def main() -> int:
         target_bundle=args.bundle,
         now=args.as_of if args.as_of is not None else datetime.now(timezone.utc),
     )
-
+    exit_code = 0 if is_valid else 1
     try:
         _emit_report(args, is_valid, findings, summary)
-        if sys.stdout is not None:
-            sys.stdout.flush()
-    except BrokenPipeError:
-        # The reader closed the pipe (review N5): the verdict stands and is the exit code; what is
-        # left unread goes to /dev/null so the interpreter's final flush cannot fail a second time.
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, sys.stdout.fileno())
-        os.close(devnull)
-    return 0 if is_valid else 1
+    except OSError:  # the report could not be written; its remainder is silenced below
+        exit_code = 1
+    return _finish_streams(exit_code)
 
 
 if __name__ == "__main__":

@@ -780,13 +780,17 @@ class TestCliEndToEndFailures(unittest.TestCase):
 
     def test_cli_fails_on_corrupt_bundle_arg(self) -> None:
         """CLI with --bundle pointing to corrupt file exits 1."""
-        with tempfile.NamedTemporaryFile(suffix=".bundle.json", mode="w", delete=False) as f:
+        # Round 8 (O9): the file lies inside --root; a path outside the root is refused before reading.
+        root_dir = tempfile.mkdtemp()
+        with tempfile.NamedTemporaryFile(suffix=".bundle.json", mode="w", delete=False, dir=root_dir) as f:
             f.write("{ corrupt json")
             f_path = f.name
         try:
             cmd = [
                 sys.executable,
                 str(ROOT / "scripts/claim_proof_bundle_checker.py"),
+                "--root",
+                root_dir,
                 "--bundle",
                 f_path,
             ]
@@ -6122,10 +6126,9 @@ class TestRound6DuplicateKeys(unittest.TestCase):
                     entry["digest"] = compute_sha256(raw)
             write_slo_bundle(root, data)
             promote_slos_row(root, SLO_CLAIM_ID, SLO_BUNDLE_REL)
-            result = run_bytes_cli([b"--root", str(root).encode(), b"--as-of", b"2026-09-02T00:00:00Z"])
-            self.assertEqual(result.returncode, 1, result.stdout[-400:])
-            self.assertIn(DUPLICATE_KEY.encode(), result.stdout)
-            self.assertIn(b"0/1 claims verified", result.stdout)
+            rc, errors, summary = run_json_cli(root)  # round 8: exact finding set, not assertIn
+            self.assertEqual((rc, errors), (1, sorted([DUPLICATE_KEY, ERR_CLAIM_LEVEL_EXCEEDED])))
+            self.assertEqual((summary["verified_bundles_count"], summary["bundles_checked"]), (0, 1))
 
 
 RETENTION_REL_FOR_TESTS = "qualification-artifacts/lane/qualification-receipt.json"
@@ -6218,8 +6221,12 @@ class TestRound6Streams(unittest.TestCase):
             self.fail(f"the checker hung (killed after 90 s): {extra}")
 
     def test_fifo_in_place_of_a_file_is_refused_not_read(self) -> None:
-        for rel in ("registries/CLAIMS.md", "architecture/claims.json", "registries/SLOS.md", "architecture/invariants.json",
-                    "qualification-artifacts/lane/qualification-receipt.json", "README.md"):
+        index_and_read = sorted([TOMBSTONE_UNAVAILABLE, ERR_UNREADABLE_INPUT])
+        for rel, expected in (
+            ("registries/CLAIMS.md", index_and_read), ("architecture/claims.json", index_and_read),
+            ("registries/SLOS.md", index_and_read), ("architecture/invariants.json", index_and_read),
+            ("qualification-artifacts/lane/qualification-receipt.json", [ERR_UNREADABLE_INPUT]), ("README.md", [ERR_UNREADABLE_INPUT]),
+        ):
             with self.subTest(file=rel), tempfile.TemporaryDirectory() as tmpdir:
                 root = build_fixture_root(Path(tmpdir))
                 path = root / rel
@@ -6227,10 +6234,11 @@ class TestRound6Streams(unittest.TestCase):
                 if path.exists():
                     path.unlink()
                 os.mkfifo(path)
-                result = self.run_cli_with_timeout(root)
+                result = self.run_cli_with_timeout(root, "--json")
                 self.assertEqual(result.returncode, 1, (result.stdout[-300:], result.stderr[-300:]))
                 self.assertNotIn(b"Traceback", result.stderr)
-                self.assertIn(b"ERR-", result.stdout)
+                report = json.loads(result.stdout)  # round 8: exact finding set, not assertIn(b"ERR-")
+                self.assertEqual(sorted({f["code"] for f in report["findings"] if f["severity"] == "error"}), expected)
 
     def test_read_regular_file_refuses_a_fifo_without_blocking(self) -> None:
         code = ("import sys; sys.path.insert(0, sys.argv[1]); import claim_proof_bundle_checker as c, os\n"
@@ -6300,6 +6308,205 @@ class TestRound6SloErrorsRows(unittest.TestCase):
                 self.assertNotIn(gone, rows[0])
                 self.assertIn(FIELD_UNKNOWN, rows[0])
                 self.assertNotIn("shadowed", cpb.DIAGNOSTIC_REGISTRY[code]["trigger"])
+
+
+# ---------------------------------------------------------------------------
+# Round-8 review, 30.87.2: F1 index duplicate keys, O9 containment, F5 summary honesty and receipts,
+# F2 output streams, F3 per-file byte cap (exact finding sets on --json output)
+# ---------------------------------------------------------------------------
+
+TOMBSTONE_UNAVAILABLE = "ERR-CLAIM-PROOF-TOMBSTONE-INDEX-UNAVAILABLE-001"
+BUNDLE_NOT_FOUND = "ERR-CLAIM-PROOF-BUNDLE-NOT-FOUND-001"
+CHECKER_SCRIPT = ROOT / "scripts/claim_proof_bundle_checker.py"
+
+
+def run_json_cli(root: Path, *extra: str, timeout: int = 120):
+    """(exit code, sorted error finding ids, summary) of a --json CLI run."""
+    cmd = [sys.executable, "-B", str(CHECKER_SCRIPT), "--root", str(root), "--as-of", "2026-09-02T00:00:00Z", "--json", *extra]
+    result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+    report = json.loads(result.stdout)
+    return result.returncode, sorted({f["code"] for f in report["findings"] if f["severity"] == "error"}), report["summary"]
+
+
+def plant_receipt(root: Path, doc: object, rel: str = RETENTION_REL_FOR_TESTS) -> Path:
+    path = root / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc), encoding="utf-8")
+    return path
+
+
+class TestRound8IndexDuplicateKeys(unittest.TestCase):
+    """F1 (executed exploit): stable_id_audit parses architecture/*.json with plain json.loads, so a
+    duplicate 'status' un-tombstoned an identifier; the checker now parses those files first."""
+
+    def run_exploit(self, extra_json: bytes):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = promoted_slo_root(Path(tmpdir), measurement={"generation": "FSS-990"}, bundle={"generation": "FSS-990"})
+            (root / "architecture/extra.json").write_bytes(extra_json)
+            return run_json_cli(root)
+
+    def test_f1_duplicate_status_in_an_index_json_is_refused(self) -> None:
+        rc, errors, summary = self.run_exploit(b'{"items":[{"id":"FSS-990","status":"tombstoned","status":"active"}]}')
+        self.assertEqual((rc, errors), (1, sorted([DUPLICATE_KEY, TOMBSTONE_UNAVAILABLE])))
+        self.assertEqual(summary["verified_bundles_count"], 0)
+
+    def test_f1_control_a_single_tombstoned_status_is_stale(self) -> None:
+        rc, errors, _ = self.run_exploit(b'{"items":[{"id":"FSS-990","status":"tombstoned"}]}')
+        self.assertEqual((rc, errors), (1, [ERR_STALE_GENERATION]))
+
+    def test_f1_api_names_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            (root / "architecture/extra.json").write_bytes(b'{"a": 1, "a": 2}')
+            _, findings = cpb.load_tombstone_index(root)
+            self.assertEqual(sorted(codes(findings)), sorted([DUPLICATE_KEY, TOMBSTONE_UNAVAILABLE]))
+            self.assertIn("architecture/extra.json", [f.file for f in findings if f.code == DUPLICATE_KEY][0])
+
+
+class TestRound8Containment(unittest.TestCase):
+    """O9: absolute paths, in-root symlinks pointing outside, and receipts are held to the root."""
+
+    def test_o9_passing_receipt_outside_the_root(self) -> None:
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            receipt = plant_receipt(Path(outside), make_receipt(), "qualification-receipt.json")
+            self.assertEqual(run_json_cli(root, "--bundle", str(receipt))[:2], (1, [BUNDLE_NOT_FOUND]))
+            ok, findings, _ = verify_proof_bundle(bundle_path=receipt, root=root, known_classes=_known_classes(), now=FIXED_NOW)
+            self.assertEqual((ok, error_code_set(findings)), (False, [BUNDLE_NOT_FOUND]))
+
+    def test_o9_absolute_in_root_symlink_pointing_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            target = plant_receipt(Path(outside), make_receipt(), "qualification-receipt.json")
+            link = root / "qualification-artifacts/link.bundle.json"
+            link.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(target, link)
+            self.assertEqual(run_json_cli(root, "--bundle", str(link))[:2], (1, [BUNDLE_NOT_FOUND]))
+
+    def test_o9_retained_receipt_symlinked_outside(self) -> None:
+        with tempfile.TemporaryDirectory() as outside, tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            target = plant_receipt(Path(outside), make_receipt(), "qualification-receipt.json")
+            link = root / RETENTION_REL_FOR_TESTS
+            link.parent.mkdir(parents=True, exist_ok=True)
+            os.symlink(target, link)
+            rc, errors, summary = run_json_cli(root)
+            self.assertEqual((rc, errors, summary["receipts_passed"]), (1, [BUNDLE_NOT_FOUND], 0))
+
+    def test_o9_absolute_path_inside_the_root_still_verifies(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = promoted_slo_root(Path(tmpdir))
+            rc, errors, summary = run_json_cli(root, "--bundle", str(root / SLO_BUNDLE_REL))
+            self.assertEqual((rc, errors), (0, []))
+
+
+class TestRound8SummaryAndReceipts(unittest.TestCase):
+    """F5: the summary never reports a claim verified in a run that fails closed, and a malformed
+    uncited receipt is counted as invalid, never as passed."""
+
+    def test_f5_failed_run_reports_no_claim_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = promoted_slo_root(Path(tmpdir))
+            self.assertEqual(run_json_cli(root)[2]["verified_bundles_count"], 1)  # control: the claim verifies
+            (root / "architecture/stable_id_resolution.json").write_text('{"schema": "other"}', encoding="utf-8")
+            rc, errors, summary = run_json_cli(root)
+            self.assertEqual((rc, errors, summary["verified_bundles_count"]), (1, [TOMBSTONE_UNAVAILABLE], 0))
+            self.assertIn("failed closed", summary["verification_withheld"])
+            text = run_bytes_cli([b"--root", str(root).encode(), b"--as-of", b"2026-09-02T00:00:00Z"])
+            self.assertIn(b"0/1 claims verified (withheld: the run failed closed", text.stdout)
+            self.assertNotIn(b"1/1 claims verified", text.stdout)
+
+    def test_f5_malformed_receipts_are_invalid_not_passed(self) -> None:
+        good = make_receipt()
+        for label, doc in (
+            ("receiptId 5", {**good, "receiptId": 5}),
+            ("startedAt 'yesterday'", {**good, "startedAt": "yesterday"}),
+            ("toolchain null", {**good, "toolchain": None}),
+            ("command without argv and outputDigest", {**good, "commands": [{"status": "passed"}]}),
+            ("every command skipped", make_receipt(command_status="skipped")),
+            ("finishedAt before startedAt", {**good, "startedAt": {"earliestNs": 5, "latestNs": 5, "clockBasis": "host-realtime"},
+                                             "finishedAt": {"earliestNs": 1, "latestNs": 1, "clockBasis": "host-realtime"}}),
+            ("laneId pattern", {**good, "laneId": "lane one"}),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                root = build_fixture_root(Path(tmpdir))
+                plant_receipt(root, doc)
+                rc, errors, summary = run_json_cli(root)
+                self.assertEqual((rc, errors), (1, [ERR_UNREADABLE_INPUT]))
+                self.assertEqual((summary["receipts_passed"], summary["receipts_invalid"]), (0, 1))
+
+    def test_f5_unknown_receipt_fields_are_unknown_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            plant_receipt(root, {**make_receipt(), "zz": 1})
+            rc, errors, summary = run_json_cli(root)
+            self.assertEqual((rc, errors, summary["receipts_invalid"]), (1, [FIELD_UNKNOWN], 1))
+
+    def test_f5_valid_receipts_are_counted(self) -> None:
+        for status, counts in (("passed", (1, 0, 0)), ("failed", (0, 1, 0))):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmpdir:
+                root = build_fixture_root(Path(tmpdir))
+                plant_receipt(root, make_receipt(status=status, command_status=status))
+                rc, errors, summary = run_json_cli(root)
+                self.assertEqual((rc, errors), (0, []))
+                self.assertEqual((summary["receipts_passed"], summary["receipts_nonpassing"], summary["receipts_invalid"]), counts)
+
+
+class TestRound8OutputStreams(unittest.TestCase):
+    """F2: help, usage errors, and reports that cannot be written fail closed with exit 1 and no traceback."""
+
+    def test_f2_help_into_a_closed_pipe(self) -> None:
+        proc = subprocess.Popen([sys.executable, "-B", str(CHECKER_SCRIPT), "--help"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc.stdout.close()
+        err = proc.stderr.read()
+        proc.stderr.close()
+        proc.wait(timeout=60)
+        self.assertNotIn(b"Traceback", err)
+        self.assertEqual(proc.returncode, 1, err[-300:])
+
+    def test_f2_usage_error_with_stderr_closed(self) -> None:
+        proc = subprocess.Popen([sys.executable, "-B", str(CHECKER_SCRIPT), "--frobnicate"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc.stderr.close()
+        out = proc.stdout.read()
+        proc.stdout.close()
+        proc.wait(timeout=60)
+        self.assertNotIn(b"Traceback", out)
+        self.assertEqual(proc.returncode, 1)
+
+    @unittest.skipUnless(os.path.exists("/dev/full"), "needs /dev/full")
+    def test_f2_stdout_on_a_full_device(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, open("/dev/full", "wb") as full:
+            root = promoted_slo_root(Path(tmpdir))
+            result = subprocess.run([sys.executable, "-B", str(CHECKER_SCRIPT), "--root", str(root), "--as-of", "2026-09-02T00:00:00Z"],
+                                    stdout=full, stderr=subprocess.PIPE, timeout=120)
+            self.assertNotIn(b"Traceback", result.stderr)
+            self.assertEqual(result.returncode, 1, result.stderr[-300:])  # the audit passes; the report was not delivered
+
+
+class TestRound8ByteCap(unittest.TestCase):
+    """F3: a per-file byte cap; at most cap + 1 bytes are read (sparse files: nothing is allocated on disk)."""
+
+    def test_f3_file_over_the_cap_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir, mock.patch.object(cpb, "MAX_INPUT_BYTES", 1024):
+            big = Path(tmpdir) / "big.bundle.json"
+            with open(big, "wb") as handle:
+                handle.truncate(1 << 30)  # a sparse 1 GiB file
+            with self.assertRaises(cpb._InputTooLarge):
+                cpb._read_regular_file(big)
+            data, findings = cpb._read_json_document(big, "big.bundle.json", "proof bundle")
+            self.assertEqual((data, codes(findings)), (None, [ERR_UNREADABLE_INPUT]))
+            self.assertIn("per-file cap of 1024 bytes", findings[0].message)
+            exact = Path(tmpdir) / "exact.bin"
+            with open(exact, "wb") as handle:
+                handle.truncate(1024)
+            self.assertEqual(len(cpb._read_regular_file(exact)), 1024)
+
+    def test_f3_cli_refuses_a_bundle_over_the_real_cap(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = promoted_slo_root(Path(tmpdir))
+            with open(root / SLO_BUNDLE_REL, "r+b") as handle:
+                handle.truncate(cpb.MAX_INPUT_BYTES + 1)  # sparse: the tail is zeros
+            self.assertEqual(run_json_cli(root)[:2], (1, [ERR_UNREADABLE_INPUT]))
 
 
 if __name__ == "__main__":
