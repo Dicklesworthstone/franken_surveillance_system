@@ -103,7 +103,9 @@ class TestLiveRepoConsistency(unittest.TestCase):
         # 73 = 72 + SCHEMA-ROBOT-DOCS-001 (schemas/robot_docs.v1.json).
         # 74 = 73 + SCHEMA-SENSOR-TAMPER-STATUS-001 (schemas/sensor_tamper_status.v1.json, fss-2uftm).
         # 75 = 74 + SCHEMA-AGENT-DELTA-002 (schemas/agent_meaningful_delta.v2.json, fss-2uftm).
-        self.assertEqual(summary["schemas_count"], 75)
+        # 76 = 75 + SCHEMA-JPEG-FIXTURE-MANIFEST-001 (schemas/jpeg_fixture_manifest.v1.json, fss-2h5zq.5).
+        # 77 = 76 + SCHEMA-MJPEG-FIXTURE-MANIFEST-001 (schemas/mjpeg_fixture_manifest.v1.json, fss-2h5zq.5).
+        self.assertEqual(summary["schemas_count"], 77)
         self.assertGreater(summary["known_active_ids"], 800)
         self.assertGreaterEqual(summary["tombstone_ids"], 14)
 

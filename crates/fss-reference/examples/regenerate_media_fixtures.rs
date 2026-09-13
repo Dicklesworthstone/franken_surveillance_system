@@ -1,10 +1,13 @@
 #![forbid(unsafe_code)]
-//! Deterministic regeneration tool for synthetic H.264 and rtpdump media fixtures.
+//! Deterministic regeneration tool for synthetic H.264/rtpdump AND baseline JPEG/MJPEG media fixtures.
 //!
-//! Run with:
+//! Run with (no environment variable such as `EXPORT_MEDIA_FIXTURES` is needed):
 //! ```sh
-//! cargo run -p fss-reference --example regenerate_media_fixtures
+//! cargo run -p fss-reference --example regenerate_media_fixtures --locked --offline
 //! ```
+//!
+//! Every JPEG/MJPEG file written is read back and its sha256 printed, so a remote run can be
+//! compared byte-for-byte with the committed fixtures.
 
 use std::error::Error;
 use std::fs;
@@ -12,9 +15,9 @@ use std::path::{Path, PathBuf};
 
 use fss_reference::media_fixture::{
     H264FixtureParams, RtpdumpParams, build_h264_manifest_json, build_rtp_manifest_json,
-    generate_h264_annexb, generate_rtpdump_clean, generate_rtpdump_duplicate,
+    compute_sha256_hex, generate_h264_annexb, generate_rtpdump_clean, generate_rtpdump_duplicate,
     generate_rtpdump_large_gap, generate_rtpdump_loss, generate_rtpdump_reorder,
-    generate_rtpdump_ssrc_reset, generate_rtpdump_truncated_last_record,
+    generate_rtpdump_ssrc_reset, generate_rtpdump_truncated_last_record, write_all_media_fixtures,
 };
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -60,7 +63,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     for (fname, fix) in rtp_fixtures {
         fs::write(rtp_dir.join(fname), &fix.bytes)?;
-        println!("Wrote tests/fixtures/media/rtp/{} (sha256: {})", fname, fix.sha256);
+        println!(
+            "Wrote tests/fixtures/media/rtp/{} (sha256: {})",
+            fname, fix.sha256
+        );
     }
 
     let all_fixtures = [
@@ -69,6 +75,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     let rtp_manifest = build_rtp_manifest_json(&all_fixtures, &rtp_params);
     fs::write(rtp_dir.join("fixture_manifest.json"), rtp_manifest)?;
     println!("Wrote tests/fixtures/media/rtp/fixture_manifest.json");
+
+    let media_dir = repo_root.join("tests/fixtures/media");
+    write_all_media_fixtures(&media_dir)?;
+    for sub in ["jpeg", "mjpeg"] {
+        let mut paths = fs::read_dir(media_dir.join(sub))?
+            .map(|entry| entry.map(|e| e.path()))
+            .collect::<Result<Vec<PathBuf>, _>>()?;
+        paths.sort();
+        for path in paths {
+            let written = fs::read(&path)?;
+            println!(
+                "Wrote {} (sha256: {})",
+                path.strip_prefix(&repo_root)?.display(),
+                compute_sha256_hex(&written)
+            );
+        }
+    }
 
     println!("All media fixtures and manifests successfully regenerated.");
     Ok(())

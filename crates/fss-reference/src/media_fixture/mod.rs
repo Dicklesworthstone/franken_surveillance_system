@@ -5,11 +5,18 @@
 //! NAL syntax, synthetic slice payloads, and packet framing; pictures are not decodable.
 
 pub mod h264;
+pub mod jpeg;
 pub mod rtpdump;
 
 pub use h264::{
     H264AnnexBStream, H264FixtureParams, NalUnitSpan, SyntheticNal, build_h264_manifest_json,
     generate_h264_annexb,
+};
+pub use jpeg::{
+    CustomMarker, GeneratedJpegFixture, GeneratedMjpegFixture, GeneratedMjpegFrame, JpegConfig,
+    JpegError, Subsampling, build_jpeg_manifest_json, build_mjpeg_manifest_json, compute_psnr,
+    compute_sha256_hex, encode_jpeg, encode_mjpeg, generate_all_jpeg_fixtures,
+    generate_all_mjpeg_fixtures, source_pixels, write_all_media_fixtures,
 };
 pub use rtpdump::{
     RD_HDR_LEN, RD_PKT_HDR_LEN, RTPDUMP_MAGIC_HEADER, RtpdumpFixture, RtpdumpPacketDesc,
