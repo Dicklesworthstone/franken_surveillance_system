@@ -38,7 +38,8 @@ mod time;
 
 pub use abstraction::{
     evaluate_negative_read, AgentAbstractionLayer, DerivedBelief, DerivedBeliefParams,
-    NegativeReadClaim, NegativeReadOutcome, WorldFact, WorldFactKind,
+    NegativeReadClaim, NegativeReadOutcome, SourceEvidenceParams, SourceEvidenceRecord,
+    WorldFact, WorldFactKind,
     AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
     AGENT_ABSTRACTIONS_FREEZE_DIGEST, AGENT_ABSTRACTIONS_GENERATION, CANONICAL_LAYERS,
 };

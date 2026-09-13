@@ -13,7 +13,8 @@ use fss_core::{
     CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest, ContractError,
     CoverageContinuity, CoverageStopReason, CoverageWitness, DerivedBelief,
     DerivedBeliefParams, Generation, KnowledgeState, LedgerAnchor, NegativeReadClaim,
-    NegativeReadOutcome, Plane, ProvenanceClass, TimestampNs, WorldFact, WorldFactKind,
+    NegativeReadOutcome, Plane, ProvenanceClass, SourceEvidenceParams, SourceEvidenceRecord,
+    TimestampNs, WorldFact, WorldFactKind,
     AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
 };
 
@@ -1122,6 +1123,313 @@ fn test_agent_abstraction_pinned_freeze_digest_and_generation() -> Result<(), Bo
         AGENT_ABSTRACTION_FREEZE_DIGEST,
         "sha256:8fb60f6b30d30bfe2ada8290daddc19550ee11f85d4d58a2c0da1ae7098a8496"
     );
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_row_properties() -> Result<(), Box<dyn Error>> {
+    let layer = AgentAbstractionLayer::SourceEvidence;
+    assert_eq!(layer.id(), "AGT-LAYER-002");
+    assert_eq!(layer.name(), "source_evidence");
+    assert_eq!(format!("{layer}"), "source_evidence");
+    assert_eq!(layer.owner(), "fss-capture/fss-media/fss-chronicle");
+    assert_eq!(
+        layer.agent_question(),
+        "What exact packets, files, measurements, continuity, and capture-time intervals exist?"
+    );
+    assert_eq!(
+        layer.output(),
+        "Immutable sensor capsules, source objects, continuity and time evidence."
+    );
+    assert_eq!(
+        layer.prohibition(),
+        "Cannot promote decode or model output into source evidence."
+    );
+    assert_eq!(layer.invariant(), "INV-003");
+    assert_eq!(layer.status(), "normative");
+    assert_eq!(layer.plane(), Plane::Authority);
+    assert_eq!(layer.tower_level(), 1);
+    assert!(layer.may_claim_authority());
+    assert!(!layer.may_authorize_effects());
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.front_gate");
+    let source_digest = ContentDigest::sha256(b"raw-h264-nalu-data");
+    let continuity_digest = ContentDigest::sha256(b"rtcp-continuity-witness-sequence-42");
+
+    let record = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:packet:front_gate:0042".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Raw H.264 capture packets from front gate optical sensor".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: Some(continuity_digest),
+        retention_forbidden_reason: None,
+    })?;
+
+    assert_eq!(record.evidence_id, "source:packet:front_gate:0042");
+    assert_eq!(record.anchor, anchor);
+    assert_eq!(record.generation, Generation(1));
+    assert_eq!(record.provenance, ProvenanceClass::Observed);
+    assert_eq!(record.source_bytes_digest, Some(source_digest));
+    assert_eq!(record.continuity_witness, Some(continuity_digest));
+    assert_eq!(record.retention_forbidden_reason, None);
+    assert_eq!(record.layer(), AgentAbstractionLayer::SourceEvidence);
+    assert_eq!(record.plane(), Plane::Authority);
+    assert!(record.may_claim_authority());
+    assert!(!record.may_authorize_effects());
+
+    let kcell = record.to_knowledge_cell();
+    assert_eq!(kcell.claim_id, "source:packet:front_gate:0042");
+    assert_eq!(kcell.knowledge_state, KnowledgeState::Known);
+    assert_eq!(kcell.provenance, ProvenanceClass::Observed);
+    assert_eq!(kcell.evidence, vec![source_digest]);
+
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.restricted_area");
+    let continuity_digest = ContentDigest::sha256(b"rtcp-continuity-witness-restricted");
+
+    let record = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:packet:restricted:0099".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Physical sensor reading where raw video retention is legally forbidden".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: None,
+        continuity_witness: Some(continuity_digest),
+        retention_forbidden_reason: Some("Statutory privacy retention prohibition on private quarters (INV-003)".to_string()),
+    })?;
+
+    assert_eq!(record.source_bytes_digest, None);
+    assert!(record.retention_forbidden_reason.is_some());
+
+    let kcell = record.to_knowledge_cell();
+    assert!(kcell.evidence.is_empty());
+    assert_eq!(kcell.knowledge_state, KnowledgeState::Known);
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.cam01");
+    let source_digest = ContentDigest::sha256(b"raw-packet-bytes");
+
+    // 1. Empty ID rejected
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Valid statement".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "invalid_identifier" => {}
+        Err(err) => return Err(format!("expected invalid_identifier, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    // 2. Empty anchor site lineage rejected
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: LedgerAnchor::genesis(""),
+        generation: Generation(1),
+        statement: "Valid statement".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "invalid_identifier" => {}
+        Err(err) => return Err(format!("expected invalid_identifier, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    // 3. Zero generation rejected
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(0),
+        statement: "Valid statement".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "generation_conflict" => {}
+        Err(err) => return Err(format!("expected generation_conflict, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    // 4. Empty statement rejected
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "invalid_identifier" => {}
+        Err(err) => return Err(format!("expected invalid_identifier, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    // 5. INV-003 violation: neither source bytes nor retention reason
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Missing both source and retention exemption".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: None,
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "evidence_required" => {}
+        Err(err) => return Err(format!("expected evidence_required, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    // 6. Prohibited promotion: decoded frame in statement
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Decoded frame RGB pixels from camera".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
+        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    // 7. Prohibited promotion: model output in statement
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Model output detections".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
+        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    // 8. Prohibited promotion: VLM inference in statement
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "VLM inference summary of scene".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
+        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    // 9. Prohibited promotion: non-Observed provenance (Derived)
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Valid statement".to_string(),
+        provenance: ProvenanceClass::Derived,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
+        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    // 10. Prohibited promotion: non-Observed provenance (Predicted)
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Valid statement".to_string(),
+        provenance: ProvenanceClass::Predicted,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: None,
+        retention_forbidden_reason: None,
+    });
+    match res {
+        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
+        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Ok(_) => return Err("expected error, got Ok".into()),
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("camera.sensor.dock_bay");
+    let source_digest = ContentDigest::sha256(b"dock-bay-payload-bytes");
+    let continuity_digest = ContentDigest::sha256(b"dock-bay-continuity");
+
+    let record = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:packet:dock_bay:0128".to_string(),
+        anchor,
+        generation: Generation(3),
+        statement: "Dock bay source packets with continuity witness".to_string(),
+        provenance: ProvenanceClass::Observed,
+        source_bytes_digest: Some(source_digest),
+        continuity_witness: Some(continuity_digest),
+        retention_forbidden_reason: None,
+    })?;
+
+    let mut encoder = CanonicalEncoder::new();
+    record.encode_canonical(&mut encoder);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let decoded = SourceEvidenceRecord::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, record);
+    assert_eq!(decoded.evidence_id, record.evidence_id);
+    assert_eq!(decoded.anchor, record.anchor);
+    assert_eq!(decoded.generation, record.generation);
+    assert_eq!(decoded.statement, record.statement);
+    assert_eq!(decoded.provenance, record.provenance);
+    assert_eq!(decoded.source_bytes_digest, record.source_bytes_digest);
+    assert_eq!(decoded.continuity_witness, record.continuity_witness);
+    assert_eq!(decoded.retention_forbidden_reason, record.retention_forbidden_reason);
+
     Ok(())
 }
 

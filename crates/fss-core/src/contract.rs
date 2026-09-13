@@ -2623,6 +2623,8 @@ pub enum ContractError {
     DerivedBeliefKnownForbidden,
     /// An unknown abstraction layer identifier or name was encountered.
     UnknownAbstractionLayer(String),
+    /// Attempted to promote decode or model output into source evidence (AGT-LAYER-002, INV-003).
+    ProhibitedEvidencePromotion,
 }
 
 impl ContractError {
@@ -2666,6 +2668,7 @@ impl ContractError {
             Self::DerivedBeliefMissingAnchor => "derived_belief_missing_anchor",
             Self::DerivedBeliefKnownForbidden => "derived_belief_known_forbidden",
             Self::UnknownAbstractionLayer(_) => "unknown_abstraction_layer",
+            Self::ProhibitedEvidencePromotion => "prohibited_evidence_promotion",
         }
     }
 }
