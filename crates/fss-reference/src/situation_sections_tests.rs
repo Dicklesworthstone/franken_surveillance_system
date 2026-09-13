@@ -254,7 +254,10 @@ fn optional_omission_is_receipted_and_hydratable() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn handoff_root_covers_the_complete_publication() -> Result<(), Box<dyn Error>> {
-    let publication = project_reference_situation(situation(false)?, &spec(10_000))?;
+    // A handoff needs a situation a compile path sealed; the fixture stands in for one.
+    let mut sealed = situation(false)?;
+    sealed.seal_effect_bindings()?;
+    let publication = project_reference_situation(sealed, &spec(10_000))?;
     let handoff = seal_reference_publication_handoff(
         &publication,
         HandoffId::parse("handoff:sections")?,

@@ -1814,8 +1814,9 @@ fn hand_built_proof_roots_are_refused_by_projection_and_classification()
         projected.map(|publication| publication.publication_digest)
     );
 
-    // Route 2: the same capsule and proof roots, re-wrapped without the binding, inside a
-    // publication whose digest still matches (the digest covers the capsule, not the binding).
+    // Route 2: the same capsule and proof roots, re-wrapped without the binding, inside an
+    // otherwise verified publication. The publication digest commits to the seal, so the re-wrap
+    // no longer matches it, and verification refuses the unbound effect before comparing digests.
     result_variant.effect_bound = true;
     let mut forged = publication(&result_variant)?;
     let arbitrary = ContentDigest::sha256(b"effect-outcome");
@@ -1824,7 +1825,7 @@ fn hand_built_proof_roots_are_refused_by_projection_and_classification()
         forged.situation.capsule.clone(),
         forged.situation.proof_roots.clone(),
     );
-    assert_eq!(forged.computed_digest()?, forged.publication_digest);
+    assert_ne!(forged.computed_digest()?, forged.publication_digest);
     let verified = forged.verify();
     assert!(
         matches!(
@@ -2183,55 +2184,119 @@ fn publication_with_self_rooted_cell(
     )?)
 }
 
-/// Review probe P5: a hand-built cell whose claim identity reads as the effect or obligation
-/// namespace without being spelled exactly would slip past the typed rules (a capital `Effect`
-/// with a resolved hypothesis reached the event rule's terminal transition), so it is refused.
+/// Review probes P5 and RR2: a reserved namespace spelled as a plural, or with no tail, would slip
+/// past the typed rules, so it is refused as a look-alike; exact-prefix edge spellings stay in the
+/// effect namespace, so a `known` one is refused as unbound.
 #[test]
-fn confusable_reserved_claim_namespaces_are_refused() -> Result<(), Box<dyn Error>> {
-    let expected = crate::ReferenceError::InvalidSpec("situation_claim_namespace_confusable");
-    for (claim_id, hypothesis) in [
+fn reserved_namespace_look_alikes_and_edges_are_refused() -> Result<(), Box<dyn Error>> {
+    for (claim_id, hypothesis, expected) in [
         (
-            "claim:Effect:meaningful-delta:outcome",
-            Some(HypothesisDisposition::Resolved),
+            "claim:effects:meaningful-delta:outcome",
+            None,
+            "situation_claim_namespace_confusable",
         ),
-        ("claim:effects:meaningful-delta:outcome", None),
-        ("claim:EFFECT:meaningful-delta:outcome", None),
-        ("Claim:effect:meaningful-delta:outcome", None),
         (
-            "claim:Obligation:meaningful-delta",
+            "claim:obligations:meaningful-delta",
             Some(HypothesisDisposition::Resolved),
+            "situation_claim_namespace_confusable",
         ),
-        ("claim:obligations:meaningful-delta", None),
+        ("claim:effect", None, "situation_claim_namespace_confusable"),
+        (
+            "claim:obligation",
+            None,
+            "situation_claim_namespace_confusable",
+        ),
+        (
+            "claim:effect::meaningful-delta:outcome",
+            None,
+            "situation_effect_known_unbound",
+        ),
+        ("claim:effect:", None, "situation_effect_known_unbound"),
     ] {
         let projected = publication_with_self_rooted_cell(claim_id, hypothesis);
+        let expected = crate::ReferenceError::InvalidSpec(expected);
         assert!(
             refused_with(&projected, &expected),
-            "{claim_id}: {:?}",
+            "{claim_id:?}: {:?}",
             projected.map(|publication| publication.publication_digest)
         );
     }
     Ok(())
 }
 
-/// Review probe P5: an obligation terminalizes only through the typed obligation set, so a
-/// hand-built `claim:obligation:` cell, `known` or resolved, is a reported change and never a
-/// terminal transition.
+/// Review probes P5 and RR1: a claim identity outside the strict ASCII grammar is refused before any
+/// namespace test, so no case, Unicode, spacing or invisible-character look-alike of a reserved
+/// namespace reaches the event rule's terminal transition.
 #[test]
-fn hand_built_obligation_cell_never_terminalizes() -> Result<(), Box<dyn Error>> {
-    let basis = publication(&Variant::baseline()?)?;
-    for hypothesis in [None, Some(HypothesisDisposition::Resolved)] {
-        let result =
-            publication_with_self_rooted_cell("claim:obligation:meaningful-delta", hypothesis)?;
-        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+fn claim_ids_outside_the_strict_ascii_grammar_are_refused() -> Result<(), Box<dyn Error>> {
+    let expected = crate::ReferenceError::InvalidSpec("situation_claim_id_grammar");
+    for claim_id in [
+        "claim:Effect:meaningful-delta:outcome",
+        "claim:EFFECT:meaningful-delta:outcome",
+        "Claim:effect:meaningful-delta:outcome",
+        "claim:Obligation:meaningful-delta",
+        "claim:\u{0435}ffect:meaningful-delta:outcome",
+        "claim:effect\u{FF1A}meaningful-delta:outcome",
+        "claim\u{FF1A}effect:meaningful-delta:outcome",
+        " claim:effect:meaningful-delta:outcome",
+        "claim:effect :meaningful-delta:outcome",
+        "claim:effect\u{200B}:meaningful-delta:outcome",
+        "claim:obligat\u{0456}on:meaningful-delta",
+        "claim: obligation:meaningful-delta",
+        "claim:effect:meaningful-delta:outcome\n",
+        "claim::meaningful-delta",
+    ] {
+        let projected =
+            publication_with_self_rooted_cell(claim_id, Some(HypothesisDisposition::Resolved));
         assert!(
-            !delta
-                .classes
-                .contains(&MeaningfulDeltaClass::TerminalTransition),
-            "{hypothesis:?}: {:?}",
-            delta.classes
+            refused_with(&projected, &expected),
+            "{claim_id:?}: {:?}",
+            projected.map(|publication| publication.publication_digest)
         );
-        assert!(delta.silence_certificate.is_none(), "{:?}", delta.classes);
-        delta.validate()?;
+    }
+    Ok(())
+}
+
+/// Review probe P5: no compile path binds an obligation-namespace cell, and an obligation
+/// terminalizes only through the typed obligation set, so a hand-built `claim:obligation:` cell,
+/// `known` or resolved, is refused rather than classified.
+#[test]
+fn hand_built_obligation_cell_is_refused() -> Result<(), Box<dyn Error>> {
+    let expected = crate::ReferenceError::InvalidSpec("situation_obligation_cell_unbound");
+    for hypothesis in [None, Some(HypothesisDisposition::Resolved)] {
+        let projected =
+            publication_with_self_rooted_cell("claim:obligation:meaningful-delta", hypothesis);
+        assert!(
+            refused_with(&projected, &expected),
+            "{hypothesis:?}: {:?}",
+            projected.map(|publication| publication.publication_digest)
+        );
+    }
+    Ok(())
+}
+
+/// Review probes P4 and RR4: a hand-built effect cell is refused in every state, not only `known`,
+/// so a situation no compile path sealed cannot carry an indeterminate or otherwise unproved effect
+/// that stands in for, or relabels, a compiled one.
+#[test]
+fn hand_built_effect_cell_in_any_state_is_refused() -> Result<(), Box<dyn Error>> {
+    let expected = crate::ReferenceError::InvalidSpec("situation_effect_cell_unbound");
+    for state in [
+        KnowledgeState::Indeterminate,
+        KnowledgeState::Unknown,
+        KnowledgeState::Estimated,
+        KnowledgeState::Stale,
+        KnowledgeState::NotApplicable,
+    ] {
+        let mut variant = Variant::baseline()?;
+        variant.effect_state = Some(state);
+        variant.effect_bound = false;
+        let projected = publication(&variant);
+        assert!(
+            refused_with(&projected, &expected),
+            "{state:?}: {:?}",
+            projected.map(|publication| publication.publication_digest)
+        );
     }
     Ok(())
 }

@@ -1260,3 +1260,186 @@ fn bound_effect_cells_are_sealed_to_their_situation() -> Result<(), Box<dyn Erro
     lifecycle.harness.cleanup();
     Ok(())
 }
+
+/// Returns whether `result` is a refusal carrying exactly `expected`.
+fn refused_with<T>(result: &Result<T, ReferenceError>, expected: &ReferenceError) -> bool {
+    result
+        .as_ref()
+        .err()
+        .is_some_and(|error| error.to_string() == expected.to_string())
+}
+
+/// Review probe RR4: a compiled situation rebuilt through the public constructor loses its seal.
+/// Rebuilt without its bound indeterminate cell it is an unsealed hand-built situation, which no
+/// handoff accepts and whose publication digest differs; rebuilt under another mission with the
+/// cell kept, it is refused because the cell is no longer bound (fss-6sph6).
+#[test]
+fn rebuilt_situation_cannot_hand_off_or_keep_a_compiled_effect() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("rr4-rebuild")?;
+    let genuine = &lifecycle.dispatched;
+    assert!(genuine.situation.is_sealed());
+    let local = genuine
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|cell| cell.claim_id.ends_with(":local-state"))
+        .cloned()
+        .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
+    assert_eq!(
+        local.knowledge_state,
+        fss_core::KnowledgeState::Indeterminate
+    );
+    let created_at = TimestampNs(1_001);
+    let expires_at = TimestampNs(2_000);
+    crate::seal_reference_handoff(
+        &genuine.situation,
+        fss_core::HandoffId::parse("handoff:rr4:genuine")?,
+        created_at,
+        expires_at,
+    )?;
+    crate::seal_reference_publication_handoff(
+        genuine,
+        fss_core::HandoffId::parse("handoff:rr4:genuine-publication")?,
+        created_at,
+        expires_at,
+    )?;
+
+    let unsealed = ReferenceError::InvalidSpec("situation_handoff_unsealed");
+    let mut capsule = genuine.situation.capsule.clone();
+    capsule
+        .frame
+        .knowledge_cells
+        .retain(|cell| cell.claim_id != local.claim_id);
+    let stripped = crate::ReferenceSituation::new(capsule, genuine.situation.proof_roots.clone());
+    assert!(!stripped.is_sealed());
+    let handoff = crate::seal_reference_handoff(
+        &stripped,
+        fss_core::HandoffId::parse("handoff:rr4:strip")?,
+        created_at,
+        expires_at,
+    );
+    assert!(refused_with(&handoff, &unsealed), "{:?}", handoff.is_ok());
+    let stripped_publication =
+        crate::project_reference_situation(stripped, &guard_projection_spec()?)?;
+    assert_ne!(
+        stripped_publication.publication_digest,
+        genuine.publication_digest
+    );
+    let handoff = crate::seal_reference_publication_handoff(
+        &stripped_publication,
+        fss_core::HandoffId::parse("handoff:rr4:strip-publication")?,
+        created_at,
+        expires_at,
+    );
+    assert!(refused_with(&handoff, &unsealed), "{:?}", handoff.is_ok());
+
+    let unbound = ReferenceError::InvalidSpec("situation_effect_cell_unbound");
+    let mut relabeled = genuine.situation.capsule.clone();
+    relabeled.mission_id = MissionId::parse("mission:elsewhere")?;
+    let relabeled =
+        crate::ReferenceSituation::new(relabeled, genuine.situation.proof_roots.clone());
+    let verified = relabeled.verify();
+    assert!(refused_with(&verified, &unbound), "{verified:?}");
+    let projected = crate::project_reference_situation(relabeled, &guard_projection_spec()?)
+        .map(|publication| publication.publication_digest);
+    assert!(refused_with(&projected, &unbound), "{projected:?}");
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// Review probe RR5: the seal records the proof roots the compile path gathered, so replacing the
+/// roots with the bound evidence plus a made-up digest, which would let a handoff drop the event
+/// evidence, is refused (fss-6sph6).
+#[test]
+fn sealed_proof_roots_cannot_be_replaced() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("rr5-roots")?;
+    let verified = lifecycle.verified(true)?;
+    let mut tampered = verified.situation.clone();
+    let mut roots: std::collections::BTreeSet<fss_core::ContentDigest> = tampered
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .filter(|cell| cell.claim_id.starts_with("claim:effect:"))
+        .flat_map(|cell| cell.evidence.iter().copied())
+        .collect();
+    roots.insert(fss_core::ContentDigest::sha256(b"rr5-foreign-root"));
+    assert!(tampered.proof_roots.difference(&roots).count() > 0);
+    tampered.proof_roots = roots;
+    assert_effect_tamper_refused(
+        &verified.situation,
+        tampered,
+        &ReferenceError::InvalidSpec("situation_sealed_proof_root_removed"),
+    )?;
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// Review probe RR6: the publication digest commits to the compile path's seal. A compiled
+/// publication and the same capsule rebuilt unsealed never share a digest, so swapping the unsealed
+/// situation into the sealed publication is refused; a rebuilt capsule that still carries a
+/// compiled effect cell is refused outright (fss-6sph6).
+#[test]
+fn publication_digest_commits_to_the_seal() -> Result<(), Box<dyn Error>> {
+    let name = "rr6-digest";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let compile_request = request(&decision, &receipt, &["capability:alert.prepare"])?;
+    let genuine = crate::project_reference_situation(
+        compile_reference_situation(compile_request, &harness.authority)?,
+        &guard_projection_spec()?,
+    )?;
+    assert!(genuine.situation.is_sealed());
+    // The seal holds even with no effect binding: editing the compiled capsule breaks it.
+    let mut relabeled = genuine.situation.clone();
+    relabeled.capsule.mission_id = MissionId::parse("mission:elsewhere")?;
+    let verified = relabeled.verify();
+    assert!(
+        refused_with(
+            &verified,
+            &ReferenceError::InvalidSpec("situation_effect_binding_seal")
+        ),
+        "{verified:?}"
+    );
+    let rebuilt = crate::ReferenceSituation::new(
+        genuine.situation.capsule.clone(),
+        genuine.situation.proof_roots.clone(),
+    );
+    let rebuilt_publication =
+        crate::project_reference_situation(rebuilt.clone(), &guard_projection_spec()?)?;
+    assert_ne!(
+        rebuilt_publication.publication_digest,
+        genuine.publication_digest
+    );
+    let mut swapped = genuine.clone();
+    swapped.situation = rebuilt;
+    let verified = swapped.verify();
+    assert!(
+        refused_with(
+            &verified,
+            &ReferenceError::Contract(fss_core::ContractError::DigestMismatch)
+        ),
+        "{verified:?}"
+    );
+    harness.cleanup();
+
+    let lifecycle = Lifecycle::new("rr6-prepared")?;
+    let prepared = &lifecycle.prepared;
+    let rebuilt = crate::ReferenceSituation::new(
+        prepared.situation.capsule.clone(),
+        prepared.situation.proof_roots.clone(),
+    );
+    let projected = crate::project_reference_situation(rebuilt, &guard_projection_spec()?)
+        .map(|publication| publication.publication_digest);
+    assert!(
+        refused_with(
+            &projected,
+            &ReferenceError::InvalidSpec("situation_effect_cell_unbound")
+        ),
+        "{projected:?}"
+    );
+    lifecycle.harness.cleanup();
+    Ok(())
+}

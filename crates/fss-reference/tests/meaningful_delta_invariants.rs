@@ -662,6 +662,24 @@ fn assert_hand_built_known_effect_refused(
     }
 }
 
+/// Asserts that projecting a hand-built situation is refused with exactly `expected` (fss-6sph6).
+fn assert_hand_built_effect_refused_with(
+    projected: Result<ReferenceSituationPublication, Box<dyn Error>>,
+    expected: &'static str,
+) -> Result<(), Box<dyn Error>> {
+    match projected {
+        Ok(publication) => Err(format!(
+            "a hand-built effect was published: {}",
+            publication.publication_digest
+        )
+        .into()),
+        Err(error) => match error.downcast_ref::<ReferenceError>() {
+            Some(ReferenceError::InvalidSpec(actual)) if *actual == expected => Ok(()),
+            _ => Err(format!("unexpected refusal (expected {expected}): {error}").into()),
+        },
+    }
+}
+
 /// F4: A hand-built effect cannot terminalize itself: a `known` effect in a situation built by hand
 /// is refused at projection (fss-6sph6). The compiled terminal effect transition and its
 /// non-coalescing are pinned by `test_f4_real_situation_f2_terminal_effect_transition_non_coalescible`.
@@ -670,7 +688,7 @@ fn test_f4_hand_built_effect_terminalization_is_refused() -> Result<(), Box<dyn 
     let mut v1 = Variant::baseline()?;
     v1.sequence = 1;
     v1.effect_state = Some(KnowledgeState::Indeterminate);
-    publication(&v1)?.verify()?;
+    assert_hand_built_effect_refused_with(publication(&v1), "situation_effect_cell_unbound")?;
 
     let mut v2 = Variant::baseline()?;
     v2.sequence = 2;
@@ -893,16 +911,10 @@ fn test_planted_negatives_free_text_statements_do_not_spoof_terminal_transition(
     v1_spoof.effect_statement =
         Some("Alert delivery is unverified and not failed, pending adapter response.".to_owned());
 
-    let pub1_base = publication(&v1_base)?;
-    let pub1_spoof = publication(&v1_spoof)?;
-    let delta1 = classify_reference_meaningful_delta(&pub1_base, &pub1_spoof)?;
-
-    assert!(
-        !delta1
-            .classes
-            .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "Planted negative: 'unverified' and 'not failed' statements must NOT produce TerminalTransition!"
-    );
+    // A hand-built effect cell is refused in every state (fss-6sph6), so the spoofing statement
+    // cannot even be published, let alone be read as a terminal transition.
+    assert_hand_built_effect_refused_with(publication(&v1_base), "situation_effect_cell_unbound")?;
+    assert_hand_built_effect_refused_with(publication(&v1_spoof), "situation_effect_cell_unbound")?;
 
     // Negative 2: Mission statement in frame.now says "disclosed", but mission_state remains Active.
     let mut v2_base = Variant::baseline()?;
@@ -1292,6 +1304,9 @@ fn test_f4_real_situation_f3_contradictory_evidence_on_estimated_premise_invalid
             cell.contradictions.push(contradiction);
         }
     }
+    // The edited copy is no longer the situation its compile path sealed, so it is published as a
+    // hand-built situation (fss-6sph6).
+    let situation2 = ReferenceSituation::new(situation2.capsule, situation2.proof_roots);
     let pub2 = project_reference_situation(situation2, &test_spec(10_000)?)?;
     pub2.verify()?;
 

@@ -489,11 +489,12 @@ pub fn classify_reference_meaningful_delta(
     let effect_terminalized = result_proved
         .keys()
         .any(|operation| !basis_proved.contains_key(operation));
-    // An effect cell is terminal only through the premise bar applied above, and an obligation only
-    // through the typed obligation set, so a terminal hypothesis disposition on a cell in either
-    // namespace never terminalizes it here (`verify` refuses look-alike spellings of both).
+    // An effect cell is terminal only through the premise bar applied above, so a terminal
+    // hypothesis disposition on an effect cell never terminalizes it here. `verify` refuses every
+    // obligation-namespace cell (none is ever bound) and every look-alike spelling of either
+    // namespace, so none reaches this rule (fss-6sph6).
     let event_terminalized = result_frame.knowledge_cells.iter().any(|cell| {
-        if is_effect_claim(cell) || cell.claim_id.starts_with("claim:obligation:") {
+        if is_effect_claim(cell) {
             return false;
         }
         let is_terminal_hypothesis = matches!(

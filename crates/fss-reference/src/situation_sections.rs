@@ -188,6 +188,15 @@ impl ReferenceSituationPublication {
         let mut encoder = CanonicalEncoder::new();
         encoder.text("fss.reference_situation_publication.v1");
         encoder.digest(self.situation.capsule.decision_fingerprint()?);
+        // The publication commits to the compile path's seal, so a sealed publication and the same
+        // capsule rebuilt unsealed never share a digest (fss-6sph6).
+        match self.situation.seal_digest() {
+            Some(seal) => {
+                encoder.bool(true);
+                encoder.digest(seal);
+            }
+            None => encoder.bool(false),
+        }
         self.resource_state.encode_canonical(&mut encoder);
         self.control_envelope.encode_canonical(&mut encoder);
         self.context_pack.encode_canonical(&mut encoder);
@@ -362,6 +371,11 @@ pub fn seal_reference_publication_handoff(
     expires_at: TimestampNs,
 ) -> Result<HandoffCapsule, ReferenceError> {
     let publication_root = publication.verify()?;
+    // A handoff carries the publication to another principal on its own, so it must be one a
+    // compile path produced and sealed (fss-6sph6).
+    if !publication.situation.is_sealed() {
+        return Err(ReferenceError::InvalidSpec("situation_handoff_unsealed"));
+    }
     let mut children = publication.situation.proof_roots.clone();
     children.insert(publication.situation.capsule.decision_fingerprint()?);
     children.insert(publication.resource_state.state_digest());

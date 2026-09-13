@@ -28,6 +28,8 @@ const CAPABILITY_EFFECT_RECONCILE: &str = "capability:effect.reconcile";
 const CAPABILITY_SESSION_WAIT: &str = "capability:session.wait";
 /// Claim-identity namespace of every effect proposition.
 pub(crate) const EFFECT_CLAIM_PREFIX: &str = "claim:effect:";
+/// Claim-identity namespace of obligation propositions, which no compile path produces.
+const OBLIGATION_CLAIM_PREFIX: &str = "claim:obligation:";
 
 /// Exact inputs used to compile one bounded situation projection.
 #[derive(Clone, Debug)]
@@ -128,6 +130,15 @@ struct EffectCellBinding {
     cell_digest: ContentDigest,
 }
 
+/// The seal a compile path takes over its finished situation (fss-6sph6).
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct EffectSeal {
+    /// Digest over the validated capsule, every binding, and `roots`.
+    digest: ContentDigest,
+    /// Proof roots the compile path gathered; projection may add roots but never remove these.
+    roots: BTreeSet<ContentDigest>,
+}
+
 /// A compiled situation plus every proof root needed for a self-contained handoff.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferenceSituation {
@@ -146,21 +157,22 @@ pub struct ReferenceSituation {
     /// A binding proves its cell only inside the situation it was compiled for, so a bound cell
     /// transplanted into another capsule, or any later capsule edit (a mission relabel, a restored
     /// commit affordance beside a terminal proof), breaks the seal (fss-6sph6).
-    effect_seal: Option<ContentDigest>,
+    seal: Option<EffectSeal>,
 }
 
 impl ReferenceSituation {
-    /// Builds a situation that binds no effect cell to verified material.
+    /// Builds an unsealed situation that binds no effect cell to verified material.
     ///
-    /// It may carry effect cells in any unproved state, but [`Self::verify`] refuses one that is
-    /// `known`: only a compile path that checked the outcome or receipt can bind a terminal effect.
+    /// [`Self::verify`] refuses such a situation if it carries any effect- or obligation-namespace
+    /// cell, since only a compile path that checked the outcome or receipt can bind one, and a
+    /// handoff refuses it outright: it was not produced by a compile path.
     #[must_use]
     pub fn new(capsule: SituationCapsule, proof_roots: BTreeSet<ContentDigest>) -> Self {
         Self {
             capsule,
             proof_roots,
             effect_bindings: BTreeMap::new(),
-            effect_seal: None,
+            seal: None,
         }
     }
 
@@ -223,21 +235,38 @@ impl ReferenceSituation {
         Ok(())
     }
 
-    /// Seals the bindings to the finished capsule. Compile paths call it after their last capsule
-    /// edit; binding another cell afterwards changes the sealed binding set, so it breaks the seal
-    /// until the path seals again.
+    /// Seals the bindings, and the proof roots gathered so far, to the finished capsule. Compile
+    /// paths call it after their last capsule edit, so a sealed situation is one a compile path
+    /// produced; a later capsule edit, binding, or removed root breaks the seal.
     pub(crate) fn seal_effect_bindings(&mut self) -> Result<(), ReferenceError> {
-        self.effect_seal = Some(self.binding_seal()?);
+        let roots = self.proof_roots.clone();
+        let digest = self.seal_digest_over(&roots)?;
+        self.seal = Some(EffectSeal { digest, roots });
         Ok(())
     }
 
-    /// Digest over the validated capsule and every binding, in claim order.
-    fn binding_seal(&self) -> Result<ContentDigest, ReferenceError> {
+    /// Returns whether a compile path sealed this situation. [`Self::verify`] checks that the seal
+    /// still matches; a situation built with [`Self::new`] is never sealed and cannot hand off.
+    #[must_use]
+    pub fn is_sealed(&self) -> bool {
+        self.seal.is_some()
+    }
+
+    /// The seal digest a publication commits to, or `None` for an unsealed situation.
+    pub(crate) fn seal_digest(&self) -> Option<ContentDigest> {
+        self.seal.as_ref().map(|seal| seal.digest)
+    }
+
+    /// Digest over the validated capsule, every binding in claim order, and `roots`.
+    fn seal_digest_over(
+        &self,
+        roots: &BTreeSet<ContentDigest>,
+    ) -> Result<ContentDigest, ReferenceError> {
         let capsule = self
             .capsule
             .validated_digest("fss.reference_effect_binding_capsule.v1")?;
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.reference_effect_binding_seal.v1");
+        encoder.text("fss.reference_effect_binding_seal.v2");
         encoder.digest(capsule);
         encoder.u64(self.effect_bindings.len() as u64);
         for (claim_id, binding) in &self.effect_bindings {
@@ -252,6 +281,10 @@ impl ReferenceSituation {
                 None => encoder.bool(false),
             }
             encoder.digest(binding.cell_digest);
+        }
+        encoder.u64(roots.len() as u64);
+        for root in roots {
+            encoder.digest(*root);
         }
         Ok(ContentDigest::sha256(&encoder.finish()))
     }
@@ -273,6 +306,12 @@ impl ReferenceSituation {
 
     fn verify_effect_bindings(&self) -> Result<(), ReferenceError> {
         let cells = &self.capsule.frame.knowledge_cells;
+        if !cells
+            .iter()
+            .all(|cell| claim_id_is_well_formed(&cell.claim_id))
+        {
+            return Err(ReferenceError::InvalidSpec("situation_claim_id_grammar"));
+        }
         if cells
             .iter()
             .any(|cell| confusable_reserved_namespace(&cell.claim_id))
@@ -304,20 +343,47 @@ impl ReferenceSituation {
                 return Err(fss_core::ContractError::IncompletePublicationGraph.into());
             }
         }
-        // A `known` effect asserts a terminal outcome, so it must be a bound cell (KSTATE-001). A
-        // bound claim appears exactly once and matches its binding, as checked above.
-        if cells.iter().any(|cell| {
-            cell.claim_id.starts_with(EFFECT_CLAIM_PREFIX)
-                && cell.knowledge_state == KnowledgeState::Known
-                && !self.effect_bindings.contains_key(&cell.claim_id)
-        }) {
-            return Err(ReferenceError::InvalidSpec(
-                "situation_effect_known_unbound",
-            ));
+        // Only a compile path binds a reserved-namespace cell, so an unbound one, in any state, is
+        // an effect or obligation no verified material produced: a `known` one asserts a terminal
+        // outcome (KSTATE-001), and any other state could stand in for, or relabel, a compiled
+        // indeterminate effect. A bound claim appears exactly once and matches its binding, as
+        // checked above.
+        for cell in cells {
+            if self.effect_bindings.contains_key(&cell.claim_id) {
+                continue;
+            }
+            if cell.claim_id.starts_with(EFFECT_CLAIM_PREFIX) {
+                return Err(ReferenceError::InvalidSpec(
+                    if cell.knowledge_state == KnowledgeState::Known {
+                        "situation_effect_known_unbound"
+                    } else {
+                        "situation_effect_cell_unbound"
+                    },
+                ));
+            }
+            if cell.claim_id.starts_with(OBLIGATION_CLAIM_PREFIX) {
+                return Err(ReferenceError::InvalidSpec(
+                    "situation_obligation_cell_unbound",
+                ));
+            }
         }
-        // Bound cells prove their effect only in the capsule they were compiled for.
-        if !self.effect_bindings.is_empty() && self.effect_seal != Some(self.binding_seal()?) {
-            return Err(ReferenceError::InvalidSpec("situation_effect_binding_seal"));
+        // A sealed situation must still be the one its compile path finished, with every proof root
+        // it gathered; bound cells prove their effect only inside a sealed situation.
+        match &self.seal {
+            Some(seal) => {
+                if seal.digest != self.seal_digest_over(&seal.roots)? {
+                    return Err(ReferenceError::InvalidSpec("situation_effect_binding_seal"));
+                }
+                if !seal.roots.is_subset(&self.proof_roots) {
+                    return Err(ReferenceError::InvalidSpec(
+                        "situation_sealed_proof_root_removed",
+                    ));
+                }
+            }
+            None if !self.effect_bindings.is_empty() => {
+                return Err(ReferenceError::InvalidSpec("situation_effect_binding_seal"));
+            }
+            None => {}
         }
         Ok(())
     }
@@ -326,6 +392,24 @@ impl ReferenceSituation {
 /// Claim namespaces whose terminal meaning only typed state carries: an effect through its
 /// binding, an obligation through the capsule's typed obligation set.
 const RESERVED_CLAIM_NAMESPACES: [&str; 2] = ["effect", "obligation"];
+
+/// Returns whether `claim_id` follows the strict claim grammar: `claim:`, a namespace of lowercase
+/// ASCII letters, digits and `-`, then nothing or `:` and a tail in the portable identifier
+/// alphabet (`[A-Za-z0-9._:-]`). No whitespace, control, format or non-ASCII character reaches a
+/// namespace test, so no Unicode or spacing look-alike of a reserved namespace survives (fss-6sph6).
+fn claim_id_is_well_formed(claim_id: &str) -> bool {
+    let Some(rest) = claim_id.strip_prefix("claim:") else {
+        return false;
+    };
+    let (namespace, tail) = rest.split_once(':').unwrap_or((rest, ""));
+    !namespace.is_empty()
+        && namespace
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && tail
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+}
 
 /// Returns whether `claim_id` reads as a reserved namespace (ignoring ASCII case and a plural
 /// `s`) without being spelled exactly `claim:{namespace}:`. Such a cell would slip past the typed
@@ -933,6 +1017,11 @@ pub fn seal_reference_handoff(
     expires_at: TimestampNs,
 ) -> Result<HandoffCapsule, ReferenceError> {
     let situation_root = situation.verify()?;
+    // A handoff carries a situation to another principal on its own, so it must be one a compile
+    // path produced and sealed (fss-6sph6).
+    if !situation.is_sealed() {
+        return Err(ReferenceError::InvalidSpec("situation_handoff_unsealed"));
+    }
     let handoff = HandoffCapsule::publish(HandoffPublishParams {
         handoff_id,
         mission_id: situation.capsule.mission_id.clone(),
