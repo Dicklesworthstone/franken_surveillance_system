@@ -767,31 +767,64 @@ fn encode_header(encoder: &mut CanonicalEncoder, belief_id: &str) -> Result<(), 
 
 #[test]
 fn test_n1_derived_belief_never_yields_effect_premise_in_any_state() -> Result<(), Box<dyn Error>> {
+    // NEW-1: for all 9 knowledge states, construction (and decode) is either refused with an
+    // exact error, or the emitted cell passes KnowledgeCell::validate() and is never an
+    // irreversible-effect premise. No invalid cell may leave the boundary.
     let anchor = sample_anchor();
     let now = TimestampNs(1_000_000_000);
-    let states = [
-        KnowledgeState::Known,
-        KnowledgeState::Estimated,
-        KnowledgeState::Unknown,
-        KnowledgeState::Conflicted,
-        KnowledgeState::Stale,
-        KnowledgeState::NotObservable,
-        KnowledgeState::Redacted,
-        KnowledgeState::Indeterminate,
-        KnowledgeState::NotApplicable,
+    let cases = [
+        (
+            KnowledgeState::Known,
+            Some(ContractError::DerivedBeliefKnownForbidden),
+        ),
+        (KnowledgeState::Estimated, None),
+        (KnowledgeState::Unknown, None),
+        (KnowledgeState::Conflicted, None),
+        (
+            KnowledgeState::Stale,
+            Some(ContractError::StaleBasisRequired),
+        ),
+        (KnowledgeState::NotObservable, None),
+        (
+            KnowledgeState::Redacted,
+            Some(ContractError::RedactionMarkerRequired),
+        ),
+        (
+            KnowledgeState::Indeterminate,
+            Some(ContractError::ReconciliationBasisRequired),
+        ),
+        (KnowledgeState::NotApplicable, None),
     ];
     let mut converted = 0usize;
-    for state in states {
+    for (state, expected_refusal) in cases {
         let mut params = sealed_params("belief:n1:state")?;
         params.knowledge_state = state;
         let params = params.with_computed_receipt()?;
-        match DerivedBelief::new(params) {
-            Err(err) => {
-                assert_eq!(state, KnowledgeState::Known, "only `known` may be refused");
-                assert_eq!(err, ContractError::DerivedBeliefKnownForbidden);
+        let payload = encode_params(&params)?;
+        match expected_refusal {
+            Some(expected) => {
+                let label = format!("new({state:?})");
+                assert_eq!(
+                    expect_err(DerivedBelief::new(params), &label)?,
+                    expected,
+                    "{state:?}"
+                );
+                let label = format!("decode({state:?})");
+                assert_eq!(
+                    expect_err(decode(&payload), &label)?,
+                    expected,
+                    "{state:?} via decode"
+                );
             }
-            Ok(belief) => {
+            None => {
+                let belief = DerivedBelief::new(params)?;
+                assert_eq!(
+                    decode(&payload)?,
+                    belief,
+                    "{state:?} decodes to the same belief"
+                );
                 let cell = belief.to_knowledge_cell(&anchor)?;
+                assert_eq!(cell.validate(), Ok(()), "{state:?} emitted an invalid cell");
                 assert_eq!(cell.knowledge_state, state);
                 assert_eq!(cell.provenance, ProvenanceClass::Derived);
                 assert!(
@@ -802,7 +835,7 @@ fn test_n1_derived_belief_never_yields_effect_premise_in_any_state() -> Result<(
             }
         }
     }
-    assert_eq!(converted, 8);
+    assert_eq!(converted, 5);
     Ok(())
 }
 
@@ -1153,6 +1186,108 @@ fn test_decode_contradictions_remaining_bytes_bound_kills_m10() -> Result<(), Bo
     assert_eq!(
         expect_err(decode(&payload), "contradictions beyond remaining bytes")?,
         ContractError::ArithmeticOverflow
+    );
+    Ok(())
+}
+
+#[test]
+fn test_new3_overlong_anchor_lineage_is_refused_not_hashed_as_empty() -> Result<(), Box<dyn Error>>
+{
+    // A 65537-byte site lineage cannot be canonically encoded. The receipt computation must
+    // report that (InvalidIdentifier) instead of hashing an empty encoding, whose digest is
+    // sha256("") and would otherwise match this planted receipt.
+    let lineage = "s".repeat(65_537);
+    let mut params = sealed_params("belief:new3:lineage")?;
+    params.anchor.site_lineage = lineage.clone();
+    params.derivation_receipt = ContentDigest::sha256(b"");
+    assert_eq!(
+        expect_err(DerivedBelief::new(params.clone()), "new(overlong lineage)")?,
+        ContractError::InvalidIdentifier
+    );
+
+    // Decode: the checked text encoder refuses to write the lineage, so write it with bytes(),
+    // which has the same wire format (u64 length prefix + bytes).
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(&params.belief_id);
+    encoder.bytes(lineage.as_bytes());
+    encoder.u64(params.anchor.ledger_epoch);
+    encoder.u64(params.anchor.commit_sequence);
+    encoder.u64(params.anchor.adapter_registry_epoch);
+    encoder.u64(params.anchor.schema_epoch);
+    encoder.u64(params.anchor.policy_epoch);
+    encoder.u64(params.anchor.privacy_epoch);
+    encoder.digest(params.anchor.state_root);
+    encoder.u64(params.generation.0);
+    encoder.text(&params.statement);
+    params.knowledge_state.encode_canonical(&mut encoder);
+    params.provenance.encode_canonical(&mut encoder);
+    params.uncertainty.encode_canonical(&mut encoder);
+    encoder.u32(u32::try_from(params.supporting_evidence.len())?);
+    for digest in &params.supporting_evidence {
+        encoder.digest(*digest);
+    }
+    encoder.u32(0);
+    encoder.digest(params.derivation_receipt);
+    let payload = encoder.finish_checked()?;
+    assert_eq!(
+        expect_err(decode(&payload), "decode(overlong lineage)")?,
+        ContractError::InvalidIdentifier
+    );
+    Ok(())
+}
+
+#[test]
+fn test_new5_golden_receipt_and_canonical_digest() -> Result<(), Box<dyn Error>> {
+    // Literal digests for a fixed belief, computed by an independent replica of the canonical
+    // encoders. A change in any shared encoder (LedgerAnchor, KnowledgeState, ProvenanceClass,
+    // BeliefInterval, digest framing) or in either domain tag changes these values.
+    let anchor = LedgerAnchor {
+        site_lineage: "site:golden".into(),
+        ledger_epoch: 3,
+        commit_sequence: 7,
+        adapter_registry_epoch: 2,
+        schema_epoch: 1,
+        policy_epoch: 1,
+        privacy_epoch: 1,
+        state_root: ContentDigest::sha256(b"golden-state-root"),
+    };
+    let mut evidence = vec![
+        ContentDigest::sha256(b"golden-ev-a"),
+        ContentDigest::sha256(b"golden-ev-b"),
+    ];
+    evidence.sort();
+    let belief = DerivedBelief::new(
+        DerivedBeliefParams {
+            belief_id: "belief:golden:001".into(),
+            anchor,
+            generation: Generation(9),
+            statement: "Golden derived proposition".into(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance: ProvenanceClass::Derived,
+            uncertainty: BeliefInterval::new(250_000, 750_000)?,
+            supporting_evidence: evidence,
+            contradictions: vec![ContentDigest::sha256(b"golden-contra")],
+            derivation_receipt: ContentDigest::sha256(b"unsealed"),
+        }
+        .with_computed_receipt()?,
+    )?;
+
+    assert_eq!(
+        fss_core::DERIVED_BELIEF_RECEIPT_DOMAIN,
+        "fss.derived_belief.receipt.v1"
+    );
+    assert_eq!(fss_core::DERIVED_BELIEF_DOMAIN, "fss.derived_belief.v1");
+    assert_eq!(
+        belief.derivation_receipt(),
+        ContentDigest::parse(
+            "sha256:ce57b1d9ba082a5c762877f37f0d001760386f2af92674af51080c86ba2d8f69"
+        )?
+    );
+    assert_eq!(
+        belief.canonical_digest()?,
+        ContentDigest::parse(
+            "sha256:122d2bfae0ed8de39aace974568f851f440da8eeef0b12a9e20bdf856021fdcd"
+        )?
     );
     Ok(())
 }
