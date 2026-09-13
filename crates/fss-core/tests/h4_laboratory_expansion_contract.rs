@@ -34,12 +34,13 @@ use fss_core::{
     AlternateSystem, BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode,
     CanonicalEncoder, Completeness, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
     ContractError, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
-    H4LaboratoryExpansion, H4LaboratoryExpansionParams, HandleAvailability, HydrationError,
-    HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec, IntermediateArtifact,
-    KnowledgeCell, KnowledgeState, LABORATORY_PROVENANCE_MARKER, LaboratoryAccess,
-    LaboratoryArtifact, LaboratoryQuarantine, LedgerAnchor, MAX_H4_ALTERNATE_SYSTEMS,
-    MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_ORACLE_COMPARISONS, OracleComparison,
-    ProvenanceClass, ReplayBundleRef, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
+    H4LaboratoryExpansion, H4LaboratoryExpansionParams, HandleAvailability, HydrationArtifact,
+    HydrationError, HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec,
+    IntermediateArtifact, KnowledgeCell, KnowledgeState, LABORATORY_PROVENANCE_MARKER,
+    LaboratoryAccess, LaboratoryArtifact, LaboratoryQuarantine, LedgerAnchor,
+    MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES,
+    MAX_H4_ORACLE_COMPARISONS, OracleComparison, ProvenanceClass, ReplayBundleRef, SemanticHandle,
+    SemanticHandleSpec, SessionId, TimestampNs,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -129,14 +130,14 @@ fn sample_quarantine() -> LaboratoryQuarantine {
     }
 }
 
-fn sample_valid_expansion() -> Result<H4LaboratoryExpansion, Box<dyn Error>> {
+fn sample_valid_params() -> Result<H4LaboratoryExpansionParams, Box<dyn Error>> {
     let subject_digest = ContentDigest::sha256(b"canonical-evidence-subject-data");
     let secondary_root = ContentDigest::sha256(b"secondary-anchor-proof-root");
     let mut proof_roots = BTreeSet::new();
     proof_roots.insert(subject_digest);
     proof_roots.insert(secondary_root);
 
-    let expansion = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+    Ok(H4LaboratoryExpansionParams {
         handle_id: "semantic-handle:sha256:abcd1234abcd1234".to_owned(),
         subject_id: "evidence:packet:cam-east:1042".to_owned(),
         subject_digest,
@@ -154,9 +155,12 @@ fn sample_valid_expansion() -> Result<H4LaboratoryExpansion, Box<dyn Error>> {
         retention_until: TimestampNs(2_000_000_000),
         proof_roots,
         completeness: Completeness::Complete,
-    })?;
+        applied_transform: None,
+    })
+}
 
-    Ok(expansion)
+fn sample_valid_expansion() -> Result<H4LaboratoryExpansion, Box<dyn Error>> {
+    Ok(H4LaboratoryExpansion::new(sample_valid_params()?)?)
 }
 
 fn sample_expansion_for_handle(
@@ -184,6 +188,7 @@ fn sample_expansion_for_handle(
         retention_until: handle.retention_until,
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: handle.applied_transform.clone(),
     })?;
 
     Ok(expansion)
@@ -268,10 +273,11 @@ fn test_h4_laboratory_expansion_valid_construction_and_gates() -> Result<(), Box
 fn test_h4_pinned_digest_literal() -> Result<(), Box<dyn Error>> {
     let expansion = sample_valid_expansion()?;
     let digest = expansion.expansion_digest();
+    assert!(digest.is_laboratory());
     assert_eq!(digest.algorithm(), fss_core::DigestAlgorithm::Sha256);
     assert_eq!(
         digest.to_string(),
-        "sha256:6858500da055f556ce3cbf2aa5f80a70ad5aff157715d99c541f6a5b9518e365"
+        "sha256:d8e4f0ccb8e13df26282ae1e3ff2702a333284f5e60896a5ac10ba5c99c75298"
     );
     Ok(())
 }
@@ -299,28 +305,48 @@ fn test_h4_to_hydration_artifact_packaging_and_realistic_transforms() -> Result<
     assert!(!artifact.is_production_safe());
     assert!(!artifact.may_authorize_effects());
 
-    // 2. Packaging with realistic transform
-    let blurred = expansion.to_hydration_artifact(Some("face_blur_v1".to_owned()))?;
+    // 2. Transform mismatch: calling to_hydration_artifact with Some when expansion was None fails
+    let mismatch_err = expansion.to_hydration_artifact(Some("face_blur_v1".to_owned()));
+    assert_eq!(
+        mismatch_err,
+        Err(HydrationError::Contract(ContractError::DigestMismatch))
+    );
+
+    // 3. Packaging with realistic transform: transform is bound into expansion digest and payload
+    let mut blurred_params = sample_valid_params()?;
+    blurred_params.applied_transform = Some("face_blur_v1".to_owned());
+    let blurred_expansion = H4LaboratoryExpansion::new(blurred_params)?;
+    let blurred = blurred_expansion.to_hydration_artifact(Some("face_blur_v1".to_owned()))?;
     assert_eq!(blurred.applied_transform.as_deref(), Some("face_blur_v1"));
     blurred.verify()?;
     assert!(blurred.is_quarantined());
     assert!(!blurred.is_production_safe());
     assert!(!blurred.may_authorize_effects());
 
-    // 3. Strongly typed LaboratoryArtifact wrapper
-    let lab_art = LaboratoryArtifact::from_expansion(&expansion, Some("redact_pii".to_owned()))?;
-    assert_eq!(
-        lab_art.artifact.applied_transform.as_deref(),
-        Some("redact_pii")
+    // Item 5 verification: payload and digest must differ between None and face_blur_v1
+    assert_ne!(
+        expansion.expansion_digest(),
+        blurred_expansion.expansion_digest()
     );
-    assert_eq!(lab_art.quarantine, *expansion.quarantine());
+    assert_ne!(artifact.payload, blurred.payload);
+
+    // 4. Strongly typed LaboratoryArtifact wrapper
+    let lab_art =
+        LaboratoryArtifact::from_expansion(&blurred_expansion, Some("face_blur_v1".to_owned()))?;
+    assert_eq!(
+        lab_art.artifact().applied_transform.as_deref(),
+        Some("face_blur_v1")
+    );
+    assert_eq!(lab_art.quarantine(), blurred_expansion.quarantine());
     assert!(lab_art.is_quarantined());
     assert!(!lab_art.is_production_safe());
     assert!(!lab_art.may_authorize_effects());
 
-    // 4. Planted negative: transform exceeding max identifier length
+    // 5. Planted negative: transform exceeding max identifier length
     let too_long_transform = "x".repeat(MAX_H4_IDENTIFIER_LEN + 1);
-    let err = expansion.to_hydration_artifact(Some(too_long_transform));
+    let mut invalid_transform_params = sample_valid_params()?;
+    invalid_transform_params.applied_transform = Some(too_long_transform);
+    let err = H4LaboratoryExpansion::new(invalid_transform_params);
     let Err(HydrationError::Contract(ContractError::InvalidIdentifier)) = err else {
         return Err("Expected InvalidIdentifier for overly long applied_transform".into());
     };
@@ -344,29 +370,53 @@ fn test_h4_cannot_authorize_effects_or_claim_known_knowledge_state() -> Result<(
         "Laboratory cell must NEVER serve as an irreversible-effect premise"
     );
 
-    // 2. Planted bypass: cell with LABORATORY_PROVENANCE_MARKER attempting to claim Known state
-    let rogue_cell = KnowledgeCell {
-        claim_id: "claim:rogue-lab-known".to_owned(),
-        statement: format!("{} rogue promotion to known", LABORATORY_PROVENANCE_MARKER),
+    // 2. Relabelled cell over H4 evidence: no "laboratory" text anywhere in claim_id or statement
+    let relabelled_cell = KnowledgeCell {
+        claim_id: "site:door-7".to_owned(),
+        statement: "door 7 is secured".to_owned(),
         knowledge_state: KnowledgeState::Known,
-        provenance: ProvenanceClass::Derived,
+        provenance: ProvenanceClass::Observed,
         hypothesis: None,
-        evidence: vec![expansion.expansion_digest(), expansion.subject_digest()],
+        evidence: vec![expansion.expansion_digest()],
         contradictions: vec![],
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
     };
-    let err = rogue_cell.validate();
-    let Err(ContractError::DerivedLayerAuthorityForbidden) = err else {
-        return Err(
-            "KnowledgeCell::validate must reject Known state when laboratory-tainted".into(),
-        );
-    };
-
-    // 3. Planted bypass: even if constructed directly, is_irreversible_effect_premise must refuse
     assert!(
-        !rogue_cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
-        "is_irreversible_effect_premise must return false for any laboratory-tainted cell"
+        relabelled_cell.is_laboratory_tainted(),
+        "Cell carrying H4 evidence digest must be laboratory-tainted even when relabelled"
+    );
+    assert_eq!(
+        relabelled_cell.validate(),
+        Err(ContractError::DerivedLayerAuthorityForbidden),
+        "Relabelled cell over H4 evidence must reject Known state"
+    );
+    assert!(
+        !relabelled_cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
+        "Relabelled cell over H4 evidence must be refused as an irreversible-effect premise"
+    );
+
+    // 3. Genuine cell with claim_id site:laboratory:door-7 over non-laboratory evidence is accepted
+    let normal_evidence = ContentDigest::sha256(b"physical-door-sensor-packet-canonical");
+    let genuine_cell = KnowledgeCell {
+        claim_id: "site:laboratory:door-7".to_owned(),
+        statement: "door 7 physical sensor reading".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![normal_evidence],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    assert!(
+        !genuine_cell.is_laboratory_tainted(),
+        "Genuine cell site:laboratory:door-7 must NOT be laboratory-tainted"
+    );
+    assert_eq!(genuine_cell.validate(), Ok(()));
+    assert!(
+        genuine_cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
+        "Genuine cell site:laboratory:door-7 must be accepted as an effect premise"
     );
 
     // 4. Planted negative: mismatched anchor lineage when converting to KnowledgeCell
@@ -408,6 +458,7 @@ fn test_planted_negative_non_quarantined_rejected() -> Result<(), Box<dyn Error>
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
 
     let Err(err) = res else {
@@ -450,6 +501,7 @@ fn test_planted_negative_zero_receipt_digests_rejected() -> Result<(), Box<dyn E
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err1) = res1 else {
         return Err("Must reject zero quarantine receipt".into());
@@ -477,6 +529,7 @@ fn test_planted_negative_zero_receipt_digests_rejected() -> Result<(), Box<dyn E
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err2) = res2 else {
         return Err("Must reject zero process drain witness".into());
@@ -509,6 +562,7 @@ fn test_planted_negative_proof_roots_failures() -> Result<(), Box<dyn Error>> {
         retention_until: TimestampNs(200),
         proof_roots: BTreeSet::new(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err1) = res1 else {
         return Err("Must reject empty proof roots".into());
@@ -538,6 +592,7 @@ fn test_planted_negative_proof_roots_failures() -> Result<(), Box<dyn Error>> {
         retention_until: TimestampNs(200),
         proof_roots: BTreeSet::from([other_root]),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err2) = res2 else {
         return Err("Must reject proof roots without subject_digest".into());
@@ -566,6 +621,7 @@ fn test_planted_negative_proof_roots_failures() -> Result<(), Box<dyn Error>> {
         retention_until: TimestampNs(200),
         proof_roots: BTreeSet::from([subject_digest]),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err3) = res3 else {
         return Err("Must reject self-referential proof roots without anchor".into());
@@ -604,6 +660,7 @@ fn test_planted_negative_empty_normative_collections_rejected() -> Result<(), Bo
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err1) = res1 else {
         return Err("Must reject empty intermediates".into());
@@ -632,6 +689,7 @@ fn test_planted_negative_empty_normative_collections_rejected() -> Result<(), Bo
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err2) = res2 else {
         return Err("Must reject empty alternate systems".into());
@@ -660,6 +718,7 @@ fn test_planted_negative_empty_normative_collections_rejected() -> Result<(), Bo
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err3) = res3 else {
         return Err("Must reject empty oracle comparisons".into());
@@ -698,6 +757,7 @@ fn test_planted_negative_inverted_time_interval_rejected() -> Result<(), Box<dyn
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err1) = res1 else {
         return Err("Must reject equal published_at and retention_until".into());
@@ -726,6 +786,7 @@ fn test_planted_negative_inverted_time_interval_rejected() -> Result<(), Box<dyn
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err2) = res2 else {
         return Err("Must reject published_at > retention_until".into());
@@ -766,6 +827,7 @@ fn test_planted_negative_missing_anchor_lineage_rejected() -> Result<(), Box<dyn
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
 
     let Err(err) = res else {
@@ -805,6 +867,7 @@ fn test_planted_negative_laboratory_access_and_purpose_gating() -> Result<(), Bo
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err1) = res1 else {
         return Err("Must reject H4 under LaboratoryAccess::Unavailable".into());
@@ -830,6 +893,7 @@ fn test_planted_negative_laboratory_access_and_purpose_gating() -> Result<(), Bo
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err2) = res2 else {
         return Err("Must reject Routine purpose for H4 laboratory expansion".into());
@@ -855,6 +919,7 @@ fn test_planted_negative_laboratory_access_and_purpose_gating() -> Result<(), Bo
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err3) = res3 else {
         return Err("Must reject Debugging purpose under QualificationOnly".into());
@@ -880,6 +945,7 @@ fn test_planted_negative_laboratory_access_and_purpose_gating() -> Result<(), Bo
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err4) = res4 else {
         return Err("Must reject Routine purpose under QualificationOrDebugGrant".into());
@@ -922,6 +988,7 @@ fn test_planted_negative_degraded_completeness_rejected() -> Result<(), Box<dyn 
             retention_until: TimestampNs(200),
             proof_roots: proof_roots.clone(),
             completeness,
+            applied_transform: None,
         });
         let Err(err) = res else {
             return Err("Must reject degraded/indeterminate completeness".into());
@@ -970,6 +1037,7 @@ fn test_planted_negative_collection_bounds_rejected() -> Result<(), Box<dyn Erro
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err1) = res1 else {
         return Err("Must reject > MAX_H4_INTERMEDIATES".into());
@@ -1006,6 +1074,7 @@ fn test_planted_negative_collection_bounds_rejected() -> Result<(), Box<dyn Erro
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err2) = res2 else {
         return Err("Must reject > MAX_H4_ALTERNATE_SYSTEMS".into());
@@ -1047,6 +1116,7 @@ fn test_planted_negative_collection_bounds_rejected() -> Result<(), Box<dyn Erro
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err3) = res3 else {
         return Err("Must reject > MAX_H4_ORACLE_COMPARISONS".into());
@@ -1093,6 +1163,7 @@ fn test_planted_negative_intermediate_shape_and_byte_count_malformed() -> Result
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err1) = res1 else {
         return Err("Must reject zero dimension in shape".into());
@@ -1128,6 +1199,7 @@ fn test_planted_negative_intermediate_shape_and_byte_count_malformed() -> Result
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err2) = res2 else {
         return Err("Must reject byte_count == u64::MAX".into());
@@ -1163,6 +1235,7 @@ fn test_planted_negative_intermediate_shape_and_byte_count_malformed() -> Result
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err3) = res3 else {
         return Err("Must reject byte_count == 0".into());
@@ -1216,6 +1289,7 @@ fn test_planted_negative_duplicate_and_undeclared_system_ids_rejected() -> Resul
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err1) = res1 else {
         return Err("Must reject duplicate alternate system IDs".into());
@@ -1253,6 +1327,7 @@ fn test_planted_negative_duplicate_and_undeclared_system_ids_rejected() -> Resul
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err2) = res2 else {
         return Err("Must reject oracle comparison referencing undeclared system".into());
@@ -1303,6 +1378,7 @@ fn test_planted_negative_oracle_comparison_discrepancy_and_tolerance_checks()
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err1) = res1 else {
         return Err(
@@ -1342,6 +1418,7 @@ fn test_planted_negative_oracle_comparison_discrepancy_and_tolerance_checks()
         retention_until: TimestampNs(200),
         proof_roots: proof_roots.clone(),
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err2) = res2 else {
         return Err(
@@ -1382,6 +1459,7 @@ fn test_planted_negative_oracle_comparison_discrepancy_and_tolerance_checks()
         retention_until: TimestampNs(200),
         proof_roots,
         completeness: Completeness::Complete,
+        applied_transform: None,
     });
     let Err(err3) = res3 else {
         return Err("Must reject -0.0 discrepancy_score".into());
@@ -1485,8 +1563,9 @@ fn test_decode_canonical_validates_and_kills_mutant_r22_and_m1() -> Result<(), B
         encoder.digest(*r);
     }
     encoder.u8(1); // Complete
+    encoder.bool(false); // applied_transform: None
 
-    let computed_digest = ContentDigest::sha256(&encoder.clone().finish());
+    let computed_digest = ContentDigest::sha256(&encoder.clone().finish()).with_laboratory(true);
     encoder.digest(computed_digest);
 
     let payload = encoder.finish();
@@ -1671,8 +1750,9 @@ fn test_h4_canonical_roundtrip_determinism() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-#[test]
-fn test_semantic_handle_h4_delivery_integration_and_binding_checks() -> Result<(), Box<dyn Error>> {
+fn sample_handle_with_transform(
+    applied_transform: Option<String>,
+) -> Result<SemanticHandle, Box<dyn Error>> {
     let levels = BTreeSet::from([
         HydrationLevel::H0,
         HydrationLevel::H1,
@@ -1682,7 +1762,7 @@ fn test_semantic_handle_h4_delivery_integration_and_binding_checks() -> Result<(
     ]);
 
     let subject_digest = ContentDigest::sha256(b"canonical-evidence-subject-data");
-    let handle = SemanticHandle::publish(SemanticHandleSpec {
+    Ok(SemanticHandle::publish(SemanticHandleSpec {
         contract_basis: sample_basis(),
         anchor: sample_anchor(),
         subject_id: "evidence:packet:cam-east:1042".to_owned(),
@@ -1692,7 +1772,7 @@ fn test_semantic_handle_h4_delivery_integration_and_binding_checks() -> Result<(
         capture_interval: None,
         spatial_scope: None,
         privacy_class: "private:property".to_owned(),
-        applied_transform: Some("quarantined_laboratory_expansion".to_owned()),
+        applied_transform,
         availability: HandleAvailability::Available,
         retention_until: TimestampNs(2_000_000_000),
         levels: levels.clone(),
@@ -1722,7 +1802,12 @@ fn test_semantic_handle_h4_delivery_integration_and_binding_checks() -> Result<(
         debug_capability: None,
         derivative_handles: BTreeSet::new(),
         published_at: TimestampNs(1_000_000_000),
-    })?;
+    })?)
+}
+
+#[test]
+fn test_semantic_handle_h4_delivery_integration_and_binding_checks() -> Result<(), Box<dyn Error>> {
+    let handle = sample_handle_with_transform(Some("quarantined_laboratory_expansion".to_owned()))?;
 
     let expansion = sample_expansion_for_handle(&handle)?;
 
@@ -1761,6 +1846,8 @@ fn test_semantic_handle_h4_delivery_integration_and_binding_checks() -> Result<(
         Some("quarantined_laboratory_expansion")
     );
     assert!(artifact.proof_roots.contains(&handle.subject_digest));
+    let quoted_cost = request.validate_delivery(&handle, &artifact, now)?;
+    assert!(quoted_cost.is_valid());
 
     // 2. Handle binding checks: mismatched handle_id
     let mut bad_handle_params = H4LaboratoryExpansionParams {
@@ -1781,28 +1868,61 @@ fn test_semantic_handle_h4_delivery_integration_and_binding_checks() -> Result<(
         retention_until: handle.retention_until,
         proof_roots: expansion.proof_roots().clone(),
         completeness: Completeness::Complete,
+        applied_transform: handle.applied_transform.clone(),
     };
     let bad_expansion = H4LaboratoryExpansion::new(bad_handle_params.clone())?;
     let err = handle.to_h4_laboratory_expansion(&request, now, &bad_expansion);
-    let Err(HydrationError::HandleRebound) = err else {
-        return Err("Handle::to_h4_laboratory_expansion must reject mismatched handle_id".into());
-    };
+    assert_eq!(
+        err,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionHandleMismatch
+        ))
+    );
+    let bad_art = bad_expansion.to_hydration_artifact(handle.applied_transform.clone())?;
+    let vd_err = request.validate_delivery(&handle, &bad_art, now);
+    assert_eq!(
+        vd_err,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionHandleMismatch
+        ))
+    );
 
     // 3. Handle binding checks: mismatched subject_id
     bad_handle_params.handle_id = handle.handle_id.clone();
     bad_handle_params.subject_id = "evidence:other-subject".to_owned();
     let bad_exp2 = H4LaboratoryExpansion::new(bad_handle_params.clone())?;
     let err2 = handle.to_h4_laboratory_expansion(&request, now, &bad_exp2);
-    let Err(HydrationError::Contract(ContractError::InvalidIdentifier)) = err2 else {
-        return Err("Handle::to_h4_laboratory_expansion must reject mismatched subject_id".into());
-    };
+    assert_eq!(
+        err2,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionSubjectMismatch
+        ))
+    );
+    let bad_art2 = bad_exp2.to_hydration_artifact(handle.applied_transform.clone())?;
+    let vd_err2 = request.validate_delivery(&handle, &bad_art2, now);
+    assert_eq!(
+        vd_err2,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionSubjectMismatch
+        ))
+    );
 
     // 4. Handle binding checks: expired now >= retention_until
     let expired_now = TimestampNs(2_000_000_000);
     let err_exp = handle.to_h4_laboratory_expansion(&request, expired_now, &expansion);
-    let Err(HydrationError::LevelUnavailable) = err_exp else {
-        return Err("Handle::to_h4_laboratory_expansion must reject expired delivery".into());
-    };
+    assert_eq!(
+        err_exp,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionExpired
+        ))
+    );
+    let vd_err_exp = request.validate_delivery(&handle, &artifact, expired_now);
+    assert_eq!(
+        vd_err_exp,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionExpired
+        ))
+    );
 
     // 5. Handle binding checks: purpose mismatch
     let debug_request = HydrationRequest::publish(HydrationRequestSpec {
@@ -1830,9 +1950,237 @@ fn test_semantic_handle_h4_delivery_integration_and_binding_checks() -> Result<(
         issued_at: TimestampNs(1_500_000_000),
     })?;
     let err_purp = handle.to_h4_laboratory_expansion(&debug_request, now, &expansion);
-    let Err(HydrationError::LaboratoryGrantRequired) = err_purp else {
-        return Err("Handle::to_h4_laboratory_expansion must reject purpose mismatch".into());
-    };
+    assert_eq!(err_purp, Err(HydrationError::LaboratoryGrantRequired));
+    let vd_err_purp = debug_request.validate_delivery(&handle, &artifact, now);
+    assert_eq!(vd_err_purp, Err(HydrationError::LaboratoryGrantRequired));
 
     Ok(())
+}
+
+#[test]
+fn test_h4_handle_binding_kills_mutants_n1_n2_n3_n7() -> Result<(), Box<dyn Error>> {
+    let handle = sample_handle_with_transform(None)?;
+
+    let request = HydrationRequest::publish(HydrationRequestSpec {
+        contract_basis: handle.contract_basis.clone(),
+        session_id: SessionId::parse("session:qualification")?,
+        handle_id: handle.handle_id.clone(),
+        expected_descriptor_digest: handle.descriptor_digest,
+        expected_subject_digest: handle.subject_digest,
+        anchor: handle.anchor.clone(),
+        requested_level: HydrationLevel::H4,
+        allow_lower_level: false,
+        available_capabilities: handle
+            .required_capabilities
+            .values()
+            .flatten()
+            .cloned()
+            .collect(),
+        authorized_privacy_classes: BTreeSet::from([handle.privacy_class.clone()]),
+        budget: BudgetVector::builder()
+            .bytes(200_000)
+            .tokens(4_000)
+            .build()?,
+        purpose: HydrationPurpose::Qualification,
+        continuation: None,
+        issued_at: TimestampNs(1_500_000_000),
+    })?;
+    let now = TimestampNs(1_500_000_000);
+
+    let mut roots = BTreeSet::new();
+    roots.insert(handle.subject_digest);
+    roots.insert(ContentDigest::sha256(b"sec-root"));
+
+    // Mutant N1: anchor mismatch
+    let mut n1_anchor = sample_anchor();
+    n1_anchor.commit_sequence = 999;
+    let mut n1_params = sample_valid_params()?;
+    n1_params.handle_id = handle.handle_id.clone();
+    n1_params.subject_id = handle.subject_id.clone();
+    n1_params.subject_digest = handle.subject_digest;
+    n1_params.anchor = n1_anchor;
+    n1_params.contract_basis = handle.contract_basis.clone();
+    n1_params.retention_until = handle.retention_until;
+    n1_params.proof_roots = roots.clone();
+    let n1_exp = H4LaboratoryExpansion::new(n1_params)?;
+    let err_n1_handle = handle.to_h4_laboratory_expansion(&request, now, &n1_exp);
+    assert_eq!(
+        err_n1_handle,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionAnchorMismatch
+        ))
+    );
+    let n1_art = n1_exp.to_hydration_artifact(None)?;
+    let err_n1_deliv = request.validate_delivery(&handle, &n1_art, now);
+    assert_eq!(
+        err_n1_deliv,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionAnchorMismatch
+        ))
+    );
+
+    // Mutant N2: contract basis mismatch
+    let mut n2_params = sample_valid_params()?;
+    n2_params.handle_id = handle.handle_id.clone();
+    n2_params.subject_id = handle.subject_id.clone();
+    n2_params.subject_digest = handle.subject_digest;
+    n2_params.anchor = handle.anchor.clone();
+    n2_params.contract_basis = ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
+        b"alt_schemas",
+        b"alt_operations",
+        b"alt_views",
+        b"alt_capabilities",
+        b"alt_errors",
+        b"alt_costs",
+        "h4-contract:alt",
+    ));
+    n2_params.retention_until = handle.retention_until;
+    n2_params.proof_roots = roots.clone();
+    let n2_exp = H4LaboratoryExpansion::new(n2_params)?;
+    let err_n2_handle = handle.to_h4_laboratory_expansion(&request, now, &n2_exp);
+    assert_eq!(
+        err_n2_handle,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionBasisMismatch
+        ))
+    );
+    let n2_art = n2_exp.to_hydration_artifact(None)?;
+    let err_n2_deliv = request.validate_delivery(&handle, &n2_art, now);
+    assert_eq!(
+        err_n2_deliv,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionBasisMismatch
+        ))
+    );
+
+    // Mutant N3: retention_until mismatch
+    let mut n3_params = sample_valid_params()?;
+    n3_params.handle_id = handle.handle_id.clone();
+    n3_params.subject_id = handle.subject_id.clone();
+    n3_params.subject_digest = handle.subject_digest;
+    n3_params.anchor = handle.anchor.clone();
+    n3_params.contract_basis = handle.contract_basis.clone();
+    n3_params.retention_until = TimestampNs(handle.retention_until.0 - 1);
+    n3_params.proof_roots = roots.clone();
+    let n3_exp = H4LaboratoryExpansion::new(n3_params)?;
+    let err_n3_handle = handle.to_h4_laboratory_expansion(&request, now, &n3_exp);
+    assert_eq!(
+        err_n3_handle,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionRetentionMismatch
+        ))
+    );
+    let n3_art = n3_exp.to_hydration_artifact(None)?;
+    let err_n3_deliv = request.validate_delivery(&handle, &n3_art, now);
+    assert_eq!(
+        err_n3_deliv,
+        Err(HydrationError::Contract(
+            ContractError::LaboratoryExpansionRetentionMismatch
+        ))
+    );
+
+    // Mutant N7: subject_digest mismatch
+    let foreign_subject_digest = ContentDigest::sha256(b"completely-different-subject");
+    let mut n7_params = sample_valid_params()?;
+    n7_params.handle_id = handle.handle_id.clone();
+    n7_params.subject_id = handle.subject_id.clone();
+    n7_params.subject_digest = foreign_subject_digest;
+    n7_params.anchor = handle.anchor.clone();
+    n7_params.contract_basis = handle.contract_basis.clone();
+    n7_params.retention_until = handle.retention_until;
+    let mut n7_roots = BTreeSet::new();
+    n7_roots.insert(foreign_subject_digest);
+    n7_roots.insert(handle.subject_digest);
+    n7_params.proof_roots = n7_roots;
+    let n7_exp = H4LaboratoryExpansion::new(n7_params)?;
+    let err_n7_handle = handle.to_h4_laboratory_expansion(&request, now, &n7_exp);
+    assert_eq!(
+        err_n7_handle,
+        Err(HydrationError::Contract(ContractError::DigestMismatch))
+    );
+    let n7_art = n7_exp.to_hydration_artifact(None)?;
+    let err_n7_deliv = request.validate_delivery(&handle, &n7_art, now);
+    assert_eq!(
+        err_n7_deliv,
+        Err(HydrationError::Contract(ContractError::DigestMismatch))
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_h4_validate_delivery_refuses_forged_payload_and_unbound_expansion()
+-> Result<(), Box<dyn Error>> {
+    let handle = sample_handle_with_transform(None)?;
+
+    let request = HydrationRequest::publish(HydrationRequestSpec {
+        contract_basis: handle.contract_basis.clone(),
+        session_id: SessionId::parse("session:qualification")?,
+        handle_id: handle.handle_id.clone(),
+        expected_descriptor_digest: handle.descriptor_digest,
+        expected_subject_digest: handle.subject_digest,
+        anchor: handle.anchor.clone(),
+        requested_level: HydrationLevel::H4,
+        allow_lower_level: false,
+        available_capabilities: handle
+            .required_capabilities
+            .values()
+            .flatten()
+            .cloned()
+            .collect(),
+        authorized_privacy_classes: BTreeSet::from([handle.privacy_class.clone()]),
+        budget: BudgetVector::builder()
+            .bytes(200_000)
+            .tokens(4_000)
+            .build()?,
+        purpose: HydrationPurpose::Qualification,
+        continuation: None,
+        issued_at: TimestampNs(1_500_000_000),
+    })?;
+    let now = TimestampNs(1_500_000_000);
+
+    // 1. Forged payload: b"forged-not-an-expansion"
+    let forged_artifact = HydrationArtifact::publish(
+        HydrationLevel::H4,
+        "application/vnd.fss.h4-laboratory-expansion+canonical",
+        b"forged-not-an-expansion".to_vec(),
+        BTreeSet::from([handle.subject_digest]),
+        Completeness::Complete,
+        None,
+    )?;
+    let forged_res = request.validate_delivery(&handle, &forged_artifact, now);
+    assert!(
+        forged_res.is_err(),
+        "validate_delivery must refuse forged H4 payload that does not decode as an expansion"
+    );
+    let Err(HydrationError::Contract(_)) = forged_res else {
+        return Err("Expected ContractError when decoding forged payload".into());
+    };
+
+    // 2. Valid expansion, but for a completely different handle / subject / lineage
+    let unbound_expansion = sample_valid_expansion()?;
+    let unbound_artifact = unbound_expansion.to_hydration_artifact(None)?;
+    let unbound_res = request.validate_delivery(&handle, &unbound_artifact, now);
+    assert!(
+        unbound_res.is_err(),
+        "validate_delivery must refuse valid expansion unbound to this handle"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_h4_intermediate_artifact_byte_count_less_than_shape_elements_rejected() {
+    // Shape [1, 64, 56, 56] has 200,704 elements; byte_count = 1 must be rejected
+    let malformed_intermediate = IntermediateArtifact {
+        stage_name: "backbone.layer3.feature_map".to_owned(),
+        content_type: "application/x-fss-tensor-f32".to_owned(),
+        digest: ContentDigest::sha256(b"feature-map-data"),
+        shape: vec![1, 64, 56, 56],
+        byte_count: 1,
+    };
+    assert_eq!(
+        malformed_intermediate.validate(),
+        Err(ContractError::LaboratoryExpansionShapeMalformed)
+    );
 }

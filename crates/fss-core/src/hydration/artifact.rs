@@ -31,7 +31,11 @@ impl HydrationArtifact {
         completeness: Completeness,
         applied_transform: Option<String>,
     ) -> Result<Self, HydrationError> {
-        let payload_digest = ContentDigest::sha256(&payload);
+        let payload_digest = if level == HydrationLevel::H4 {
+            ContentDigest::sha256(&payload).with_laboratory(true)
+        } else {
+            ContentDigest::sha256(&payload)
+        };
         let mut roots: BTreeSet<_> = proof_roots.into_iter().collect();
         if roots.is_empty() || roots.iter().all(|root| *root == payload_digest) {
             return Err(ContractError::EvidenceRequired.into());
@@ -57,14 +61,23 @@ impl HydrationArtifact {
     pub fn computed_digest(&self) -> ContentDigest {
         let mut encoder = CanonicalEncoder::new();
         self.encode_body(&mut encoder);
-        ContentDigest::sha256(&encoder.finish())
+        let digest = ContentDigest::sha256(&encoder.finish());
+        if self.level == HydrationLevel::H4 {
+            digest.with_laboratory(true)
+        } else {
+            digest
+        }
     }
 
     /// Verifies payload and artifact integrity.
     pub fn verify(&self) -> Result<(), HydrationError> {
         self.validate_body()?;
-        if self.payload_digest != ContentDigest::sha256(&self.payload)
-            || self.artifact_digest != self.computed_digest()
+        let expected_payload = if self.level == HydrationLevel::H4 {
+            ContentDigest::sha256(&self.payload).with_laboratory(true)
+        } else {
+            ContentDigest::sha256(&self.payload)
+        };
+        if self.payload_digest != expected_payload || self.artifact_digest != self.computed_digest()
         {
             return Err(ContractError::DigestMismatch.into());
         }
