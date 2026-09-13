@@ -12,17 +12,21 @@ use crate::validator::GraphValidator;
 
 /// Pinned, frozen specification version for Model IR.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(u32)]
 pub enum ModelIrVersion {
     /// Version 1 of the Model Operator IR.
-    V1 = 1,
+    V1,
+    /// Unsupported or future Model Operator IR version.
+    Unsupported(u32),
 }
 
 impl ModelIrVersion {
     /// Returns the numerical version tag.
     #[must_use]
     pub const fn as_u32(self) -> u32 {
-        self as u32
+        match self {
+            Self::V1 => 1,
+            Self::Unsupported(v) => v,
+        }
     }
 
     /// Resolves a `ModelIrVersion` from a numerical version tag.
@@ -33,10 +37,22 @@ impl ModelIrVersion {
         match version {
             1 => Ok(Self::V1),
             other => Err(ModelIrError::VersionMismatch {
-                expected: Self::V1.as_u32(),
+                expected: 1,
                 actual: other,
             }),
         }
+    }
+
+    /// Constructs an explicit unsupported version tag for compatibility validation.
+    #[must_use]
+    pub const fn unsupported(version: u32) -> Self {
+        Self::Unsupported(version)
+    }
+
+    /// Returns `true` if this version is supported by the v1 runtime.
+    #[must_use]
+    pub const fn is_supported(self) -> bool {
+        matches!(self, Self::V1)
     }
 }
 

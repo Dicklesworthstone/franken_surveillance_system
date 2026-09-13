@@ -13,8 +13,7 @@ use crate::port::TensorPort;
 /// Broadcasts two tensor shapes according to standard multi-dimensional broadcasting rules.
 ///
 /// # Errors
-/// Returns [`ModelIrError::ShapeMismatch`] if dimensions cannot be broadcast.
-/// Returns [`ModelIrError::ArithmeticOverflow`] if rank overflows [`MAX_TENSOR_RANK`].
+/// Returns [`ModelIrError::ShapeMismatch`] if dimensions cannot be broadcast or if broadcast rank exceeds [`MAX_TENSOR_RANK`].
 pub fn broadcast_shapes(
     node_id: &str,
     op_id: &'static str,
@@ -507,6 +506,27 @@ pub fn infer_operator_outputs(
                 });
             }
 
+            let mut seen_axes = vec![false; new_rank];
+            for &axis in &axes {
+                if axis >= new_rank {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "axes".to_string(),
+                        reason: format!(
+                            "unsqueeze axis {axis} out of bounds for output rank {new_rank}"
+                        ),
+                    });
+                }
+                if seen_axes[axis] {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "axes".to_string(),
+                        reason: format!("duplicate axis {axis} in unsqueeze axes"),
+                    });
+                }
+                seen_axes[axis] = true;
+            }
+
             let mut out_dims = Vec::with_capacity(new_rank);
             let mut in_idx = 0;
             for i in 0..new_rank {
@@ -663,6 +683,7 @@ pub fn infer_operator_outputs(
             }
 
             let mut out_dims = in_dims.to_vec();
+            let mut seen_axes = vec![false; rank];
 
             for i in 0..axes.len() {
                 let axis = axes[i];
@@ -673,6 +694,14 @@ pub fn infer_operator_outputs(
                         reason: format!("slice axis {axis} out of bounds for rank {rank}"),
                     });
                 }
+                if seen_axes[axis] {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "axes".to_string(),
+                        reason: format!("duplicate axis {axis} in slice axes"),
+                    });
+                }
+                seen_axes[axis] = true;
                 let start = starts[i];
                 let end = ends[i];
                 let dim_len = in_dims[axis];
@@ -878,7 +907,7 @@ pub fn infer_operator_outputs(
                 });
             }
 
-            let dilations = if let Some(d_attr) = attrs.get("dilation") {
+            let dilations = if let Some(d_attr) = attrs.get("dilation").or_else(|| attrs.get("dilations")) {
                 d_attr.as_usize_list(node_id, "dilation")?
             } else {
                 vec![1, 1]

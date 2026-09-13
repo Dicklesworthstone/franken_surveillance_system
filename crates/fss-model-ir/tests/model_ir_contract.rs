@@ -131,66 +131,62 @@ fn test_valid_feedforward_graph() -> Result<(), Box<dyn Error>> {
     assert_eq!(graph.output_count(), 1);
 
     let digest = graph.content_digest()?;
-    assert_ne!(digest.bytes(), [0u8; 32]);
+    assert_eq!(
+        digest.to_string(),
+        "sha256:c227ec96549593de1744dca380151b816fff44a08a56fe9a429b44ec5b82f9be"
+    );
     Ok(())
 }
 
 #[test]
 fn test_valid_cnn_graph() -> Result<(), Box<dyn Error>> {
     let g = gen1();
-    let img_port = TensorPort::new("img", DType::F32, Shape::new(vec![4, 3, 32, 32])?, g)?;
-    let wt_port = TensorPort::new("wt", DType::F32, Shape::new(vec![16, 3, 3, 3])?, g)?;
-    // Conv output: (32 + 2 - 3)/1 + 1 = 32 -> [4, 16, 32, 32]
-    // Pool output: (32 - 2)/2 + 1 = 16 -> [4, 16, 16, 16]
-    let out_port = TensorPort::new("pooled", DType::F32, Shape::new(vec![4, 16, 16, 16])?, g)?;
+    let x_port = TensorPort::new("img", DType::F32, Shape::new(vec![1, 1, 10, 10])?, g)?;
+    let w_port = TensorPort::new("w_conv", DType::F32, Shape::new(vec![2, 1, 3, 3])?, g)?;
+    let out_port = TensorPort::new("pooled", DType::F32, Shape::new(vec![1, 2, 4, 4])?, g)?;
 
     let mut conv_attrs = AttributeMap::new();
     conv_attrs.insert("strides".to_string(), AttrValue::IntList(vec![1, 1]));
-    conv_attrs.insert("padding".to_string(), AttrValue::IntList(vec![1, 1, 1, 1]));
+    conv_attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+    conv_attrs.insert("dilations".to_string(), AttrValue::IntList(vec![1, 1]));
+    conv_attrs.insert("groups".to_string(), AttrValue::Int(1));
+
+    let n_conv = GraphNode::new(
+        "conv1",
+        OpCode::Conv2d,
+        "conv_op",
+        vec!["img".to_string(), "w_conv".to_string()],
+        vec!["conv_out".to_string()],
+        conv_attrs,
+    )?;
 
     let mut pool_attrs = AttributeMap::new();
     pool_attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
     pool_attrs.insert("strides".to_string(), AttrValue::IntList(vec![2, 2]));
     pool_attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
 
-    let n_conv = GraphNode::new(
-        "conv1",
-        OpCode::Conv2d,
-        "spatial_conv",
-        vec!["img".to_string(), "wt".to_string()],
-        vec!["conv_out".to_string()],
-        conv_attrs,
-    )?;
-
-    let n_relu = GraphNode::new(
-        "relu1",
-        OpCode::Relu,
-        "relu_activation",
-        vec!["conv_out".to_string()],
-        vec!["relu_out".to_string()],
-        AttributeMap::new(),
-    )?;
-
     let n_pool = GraphNode::new(
         "pool1",
         OpCode::MaxPool2d,
-        "spatial_maxpool",
-        vec!["relu_out".to_string()],
+        "maxpool_op",
+        vec!["conv_out".to_string()],
         vec!["pooled".to_string()],
         pool_attrs,
     )?;
 
-    let graph = ModelIrGraph::builder("cnn_block", g)
-        .add_input(img_port)
-        .add_input(wt_port)
+    let graph = ModelIrGraph::builder("cnn_pipeline", g)
+        .add_input(x_port)
+        .add_input(w_port)
         .add_output(out_port)
         .add_node(n_conv)
-        .add_node(n_relu)
         .add_node(n_pool)
         .build_and_validate()?;
 
     let digest = graph.content_digest()?;
-    assert_ne!(digest.bytes(), [0u8; 32]);
+    assert_eq!(
+        digest.to_string(),
+        "sha256:5757d8e150913bb3c6ed93027c0f09fa085ded9ce5c96fb73131128df1e2e843"
+    );
     Ok(())
 }
 
@@ -254,7 +250,10 @@ fn test_valid_transformer_block_graph() -> Result<(), Box<dyn Error>> {
         .build_and_validate()?;
 
     let digest = graph.content_digest()?;
-    assert_ne!(digest.bytes(), [0u8; 32]);
+    assert_eq!(
+        digest.to_string(),
+        "sha256:53ea9bfe92a51aa16bfa85f8c4fea97dc235d4ae5314ecdcc2d150b26240cbad"
+    );
     Ok(())
 }
 
@@ -282,7 +281,10 @@ fn test_valid_embedding_graph() -> Result<(), Box<dyn Error>> {
         .build_and_validate()?;
 
     let digest = graph.content_digest()?;
-    assert_ne!(digest.bytes(), [0u8; 32]);
+    assert_eq!(
+        digest.to_string(),
+        "sha256:259f0c834b3b5e4abc7f9b29b61517fa3eeb4e06f33ade1e30a6510dd0e3577a"
+    );
     Ok(())
 }
 
@@ -313,6 +315,10 @@ fn test_canonical_digest_determinism_and_sensitivity() -> Result<(), Box<dyn Err
         .add_node(n.clone())
         .build_and_validate()?;
 
+    assert_eq!(
+        g1.content_digest()?.to_string(),
+        "sha256:f0e7b3d03dd1312d48d08153b883353e857482cb53fd268fa1e05194c41dd520"
+    );
     assert_eq!(g1.content_digest()?, g2.content_digest()?);
 
     // 1. Sensitivity to graph ID
@@ -380,23 +386,21 @@ fn test_schema_domain_and_pinned_counts() -> Result<(), Box<dyn Error>> {
         .join("registries/DIGEST_DOMAINS.md");
     let content = fs::read_to_string(domains_path)?;
     assert!(
+        content.contains("`SCHEMA-DOMAIN-MODEL-IR-001`"),
+        "DIGEST_DOMAINS.md must register stable ID 'SCHEMA-DOMAIN-MODEL-IR-001'"
+    );
+    assert!(
         content.contains("fss.model_ir.v1"),
         "DIGEST_DOMAINS.md must register domain 'fss.model_ir.v1'"
     );
 
-    let schemas_path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .nth(2)
-        .ok_or("missing root ancestor")?
-        .join("registries/SCHEMAS.md");
-    let schemas_content = fs::read_to_string(schemas_path)?;
-    let schema_count = schemas_content
+    let domain_count = content
         .lines()
-        .filter(|line| line.starts_with("| `SCHEMA-"))
+        .filter(|line| line.starts_with("| `SCHEMA-DOMAIN-"))
         .count();
     assert_eq!(
-        schema_count, 71,
-        "registries/SCHEMAS.md count must remain pinned at 71"
+        domain_count, 43,
+        "registries/DIGEST_DOMAINS.md count must remain pinned at 43"
     );
     Ok(())
 }
@@ -958,6 +962,361 @@ fn test_declared_output_mismatch_rejected() -> Result<(), Box<dyn Error>> {
             assert_eq!(op_id, "GRAPH-OUTPUT");
         }
         other => return Err(format!("expected ShapeMismatch, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unsqueeze_out_of_bounds_axis_rejected() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![2, 3])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![2, 3, 1])?, g)?;
+
+    let mut attrs = AttributeMap::new();
+    // Input rank is 2. With 1 axis added, new_rank is 3. Axis 5 is out of bounds (5 >= 3).
+    attrs.insert("axes".to_string(), AttrValue::IntList(vec![5]));
+
+    let n = GraphNode::new(
+        "unsq",
+        OpCode::Unsqueeze,
+        "unsq_op",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        attrs,
+    )?;
+
+    let graph = ModelIrGraph::new(
+        "unsq_oob",
+        ModelIrVersion::V1,
+        g,
+        vec![in_port],
+        vec![out_port],
+        vec![n],
+    )?;
+
+    match graph.validate() {
+        Err(ModelIrError::InvalidAttribute { attr_name, .. }) => {
+            assert_eq!(attr_name, "axes");
+        }
+        other => return Err(format!("expected InvalidAttribute for axes, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_unsqueeze_duplicate_axes_rejected() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![2, 3])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![2, 1, 3])?, g)?;
+
+    let mut attrs = AttributeMap::new();
+    // Duplicate axis [1, 1]
+    attrs.insert("axes".to_string(), AttrValue::IntList(vec![1, 1]));
+
+    let n = GraphNode::new(
+        "unsq",
+        OpCode::Unsqueeze,
+        "unsq_op",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        attrs,
+    )?;
+
+    let graph = ModelIrGraph::new(
+        "unsq_dup",
+        ModelIrVersion::V1,
+        g,
+        vec![in_port],
+        vec![out_port],
+        vec![n],
+    )?;
+
+    match graph.validate() {
+        Err(ModelIrError::InvalidAttribute { attr_name, .. }) => {
+            assert_eq!(attr_name, "axes");
+        }
+        other => return Err(format!("expected InvalidAttribute for duplicate axes, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_slice_duplicate_axes_rejected() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![4, 8, 16])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![4, 4, 16])?, g)?;
+
+    let mut attrs = AttributeMap::new();
+    // Duplicate axis [1, 1]
+    attrs.insert("axes".to_string(), AttrValue::IntList(vec![1, 1]));
+    attrs.insert("starts".to_string(), AttrValue::IntList(vec![0, 0]));
+    attrs.insert("ends".to_string(), AttrValue::IntList(vec![4, 4]));
+
+    let n = GraphNode::new(
+        "slice",
+        OpCode::Slice,
+        "slice_op",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        attrs,
+    )?;
+
+    let graph = ModelIrGraph::new(
+        "slice_dup",
+        ModelIrVersion::V1,
+        g,
+        vec![in_port],
+        vec![out_port],
+        vec![n],
+    )?;
+
+    match graph.validate() {
+        Err(ModelIrError::InvalidAttribute { attr_name, .. }) => {
+            assert_eq!(attr_name, "axes");
+        }
+        other => return Err(format!("expected InvalidAttribute for duplicate slice axes, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_arithmetic_overflow_reshape_product() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![4, 4])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![16])?, g)?;
+
+    let mut attrs = AttributeMap::new();
+    // Multiplying i64::MAX and 3 overflows usize
+    attrs.insert(
+        "shape".to_string(),
+        AttrValue::IntList(vec![i64::MAX, 3]),
+    );
+
+    let n = GraphNode::new(
+        "reshape_overflow",
+        OpCode::Reshape,
+        "reshape_op",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        attrs,
+    )?;
+
+    let graph = ModelIrGraph::new(
+        "reshape_of_graph",
+        ModelIrVersion::V1,
+        g,
+        vec![in_port],
+        vec![out_port],
+        vec![n],
+    )?;
+
+    match graph.validate() {
+        Err(ModelIrError::ArithmeticOverflow { operation }) => {
+            assert_eq!(operation, "reshape known dimensions product");
+        }
+        other => return Err(format!("expected ArithmeticOverflow, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_arithmetic_overflow_concat_dimension_summation() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let half_max = usize::MAX / 2 + 1;
+    let in_port1 = TensorPort::new("x1", DType::F32, Shape::new(vec![half_max, 4])?, g)?;
+    let in_port2 = TensorPort::new("x2", DType::F32, Shape::new(vec![half_max, 4])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![16, 4])?, g)?;
+
+    let mut attrs = AttributeMap::new();
+    attrs.insert("axis".to_string(), AttrValue::Int(0));
+
+    let n = GraphNode::new(
+        "concat_overflow",
+        OpCode::Concat,
+        "concat_op",
+        vec!["x1".to_string(), "x2".to_string()],
+        vec!["y".to_string()],
+        attrs,
+    )?;
+
+    let graph = ModelIrGraph::new(
+        "concat_of_graph",
+        ModelIrVersion::V1,
+        g,
+        vec![in_port1, in_port2],
+        vec![out_port],
+        vec![n],
+    )?;
+
+    match graph.validate() {
+        Err(ModelIrError::ArithmeticOverflow { operation }) => {
+            assert_eq!(operation, "concat dimension summation");
+        }
+        other => return Err(format!("expected ArithmeticOverflow, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_arithmetic_overflow_conv2d_dilation() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let x_port = TensorPort::new("img", DType::F32, Shape::new(vec![1, 1, 10, 10])?, g)?;
+    let w_port = TensorPort::new("w_conv", DType::F32, Shape::new(vec![1, 1, 4, 3])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 4, 4])?, g)?;
+
+    let mut conv_attrs = AttributeMap::new();
+    conv_attrs.insert("strides".to_string(), AttrValue::IntList(vec![1, 1]));
+    conv_attrs.insert("padding".to_string(), AttrValue::IntList(vec![0, 0, 0, 0]));
+    // (4 - 1) * i64::MAX overflows usize during effective kernel calculation
+    conv_attrs.insert(
+        "dilation".to_string(),
+        AttrValue::IntList(vec![i64::MAX, 1]),
+    );
+    conv_attrs.insert("groups".to_string(), AttrValue::Int(1));
+
+    let n_conv = GraphNode::new(
+        "conv_overflow",
+        OpCode::Conv2d,
+        "conv_op",
+        vec!["img".to_string(), "w_conv".to_string()],
+        vec!["y".to_string()],
+        conv_attrs,
+    )?;
+
+    let graph = ModelIrGraph::new(
+        "conv_of_graph",
+        ModelIrVersion::V1,
+        g,
+        vec![x_port, w_port],
+        vec![out_port],
+        vec![n_conv],
+    )?;
+
+    match graph.validate() {
+        Err(ModelIrError::ArithmeticOverflow { operation }) => {
+            assert_eq!(operation, "effective kernel height calculation");
+        }
+        other => return Err(format!("expected ArithmeticOverflow, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_arithmetic_overflow_conv2d_padding() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let x_port = TensorPort::new("img", DType::F32, Shape::new(vec![1, 1, 10, 10])?, g)?;
+    let w_port = TensorPort::new("w_conv", DType::F32, Shape::new(vec![1, 1, 3, 3])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 4, 4])?, g)?;
+
+    let mut conv_attrs = AttributeMap::new();
+    conv_attrs.insert("strides".to_string(), AttrValue::IntList(vec![1, 1]));
+    // i64::MAX top + i64::MAX bottom + h overflows usize padded height calculation
+    conv_attrs.insert(
+        "padding".to_string(),
+        AttrValue::IntList(vec![i64::MAX, 0, i64::MAX, 0]),
+    );
+    conv_attrs.insert("dilations".to_string(), AttrValue::IntList(vec![1, 1]));
+    conv_attrs.insert("groups".to_string(), AttrValue::Int(1));
+
+    let n_conv = GraphNode::new(
+        "conv_pad_overflow",
+        OpCode::Conv2d,
+        "conv_op",
+        vec!["img".to_string(), "w_conv".to_string()],
+        vec!["y".to_string()],
+        conv_attrs,
+    )?;
+
+    let graph = ModelIrGraph::new(
+        "conv_pad_of_graph",
+        ModelIrVersion::V1,
+        g,
+        vec![x_port, w_port],
+        vec![out_port],
+        vec![n_conv],
+    )?;
+
+    match graph.validate() {
+        Err(ModelIrError::ArithmeticOverflow { operation }) => {
+            assert_eq!(operation, "padded height calculation");
+        }
+        other => return Err(format!("expected ArithmeticOverflow, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_arithmetic_overflow_maxpool2d_padding() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let x_port = TensorPort::new("img", DType::F32, Shape::new(vec![1, 1, 10, 10])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![1, 1, 4, 4])?, g)?;
+
+    let mut pool_attrs = AttributeMap::new();
+    pool_attrs.insert("kernel_size".to_string(), AttrValue::IntList(vec![2, 2]));
+    pool_attrs.insert("strides".to_string(), AttrValue::IntList(vec![2, 2]));
+    // i64::MAX top + i64::MAX bottom + h overflows usize maxpool padded height calculation
+    pool_attrs.insert(
+        "padding".to_string(),
+        AttrValue::IntList(vec![i64::MAX, 0, i64::MAX, 0]),
+    );
+
+    let n_pool = GraphNode::new(
+        "pool_pad_overflow",
+        OpCode::MaxPool2d,
+        "maxpool_op",
+        vec!["img".to_string()],
+        vec!["y".to_string()],
+        pool_attrs,
+    )?;
+
+    let graph = ModelIrGraph::new(
+        "pool_pad_of_graph",
+        ModelIrVersion::V1,
+        g,
+        vec![x_port],
+        vec![out_port],
+        vec![n_pool],
+    )?;
+
+    match graph.validate() {
+        Err(ModelIrError::ArithmeticOverflow { operation }) => {
+            assert_eq!(operation, "maxpool padded height calculation");
+        }
+        other => return Err(format!("expected ArithmeticOverflow, got {other:?}").into()),
+    }
+    Ok(())
+}
+
+#[test]
+fn test_graph_validator_rejects_unsupported_version() -> Result<(), Box<dyn Error>> {
+    let g = gen1();
+    let in_port = TensorPort::new("x", DType::F32, Shape::new(vec![4, 4])?, g)?;
+    let out_port = TensorPort::new("y", DType::F32, Shape::new(vec![4, 4])?, g)?;
+
+    let n = GraphNode::new(
+        "relu",
+        OpCode::Relu,
+        "r",
+        vec!["x".to_string()],
+        vec!["y".to_string()],
+        AttributeMap::new(),
+    )?;
+
+    let graph = ModelIrGraph::new(
+        "unsupported_version_graph",
+        ModelIrVersion::unsupported(2),
+        g,
+        vec![in_port],
+        vec![out_port],
+        vec![n],
+    )?;
+
+    match graph.validate() {
+        Err(ModelIrError::VersionMismatch { expected, actual }) => {
+            assert_eq!(expected, 1);
+            assert_eq!(actual, 2);
+        }
+        other => return Err(format!("expected VersionMismatch, got {other:?}").into()),
     }
     Ok(())
 }
