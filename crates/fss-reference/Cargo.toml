@@ -19,4 +19,5 @@ fss-publication = { path = "../fss-publication" }
 
 [dev-dependencies]
 fss-core = { path = "../fss-core", features = ["test-support"] }
+fss-packet = { path = "../fss-packet" }
 
