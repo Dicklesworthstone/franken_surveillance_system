@@ -409,6 +409,29 @@ const fn asserts_present_support(state: KnowledgeState) -> bool {
     }
 }
 
+/// Parameters for constructing a validated [`KnowledgeCell`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct KnowledgeCellParams {
+    /// Stable proposition identity.
+    pub claim_id: String,
+    /// Compact human-readable statement.
+    pub statement: String,
+    /// Epistemic state.
+    pub knowledge_state: KnowledgeState,
+    /// Provenance class.
+    pub provenance: ProvenanceClass,
+    /// Hypothesis disposition, when applicable.
+    pub hypothesis: Option<HypothesisDisposition>,
+    /// Evidence roots supporting the proposition.
+    pub evidence: Vec<ContentDigest>,
+    /// Contradicting evidence roots.
+    pub contradictions: Vec<ContentDigest>,
+    /// Validity end, when bounded.
+    pub valid_until: Option<TimestampNs>,
+    /// Typed basis required by states whose registry meaning names one; `None` otherwise.
+    pub state_basis: Option<KnowledgeStateBasis>,
+}
+
 /// One proposition with orthogonal epistemic, provenance, and hypothesis states.
 ///
 /// `Debug` is implemented by hand so that a `redacted` cell never prints its statement.
@@ -435,7 +458,90 @@ pub struct KnowledgeCell {
 }
 
 impl KnowledgeCell {
+    /// Constructs a new [`KnowledgeCell`] after validating all invariants.
+    pub fn new(params: KnowledgeCellParams) -> Result<Self, ContractError> {
+        let cell = Self {
+            claim_id: params.claim_id,
+            statement: params.statement,
+            knowledge_state: params.knowledge_state,
+            provenance: params.provenance,
+            hypothesis: params.hypothesis,
+            evidence: params.evidence,
+            contradictions: params.contradictions,
+            valid_until: params.valid_until,
+            state_basis: params.state_basis,
+        };
+        cell.validate()?;
+        Ok(cell)
+    }
+
+    /// Returns the stable claim identifier.
+    #[must_use]
+    pub fn claim_id(&self) -> &str {
+        &self.claim_id
+    }
+
+    /// Returns the statement text.
+    #[must_use]
+    pub fn statement(&self) -> &str {
+        &self.statement
+    }
+
+    /// Returns the epistemic knowledge state.
+    #[must_use]
+    pub const fn knowledge_state(&self) -> KnowledgeState {
+        self.knowledge_state
+    }
+
+    /// Returns the provenance class.
+    #[must_use]
+    pub const fn provenance(&self) -> ProvenanceClass {
+        self.provenance
+    }
+
+    /// Returns the hypothesis disposition, when present.
+    #[must_use]
+    pub const fn hypothesis(&self) -> Option<HypothesisDisposition> {
+        self.hypothesis
+    }
+
+    /// Returns the supporting evidence roots.
+    #[must_use]
+    pub fn evidence(&self) -> &[ContentDigest] {
+        &self.evidence
+    }
+
+    /// Returns the contradicting evidence roots.
+    #[must_use]
+    pub fn contradictions(&self) -> &[ContentDigest] {
+        &self.contradictions
+    }
+
+    /// Returns the validity boundary timestamp, when set.
+    #[must_use]
+    pub const fn valid_until(&self) -> Option<TimestampNs> {
+        self.valid_until
+    }
+
+    /// Returns the typed state basis, when present.
+    #[must_use]
+    pub fn state_basis(&self) -> Option<&KnowledgeStateBasis> {
+        self.state_basis.as_ref()
+    }
+
     /// Returns whether this cell may be used as an irreversible-effect premise.
+    ///
+    /// CONSTITUTIONAL HARD GATES:
+    /// 1. Only `Known` (KSTATE-001) may authorize irreversible effects.
+    /// 2. Only `Observed`, `OperatorAsserted`, and `Policy` provenance may authorize effects.
+    ///    Per AGT-LAYER-004 and INV-069, derived beliefs belong to the Cognition plane,
+    ///    never the Authority plane, and can NEVER authorize irreversible physical effects.
+    ///    Predictions (`Predicted`), operational memory (`Remembered`), and vendor assertions
+    ///    (`VendorClaimed`) are also strictly non-authorizing.
+    /// 3. The cell must pass full [`Self::validate`] checks.
+    /// 4. Admissible supporting evidence must be present (`!self.evidence.is_empty()`).
+    /// 5. No contradicting evidence may exist (`self.contradictions.is_empty()`).
+    /// 6. The cell's validity interval must not be expired relative to `now`.
     #[must_use]
     pub fn is_irreversible_effect_premise(&self, now: TimestampNs) -> bool {
         self.knowledge_state.may_authorize_irreversible_effect()
@@ -1690,5 +1796,74 @@ mod tests {
         impl<T: ?Sized> AmbiguousIfCanonical<()> for T {}
         impl<T: ?Sized + CanonicalEncode> AmbiguousIfCanonical<u8> for T {}
         <WorldEnvelope as AmbiguousIfCanonical<_>>::probe();
+        <SituationFrame as AmbiguousIfCanonical<_>>::probe();
+    }
+
+    #[test]
+    fn knowledge_cell_constructor_and_getters_enforce_validation() -> Result<(), ContractError> {
+        let digest = ContentDigest::sha256(b"door-evidence");
+        let params = KnowledgeCellParams {
+            claim_id: "claim:door".to_owned(),
+            statement: "The door is closed.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: Vec::new(),
+            valid_until: Some(TimestampNs(100)),
+            state_basis: None,
+        };
+
+        let cell = KnowledgeCell::new(params)?;
+        assert_eq!(cell.claim_id(), "claim:door");
+        assert_eq!(cell.statement(), "The door is closed.");
+        assert_eq!(cell.knowledge_state(), KnowledgeState::Known);
+        assert_eq!(cell.provenance(), ProvenanceClass::Observed);
+        assert_eq!(cell.hypothesis(), None);
+        assert_eq!(cell.evidence(), &[digest]);
+        assert_eq!(cell.contradictions(), &[]);
+        assert_eq!(cell.valid_until(), Some(TimestampNs(100)));
+        assert_eq!(cell.state_basis(), None);
+
+        // Constructor enforces validation: Predicted + Known is refused
+        let invalid_params = KnowledgeCellParams {
+            claim_id: "claim:prediction".to_owned(),
+            statement: "Prediction.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Predicted,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        };
+        assert_eq!(
+            KnowledgeCell::new(invalid_params),
+            Err(ContractError::PredictedKnownForbidden)
+        );
+
+        // Derived + Known constructor succeeds, but can NEVER be an irreversible effect premise
+        let derived_known_params = KnowledgeCellParams {
+            claim_id: "claim:derived:breach".to_owned(),
+            statement: "Perimeter breach derived.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Derived,
+            hypothesis: None,
+            evidence: vec![digest],
+            contradictions: Vec::new(),
+            valid_until: Some(TimestampNs(100)),
+            state_basis: None,
+        };
+        let derived_cell = KnowledgeCell::new(derived_known_params)?;
+        assert_eq!(derived_cell.knowledge_state(), KnowledgeState::Known);
+        assert_eq!(derived_cell.provenance(), ProvenanceClass::Derived);
+        assert!(
+            !derived_cell
+                .provenance()
+                .may_authorize_irreversible_effect()
+        );
+        assert!(!derived_cell.is_irreversible_effect_premise(TimestampNs(50)));
+
+        Ok(())
     }
 }

@@ -3,8 +3,9 @@ use std::fs;
 
 use fss_core::{
     CapsuleId, CaptureInterval, Completeness, ContractBasis, ContractBasisRegistryBytes,
-    EffectJournal, EffectState, EventId, IdempotencyKey, MissionId, ObligationId, OperationId,
-    PrincipalId, ProbabilityInterval, SensorId, SessionId, TimestampNs,
+    EffectJournal, EffectState, EventId, IdempotencyKey, KnowledgeState, MissionId, ObligationId,
+    OperationId, PrincipalId, ProbabilityInterval, ProvenanceClass, SensorId, SessionId,
+    TimestampNs,
 };
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
@@ -1964,10 +1965,10 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 
 /// Pinned v6 seal digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:2dd82f8e7855af0a0b13a2d9af92891e065826aa38c9898abdfe4c24272d130a";
+    "sha256:cbd5d10dc57ed2e27d9845d73c858a9767643b1f5d9d988bca5e6e993c806c68";
 /// Pinned v5 publication digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:8ee1205c591ed1922a9e2d3684d97ff96b84c000be4d45a503dd82d7447c7a0b";
+    "sha256:f9299f3992154f2b761366e1ae91f0ed57b3edfc5a9c54cf3a25fb55f4bb0c95";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.
@@ -3633,6 +3634,46 @@ fn a_raw_proof_marker_never_suppresses_a_first_proof() -> Result<(), Box<dyn Err
         None,
     )?;
     assert!(is_terminal(&first), "X to G: {:?}", first.classes);
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn effect_journal_receipt_is_observed_and_derived_receipt_cannot_resolve_indeterminate_effect()
+-> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("receipt-prov-pinned")?;
+    let verified = lifecycle.verified(true)?;
+
+    // Find the local state effect cell produced by annotate_operation_receipt
+    let local_state_cell = verified
+        .situation
+        .capsule
+        .frame
+        .knowledge_cells
+        .iter()
+        .find(|c| verified.situation.effect_cell_kind(&c.claim_id) == Some(crate::EffectCellKind::LocalState))
+        .ok_or(ReferenceError::InvalidSpec("missing_local_state_cell"))?;
+
+    // 1. Pins that the local effect journal receipt is classified as Observed under PROV-001.
+    // Local effect journal receipts are direct canonical effect evidence of local runtime
+    // state execution, not cognitive derivations (see AGENT_CONTRACTS.md Note on PROV-001).
+    assert_eq!(local_state_cell.provenance, ProvenanceClass::Observed);
+    assert_eq!(local_state_cell.knowledge_state, KnowledgeState::Known);
+    assert!(local_state_cell.provenance.may_authorize_irreversible_effect());
+    assert!(local_state_cell.is_irreversible_effect_premise(verified.situation.capsule.created_at));
+
+    // 2. Pins that a Derived receipt cell can NEVER resolve an Indeterminate effect:
+    // If an effect journal receipt were labeled as Derived, may_authorize_irreversible_effect()
+    // returns false per AGT-LAYER-004 / INV-069, so is_irreversible_effect_premise returns false.
+    let mut derived_cell = local_state_cell.clone();
+    derived_cell.provenance = ProvenanceClass::Derived;
+    assert_eq!(derived_cell.validate(), Ok(()));
+    assert!(!derived_cell.provenance.may_authorize_irreversible_effect());
+    assert!(
+        !derived_cell.is_irreversible_effect_premise(verified.situation.capsule.created_at),
+        "Derived receipt cell must not be an irreversible effect premise"
+    );
+
     lifecycle.harness.cleanup();
     Ok(())
 }

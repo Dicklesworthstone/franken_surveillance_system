@@ -17,7 +17,7 @@ use std::str::FromStr;
 use fss_core::{
     BeliefInterval, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
     ContentDigest, ContractError, DerivedBelief, DerivedBeliefParams, Generation, KnowledgeCell,
-    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, PrivacyGeneration,
+    KnowledgeCellParams, KnowledgeState, KnowledgeStateBasis, LedgerAnchor, PrivacyGeneration,
     ProvenanceClass, ReconciliationBasis, RedactionMarker, RedactionReason, SituationFrame,
     StaleBasis, TimestampNs, WorldEnvelope,
 };
@@ -289,9 +289,10 @@ fn test_non_authorizing_provenances_rejected_for_irreversible_effects_even_when_
     let now = TimestampNs(1_000_000_000);
     let evidence_digest = ContentDigest::sha256(b"admissible_evidence");
 
-    // Constitutional Invariant: Predicted, Remembered, and VendorClaimed can NEVER authorize
+    // Constitutional Invariant: Derived, Predicted, Remembered, and VendorClaimed can NEVER authorize
     // irreversible effects, even when epistemic state is set to Known.
     let non_authorizing = [
+        (ProvenanceClass::Derived, "derived"),
         (ProvenanceClass::Predicted, "predicted"),
         (ProvenanceClass::Remembered, "remembered"),
         (ProvenanceClass::VendorClaimed, "vendor_claimed"),
@@ -391,8 +392,8 @@ fn test_derived_contract_row_properties() -> Result<(), Box<dyn Error>> {
     assert!(prov.is_derived());
     assert!(!prov.is_observed());
 
-    // 5. May authorize irreversible effect: true (when accompanied by Known state and evidence)
-    assert!(prov.may_authorize_irreversible_effect());
+    // 5. May authorize irreversible effect: false (derived beliefs belong to Cognition plane, never Authority plane per AGT-LAYER-004 / INV-069)
+    assert!(!prov.may_authorize_irreversible_effect());
 
     Ok(())
 }
@@ -582,10 +583,11 @@ fn test_derived_cell_effect_premise_evaluation() -> Result<(), Box<dyn Error>> {
     let now = TimestampNs(1_000_000_000);
     let input_digest = ContentDigest::sha256(b"canonical_deterministic_derivation_input");
 
-    // Positive case: Known + Derived + Inputs + No Contradictions + Unexpired
+    // Constitutional Gate: Derived beliefs belong to the Cognition plane and can NEVER
+    // authorize irreversible physical effects, even when Known with inputs and no contradictions.
     let valid_cell = KnowledgeCell {
         claim_id: "claim:perimeter:breach:derived".to_string(),
-        statement: "Perimeter breach deterministically proved from multi-sensor fused inputs".to_string(),
+        statement: "Perimeter breach deterministically derived from multi-sensor fused inputs".to_string(),
         knowledge_state: KnowledgeState::Known,
         provenance: ProvenanceClass::Derived,
         hypothesis: None,
@@ -595,7 +597,9 @@ fn test_derived_cell_effect_premise_evaluation() -> Result<(), Box<dyn Error>> {
         state_basis: None,
     };
 
-    assert!(valid_cell.is_irreversible_effect_premise(now));
+    assert_eq!(valid_cell.validate(), Ok(()));
+    assert!(!valid_cell.provenance.may_authorize_irreversible_effect());
+    assert!(!valid_cell.is_irreversible_effect_premise(now));
 
     // Negative case 1: Empty inputs cannot authorize effect
     let mut no_inputs = valid_cell.clone();
@@ -614,7 +618,7 @@ fn test_derived_cell_effect_premise_evaluation() -> Result<(), Box<dyn Error>> {
     expired_cell.valid_until = Some(TimestampNs(500_000_000));
     assert!(!expired_cell.is_irreversible_effect_premise(now));
 
-    // Negative case 4: Estimated state cannot authorize effect even with Derived provenance
+    // Negative case 4: Estimated state cannot authorize effect
     let mut estimated_cell = valid_cell.clone();
     estimated_cell.knowledge_state = KnowledgeState::Estimated;
     assert!(!estimated_cell.is_irreversible_effect_premise(now));
@@ -641,10 +645,10 @@ fn test_derived_distinction_from_observed_and_predicted() -> Result<(), Box<dyn 
     assert_ne!(derived.meaning(), predicted.meaning());
 
     // Constitutional effect authorization distinction:
-    // Both Observed and Derived may authorize irreversible effects when Known + witnessed.
-    // Predicted CAN NEVER authorize irreversible effects even when Known.
+    // Observed may authorize irreversible effects when Known + witnessed.
+    // Derived and Predicted CAN NEVER authorize irreversible effects even when Known.
     assert!(observed.may_authorize_irreversible_effect());
-    assert!(derived.may_authorize_irreversible_effect());
+    assert!(!derived.may_authorize_irreversible_effect());
     assert!(!predicted.may_authorize_irreversible_effect());
 
     let derived_known_cell = KnowledgeCell {
@@ -658,7 +662,7 @@ fn test_derived_distinction_from_observed_and_predicted() -> Result<(), Box<dyn 
         valid_until: Some(TimestampNs(2_000_000_000)),
         state_basis: None,
     };
-    assert!(derived_known_cell.is_irreversible_effect_premise(now));
+    assert!(!derived_known_cell.is_irreversible_effect_premise(now));
 
     let predicted_known_cell = KnowledgeCell {
         claim_id: "claim:predicted:known".to_string(),
@@ -968,7 +972,7 @@ fn test_predicted_cannot_authorize_irreversible_effects_even_when_known(
         provenance: ProvenanceClass::Derived,
         ..predicted_known_cell
     };
-    assert!(derived_cell.is_irreversible_effect_premise(now));
+    assert!(!derived_cell.is_irreversible_effect_premise(now));
 
     Ok(())
 }
@@ -1090,18 +1094,18 @@ fn test_predicted_distinction_from_all_other_provenance_classes() -> Result<(), 
         .filter(|p| !p.may_authorize_irreversible_effect())
         .collect();
 
-    // Predicted is in the non-authorizing partition
+    // Predicted and Derived are in the non-authorizing partition
     assert!(non_authorizing_classes.contains(&ProvenanceClass::Predicted));
     assert!(non_authorizing_classes.contains(&ProvenanceClass::Remembered));
     assert!(non_authorizing_classes.contains(&ProvenanceClass::VendorClaimed));
-    assert_eq!(non_authorizing_classes.len(), 3);
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Derived));
+    assert_eq!(non_authorizing_classes.len(), 4);
 
-    // Observed and Derived are in the authorizing partition
+    // Observed, OperatorAsserted, Policy are in the authorizing partition
     assert!(authorizing_classes.contains(&ProvenanceClass::Observed));
-    assert!(authorizing_classes.contains(&ProvenanceClass::Derived));
     assert!(authorizing_classes.contains(&ProvenanceClass::OperatorAsserted));
     assert!(authorizing_classes.contains(&ProvenanceClass::Policy));
-    assert_eq!(authorizing_classes.len(), 4);
+    assert_eq!(authorizing_classes.len(), 3);
 
     Ok(())
 }
@@ -1318,7 +1322,7 @@ fn test_remembered_cannot_authorize_irreversible_effects_even_when_known(
         provenance: ProvenanceClass::Derived,
         ..remembered_known_cell
     };
-    assert!(derived_cell.is_irreversible_effect_premise(now));
+    assert!(!derived_cell.is_irreversible_effect_premise(now));
 
     Ok(())
 }
@@ -1445,18 +1449,18 @@ fn test_remembered_distinction_from_all_other_provenance_classes() -> Result<(),
         .filter(|p| !p.may_authorize_irreversible_effect())
         .collect();
 
-    // Remembered is in the non-authorizing partition
+    // Remembered and Derived are in the non-authorizing partition
     assert!(non_authorizing_classes.contains(&ProvenanceClass::Remembered));
     assert!(non_authorizing_classes.contains(&ProvenanceClass::Predicted));
     assert!(non_authorizing_classes.contains(&ProvenanceClass::VendorClaimed));
-    assert_eq!(non_authorizing_classes.len(), 3);
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Derived));
+    assert_eq!(non_authorizing_classes.len(), 4);
 
     // Authorizing partition
     assert!(authorizing_classes.contains(&ProvenanceClass::Observed));
-    assert!(authorizing_classes.contains(&ProvenanceClass::Derived));
     assert!(authorizing_classes.contains(&ProvenanceClass::OperatorAsserted));
     assert!(authorizing_classes.contains(&ProvenanceClass::Policy));
-    assert_eq!(authorizing_classes.len(), 4);
+    assert_eq!(authorizing_classes.len(), 3);
 
     Ok(())
 }
@@ -1789,15 +1793,15 @@ fn test_operator_asserted_distinction_from_all_other_provenance_classes(
     // OperatorAsserted is in the authorizing partition
     assert!(authorizing_classes.contains(&ProvenanceClass::OperatorAsserted));
     assert!(authorizing_classes.contains(&ProvenanceClass::Observed));
-    assert!(authorizing_classes.contains(&ProvenanceClass::Derived));
     assert!(authorizing_classes.contains(&ProvenanceClass::Policy));
-    assert_eq!(authorizing_classes.len(), 4);
+    assert_eq!(authorizing_classes.len(), 3);
 
     // Non-authorizing partition
     assert!(non_authorizing_classes.contains(&ProvenanceClass::Predicted));
     assert!(non_authorizing_classes.contains(&ProvenanceClass::Remembered));
     assert!(non_authorizing_classes.contains(&ProvenanceClass::VendorClaimed));
-    assert_eq!(non_authorizing_classes.len(), 3);
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Derived));
+    assert_eq!(non_authorizing_classes.len(), 4);
 
     Ok(())
 }
@@ -2016,7 +2020,7 @@ fn test_vendor_claimed_cannot_authorize_irreversible_effects_even_when_known(
         provenance: ProvenanceClass::Derived,
         ..vendor_known_cell
     };
-    assert!(derived_cell.is_irreversible_effect_premise(now));
+    assert!(!derived_cell.is_irreversible_effect_premise(now));
 
     Ok(())
 }
@@ -2135,18 +2139,18 @@ fn test_vendor_claimed_distinction_from_all_other_provenance_classes() -> Result
         .filter(|p| p.may_authorize_irreversible_effect())
         .collect();
 
-    // VendorClaimed is in the non-authorizing partition
+    // VendorClaimed and Derived are in the non-authorizing partition
     assert!(non_authorizing_classes.contains(&ProvenanceClass::VendorClaimed));
     assert!(non_authorizing_classes.contains(&ProvenanceClass::Predicted));
     assert!(non_authorizing_classes.contains(&ProvenanceClass::Remembered));
-    assert_eq!(non_authorizing_classes.len(), 3);
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Derived));
+    assert_eq!(non_authorizing_classes.len(), 4);
 
     // Authorizing partition
     assert!(authorizing_classes.contains(&ProvenanceClass::Observed));
-    assert!(authorizing_classes.contains(&ProvenanceClass::Derived));
     assert!(authorizing_classes.contains(&ProvenanceClass::OperatorAsserted));
     assert!(authorizing_classes.contains(&ProvenanceClass::Policy));
-    assert_eq!(authorizing_classes.len(), 4);
+    assert_eq!(authorizing_classes.len(), 3);
 
     Ok(())
 }
@@ -2524,5 +2528,171 @@ fn test_wire_code_roundtrip() -> Result<(), Box<dyn Error>> {
         ProvenanceClass::from_code(8),
         Err(ContractError::InvalidIdentifier)
     );
+    Ok(())
+}
+
+#[test]
+fn test_fss_nozug_planted_bypass_derived_to_known_relabel_refused_as_effect_premise()
+-> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let anchor = LedgerAnchor::genesis("site:derived-relabel-bypass-test");
+    let belief_generation = Generation::from_u64(1);
+    let receipt = ContentDigest::sha256(b"deterministic_derivation_receipt_nozug");
+    let input = ContentDigest::sha256(b"input_sensor_tensor_digest_nozug");
+
+    // Construct a valid DerivedBelief
+    let params = DerivedBeliefParams {
+        belief_id: "belief:track:intruder:001".to_string(),
+        anchor: anchor.clone(),
+        generation: belief_generation,
+        statement: "Intruder detected via multi-camera fusion".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Derived,
+        uncertainty: BeliefInterval::from_f64(0.95, 0.95)?,
+        supporting_evidence: vec![input],
+        contradictions: vec![],
+        derivation_receipt: receipt,
+    }
+    .with_computed_receipt()?;
+
+    let belief = DerivedBelief::new(params)?;
+    let mut cell = belief.to_knowledge_cell(&anchor)?;
+
+    // Baseline: Estimated + Derived is NOT an irreversible effect premise
+    assert_eq!(cell.knowledge_state, KnowledgeState::Estimated);
+    assert_eq!(cell.provenance, ProvenanceClass::Derived);
+    assert!(!cell.is_irreversible_effect_premise(now));
+
+    // Planted bypass attempt: A caller mutates knowledge_state to Known
+    // attempting to turn a derived belief into an irreversible-effect premise.
+    cell.knowledge_state = KnowledgeState::Known;
+
+    // Constitutional Hard Gate (AGT-LAYER-004, INV-069, PROV-002):
+    // Derived beliefs belong strictly to the Cognition plane, never the Authority plane.
+    // Even when relabelled to Known with valid evidence and no contradictions,
+    // ProvenanceClass::Derived::may_authorize_irreversible_effect MUST return false,
+    // and is_irreversible_effect_premise MUST return false.
+    assert_eq!(cell.knowledge_state, KnowledgeState::Known);
+    assert_eq!(cell.provenance, ProvenanceClass::Derived);
+    assert!(!cell.provenance.may_authorize_irreversible_effect());
+    assert!(
+        !cell.is_irreversible_effect_premise(now),
+        "Planted bypass failed closed: Derived+Known cell MUST NOT authorize irreversible effects"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_fss_nozug_planted_bypass_hand_crafted_derived_known_cell_refused_as_effect_premise()
+-> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let evidence_digest = ContentDigest::sha256(b"admissible_evidence_root_nozug");
+
+    // Planted bypass attempt: Hand-craft a Derived + Known KnowledgeCell with valid inputs,
+    // unexpired validity window, and zero contradictions.
+    let hand_crafted = KnowledgeCell {
+        claim_id: "claim:perimeter:breach:forged".to_string(),
+        statement: "Perimeter breach asserted as known from derivation".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![evidence_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    // The cell passes semantic validation (Derived allows Known when evidence is present),
+    // BUT effect premise evaluation MUST fail closed.
+    assert_eq!(hand_crafted.validate(), Ok(()));
+    assert_eq!(hand_crafted.knowledge_state, KnowledgeState::Known);
+    assert_eq!(hand_crafted.provenance, ProvenanceClass::Derived);
+    assert!(
+        !hand_crafted.provenance.may_authorize_irreversible_effect()
+    );
+    assert!(
+        !hand_crafted.is_irreversible_effect_premise(now),
+        "Hand-crafted Derived+Known cell MUST NOT authorize irreversible physical effects"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_fss_nozug_knowledge_cell_constructor_and_getters_integrity() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let evidence_digest = ContentDigest::sha256(b"observed_source_evidence_nozug");
+
+    // 1. Valid construction of Observed + Known cell via KnowledgeCell::new
+    let observed_params = KnowledgeCellParams {
+        claim_id: "claim:physical:sensor:001".to_string(),
+        statement: "Motion detected by PIR sensor".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![evidence_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    let observed_cell = KnowledgeCell::new(observed_params)?;
+    assert_eq!(observed_cell.claim_id(), "claim:physical:sensor:001");
+    assert_eq!(observed_cell.statement(), "Motion detected by PIR sensor");
+    assert_eq!(observed_cell.knowledge_state(), KnowledgeState::Known);
+    assert_eq!(observed_cell.provenance(), ProvenanceClass::Observed);
+    assert_eq!(observed_cell.evidence(), &[evidence_digest]);
+    assert_eq!(observed_cell.contradictions(), &[]);
+    assert_eq!(
+        observed_cell.valid_until(),
+        Some(TimestampNs(2_000_000_000))
+    );
+    assert_eq!(observed_cell.state_basis(), None);
+    assert!(
+        observed_cell
+            .provenance()
+            .may_authorize_irreversible_effect()
+    );
+    assert!(observed_cell.is_irreversible_effect_premise(now));
+
+    // 2. Construction of Derived + Known cell via KnowledgeCell::new succeeds validation,
+    // but is strictly refused as an effect premise.
+    let derived_params = KnowledgeCellParams {
+        claim_id: "claim:derived:model:001".to_string(),
+        statement: "Classification output derived".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![evidence_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    let derived_cell = KnowledgeCell::new(derived_params)?;
+    assert_eq!(derived_cell.provenance(), ProvenanceClass::Derived);
+    assert!(
+        !derived_cell
+            .provenance()
+            .may_authorize_irreversible_effect()
+    );
+    assert!(!derived_cell.is_irreversible_effect_premise(now));
+
+    // 3. Construction of Predicted + Known cell via KnowledgeCell::new is refused by validation
+    let predicted_params = KnowledgeCellParams {
+        claim_id: "claim:predicted:future:001".to_string(),
+        statement: "Future state predicted".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![evidence_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    };
+    assert_eq!(
+        KnowledgeCell::new(predicted_params),
+        Err(ContractError::PredictedKnownForbidden)
+    );
+
     Ok(())
 }

@@ -248,7 +248,10 @@ fn annotate_operation_receipt(
             operation_receipt.state.as_str()
         ),
         knowledge_state,
-        provenance: ProvenanceClass::Derived,
+        // Local effect journal receipts are classified as Observed under PROV-001 because
+        // they constitute direct canonical effect evidence of local runtime state, distinguishing
+        // them from cognitive derivations and allowing effect reconciliation.
+        provenance: ProvenanceClass::Observed,
         hypothesis: None,
         evidence: vec![digest],
         contradictions: Vec::new(),
