@@ -34,6 +34,7 @@
     "crates/fss-reference/src/alert.rs",
     "crates/fss-reference/src/durable_effect.rs",
     "crates/fss-reference/src/policy.rs",
+    "crates/fss-reference/src/reference_deployment.rs",
     "crates/fss-reference/src/situation.rs",
     "crates/fss-reference/src/situation_guard.rs",
     "crates/fss-reference/src/situation_sections.rs"
@@ -119,6 +120,7 @@
     "crates/fss-reference/src/packet_fault.rs": "authority",
     "crates/fss-reference/src/policy.rs": "cognition",
     "crates/fss-reference/src/policy_tests.rs": "support",
+    "crates/fss-reference/src/reference_deployment.rs": "ambiguous",
     "crates/fss-reference/src/situation_guard.rs": "cognition",
     "crates/fss-reference/src/situation_guard_tests.rs": "support",
     "crates/fss-reference/src/situation.rs": "cognition",
