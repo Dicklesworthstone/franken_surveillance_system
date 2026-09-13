@@ -1,13 +1,24 @@
 # Dependency registry
 
 The normative doctrine is [`docs/DEPENDENCY_CONSTITUTION.md`](../docs/DEPENDENCY_CONSTITUTION.md); the machine allowlist is `architecture/dependency_allowlist.toml`.
+This file mirrors `architecture/dependencies.json` field by field. `scripts/dependency_registry_checker.py` parses both tables strictly and refuses drift, duplicate rows, and dependency identifiers anywhere outside the row table.
 
-| ID | Constitution Class | Class | Rule | Scope |
-|---|---|---|---|---|
-| `DEP-OWNED-001` | `DEP-CLASS-F2` | Owned runtime and Franken-suite families | admitted after per-mechanism integration gate | `Production` |
-| `DEP-FUND-001` | `DEP-CLASS-F3` | serde / serde_json | control-plane schemas only; never durable bytes or authority | `Production subject to audit` |
-| `DEP-LAB-001` | `DEP-CLASS-F4` | Pinned codec/model/vendor/reference executables | sealed fixture/oracle lanes only; no production invocation path and absent from release closure | `Development/migration only` |
-| `DEP-ORACLE-001` | `DEP-CLASS-F4` | Python/reference ecosystems | held-out conformance and lab fixtures only; absent from release closure | `Development only` |
-| `DEP-EXCEPTION-001` | `DEP-CLASS-F3` | Any other external crate | requires DEP record, ADR, source/feature census, semantic owner, substitute prohibition, and removal plan | `Not admitted` |
+| Field | Value |
+|---|---|
+| `schema` | `fss.dependencies.v2` |
+| `generation` | `gen:fss1:dependencies-v2` |
+| `freezeDigest` | `sha256:ebbd4c884de0b3e54fe147eced73327ef69cf26018405de44827c8e4935481fb` |
+| `sourceDocument` | `registries/DEPENDENCIES.md` |
+| `constitution` | `architecture/dependency_constitution.json` |
+| `policy` | `architecture/dependency_allowlist.toml` |
+| `contractBasis` | `fss.agent_contract_basis.v1` |
+
+| ID | Constitution Class | Class | Rule | Scope | Status | Superseded By | Tombstone Decision | Owner | Producers | Consumers |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `DEP-OWNED-001` | `DEP-CLASS-F2` | Owned runtime and Franken-suite families | admitted after per-mechanism integration gate | `Production` | `active` | — | — | `scripts/dependency_audit.py` | `architecture/dependency_allowlist.toml#in_house`, `architecture/franken_imports.json` | `scripts/dependency_audit.py`, `scripts/dependency_registry_checker.py`, `scripts/dependency_constitution_checker.py`, `scripts/check-policy.py` |
+| `DEP-FUND-001` | `DEP-CLASS-F3` | serde / serde_json | control-plane schemas only; never durable bytes or authority | `Production subject to audit` | `active` | — | — | `scripts/dependency_audit.py` | `architecture/dependency_allowlist.toml#fundamental`, `architecture/dependency_allowlist.toml#pending_owner_decisions` | `scripts/dependency_audit.py`, `scripts/dependency_registry_checker.py`, `scripts/dependency_constitution_checker.py`, `scripts/check-policy.py` |
+| `DEP-LAB-001` | `DEP-CLASS-F4` | Pinned codec/model/vendor/reference executables | sealed fixture/oracle lanes only; no production invocation path and absent from release closure | `Development/migration only` | `active` | — | — | `scripts/dependency_audit.py` | `architecture/dependency_allowlist.toml#laboratory_oracles` | `scripts/dependency_audit.py`, `scripts/dependency_registry_checker.py`, `scripts/dependency_constitution_checker.py`, `scripts/check-policy.py` |
+| `DEP-ORACLE-001` | `DEP-CLASS-F4` | Python/reference ecosystems | held-out conformance and lab fixtures only; absent from release closure | `Development only` | `active` | — | — | `scripts/dependency_audit.py` | `architecture/dependency_allowlist.toml#laboratory_oracles` | `scripts/dependency_audit.py`, `scripts/dependency_registry_checker.py`, `scripts/dependency_constitution_checker.py`, `scripts/check-policy.py` |
+| `DEP-EXCEPTION-001` | `DEP-CLASS-F3` | Any other external crate | requires DEP record, ADR, source/feature census, semantic owner, substitute prohibition, and removal plan | `Not admitted` | `active` | — | — | `scripts/dependency_audit.py` | `architecture/dependency_allowlist.toml#exception_candidates` | `scripts/dependency_audit.py`, `scripts/dependency_registry_checker.py`, `scripts/dependency_constitution_checker.py`, `scripts/check-policy.py` |
 
 No exception is implied by appearance in `Cargo.lock`. Release qualification computes and records the complete source/feature closure and fails closed on unknown provenance.
