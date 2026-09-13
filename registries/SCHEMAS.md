@@ -75,5 +75,7 @@
 | `SCHEMA-PROVIDER-FAILURE-RECEIPT-001` | `fss.provider_failure_receipt.v1` | `schemas/provider_failure_receipt.v1.json` | provider authority | provider-issued failure receipt; nonce and error reason preserved |
 | `SCHEMA-EFFECT-RECONCILIATION-001` | `fss.effect_reconciliation.v1` | `schemas/effect_reconciliation.v1.json` | effect truth | four-valued outcome; verified requires independent evidence witness |
 | `SCHEMA-ROBOT-DOCS-001` | `fss.robot_docs.v1` | `schemas/robot_docs.v1.json` | documentation/metadata | immutable; additions compatible |
+| `SCHEMA-JPEG-FIXTURE-MANIFEST-001` | `fss.jpeg_fixture_manifest.v1` | `schemas/jpeg_fixture_manifest.v1.json` | test evidence | baseline JPEG fixture suite manifest recording dimensions, subsampling, quality, file sha256, source pixel sha256, and float IDCT reconstruction metrics |
+| `SCHEMA-MJPEG-FIXTURE-MANIFEST-001` | `fss.mjpeg_fixture_manifest.v1` | `schemas/mjpeg_fixture_manifest.v1.json` | test evidence | MJPEG stream fixture suite manifest recording variant, frame count, file sha256, and per-frame source fixture bindings |
 
 Binary media, ledger, search-segment, graph-run, and release formats additionally require magic, version, bounded lengths, canonical encoding, migration fixtures, corruption tests, and a named format owner before implementation.
