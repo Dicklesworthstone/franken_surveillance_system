@@ -10,16 +10,22 @@
 //!    - zero quarantine receipt or drain witness rejected (InvalidDigest)
 //!    - missing/empty proof roots rejected (EvidenceRequired)
 //!    - inverted time interval rejected (InvertedTimeInterval)
-//!    - missing anchor lineage rejected (DerivedBeliefMissingAnchor)
+//!    - missing anchor lineage rejected (LaboratoryExpansionMissingAnchor)
 //!    - degraded or indeterminate completeness rejected (EvidenceRequired)
 //!    - empty intermediates, alternate systems, or oracle comparisons rejected (EvidenceRequired)
 //!    - excess collection bounds rejected (ArithmeticOverflow)
 //!    - routine hydration purpose or unavailable policy rejected (LaboratoryGrantRequired)
+//!    - intermediate shape and byte counts malformed (LaboratoryExpansionShapeMalformed)
+//!    - oracle comparison discrepancy/tolerance contradictions (LaboratoryExpansionToleranceMismatch)
+//!    - duplicate alternate systems / undeclared oracle IDs (InvalidIdentifier, LaboratoryGrantRequired)
 //! 4. Security against OOM: decode_canonical bounds-checks lengths against remaining input and
 //!    hard limits before allocating Vec::with_capacity
-//! 5. Mutant R22 kill: decode_canonical invokes expansion.validate()
-//! 6. Byte-exact canonical round-trip serialization and digest determinism
-//! 7. Zero unwrap, expect, or panic anywhere in test suite
+//! 5. Mutant kills: M1 (validate in decode), M2 (digest check in decode), M4 (time interval check),
+//!    M5 (anchor lineage check), M6 (purpose check), M7 (tolerance check), M10 (collection bounds)
+//! 6. Effect premise taint: KnowledgeCell conversion carries LABORATORY_PROVENANCE_MARKER, refuses Known state
+//! 7. Handle binding: delivery checks handle_id, subject_id, subject_digest, anchor, contract_basis, retention, access
+//! 8. Byte-exact canonical round-trip serialization and digest determinism
+//! 9. Zero unwrap, expect, or panic anywhere in test suite
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
@@ -27,11 +33,13 @@ use std::error::Error;
 use fss_core::{
     AlternateSystem, BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode,
     CanonicalEncoder, Completeness, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
-    ContractError, HandleAvailability, HydrationError, HydrationLevel,
-    HydrationPurpose, HydrationRequest, HydrationRequestSpec, IntermediateArtifact,
-    LaboratoryAccess, LaboratoryQuarantine, LedgerAnchor, OracleComparison, ReplayBundleRef,
-    SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs, H4LaboratoryExpansion,
-    H4LaboratoryExpansionParams, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
+    ContractError, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
+    H4LaboratoryExpansion, H4LaboratoryExpansionParams, HandleAvailability, HydrationError,
+    HydrationLevel, HydrationPurpose, HydrationRequest, HydrationRequestSpec, IntermediateArtifact,
+    KnowledgeCell, KnowledgeState, LABORATORY_PROVENANCE_MARKER, LaboratoryAccess,
+    LaboratoryArtifact, LaboratoryQuarantine, LedgerAnchor, MAX_H4_ALTERNATE_SYSTEMS,
+    MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_ORACLE_COMPARISONS, OracleComparison,
+    ProvenanceClass, ReplayBundleRef, SemanticHandle, SemanticHandleSpec, SessionId, TimestampNs,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -151,6 +159,36 @@ fn sample_valid_expansion() -> Result<H4LaboratoryExpansion, Box<dyn Error>> {
     Ok(expansion)
 }
 
+fn sample_expansion_for_handle(
+    handle: &SemanticHandle,
+) -> Result<H4LaboratoryExpansion, Box<dyn Error>> {
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(handle.subject_digest);
+    proof_roots.insert(ContentDigest::sha256(b"secondary-anchor-proof-root"));
+
+    let expansion = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: handle.handle_id.clone(),
+        subject_id: handle.subject_id.clone(),
+        subject_digest: handle.subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: handle.laboratory_access,
+        purpose: HydrationPurpose::Qualification,
+        anchor: handle.anchor.clone(),
+        contract_basis: handle.contract_basis.clone(),
+        estimated_cost: sample_budget()?,
+        published_at: handle.published_at,
+        retention_until: handle.retention_until,
+        proof_roots,
+        completeness: Completeness::Complete,
+    })?;
+
+    Ok(expansion)
+}
+
 #[test]
 fn test_h4_laboratory_expansion_normative_row_properties() {
     assert_eq!(H4_LEVEL_ID, "H4");
@@ -159,7 +197,7 @@ fn test_h4_laboratory_expansion_normative_row_properties() {
         H4_CONTENT,
         "replay bundle, intermediates, alternate decoders/models, and oracle comparisons"
     );
-    assert_eq!(H4_OWNER, "fss-laboratory/oracle");
+    assert_eq!(H4_OWNER, "fss-agent-core");
     assert_eq!(H4_SCHEMA, "fss.h4_laboratory_expansion.v1");
 
     assert_eq!(HydrationLevel::H4.as_str(), "H4");
@@ -195,8 +233,30 @@ fn test_h4_laboratory_expansion_valid_construction_and_gates() -> Result<(), Box
 
     // Deterministic digest
     let digest = expansion.computed_digest();
-    assert_eq!(expansion.expansion_digest, digest);
+    assert_eq!(expansion.expansion_digest(), digest);
     assert_ne!(digest.bytes(), [0u8; 32]);
+
+    // Field accessors verify encapsulation
+    assert_eq!(
+        expansion.handle_id(),
+        "semantic-handle:sha256:abcd1234abcd1234"
+    );
+    assert_eq!(expansion.subject_id(), "evidence:packet:cam-east:1042");
+    assert_eq!(
+        expansion.subject_digest(),
+        ContentDigest::sha256(b"canonical-evidence-subject-data")
+    );
+    assert_eq!(
+        expansion.laboratory_access(),
+        LaboratoryAccess::QualificationOnly
+    );
+    assert_eq!(expansion.purpose(), HydrationPurpose::Qualification);
+    assert_eq!(expansion.published_at(), TimestampNs(1_000_000_000));
+    assert_eq!(expansion.retention_until(), TimestampNs(2_000_000_000));
+    assert_eq!(expansion.completeness(), Completeness::Complete);
+    assert_eq!(expansion.intermediates().len(), 2);
+    assert_eq!(expansion.alternate_systems().len(), 1);
+    assert_eq!(expansion.oracle_comparisons().len(), 1);
 
     // Validation passes
     expansion.validate()?;
@@ -205,25 +265,117 @@ fn test_h4_laboratory_expansion_valid_construction_and_gates() -> Result<(), Box
 }
 
 #[test]
-fn test_h4_to_hydration_artifact_packaging() -> Result<(), Box<dyn Error>> {
+fn test_h4_pinned_digest_literal() -> Result<(), Box<dyn Error>> {
     let expansion = sample_valid_expansion()?;
-    let artifact = expansion.to_hydration_artifact()?;
+    let digest = expansion.expansion_digest();
+    assert_eq!(digest.algorithm(), fss_core::DigestAlgorithm::Sha256);
+    assert_eq!(
+        digest.to_string(),
+        "sha256:6858500da055f556ce3cbf2aa5f80a70ad5aff157715d99c541f6a5b9518e365"
+    );
+    Ok(())
+}
 
+#[test]
+fn test_h4_to_hydration_artifact_packaging_and_realistic_transforms() -> Result<(), Box<dyn Error>>
+{
+    let expansion = sample_valid_expansion()?;
+
+    // 1. Packaging with None transform
+    let artifact = expansion.to_hydration_artifact(None)?;
     assert_eq!(artifact.level, HydrationLevel::H4);
     assert_eq!(
         artifact.content_type,
         "application/vnd.fss.h4-laboratory-expansion+canonical"
     );
     assert_eq!(artifact.completeness, Completeness::Complete);
-    assert_eq!(
-        artifact.applied_transform.as_deref(),
-        Some("quarantined_laboratory_expansion")
-    );
+    assert_eq!(artifact.applied_transform, None);
     assert!(!artifact.payload.is_empty());
-    assert!(artifact.proof_roots.contains(&expansion.subject_digest));
-
-    // Artifact verifies cleanly
+    assert!(artifact.proof_roots.contains(&expansion.subject_digest()));
     artifact.verify()?;
+
+    // Constitutional artifact gates
+    assert!(artifact.is_quarantined());
+    assert!(!artifact.is_production_safe());
+    assert!(!artifact.may_authorize_effects());
+
+    // 2. Packaging with realistic transform
+    let blurred = expansion.to_hydration_artifact(Some("face_blur_v1".to_owned()))?;
+    assert_eq!(blurred.applied_transform.as_deref(), Some("face_blur_v1"));
+    blurred.verify()?;
+    assert!(blurred.is_quarantined());
+    assert!(!blurred.is_production_safe());
+    assert!(!blurred.may_authorize_effects());
+
+    // 3. Strongly typed LaboratoryArtifact wrapper
+    let lab_art = LaboratoryArtifact::from_expansion(&expansion, Some("redact_pii".to_owned()))?;
+    assert_eq!(
+        lab_art.artifact.applied_transform.as_deref(),
+        Some("redact_pii")
+    );
+    assert_eq!(lab_art.quarantine, *expansion.quarantine());
+    assert!(lab_art.is_quarantined());
+    assert!(!lab_art.is_production_safe());
+    assert!(!lab_art.may_authorize_effects());
+
+    // 4. Planted negative: transform exceeding max identifier length
+    let too_long_transform = "x".repeat(MAX_H4_IDENTIFIER_LEN + 1);
+    let err = expansion.to_hydration_artifact(Some(too_long_transform));
+    let Err(HydrationError::Contract(ContractError::InvalidIdentifier)) = err else {
+        return Err("Expected InvalidIdentifier for overly long applied_transform".into());
+    };
+
+    Ok(())
+}
+
+#[test]
+fn test_h4_cannot_authorize_effects_or_claim_known_knowledge_state() -> Result<(), Box<dyn Error>> {
+    let expansion = sample_valid_expansion()?;
+    let anchor = sample_anchor();
+
+    // 1. Convert to KnowledgeCell
+    let cell = expansion.to_knowledge_cell(&anchor)?;
+    assert_eq!(cell.knowledge_state, KnowledgeState::Estimated);
+    assert_eq!(cell.provenance, ProvenanceClass::Derived);
+    assert!(cell.is_laboratory_tainted());
+    assert!(cell.statement.contains(LABORATORY_PROVENANCE_MARKER));
+    assert!(
+        !cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
+        "Laboratory cell must NEVER serve as an irreversible-effect premise"
+    );
+
+    // 2. Planted bypass: cell with LABORATORY_PROVENANCE_MARKER attempting to claim Known state
+    let rogue_cell = KnowledgeCell {
+        claim_id: "claim:rogue-lab-known".to_owned(),
+        statement: format!("{} rogue promotion to known", LABORATORY_PROVENANCE_MARKER),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Derived,
+        hypothesis: None,
+        evidence: vec![expansion.expansion_digest(), expansion.subject_digest()],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+    let err = rogue_cell.validate();
+    let Err(ContractError::DerivedLayerAuthorityForbidden) = err else {
+        return Err(
+            "KnowledgeCell::validate must reject Known state when laboratory-tainted".into(),
+        );
+    };
+
+    // 3. Planted bypass: even if constructed directly, is_irreversible_effect_premise must refuse
+    assert!(
+        !rogue_cell.is_irreversible_effect_premise(TimestampNs(1_500_000_000)),
+        "is_irreversible_effect_premise must return false for any laboratory-tainted cell"
+    );
+
+    // 4. Planted negative: mismatched anchor lineage when converting to KnowledgeCell
+    let mut different_anchor = sample_anchor();
+    different_anchor.site_lineage = "site:other:site".to_owned();
+    let diff_err = expansion.to_knowledge_cell(&different_anchor);
+    let Err(ContractError::InvalidAnchorSuccessor) = diff_err else {
+        return Err("to_knowledge_cell must reject mismatched anchor lineage".into());
+    };
 
     Ok(())
 }
@@ -231,7 +383,7 @@ fn test_h4_to_hydration_artifact_packaging() -> Result<(), Box<dyn Error>> {
 #[test]
 fn test_planted_negative_non_quarantined_rejected() -> Result<(), Box<dyn Error>> {
     let mut quarantine = sample_quarantine();
-    quarantine.quarantined_from_production = false; // ILLEGAL: claiming production
+    quarantine.quarantined_from_production = false;
 
     let subject_digest = ContentDigest::sha256(b"sub");
     let mut proof_roots = BTreeSet::new();
@@ -261,7 +413,10 @@ fn test_planted_negative_non_quarantined_rejected() -> Result<(), Box<dyn Error>
     let Err(err) = res else {
         return Err("Must reject non-quarantined laboratory output".into());
     };
-    assert_eq!(err, HydrationError::Contract(ContractError::DerivedLayerAuthorityForbidden));
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::DerivedLayerAuthorityForbidden)
+    );
 
     Ok(())
 }
@@ -352,13 +507,16 @@ fn test_planted_negative_proof_roots_failures() -> Result<(), Box<dyn Error>> {
         estimated_cost: sample_budget()?,
         published_at: TimestampNs(100),
         retention_until: TimestampNs(200),
-        proof_roots: BTreeSet::new(), // EMPTY
+        proof_roots: BTreeSet::new(),
         completeness: Completeness::Complete,
     });
     let Err(err1) = res1 else {
         return Err("Must reject empty proof roots".into());
     };
-    assert_eq!(err1, HydrationError::Contract(ContractError::EvidenceRequired));
+    assert_eq!(
+        err1,
+        HydrationError::Contract(ContractError::EvidenceRequired)
+    );
 
     // 2. Missing subject digest from proof roots
     let other_root = ContentDigest::sha256(b"other-only");
@@ -378,13 +536,16 @@ fn test_planted_negative_proof_roots_failures() -> Result<(), Box<dyn Error>> {
         estimated_cost: sample_budget()?,
         published_at: TimestampNs(100),
         retention_until: TimestampNs(200),
-        proof_roots: BTreeSet::from([other_root]), // DOES NOT CONTAIN subject_digest
+        proof_roots: BTreeSet::from([other_root]),
         completeness: Completeness::Complete,
     });
     let Err(err2) = res2 else {
         return Err("Must reject proof roots without subject_digest".into());
     };
-    assert_eq!(err2, HydrationError::Contract(ContractError::EvidenceRequired));
+    assert_eq!(
+        err2,
+        HydrationError::Contract(ContractError::EvidenceRequired)
+    );
 
     // 3. Only subject_digest without an independent proof anchor
     let res3 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
@@ -403,13 +564,16 @@ fn test_planted_negative_proof_roots_failures() -> Result<(), Box<dyn Error>> {
         estimated_cost: sample_budget()?,
         published_at: TimestampNs(100),
         retention_until: TimestampNs(200),
-        proof_roots: BTreeSet::from([subject_digest]), // NO independent root
+        proof_roots: BTreeSet::from([subject_digest]),
         completeness: Completeness::Complete,
     });
     let Err(err3) = res3 else {
         return Err("Must reject self-referential proof roots without anchor".into());
     };
-    assert_eq!(err3, HydrationError::Contract(ContractError::EvidenceRequired));
+    assert_eq!(
+        err3,
+        HydrationError::Contract(ContractError::EvidenceRequired)
+    );
 
     Ok(())
 }
@@ -427,7 +591,7 @@ fn test_planted_negative_empty_normative_collections_rejected() -> Result<(), Bo
         subject_id: "evidence:test".to_owned(),
         subject_digest,
         replay_bundle: sample_replay_bundle(),
-        intermediates: vec![], // EMPTY
+        intermediates: vec![],
         alternate_systems: sample_alternate_systems(),
         oracle_comparisons: sample_oracle_comparisons(),
         quarantine: sample_quarantine(),
@@ -444,7 +608,10 @@ fn test_planted_negative_empty_normative_collections_rejected() -> Result<(), Bo
     let Err(err1) = res1 else {
         return Err("Must reject empty intermediates".into());
     };
-    assert_eq!(err1, HydrationError::Contract(ContractError::EvidenceRequired));
+    assert_eq!(
+        err1,
+        HydrationError::Contract(ContractError::EvidenceRequired)
+    );
 
     // 2. Empty alternate systems
     let res2 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
@@ -453,7 +620,7 @@ fn test_planted_negative_empty_normative_collections_rejected() -> Result<(), Bo
         subject_digest,
         replay_bundle: sample_replay_bundle(),
         intermediates: sample_intermediates(),
-        alternate_systems: vec![], // EMPTY
+        alternate_systems: vec![],
         oracle_comparisons: sample_oracle_comparisons(),
         quarantine: sample_quarantine(),
         laboratory_access: LaboratoryAccess::QualificationOnly,
@@ -469,7 +636,10 @@ fn test_planted_negative_empty_normative_collections_rejected() -> Result<(), Bo
     let Err(err2) = res2 else {
         return Err("Must reject empty alternate systems".into());
     };
-    assert_eq!(err2, HydrationError::Contract(ContractError::EvidenceRequired));
+    assert_eq!(
+        err2,
+        HydrationError::Contract(ContractError::EvidenceRequired)
+    );
 
     // 3. Empty oracle comparisons
     let res3 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
@@ -479,7 +649,7 @@ fn test_planted_negative_empty_normative_collections_rejected() -> Result<(), Bo
         replay_bundle: sample_replay_bundle(),
         intermediates: sample_intermediates(),
         alternate_systems: sample_alternate_systems(),
-        oracle_comparisons: vec![], // EMPTY
+        oracle_comparisons: vec![],
         quarantine: sample_quarantine(),
         laboratory_access: LaboratoryAccess::QualificationOnly,
         purpose: HydrationPurpose::Qualification,
@@ -494,7 +664,117 @@ fn test_planted_negative_empty_normative_collections_rejected() -> Result<(), Bo
     let Err(err3) = res3 else {
         return Err("Must reject empty oracle comparisons".into());
     };
-    assert_eq!(err3, HydrationError::Contract(ContractError::EvidenceRequired));
+    assert_eq!(
+        err3,
+        HydrationError::Contract(ContractError::EvidenceRequired)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_inverted_time_interval_rejected() -> Result<(), Box<dyn Error>> {
+    let subject_digest = ContentDigest::sha256(b"sub");
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(subject_digest);
+    proof_roots.insert(ContentDigest::sha256(b"other"));
+
+    // 1. Equal times (published_at == retention_until)
+    let res1 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(200),
+        retention_until: TimestampNs(200),
+        proof_roots: proof_roots.clone(),
+        completeness: Completeness::Complete,
+    });
+    let Err(err1) = res1 else {
+        return Err("Must reject equal published_at and retention_until".into());
+    };
+    assert_eq!(
+        err1,
+        HydrationError::Contract(ContractError::InvertedTimeInterval)
+    );
+
+    // 2. Inverted times (published_at > retention_until)
+    let res2 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(300),
+        retention_until: TimestampNs(200),
+        proof_roots,
+        completeness: Completeness::Complete,
+    });
+    let Err(err2) = res2 else {
+        return Err("Must reject published_at > retention_until".into());
+    };
+    assert_eq!(
+        err2,
+        HydrationError::Contract(ContractError::InvertedTimeInterval)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_missing_anchor_lineage_rejected() -> Result<(), Box<dyn Error>> {
+    let subject_digest = ContentDigest::sha256(b"sub");
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(subject_digest);
+    proof_roots.insert(ContentDigest::sha256(b"other"));
+
+    let mut anchor = sample_anchor();
+    anchor.site_lineage.clear();
+
+    let res = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor,
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots,
+        completeness: Completeness::Complete,
+    });
+
+    let Err(err) = res else {
+        return Err("Must reject expansion with empty anchor site lineage".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::LaboratoryExpansionMissingAnchor)
+    );
 
     Ok(())
 }
@@ -516,7 +796,7 @@ fn test_planted_negative_laboratory_access_and_purpose_gating() -> Result<(), Bo
         alternate_systems: sample_alternate_systems(),
         oracle_comparisons: sample_oracle_comparisons(),
         quarantine: sample_quarantine(),
-        laboratory_access: LaboratoryAccess::Unavailable, // UNAVAILABLE
+        laboratory_access: LaboratoryAccess::Unavailable,
         purpose: HydrationPurpose::Qualification,
         anchor: sample_anchor(),
         contract_basis: sample_basis(),
@@ -542,7 +822,7 @@ fn test_planted_negative_laboratory_access_and_purpose_gating() -> Result<(), Bo
         oracle_comparisons: sample_oracle_comparisons(),
         quarantine: sample_quarantine(),
         laboratory_access: LaboratoryAccess::QualificationOnly,
-        purpose: HydrationPurpose::Routine, // ROUTINE FORBIDDEN
+        purpose: HydrationPurpose::Routine,
         anchor: sample_anchor(),
         contract_basis: sample_basis(),
         estimated_cost: sample_budget()?,
@@ -556,7 +836,7 @@ fn test_planted_negative_laboratory_access_and_purpose_gating() -> Result<(), Bo
     };
     assert_eq!(err2, HydrationError::LaboratoryGrantRequired);
 
-    // 3. Routine purpose under QualificationOrDebugGrant
+    // 3. Debugging purpose under QualificationOnly
     let res3 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
         handle_id: "semantic-handle:test".to_owned(),
         subject_id: "evidence:test".to_owned(),
@@ -566,8 +846,33 @@ fn test_planted_negative_laboratory_access_and_purpose_gating() -> Result<(), Bo
         alternate_systems: sample_alternate_systems(),
         oracle_comparisons: sample_oracle_comparisons(),
         quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Debugging,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots: proof_roots.clone(),
+        completeness: Completeness::Complete,
+    });
+    let Err(err3) = res3 else {
+        return Err("Must reject Debugging purpose under QualificationOnly".into());
+    };
+    assert_eq!(err3, HydrationError::LaboratoryGrantRequired);
+
+    // 4. Routine purpose under QualificationOrDebugGrant
+    let res4 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
         laboratory_access: LaboratoryAccess::QualificationOrDebugGrant,
-        purpose: HydrationPurpose::Routine, // ROUTINE FORBIDDEN
+        purpose: HydrationPurpose::Routine,
         anchor: sample_anchor(),
         contract_basis: sample_basis(),
         estimated_cost: sample_budget()?,
@@ -576,10 +881,10 @@ fn test_planted_negative_laboratory_access_and_purpose_gating() -> Result<(), Bo
         proof_roots,
         completeness: Completeness::Complete,
     });
-    let Err(err3) = res3 else {
+    let Err(err4) = res4 else {
         return Err("Must reject Routine purpose under QualificationOrDebugGrant".into());
     };
-    assert_eq!(err3, HydrationError::LaboratoryGrantRequired);
+    assert_eq!(err4, HydrationError::LaboratoryGrantRequired);
 
     Ok(())
 }
@@ -616,13 +921,475 @@ fn test_planted_negative_degraded_completeness_rejected() -> Result<(), Box<dyn 
             published_at: TimestampNs(100),
             retention_until: TimestampNs(200),
             proof_roots: proof_roots.clone(),
-            completeness, // INADMISSIBLE
+            completeness,
         });
         let Err(err) = res else {
             return Err("Must reject degraded/indeterminate completeness".into());
         };
-        assert_eq!(err, HydrationError::Contract(ContractError::EvidenceRequired));
+        assert_eq!(
+            err,
+            HydrationError::Contract(ContractError::EvidenceRequired)
+        );
     }
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_collection_bounds_rejected() -> Result<(), Box<dyn Error>> {
+    let subject_digest = ContentDigest::sha256(b"sub");
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(subject_digest);
+    proof_roots.insert(ContentDigest::sha256(b"other"));
+
+    // 1. > MAX_H4_INTERMEDIATES
+    let many_intermediates: Vec<_> = (0..=MAX_H4_INTERMEDIATES)
+        .map(|i| IntermediateArtifact {
+            stage_name: format!("stage_{i}"),
+            content_type: "application/octet-stream".to_owned(),
+            digest: ContentDigest::sha256(format!("digest_{i}").as_bytes()),
+            shape: vec![1, 1],
+            byte_count: 1,
+        })
+        .collect();
+    let res1 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: many_intermediates,
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots: proof_roots.clone(),
+        completeness: Completeness::Complete,
+    });
+    let Err(err1) = res1 else {
+        return Err("Must reject > MAX_H4_INTERMEDIATES".into());
+    };
+    assert_eq!(
+        err1,
+        HydrationError::Contract(ContractError::ArithmeticOverflow)
+    );
+
+    // 2. > MAX_H4_ALTERNATE_SYSTEMS
+    let many_systems: Vec<_> = (0..=MAX_H4_ALTERNATE_SYSTEMS)
+        .map(|i| AlternateSystem {
+            system_id: format!("oracle:sys_{i}"),
+            version: "1.0".to_owned(),
+            framework: "fw".to_owned(),
+            quarantine_digest: ContentDigest::sha256(b"qd"),
+        })
+        .collect();
+    let res2 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: many_systems,
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots: proof_roots.clone(),
+        completeness: Completeness::Complete,
+    });
+    let Err(err2) = res2 else {
+        return Err("Must reject > MAX_H4_ALTERNATE_SYSTEMS".into());
+    };
+    assert_eq!(
+        err2,
+        HydrationError::Contract(ContractError::ArithmeticOverflow)
+    );
+
+    // 3. > MAX_H4_ORACLE_COMPARISONS
+    let systems = sample_alternate_systems();
+    let oracle_id = systems[0].system_id.clone();
+    let many_comparisons: Vec<_> = (0..=MAX_H4_ORACLE_COMPARISONS)
+        .map(|i| OracleComparison {
+            comparison_id: format!("cmp:{i}"),
+            oracle_id: oracle_id.clone(),
+            metric_name: "metric".to_owned(),
+            discrepancy_score: 0.01,
+            tolerance_threshold: 0.05,
+            within_tolerance: true,
+            oracle_version: "1.0".to_owned(),
+        })
+        .collect();
+    let res3 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: systems,
+        oracle_comparisons: many_comparisons,
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots,
+        completeness: Completeness::Complete,
+    });
+    let Err(err3) = res3 else {
+        return Err("Must reject > MAX_H4_ORACLE_COMPARISONS".into());
+    };
+    assert_eq!(
+        err3,
+        HydrationError::Contract(ContractError::ArithmeticOverflow)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_intermediate_shape_and_byte_count_malformed() -> Result<(), Box<dyn Error>>
+{
+    let subject_digest = ContentDigest::sha256(b"sub");
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(subject_digest);
+    proof_roots.insert(ContentDigest::sha256(b"other"));
+
+    // 1. Zero dimension in shape
+    let bad_intermediate_1 = IntermediateArtifact {
+        stage_name: "stage".to_owned(),
+        content_type: "application/octet-stream".to_owned(),
+        digest: ContentDigest::sha256(b"data"),
+        shape: vec![1, 0, 10],
+        byte_count: 10,
+    };
+    let res1 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: vec![bad_intermediate_1],
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots: proof_roots.clone(),
+        completeness: Completeness::Complete,
+    });
+    let Err(err1) = res1 else {
+        return Err("Must reject zero dimension in shape".into());
+    };
+    assert_eq!(
+        err1,
+        HydrationError::Contract(ContractError::LaboratoryExpansionShapeMalformed)
+    );
+
+    // 2. byte_count == u64::MAX
+    let bad_intermediate_2 = IntermediateArtifact {
+        stage_name: "stage".to_owned(),
+        content_type: "application/octet-stream".to_owned(),
+        digest: ContentDigest::sha256(b"data"),
+        shape: vec![1, 10],
+        byte_count: u64::MAX,
+    };
+    let res2 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: vec![bad_intermediate_2],
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots: proof_roots.clone(),
+        completeness: Completeness::Complete,
+    });
+    let Err(err2) = res2 else {
+        return Err("Must reject byte_count == u64::MAX".into());
+    };
+    assert_eq!(
+        err2,
+        HydrationError::Contract(ContractError::LaboratoryExpansionShapeMalformed)
+    );
+
+    // 3. byte_count == 0
+    let bad_intermediate_3 = IntermediateArtifact {
+        stage_name: "stage".to_owned(),
+        content_type: "application/octet-stream".to_owned(),
+        digest: ContentDigest::sha256(b"data"),
+        shape: vec![1, 10],
+        byte_count: 0,
+    };
+    let res3 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: vec![bad_intermediate_3],
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots,
+        completeness: Completeness::Complete,
+    });
+    let Err(err3) = res3 else {
+        return Err("Must reject byte_count == 0".into());
+    };
+    assert_eq!(
+        err3,
+        HydrationError::Contract(ContractError::LaboratoryExpansionShapeMalformed)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_duplicate_and_undeclared_system_ids_rejected() -> Result<(), Box<dyn Error>>
+{
+    let subject_digest = ContentDigest::sha256(b"sub");
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(subject_digest);
+    proof_roots.insert(ContentDigest::sha256(b"other"));
+
+    // 1. Duplicate alternate system IDs
+    let dup_systems = vec![
+        AlternateSystem {
+            system_id: "oracle:dup-sys".to_owned(),
+            version: "1.0".to_owned(),
+            framework: "fw".to_owned(),
+            quarantine_digest: ContentDigest::sha256(b"qd1"),
+        },
+        AlternateSystem {
+            system_id: "oracle:dup-sys".to_owned(),
+            version: "2.0".to_owned(),
+            framework: "fw".to_owned(),
+            quarantine_digest: ContentDigest::sha256(b"qd2"),
+        },
+    ];
+    let res1 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: dup_systems,
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots: proof_roots.clone(),
+        completeness: Completeness::Complete,
+    });
+    let Err(err1) = res1 else {
+        return Err("Must reject duplicate alternate system IDs".into());
+    };
+    assert_eq!(
+        err1,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 2. Comparison referencing undeclared oracle system
+    let undeclared_comparison = vec![OracleComparison {
+        comparison_id: "cmp:1".to_owned(),
+        oracle_id: "oracle:undeclared-system".to_owned(),
+        metric_name: "psnr".to_owned(),
+        discrepancy_score: 0.01,
+        tolerance_threshold: 0.05,
+        within_tolerance: true,
+        oracle_version: "1.0".to_owned(),
+    }];
+    let res2 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: undeclared_comparison,
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots,
+        completeness: Completeness::Complete,
+    });
+    let Err(err2) = res2 else {
+        return Err("Must reject oracle comparison referencing undeclared system".into());
+    };
+    assert_eq!(
+        err2,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_oracle_comparison_discrepancy_and_tolerance_checks()
+-> Result<(), Box<dyn Error>> {
+    let subject_digest = ContentDigest::sha256(b"sub");
+    let mut proof_roots = BTreeSet::new();
+    proof_roots.insert(subject_digest);
+    proof_roots.insert(ContentDigest::sha256(b"other"));
+    let systems = sample_alternate_systems();
+    let oracle_id = systems[0].system_id.clone();
+
+    // 1. discrepancy <= tolerance, but within_tolerance = false (contradiction)
+    let bad_cmp_1 = vec![OracleComparison {
+        comparison_id: "cmp:mismatch1".to_owned(),
+        oracle_id: oracle_id.clone(),
+        metric_name: "psnr".to_owned(),
+        discrepancy_score: 0.01,
+        tolerance_threshold: 0.05,
+        within_tolerance: false,
+        oracle_version: "1.0".to_owned(),
+    }];
+    let res1 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: systems.clone(),
+        oracle_comparisons: bad_cmp_1,
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots: proof_roots.clone(),
+        completeness: Completeness::Complete,
+    });
+    let Err(err1) = res1 else {
+        return Err(
+            "Must reject tolerance mismatch (within_tolerance false when <= threshold)".into(),
+        );
+    };
+    assert_eq!(
+        err1,
+        HydrationError::Contract(ContractError::LaboratoryExpansionToleranceMismatch)
+    );
+
+    // 2. discrepancy > tolerance, but within_tolerance = true (contradiction)
+    let bad_cmp_2 = vec![OracleComparison {
+        comparison_id: "cmp:mismatch2".to_owned(),
+        oracle_id: oracle_id.clone(),
+        metric_name: "psnr".to_owned(),
+        discrepancy_score: 0.10,
+        tolerance_threshold: 0.05,
+        within_tolerance: true,
+        oracle_version: "1.0".to_owned(),
+    }];
+    let res2 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: systems.clone(),
+        oracle_comparisons: bad_cmp_2,
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots: proof_roots.clone(),
+        completeness: Completeness::Complete,
+    });
+    let Err(err2) = res2 else {
+        return Err(
+            "Must reject tolerance mismatch (within_tolerance true when > threshold)".into(),
+        );
+    };
+    assert_eq!(
+        err2,
+        HydrationError::Contract(ContractError::LaboratoryExpansionToleranceMismatch)
+    );
+
+    // 3. -0.0 in discrepancy_score rejected
+    let neg_zero: f64 = f64::from_bits(0x8000_0000_0000_0000);
+    let bad_cmp_3 = vec![OracleComparison {
+        comparison_id: "cmp:negzero".to_owned(),
+        oracle_id,
+        metric_name: "psnr".to_owned(),
+        discrepancy_score: neg_zero,
+        tolerance_threshold: 0.05,
+        within_tolerance: true,
+        oracle_version: "1.0".to_owned(),
+    }];
+    let res3 = H4LaboratoryExpansion::new(H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:test".to_owned(),
+        subject_id: "evidence:test".to_owned(),
+        subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: systems,
+        oracle_comparisons: bad_cmp_3,
+        quarantine: sample_quarantine(),
+        laboratory_access: LaboratoryAccess::QualificationOnly,
+        purpose: HydrationPurpose::Qualification,
+        anchor: sample_anchor(),
+        contract_basis: sample_basis(),
+        estimated_cost: sample_budget()?,
+        published_at: TimestampNs(100),
+        retention_until: TimestampNs(200),
+        proof_roots,
+        completeness: Completeness::Complete,
+    });
+    let Err(err3) = res3 else {
+        return Err("Must reject -0.0 discrepancy_score".into());
+    };
+    assert_eq!(
+        err3,
+        HydrationError::Contract(ContractError::LaboratoryExpansionToleranceMismatch)
+    );
 
     Ok(())
 }
@@ -636,7 +1403,7 @@ fn test_security_decode_large_length_rejected_without_oom() -> Result<(), Box<dy
     encoder.text("evidence:attack");
     encoder.digest(ContentDigest::sha256(b"sub"));
     sample_replay_bundle().encode_canonical(&mut encoder);
-    encoder.u32(u32::MAX); // MALICIOUS LENGTH: requesting ~137 GB
+    encoder.u32(u32::MAX);
     let payload = encoder.finish();
 
     let mut decoder = CanonicalDecoder::new(&payload);
@@ -653,7 +1420,7 @@ fn test_security_decode_large_length_rejected_without_oom() -> Result<(), Box<dy
     encoder2.text("evidence:attack");
     encoder2.digest(ContentDigest::sha256(b"sub"));
     sample_replay_bundle().encode_canonical(&mut encoder2);
-    encoder2.u32(50); // 50 items require hundreds of bytes, but payload ends here
+    encoder2.u32(50);
     let payload2 = encoder2.finish();
 
     let mut decoder2 = CanonicalDecoder::new(&payload2);
@@ -667,65 +1434,221 @@ fn test_security_decode_large_length_rejected_without_oom() -> Result<(), Box<dy
 }
 
 #[test]
-fn test_decode_canonical_validates_and_kills_mutant_r22() -> Result<(), Box<dyn Error>> {
-    // Construct valid expansion, then serialize it manually with an illegal field
-    // (quarantined_from_production = false)
+fn test_decode_canonical_validates_and_kills_mutant_r22_and_m1() -> Result<(), Box<dyn Error>> {
     let valid = sample_valid_expansion()?;
+
+    // Construct a canonically serialized payload where all individual fields decode fine,
+    // but the expansion-level invariant is violated: oracle_comparisons has an undeclared oracle_id,
+    // and the expansion_digest matches this tampered content!
+    let mut bad_cmps = sample_oracle_comparisons();
+    bad_cmps[0].oracle_id = "oracle:undeclared-in-systems".to_owned();
 
     let mut encoder = CanonicalEncoder::new();
     encoder.text(H4_SCHEMA);
-    encoder.text(&valid.handle_id);
-    encoder.text(&valid.subject_id);
-    encoder.digest(valid.subject_digest);
-    valid.replay_bundle.encode_canonical(&mut encoder);
+    encoder.text(valid.handle_id());
+    encoder.text(valid.subject_id());
+    encoder.digest(valid.subject_digest());
+    valid.replay_bundle().encode_canonical(&mut encoder);
 
-    encoder.u32(valid.intermediates.len() as u32);
-    for item in &valid.intermediates {
+    encoder.u32(valid.intermediates().len() as u32);
+    for item in valid.intermediates() {
         item.encode_canonical(&mut encoder);
     }
-    encoder.u32(valid.alternate_systems.len() as u32);
-    for item in &valid.alternate_systems {
+    encoder.u32(valid.alternate_systems().len() as u32);
+    for item in valid.alternate_systems() {
         item.encode_canonical(&mut encoder);
     }
-    encoder.u32(valid.oracle_comparisons.len() as u32);
-    for item in &valid.oracle_comparisons {
+    encoder.u32(bad_cmps.len() as u32);
+    for item in &bad_cmps {
         item.encode_canonical(&mut encoder);
     }
 
-    // ILLEGAL: quarantine set to false
-    encoder.bool(false); // quarantined_from_production = false
-    encoder.digest(valid.quarantine.quarantine_receipt_digest);
-    encoder.text(&valid.quarantine.isolation_boundary);
-    encoder.digest(valid.quarantine.process_drain_witness);
+    encoder.bool(valid.quarantine().quarantined_from_production);
+    encoder.digest(valid.quarantine().quarantine_receipt_digest);
+    encoder.text(&valid.quarantine().isolation_boundary);
+    encoder.digest(valid.quarantine().process_drain_witness);
 
-    valid.laboratory_access.encode_canonical(&mut encoder);
-    valid.purpose.encode_canonical(&mut encoder);
-    valid.anchor.encode_canonical(&mut encoder);
-    valid.contract_basis.encode_canonical(&mut encoder);
+    valid.laboratory_access().encode_canonical(&mut encoder);
+    valid.purpose().encode_canonical(&mut encoder);
+    valid.anchor().encode_canonical(&mut encoder);
+    valid.contract_basis().encode_canonical(&mut encoder);
 
     let mut cost_enc = CanonicalEncoder::new();
-    valid.estimated_cost.encode_to_canonical(&mut cost_enc);
+    valid.estimated_cost().encode_to_canonical(&mut cost_enc);
     encoder.bytes(&cost_enc.finish());
 
-    valid.published_at.encode_canonical(&mut encoder);
-    valid.retention_until.encode_canonical(&mut encoder);
+    valid.published_at().encode_canonical(&mut encoder);
+    valid.retention_until().encode_canonical(&mut encoder);
 
-    encoder.u32(valid.proof_roots.len() as u32);
-    for r in &valid.proof_roots {
+    encoder.u32(valid.proof_roots().len() as u32);
+    for r in valid.proof_roots() {
         encoder.digest(*r);
     }
     encoder.u8(1); // Complete
-    encoder.digest(ContentDigest::sha256(b"fake-digest"));
+
+    let computed_digest = ContentDigest::sha256(&encoder.clone().finish());
+    encoder.digest(computed_digest);
 
     let payload = encoder.finish();
     let mut decoder = CanonicalDecoder::new(&payload);
 
-    // If decode_canonical did not call validate(), this would bypass validation.
     let res = H4LaboratoryExpansion::decode_canonical(&mut decoder);
     let Err(err) = res else {
-        return Err("decode_canonical must invoke validate() and reject non-quarantined payload".into());
+        return Err(
+            "decode_canonical must invoke validate() and reject undeclared oracle system".into(),
+        );
     };
-    assert_eq!(err, ContractError::DerivedLayerAuthorityForbidden);
+    assert_eq!(err, ContractError::InvalidIdentifier);
+
+    Ok(())
+}
+
+#[test]
+fn test_decode_canonical_kills_mutant_m2_digest_tamper() -> Result<(), Box<dyn Error>> {
+    let valid = sample_valid_expansion()?;
+
+    let mut encoder = CanonicalEncoder::new();
+    valid.encode_canonical(&mut encoder);
+    let mut payload = encoder.finish();
+
+    // Tamper with the last byte of expansion_digest
+    let len = payload.len();
+    payload[len - 1] ^= 0xFF;
+
+    let mut decoder = CanonicalDecoder::new(&payload);
+    let res = H4LaboratoryExpansion::decode_canonical(&mut decoder);
+    let Err(err) = res else {
+        return Err("decode_canonical must reject tampered expansion_digest".into());
+    };
+    assert_eq!(err, ContractError::DigestMismatch);
+
+    Ok(())
+}
+
+#[test]
+fn test_decode_canonical_rejects_duplicate_and_unsorted_proof_roots() -> Result<(), Box<dyn Error>>
+{
+    let valid = sample_valid_expansion()?;
+    let r1 = ContentDigest::sha256(b"root-a");
+    let r2 = ContentDigest::sha256(b"root-b");
+    let (smaller, larger) = if r1 < r2 { (r1, r2) } else { (r2, r1) };
+
+    // 1. Duplicate proof roots in stream
+    let mut enc1 = CanonicalEncoder::new();
+    enc1.text(H4_SCHEMA);
+    enc1.text(valid.handle_id());
+    enc1.text(valid.subject_id());
+    enc1.digest(valid.subject_digest());
+    valid.replay_bundle().encode_canonical(&mut enc1);
+    enc1.u32(valid.intermediates().len() as u32);
+    for item in valid.intermediates() {
+        item.encode_canonical(&mut enc1);
+    }
+    enc1.u32(valid.alternate_systems().len() as u32);
+    for item in valid.alternate_systems() {
+        item.encode_canonical(&mut enc1);
+    }
+    enc1.u32(valid.oracle_comparisons().len() as u32);
+    for item in valid.oracle_comparisons() {
+        item.encode_canonical(&mut enc1);
+    }
+    enc1.bool(valid.quarantine().quarantined_from_production);
+    enc1.digest(valid.quarantine().quarantine_receipt_digest);
+    enc1.text(&valid.quarantine().isolation_boundary);
+    enc1.digest(valid.quarantine().process_drain_witness);
+    valid.laboratory_access().encode_canonical(&mut enc1);
+    valid.purpose().encode_canonical(&mut enc1);
+    valid.anchor().encode_canonical(&mut enc1);
+    valid.contract_basis().encode_canonical(&mut enc1);
+    let mut cost_enc1 = CanonicalEncoder::new();
+    valid.estimated_cost().encode_to_canonical(&mut cost_enc1);
+    enc1.bytes(&cost_enc1.finish());
+    valid.published_at().encode_canonical(&mut enc1);
+    valid.retention_until().encode_canonical(&mut enc1);
+
+    enc1.u32(2);
+    enc1.digest(smaller);
+    enc1.digest(smaller);
+    enc1.u8(1); // Complete
+    enc1.digest(ContentDigest::sha256(b"digest"));
+
+    let payload1 = enc1.finish();
+    let mut dec1 = CanonicalDecoder::new(&payload1);
+    let res1 = H4LaboratoryExpansion::decode_canonical(&mut dec1);
+    let Err(err1) = res1 else {
+        return Err("decode_canonical must reject duplicate proof roots".into());
+    };
+    assert_eq!(err1, ContractError::NonCanonicalOrdering);
+
+    // 2. Unsorted (descending) proof roots in stream
+    let mut enc2 = CanonicalEncoder::new();
+    enc2.text(H4_SCHEMA);
+    enc2.text(valid.handle_id());
+    enc2.text(valid.subject_id());
+    enc2.digest(valid.subject_digest());
+    valid.replay_bundle().encode_canonical(&mut enc2);
+    enc2.u32(valid.intermediates().len() as u32);
+    for item in valid.intermediates() {
+        item.encode_canonical(&mut enc2);
+    }
+    enc2.u32(valid.alternate_systems().len() as u32);
+    for item in valid.alternate_systems() {
+        item.encode_canonical(&mut enc2);
+    }
+    enc2.u32(valid.oracle_comparisons().len() as u32);
+    for item in valid.oracle_comparisons() {
+        item.encode_canonical(&mut enc2);
+    }
+    enc2.bool(valid.quarantine().quarantined_from_production);
+    enc2.digest(valid.quarantine().quarantine_receipt_digest);
+    enc2.text(&valid.quarantine().isolation_boundary);
+    enc2.digest(valid.quarantine().process_drain_witness);
+    valid.laboratory_access().encode_canonical(&mut enc2);
+    valid.purpose().encode_canonical(&mut enc2);
+    valid.anchor().encode_canonical(&mut enc2);
+    valid.contract_basis().encode_canonical(&mut enc2);
+    let mut cost_enc2 = CanonicalEncoder::new();
+    valid.estimated_cost().encode_to_canonical(&mut cost_enc2);
+    enc2.bytes(&cost_enc2.finish());
+    valid.published_at().encode_canonical(&mut enc2);
+    valid.retention_until().encode_canonical(&mut enc2);
+
+    enc2.u32(2);
+    enc2.digest(larger);
+    enc2.digest(smaller);
+    enc2.u8(1); // Complete
+    enc2.digest(ContentDigest::sha256(b"digest"));
+
+    let payload2 = enc2.finish();
+    let mut dec2 = CanonicalDecoder::new(&payload2);
+    let res2 = H4LaboratoryExpansion::decode_canonical(&mut dec2);
+    let Err(err2) = res2 else {
+        return Err("decode_canonical must reject descending proof roots".into());
+    };
+    assert_eq!(err2, ContractError::NonCanonicalOrdering);
+
+    Ok(())
+}
+
+#[test]
+fn test_from_canonical_bytes_rejects_trailing_bytes() -> Result<(), Box<dyn Error>> {
+    let expansion = sample_valid_expansion()?;
+
+    let mut encoder = CanonicalEncoder::new();
+    expansion.encode_canonical(&mut encoder);
+    let mut bytes = encoder.finish();
+
+    // Successfully parses without trailing bytes
+    let parsed = H4LaboratoryExpansion::from_canonical_bytes(&bytes)?;
+    assert_eq!(parsed, expansion);
+
+    // Appending a trailing byte must cause from_canonical_bytes to fail
+    bytes.push(0xAA);
+    let res = H4LaboratoryExpansion::from_canonical_bytes(&bytes);
+    let Err(err) = res else {
+        return Err("from_canonical_bytes must reject trailing bytes".into());
+    };
+    assert_eq!(err, ContractError::NonCanonicalOrdering);
 
     Ok(())
 }
@@ -742,16 +1665,14 @@ fn test_h4_canonical_roundtrip_determinism() -> Result<(), Box<dyn Error>> {
     let decoded = H4LaboratoryExpansion::decode_canonical(&mut decoder)?;
 
     assert_eq!(expansion, decoded);
-    assert_eq!(expansion.expansion_digest, decoded.expansion_digest);
+    assert_eq!(expansion.expansion_digest(), decoded.expansion_digest());
     assert_eq!(expansion.computed_digest(), decoded.computed_digest());
 
     Ok(())
 }
 
 #[test]
-fn test_semantic_handle_h4_delivery_integration() -> Result<(), Box<dyn Error>> {
-    let expansion = sample_valid_expansion()?;
-
+fn test_semantic_handle_h4_delivery_integration_and_binding_checks() -> Result<(), Box<dyn Error>> {
     let levels = BTreeSet::from([
         HydrationLevel::H0,
         HydrationLevel::H1,
@@ -760,11 +1681,12 @@ fn test_semantic_handle_h4_delivery_integration() -> Result<(), Box<dyn Error>> 
         HydrationLevel::H4,
     ]);
 
+    let subject_digest = ContentDigest::sha256(b"canonical-evidence-subject-data");
     let handle = SemanticHandle::publish(SemanticHandleSpec {
         contract_basis: sample_basis(),
         anchor: sample_anchor(),
-        subject_id: expansion.subject_id.clone(),
-        subject_digest: expansion.subject_digest,
+        subject_id: "evidence:packet:cam-east:1042".to_owned(),
+        subject_digest,
         semantic_type: "evidence_bundle".to_owned(),
         source_id: "sensor:cam-east".to_owned(),
         capture_interval: None,
@@ -802,6 +1724,8 @@ fn test_semantic_handle_h4_delivery_integration() -> Result<(), Box<dyn Error>> 
         published_at: TimestampNs(1_000_000_000),
     })?;
 
+    let expansion = sample_expansion_for_handle(&handle)?;
+
     let request = HydrationRequest::publish(HydrationRequestSpec {
         contract_basis: handle.contract_basis.clone(),
         session_id: SessionId::parse("session:qualification")?,
@@ -828,10 +1752,87 @@ fn test_semantic_handle_h4_delivery_integration() -> Result<(), Box<dyn Error>> 
     })?;
 
     let now = TimestampNs(1_500_000_000);
-    let artifact = handle.to_h4_laboratory_expansion(&request, now, &expansion)?;
 
+    // 1. Successful delivery matches handle transform
+    let artifact = handle.to_h4_laboratory_expansion(&request, now, &expansion)?;
     assert_eq!(artifact.level, HydrationLevel::H4);
+    assert_eq!(
+        artifact.applied_transform.as_deref(),
+        Some("quarantined_laboratory_expansion")
+    );
     assert!(artifact.proof_roots.contains(&handle.subject_digest));
+
+    // 2. Handle binding checks: mismatched handle_id
+    let mut bad_handle_params = H4LaboratoryExpansionParams {
+        handle_id: "semantic-handle:other-rebound-id".to_owned(),
+        subject_id: handle.subject_id.clone(),
+        subject_digest: handle.subject_digest,
+        replay_bundle: sample_replay_bundle(),
+        intermediates: sample_intermediates(),
+        alternate_systems: sample_alternate_systems(),
+        oracle_comparisons: sample_oracle_comparisons(),
+        quarantine: sample_quarantine(),
+        laboratory_access: handle.laboratory_access,
+        purpose: HydrationPurpose::Qualification,
+        anchor: handle.anchor.clone(),
+        contract_basis: handle.contract_basis.clone(),
+        estimated_cost: sample_budget()?,
+        published_at: handle.published_at,
+        retention_until: handle.retention_until,
+        proof_roots: expansion.proof_roots().clone(),
+        completeness: Completeness::Complete,
+    };
+    let bad_expansion = H4LaboratoryExpansion::new(bad_handle_params.clone())?;
+    let err = handle.to_h4_laboratory_expansion(&request, now, &bad_expansion);
+    let Err(HydrationError::HandleRebound) = err else {
+        return Err("Handle::to_h4_laboratory_expansion must reject mismatched handle_id".into());
+    };
+
+    // 3. Handle binding checks: mismatched subject_id
+    bad_handle_params.handle_id = handle.handle_id.clone();
+    bad_handle_params.subject_id = "evidence:other-subject".to_owned();
+    let bad_exp2 = H4LaboratoryExpansion::new(bad_handle_params.clone())?;
+    let err2 = handle.to_h4_laboratory_expansion(&request, now, &bad_exp2);
+    let Err(HydrationError::Contract(ContractError::InvalidIdentifier)) = err2 else {
+        return Err("Handle::to_h4_laboratory_expansion must reject mismatched subject_id".into());
+    };
+
+    // 4. Handle binding checks: expired now >= retention_until
+    let expired_now = TimestampNs(2_000_000_000);
+    let err_exp = handle.to_h4_laboratory_expansion(&request, expired_now, &expansion);
+    let Err(HydrationError::LevelUnavailable) = err_exp else {
+        return Err("Handle::to_h4_laboratory_expansion must reject expired delivery".into());
+    };
+
+    // 5. Handle binding checks: purpose mismatch
+    let debug_request = HydrationRequest::publish(HydrationRequestSpec {
+        contract_basis: handle.contract_basis.clone(),
+        session_id: SessionId::parse("session:qualification")?,
+        handle_id: handle.handle_id.clone(),
+        expected_descriptor_digest: handle.descriptor_digest,
+        expected_subject_digest: handle.subject_digest,
+        anchor: handle.anchor.clone(),
+        requested_level: HydrationLevel::H4,
+        allow_lower_level: false,
+        available_capabilities: handle
+            .required_capabilities
+            .values()
+            .flatten()
+            .cloned()
+            .collect(),
+        authorized_privacy_classes: BTreeSet::from([handle.privacy_class.clone()]),
+        budget: BudgetVector::builder()
+            .bytes(200_000)
+            .tokens(4_000)
+            .build()?,
+        purpose: HydrationPurpose::Debugging,
+        continuation: None,
+        issued_at: TimestampNs(1_500_000_000),
+    })?;
+    let err_purp = handle.to_h4_laboratory_expansion(&debug_request, now, &expansion);
+    let Err(HydrationError::LaboratoryGrantRequired) = err_purp else {
+        return Err("Handle::to_h4_laboratory_expansion must reject purpose mismatch".into());
+    };
 
     Ok(())
 }

@@ -2781,6 +2781,14 @@ pub enum ContractError {
     PrematureQuiescenceProof,
     /// A decoded element count exceeds the remaining bytes or configured structural bound.
     CountBoundExceeded,
+    /// An H4 laboratory expansion lacks an anchor to canonical evidence (AGT-H4).
+    LaboratoryExpansionMissingAnchor,
+    /// An H4 oracle comparison tolerance flag disagrees with discrepancy score and threshold (AGT-H4).
+    LaboratoryExpansionToleranceMismatch,
+    /// An H4 intermediate artifact tensor shape or byte count is malformed (AGT-H4).
+    LaboratoryExpansionShapeMalformed,
+    /// Access to H4 laboratory expansion requires qualification or an explicit debugging grant (AGT-H4).
+    LaboratoryGrantRequired,
 }
 
 impl ContractError {
@@ -2854,6 +2862,10 @@ impl ContractError {
             Self::ProofRegionMismatch(_) => "proof_region_mismatch",
             Self::PrematureQuiescenceProof => "premature_quiescence_proof",
             Self::CountBoundExceeded => "count_bound_exceeded",
+            Self::LaboratoryExpansionMissingAnchor => "laboratory_expansion_missing_anchor",
+            Self::LaboratoryExpansionToleranceMismatch => "laboratory_expansion_tolerance_mismatch",
+            Self::LaboratoryExpansionShapeMalformed => "laboratory_expansion_shape_malformed",
+            Self::LaboratoryGrantRequired => "laboratory_grant_required",
         }
     }
 }

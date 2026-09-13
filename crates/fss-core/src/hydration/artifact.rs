@@ -71,6 +71,24 @@ impl HydrationArtifact {
         Ok(())
     }
 
+    /// Returns whether this artifact is strictly quarantined from production (level H4).
+    #[must_use]
+    pub const fn is_quarantined(&self) -> bool {
+        matches!(self.level, HydrationLevel::H4)
+    }
+
+    /// Constitutional rule: Laboratory material (H4) is excluded from production.
+    #[must_use]
+    pub const fn is_production_safe(&self) -> bool {
+        !self.is_quarantined()
+    }
+
+    /// Constitutional hard gate: Laboratory material may NEVER authorize effects.
+    #[must_use]
+    pub const fn may_authorize_effects(&self) -> bool {
+        !self.is_quarantined()
+    }
+
     fn validate_body(&self) -> Result<(), HydrationError> {
         if !valid_text(&self.content_type)
             || self.payload.is_empty()

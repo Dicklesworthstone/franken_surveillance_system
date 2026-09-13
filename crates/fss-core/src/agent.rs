@@ -156,6 +156,12 @@ impl CanonicalEncode for ContractBasis {
 /// withheld proposition.
 pub const REDACTED_STATEMENT_MARKER: &str = "<redacted:statement-withheld>";
 
+/// Marker indicating that a proposition or its evidence originates from a quarantined laboratory expansion (H4).
+///
+/// Propositions carrying this marker may NEVER claim the `Known` knowledge state or serve as an
+/// irreversible-effect premise (DEP-CLASS-F4, INV-022).
+pub const LABORATORY_PROVENANCE_MARKER: &str = "<provenance:laboratory-quarantine>";
+
 /// Which projection withholds a `redacted` proposition (KSTATE-007).
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum RedactionReason {
@@ -440,10 +446,19 @@ impl KnowledgeCell {
     pub fn is_irreversible_effect_premise(&self, now: TimestampNs) -> bool {
         self.knowledge_state.may_authorize_irreversible_effect()
             && self.provenance.may_authorize_irreversible_effect()
+            && !self.is_laboratory_tainted()
             && self.validate().is_ok()
             && !self.evidence.is_empty()
             && self.contradictions.is_empty()
             && self.valid_until.is_none_or(|limit| now <= limit)
+    }
+
+    /// Returns whether this proposition is marked with quarantined laboratory provenance or taint.
+    #[must_use]
+    pub fn is_laboratory_tainted(&self) -> bool {
+        self.statement.contains(LABORATORY_PROVENANCE_MARKER)
+            || self.claim_id.starts_with("laboratory:")
+            || self.claim_id.contains(":laboratory:")
     }
 
     /// Validates that the typed state basis matches the knowledge state.
@@ -456,7 +471,12 @@ impl KnowledgeCell {
     /// States that assert no present support (`unknown`, `stale`, `not_observable`, `redacted`,
     /// `indeterminate`, `not_applicable`) stay valid without evidence, so an honest unknown is
     /// never refused for lacking the support it reports it does not have.
+    ///
+    /// Quarantined laboratory outputs may NEVER claim authority or the `known` knowledge state.
     pub fn validate(&self) -> Result<(), ContractError> {
+        if self.is_laboratory_tainted() && self.knowledge_state == KnowledgeState::Known {
+            return Err(ContractError::DerivedLayerAuthorityForbidden);
+        }
         if matches!(
             self.provenance,
             ProvenanceClass::Observed | ProvenanceClass::Derived

@@ -28,11 +28,11 @@ mod request;
 pub use artifact::HydrationArtifact;
 pub use error::HydrationError;
 pub use h4::{
-    AlternateSystem, H4LaboratoryExpansion, H4LaboratoryExpansionParams, H4_CONTENT,
-    H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA, IntermediateArtifact,
-    LaboratoryQuarantine, OracleComparison, ReplayBundleRef, MAX_H4_ALTERNATE_SYSTEMS,
-    MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN,
-    MAX_H4_ORACLE_COMPARISONS, MAX_H4_PROOF_ROOTS,
+    AlternateSystem, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
+    H4LaboratoryExpansion, H4LaboratoryExpansionParams, IntermediateArtifact, LaboratoryArtifact,
+    LaboratoryQuarantine, MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES,
+    MAX_H4_METADATA_LEN, MAX_H4_ORACLE_COMPARISONS, MAX_H4_PROOF_ROOTS, OracleComparison,
+    ReplayBundleRef,
 };
 pub use handle::{SemanticHandle, SemanticHandleSpec};
 pub use receipt::{HydrationReceipt, HydrationReceiptSpec, HydrationResponse};

@@ -50,9 +50,10 @@ pub use abstraction::{
 
 pub use agent::{
     ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
-    HandoffPublishParams, KnowledgeCell, KnowledgeStateBasis, MissionLifecycleState, PossibleWorld,
-    REDACTED_STATEMENT_MARKER, ReconciliationBasis, ReconciliationBranch, RedactionMarker,
-    RedactionReason, SituationCapsule, SituationFrame, StaleBasis, WorldEnvelope,
+    HandoffPublishParams, KnowledgeCell, KnowledgeStateBasis, LABORATORY_PROVENANCE_MARKER,
+    MissionLifecycleState, PossibleWorld, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
+    ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule, SituationFrame,
+    StaleBasis, WorldEnvelope,
 };
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,
@@ -123,13 +124,14 @@ pub use evidence::{
     SensorCapsule, SensorSourceBytesSpec,
 };
 pub use hydration::{
-    AlternateSystem, H4LaboratoryExpansion, H4LaboratoryExpansionParams, H4_CONTENT, H4_LEVEL_ID,
-    H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA, HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact,
-    HydrationError, HydrationLevel, HydrationPurpose, HydrationReceipt, HydrationReceiptSpec,
-    HydrationRequest, HydrationRequestSpec, HydrationResponse, IntermediateArtifact,
-    LaboratoryAccess, LaboratoryQuarantine, OracleComparison, ReplayBundleRef, SemanticHandle,
-    SemanticHandleSpec, MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES,
-    MAX_H4_METADATA_LEN, MAX_H4_ORACLE_COMPARISONS, MAX_H4_PROOF_ROOTS,
+    AlternateSystem, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
+    H4LaboratoryExpansion, H4LaboratoryExpansionParams, HYDRATION_VIEW_ID, HandleAvailability,
+    HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose, HydrationReceipt,
+    HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec, HydrationResponse,
+    IntermediateArtifact, LaboratoryAccess, LaboratoryArtifact, LaboratoryQuarantine,
+    MAX_H4_ALTERNATE_SYSTEMS, MAX_H4_IDENTIFIER_LEN, MAX_H4_INTERMEDIATES, MAX_H4_METADATA_LEN,
+    MAX_H4_ORACLE_COMPARISONS, MAX_H4_PROOF_ROOTS, OracleComparison, ReplayBundleRef,
+    SemanticHandle, SemanticHandleSpec,
 };
 pub use identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, DeviceCapabilities,
