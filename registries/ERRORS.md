@@ -159,6 +159,17 @@ operation states rather than generic errors.
 | `ERR-GRAPH-MISSING-OUTPUT-WITNESS-001` | graph algorithm row lacks declared output-size witness with bounds | declare output-size witness with bounds or record explicit owner drift |
 | `ERR-GRAPH-PROJECTION-MISMATCH-001` | graph algorithm projections differ between machine source and registry markdown mirror | reconcile machine source and registry markdown projections |
 | `ERR-GRAPH-STABLE-ID-DRIFT-001` | graph algorithm stable identifier renumbered or superseded row not tombstoned | restore stable algorithm identity and retain superseded rows as tombstones |
+| `ERR-NEG-MISSING-COVERAGE-001` | negative evidence entry lacks a certifying coverage witness | provide a valid certifying coverage witness; absence without witness is never evidence |
+| `ERR-NEG-COVERAGE-GAP-001` | negative evidence evaluated during an uncertified coverage gap | ensure continuous coverage witness; absence during gap is never evidence |
+| `ERR-NEG-UNCERTIFIED-COVERAGE-001` | coverage witness does not certify complete negative predicate absence | verify coverage domain and predicate certification |
+| `ERR-NEG-UNKNOWN-VERSION-001` | negative evidence binary ledger format version is unknown or unsupported | refuse unknown version; never guess ledger encoding format |
+| `ERR-NEG-CHECKSUM-MISMATCH-001` | negative evidence binary ledger corrupt magic, checksum, or truncated data | repair corrupt ledger binary or restore from canonical backup |
+| `ERR-NEG-NON-CANONICAL-ORDER-001` | negative evidence ledger entries are not in strictly increasing canonical order | sort entries strictly by stable ID |
+| `ERR-NEG-DUPLICATE-ID-001` | negative evidence ledger contains duplicate stable entry identifier | allocate unique stable entry identifier; never duplicate IDs |
+| `ERR-NEG-INPUT-OVERSIZED-001` | negative evidence entry or field exceeds declared capacity limit | bound entry string length or shared failure domain count |
+| `ERR-NEG-ENTRY-TOMBSTONED-001` | attempted operation on or with a permanently tombstoned negative entry | do not operate on tombstoned negative-evidence entries |
+| `ERR-NEG-REVIVAL-UNMET-001` | candidate retry or promotion attempted without meeting revival condition | satisfy documented revival condition before promoting candidate |
+| `ERR-NEG-VALIDATION-FAILED-001` | negative evidence entry semantic validation failed | provide valid required fields conforming to negative evidence contract |
 | `ERR-DEP-REGISTRY-DRIFT-001` | dependency registry row drift between machine registry and markdown mirror | synchronize architecture/dependencies.json and registries/DEPENDENCIES.md |
 | `ERR-DEP-STABLE-ID-REUSED-001` | dependency class stable identifier was reused, duplicated, renumbered, or tombstoned | allocate a new unique stable identifier; never reuse stable IDs |
 | `ERR-DEP-MISSING-FIELD-001` | dependency class row or root metadata lacks a mandatory field or is empty/corrupt | declare all mandatory fields in dependency class row |
