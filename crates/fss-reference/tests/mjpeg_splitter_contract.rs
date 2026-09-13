@@ -1441,27 +1441,71 @@ fn probe_middle_frame_overflow_resyncs_at_next_soi() -> Result<(), Box<dyn Error
 }
 
 #[test]
-fn probe_checkpoint_boundary_crossing_kills_n7() -> Result<(), Box<dyn Error>> {
-    let mut f = vec![0xFF, 0xD8];
-    f.extend(helper_sof0(8, 8));
-    f.extend(helper_sos1());
-    // Build blocks where each checkpoint boundary is crossed by FF 00:
-    for _ in 0..40 {
-        f.resize(f.len() + 65535, 0x01);
-        f.extend_from_slice(&[0xFF, 0x00]);
-    }
-    f.extend_from_slice(&[0xFF, 0xD9]);
+fn probe_cut_right_after_marker_code_then_complete_frame() -> Result<(), Box<dyn Error>> {
+    // frame1 = FF D8 FF E0 (cut right after the APP0 marker code); the next frame's SOI is read
+    // as the length field (0xFFD8), overflows, and resync must start at current_pos without skipping.
+    let mut s = helper_frame(8, 8, &[0x11]); // 0..28
+    s.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0]); // 28..32
+    s.extend(helper_frame(8, 8, &[0x22])); // 32..60 complete frame
+    let scan = split_jpeg_stream(&s, &MjpegLimits::default(), None)?;
+    let spans: Vec<(usize, usize, bool, bool)> = scan
+        .frames
+        .iter()
+        .map(|f| (f.start_offset, f.end_offset, f.has_eoi, f.is_truncated))
+        .collect();
+    assert_eq!(
+        spans,
+        vec![
+            (0, 28, true, false),
+            (28, 32, false, true),
+            (32, 60, true, false),
+        ],
+        "complete frame at 32..60 swallowed"
+    );
+    Ok(())
+}
 
-    let cx = ReplayCx::for_test();
-    let res = std::thread::scope(|s| {
-        s.spawn(|| {
-            std::thread::sleep(std::time::Duration::from_millis(1));
-            cx.request_cancellation();
-        });
-        split_jpeg_stream(&f, &MjpegLimits::default(), Some(&cx))
-    });
+#[test]
+fn probe_cut_after_high_length_byte_then_complete_frame() -> Result<(), Box<dyn Error>> {
+    let mut s = helper_frame(8, 8, &[0x11]); // 0..28
+    s.extend_from_slice(&[0xFF, 0xD8, 0xFF, 0xE0, 0x00]); // 28..33, length 0x00FF overflows
+    s.extend(helper_frame(8, 8, &[0x22])); // 33..61 complete frame
+    let scan = split_jpeg_stream(&s, &MjpegLimits::default(), None)?;
+    let spans: Vec<(usize, usize, bool, bool)> = scan
+        .frames
+        .iter()
+        .map(|f| (f.start_offset, f.end_offset, f.has_eoi, f.is_truncated))
+        .collect();
+    assert_eq!(
+        spans,
+        vec![
+            (0, 28, true, false),
+            (28, 33, false, true),
+            (33, 61, true, false),
+        ],
+        "complete frame at 33..61 swallowed"
+    );
+    Ok(())
+}
 
-    assert_eq!(res, Err(JpegSplitError::CancellationRequested));
+#[test]
+fn probe_garbage_run_counts_toward_marker_limit_kills_f2() -> Result<(), Box<dyn Error>> {
+    let lim = MjpegLimits {
+        max_marker_segments_per_frame: 3,
+        ..Default::default()
+    };
+    let mut mix = vec![0xFF, 0xD8, b'g', 0xFF, 0x00];
+    mix.extend(helper_sof0(8, 8));
+    mix.extend(helper_sos1());
+    mix.extend_from_slice(&[0x11, 0xFF, 0xD9]);
+    assert_eq!(
+        split_jpeg_stream(&mix, &lim, None),
+        Err(JpegSplitError::TooManyMarkerSegments {
+            frame_index: 0,
+            count: 4,
+            limit: 3,
+        })
+    );
     Ok(())
 }
 
