@@ -162,6 +162,27 @@ impl SemanticHandle {
         H0Identity::from_semantic_handle(self)
     }
 
+    /// Materializes an H2 decision artifact from this semantic handle.
+    pub fn to_h2_decision_artifact(
+        &self,
+        artifact_kind: DecisionArtifactKind,
+        payload: Vec<u8>,
+        proof_roots: impl IntoIterator<Item = ContentDigest>,
+        applied_redaction_transform: impl Into<String>,
+        authorization_grant_id: impl Into<String>,
+        completeness: Completeness,
+    ) -> Result<H2DecisionArtifact, HydrationError> {
+        H2DecisionArtifact::from_semantic_handle(
+            self,
+            artifact_kind,
+            payload,
+            proof_roots,
+            applied_redaction_transform,
+            authorization_grant_id,
+            completeness,
+        )
+    }
+
     /// Returns the maximum published hydration level.
     #[must_use]
     pub fn maximum_level(&self) -> Option<HydrationLevel> {
