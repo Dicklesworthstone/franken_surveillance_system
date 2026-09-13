@@ -782,22 +782,42 @@ pub fn compute_operator_table_digest() -> Result<ContentDigest, ModelIrError> {
     Ok(ContentDigest::new(DigestAlgorithm::Sha256, digest_bytes))
 }
 
+/// Verifies that an actual operator table digest matches the expected freeze digest.
+///
+/// Pure verification function with zero ambient or mutable process state.
+///
+/// # Errors
+/// Returns [`ModelIrError::InvalidAttribute`] if `actual` does not equal `expected`.
+pub fn verify_operator_table_digest(
+    expected: &ContentDigest,
+    actual: &ContentDigest,
+) -> Result<(), ModelIrError> {
+    if actual != expected {
+        return Err(ModelIrError::InvalidAttribute {
+            node_id: "operator_table".to_string(),
+            attr_name: "freeze_digest".to_string(),
+            reason: format!(
+                "operator table freeze digest diverged: expected {expected}, got {actual}"
+            ),
+        });
+    }
+    Ok(())
+}
+
 /// Verifies that the live operator table matches the pinned freeze digest.
 ///
 /// # Errors
 /// Returns [`ModelIrError::InvalidAttribute`] if the digest has diverged.
 pub fn verify_operator_table_frozen() -> Result<(), ModelIrError> {
     let computed = compute_operator_table_digest()?;
-    if computed.to_string() != OPERATOR_TABLE_FREEZE_DIGEST {
-        return Err(ModelIrError::InvalidAttribute {
+    let expected = ContentDigest::parse(OPERATOR_TABLE_FREEZE_DIGEST).map_err(|e| {
+        ModelIrError::InvalidAttribute {
             node_id: "operator_table".to_string(),
             attr_name: "freeze_digest".to_string(),
-            reason: format!(
-                "operator table freeze digest diverged: expected {OPERATOR_TABLE_FREEZE_DIGEST}, got {computed}"
-            ),
-        });
-    }
-    Ok(())
+            reason: format!("invalid pinned freeze digest: {e}"),
+        }
+    })?;
+    verify_operator_table_digest(&expected, &computed)
 }
 
 /// Verifies that all operators match the baseline identifiers and no tombstones are resurrected.

@@ -9,6 +9,7 @@ use crate::attribute::AttributeMap;
 use crate::error::ModelIrError;
 use crate::op::OpCode;
 use crate::port::TensorPort;
+use crate::validator::order_independent_num_elements;
 
 /// Broadcasts two tensor shapes according to standard multi-dimensional broadcasting rules.
 ///
@@ -332,7 +333,7 @@ pub fn infer_operator_outputs(
                         attr_name: "shape".to_string(),
                     })?;
 
-            let _allowzero = if let Some(az) = attrs.get("allowzero") {
+            let allowzero = if let Some(az) = attrs.get("allowzero") {
                 az.as_bool(node_id, "allowzero")?
             } else {
                 false
@@ -359,7 +360,7 @@ pub fn infer_operator_outputs(
                     });
                 }
             };
-            let total_in_elements = in0.shape().num_elements()?;
+            let total_in_elements = order_independent_num_elements(in0.shape())?;
 
             let mut minus_one_idx = None;
             let mut known_product: usize = 1;
@@ -376,12 +377,30 @@ pub fn infer_operator_outputs(
                     }
                     minus_one_idx = Some(idx);
                     resolved_dims.push(0); // placeholder
-                } else if d < 0 {
+                } else if d < -1 {
                     return Err(ModelIrError::InvalidAttribute {
                         node_id: node_id.to_string(),
                         attr_name: "shape".to_string(),
                         reason: format!("negative dimension {d} not permitted in reshape"),
                     });
+                } else if d == 0 && !allowzero {
+                    if idx >= in0.rank() {
+                        return Err(ModelIrError::InvalidAttribute {
+                            node_id: node_id.to_string(),
+                            attr_name: "shape".to_string(),
+                            reason: format!(
+                                "cannot copy input dimension at index {idx} when input rank is {}",
+                                in0.rank()
+                            ),
+                        });
+                    }
+                    let copied_dim = in0.shape().dims()[idx];
+                    known_product = known_product.checked_mul(copied_dim).ok_or(
+                        ModelIrError::ArithmeticOverflow {
+                            operation: "reshape known dimensions product",
+                        },
+                    )?;
+                    resolved_dims.push(copied_dim);
                 } else {
                     let dim_u =
                         usize::try_from(d).map_err(|_| ModelIrError::ArithmeticOverflow {
@@ -437,19 +456,20 @@ pub fn infer_operator_outputs(
                 }
                 let inferred_dim = total_in_elements / known_product;
                 resolved_dims[idx] = inferred_dim;
-            } else {
-                if known_product != total_in_elements {
-                    return Err(ModelIrError::ShapeMismatch {
-                        node_id: node_id.to_string(),
-                        op_id: op.stable_id(),
-                        reason: format!(
-                            "element count mismatch in reshape: input has {total_in_elements}, requested shape has {known_product}"
-                        ),
-                    });
-                }
             }
 
             let out_shape = Shape::new(resolved_dims)?;
+            let total_out_elements = order_independent_num_elements(&out_shape)?;
+            if total_out_elements != total_in_elements {
+                return Err(ModelIrError::ShapeMismatch {
+                    node_id: node_id.to_string(),
+                    op_id: op.stable_id(),
+                    reason: format!(
+                        "element count mismatch in reshape: input has {total_in_elements}, requested shape has {total_out_elements}"
+                    ),
+                });
+            }
+
             let port = TensorPort::new(&output_names[0], in0.dtype(), out_shape, generation)?;
             Ok(vec![port])
         }
@@ -697,24 +717,46 @@ pub fn infer_operator_outputs(
             }
             let base = inputs[0];
             let rank = base.rank();
-            let base_dims = base.shape().dims();
+            let axis_raw: i64 = if let Some(a) = attrs.get("axis") {
+                a.as_int(node_id, "axis")?
+            } else {
+                0
+            };
 
-            let axis = attrs
-                .get("axis")
-                .ok_or_else(|| ModelIrError::MissingAttribute {
-                    node_id: node_id.to_string(),
-                    attr_name: "axis".to_string(),
+            let axis = if axis_raw < 0 {
+                let r = i64::try_from(rank).map_err(|_| ModelIrError::ArithmeticOverflow {
+                    operation: "tensor rank to i64 conversion",
+                })?;
+                let effective =
+                    r.checked_add(axis_raw)
+                        .ok_or(ModelIrError::ArithmeticOverflow {
+                            operation: "negative axis resolution",
+                        })?;
+                if effective < 0 {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "axis".to_string(),
+                        reason: format!("concat axis {axis_raw} out of bounds for rank {rank}"),
+                    });
+                }
+                usize::try_from(effective).map_err(|_| ModelIrError::ArithmeticOverflow {
+                    operation: "resolved axis to usize conversion",
                 })?
-                .as_usize(node_id, "axis")?;
+            } else {
+                usize::try_from(axis_raw).map_err(|_| ModelIrError::ArithmeticOverflow {
+                    operation: "axis to usize conversion",
+                })?
+            };
 
             if axis >= rank {
                 return Err(ModelIrError::InvalidAttribute {
                     node_id: node_id.to_string(),
                     attr_name: "axis".to_string(),
-                    reason: format!("concat axis {axis} out of bounds for rank {rank}"),
+                    reason: format!("concat axis {axis_raw} out of bounds for rank {rank}"),
                 });
             }
 
+            let base_dims = base.shape().dims();
             let mut total_concat_dim: usize = 0;
 
             for (idx, in_port) in inputs.iter().enumerate() {
@@ -1096,17 +1138,42 @@ pub fn infer_operator_outputs(
                 });
             }
 
-            let axis = attrs
-                .get("axis")
-                .map(|a| a.as_usize(node_id, "axis"))
-                .transpose()?
-                .unwrap_or_else(|| in0.rank().saturating_sub(1));
+            let axis_raw: i64 = if let Some(a) = attrs.get("axis") {
+                a.as_int(node_id, "axis")?
+            } else {
+                -1
+            };
+            let rank = in0.rank();
+            let axis = if axis_raw < 0 {
+                let r = i64::try_from(rank).map_err(|_| ModelIrError::ArithmeticOverflow {
+                    operation: "tensor rank to i64 conversion",
+                })?;
+                let effective =
+                    r.checked_add(axis_raw)
+                        .ok_or(ModelIrError::ArithmeticOverflow {
+                            operation: "negative axis resolution",
+                        })?;
+                if effective < 0 {
+                    return Err(ModelIrError::InvalidAttribute {
+                        node_id: node_id.to_string(),
+                        attr_name: "axis".to_string(),
+                        reason: format!("softmax axis {axis_raw} out of bounds for rank {rank}"),
+                    });
+                }
+                usize::try_from(effective).map_err(|_| ModelIrError::ArithmeticOverflow {
+                    operation: "resolved axis to usize conversion",
+                })?
+            } else {
+                usize::try_from(axis_raw).map_err(|_| ModelIrError::ArithmeticOverflow {
+                    operation: "axis to usize conversion",
+                })?
+            };
 
-            if axis >= in0.rank() {
+            if axis >= rank {
                 return Err(ModelIrError::InvalidAttribute {
                     node_id: node_id.to_string(),
                     attr_name: "axis".to_string(),
-                    reason: format!("softmax axis {axis} out of bounds for rank {}", in0.rank()),
+                    reason: format!("softmax axis {axis_raw} out of bounds for rank {rank}"),
                 });
             }
 
@@ -1334,8 +1401,16 @@ pub fn infer_operator_outputs(
                 });
             }
 
-            let out_h = (total_h - eff_kh) / strides[0] + 1;
-            let out_w = (total_w - eff_kw) / strides[1] + 1;
+            let out_h = ((total_h - eff_kh) / strides[0]).checked_add(1).ok_or(
+                ModelIrError::ArithmeticOverflow {
+                    operation: "conv2d output height calculation",
+                },
+            )?;
+            let out_w = ((total_w - eff_kw) / strides[1]).checked_add(1).ok_or(
+                ModelIrError::ArithmeticOverflow {
+                    operation: "conv2d output width calculation",
+                },
+            )?;
 
             let out_shape = Shape::new(vec![n, c_out, out_h, out_w])?;
             let port = TensorPort::new(&output_names[0], in0.dtype(), out_shape, generation)?;
@@ -1470,20 +1545,46 @@ pub fn infer_operator_outputs(
             }
 
             let mut out_h = if ceil_mode {
-                (total_h - kernel_size[0]).div_ceil(strides[0]) + 1
+                (total_h - kernel_size[0])
+                    .div_ceil(strides[0])
+                    .checked_add(1)
+                    .ok_or(ModelIrError::ArithmeticOverflow {
+                        operation: "maxpool output height calculation",
+                    })?
             } else {
-                (total_h - kernel_size[0]) / strides[0] + 1
+                ((total_h - kernel_size[0]) / strides[0])
+                    .checked_add(1)
+                    .ok_or(ModelIrError::ArithmeticOverflow {
+                        operation: "maxpool output height calculation",
+                    })?
             };
             let mut out_w = if ceil_mode {
-                (total_w - kernel_size[1]).div_ceil(strides[1]) + 1
+                (total_w - kernel_size[1])
+                    .div_ceil(strides[1])
+                    .checked_add(1)
+                    .ok_or(ModelIrError::ArithmeticOverflow {
+                        operation: "maxpool output width calculation",
+                    })?
             } else {
-                (total_w - kernel_size[1]) / strides[1] + 1
+                ((total_w - kernel_size[1]) / strides[1])
+                    .checked_add(1)
+                    .ok_or(ModelIrError::ArithmeticOverflow {
+                        operation: "maxpool output width calculation",
+                    })?
             };
-            if ceil_mode && (out_h - 1) * strides[0] >= h + pads[0] {
-                out_h = out_h.saturating_sub(1);
+            if ceil_mode && out_h > 0 {
+                let last_start_h = (out_h - 1) as u128 * strides[0] as u128;
+                let boundary_h = (h as u128) + (pads[0] as u128);
+                if last_start_h >= boundary_h {
+                    out_h = out_h.saturating_sub(1);
+                }
             }
-            if ceil_mode && (out_w - 1) * strides[1] >= w + pads[1] {
-                out_w = out_w.saturating_sub(1);
+            if ceil_mode && out_w > 0 {
+                let last_start_w = (out_w - 1) as u128 * strides[1] as u128;
+                let boundary_w = (w as u128) + (pads[1] as u128);
+                if last_start_w >= boundary_w {
+                    out_w = out_w.saturating_sub(1);
+                }
             }
 
             let out_shape = Shape::new(vec![n, c, out_h, out_w])?;
