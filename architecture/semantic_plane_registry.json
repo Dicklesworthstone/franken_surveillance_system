@@ -107,6 +107,7 @@
     "crates/fss-reference/src/situation_guard_tests.rs": "support",
     "crates/fss-reference/src/situation.rs": "cognition",
     "crates/fss-reference/src/situation_sections.rs": "cognition",
+    "crates/fss-reference/src/situation_sections_dedup_tests.rs": "support",
     "crates/fss-reference/src/situation_sections_tests.rs": "support",
     "crates/fss-reference/src/situation_tests.rs": "support",
     "crates/fss-reference/src/source.rs": "authority",
