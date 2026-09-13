@@ -162,6 +162,14 @@ impl SemanticHandle {
         H0Identity::from_semantic_handle(self)
     }
 
+    /// Materializes an H1 semantic synopsis from this published handle.
+    pub fn to_h1_synopsis(
+        &self,
+        content: H1ContentSpec,
+    ) -> Result<H1SemanticSynopsis, HydrationError> {
+        H1SemanticSynopsis::from_semantic_handle(self, content)
+    }
+
     /// Materializes an H2 decision artifact from this semantic handle.
     pub fn to_h2_decision_artifact(
         &self,

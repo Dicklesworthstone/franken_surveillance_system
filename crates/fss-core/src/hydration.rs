@@ -21,6 +21,7 @@ mod admission;
 mod artifact;
 mod error;
 mod h0;
+pub mod h1;
 pub mod h2;
 pub mod h4;
 mod handle;
@@ -33,6 +34,7 @@ pub use h0::{
     H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0_SEMANTIC_OWNER, H0Identity,
     H0IdentityParams, is_valid_h0_screened_field,
 };
+pub use h1::*;
 pub use h2::*;
 pub use h4::{
     AlternateSystem, H4_CONTENT, H4_LEVEL_ID, H4_LEVEL_NAME, H4_OWNER, H4_SCHEMA,
