@@ -658,8 +658,18 @@ pub fn compile_reference_situation(
     }
     .validated()?;
     let mut knowledge_cells = vec![policy_cell];
-    let physical_state =
-        physical_knowledge_state(request.decision.event.state, &supporting, &contradicting);
+    let tamper_status = fss_core::event::compute_sensor_tamper_status(
+        std::iter::empty(),
+        Some(&request.decision.event.evidence),
+    );
+    let physical_state = if tamper_status.has_open_tamper() {
+        match request.decision.event.state {
+            EventState::Indeterminate => KnowledgeState::Indeterminate,
+            _ => KnowledgeState::Unknown,
+        }
+    } else {
+        physical_knowledge_state(request.decision.event.state, &supporting, &contradicting)
+    };
     knowledge_cells.push(
         KnowledgeCell {
             claim_id: physical_claim_id.clone(),
@@ -1808,11 +1818,8 @@ pub(crate) fn sensor_integrity_claim_id(event_name: &str) -> String {
 
 /// Digests of the retained edges that report a sensor-integrity risk.
 pub(crate) fn sensor_tamper_roots(evidence: &[fss_core::EventEvidence]) -> Vec<ContentDigest> {
-    evidence
-        .iter()
-        .filter(|edge| edge.reports_sensor_tamper())
-        .map(|edge| edge.digest)
-        .collect()
+    let status = fss_core::event::compute_sensor_tamper_status(std::iter::empty(), Some(evidence));
+    status.open_tamper_roots
 }
 
 /// Compiles the sensor-integrity cell when retained evidence reports sensor tamper.
@@ -1821,29 +1828,49 @@ pub(crate) fn sensor_tamper_roots(evidence: &[fss_core::EventEvidence]) -> Vec<C
 /// against the integrity of the sensing the event rests on. The integrity claim therefore carries
 /// the tamper roots as contradictions with no supporting root: `unknown` and disfavored, never
 /// established. A new or changed tamper root is therefore a contradiction delta, which is never
-/// coalesced; a cleared one retires the tamper world and is reported as a material change.
+/// coalesced; an explicit, evidenced restoration retires the tamper risk, establishing `Known`
+/// with restoration evidence roots.
 pub(crate) fn sensor_integrity_cell(
     event_name: &str,
     evidence: &[fss_core::EventEvidence],
 ) -> Result<Option<KnowledgeCell>, ReferenceError> {
-    let tamper = sensor_tamper_roots(evidence);
-    if tamper.is_empty() {
-        return Ok(None);
+    let status = fss_core::event::compute_sensor_tamper_status(std::iter::empty(), Some(evidence));
+    let restorations = status.restoration_roots();
+    let tamper = status.open_tamper_roots;
+
+    if !tamper.is_empty() {
+        Ok(Some(
+            KnowledgeCell {
+                claim_id: sensor_integrity_claim_id(event_name),
+                statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
+                knowledge_state: KnowledgeState::Unknown,
+                provenance: ProvenanceClass::Derived,
+                hypothesis: Some(HypothesisDisposition::Disfavored),
+                evidence: Vec::new(),
+                contradictions: tamper,
+                valid_until: None,
+                state_basis: None,
+            }
+            .validated()?,
+        ))
+    } else if !restorations.is_empty() {
+        Ok(Some(
+            KnowledgeCell {
+                claim_id: sensor_integrity_claim_id(event_name),
+                statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
+                knowledge_state: KnowledgeState::Known,
+                provenance: ProvenanceClass::Derived,
+                hypothesis: Some(HypothesisDisposition::Supported),
+                evidence: restorations,
+                contradictions: Vec::new(),
+                valid_until: None,
+                state_basis: None,
+            }
+            .validated()?,
+        ))
+    } else {
+        Ok(None)
     }
-    Ok(Some(
-        KnowledgeCell {
-            claim_id: sensor_integrity_claim_id(event_name),
-            statement: "Every sensor contributing to this event retains integrity: no tamper, replay, cover, dazzle, or disconnect is indicated.".to_owned(),
-            knowledge_state: KnowledgeState::Unknown,
-            provenance: ProvenanceClass::Derived,
-            hypothesis: Some(HypothesisDisposition::Disfavored),
-            evidence: Vec::new(),
-            contradictions: tamper,
-            valid_until: None,
-            state_basis: None,
-        }
-        .validated()?,
-    ))
 }
 
 pub(crate) fn physical_statement(state: EventState) -> &'static str {

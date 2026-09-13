@@ -326,6 +326,11 @@
       "plane": "cognition",
       "description": "Cross-sensor corroboration analysis and evidence overlap"
     },
+    "SensorTamperStatus": {
+      "file": "crates/fss-core/src/event.rs",
+      "plane": "cognition",
+      "description": "Accumulated active and retired sensor-tamper risk status across event revisions"
+    },
     "EventSupersedeParams": {
       "file": "crates/fss-core/src/event.rs",
       "plane": "cognition",

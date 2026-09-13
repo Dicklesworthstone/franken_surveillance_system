@@ -885,10 +885,15 @@ fn contradiction_changed(
         return true;
     }
     basis.iter().any(|prior| {
-        result
+        let had_contradiction =
+            prior.knowledge_state == KnowledgeState::Conflicted || !prior.contradictions.is_empty();
+        match result
             .iter()
             .find(|current| current.claim_id == prior.claim_id)
-            .is_some_and(|current| prior.contradictions != current.contradictions)
+        {
+            Some(current) => prior.contradictions != current.contradictions,
+            None => had_contradiction,
+        }
     })
 }
 

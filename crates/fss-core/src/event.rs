@@ -850,6 +850,107 @@ const fn sensor_tamper_vetoes(state: EventState) -> bool {
     }
 }
 
+/// Tracks active and retired sensor-tamper risks across revisions.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct SensorTamperStatus {
+    /// Failure domains with unretired sensor-tamper reports.
+    pub open_domains: BTreeSet<String>,
+    /// Retained evidence root digests of unretired sensor-tamper reports.
+    pub open_tamper_roots: Vec<ContentDigest>,
+    /// Evidenced restorations: (failure_domain, restoration_digest).
+    pub restorations: Vec<(String, ContentDigest)>,
+    /// Open tamper reports: (failure_domain, tamper_digest).
+    pub open_tamper_reports: Vec<(String, ContentDigest)>,
+}
+
+impl SensorTamperStatus {
+    /// Returns true if any sensor-tamper risk remains unretired.
+    #[must_use]
+    pub fn has_open_tamper(&self) -> bool {
+        !self.open_domains.is_empty() || !self.open_tamper_roots.is_empty()
+    }
+
+    /// Returns unretired tamper evidence root digests.
+    #[must_use]
+    pub fn open_roots(&self) -> &[ContentDigest] {
+        &self.open_tamper_roots
+    }
+
+    /// Returns evidenced restoration digests.
+    #[must_use]
+    pub fn restoration_roots(&self) -> Vec<ContentDigest> {
+        self.restorations.iter().map(|(_, d)| *d).collect()
+    }
+}
+
+/// Accumulates sensor-tamper status across an ordered sequence of event revisions and/or evidence edges.
+pub fn compute_sensor_tamper_status<'a>(
+    history: impl IntoIterator<Item = &'a EventHypothesis>,
+    current_evidence: Option<&'a [EventEvidence]>,
+) -> SensorTamperStatus {
+    let mut status = SensorTamperStatus::default();
+
+    for rev in history {
+        apply_evidence_to_tamper_status(&mut status, &rev.evidence);
+    }
+
+    if let Some(evidence) = current_evidence {
+        apply_evidence_to_tamper_status(&mut status, evidence);
+    }
+
+    status
+}
+
+pub(crate) fn apply_evidence_to_tamper_status(
+    status: &mut SensorTamperStatus,
+    evidence: &[EventEvidence],
+) {
+    for edge in evidence {
+        if edge.reports_sensor_tamper()
+            && !status
+                .open_tamper_reports
+                .iter()
+                .any(|(d, dig)| d == &edge.failure_domain && dig == &edge.digest)
+        {
+            status
+                .open_tamper_reports
+                .push((edge.failure_domain.clone(), edge.digest));
+        }
+    }
+    for edge in evidence {
+        if edge.reports_integrity_restoration() {
+            if edge.failure_domain.is_empty() {
+                status.open_tamper_reports.clear();
+            } else {
+                status
+                    .open_tamper_reports
+                    .retain(|(d, _)| d != &edge.failure_domain);
+            }
+            if !status
+                .restorations
+                .iter()
+                .any(|(d, dig)| d == &edge.failure_domain && dig == &edge.digest)
+            {
+                status
+                    .restorations
+                    .push((edge.failure_domain.clone(), edge.digest));
+            }
+        }
+    }
+    status.open_domains = status
+        .open_tamper_reports
+        .iter()
+        .map(|(d, _)| d.clone())
+        .collect();
+    let mut roots = Vec::new();
+    for (_, dig) in &status.open_tamper_reports {
+        if !roots.contains(dig) {
+            roots.push(*dig);
+        }
+    }
+    status.open_tamper_roots = roots;
+}
+
 /// Semantic relationship of an evidence graph edge.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[repr(u8)]
@@ -873,6 +974,8 @@ pub enum EvidenceEdgeRelation {
     /// Edge reports a sensor-integrity risk (tamper, replay, cover, dazzle, or disconnect) for
     /// the evidence source; it neither supports nor contradicts the event itself.
     SensorTamper = 9,
+    /// Edge reports explicit, evidenced restoration of sensor integrity retiring prior tamper.
+    SensorIntegrityRestoration = 10,
 }
 
 impl EvidenceEdgeRelation {
@@ -889,6 +992,7 @@ impl EvidenceEdgeRelation {
             Self::RequiredBy => "required_by",
             Self::Explains => "explains",
             Self::SensorTamper => "sensor_tamper",
+            Self::SensorIntegrityRestoration => "sensor_integrity_restoration",
         }
     }
 
@@ -904,6 +1008,7 @@ impl EvidenceEdgeRelation {
             "required_by" => Ok(Self::RequiredBy),
             "explains" => Ok(Self::Explains),
             "sensor_tamper" => Ok(Self::SensorTamper),
+            "sensor_integrity_restoration" => Ok(Self::SensorIntegrityRestoration),
             _ => Err(EventDecodeError::NonCanonicalEncoding {
                 detail: format!("unknown evidence edge relation '{s}'"),
             }),
@@ -915,9 +1020,10 @@ impl EvidenceEdgeRelation {
     /// Only `Supports` counts as support for the event and only `Contradicts` counts against it.
     /// Every other relation records lineage, revision, ordering, dependency, invalidation, or
     /// explanation structure, or (`SensorTamper`) a sensor-integrity risk about the evidence
-    /// source, and carries no evidential direction for the event, so it must be `supports=false`
-    /// and counts as neither support nor contradiction. The match is exhaustive with no wildcard:
-    /// a new relation must choose its evidential direction here.
+    /// source, or (`SensorIntegrityRestoration`) an evidenced retirement of that risk, and carries
+    /// no evidential direction for the event, so it must be `supports=false` and counts as neither
+    /// support nor contradiction. The match is exhaustive with no wildcard: a new relation must
+    /// choose its evidential direction here.
     #[must_use]
     pub const fn required_supports_flag(self) -> bool {
         match self {
@@ -929,7 +1035,8 @@ impl EvidenceEdgeRelation {
             | Self::ObservedAfter
             | Self::RequiredBy
             | Self::Explains
-            | Self::SensorTamper => false,
+            | Self::SensorTamper
+            | Self::SensorIntegrityRestoration => false,
         }
     }
 
@@ -951,6 +1058,7 @@ impl EvidenceEdgeRelation {
             7 => Ok(Self::RequiredBy),
             8 => Ok(Self::Explains),
             9 => Ok(Self::SensorTamper),
+            10 => Ok(Self::SensorIntegrityRestoration),
             _ => Err(EventDecodeError::NonCanonicalEncoding {
                 detail: format!("unknown evidence edge relation tag {v}"),
             }),
@@ -1442,6 +1550,13 @@ impl EventEvidence {
     pub fn reports_sensor_tamper(&self) -> bool {
         !self.supports && self.relation == EvidenceEdgeRelation::SensorTamper
     }
+
+    /// Returns true only for an edge that reports an explicit, evidenced sensor-integrity restoration:
+    /// a `SensorIntegrityRestoration` relation carrying `supports=false`.
+    #[must_use]
+    pub fn reports_integrity_restoration(&self) -> bool {
+        !self.supports && self.relation == EvidenceEdgeRelation::SensorIntegrityRestoration
+    }
 }
 
 impl CanonicalEncode for EventEvidence {
@@ -1863,6 +1978,23 @@ impl EventHypothesis {
                 ),
             });
         }
+        let tamper_status =
+            compute_sensor_tamper_status(std::iter::once(self), Some(&params.evidence));
+        if sensor_tamper_vetoes(params.state) && tamper_status.has_open_tamper() {
+            return Err(EventDecodeError::Contract(
+                ContractError::SensorIntegrityRisk,
+            ));
+        }
+
+        let mut final_evidence = params.evidence;
+        for edge in &self.evidence {
+            if edge.reports_sensor_tamper()
+                && tamper_status.open_domains.contains(&edge.failure_domain)
+                && !final_evidence.iter().any(|e| e.digest == edge.digest)
+            {
+                final_evidence.push(edge.clone());
+            }
+        }
         let rev = Self {
             schema: Self::SCHEMA.to_string(),
             event_id: self.event_id.clone(),
@@ -1883,7 +2015,7 @@ impl EventHypothesis {
             zone_ids: params.zone_ids,
             track_ids: params.track_ids,
             probability: params.probability,
-            evidence: params.evidence,
+            evidence: final_evidence,
             model_receipts: params.model_receipts,
             decision_path: params.decision_path,
         };
@@ -1902,8 +2034,15 @@ impl EventHypothesis {
         let event_id = &chain[0].event_id;
         let mut prior_digest: Option<ContentDigest> = None;
         let mut prior_rev: Option<&EventHypothesis> = None;
+        let mut tamper_status = SensorTamperStatus::default();
         for (i, rev) in chain.iter().enumerate() {
             rev.verify()?;
+            apply_evidence_to_tamper_status(&mut tamper_status, &rev.evidence);
+            if sensor_tamper_vetoes(rev.state) && tamper_status.has_open_tamper() {
+                return Err(EventDecodeError::Contract(
+                    ContractError::SensorIntegrityRisk,
+                ));
+            }
             if &rev.event_id != event_id {
                 return Err(EventDecodeError::Contradiction {
                     field: "chain.eventId",
@@ -3096,6 +3235,24 @@ impl EventLineage {
         self.current().revision
     }
 
+    /// Returns the accumulated sensor tamper status across this lineage.
+    #[must_use]
+    pub fn sensor_tamper_status(&self) -> SensorTamperStatus {
+        compute_sensor_tamper_status(self.chain.iter(), None)
+    }
+
+    /// Returns true if any unretired sensor-tamper risk exists in this lineage.
+    #[must_use]
+    pub fn has_open_sensor_tamper(&self) -> bool {
+        self.sensor_tamper_status().has_open_tamper()
+    }
+
+    /// Returns the failure domains with unretired sensor-tamper reports.
+    #[must_use]
+    pub fn open_sensor_tamper_domains(&self) -> BTreeSet<String> {
+        self.sensor_tamper_status().open_domains
+    }
+
     /// Returns the highest canonical progression state reached so far in the lineage.
     #[must_use]
     pub fn highest_canonical_state(&self) -> Option<EventState> {
@@ -3257,14 +3414,23 @@ impl EventLineage {
         }
 
         // Tampered sensing never establishes or acts on presence: refused before the revision is
-        // built, with a typed transition error.
-        if sensor_tamper_vetoes(params.target_state)
-            && params
-                .evidence
-                .iter()
-                .any(EventEvidence::reports_sensor_tamper)
-        {
+        // built, with a typed transition error. Tamper status is sticky across the lineage:
+        // open tamper risks persist until an explicit, evidenced integrity restoration retires them.
+        let tamper_status = compute_sensor_tamper_status(self.chain.iter(), Some(&params.evidence));
+        if sensor_tamper_vetoes(params.target_state) && tamper_status.has_open_tamper() {
             return Err(EventTransitionError::SensorIntegrityRisk);
+        }
+
+        let mut final_evidence = params.evidence;
+        for prior_edge in self.chain.iter().flat_map(|r| r.evidence.iter()) {
+            if prior_edge.reports_sensor_tamper()
+                && tamper_status
+                    .open_domains
+                    .contains(&prior_edge.failure_domain)
+                && !final_evidence.iter().any(|e| e.digest == prior_edge.digest)
+            {
+                final_evidence.push(prior_edge.clone());
+            }
         }
 
         let next_revision =
@@ -3289,7 +3455,7 @@ impl EventLineage {
             zone_ids: params.zone_ids,
             track_ids: params.track_ids,
             probability: params.probability,
-            evidence: params.evidence,
+            evidence: final_evidence,
             model_receipts: params.model_receipts,
             decision_path: params.decision_path,
         };
@@ -3386,12 +3552,10 @@ impl EventLineage {
             }
         }
         // Replay refuses a tamper-vetoed revision with the same typed error as a transition.
-        if sensor_tamper_vetoes(rev.state)
-            && rev
-                .evidence
-                .iter()
-                .any(EventEvidence::reports_sensor_tamper)
-        {
+        // Tamper status is sticky across the lineage: open tamper risks persist until an
+        // explicit, evidenced integrity restoration retires them.
+        let tamper_status = compute_sensor_tamper_status(self.chain.iter(), Some(&rev.evidence));
+        if sensor_tamper_vetoes(rev.state) && tamper_status.has_open_tamper() {
             return Err(EventTransitionError::SensorIntegrityRisk);
         }
         rev.verify()?;

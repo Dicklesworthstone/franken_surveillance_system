@@ -147,6 +147,13 @@ pub fn evaluate_unknown_presence(
                 unresolved += 1;
                 EvidenceEdgeRelation::SensorTamper
             }
+            // Evidenced restoration of sensor integrity retires prior tamper.
+            MockModelOutcome::Finding {
+                label: MockSemanticLabel::IntegrityRestored,
+                ..
+            } => {
+                EvidenceEdgeRelation::SensorIntegrityRestoration
+            }
             // Unknown and abstention say nothing about presence: a neutral derivation edge that
             // holds the event unresolved without contradicting it.
             MockModelOutcome::Finding {
