@@ -2,101 +2,190 @@
   "asOf": "2026-09-12",
   "capabilities": [
     {
-      "description": "Declared agent operating capability",
+      "capability": "request cancellation/drain/reconciliation of owned work",
+      "defaultRole": "owner or delegated supervisor",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-CANCEL-001 authority on session/task/plan/obligation",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-CANCEL-001",
-      "name": "cap_agent_cancel_001",
-      "plane": "lifecycle effect"
+      "plane": "lifecycle effect",
+      "safeAlternative": "request task owner or supervisor to initiate drain/cancel transition",
+      "scope": "session/task/plan/obligation"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "create/revise investigations, hypotheses, probes, and findings",
+      "defaultRole": "explicit mission role",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-CASE-WRITE-001 authority on mission/case scope",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-CASE-WRITE-001",
-      "name": "cap_agent_case_write_001",
-      "plane": "agent cognition"
+      "plane": "agent cognition",
+      "safeAlternative": "request mission investigation role or record local hypotheses",
+      "scope": "mission/case scope"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "read minimal evidence/decision subgraphs and counterfactuals",
+      "defaultRole": "agent read role",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-EXPLAIN-001 authority on authorized decision/evidence domain",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-EXPLAIN-001",
-      "name": "cap_agent_explain_001",
-      "plane": "cognition read"
+      "plane": "cognition read",
+      "safeAlternative": "request explanation access role or query top-level outcome summary",
+      "scope": "authorized decision/evidence domain"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "append correction, adjudication, outcome, or learning proposal",
+      "defaultRole": "scoped agent/operator role",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-FEEDBACK-001 authority on episode/event/case",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-FEEDBACK-001",
-      "name": "cap_agent_feedback_001",
-      "plane": "advisory write"
+      "plane": "advisory write",
+      "safeAlternative": "request feedback role or submit offline evaluation report",
+      "scope": "episode/event/case"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "publish a redacted root-last handoff capsule",
+      "defaultRole": "explicit delegation",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-HANDOFF-WRITE-001 authority on mission/workspace + recipient scope",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-HANDOFF-WRITE-001",
-      "name": "cap_agent_handoff_write_001",
-      "plane": "agent continuity write"
+      "plane": "agent continuity write",
+      "safeAlternative": "request handoff delegation authorization or retain session locally",
+      "scope": "mission/workspace + recipient scope"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "submit an exact prepared plan to domain effect authorities",
+      "defaultRole": "denied unless explicit; never substitutes for domain effect capabilities",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-PLAN-COMMIT-001 authority on plan digest + fences",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-PLAN-COMMIT-001",
-      "name": "cap_agent_plan_commit_001",
-      "plane": "effect orchestration"
+      "plane": "effect orchestration",
+      "safeAlternative": "submit prepared plan to human supervisor for manual approval and domain dispatch",
+      "scope": "plan digest + fences"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "compile and seal a witnessed contingent plan",
+      "defaultRole": "explicit planner role",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-PLAN-PREPARE-001 authority on mission + objective + target domain",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-PLAN-PREPARE-001",
-      "name": "cap_agent_plan_prepare_001",
-      "plane": "cognition/prepare"
+      "plane": "cognition/prepare",
+      "safeAlternative": "request planner role or inspect established affordance frontier",
+      "scope": "mission + objective + target domain"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "compile and execute bounded semantic queries",
+      "defaultRole": "agent read role",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-QUERY-001 authority on authorized resources + anchor",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-QUERY-001",
-      "name": "cap_agent_query_001",
-      "plane": "cognition read"
+      "plane": "cognition read",
+      "safeAlternative": "request agent query role or query standard pre-aggregated views",
+      "scope": "authorized resources + anchor"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "open a mission-scoped agent session",
+      "defaultRole": "denied unless negotiated",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SESSION-OPEN-001 authority on deployment + mission + principal",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-SESSION-OPEN-001",
-      "name": "cap_agent_session_open_001",
-      "plane": "agent control"
+      "plane": "agent control",
+      "safeAlternative": "authenticate principal credentials and negotiate session contract basis",
+      "scope": "deployment + mission + principal"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "read/resume exact workspace or handoff revisions",
+      "defaultRole": "session principal",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SESSION-READ-001 authority on mission/session/workspace root",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-SESSION-READ-001",
-      "name": "cap_agent_session_read_001",
-      "plane": "agent control"
+      "plane": "agent control",
+      "safeAlternative": "authenticate as session principal or request delegated continuation",
+      "scope": "mission/session/workspace root"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "read capability-projected SituationFrames, deltas, and obligations",
+      "defaultRole": "agent read role",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-AGENT-SITUATION-READ-001 authority on deployment/mission/zone/time",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-AGENT-SITUATION-READ-001",
-      "name": "cap_agent_situation_read_001",
-      "plane": "cognition read"
+      "plane": "cognition read",
+      "safeAlternative": "request agent read role or query minimal public SituationCapsule",
+      "scope": "deployment/mission/zone/time"
     },
     {
-      "description": "Declared agent operating capability",
+      "capability": "generate sealed repair plan",
+      "defaultRole": "operator",
+      "denialReason": "ERR-AUTH-DENIED-001: principal lacks CAP-REPAIR-PREPARE-001 authority on subsystem/object scope",
+      "generation": "gen:fss1:capabilities-v1",
       "id": "CAP-REPAIR-PREPARE-001",
-      "name": "cap_repair_prepare_001",
-      "plane": "authority read"
+      "plane": "authority read",
+      "safeAlternative": "request operator repair inspection role or run read-only diagnostics",
+      "scope": "subsystem/object scope"
     }
   ],
   "discovery": {
     "capabilities": {
       "cli": "fss capabilities --json",
-      "description": "Report all supported device, model, and agent capabilities in typed JSON"
+      "description": "Report capabilities in JSON format."
     },
-    "operations": {
-      "cli": "fss operations --json",
-      "description": "Report all registered fss/1 operations with request/response schemas and crosswalk targets"
+    "doctor": {
+      "cli": "fss doctor --json",
+      "description": "Report system diagnostic doctor results in JSON format."
     },
-    "robot_docs": {
-      "cli": "fss robot-docs guide",
-      "description": "Output complete self-describing robot documentation for autonomous agent drivers"
+    "negative_evidence": {
+      "cli": "fss negative-evidence list --json",
+      "description": "Negative evidence ledger management."
     },
-    "schemas": {
-      "cli": "fss schema list --json",
-      "description": "List all authoritative schema identifiers, files, and compatibility rules"
-    },
-    "views": {
-      "cli": "fss views --json",
-      "description": "Report all registered agent views with token budgets and required section keys"
+    "status": {
+      "cli": "fss status --json",
+      "description": "Report system status in JSON format."
     }
   },
   "errors": [
+    {
+      "description": "device adapter registry file is corrupt or missing mandatory fields",
+      "guidance": "repair or restore device adapter registry file",
+      "id": "ERR-ADAPTER-CORRUPT-FILE-001"
+    },
+    {
+      "description": "device adapter canonical freeze digest does not match pinned generation digest",
+      "guidance": "recompute canonical device adapter registry digest or bump generation",
+      "id": "ERR-ADAPTER-DIGEST-MISMATCH-001"
+    },
+    {
+      "description": "adapter generation does not match current system generation",
+      "guidance": "fail closed; assign expected generation to device adapter registry",
+      "id": "ERR-ADAPTER-GENERATION-MISMATCH-001"
+    },
+    {
+      "description": "adapter tier is invalid or violates promotion rules",
+      "guidance": "fail closed; reject unsupported tier",
+      "id": "ERR-ADAPTER-INVALID-TIER-001"
+    },
+    {
+      "description": "adapter response violates typed protocol",
+      "guidance": "terminate adapter generation; retain fixture",
+      "id": "ERR-ADAPTER-PROTOCOL-001"
+    },
+    {
+      "description": "adapter registry row drift between machine registry and markdown",
+      "guidance": "synchronize architecture/device_adapters.json and registries/DEVICE_ADAPTERS.md",
+      "id": "ERR-ADAPTER-REGISTRY-DRIFT-001"
+    },
+    {
+      "description": "deterministic replay adapter produced state root or audit hash diverging from reference proof",
+      "guidance": "fail closed; reject diverged replay output and quarantine bundle",
+      "id": "ERR-ADAPTER-REPLAY-DIVERGED-001"
+    },
+    {
+      "description": "adapter row violates semantic invariants (tier, state, gate)",
+      "guidance": "fail closed; enforce normative row definitions",
+      "id": "ERR-ADAPTER-SEMANTIC-INVARIANT-001"
+    },
+    {
+      "description": "adapter stable identifier was reused, renumbered, or resurrected",
+      "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
+      "id": "ERR-ADAPTER-STABLE-ID-REUSED-001"
+    },
     {
       "description": "recommended next move lost a precondition, capability, lease, or validity interval",
       "guidance": "refresh/replan; never execute cached recommendation",
@@ -121,6 +210,11 @@
       "description": "handoff root is incomplete, expired, unauthorized, schema/generation-incompatible, or cannot be safely rebased",
       "guidance": "reject, migrate, or open a new session with an explicit invalidation report; never silently resume",
       "id": "ERR-AGENT-HANDOFF-INVALID-001"
+    },
+    {
+      "description": "required mission state exists only in conversation or caller memory",
+      "guidance": "persist typed mission/workspace/case/plan/finding/handoff state before proceeding",
+      "id": "ERR-AGENT-HIDDEN-STATE-001"
     },
     {
       "description": "learning proposal lacks evidence, applicability, counterexamples, or validation path",
@@ -153,9 +247,74 @@
       "id": "ERR-AGENT-SESSION-STALE-001"
     },
     {
+      "description": "CLI/MCP/TUI/report semantic payload or digest differs for equivalent input",
+      "guidance": "block affected surface/release and retain differential transcript",
+      "id": "ERR-AGENT-TRANSPORT-DIVERGED-001"
+    },
+    {
       "description": "requested multi-agent work scope overlaps an incompatible live claim, lease, or fence",
       "guidance": "narrow, wait, delegate, release, or supersede with explicit authority; never last-writer-wins",
       "id": "ERR-AGENT-WORK-CLAIM-CONFLICT-001"
+    },
+    {
+      "description": "agent abstraction registry or markdown documentation file is missing or corrupt",
+      "guidance": "repair or restore agent abstraction registry file",
+      "id": "ERR-AGT-CORRUPT-FILE-001"
+    },
+    {
+      "description": "agent abstraction registry digest does not match canonical encoding of metadata and rows",
+      "guidance": "recompute canonical agent abstraction registry digest",
+      "id": "ERR-AGT-DIGEST-MISMATCH-001"
+    },
+    {
+      "description": "agent abstraction registry digest diverged from pinned baseline freeze digest",
+      "guidance": "restore frozen agent abstraction registry or bump generation",
+      "id": "ERR-AGT-FREEZE-DIVERGENCE-001"
+    },
+    {
+      "description": "agent abstraction registry generation diverged from baseline generation",
+      "guidance": "assign expected generation to agent abstraction registry",
+      "id": "ERR-AGT-GENERATION-MISMATCH-001"
+    },
+    {
+      "description": "derived beliefs or non-authority abstraction layer illegally claims authority or authorizes effects",
+      "guidance": "preserve cognition plane boundary; derived layers cannot claim authority or authorize effects",
+      "id": "ERR-AGT-ILLEGAL-AUTHORITY-001"
+    },
+    {
+      "description": "agent abstraction layer invariant or prohibition violated",
+      "guidance": "enforce layer semantic invariants and constitutional prohibitions",
+      "id": "ERR-AGT-INVARIANT-VIOLATION-001"
+    },
+    {
+      "description": "agent abstraction layer row or root metadata lacks a mandatory field or is empty/corrupt",
+      "guidance": "declare all mandatory fields in agent abstraction layer row",
+      "id": "ERR-AGT-MISSING-FIELD-001"
+    },
+    {
+      "description": "agent abstraction registry row drift between machine registry and markdown mirror",
+      "guidance": "synchronize architecture/agent_abstraction_stack.json and registries/AGENT_ABSTRACTIONS.md",
+      "id": "ERR-AGT-REGISTRY-DRIFT-001"
+    },
+    {
+      "description": "agent abstraction layer stable identifier was reused, duplicated, renumbered, or tombstoned",
+      "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
+      "id": "ERR-AGT-STABLE-ID-REUSED-001"
+    },
+    {
+      "description": "remote archive unavailable",
+      "guidance": "local spool obligation; bounded retry",
+      "id": "ERR-ARCHIVE-UNREACHABLE-001"
+    },
+    {
+      "description": "published object failed retrieval/integrity check",
+      "guidance": "quarantine/repair/escalate",
+      "id": "ERR-ARCHIVE-VERIFY-001"
+    },
+    {
+      "description": "arithmetic overflow in timestamp or uncertainty calculation",
+      "guidance": "bound timestamp values within addressable range",
+      "id": "ERR-ARITHMETIC-OVERFLOW-001"
     },
     {
       "description": "principal lacks exact capability",
@@ -168,14 +327,399 @@
       "id": "ERR-BUDGET-EXHAUSTED-001"
     },
     {
+      "description": "certificate expired/invalidated/residual failure",
+      "guidance": "no geometry-dependent negative evidence",
+      "id": "ERR-CALIBRATION-INVALID-001"
+    },
+    {
+      "description": "capability registry or markdown documentation file is missing or corrupt",
+      "guidance": "repair or restore capability registry file",
+      "id": "ERR-CAPABILITY-CORRUPT-FILE-001"
+    },
+    {
+      "description": "capability registry digest does not match canonical encoding of sorted rows",
+      "guidance": "recompute canonical capability registry digest",
+      "id": "ERR-CAPABILITY-DIGEST-MISMATCH-001"
+    },
+    {
+      "description": "capability row lacks a default role or default grant policy",
+      "guidance": "declare an explicit default role or default denial in the capability row",
+      "id": "ERR-CAPABILITY-MISSING-DEFAULT-001"
+    },
+    {
+      "description": "capability registry row drift between architecture JSON and markdown",
+      "guidance": "synchronize architecture/capabilities.json and registries/CAPABILITIES.md",
+      "id": "ERR-CAPABILITY-REGISTRY-DRIFT-001"
+    },
+    {
+      "description": "capability stable identifier was reused or renumbered for a different entity",
+      "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
+      "id": "ERR-CAPABILITY-STABLE-ID-REUSED-001"
+    },
+    {
+      "description": "capability specifies an unknown or unregistered semantic plane",
+      "guidance": "assign a recognized semantic plane to the capability row",
+      "id": "ERR-CAPABILITY-UNKNOWN-PLANE-001"
+    },
+    {
+      "description": "promoted proof or bounded_model claim declares no assumptions, or an assumption lacks a non-empty id and statement",
+      "guidance": "declare every named assumption before promotion; no retry without them",
+      "id": "ERR-CLAIM-ASSUMPTIONS-MISSING-001"
+    },
+    {
+      "description": "bounded_model derivation records no usable inputs or arithmetic formula, the formula is not its expression right-hand side, or it does not recompute the derived value",
+      "guidance": "record every input with value and units and the exact arithmetic yielding the derived value",
+      "id": "ERR-CLAIM-BOUND-DERIVATION-NOT-RECOMPUTABLE-001"
+    },
+    {
+      "description": "bounded_model claim derivation is missing, not on disk, digest-unbound, malformed, stepless, or not bound to the claim id and generation",
+      "guidance": "retain the fss.bound_derivation.v1 derivation bound to the claim before promotion",
+      "id": "ERR-CLAIM-BOUND-DERIVATION-UNBOUND-001"
+    },
+    {
+      "description": "bounded_model derivation formula is dimensionally inconsistent (+ or - of different units, or propagated units differ from the derivation units)",
+      "guidance": "correct the formula or input units; units are never converted implicitly",
+      "id": "ERR-CLAIM-BOUND-DIMENSION-MISMATCH-001"
+    },
+    {
+      "description": "bounded_model claim bound expression, comparator, or value is missing, non-finite, bound to another claim, or differs from the derivation",
+      "guidance": "bind the exact derived bound expression to the claim",
+      "id": "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001"
+    },
+    {
+      "description": "bounded_model derivation declares no sensitivity analysis or no invalidators",
+      "guidance": "retain sensitivity analysis and invalidators with the derivation",
+      "id": "ERR-CLAIM-BOUND-SENSITIVITY-MISSING-001"
+    },
+    {
+      "description": "bounded_model claimed bound is tighter than the analytically derived bound",
+      "guidance": "claim at most the derived bound or retain a derivation supporting the tighter one",
+      "id": "ERR-CLAIM-BOUND-TIGHTER-THAN-DERIVATION-001"
+    },
+    {
+      "description": "bounded_model claim bound or derivation declares no units, or the claimed units differ from the derivation units",
+      "guidance": "declare identical explicit units in claim and derivation; never convert implicitly",
+      "id": "ERR-CLAIM-BOUND-UNITS-MISSING-001"
+    },
+    {
+      "description": "bounded_model claimed, derived, or input value lies outside its registered unit domain (negative, above 100 percent, above 1 auprc)",
+      "guidance": "correct the value or its unit",
+      "id": "ERR-CLAIM-BOUND-VALUE-OUT-OF-DOMAIN-001"
+    },
+    {
+      "description": "promoted claim of a class the checker does not realize with evidence inspection (only slo, proof, bounded_model are realized)",
+      "guidance": "realize the class row or keep the claim unpromoted",
+      "id": "ERR-CLAIM-CLASS-EVIDENCE-UNINSPECTED-001"
+    },
+    {
+      "description": "a registry binding claim ids to classes (architecture/invariants.json) declares an inexact id or one id more than once",
+      "guidance": "give every stable id exactly one row",
+      "id": "ERR-CLAIM-CLASS-REGISTRY-INVALID-001"
+    },
+    {
+      "description": "a promoted proof bundle's claim id is bound to a claim class by no registry (SLO ids by registries/SLOS.md, invariant ids by architecture/invariants.json); a row Class column or the bundle never resolves it",
+      "guidance": "bind the claim id in its owning registry; no retry until one does",
+      "id": "ERR-CLAIM-CLASS-UNRESOLVED-001"
+    },
+    {
+      "description": "a JSON document the claim checker reads (proof bundle, qualification receipt, retained evidence document, or registry, including every architecture/*.json the stable-ID tombstone index reads, which leaves the index unavailable) declares the same key twice in one object, at any nesting level; with a plain parser the last value would silently win",
+      "guidance": "declare every key once; a document that says two things is never read as one of them",
+      "id": "ERR-CLAIM-EVIDENCE-DUPLICATE-KEY-001"
+    },
+    {
+      "description": "an evidence document the claim checker reads declares a key outside its exact field set: the proof bundle, an artifact entry, an assumption, the theorem, the toolchain identity, the formal model reference, manifest, or model source, the proof check receipt, the bound, the derivation, a derivation input, a sensitivity entry, an slo measurement, or its measurement_window; or a qualification receipt declares a case, whitespace, or format-character variant of a field the checker relies on. Keys are compared byte for byte (no case folding, stripping, or normalization)",
+      "guidance": "remove the key or spell it exactly as the document's field set names it; unknown fields are never ignored",
+      "id": "ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001"
+    },
+    {
+      "description": "promoted proof or bounded_model claim is cited by no claim row declaring its current generation (Generation column), or its citing rows conflict",
+      "guidance": "declare the claim row's current generation and bind the bundle to exactly it",
+      "id": "ERR-CLAIM-GENERATION-UNBOUND-001"
+    },
+    {
+      "description": "a proof bundle's schema is missing or not exactly `fss.proof_bundle.v1`, or its bundle_id is present but not an exact token",
+      "guidance": "declare the schema byte for byte and, when present, a bundle_id of printable ASCII with no whitespace",
+      "id": "ERR-CLAIM-PROOF-BUNDLE-SCHEMA-INVALID-001"
+    },
+    {
+      "description": "proof check receipt is missing, malformed, non-passing, or not bound to the claim, formal model, and formal artifact digest",
+      "guidance": "re-run the formal checker and retain a passing bound receipt",
+      "id": "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001"
+    },
+    {
+      "description": "proof claim formal artifact is absent, not on disk, empty, digest-unbound, or not written in the declared checker language",
+      "guidance": "retain the exact checked formal artifact before promotion",
+      "id": "ERR-CLAIM-PROOF-FORMAL-ARTIFACT-MISSING-001"
+    },
+    {
+      "description": "proof claim declares no formal model, or its retained fss.formal_model.v1 manifest or source is missing, unreadable, digest-unbound, or not bound to the claim id",
+      "guidance": "retain the declared formal model bound to the claim id before promotion",
+      "id": "ERR-CLAIM-PROOF-FORMAL-MODEL-UNBOUND-001"
+    },
+    {
+      "description": "proof claim formal model generation differs from the claim generation, the declared model reference, or the check receipt",
+      "guidance": "re-check the proof at the claim generation; never splice generations",
+      "id": "ERR-CLAIM-PROOF-MODEL-GENERATION-MISMATCH-001"
+    },
+    {
+      "description": "promoted proof bundle passed the static pre-filter, but a proof is verified only by a qualification receipt from running the prover, and no such receipt mechanism is defined yet",
+      "guidance": "a user decision: define the prover-run receipt; until then no proof claim is verified",
+      "id": "ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001"
+    },
+    {
+      "description": "proof bundle references a stale, superseded, tombstoned, expired, or latest-aliased generation, or a generation other than its claim row's current one",
+      "guidance": "re-qualify at the current generation; never splice generations",
+      "id": "ERR-CLAIM-PROOF-STALE-GENERATION-001"
+    },
+    {
+      "description": "proof claim is backed only by tests (test-runner toolchain, test source, or test results) instead of a formal artifact",
+      "guidance": "demote the claim or supply a machine-checked formal proof",
+      "id": "ERR-CLAIM-PROOF-TESTS-ONLY-001"
+    },
+    {
+      "description": "proof claim theorem statement is missing, bound to another claim, or differs from the statement the check receipt checked",
+      "guidance": "bind the exact theorem statement to the claim and re-check",
+      "id": "ERR-CLAIM-PROOF-THEOREM-UNBOUND-001"
+    },
+    {
+      "description": "proof claim formal checker identity is missing, unregistered, latest-aliased, or differs between bundle and check receipt",
+      "guidance": "pin the exact registered formal checker and version in bundle and receipt",
+      "id": "ERR-CLAIM-PROOF-TOOLCHAIN-UNBOUND-001"
+    },
+    {
+      "description": "proof claim formal artifact contains, outside comments and strings, an unproven placeholder (Lean sorry, sorryAx, admit, stop or a confusable lookalike; TLAPS OMITTED in any case)",
+      "guidance": "complete the proof; a placeholder is never a checked proof",
+      "id": "ERR-CLAIM-PROOF-UNPROVEN-PLACEHOLDER-001"
+    },
+    {
+      "description": "proof claim formal artifact contains a known unsound escape (Lean axiom, compiler trust, lcProof, kernel bypass, metaprogramming, a #-command, an import outside Init/Std/Lean; TLA+ AXIOM, ASSUMPTION or non-sequent ASSUME, or EXTENDS/INSTANCE of a non-standard module)",
+      "guidance": "remove the escape; declare assumptions in the bundle and model",
+      "id": "ERR-CLAIM-PROOF-UNSOUND-ESCAPE-001"
+    },
+    {
+      "description": "slo measurement has no single canonical numeric 'actual': it is missing, non-numeric, boolean, negative, overflowing, or rounded-only (an actual-like key is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001)",
+      "guidance": "retain exactly one finite, non-negative numeric 'actual' in the SLO unit; never report only a rounded value",
+      "id": "ERR-CLAIM-SLO-ACTUAL-INVALID-001"
+    },
+    {
+      "description": "slo measurement declares a comparator that differs from the comparator of its registries/SLOS.md row",
+      "guidance": "remove the comparator from the measurement; the SLO row alone defines the comparison",
+      "id": "ERR-CLAIM-SLO-COMPARATOR-OVERRIDE-001"
+    },
+    {
+      "description": "the measurements behind one slo claim come from different operations, or their validity windows share no common instant",
+      "guidance": "measure every conjunct of the SLO target on the same operation within overlapping validity windows",
+      "id": "ERR-CLAIM-SLO-CONJUNCT-INCOHERENT-001"
+    },
+    {
+      "description": "slo claim retains no single digest-bound fss.environment_manifest.v1 artifact, or the measurement is not bound to that manifest's digest",
+      "guidance": "retain the exact environment manifest and bind the measurement to its digest",
+      "id": "ERR-CLAIM-SLO-ENVIRONMENT-UNRETAINED-001"
+    },
+    {
+      "description": "an operation-cost row listing the slo claim's SLO declares no measurement_max_age_days (the strictest bound over all such rows applies), so the freshness bound is unset",
+      "guidance": "a user decision: set the bound on every such row; the checker never assumes a default",
+      "id": "ERR-CLAIM-SLO-FRESHNESS-BOUND-UNSET-001"
+    },
+    {
+      "description": "slo bundle or measurement declares no generation, or the measurement declares no operation-cost registry generation",
+      "guidance": "bind the bundle and measurement to one explicit generation and to the operation-cost registry generation measured against",
+      "id": "ERR-CLAIM-SLO-GENERATION-UNBOUND-001"
+    },
+    {
+      "description": "slo measurement status is missing or anything other than 'passed'",
+      "guidance": "re-run the measurement; a failed, partial, or unlabelled run never supports an slo claim",
+      "id": "ERR-CLAIM-SLO-MEASUREMENT-NOT-PASSED-001"
+    },
+    {
+      "description": "the SLO registry (registries/SLOS.md) or operation-cost registry (architecture/operation_cost_registry.toml) consulted for an slo claim is missing, unreadable, empty, malformed, or declares no rows or generation",
+      "guidance": "repair the registry under the audited root; slo claims are never checked against a silently skipped registry",
+      "id": "ERR-CLAIM-SLO-REGISTRY-INVALID-001"
+    },
+    {
+      "description": "slo measurement's declared statistic is not exactly the statistic its SLO target names (missing, different, not byte-exact, or declared for a target naming none; a statistic-like key is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001)",
+      "guidance": "declare the single canonical 'statistic' exactly as the SLO target names it, or none when it names none",
+      "id": "ERR-CLAIM-SLO-STATISTIC-MISMATCH-001"
+    },
+    {
+      "description": "slo claim target cannot be resolved to exactly one numeric threshold of its registries/SLOS.md row, the measurement declares no or a different unit, or the measurement restates a target that differs from the authoritative row (a non-canonical target key is ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001)",
+      "guidance": "claim only an SLO row with a registered numeric threshold; measure in its exact unit and never restate or relax the target",
+      "id": "ERR-CLAIM-SLO-TARGET-UNBOUND-001"
+    },
+    {
+      "description": "slo measurement validity window is missing, unparseable, zone-less, empty, finished before it started, or lies in the future",
+      "guidance": "retain a zone-qualified ISO-8601 measurement window that ended before the evaluation instant",
+      "id": "ERR-CLAIM-SLO-WINDOW-INVALID-001"
+    },
+    {
+      "description": "option flag was specified more than once",
+      "guidance": "specify option at most once",
+      "id": "ERR-CLI-DUPLICATE-OPTION-001"
+    },
+    {
+      "description": "command-line argument contains invalid UTF-8 bytes",
+      "guidance": "encode command-line arguments in UTF-8",
+      "id": "ERR-CLI-INVALID-UNICODE-001"
+    },
+    {
+      "description": "option or argument value cannot be parsed into expected domain",
+      "guidance": "provide valid typed value before retry",
+      "id": "ERR-CLI-MALFORMED-VALUE-001"
+    },
+    {
+      "description": "required option or positional argument value is missing",
+      "guidance": "provide required value before retry",
+      "id": "ERR-CLI-MISSING-VALUE-001"
+    },
+    {
       "description": "runtime error occurred during validated command execution",
       "guidance": "inspect diagnostic and address failure cause",
       "id": "ERR-CLI-RUNTIME-FAILURE-001"
     },
     {
+      "description": "extra argument provided after command grammar is satisfied",
+      "guidance": "remove trailing argument before retry",
+      "id": "ERR-CLI-TRAILING-ARGUMENT-001"
+    },
+    {
+      "description": "positional argument provided to command taking no positionals",
+      "guidance": "remove unexpected positional argument",
+      "id": "ERR-CLI-UNEXPECTED-POSITIONAL-001"
+    },
+    {
+      "description": "command token is not a recognized CLI command or verb",
+      "guidance": "do not retry without valid command name",
+      "id": "ERR-CLI-UNKNOWN-COMMAND-001"
+    },
+    {
+      "description": "option flag is unrecognized for binary or active command",
+      "guidance": "do not retry without valid option flag",
+      "id": "ERR-CLI-UNKNOWN-OPTION-001"
+    },
+    {
+      "description": "comparison or association between incompatible clock bases",
+      "guidance": "convert to common basis or synchronise to UTC",
+      "id": "ERR-CLOCK-BASIS-MISMATCH-001"
+    },
+    {
+      "description": "clock synchronization state unknown when synchronised evidence required",
+      "guidance": "obtain synchronisation certificate or abstain",
+      "id": "ERR-CLOCK-STATE-UNKNOWN-001"
+    },
+    {
       "description": "capture interval too wide for requested operation",
       "guidance": "degrade/abstain/recalibrate",
       "id": "ERR-CLOCK-UNCERTAIN-001"
+    },
+    {
+      "description": "clock unsynchronised or drift bound exceeds tolerance",
+      "guidance": "synchronise clock or bound monotonic drift",
+      "id": "ERR-CLOCK-UNSYNCHRONISED-001"
+    },
+    {
+      "description": "effective observability cannot be established",
+      "guidance": "abstain/escalate health alert",
+      "id": "ERR-COVERAGE-UNKNOWN-001"
+    },
+    {
+      "description": "media decode failed",
+      "guidance": "preserve source; alternate decoder only if registered",
+      "id": "ERR-DECODE-001"
+    },
+    {
+      "description": "media exceeds declared bounds",
+      "guidance": "fail closed",
+      "id": "ERR-DECODE-BOUNDS-001"
+    },
+    {
+      "description": "deletion closure blocked by hold/backend/offline copy",
+      "guidance": "report exact blockers and obligation",
+      "id": "ERR-DELETION-BLOCKED-001"
+    },
+    {
+      "description": "architecture/dependency_allowlist.toml bytes diverged from the checker's pinned allowlist digest",
+      "guidance": "review the allowlist change and update the pinned digest in scripts/dependency_authority.py in the same commit",
+      "id": "ERR-DEP-ALLOWLIST-DIGEST-DIVERGED-001"
+    },
+    {
+      "description": "dependency constitution drift between machine registry and markdown documentation, or between DEPENDENCY_CONSTITUTION.md and its docs/ copy",
+      "guidance": "synchronize architecture/dependency_constitution.json and docs/DEPENDENCY_CONSTITUTION.md, and keep docs/DEPENDENCY_CONSTITUTION.md byte-identical to DEPENDENCY_CONSTITUTION.md",
+      "id": "ERR-DEP-CONST-DRIFT-001"
+    },
+    {
+      "description": "dependency constitution semantic invariant violated",
+      "guidance": "enforce constitutional admission rule and production closed-universe invariants",
+      "id": "ERR-DEP-CONST-INVARIANT-001"
+    },
+    {
+      "description": "Cargo metadata violates constitutional language or stdlib requirements for DEP-CLASS-F0, or names a workspace member that is not declared in architecture/crate_topology.json and listed explicitly in the root [workspace].members",
+      "guidance": "ensure all workspace crates compile under rust-2024 without foreign links, and declare every member in the crate topology and the explicit workspace member list",
+      "id": "ERR-DEP-CONST-METADATA-VIOLATION-001"
+    },
+    {
+      "description": "dependency registry or markdown documentation file is missing or corrupt",
+      "guidance": "repair or restore dependency registry file",
+      "id": "ERR-DEP-CORRUPT-FILE-001"
+    },
+    {
+      "description": "dependency registry digest does not match canonical encoding of metadata and rows",
+      "guidance": "recompute canonical dependency registry digest",
+      "id": "ERR-DEP-DIGEST-MISMATCH-001"
+    },
+    {
+      "description": "a toolchain command required for DEP-CLASS-F0 verification (rustc -Vv or cargo metadata) could not run, timed out, exited non-zero, or produced unparseable output",
+      "guidance": "restore the pinned toolchain and offline cargo inputs and rerun; an execution failure is never reported as a corrupt file",
+      "id": "ERR-DEP-EXEC-FAILED-001"
+    },
+    {
+      "description": "dependency registry digest diverged from pinned baseline freeze digest",
+      "guidance": "restore frozen dependency registry or bump generation",
+      "id": "ERR-DEP-FREEZE-DIVERGENCE-001"
+    },
+    {
+      "description": "dependency registry generation diverged from baseline generation",
+      "guidance": "assign expected generation to dependency registry",
+      "id": "ERR-DEP-GENERATION-MISMATCH-001"
+    },
+    {
+      "description": "dependency class row or root metadata lacks a mandatory field or is empty/corrupt",
+      "guidance": "declare all mandatory fields in dependency class row",
+      "id": "ERR-DEP-MISSING-FIELD-001"
+    },
+    {
+      "description": "a crate recorded under an open owner decision (dependency_allowlist.toml [pending_owner_decisions], e.g. fss-ndxis) reached a manifest, lockfile, or resolved closure",
+      "guidance": "keep the crate out of the closure until the owner records the decision; it is neither admitted nor rejected meanwhile",
+      "id": "ERR-DEP-PENDING-DECISION-001"
+    },
+    {
+      "description": "dependency registry row drift between machine registry and markdown mirror",
+      "guidance": "synchronize architecture/dependencies.json and registries/DEPENDENCIES.md",
+      "id": "ERR-DEP-REGISTRY-DRIFT-001"
+    },
+    {
+      "description": "dependency class stable identifier was reused, duplicated, renumbered, or tombstoned",
+      "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
+      "id": "ERR-DEP-STABLE-ID-REUSED-001"
+    },
+    {
+      "description": "a dependency or dependency-class tombstone/supersession record is malformed, contradictory, dangling, or missing",
+      "guidance": "record status, successor, and tombstone decision consistently in architecture/dependencies.json and architecture/stable_id_resolution.json",
+      "id": "ERR-DEP-TOMBSTONE-INVALID-001"
+    },
+    {
+      "description": "a dependency registry row's owner, producer, consumer, ContractBasis link, or a dependency checker diagnostic code does not resolve",
+      "guidance": "name existing repository files and allowlist tables that reference the row, and register every emitted code in registries/ERRORS.md",
+      "id": "ERR-DEP-TRACE-UNRESOLVED-001"
+    },
+    {
+      "description": "the repository enables a nightly unstable feature (#![feature(...)] including inside cfg_attr, -Z rustflags in .cargo/config or checked-in env/shell files, a cargo [unstable] table, cargo-features, or a -Z literal in a build script) while no unstable-feature allowlist is registered",
+      "guidance": "remove the feature gate or flag, or register an unstable-feature allowlist with owner and removal plan before enabling it",
+      "id": "ERR-DEP-UNSTABLE-FEATURE-001"
+    },
+    {
+      "description": "exact product/firmware/app tuple not certified",
+      "guidance": "fail closed or explicit import-only mode",
+      "id": "ERR-DEVICE-UNSUPPORTED-001"
     },
     {
       "description": "dispatch outcome cannot be determined",
@@ -188,9 +732,114 @@
       "id": "ERR-EVIDENCE-MISSING-001"
     },
     {
+      "description": "observed device generation differs from registry",
+      "guidance": "disable/move to shadow; no optimistic retry",
+      "id": "ERR-FIRMWARE-DRIFT-001"
+    },
+    {
+      "description": "frozen public registry digest does not match canonical encoding of sorted rows",
+      "guidance": "recompute canonical freeze digest over sorted rows",
+      "id": "ERR-FROZEN-DIGEST-MISMATCH-001"
+    },
+    {
+      "description": "public operation or resource was added, removed, renamed, or renumbered without a new registry generation",
+      "guidance": "bump the registry generation and update the frozen public registry",
+      "id": "ERR-FROZEN-REGISTRY-DRIFT-001"
+    },
+    {
+      "description": "stable operation or resource identifier was reused for a different entity",
+      "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
+      "id": "ERR-FROZEN-STABLE-ID-REUSED-001"
+    },
+    {
+      "description": "tombstoned operation or resource was resurrected into active registry",
+      "guidance": "allocate a new identifier; tombstoned entries remain permanently retired",
+      "id": "ERR-FROZEN-TOMBSTONE-RESURRECTED-001"
+    },
+    {
+      "description": "crosswalk or presentation surface references an unregistered operation",
+      "guidance": "register operation in frozen registry or correct surface reference",
+      "id": "ERR-FROZEN-UNREGISTERED-OP-001"
+    },
+    {
+      "description": "graph algorithm row lacks declared complexity witness operations",
+      "guidance": "declare dominant operation complexity witness in graph algorithm registry",
+      "id": "ERR-GRAPH-MISSING-COMPLEXITY-WITNESS-001"
+    },
+    {
+      "description": "graph algorithm row lacks declared output-size witness with bounds",
+      "guidance": "declare output-size witness with bounds or record explicit owner drift",
+      "id": "ERR-GRAPH-MISSING-OUTPUT-WITNESS-001"
+    },
+    {
+      "description": "graph algorithm row lacks a deterministic CGSE tie-break rule",
+      "guidance": "specify a deterministic CGSE tie-break policy in graph algorithm registry",
+      "id": "ERR-GRAPH-MISSING-TIE-BREAK-001"
+    },
+    {
+      "description": "graph algorithm projections differ between machine source and registry markdown mirror",
+      "guidance": "reconcile machine source and registry markdown projections",
+      "id": "ERR-GRAPH-PROJECTION-MISMATCH-001"
+    },
+    {
+      "description": "graph algorithm stable identifier renumbered or superseded row not tombstoned",
+      "guidance": "restore stable algorithm identity and retain superseded rows as tombstones",
+      "id": "ERR-GRAPH-STABLE-ID-DRIFT-001"
+    },
+    {
+      "description": "graph algorithm specifies an unregistered or nonexistent graph projection ID",
+      "guidance": "update algorithm projection to a registered projection ID from docs/GRAPH_ALGORITHM_ATLAS.md",
+      "id": "ERR-GRAPH-UNREGISTERED-PROJECTION-001"
+    },
+    {
       "description": "same key used with different request digest",
       "guidance": "reject permanently",
       "id": "ERR-IDEMPOTENCY-CONFLICT-001"
+    },
+    {
+      "description": "boundary converted an internal panic to structured crash receipt",
+      "guidance": "quarantine, preserve support bundle",
+      "id": "ERR-INTERNAL-PANIC-001"
+    },
+    {
+      "description": "knowledge state registry or markdown documentation file is missing or corrupt",
+      "guidance": "repair or restore knowledge state registry file",
+      "id": "ERR-KSTATE-CORRUPT-FILE-001"
+    },
+    {
+      "description": "knowledge state registry digest does not match canonical encoding of metadata and rows",
+      "guidance": "recompute canonical knowledge state registry digest",
+      "id": "ERR-KSTATE-DIGEST-MISMATCH-001"
+    },
+    {
+      "description": "knowledge state registry digest diverged from pinned baseline freeze digest",
+      "guidance": "restore frozen knowledge state registry or bump generation",
+      "id": "ERR-KSTATE-FREEZE-DIVERGENCE-001"
+    },
+    {
+      "description": "knowledge state registry generation diverged from baseline generation",
+      "guidance": "assign expected generation to knowledge state registry",
+      "id": "ERR-KSTATE-GENERATION-MISMATCH-001"
+    },
+    {
+      "description": "non-known knowledge state illegally authorizes irreversible effect",
+      "guidance": "restrict irreversible effect authorization strictly to known state",
+      "id": "ERR-KSTATE-ILLEGAL-IRREVERSIBLE-AUTH-001"
+    },
+    {
+      "description": "knowledge state row lacks a mandatory field or is empty/corrupt",
+      "guidance": "declare all mandatory fields in knowledge state row",
+      "id": "ERR-KSTATE-MISSING-FIELD-001"
+    },
+    {
+      "description": "knowledge state registry row drift between machine registry and markdown",
+      "guidance": "synchronize architecture/knowledge_states.json and registries/AGENT_CONTRACTS.md",
+      "id": "ERR-KSTATE-REGISTRY-DRIFT-001"
+    },
+    {
+      "description": "knowledge state stable identifier was reused or renumbered for a different entity",
+      "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
+      "id": "ERR-KSTATE-STABLE-ID-REUSED-001"
     },
     {
       "description": "effect lease fence is not current",
@@ -198,9 +847,259 @@
       "id": "ERR-LEASE-STALE-001"
     },
     {
+      "description": "durable ledger batch identity already committed with different content",
+      "guidance": "reject input; stable batch IDs are never reused",
+      "id": "ERR-LEDGER-DURABLE-BATCH-ID-CONFLICT-001"
+    },
+    {
+      "description": "journal byte offset or file length exceeds addressable 64-bit bounds",
+      "guidance": "archive or rotate journal; no in-place append possible",
+      "id": "ERR-LEDGER-LENGTH-OVERFLOW-001"
+    },
+    {
+      "description": "batch basis anchor is not the committed anchor at its sequence",
+      "guidance": "reject input; foreign lineage, epoch, or state root",
+      "id": "ERR-LEDGER-ORACLE-BASIS-FORKED-001"
+    },
+    {
+      "description": "committed batch identity reused with different content",
+      "guidance": "reject input; stable batch IDs are never reused",
+      "id": "ERR-LEDGER-ORACLE-BATCH-ID-CONFLICT-001"
+    },
+    {
+      "description": "batch delta count, child count, or text field exceeds the canonical batch bound",
+      "guidance": "reject input; split or repair the producer",
+      "id": "ERR-LEDGER-ORACLE-BOUND-001"
+    },
+    {
+      "description": "committed-batch capacity of the oracle is exhausted",
+      "guidance": "archive or rotate before appending",
+      "id": "ERR-LEDGER-ORACLE-CAPACITY-001"
+    },
+    {
+      "description": "declared batch digest does not match batch content",
+      "guidance": "reject input; never retry unchanged",
+      "id": "ERR-LEDGER-ORACLE-DIGEST-MISMATCH-001"
+    },
+    {
+      "description": "exact batch is already committed at the reported sequence",
+      "guidance": "no retry; batch is already canonical",
+      "id": "ERR-LEDGER-ORACLE-DUPLICATE-BATCH-001"
+    },
+    {
+      "description": "one batch carries more than one delta for the same object",
+      "guidance": "reject input; merge or split deltas",
+      "id": "ERR-LEDGER-ORACLE-DUPLICATE-OBJECT-001"
+    },
+    {
+      "description": "canonical encoding of a digest input exceeded its encoder bound",
+      "guidance": "reject input; repair the oversized field",
+      "id": "ERR-LEDGER-ORACLE-ENCODING-001"
+    },
+    {
+      "description": "delta generations do not follow the committed object generation",
+      "guidance": "reject input; re-prepare against the head",
+      "id": "ERR-LEDGER-ORACLE-GENERATION-CONFLICT-001"
+    },
+    {
+      "description": "ledger oracle limit or site lineage outside its admitted range",
+      "guidance": "repair configuration; do not retry unchanged",
+      "id": "ERR-LEDGER-ORACLE-INVALID-CONFIG-001"
+    },
+    {
+      "description": "successor anchor lineage, epoch, or sequence does not follow its basis",
+      "guidance": "reject input; re-prepare against the head",
+      "id": "ERR-LEDGER-ORACLE-INVALID-SUCCESSOR-001"
+    },
+    {
+      "description": "batch deltas or child roots are not in strictly increasing canonical order",
+      "guidance": "reject input; re-prepare canonically",
+      "id": "ERR-LEDGER-ORACLE-NON-CANONICAL-001"
+    },
+    {
+      "description": "batch would exceed the live-object capacity of the oracle",
+      "guidance": "archive or rotate before appending",
+      "id": "ERR-LEDGER-ORACLE-OBJECT-CAPACITY-001"
+    },
+    {
+      "description": "anchor-pinned read named an anchor that is not committed in this history",
+      "guidance": "resnapshot from a committed anchor of this lineage",
+      "id": "ERR-LEDGER-ORACLE-READ-ANCHOR-MISMATCH-001"
+    },
+    {
+      "description": "anchor-pinned read requested a sequence beyond the committed head",
+      "guidance": "wait for commit or read at a committed anchor",
+      "id": "ERR-LEDGER-ORACLE-READ-BEYOND-HEAD-001"
+    },
+    {
+      "description": "commit sequence space is exhausted",
+      "guidance": "archive or rotate; no in-place append possible",
+      "id": "ERR-LEDGER-ORACLE-SEQUENCE-EXHAUSTED-001"
+    },
+    {
+      "description": "batch basis is beyond the head; predecessor batches are missing",
+      "guidance": "supply predecessors in canonical order, then retry",
+      "id": "ERR-LEDGER-ORACLE-SEQUENCE-GAP-001"
+    },
+    {
+      "description": "staged batch was validated against a head that has since moved or another history",
+      "guidance": "stage again against the current head",
+      "id": "ERR-LEDGER-ORACLE-STALE-STAGE-001"
+    },
+    {
+      "description": "declared successor state root does not match the applied deltas",
+      "guidance": "reject input; never retry unchanged",
+      "id": "ERR-LEDGER-ORACLE-STATE-ROOT-MISMATCH-001"
+    },
+    {
+      "description": "another batch already committed on the same basis (first committer wins)",
+      "guidance": "rebase onto the current head and prepare a new batch",
+      "id": "ERR-LEDGER-ORACLE-SUCCESSOR-CONFLICT-001"
+    },
+    {
+      "description": "mixed or stale model/index generation",
+      "guidance": "rebuild/retry at coherent generation",
+      "id": "ERR-MODEL-GENERATION-001"
+    },
+    {
+      "description": "malformed/out-of-bounds model output",
+      "guidance": "reject output; terminate/quarantine generation",
+      "id": "ERR-MODEL-OUTPUT-001"
+    },
+    {
+      "description": "model generation not runnable",
+      "guidance": "route to registered fallback or degrade",
+      "id": "ERR-MODEL-UNAVAILABLE-001"
+    },
+    {
+      "description": "negative evidence binary ledger corrupt magic, checksum, or truncated data",
+      "guidance": "repair corrupt ledger binary or restore from canonical backup",
+      "id": "ERR-NEG-CHECKSUM-MISMATCH-001"
+    },
+    {
+      "description": "negative evidence ledger changed between read and publish on every bounded attempt",
+      "guidance": "identify the concurrent writer, then retry the append explicitly",
+      "id": "ERR-NEG-CONCURRENT-MODIFICATION-001"
+    },
+    {
+      "description": "negative evidence evaluated during an uncertified coverage gap",
+      "guidance": "ensure continuous coverage witness; absence during gap is never evidence",
+      "id": "ERR-NEG-COVERAGE-GAP-001"
+    },
+    {
+      "description": "negative evidence ledger contains duplicate stable entry identifier",
+      "guidance": "allocate unique stable entry identifier; never duplicate IDs",
+      "id": "ERR-NEG-DUPLICATE-ID-001"
+    },
+    {
+      "description": "attempted operation on or with a permanently tombstoned negative entry",
+      "guidance": "do not operate on tombstoned negative-evidence entries",
+      "id": "ERR-NEG-ENTRY-TOMBSTONED-001"
+    },
+    {
+      "description": "negative evidence entry or field exceeds declared capacity limit",
+      "guidance": "bound entry string length or shared failure domain count",
+      "id": "ERR-NEG-INPUT-OVERSIZED-001"
+    },
+    {
+      "description": "negative evidence ledger init target already exists",
+      "guidance": "choose a new path; init never overwrites a ledger",
+      "id": "ERR-NEG-LEDGER-EXISTS-001"
+    },
+    {
+      "description": "negative evidence ledger file has a link count other than one, so an atomic publish would update only one of its names",
+      "guidance": "keep the ledger under a single name (use a symlink for aliases) before appending",
+      "id": "ERR-NEG-LEDGER-HARD-LINKED-001"
+    },
+    {
+      "description": "negative evidence ledger lock file is held by another writer or was left stale by a crashed writer",
+      "guidance": "retry after the other writer finishes; remove a stale lock only after confirming no writer is running",
+      "id": "ERR-NEG-LEDGER-LOCKED-001"
+    },
+    {
+      "description": "negative evidence ledger file does not exist",
+      "guidance": "create the ledger with `fss negative-evidence init` before appending",
+      "id": "ERR-NEG-LEDGER-NOT-FOUND-001"
+    },
+    {
+      "description": "negative evidence ledger entry bytes carry an unknown tag, an invalid value, or a count beyond its declared bound",
+      "guidance": "restore the ledger from a canonical backup; never guess field values",
+      "id": "ERR-NEG-MALFORMED-ENTRY-001"
+    },
+    {
+      "description": "negative evidence entry lacks a certifying coverage witness",
+      "guidance": "provide a valid certifying coverage witness; absence without witness is never evidence",
+      "id": "ERR-NEG-MISSING-COVERAGE-001"
+    },
+    {
+      "description": "locally certified negative evidence lacks a proof hash, a retained evidence reference, or the evidence its knowledge state requires",
+      "guidance": "supply the proof hash and retained evidence reference, or record the entry as not locally certified",
+      "id": "ERR-NEG-MISSING-PROOF-001"
+    },
+    {
+      "description": "negative evidence ledger entries are not in strictly increasing canonical order",
+      "guidance": "sort entries strictly by stable ID",
+      "id": "ERR-NEG-NON-CANONICAL-ORDER-001"
+    },
+    {
+      "description": "candidate retry or promotion attempted without meeting revival condition",
+      "guidance": "satisfy documented revival condition before promoting candidate",
+      "id": "ERR-NEG-REVIVAL-UNMET-001"
+    },
+    {
+      "description": "coverage witness does not certify complete negative predicate absence",
+      "guidance": "verify coverage domain and predicate certification",
+      "id": "ERR-NEG-UNCERTIFIED-COVERAGE-001"
+    },
+    {
+      "description": "negative evidence binary ledger format version is unknown or unsupported",
+      "guidance": "refuse unknown version; never guess ledger encoding format",
+      "id": "ERR-NEG-UNKNOWN-VERSION-001"
+    },
+    {
+      "description": "negative evidence entry semantic validation failed",
+      "guidance": "provide valid required fields conforming to negative evidence contract",
+      "id": "ERR-NEG-VALIDATION-FAILED-001"
+    },
+    {
+      "description": "attempted non-monotone uncertainty narrowing violating FORMAL-010",
+      "guidance": "preserve monotone widening; retain sync evidence",
+      "id": "ERR-NON-MONOTONE-NARROWING-001"
+    },
+    {
       "description": "operation execution failed with expected domain error",
       "guidance": "inspect error details and apply recovery guidance",
       "id": "ERR-OP-EXECUTION-FAILED-001"
+    },
+    {
+      "description": "error identity does not conform to stable ERR pattern",
+      "guidance": "fix error identity to match stable registry format",
+      "id": "ERR-OP-ID-MALFORMED-001"
+    },
+    {
+      "description": "tombstone: superseded by `ERR-EFFECT-INDETERMINATE-001`",
+      "guidance": "historical duplicate preserved for audit; indeterminate outcomes must use Indeterminate variant",
+      "id": "ERR-OP-INDETERMINATE-001"
+    },
+    {
+      "description": "operation outcome state transition or representation is invalid",
+      "guidance": "inspect outcome payload and repair state machine",
+      "id": "ERR-OP-INVALID-OUTCOME-001"
+    },
+    {
+      "description": "tombstone: superseded by `ERR-COVERAGE-UNKNOWN-001`",
+      "guidance": "historical duplicate preserved for audit; canonical target is `ERR-COVERAGE-UNKNOWN-001`",
+      "id": "ERR-OP-NOT-OBSERVABLE-001"
+    },
+    {
+      "description": "tombstone: superseded by `ERR-PRECONDITION-STALE-001`",
+      "guidance": "historical duplicate preserved for audit; canonical target is `ERR-PRECONDITION-STALE-001`",
+      "id": "ERR-OP-PRECONDITION-FAILED-001"
+    },
+    {
+      "description": "pending unresolved operation must be reconciled before further mutation",
+      "guidance": "reconcile pending sequence before retry",
+      "id": "ERR-OP-RECONCILIATION-REQUIRED-001"
     },
     {
       "description": "operation budget or deadline expired before completion",
@@ -208,9 +1107,254 @@
       "id": "ERR-OP-TIMEOUT-001"
     },
     {
+      "description": "tombstone: superseded by `ERR-AUTH-DENIED-001`",
+      "guidance": "historical duplicate preserved for audit; canonical target is `ERR-AUTH-DENIED-001`",
+      "id": "ERR-OP-UNAUTHORIZED-001"
+    },
+    {
+      "description": "surveillance operation not registered in time uncertainty budget catalog",
+      "guidance": "register operation tolerance before evaluation",
+      "id": "ERR-OPERATION-UNREGISTERED-001"
+    },
+    {
       "description": "plan anchor changed before commit",
       "guidance": "re-plan; never auto-commit changed intent",
       "id": "ERR-PRECONDITION-STALE-001"
+    },
+    {
+      "description": "required redaction could not be applied",
+      "guidance": "fail closed at restricted boundary",
+      "id": "ERR-PRIVACY-MASK-001"
+    },
+    {
+      "description": "provenance registry or markdown documentation file is missing or corrupt",
+      "guidance": "repair or restore provenance registry file",
+      "id": "ERR-PROV-CORRUPT-FILE-001"
+    },
+    {
+      "description": "provenance registry digest does not match canonical encoding of metadata and rows",
+      "guidance": "recompute canonical provenance registry digest",
+      "id": "ERR-PROV-DIGEST-MISMATCH-001"
+    },
+    {
+      "description": "provenance registry digest diverged from pinned baseline freeze digest",
+      "guidance": "restore frozen provenance registry or bump generation",
+      "id": "ERR-PROV-FREEZE-DIVERGENCE-001"
+    },
+    {
+      "description": "provenance registry generation diverged from baseline generation",
+      "guidance": "assign expected generation to provenance registry",
+      "id": "ERR-PROV-GENERATION-MISMATCH-001"
+    },
+    {
+      "description": "provenance class row lacks a mandatory field or is empty/corrupt",
+      "guidance": "declare all mandatory fields in provenance class row",
+      "id": "ERR-PROV-MISSING-FIELD-001"
+    },
+    {
+      "description": "provenance registry row drift between machine registry and markdown",
+      "guidance": "synchronize architecture/provenance_classes.json and registries/AGENT_CONTRACTS.md",
+      "id": "ERR-PROV-REGISTRY-DRIFT-001"
+    },
+    {
+      "description": "provenance semantic invariant violation: non-permissible irreversible authorization, missing anchors, or score flattening",
+      "guidance": "enforce provenance orthogonality and class-specific evidence/authorization gates",
+      "id": "ERR-PROV-SEMANTIC-INVARIANT-001"
+    },
+    {
+      "description": "provenance class stable identifier was reused or renumbered for a different entity",
+      "guidance": "allocate a new unique stable identifier; never reuse stable IDs",
+      "id": "ERR-PROV-STABLE-ID-REUSED-001"
+    },
+    {
+      "description": "root reachability is already canonical; nothing to prepare",
+      "guidance": "no retry; root is already ledgered",
+      "id": "ERR-PUBLICATION-LEDGER-ALREADY-LEDGERED-001"
+    },
+    {
+      "description": "canonical ledger already names a different root or family for the slot; nothing appended",
+      "guidance": "repair the ledger identity explicitly; never overwrite either record",
+      "id": "ERR-PUBLICATION-LEDGER-CONFLICT-001"
+    },
+    {
+      "description": "root is durable and its reachability append became indeterminate",
+      "guidance": "reconcile the ledger append before any retry",
+      "id": "ERR-PUBLICATION-LEDGER-INDETERMINATE-001"
+    },
+    {
+      "description": "a root-ledger fault-injection cut point fired after the root became durable",
+      "guidance": "reopen both owners to reconcile",
+      "id": "ERR-PUBLICATION-LEDGER-INJECTED-CRASH-001"
+    },
+    {
+      "description": "slot holds no durable root; its reachability is never committed to the ledger",
+      "guidance": "publish durably or reopen to reconcile first",
+      "id": "ERR-PUBLICATION-LEDGER-NOT-DURABLE-001"
+    },
+    {
+      "description": "offered batch is not the reachability batch of the slot's durable root",
+      "guidance": "reject input; prepare against the durable root",
+      "id": "ERR-PUBLICATION-LEDGER-PREPARED-MISMATCH-001"
+    },
+    {
+      "description": "reconciling an indeterminate ledger append failed",
+      "guidance": "repair ledger storage, then reconcile again",
+      "id": "ERR-PUBLICATION-LEDGER-RECONCILE-001"
+    },
+    {
+      "description": "an indeterminate ledger append must be reconciled before root-ledger work",
+      "guidance": "reconcile the pending ledger append",
+      "id": "ERR-PUBLICATION-LEDGER-RECONCILIATION-REQUIRED-001"
+    },
+    {
+      "description": "slot cannot be expressed as a stable ledger object or batch identity",
+      "guidance": "reject input; choose a slot within the ledgered slot bound",
+      "id": "ERR-PUBLICATION-LEDGER-SLOT-IDENTITY-001"
+    },
+    {
+      "description": "root is durable but the ledger refused or could not prepare its reachability batch; explicit pending-ledger state",
+      "guidance": "follow the nested cause, then retry the idempotent ledger commit",
+      "id": "ERR-PUBLICATION-LEDGER-UNLEDGERED-001"
+    },
+    {
+      "description": "manifest child count or directory entry count exceeds the configured bound",
+      "guidance": "reject input; split the manifest or repair the layout",
+      "id": "ERR-PUBLICATION-LOCAL-BOUND-001"
+    },
+    {
+      "description": "slot holds a root record that failed reopen verification",
+      "guidance": "repair or quarantine the broken record; never overwrite it",
+      "id": "ERR-PUBLICATION-LOCAL-BROKEN-ROOT-001"
+    },
+    {
+      "description": "publication was cancelled before the root rename; nothing is visible",
+      "guidance": "retry idempotently when resumed",
+      "id": "ERR-PUBLICATION-LOCAL-CANCELLED-001"
+    },
+    {
+      "description": "configured root or tombstone capacity of the local publisher is exhausted",
+      "guidance": "archive or rotate before publishing",
+      "id": "ERR-PUBLICATION-LOCAL-CAPACITY-001"
+    },
+    {
+      "description": "removing a temporary publication file failed after an earlier error; both errors are carried",
+      "guidance": "repair storage, discard orphaned temps, then retry idempotently",
+      "id": "ERR-PUBLICATION-LOCAL-CLEANUP-001"
+    },
+    {
+      "description": "a referenced object failed digest verification; root not visible",
+      "guidance": "repair or restage the named object, then retry idempotently",
+      "id": "ERR-PUBLICATION-LOCAL-CORRUPT-REFERENCE-001"
+    },
+    {
+      "description": "a durable tombstone record failed verification on open",
+      "guidance": "repair the tombstone store; open fails closed",
+      "id": "ERR-PUBLICATION-LOCAL-CORRUPT-TOMBSTONE-001"
+    },
+    {
+      "description": "tombstone record lacks a deletion authority witness",
+      "guidance": "supply a verified deletion authority witness",
+      "id": "ERR-PUBLICATION-LOCAL-DELETION-AUTHORITY-001"
+    },
+    {
+      "description": "canonical encoding of a publication record exceeded its encoder bound",
+      "guidance": "reject input; repair the oversized field",
+      "id": "ERR-PUBLICATION-LOCAL-ENCODING-001"
+    },
+    {
+      "description": "root was renamed into place but its directory fsync failed; durability unknown",
+      "guidance": "reopen to reconcile before any retry",
+      "id": "ERR-PUBLICATION-LOCAL-INDETERMINATE-001"
+    },
+    {
+      "description": "a fault-injection cut point fired and the instance behaves as a dead process",
+      "guidance": "reopen to reconcile",
+      "id": "ERR-PUBLICATION-LOCAL-INJECTED-CRASH-001"
+    },
+    {
+      "description": "local publication limits are zero, inconsistent, or above a format maximum",
+      "guidance": "repair configuration; do not retry unchanged",
+      "id": "ERR-PUBLICATION-LOCAL-INVALID-CONFIG-001"
+    },
+    {
+      "description": "a publication filesystem operation failed before the root rename",
+      "guidance": "bounded retry after repairing storage; nothing is visible",
+      "id": "ERR-PUBLICATION-LOCAL-IO-001"
+    },
+    {
+      "description": "a publication directory or record path has the wrong file type or is occupied unexpectedly",
+      "guidance": "repair the layout; nothing is overwritten",
+      "id": "ERR-PUBLICATION-LOCAL-LAYOUT-001"
+    },
+    {
+      "description": "another owner holds the exclusive publication lock",
+      "guidance": "wait for the owner to close; never share the root",
+      "id": "ERR-PUBLICATION-LOCAL-LOCKED-001"
+    },
+    {
+      "description": "manifest root does not match its canonical body or its staged read-back",
+      "guidance": "reject input; rebuild the manifest canonically",
+      "id": "ERR-PUBLICATION-LOCAL-MANIFEST-MISMATCH-001"
+    },
+    {
+      "description": "an orphaned temporary record from an interrupted publication occupies the path",
+      "guidance": "discard classified orphans, then retry idempotently",
+      "id": "ERR-PUBLICATION-LOCAL-ORPHAN-TEMP-001"
+    },
+    {
+      "description": "publisher observed a crash or indeterminate outcome and refuses further work",
+      "guidance": "reopen to reconcile",
+      "id": "ERR-PUBLICATION-LOCAL-POISONED-001"
+    },
+    {
+      "description": "root rename was reported failed and rolling back the possibly renamed record failed; visibility unknown, slot marked indeterminate",
+      "guidance": "reopen to reconcile; the slot is refused until its record and indeterminate marker are repaired",
+      "id": "ERR-PUBLICATION-LOCAL-ROOT-VISIBILITY-INDETERMINATE-001"
+    },
+    {
+      "description": "slot already holds a different visible root",
+      "guidance": "reject input; publish the new root under a new slot",
+      "id": "ERR-PUBLICATION-LOCAL-SLOT-CONFLICT-001"
+    },
+    {
+      "description": "publication slot name is empty, too long, or outside the slot grammar",
+      "guidance": "reject input; choose a registered slot name",
+      "id": "ERR-PUBLICATION-LOCAL-SLOT-INVALID-001"
+    },
+    {
+      "description": "the staging spool refused an object stage, verify, or read",
+      "guidance": "follow the nested spool failure; no root was made visible",
+      "id": "ERR-PUBLICATION-LOCAL-SPOOL-001"
+    },
+    {
+      "description": "a different tombstone record is already durable for the object",
+      "guidance": "reject input; tombstones are immutable",
+      "id": "ERR-PUBLICATION-LOCAL-TOMBSTONE-CONFLICT-001"
+    },
+    {
+      "description": "object is reachable from a visible root and cannot be tombstoned locally",
+      "guidance": "run deletion closure through its owner; no silent unpublish",
+      "id": "ERR-PUBLICATION-LOCAL-TOMBSTONE-REACHABLE-001"
+    },
+    {
+      "description": "tombstone rename was reported failed and rolling back the possibly renamed record failed; visibility unknown",
+      "guidance": "reopen to reconcile; the tombstone is refused until its record and indeterminate marker are repaired",
+      "id": "ERR-PUBLICATION-LOCAL-TOMBSTONE-VISIBILITY-INDETERMINATE-001"
+    },
+    {
+      "description": "a referenced object carries a durable tombstone; root not visible",
+      "guidance": "reject input; tombstoned objects are never republished",
+      "id": "ERR-PUBLICATION-LOCAL-TOMBSTONED-REFERENCE-001"
+    },
+    {
+      "description": "custody of a referenced object could not be determined; root not visible",
+      "guidance": "reopen to reconcile storage, then retry idempotently",
+      "id": "ERR-PUBLICATION-LOCAL-UNAVAILABLE-001"
+    },
+    {
+      "description": "child staging incomplete; root not visible",
+      "guidance": "idempotent retry or collect children",
+      "id": "ERR-PUBLICATION-PARTIAL-001"
     },
     {
       "description": "region/process failed to drain",
@@ -223,9 +1367,59 @@
       "id": "ERR-REPLAY-DIVERGED-001"
     },
     {
+      "description": "malformed JSON syntax, duplicate keys, or encoding corruption in robot docs or registry",
+      "guidance": "repair malformed input; ensure canonical encoding",
+      "id": "ERR-ROBOT-DOCS-CORRUPT-001"
+    },
+    {
+      "description": "cataloged operations, views, or resources drift across registries",
+      "guidance": "reconcile registry definitions before generating docs",
+      "id": "ERR-ROBOT-DOCS-DRIFT-001"
+    },
+    {
+      "description": "generated robot documentation markdown or json artifact missing",
+      "guidance": "generate robot docs with scripts/generate_robot_docs.py",
+      "id": "ERR-ROBOT-DOCS-MISSING-001"
+    },
+    {
+      "description": "suspected secret, credential, token, or local filesystem path detected in registry text",
+      "guidance": "remove sensitive data and sanitize registry text",
+      "id": "ERR-ROBOT-DOCS-SECRET-DETECTED-001"
+    },
+    {
+      "description": "robot documentation diverges from authoritative machine registries",
+      "guidance": "regenerate robot docs with scripts/generate_robot_docs.py",
+      "id": "ERR-ROBOT-DOCS-STALE-001"
+    },
+    {
+      "description": "documented operation references unregistered capability, schema, or error identity",
+      "guidance": "register referenced entity in authoritative registry before generating docs",
+      "id": "ERR-ROBOT-DOCS-UNREGISTERED-001"
+    },
+    {
+      "description": "input durable schema version unsupported",
+      "guidance": "migrate with registered path or reject",
+      "id": "ERR-SCHEMA-UNSUPPORTED-001"
+    },
+    {
+      "description": "secret handle cannot be resolved",
+      "guidance": "repair/rotate; bounded retry if provider transient",
+      "id": "ERR-SECRET-UNAVAILABLE-001"
+    },
+    {
       "description": "gaps/jitter exceed contract",
       "guidance": "degrade coverage; bounded recovery",
       "id": "ERR-STREAM-CONTINUITY-001"
+    },
+    {
+      "description": "adapter accepted but no decodable frame before budget",
+      "guidance": "reconnect or fail; never claim coverage",
+      "id": "ERR-STREAM-NO-FIRST-FRAME-001"
+    },
+    {
+      "description": "capture or transit interval earliest bound exceeds latest bound",
+      "guidance": "correct interval bounds before evaluation",
+      "id": "ERR-TIME-INTERVAL-INVERTED-001"
     }
   ],
   "freezeDigest": "sha256:9bbec4e6845ea702f676cd22472e5fb0d35ca3b3d97f66cbfccb452182413da8",
@@ -1006,11 +2200,39 @@
   "schema": "fss.robot_docs.v1",
   "schemas": [
     {
+      "authority": "compatibility",
+      "compatibilityRule": "exact tuple only; invalidator transitions revoke/degrade",
+      "file": "schemas/adapter_compatibility_certificate.v1.json",
+      "id": "SCHEMA-ADAPTER-CERT-001",
+      "schema": "fss.adapter_compatibility_certificate.v1"
+    },
+    {
+      "authority": "adapter authority",
+      "compatibilityRule": "adapter identity binds protocol profile, isolation mode, credentials, and capabilities",
+      "file": "schemas/adapter_identity.v1.json",
+      "id": "SCHEMA-ADAPTER-IDENTITY-001",
+      "schema": "fss.adapter_identity.v1"
+    },
+    {
+      "authority": "decision support",
+      "compatibilityRule": "value, cost, risk, authority, reversibility, invalidators, alternatives, and expected proof remain decomposed",
+      "file": "schemas/agent_affordance.v1.json",
+      "id": "SCHEMA-AGENT-AFFORDANCE-001",
+      "schema": "fss.agent_affordance.v1"
+    },
+    {
       "authority": "semantic response",
       "compatibilityRule": "anchor, knowledge/provenance status, coverage, omissions, budget, evidence, affordances, and continuity remain explicit",
       "file": "schemas/agent_cognitive_envelope.v1.json",
       "id": "SCHEMA-AGENT-COGNITIVE-ENVELOPE-001",
       "schema": "fss.agent_cognitive_envelope.v1"
+    },
+    {
+      "authority": "context/hydration projection",
+      "compatibilityRule": "cursor is exact and root-verified; fenced lifetime and progress cannot be reinterpreted or replayed",
+      "file": "schemas/agent_continuation_cursor.v1.json",
+      "id": "SCHEMA-AGENT-CONTINUATION-CURSOR-001",
+      "schema": "fss.agent_continuation_cursor.v1"
     },
     {
       "authority": "semantic compatibility",
@@ -1027,11 +2249,25 @@
       "schema": "fss.agent_control_plan.v1"
     },
     {
+      "authority": "execution evidence",
+      "compatibilityRule": "original predictions, receipts, outcome, resource use, residual uncertainty, and attribution remain auditable",
+      "file": "schemas/agent_execution_episode.v1.json",
+      "id": "SCHEMA-AGENT-EPISODE-001",
+      "schema": "fss.agent_execution_episode.v1"
+    },
+    {
       "authority": "advisory feedback",
       "compatibilityRule": "correction or outcome signal is evidence-linked and cannot directly mutate active policy",
       "file": "schemas/agent_feedback_proposal.v1.json",
       "id": "SCHEMA-AGENT-FEEDBACK-001",
       "schema": "fss.agent_feedback_proposal.v1"
+    },
+    {
+      "authority": "multi-agent cognition",
+      "compatibilityRule": "claim, epistemic state, evidence, assumptions, coverage, method receipts, and withdrawal state remain auditable",
+      "file": "schemas/agent_finding.v1.json",
+      "id": "SCHEMA-AGENT-FINDING-001",
+      "schema": "fss.agent_finding.v1"
     },
     {
       "authority": "handoff custody",
@@ -1046,6 +2282,20 @@
       "file": "schemas/agent_hypothesis_workspace.v1.json",
       "id": "SCHEMA-AGENT-HYPOTHESIS-001",
       "schema": "fss.agent_hypothesis_workspace.v1"
+    },
+    {
+      "authority": "epistemic projection",
+      "compatibilityRule": "knowledge state, provenance, evidence, validity, uncertainty, and decision relevance remain separate",
+      "file": "schemas/agent_knowledge_cell.v1.json",
+      "id": "SCHEMA-AGENT-KNOWLEDGE-001",
+      "schema": "fss.agent_knowledge_cell.v1"
+    },
+    {
+      "authority": "advisory learning",
+      "compatibilityRule": "applicability, evidence, counterexamples, harmful outcomes, validation, expiry, and promotion remain explicit",
+      "file": "schemas/agent_learning_proposal.v1.json",
+      "id": "SCHEMA-AGENT-LEARNING-001",
+      "schema": "fss.agent_learning_proposal.v1"
     },
     {
       "authority": "follow/continuity",
@@ -1090,6 +2340,13 @@
       "schema": "fss.agent_response_envelope.v1"
     },
     {
+      "authority": "session/runtime",
+      "compatibilityRule": "session identity, authority, privacy projection, view, continuations, and expiry remain explicit",
+      "file": "schemas/agent_session.v1.json",
+      "id": "SCHEMA-AGENT-SESSION-001",
+      "schema": "fss.agent_session.v1"
+    },
+    {
       "authority": "workspace continuity",
       "compatibilityRule": "workspace revisions are immutable and resume records stale and invalidated state",
       "file": "schemas/agent_session_capsule.v1.json",
@@ -1104,6 +2361,13 @@
       "schema": "fss.agent_situation_frame.v1"
     },
     {
+      "authority": "multi-agent coordination",
+      "compatibilityRule": "scope, basis, owner, lease, progress, result, expiry, and no-effect-authority property remain explicit",
+      "file": "schemas/agent_work_claim.v1.json",
+      "id": "SCHEMA-AGENT-WORK-CLAIM-001",
+      "schema": "fss.agent_work_claim.v1"
+    },
+    {
       "authority": "agent world model",
       "compatibilityRule": "nominal estimate, certified core and absences, material alternatives, adversarial residuals, unresolved dimensions, discriminators, and selection witness remain separate and anchor-pinned",
       "file": "schemas/agent_world_envelope.v1.json",
@@ -1111,11 +2375,88 @@
       "schema": "fss.agent_world_envelope.v1"
     },
     {
+      "authority": "authority",
+      "compatibilityRule": "generation immutable; invalidation creates new state",
+      "file": "schemas/calibration_certificate.v1.json",
+      "id": "SCHEMA-CALIBRATION-CERT-001",
+      "schema": "fss.calibration_certificate.v1"
+    },
+    {
+      "authority": "runtime evidence",
+      "compatibilityRule": "terminal/indeterminate outcome and outstanding effects preserved",
+      "file": "schemas/cancellation_drain_certificate.v1.json",
+      "id": "SCHEMA-CANCEL-DRAIN-001",
+      "schema": "fss.cancellation_drain_certificate.v1"
+    },
+    {
+      "authority": "product boundary",
+      "compatibilityRule": "additions compatible; changed meaning requires new schema",
+      "file": "CLI output",
+      "id": "SCHEMA-CAPABILITIES-001",
+      "schema": "fss.capabilities.v1"
+    },
+    {
+      "authority": "authority/diagnostic",
+      "compatibilityRule": "diagnostic schema immutable; errors follow structured envelope",
+      "file": "schemas/cli_diagnostic.v1.json",
+      "id": "SCHEMA-CLI-DIAGNOSTIC-001",
+      "schema": "fss.cli_diagnostic.v1"
+    },
+    {
+      "authority": "context/hydration projection",
+      "compatibilityRule": "one emitted expansion slot maps to one exact descriptor revision, purpose, level, and descriptor-owned full cost",
+      "file": "schemas/context_expansion_binding.v1.json",
+      "id": "SCHEMA-AGENT-CONTEXT-BINDING-001",
+      "schema": "fss.context_expansion_binding.v1"
+    },
+    {
+      "authority": "context/hydration projection",
+      "compatibilityRule": "every emitted expansion slot is bound exactly once; missing, duplicate, unexpected, stale, or ambient descriptors fail closed",
+      "file": "schemas/context_expansion_binding_set.v1.json",
+      "id": "SCHEMA-AGENT-CONTEXT-BINDING-SET-001",
+      "schema": "fss.context_expansion_binding_set.v1"
+    },
+    {
+      "authority": "authority/query",
+      "compatibilityRule": "absence claims require declared domain and stop reason",
+      "file": "schemas/coverage_witness.v1.json",
+      "id": "SCHEMA-COVERAGE-WITNESS-001",
+      "schema": "fss.coverage_witness.v1"
+    },
+    {
+      "authority": "policy/evidence",
+      "compatibilityRule": "hard constraints and alternatives retained; no silent rewrite",
+      "file": "schemas/decision_card.v1.json",
+      "id": "SCHEMA-DECISION-CARD-001",
+      "schema": "fss.decision_card.v1"
+    },
+    {
+      "authority": "device authority",
+      "compatibilityRule": "immutable hardware, firmware, and model generation; generation change produces a new identity",
+      "file": "schemas/device_identity.v1.json",
+      "id": "SCHEMA-DEVICE-IDENTITY-001",
+      "schema": "fss.device_identity.v1"
+    },
+    {
       "authority": "diagnostics",
       "compatibilityRule": "bounded and secret-free",
       "file": "CLI output",
       "id": "SCHEMA-DOCTOR-001",
       "schema": "fss.doctor.v1"
+    },
+    {
+      "authority": "effect truth",
+      "compatibilityRule": "immutable intent; operation and idempotency identities preserved",
+      "file": "schemas/effect_intent.v1.json",
+      "id": "SCHEMA-EFFECT-INTENT-001",
+      "schema": "fss.effect_intent.v1"
+    },
+    {
+      "authority": "effect truth",
+      "compatibilityRule": "four-valued outcome; verified requires independent evidence witness",
+      "file": "schemas/effect_reconciliation.v1.json",
+      "id": "SCHEMA-EFFECT-RECONCILIATION-001",
+      "schema": "fss.effect_reconciliation.v1"
     },
     {
       "authority": "authority",
@@ -1139,6 +2480,20 @@
       "schema": "fss.evidence_bundle.v1"
     },
     {
+      "authority": "authority/version universe",
+      "compatibilityRule": "basis/new anchors and ordered delta identities preserved",
+      "file": "schemas/evidence_delta_batch.v1.json",
+      "id": "SCHEMA-EVIDENCE-DELTA-001",
+      "schema": "fss.evidence_delta_batch.v1"
+    },
+    {
+      "authority": "derived/evidence",
+      "compatibilityRule": "causal evidence graph over capsules, identities, model receipts, and revisions",
+      "file": "schemas/evidence_graph.v1.json",
+      "id": "SCHEMA-EVIDENCE-GRAPH-001",
+      "schema": "fss.evidence_graph.v1"
+    },
+    {
       "authority": "operational memory",
       "compatibilityRule": "episode signature, signals, failures, costs, applicability, decay, and privacy remain auditable",
       "file": "schemas/experience_capsule.v1.json",
@@ -1146,11 +2501,53 @@
       "schema": "fss.experience_capsule.v1"
     },
     {
+      "authority": "derived/evidence",
+      "compatibilityRule": "algorithm/projection/policy identity and output digest preserved",
+      "file": "schemas/graph_algorithm_witness.v1.json",
+      "id": "SCHEMA-GRAPH-WITNESS-001",
+      "schema": "fss.graph_algorithm_witness.v1"
+    },
+    {
       "authority": "investigation cognition",
       "compatibilityRule": "case revisions preserve question, decision, hypotheses, probes, stop rules, and residual uncertainty",
       "file": "schemas/investigation_state.v1.json",
       "id": "SCHEMA-AGENT-INVESTIGATION-001",
       "schema": "fss.investigation_state.v1"
+    },
+    {
+      "authority": "supply-chain evidence",
+      "compatibilityRule": "package identity/source/license fields remain auditable",
+      "file": "schemas/license_inventory.v1.json",
+      "id": "SCHEMA-LICENSE-INVENTORY-001",
+      "schema": "fss.license_inventory.v1"
+    },
+    {
+      "authority": "derived/model evidence",
+      "compatibilityRule": "input/model/plan/backend/numeric/budget/outcome and output identities preserved",
+      "file": "schemas/model_execution_receipt.v1.json",
+      "id": "SCHEMA-MODEL-RECEIPT-001",
+      "schema": "fss.model_execution_receipt.v1"
+    },
+    {
+      "authority": "model authority/package",
+      "compatibilityRule": "immutable model manifest root; model identity, generation, weights, schemas, calibration, and license/provenance preserved",
+      "file": "schemas/model_manifest.v1.json",
+      "id": "SCHEMA-MODEL-MANIFEST-001",
+      "schema": "fss.model_manifest.v1"
+    },
+    {
+      "authority": "model authority/package",
+      "compatibilityRule": "immutable package root; operator/tensor/preprocess/numeric/license identities preserved",
+      "file": "schemas/model_package_manifest.v1.json",
+      "id": "SCHEMA-MODEL-PACKAGE-001",
+      "schema": "fss.model_package_manifest.v1"
+    },
+    {
+      "authority": "cli report",
+      "compatibilityRule": "ledger entries, verification result, epistemic state derived from entry knowledge states, and degradation stay explicit; not an agent response envelope",
+      "file": "schemas/negative_evidence_report.v1.json",
+      "id": "SCHEMA-NEGATIVE-EVIDENCE-REPORT-001",
+      "schema": "fss.negative_evidence_report.v1"
     },
     {
       "authority": "effect truth",
@@ -1167,11 +2564,102 @@
       "schema": "fss.prepared_effect.v1"
     },
     {
+      "authority": "provider authority",
+      "compatibilityRule": "provider-issued failure receipt; nonce and error reason preserved",
+      "file": "schemas/provider_failure_receipt.v1.json",
+      "id": "SCHEMA-PROVIDER-FAILURE-RECEIPT-001",
+      "schema": "fss.provider_failure_receipt.v1"
+    },
+    {
+      "authority": "provider authority",
+      "compatibilityRule": "provider-issued observation receipt; verified by lookup, never recomputable",
+      "file": "schemas/provider_observation_receipt.v1.json",
+      "id": "SCHEMA-PROVIDER-OBSERVATION-RECEIPT-001",
+      "schema": "fss.provider_observation_receipt.v1"
+    },
+    {
+      "authority": "aggregate release custody",
+      "compatibilityRule": "primary/support artifact digests, claim boundary, and signing state immutable",
+      "file": "schemas/release_qualification_root.v2.json",
+      "id": "SCHEMA-QUALIFICATION-ROOT-002",
+      "schema": "fss.qualification_root.v2"
+    },
+    {
+      "authority": "release custody",
+      "compatibilityRule": "native target/toolchain/source/lock/manifest/smoke identities immutable",
+      "file": "schemas/release_build_receipt.v1.json",
+      "id": "SCHEMA-RELEASE-BUILD-001",
+      "schema": "fss.release_build_receipt.v1"
+    },
+    {
+      "authority": "release custody",
+      "compatibilityRule": "same source/sibling/toolchain identity required for aggregation",
+      "file": "schemas/release_qualification_receipt.v1.json",
+      "id": "SCHEMA-RELEASE-RECEIPT-001",
+      "schema": "fss.release_qualification_receipt.v1"
+    },
+    {
+      "authority": "release custody",
+      "compatibilityRule": "stage inventory and content digests preserved exactly",
+      "file": "schemas/release_stage_verification.v1.json",
+      "id": "SCHEMA-RELEASE-STAGE-001",
+      "schema": "fss.release_stage_verification.v1"
+    },
+    {
+      "authority": "documentation/metadata",
+      "compatibilityRule": "immutable; additions compatible",
+      "file": "schemas/robot_docs.v1.json",
+      "id": "SCHEMA-ROBOT-DOCS-001",
+      "schema": "fss.robot_docs.v1"
+    },
+    {
       "authority": "context projection",
       "compatibilityRule": "selected and omitted classes, critical preservation, stop reason, and expansion slots remain explicit",
       "file": "schemas/semantic_compression_receipt.v1.json",
       "id": "SCHEMA-AGENT-COMPRESSION-001",
       "schema": "fss.semantic_compression_receipt.v1"
+    },
+    {
+      "authority": "context projection",
+      "compatibilityRule": "pack basis, view, items, compression receipt, token count, continuation, digest, and expansion slots are immutable",
+      "file": "schemas/semantic_context_pack.v1.json",
+      "id": "SCHEMA-AGENT-CONTEXT-001",
+      "schema": "fss.semantic_context_pack.v1"
+    },
+    {
+      "authority": "context/hydration projection",
+      "compatibilityRule": "handle identity is immutable across descriptor revisions; H-level ladder stays contiguous and priced",
+      "file": "schemas/semantic_handle.v1.json",
+      "id": "SCHEMA-AGENT-HANDLE-001",
+      "schema": "fss.semantic_handle.v1"
+    },
+    {
+      "authority": "context/hydration projection",
+      "compatibilityRule": "immutable subject, exact descriptor revision, contract basis, authority anchor, level, and ladder policy remain inseparable",
+      "file": "schemas/semantic_handle_reference.v1.json",
+      "id": "SCHEMA-AGENT-HANDLE-REFERENCE-001",
+      "schema": "fss.semantic_handle_reference.v1"
+    },
+    {
+      "authority": "context/hydration projection",
+      "compatibilityRule": "payload digest, descriptor digest, and subject digest remain verifiable; tampered payloads are rejected",
+      "file": "schemas/semantic_hydration_artifact.v1.json",
+      "id": "SCHEMA-AGENT-HYDRATION-ARTIFACT-001",
+      "schema": "fss.semantic_hydration_artifact.v1"
+    },
+    {
+      "authority": "context/hydration projection",
+      "compatibilityRule": "receipt binds request digest, artifact digest, consumed cost, and exact continuation; no receipt without a delivered artifact",
+      "file": "schemas/semantic_hydration_receipt.v1.json",
+      "id": "SCHEMA-AGENT-HYDRATION-RECEIPT-001",
+      "schema": "fss.semantic_hydration_receipt.v1"
+    },
+    {
+      "authority": "context/hydration projection",
+      "compatibilityRule": "request binds exact handle reference, level, budget, and contract basis; unknown levels fail closed",
+      "file": "schemas/semantic_hydration_request.v1.json",
+      "id": "SCHEMA-AGENT-HYDRATION-REQUEST-001",
+      "schema": "fss.semantic_hydration_request.v1"
     },
     {
       "authority": "authority",
@@ -1186,6 +2674,41 @@
       "file": "schemas/situation_capsule.v1.json",
       "id": "SCHEMA-AGENT-SITUATION-CAPSULE-001",
       "schema": "fss.situation_capsule.v1"
+    },
+    {
+      "authority": "source custody",
+      "compatibilityRule": "source identity binds device, adapter, channel, clock basis, and stream generation; unknown versions fail closed",
+      "file": "schemas/source_identity.v1.json",
+      "id": "SCHEMA-SOURCE-IDENTITY-001",
+      "schema": "fss.source_identity.v1"
+    },
+    {
+      "authority": "source custody",
+      "compatibilityRule": "clean tracked source identity and executable bits preserved",
+      "file": "schemas/source_manifest.v1.json",
+      "id": "SCHEMA-SOURCE-MANIFEST-001",
+      "schema": "fss.source_manifest.v1"
+    },
+    {
+      "authority": "product boundary",
+      "compatibilityRule": "status fields cannot imply unsupported readiness",
+      "file": "CLI output",
+      "id": "SCHEMA-STATUS-001",
+      "schema": "fss.status.v1"
+    },
+    {
+      "authority": "authority/transfer",
+      "compatibilityRule": "root-last; object and closure identities immutable",
+      "file": "schemas/transfer_manifest.v1.json",
+      "id": "SCHEMA-TRANSFER-MANIFEST-001",
+      "schema": "fss.transfer_manifest.v1"
+    },
+    {
+      "authority": "transfer evidence",
+      "compatibilityRule": "path, repair, closure, publication, and retrievability states remain distinct",
+      "file": "schemas/transfer_receipt.v1.json",
+      "id": "SCHEMA-TRANSFER-RECEIPT-001",
+      "schema": "fss.transfer_receipt.v1"
     }
   ],
   "semanticProtocol": "fss/1",

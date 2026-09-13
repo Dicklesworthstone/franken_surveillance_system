@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/robot_docs.v1.json",
+  "title": "Robot Docs v1",
+  "description": "Self-describing robot documentation derived from authoritative machine registries under fss/1.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "semanticProtocol",
+    "registryGeneration",
+    "freezeDigest",
+    "asOf",
+    "operations",
+    "views",
+    "resources",
+    "schemas",
+    "capabilities",
+    "errors",
+    "discovery"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.robot_docs.v1"
+    },
+    "semanticProtocol": {
+      "const": "fss/1"
+    },
+    "registryGeneration": {
+      "type": "string"
+    },
+    "freezeDigest": {
+      "type": "string"
+    },
+    "asOf": {
+      "type": "string"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "views": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "resources": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "schemas": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object"
+      }
+    },
+    "discovery": {
+      "type": "object"
+    }
+  }
+}
