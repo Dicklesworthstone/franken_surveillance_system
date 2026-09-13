@@ -390,6 +390,25 @@ const fn required_basis_error(state: KnowledgeState) -> Option<ContractError> {
     }
 }
 
+/// Returns whether a knowledge state's registry meaning asserts present support for the
+/// proposition, so an evidence-bearing provenance class must name that support.
+///
+/// `known` (KSTATE-001, "established ... by admissible evidence"), `estimated` (KSTATE-002,
+/// "supported by a declared derivation or model"), and `conflicted` (KSTATE-004, "material
+/// admissible evidence supports incompatible propositions") each name present evidence. Every
+/// other state reports that support is absent, withheld, outdated, unresolved, or meaningless.
+const fn asserts_present_support(state: KnowledgeState) -> bool {
+    match state {
+        KnowledgeState::Known | KnowledgeState::Estimated | KnowledgeState::Conflicted => true,
+        KnowledgeState::Unknown
+        | KnowledgeState::Stale
+        | KnowledgeState::NotObservable
+        | KnowledgeState::Redacted
+        | KnowledgeState::Indeterminate
+        | KnowledgeState::NotApplicable => false,
+    }
+}
+
 /// One proposition with orthogonal epistemic, provenance, and hypothesis states.
 ///
 /// `Debug` is implemented by hand so that a `redacted` cell never prints its statement.
@@ -431,9 +450,17 @@ impl KnowledgeCell {
     ///
     /// A state whose registry meaning names a basis is refused without it, and a basis is
     /// refused on any state it does not belong to.
-    /// An `observed` or `derived` cell must bind source evidence or named input anchors.
+    ///
+    /// An `observed` (PROV-001) or `derived` (PROV-002) cell whose knowledge state asserts
+    /// present support for its proposition must bind source evidence or named input anchors.
+    /// States that assert no present support (`unknown`, `stale`, `not_observable`, `redacted`,
+    /// `indeterminate`, `not_applicable`) stay valid without evidence, so an honest unknown is
+    /// never refused for lacking the support it reports it does not have.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if matches!(self.provenance, ProvenanceClass::Observed | ProvenanceClass::Derived)
+        if matches!(
+            self.provenance,
+            ProvenanceClass::Observed | ProvenanceClass::Derived
+        ) && asserts_present_support(self.knowledge_state)
             && self.evidence.is_empty()
         {
             return Err(ContractError::EvidenceRequired);
