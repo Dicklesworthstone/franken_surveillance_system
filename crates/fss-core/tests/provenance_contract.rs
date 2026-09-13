@@ -1753,3 +1753,350 @@ fn test_operator_asserted_distinction_from_all_other_provenance_classes(
 
     Ok(())
 }
+
+#[test]
+fn test_vendor_claimed_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let prov = ProvenanceClass::VendorClaimed;
+
+    // 1. Exact normative stable ID
+    assert_eq!(prov.id(), "PROV-006");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(prov.as_str(), "vendor_claimed");
+    assert_eq!(format!("{prov}"), "vendor_claimed");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        prov.meaning(),
+        "Metadata or state asserted by a device/vendor boundary and not treated as independent physical truth."
+    );
+
+    // 4. Predicate helper methods
+    assert!(prov.is_vendor_claimed());
+    assert!(!prov.is_observed());
+    assert!(!prov.is_derived());
+    assert!(!prov.is_predicted());
+    assert!(!prov.is_remembered());
+    assert!(!prov.is_operator_asserted());
+
+    // 5. Constitutional effect authorization rule (INV-069):
+    // Vendor claims CANNOT authorize irreversible physical effects.
+    assert!(!prov.may_authorize_irreversible_effect());
+
+    Ok(())
+}
+
+#[test]
+fn test_vendor_claimed_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = ProvenanceClass::from_id("PROV-006")?;
+    assert_eq!(from_id, ProvenanceClass::VendorClaimed);
+
+    // Parse from schema name
+    let from_name = ProvenanceClass::from_name("vendor_claimed")?;
+    assert_eq!(from_name, ProvenanceClass::VendorClaimed);
+
+    // Parse via FromStr
+    let from_str_name = ProvenanceClass::from_str("vendor_claimed")?;
+    assert_eq!(from_str_name, ProvenanceClass::VendorClaimed);
+
+    let from_str_id = ProvenanceClass::from_str("PROV-006")?;
+    assert_eq!(from_str_id, ProvenanceClass::VendorClaimed);
+
+    // Rejection of invalid / malformed variants (fail closed)
+    assert_eq!(
+        ProvenanceClass::from_id("PROV-0060"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_id("PROV-6"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("vendor"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("VENDOR_CLAIMED"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("claimed"),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_vendor_claimed_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let prov = ProvenanceClass::VendorClaimed;
+
+    let mut encoder = CanonicalEncoder::new();
+    prov.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = ProvenanceClass::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, prov);
+    assert_eq!(decoded.id(), "PROV-006");
+    assert_eq!(decoded.as_str(), "vendor_claimed");
+
+    Ok(())
+}
+
+#[test]
+fn test_vendor_claimed_orthogonality_across_epistemic_states() -> Result<(), Box<dyn Error>> {
+    let vendor_payload_digest = ContentDigest::sha256(b"vendor_cloud_webhook_json_payload");
+
+    let basis_for = |state: KnowledgeState| -> Result<Option<KnowledgeStateBasis>, ContractError> {
+        Ok(match state {
+            KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+                reason: RedactionReason::PrivacyProjection,
+                privacy_generation: PrivacyGeneration::parse("privacy:projection:v1")?,
+            })),
+            KnowledgeState::Stale => {
+                let mut older = LedgerAnchor::genesis("site:provenance-test");
+                older.commit_sequence = 4;
+                let mut current = LedgerAnchor::genesis("site:provenance-test");
+                current.commit_sequence = 9;
+                Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+                    valid_at: Box::new(older),
+                    current: Box::new(current),
+                }))
+            }
+            KnowledgeState::Indeterminate => {
+                Some(KnowledgeStateBasis::Reconciliation(ReconciliationBasis {
+                    unresolved_outcome_root: ContentDigest::sha256(b"unresolved_vendor_poll_attempt"),
+                    branches: std::collections::BTreeSet::from([
+                        fss_core::ReconciliationBranch::Occurred,
+                        fss_core::ReconciliationBranch::NotOccurred,
+                    ]),
+                }))
+            }
+            _ => None,
+        })
+    };
+
+    let all_states = [
+        KnowledgeState::Known,
+        KnowledgeState::Estimated,
+        KnowledgeState::Unknown,
+        KnowledgeState::Conflicted,
+        KnowledgeState::Stale,
+        KnowledgeState::NotObservable,
+        KnowledgeState::Redacted,
+        KnowledgeState::Indeterminate,
+        KnowledgeState::NotApplicable,
+    ];
+
+    for state in all_states {
+        let cell = KnowledgeCell {
+            claim_id: format!("claim:vendor:{}", state.as_str()),
+            statement: format!("Testing vendor_claimed orthogonality for {}", state.as_str()),
+            knowledge_state: state,
+            provenance: ProvenanceClass::VendorClaimed,
+            hypothesis: None,
+            evidence: vec![vendor_payload_digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: basis_for(state)?,
+        };
+
+        assert!(
+            cell.validate().is_ok(),
+            "Validation failed for vendor_claimed cell in state {}",
+            state.as_str()
+        );
+
+        // Provenance remains VendorClaimed regardless of epistemic state
+        assert_eq!(cell.provenance, ProvenanceClass::VendorClaimed);
+        assert!(cell.is_vendor_claimed());
+        assert_eq!(cell.provenance.id(), "PROV-006");
+        assert_eq!(cell.provenance.as_str(), "vendor_claimed");
+
+        // Epistemic state and provenance are strictly distinct
+        assert_ne!(cell.provenance.as_str(), state.as_str());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_vendor_claimed_cannot_authorize_irreversible_effects_even_when_known(
+) -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let vendor_event_digest = ContentDigest::sha256(b"vendor_cloud_motion_event_notification");
+
+    // Constitutional Hard Gate (AGENTS.md & INV-069):
+    // A vendor claim, even if received as Known truth from the vendor API,
+    // has payload evidence, has no contradictions, and is unexpired,
+    // MUST NEVER authorize an irreversible physical effect!
+    let vendor_known_cell = KnowledgeCell {
+        claim_id: "claim:vendor:door_lock_status".to_string(),
+        statement: "Vendor cloud API reports front entry lock bolt is fully extended".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::VendorClaimed,
+        hypothesis: None,
+        evidence: vec![vendor_event_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    assert!(vendor_known_cell.validate().is_ok());
+    assert!(vendor_known_cell.is_vendor_claimed());
+    assert_eq!(vendor_known_cell.knowledge_state, KnowledgeState::Known);
+
+    // Irreversible effect premise MUST evaluate to false (fail closed)
+    assert!(
+        !vendor_known_cell.is_irreversible_effect_premise(now),
+        "Vendor claimed state must NEVER authorize irreversible effects even when Known!"
+    );
+
+    // Contrast with Observed and Derived
+    let observed_cell = KnowledgeCell {
+        provenance: ProvenanceClass::Observed,
+        ..vendor_known_cell.clone()
+    };
+    assert!(observed_cell.is_irreversible_effect_premise(now));
+
+    let derived_cell = KnowledgeCell {
+        provenance: ProvenanceClass::Derived,
+        ..vendor_known_cell
+    };
+    assert!(derived_cell.is_irreversible_effect_premise(now));
+
+    Ok(())
+}
+
+#[test]
+fn test_vendor_claimed_prohibited_shortcut_enforcement() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let cloud_api_response = ContentDigest::sha256(b"cloud_vendor_tamper_alert_response");
+
+    // Prohibited shortcuts from AGENTS.md:
+    // 1. "Treating an agent memory, prior handoff, vendor claim, or prediction as current canonical truth."
+    // 2. "Calling one camera's model score 'corroborated'."
+    // 3. "Presenting a mobile screen capture or app automation path as a stable native integration."
+    let vendor_cell = KnowledgeCell {
+        claim_id: "claim:camera:tamper:vendor".to_string(),
+        statement: "Vendor proprietary push notification claims camera 3 was tampered with".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::VendorClaimed,
+        hypothesis: None,
+        evidence: vec![cloud_api_response],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(1_500_000_000)),
+        state_basis: None,
+    };
+
+    assert!(vendor_cell.validate().is_ok());
+    assert!(vendor_cell.is_vendor_claimed());
+
+    // Fails closed: Vendor proprietary push cannot authorize physical lockdown or alarms
+    assert!(
+        !vendor_cell.is_irreversible_effect_premise(now),
+        "Vendor claim must not be treated as independent physical truth"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_vendor_claimed_distinction_from_observed_evidence() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let vendor_cloud_msg = ContentDigest::sha256(b"vendor_api_door_sensor_payload");
+    let physical_hardware_packet = ContentDigest::sha256(b"native_gpio_switch_continuity_packet");
+
+    // 1. Vendor claim: Unverified vendor boundary assertion
+    let vendor_claim = KnowledgeCell {
+        claim_id: "claim:door:status:001".to_string(),
+        statement: "Cloud vendor API states perimeter door is closed".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::VendorClaimed,
+        hypothesis: None,
+        evidence: vec![vendor_cloud_msg],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    // 2. Observed evidence: Direct physical sensor measurement with cryptographic custody
+    let physical_observation = KnowledgeCell {
+        claim_id: "claim:door:status:001".to_string(),
+        statement: "Native GPIO reed switch circuit confirms continuity across physical door frame".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![physical_hardware_packet],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    // Both validate successfully
+    assert!(vendor_claim.validate().is_ok());
+    assert!(physical_observation.validate().is_ok());
+
+    // Only the direct physical observation carries authority for irreversible actions
+    assert!(!vendor_claim.is_irreversible_effect_premise(now));
+    assert!(physical_observation.is_irreversible_effect_premise(now));
+
+    Ok(())
+}
+
+#[test]
+fn test_vendor_claimed_distinction_from_all_other_provenance_classes() -> Result<(), Box<dyn Error>> {
+    let all_provenances = [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ];
+
+    let vendor_claimed = ProvenanceClass::VendorClaimed;
+
+    for prov in all_provenances {
+        if prov != vendor_claimed {
+            // IDs are strictly distinct
+            assert_ne!(vendor_claimed.id(), prov.id());
+            // Schema names are strictly distinct
+            assert_ne!(vendor_claimed.as_str(), prov.as_str());
+            // Meanings are strictly distinct
+            assert_ne!(vendor_claimed.meaning(), prov.meaning());
+        }
+    }
+
+    // Effect authorization partition check
+    let non_authorizing_classes: Vec<ProvenanceClass> = all_provenances
+        .iter()
+        .copied()
+        .filter(|p| !p.may_authorize_irreversible_effect())
+        .collect();
+
+    let authorizing_classes: Vec<ProvenanceClass> = all_provenances
+        .iter()
+        .copied()
+        .filter(|p| p.may_authorize_irreversible_effect())
+        .collect();
+
+    // VendorClaimed is in the non-authorizing partition
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::VendorClaimed));
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Predicted));
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Remembered));
+    assert_eq!(non_authorizing_classes.len(), 3);
+
+    // Authorizing partition
+    assert!(authorizing_classes.contains(&ProvenanceClass::Observed));
+    assert!(authorizing_classes.contains(&ProvenanceClass::Derived));
+    assert!(authorizing_classes.contains(&ProvenanceClass::OperatorAsserted));
+    assert!(authorizing_classes.contains(&ProvenanceClass::Policy));
+    assert_eq!(authorizing_classes.len(), 4);
+
+    Ok(())
+}

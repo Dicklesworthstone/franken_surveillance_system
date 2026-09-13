@@ -404,6 +404,12 @@ impl ProvenanceClass {
     pub const fn is_operator_asserted(self) -> bool {
         matches!(self, Self::OperatorAsserted)
     }
+
+    /// Returns whether this provenance class represents vendor/device boundary assertions (PROV-006).
+    #[must_use]
+    pub const fn is_vendor_claimed(self) -> bool {
+        matches!(self, Self::VendorClaimed)
+    }
 }
 
 impl CanonicalEncode for ProvenanceClass {
@@ -448,6 +454,73 @@ pub enum HypothesisDisposition {
     Resolved,
     /// A newer hypothesis revision replaced it.
     Superseded,
+}
+
+impl HypothesisDisposition {
+    /// Returns the stable schema spelling.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Live => "live",
+            Self::Supported => "supported",
+            Self::Disfavored => "disfavored",
+            Self::Refuted => "refuted",
+            Self::Resolved => "resolved",
+            Self::Superseded => "superseded",
+        }
+    }
+
+    /// Parses from the stable schema spelling.
+    pub fn from_name(s: &str) -> Result<Self, ContractError> {
+        match s {
+            "live" => Ok(Self::Live),
+            "supported" => Ok(Self::Supported),
+            "disfavored" => Ok(Self::Disfavored),
+            "refuted" => Ok(Self::Refuted),
+            "resolved" => Ok(Self::Resolved),
+            "superseded" => Ok(Self::Superseded),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+
+    /// Returns whether this disposition is still under active consideration.
+    #[must_use]
+    pub const fn is_viable(self) -> bool {
+        matches!(self, Self::Live | Self::Supported | Self::Disfavored)
+    }
+
+    /// Returns whether this disposition represents a terminal state.
+    #[must_use]
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Refuted | Self::Resolved | Self::Superseded)
+    }
+}
+
+impl CanonicalEncode for HypothesisDisposition {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for HypothesisDisposition {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        Self::from_name(text)
+    }
+}
+
+impl fmt::Display for HypothesisDisposition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for HypothesisDisposition {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::from_name(s)
+    }
 }
 
 /// Completeness of a bounded response or query.
@@ -2649,6 +2722,14 @@ pub enum ContractError {
     UnknownAbstractionLayer(String),
     /// Attempted to promote decode or model output into source evidence (AGT-LAYER-002, INV-003).
     ProhibitedEvidencePromotion,
+    /// Attempted to collapse uncertainty into truth or resolve an investigation without adjudication (AGT-LAYER-006, INV-104).
+    UnadjudicatedUncertaintyCollapse,
+    /// An investigation requires at least two competing hypotheses to preserve alternatives (AGT-LAYER-006, INV-104, AGENTS.md).
+    CompetingHypothesesRequired,
+    /// An investigation hypothesis lacks mandatory predicted observations or falsifiers (AGT-LAYER-006, INV-104).
+    HypothesisMissingFalsifier,
+    /// An investigation hypothesis cannot claim the `known` knowledge state (AGT-LAYER-006, INV-104).
+    HypothesisKnownForbidden,
 }
 
 impl ContractError {
@@ -2693,6 +2774,10 @@ impl ContractError {
             Self::DerivedBeliefKnownForbidden => "derived_belief_known_forbidden",
             Self::UnknownAbstractionLayer(_) => "unknown_abstraction_layer",
             Self::ProhibitedEvidencePromotion => "prohibited_evidence_promotion",
+            Self::UnadjudicatedUncertaintyCollapse => "unadjudicated_uncertainty_collapse",
+            Self::CompetingHypothesesRequired => "competing_hypotheses_required",
+            Self::HypothesisMissingFalsifier => "hypothesis_missing_falsifier",
+            Self::HypothesisKnownForbidden => "hypothesis_known_forbidden",
         }
     }
 }
