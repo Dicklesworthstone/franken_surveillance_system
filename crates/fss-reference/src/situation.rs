@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use fss_core::OperationId;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, CanonicalEncoder,
     Completeness, ContentDigest, ContractBasis, CoverageContinuity, CoverageStopReason,
@@ -12,6 +11,7 @@ use fss_core::{
     PrincipalId, ProvenanceClass, ReconciliationBasis, SessionId, SituationCapsule, SituationFrame,
     TimestampNs, WorldEnvelope,
 };
+use fss_core::{EventId, OperationId};
 use fss_ledger::DurableReferenceLedger;
 use fss_object::ObjectManifest;
 
@@ -48,6 +48,11 @@ pub struct ReferenceSituationRequest<'a> {
     pub contract_basis: ContractBasis,
     /// Prior authority anchor, when producing a delta-oriented projection.
     pub previous_anchor: Option<LedgerAnchor>,
+    /// Publication digest of the predecessor this situation continues, when it continues one.
+    ///
+    /// It is sealed with the situation, so a meaningful delta can require its result to descend
+    /// from its basis (fss-mnlz1).
+    pub predecessor_publication: Option<ContentDigest>,
     /// Canonical policy decision being projected.
     pub decision: &'a ReferencePolicyDecision,
     /// Authority receipt for the event revision.
@@ -139,6 +144,13 @@ struct EffectSeal {
     roots: BTreeSet<ContentDigest>,
 }
 
+/// What a compiled situation is about: the event it projects and the objective it serves.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SituationSubject {
+    event_id: EventId,
+    objective_id: String,
+}
+
 /// A compiled situation plus every proof root needed for a self-contained handoff.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ReferenceSituation {
@@ -158,6 +170,10 @@ pub struct ReferenceSituation {
     /// transplanted into another capsule, or any later capsule edit (a mission relabel, a restored
     /// commit affordance beside a terminal proof), breaks the seal (fss-6sph6).
     seal: Option<EffectSeal>,
+    /// The subject a compile path sealed with the situation; `None` for a hand-built situation.
+    subject: Option<SituationSubject>,
+    /// The predecessor publication a compile path sealed with the situation, when it continues one.
+    predecessor: Option<ContentDigest>,
 }
 
 impl ReferenceSituation {
@@ -173,6 +189,8 @@ impl ReferenceSituation {
             proof_roots,
             effect_bindings: BTreeMap::new(),
             seal: None,
+            subject: None,
+            predecessor: None,
         }
     }
 
@@ -235,6 +253,41 @@ impl ReferenceSituation {
         Ok(())
     }
 
+    /// Records the subject and predecessor a compile path is about to seal with the situation.
+    /// Sealing covers both, so neither can change afterwards without breaking the seal
+    /// (fss-mnlz1).
+    pub(crate) fn set_lineage(
+        &mut self,
+        event_id: EventId,
+        objective_id: String,
+        predecessor: Option<ContentDigest>,
+    ) {
+        self.subject = Some(SituationSubject {
+            event_id,
+            objective_id,
+        });
+        self.predecessor = predecessor;
+    }
+
+    /// Returns the sealed subject (event and objective), or `None` for a hand-built situation.
+    #[must_use]
+    pub fn subject(&self) -> Option<(&EventId, &str)> {
+        self.subject
+            .as_ref()
+            .map(|subject| (&subject.event_id, subject.objective_id.as_str()))
+    }
+
+    /// Returns the sealed predecessor publication digest, when this situation continues one.
+    #[must_use]
+    pub fn predecessor_publication(&self) -> Option<ContentDigest> {
+        self.predecessor
+    }
+
+    /// Returns whether both situations carry a sealed subject and it is the same one.
+    pub(crate) fn same_subject(&self, other: &Self) -> bool {
+        self.subject.is_some() && self.subject == other.subject
+    }
+
     /// Seals the bindings, and the proof roots gathered so far, to the finished capsule. Compile
     /// paths call it after their last capsule edit, so a sealed situation is one a compile path
     /// produced; a later capsule edit, binding, or removed root breaks the seal.
@@ -266,8 +319,24 @@ impl ReferenceSituation {
             .capsule
             .validated_digest("fss.reference_effect_binding_capsule.v1")?;
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.reference_effect_binding_seal.v2");
+        encoder.text("fss.reference_effect_binding_seal.v3");
         encoder.digest(capsule);
+        // The lineage: what the situation is about and which publication it continues.
+        match &self.subject {
+            Some(subject) => {
+                encoder.bool(true);
+                encoder.text(subject.event_id.as_str());
+                encoder.text(&subject.objective_id);
+            }
+            None => encoder.bool(false),
+        }
+        match self.predecessor {
+            Some(predecessor) => {
+                encoder.bool(true);
+                encoder.digest(predecessor);
+            }
+            None => encoder.bool(false),
+        }
         encoder.u64(self.effect_bindings.len() as u64);
         for (claim_id, binding) in &self.effect_bindings {
             encoder.text(claim_id);
@@ -1047,6 +1116,11 @@ pub fn compile_reference_situation(
     if let Some((operation_id, state, cell)) = &outcome_cell {
         situation.bind_effect_cell(EffectCellKind::Outcome, operation_id, *state, cell)?;
     }
+    situation.set_lineage(
+        request.decision.event.event_id.clone(),
+        request.objective_id.clone(),
+        request.predecessor_publication,
+    );
     situation.seal_effect_bindings()?;
     Ok(situation)
 }

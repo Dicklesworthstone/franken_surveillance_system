@@ -116,7 +116,9 @@ pub use extrinsics::{
     ReferenceExtrinsicsSolver, RigidTransform3D, solve_extrinsics,
 };
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
-pub use meaningful_delta::classify_reference_meaningful_delta;
+pub use meaningful_delta::{
+    classify_reference_meaningful_delta, classify_reference_meaningful_delta_with_open_obligations,
+};
 pub use model::{
     ADR_0004_ID, ADR_0004_TITLE, CorroboratedModelFinding, CorroborationStatus,
     MAX_CORROBORATION_SOURCES, MAX_DETECTIONS_PER_OUTPUT, MAX_EMBEDDING_DIM, MAX_FAULT_REASON_LEN,

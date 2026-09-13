@@ -314,6 +314,7 @@ fn test_request<'a>(
         revision: 1,
         contract_basis: test_basis(),
         previous_anchor: None,
+        predecessor_publication: None,
         decision,
         event_receipt,
         alert_plan,

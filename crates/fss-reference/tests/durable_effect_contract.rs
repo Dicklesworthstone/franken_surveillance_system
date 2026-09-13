@@ -268,6 +268,7 @@ fn situation_request<'a>(
             .with_accepted_nightly("nightly-2026-08-31"),
         ),
         previous_anchor: None,
+        predecessor_publication: None,
         decision,
         event_receipt: receipt,
         alert_plan: plan,

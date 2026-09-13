@@ -12,7 +12,7 @@ use fss_core::{
 
 use crate::{
     ReferenceProjectionSpec, ReferenceSituation, classify_reference_meaningful_delta,
-    project_reference_situation,
+    classify_reference_meaningful_delta_with_open_obligations, project_reference_situation,
 };
 
 #[derive(Clone, Debug)]
@@ -33,6 +33,7 @@ struct Variant {
     effect_bound: bool,
     effect_terminal_state: fss_core::EffectState,
     effect_statement: Option<String>,
+    predecessor: Option<ContentDigest>,
     created_at: Option<TimestampNs>,
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
@@ -60,6 +61,7 @@ impl Variant {
             effect_bound: true,
             effect_terminal_state: fss_core::EffectState::Verified,
             effect_statement: None,
+            predecessor: None,
             created_at: None,
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
@@ -288,6 +290,12 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             )?;
         }
     }
+    // The fixture stands in for a compile path, which seals its subject and predecessor too.
+    situation.set_lineage(
+        fss_core::EventId::parse("event:meaningful-delta")?,
+        "objective:meaningful-delta".to_owned(),
+        variant.predecessor,
+    );
     situation.seal_effect_bindings()?;
     project_reference_situation(
         situation,
@@ -421,8 +429,12 @@ fn effect_terminalization_preserves_uncertainty_transition() -> Result<(), Box<d
     result_variant.sequence = 2;
     result_variant.effect_state = Some(KnowledgeState::Known);
     result_variant.obligations.clear();
-    let result = publication(&result_variant)?;
-    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+    let result = successor_of(&basis, &result_variant)?;
+    let delta = classify_reference_meaningful_delta_with_open_obligations(
+        &basis,
+        &result,
+        &BTreeSet::new(),
+    )?;
 
     assert!(
         delta
@@ -617,7 +629,7 @@ fn indeterminate_effect_delta(
     result_variant.sequence = 2;
     result_variant.effect_state = successor;
     configure(&mut result_variant);
-    let result = publication(&result_variant)?;
+    let result = successor_of(&basis, &result_variant)?;
     Ok(classify_reference_meaningful_delta(&basis, &result)?)
 }
 
@@ -1031,7 +1043,7 @@ fn effect_transition_delta(
     result_variant.sequence = 2;
     result_variant.effect_state = current;
     configure(&mut result_variant);
-    let result = publication(&result_variant)?;
+    let result = successor_of(&basis, &result_variant)?;
     Ok(classify_reference_meaningful_delta(&basis, &result)?)
 }
 
@@ -1205,8 +1217,8 @@ fn indeterminate_effect_laundered_through_unknown_never_terminalizes() -> Result
     third.effect_state = Some(KnowledgeState::Known);
     third.effect_evidence = false;
     let first = publication(&first)?;
-    let second = publication(&second)?;
-    let third = publication(&third)?;
+    let second = successor_of(&first, &second)?;
+    let third = successor_of(&second, &third)?;
 
     // Step one keeps the indeterminate effect open.
     let step_one = classify_reference_meaningful_delta(&first, &second)?;
@@ -1333,8 +1345,8 @@ fn parked_effect_deltas(
     let mut third = second.clone();
     third.sequence = 3;
     let first = publication(&first)?;
-    let second = publication(&second)?;
-    let third = publication(&third)?;
+    let second = successor_of(&first, &second)?;
+    let third = successor_of(&second, &third)?;
     Ok((
         classify_reference_meaningful_delta(&first, &second)?,
         classify_reference_meaningful_delta(&second, &third)?,
@@ -1390,7 +1402,7 @@ fn unproved_effect_stays_effect_uncertainty_in_every_delta() -> Result<(), Box<d
         let basis = publication(&basis_variant)?;
         let mut result_variant = basis_variant.clone();
         result_variant.sequence = 2;
-        let result = publication(&result_variant)?;
+        let result = successor_of(&basis, &result_variant)?;
         let delta = classify_reference_meaningful_delta(&basis, &result)?;
         assert_unproved_effect_still_reported(
             &delta,
@@ -1491,7 +1503,7 @@ fn unestablished_effect_removed_is_effect_uncertainty_not_silence() -> Result<()
         let mut result_variant = basis_variant.clone();
         result_variant.sequence = 2;
         result_variant.effect_state = None;
-        let result = publication(&result_variant)?;
+        let result = successor_of(&basis, &result_variant)?;
         let delta = classify_reference_meaningful_delta(&basis, &result)?;
         assert_unproved_effect_removal_reported(
             &delta,
@@ -1514,8 +1526,8 @@ fn indeterminate_effect_laundered_through_unknown_then_dropped_is_never_silent()
     third.sequence = 3;
     third.effect_state = None;
     let first = publication(&first)?;
-    let second = publication(&second)?;
-    let third = publication(&third)?;
+    let second = successor_of(&first, &second)?;
+    let third = successor_of(&second, &third)?;
 
     let step_one = classify_reference_meaningful_delta(&first, &second)?;
     assert_effect_unresolved(
@@ -1868,7 +1880,7 @@ fn proved_effect_whose_typed_outcome_flips_is_a_contradiction() -> Result<(), Bo
     let mut result_variant = basis_variant.clone();
     result_variant.sequence = 2;
     result_variant.effect_terminal_state = fss_core::EffectState::Failed;
-    let result = publication(&result_variant)?;
+    let result = successor_of(&basis, &result_variant)?;
     let delta = classify_reference_meaningful_delta(&basis, &result)?;
     let expected = "effect outcome contradicted: operation meaningful-delta was proved succeeded and is now proved failed";
     assert!(delta.silence_certificate.is_none(), "{:?}", delta.classes);
@@ -2161,11 +2173,13 @@ fn nominal_spec() -> Result<ReferenceProjectionSpec, Box<dyn Error>> {
 }
 
 /// The successor publication plus one hand-built `known` cell whose evidence the caller rooted
-/// itself (review probe P5); sealed when `sealed`, as a compile path would seal it.
+/// itself (review probe P5); sealed when `sealed`, as a compile path would seal it, with the
+/// fixture subject and `predecessor` as its sealed predecessor.
 fn publication_with_cell(
     claim_id: &str,
     hypothesis: Option<HypothesisDisposition>,
     sealed: bool,
+    predecessor: Option<ContentDigest>,
 ) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
     let mut variant = Variant::baseline()?;
     variant.sequence = 2;
@@ -2187,6 +2201,11 @@ fn publication_with_cell(
     roots.insert(root);
     let mut situation = ReferenceSituation::new(capsule, roots);
     if sealed {
+        situation.set_lineage(
+            fss_core::EventId::parse("event:meaningful-delta")?,
+            "objective:meaningful-delta".to_owned(),
+            predecessor,
+        );
         situation.seal_effect_bindings()?;
     }
     Ok(project_reference_situation(situation, &nominal_spec()?)?)
@@ -2197,7 +2216,7 @@ fn publication_with_self_rooted_cell(
     claim_id: &str,
     hypothesis: Option<HypothesisDisposition>,
 ) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
-    publication_with_cell(claim_id, hypothesis, false)
+    publication_with_cell(claim_id, hypothesis, false, None)
 }
 
 /// `publication` rebuilt through the public constructor, so unsealed, after `edit_capsule`.
@@ -2379,7 +2398,7 @@ fn effect_statement_free_text_never_terminalizes() -> Result<(), Box<dyn Error>>
         let mut result_variant = basis_variant.clone();
         result_variant.sequence = 2;
         result_variant.effect_statement = Some(statement.to_owned());
-        let result = publication(&result_variant)?;
+        let result = successor_of(&basis, &result_variant)?;
         let delta = classify_reference_meaningful_delta(&basis, &result)?;
         assert!(
             !delta
@@ -2408,21 +2427,24 @@ fn effect_statement_free_text_never_terminalizes() -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-/// Round 5 N2: an obligation discharge is terminal only between sealed publications. An unsealed
-/// result that drops the basis obligation reports the removal but no terminal transition; the
-/// sealed discharge is terminal, non-coalescible, and refuses to coalesce with the next delta.
+/// Round 5 N2 and fss-mnlz1: an obligation discharge is terminal only between sealed
+/// publications where the result continues the basis, and only once the durable journal no longer
+/// holds the obligation open. An unsealed result reports the removal but no terminal transition;
+/// the continuing sealed discharge is refused without the journal's open obligations and while the
+/// obligation is still open, and otherwise is terminal, critical, and refuses to coalesce.
 #[test]
 fn obligation_discharge_is_terminal_only_between_sealed_publications() -> Result<(), Box<dyn Error>>
 {
+    let obligation = ObligationId::parse("obligation:meaningful-delta")?;
     let mut basis_variant = Variant::baseline()?;
-    basis_variant.obligations = vec![ObligationId::parse("obligation:meaningful-delta")?];
+    basis_variant.obligations = vec![obligation.clone()];
     let basis = publication(&basis_variant)?;
     let mut result_variant = basis_variant.clone();
     result_variant.sequence = 2;
     result_variant.obligations.clear();
-    let sealed = publication(&result_variant)?;
+    let sealed = successor_of(&basis, &result_variant)?;
     let unsealed = unsealed_copy(&sealed, |_| {})?;
-    let removed = "obligation removed: obligation:meaningful-delta".to_owned();
+    let removed = format!("obligation removed: {obligation}");
 
     let delta = classify_reference_meaningful_delta(&basis, &unsealed)?;
     assert!(
@@ -2440,7 +2462,38 @@ fn obligation_discharge_is_terminal_only_between_sealed_publications() -> Result
     );
     delta.validate()?;
 
-    let delta = classify_reference_meaningful_delta(&basis, &sealed)?;
+    let without_journal = classify_reference_meaningful_delta(&basis, &sealed);
+    assert!(
+        matches!(
+            without_journal,
+            Err(crate::ReferenceError::InvalidSpec(
+                "meaningful_delta_open_obligations_required"
+            ))
+        ),
+        "{:?}",
+        without_journal.map(|delta| delta.classes)
+    );
+    let still_open = classify_reference_meaningful_delta_with_open_obligations(
+        &basis,
+        &sealed,
+        &BTreeSet::from([obligation.clone()]),
+    );
+    assert!(
+        matches!(
+            still_open,
+            Err(crate::ReferenceError::InvalidSpec(
+                "meaningful_delta_obligation_still_open"
+            ))
+        ),
+        "{:?}",
+        still_open.map(|delta| delta.classes)
+    );
+
+    let delta = classify_reference_meaningful_delta_with_open_obligations(
+        &basis,
+        &sealed,
+        &BTreeSet::new(),
+    )?;
     for class in [
         MeaningfulDeltaClass::Obligation,
         MeaningfulDeltaClass::TerminalTransition,
@@ -2453,10 +2506,12 @@ fn obligation_discharge_is_terminal_only_between_sealed_publications() -> Result
     }
     assert!(delta.obligation_changes.contains(&removed), "{delta:?}");
     assert!(delta.is_non_coalescible());
+    assert_eq!(delta.priority, DeltaPriority::Critical);
     let mut next_variant = result_variant.clone();
     next_variant.sequence = 3;
     next_variant.pressure = ResourcePressure::Elevated;
-    let next = classify_reference_meaningful_delta(&sealed, &publication(&next_variant)?)?;
+    let next =
+        classify_reference_meaningful_delta(&sealed, &successor_of(&sealed, &next_variant)?)?;
     assert!(!delta.can_coalesce_with(&next)?);
     assert!(
         delta
@@ -2509,8 +2564,9 @@ fn unsealed_publications_never_terminalize_any_name() -> Result<(), Box<dyn Erro
     Ok(())
 }
 
-/// Round 5 N2 positive control: the same resolved hypothesis in a sealed result, against a sealed
-/// basis, is an event terminal transition that refuses to coalesce with the next delta.
+/// Round 5 N2 positive control: the same resolved hypothesis in a sealed result that continues the
+/// sealed basis is an event terminal transition: critical, and refusing to coalesce with the next
+/// delta.
 #[test]
 fn sealed_event_hypothesis_terminal_is_non_coalescible() -> Result<(), Box<dyn Error>> {
     let basis = publication(&Variant::baseline()?)?;
@@ -2518,6 +2574,7 @@ fn sealed_event_hypothesis_terminal_is_non_coalescible() -> Result<(), Box<dyn E
         "claim:alert-delivery",
         Some(HypothesisDisposition::Resolved),
         true,
+        Some(basis.publication_digest),
     )?;
     assert!(result.situation.is_sealed());
     let delta = classify_reference_meaningful_delta(&basis, &result)?;
@@ -2533,7 +2590,8 @@ fn sealed_event_hypothesis_terminal_is_non_coalescible() -> Result<(), Box<dyn E
     let mut next_variant = Variant::baseline()?;
     next_variant.sequence = 3;
     next_variant.pressure = ResourcePressure::Elevated;
-    let next = classify_reference_meaningful_delta(&result, &publication(&next_variant)?)?;
+    let next =
+        classify_reference_meaningful_delta(&result, &successor_of(&result, &next_variant)?)?;
     assert!(!delta.can_coalesce_with(&next)?);
     assert!(
         delta
@@ -2580,8 +2638,9 @@ fn unsealed_basis_cannot_fake_an_obligation_discharge() -> Result<(), Box<dyn Er
     Ok(())
 }
 
-/// Round 5 N2: an effect terminalizes only when both publications are sealed. A proved effect in a
-/// sealed result is terminal against the sealed basis and not against its unsealed copy.
+/// Round 5 N2: an effect terminalizes only between sealed publications. A proved effect in a
+/// sealed result is terminal against the sealed basis it continues and not against that basis's
+/// unsealed copy.
 #[test]
 fn effect_terminalization_needs_a_sealed_basis() -> Result<(), Box<dyn Error>> {
     let sealed_basis = publication(&Variant::baseline()?)?;
@@ -2589,7 +2648,7 @@ fn effect_terminalization_needs_a_sealed_basis() -> Result<(), Box<dyn Error>> {
     let mut result_variant = Variant::baseline()?;
     result_variant.sequence = 2;
     result_variant.effect_state = Some(KnowledgeState::Known);
-    let result = publication(&result_variant)?;
+    let result = successor_of(&sealed_basis, &result_variant)?;
     let terminal = |delta: &fss_core::MeaningfulDelta| {
         delta
             .classes
@@ -2603,25 +2662,34 @@ fn effect_terminalization_needs_a_sealed_basis() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// `publication` rebuilt after `edit_capsule` and sealed, as a compile path would seal it.
+/// `publication` rebuilt after `edit_capsule` and sealed, as a compile path would seal it, with
+/// the fixture subject and `predecessor` as its sealed predecessor.
 fn resealed_copy(
     publication: &crate::ReferenceSituationPublication,
+    predecessor: Option<ContentDigest>,
     edit_capsule: impl FnOnce(&mut SituationCapsule),
 ) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
     let mut capsule = publication.situation.capsule.clone();
     edit_capsule(&mut capsule);
     let mut situation = ReferenceSituation::new(capsule, publication.situation.proof_roots.clone());
+    situation.set_lineage(
+        fss_core::EventId::parse("event:meaningful-delta")?,
+        "objective:meaningful-delta".to_owned(),
+        predecessor,
+    );
     situation.seal_effect_bindings()?;
     Ok(project_reference_situation(situation, &nominal_spec()?)?)
 }
 
 /// Round 5 R5-4: a mission terminal transition, through the typed `mission_state` or a
 /// `claim:mission:` cell, needs both publications sealed like every other terminal transition.
-/// Between sealed publications it is a critical, non-coalescible terminal transition; with the
-/// result unsealed the change is reported but never as terminal.
+/// Between sealed publications where the result continues the basis it is a critical,
+/// non-coalescible terminal transition; with the result unsealed the change is reported but never
+/// as terminal.
 #[test]
 fn mission_terminalization_needs_both_publications_sealed() -> Result<(), Box<dyn Error>> {
     let basis = publication(&Variant::baseline()?)?;
+    let predecessor = Some(basis.publication_digest);
     let mut successor = Variant::baseline()?;
     successor.sequence = 2;
     let template = publication(&successor)?;
@@ -2636,13 +2704,13 @@ fn mission_terminalization_needs_both_publications_sealed() -> Result<(), Box<dy
     for (label, sealed, unsealed) in [
         (
             "mission_state",
-            resealed_copy(&template, close)?,
+            resealed_copy(&template, predecessor, close)?,
             unsealed_copy(&template, close)?,
         ),
         (
             "claim:mission",
-            publication_with_cell("claim:mission:meaningful-delta", None, true)?,
-            publication_with_cell("claim:mission:meaningful-delta", None, false)?,
+            publication_with_cell("claim:mission:meaningful-delta", None, true, predecessor)?,
+            publication_with_cell("claim:mission:meaningful-delta", None, false, None)?,
         ),
     ] {
         let delta = classify_reference_meaningful_delta(&basis, &sealed)?;
@@ -2655,6 +2723,49 @@ fn mission_terminalization_needs_both_publications_sealed() -> Result<(), Box<dy
         assert!(
             delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
             "{label} unsealed: {:?}",
+            delta.classes
+        );
+        delta.validate()?;
+    }
+    Ok(())
+}
+
+/// `variant` published as the successor of `basis`: sealed with the fixture subject and `basis` as
+/// its sealed predecessor, as a compile path chains a lineage (fss-mnlz1).
+fn successor_of(
+    basis: &crate::ReferenceSituationPublication,
+    variant: &Variant,
+) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+    let mut variant = variant.clone();
+    variant.predecessor = Some(basis.publication_digest);
+    publication(&variant)
+}
+
+/// fss-mnlz1: a proved effect is terminal only when the result continues the basis. The same
+/// sealed publications classify as terminal when chained, and report the change without a terminal
+/// transition when the result names no predecessor or another one.
+#[test]
+fn effect_terminalization_needs_the_result_to_continue_the_basis() -> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    let mut result_variant = Variant::baseline()?;
+    result_variant.sequence = 2;
+    result_variant.effect_state = Some(KnowledgeState::Known);
+    let terminal = |delta: &fss_core::MeaningfulDelta| {
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition)
+    };
+    let chained = successor_of(&basis, &result_variant)?;
+    let delta = classify_reference_meaningful_delta(&basis, &chained)?;
+    assert!(terminal(&delta), "{:?}", delta.classes);
+    for predecessor in [None, Some(ContentDigest::sha256(b"another-publication"))] {
+        let mut variant = result_variant.clone();
+        variant.predecessor = predecessor;
+        let delta = classify_reference_meaningful_delta(&basis, &publication(&variant)?)?;
+        assert!(!terminal(&delta), "{predecessor:?}: {:?}", delta.classes);
+        assert!(
+            delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
+            "{predecessor:?}: {:?}",
             delta.classes
         );
         delta.validate()?;

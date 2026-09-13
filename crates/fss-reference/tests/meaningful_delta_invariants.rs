@@ -24,11 +24,11 @@ use fss_reference::{
     ReferenceModelObservation, ReferencePolicyDecision, ReferenceProjectionSpec,
     ReferenceProviderBehavior, ReferenceSituation, ReferenceSituationPublication,
     ReferenceSituationRequest, VirtualCameraSpec, classify_reference_meaningful_delta,
-    compile_reference_situation, compile_reference_situation_with_operation_receipt,
-    dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
-    observe_reference_alert, prepare_reference_alert, project_reference_situation,
-    publish_reference_alert_outcome, publish_reference_event, run_reference_capture,
-    verify_reference_alert,
+    classify_reference_meaningful_delta_with_open_obligations, compile_reference_situation,
+    compile_reference_situation_with_operation_receipt, dispatch_reference_alert,
+    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
+    prepare_reference_alert, project_reference_situation, publish_reference_alert_outcome,
+    publish_reference_event, run_reference_capture, verify_reference_alert,
 };
 
 #[derive(Clone, Debug)]
@@ -318,6 +318,7 @@ fn test_request<'a>(
         revision: 1,
         contract_basis: test_basis(),
         previous_anchor: None,
+        predecessor_publication: None,
         created_at: TimestampNs(1_000),
         decision,
         event_receipt,
@@ -1209,11 +1210,25 @@ fn test_f4_real_situation_f2_terminal_effect_transition_non_coalescible()
         BTreeSet::from(["capability:alert.commit".to_owned()]),
     )?;
     req2.alert_outcome = Some(&outcome);
+    req2.predecessor_publication = Some(pub1.publication_digest);
     let situation2 = compile_reference_situation(req2, &harness.authority)?;
     let pub2 = project_reference_situation(situation2, &test_spec(10_000)?)?;
     pub2.verify()?;
 
-    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+    // The verified outcome continues the prepared publication, and the journal no longer holds the
+    // alert obligation open (fss-mnlz1).
+    let open_obligations: BTreeSet<ObligationId> = journal
+        .obligations()
+        .filter(|obligation| {
+            matches!(
+                obligation.state,
+                fss_core::ObligationState::Pending | fss_core::ObligationState::Indeterminate
+            )
+        })
+        .map(|obligation| obligation.obligation_id.clone())
+        .collect();
+    let delta =
+        classify_reference_meaningful_delta_with_open_obligations(&pub1, &pub2, &open_obligations)?;
     assert!(
         delta
             .classes
@@ -1235,6 +1250,7 @@ fn test_f4_real_situation_f2_terminal_effect_transition_non_coalescible()
         BTreeSet::from(["capability:alert.commit".to_owned()]),
     )?;
     req3.alert_outcome = Some(&outcome);
+    req3.predecessor_publication = Some(pub2.publication_digest);
     let situation3 = compile_reference_situation(req3, &harness.authority)?;
     let pub3 = project_reference_situation(situation3, &spec3)?;
     pub3.verify()?;

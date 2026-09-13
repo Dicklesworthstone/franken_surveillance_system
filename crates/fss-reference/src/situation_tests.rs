@@ -160,6 +160,7 @@ fn request<'a>(
         revision: 1,
         contract_basis: basis(),
         previous_anchor: None,
+        predecessor_publication: None,
         decision,
         event_receipt,
         alert_plan: None,
@@ -1323,5 +1324,81 @@ fn tamper_finding_is_a_typed_integrity_risk_not_a_presence_contradiction()
             .iter()
             .any(|risk| risk.starts_with("Sensor tamper is reported"))
     );
+    Ok(())
+}
+
+/// fss-mnlz1 R5-2: a rejected event's publication, chained after the publication of another event
+/// in the same mission, carries refuted-hypothesis cells, but a different subject: it never
+/// terminalizes the other event's cells.
+#[test]
+fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dyn Error>> {
+    let mut harness = SituationHarness::new("r52")?;
+    let (corroborated, corroborated_receipt) = harness.publish_decision(
+        "r52-corroborated",
+        &[
+            (MockSemanticLabel::PersonLike, "power:alpha"),
+            (MockSemanticLabel::PersonLike, "power:beta"),
+        ],
+    )?;
+    let (rejected, rejected_receipt) = harness.publish_decision(
+        "r52-rejected",
+        &[(MockSemanticLabel::AnimalLike, "power:alpha")],
+    )?;
+    assert_eq!(rejected.event.state, EventState::Rejected);
+    let spec = crate::situation_guard_tests::guard_projection_spec()?;
+    let basis = crate::project_reference_situation(
+        compile_reference_situation(
+            request(
+                &corroborated,
+                &corroborated_receipt,
+                capabilities(&["capability:alert.prepare"]),
+            )?,
+            &harness.authority,
+        )?,
+        &spec,
+    )?;
+    let mut rejected_request = request(
+        &rejected,
+        &rejected_receipt,
+        capabilities(&["capability:evidence.query", "capability:session.wait"]),
+    )?;
+    rejected_request.predecessor_publication = Some(basis.publication_digest);
+    let result = crate::project_reference_situation(
+        compile_reference_situation(rejected_request, &harness.authority)?,
+        &spec,
+    )?;
+    assert_eq!(
+        result.situation.predecessor_publication(),
+        Some(basis.publication_digest)
+    );
+    assert!(
+        result
+            .situation
+            .capsule
+            .frame
+            .knowledge_cells
+            .iter()
+            .any(|cell| cell.hypothesis == Some(HypothesisDisposition::Refuted)),
+        "{:?}",
+        result.situation.capsule.frame.knowledge_cells
+    );
+    assert_ne!(basis.situation.subject(), result.situation.subject());
+    let delta = crate::classify_reference_meaningful_delta(&basis, &result)?;
+    assert!(
+        !delta
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::MaterialState),
+        "{:?}",
+        delta.classes
+    );
+    delta.validate()?;
+    harness.cleanup();
     Ok(())
 }

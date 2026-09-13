@@ -9,6 +9,8 @@ use fss_core::{
     TimestampNs, WorldEnvelope,
 };
 
+use fss_core::ObligationId;
+
 use crate::situation::{EFFECT_CLAIM_PREFIX, EffectOutcome, OBLIGATION_CLAIM_PREFIX};
 use crate::{ReferenceError, ReferenceSituationPublication};
 
@@ -139,9 +141,33 @@ fn indeterminate_effect_successor(
 /// new effect uncertainty, and authority changes are emitted as non-coalescible critical deltas.
 /// Optional presentation detail and harmless anchor advancement are never substituted for typed
 /// mission-state change.
+///
+/// This entry point has no view of the durable effect journal, so a terminal obligation discharge
+/// is refused (see [`classify_reference_meaningful_delta_with_open_obligations`]).
 pub fn classify_reference_meaningful_delta(
     basis: &ReferenceSituationPublication,
     result: &ReferenceSituationPublication,
+) -> Result<MeaningfulDelta, ReferenceError> {
+    classify(basis, result, None)
+}
+
+/// Classifies like [`classify_reference_meaningful_delta`], with the obligations the durable effect
+/// journal still holds open.
+///
+/// A terminal obligation discharge (the result continues the basis and drops an obligation) is
+/// refused while `open_obligations` still holds a dropped obligation (fss-mnlz1).
+pub fn classify_reference_meaningful_delta_with_open_obligations(
+    basis: &ReferenceSituationPublication,
+    result: &ReferenceSituationPublication,
+    open_obligations: &BTreeSet<ObligationId>,
+) -> Result<MeaningfulDelta, ReferenceError> {
+    classify(basis, result, Some(open_obligations))
+}
+
+fn classify(
+    basis: &ReferenceSituationPublication,
+    result: &ReferenceSituationPublication,
+    open_obligations: Option<&BTreeSet<ObligationId>>,
 ) -> Result<MeaningfulDelta, ReferenceError> {
     basis.verify()?;
     result.verify()?;
@@ -151,7 +177,14 @@ pub fn classify_reference_meaningful_delta(
     // that claim, so a delta with either side unsealed reports every change, an obligation leaving
     // the set included, but never as a terminal transition (fss-6sph6). The seal covers every cell
     // of a sealed capsule; an effect must also be proved through its typed binding.
-    let both_sealed = basis.situation.is_sealed() && result.situation.is_sealed();
+    // fss-mnlz1: a terminal transition also needs the result to continue the basis. Both carry
+    // the same sealed subject (event and objective), and the result's sealed predecessor is the
+    // basis publication itself. A stale basis, another event of the mission, or a result compiled
+    // outside the basis lineage reports every change but never a terminal one.
+    let terminal_allowed = basis.situation.is_sealed()
+        && result.situation.is_sealed()
+        && basis.situation.same_subject(&result.situation)
+        && result.situation.predecessor_publication() == Some(basis.publication_digest);
 
     let basis_capsule = &basis.situation.capsule;
     let result_capsule = &result.situation.capsule;
@@ -483,18 +516,36 @@ pub fn classify_reference_meaningful_delta(
     // An obligation terminalizes only through the capsule's typed obligation set. No compile path
     // binds a `claim:obligation:` cell, so such a cell's state or hypothesis is unproved and never
     // terminalizes one by its name (fss-6sph6).
-    let obligation_terminalized = both_sealed
+    let obligation_terminalized = terminal_allowed
         && basis_obligations
             .difference(&result_obligations)
             .next()
             .is_some();
+    // fss-mnlz1: a terminal discharge must agree with the durable effect journal. Without the
+    // journal's open obligations, or while it still holds a dropped obligation open, the discharge
+    // is refused rather than reported as terminal.
+    if obligation_terminalized {
+        let Some(open) = open_obligations else {
+            return Err(ReferenceError::InvalidSpec(
+                "meaningful_delta_open_obligations_required",
+            ));
+        };
+        if basis_obligations
+            .difference(&result_obligations)
+            .any(|obligation| open.contains(*obligation))
+        {
+            return Err(ReferenceError::InvalidSpec(
+                "meaningful_delta_obligation_still_open",
+            ));
+        }
+    }
     // KSTATE-001: an effect is terminal only when an operation newly has a proved outcome: a
     // bound, sealed cell (see `proved_operations`) that clears the full irreversible-effect premise
     // bar at the result anchor, for an operation the basis did not prove. That covers a resolved
     // basis-indeterminate effect and a proof that supersedes another cell of the operation, and it
     // never follows from a bare `known` state, a hypothesis disposition, or a claim name; a cell
     // added to an operation the basis already proved is not a second transition (fss-6sph6).
-    let effect_terminalized = both_sealed
+    let effect_terminalized = terminal_allowed
         && result_proved
             .keys()
             .any(|operation| !basis_proved.contains_key(operation));
@@ -502,7 +553,7 @@ pub fn classify_reference_meaningful_delta(
     // hypothesis disposition on an effect cell never terminalizes it here. `verify` refuses every
     // obligation-namespace cell (none is ever bound) and every look-alike spelling of either
     // namespace, so none reaches this rule (fss-6sph6).
-    let event_terminalized = both_sealed
+    let event_terminalized = terminal_allowed
         && result_frame.knowledge_cells.iter().any(|cell| {
             if !event_rule_applies(cell) {
                 return false;
@@ -534,7 +585,7 @@ pub fn classify_reference_meaningful_delta(
     // A mission terminal transition, like every other, needs both publications sealed: neither a
     // hand-built `mission_state` nor a hand-built `claim:mission:` cell settles a mission
     // (fss-6sph6).
-    let mission_terminalized = both_sealed
+    let mission_terminalized = terminal_allowed
         && (match (basis_capsule.mission_state, result_capsule.mission_state) {
             (Some(basis_state), Some(result_state)) => {
                 !basis_state.is_terminal() && result_state.is_terminal()
