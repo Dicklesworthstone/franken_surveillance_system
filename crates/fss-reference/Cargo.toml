@@ -16,6 +16,7 @@ fss-core = { path = "../fss-core" }
 fss-ledger = { path = "../fss-ledger" }
 fss-object = { path = "../fss-object" }
 fss-publication = { path = "../fss-publication" }
+fss-tensor = { path = "../fss-tensor" }
 
 [dev-dependencies]
 fss-core = { path = "../fss-core", features = ["test-support"] }
