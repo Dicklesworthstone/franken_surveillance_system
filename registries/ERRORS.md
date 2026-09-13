@@ -168,6 +168,7 @@ operation states rather than generic errors.
 | `ERR-ADAPTER-DIGEST-MISMATCH-001` | device adapter canonical freeze digest does not match pinned generation digest | recompute canonical device adapter registry digest or bump generation |
 | `ERR-ADAPTER-GENERATION-MISMATCH-001` | adapter generation does not match current system generation | fail closed; assign expected generation to device adapter registry |
 | `ERR-ADAPTER-INVALID-TIER-001` | adapter tier is invalid or violates promotion rules | fail closed; reject unsupported tier |
+| `ERR-ADAPTER-REPLAY-DIVERGED-001` | deterministic replay adapter produced state root or audit hash diverging from reference proof | fail closed; reject diverged replay output and quarantine bundle |
 | `ERR-GRAPH-UNREGISTERED-PROJECTION-001` | graph algorithm specifies an unregistered or nonexistent graph projection ID | update algorithm projection to a registered projection ID from docs/GRAPH_ALGORITHM_ATLAS.md |
 | `ERR-GRAPH-MISSING-TIE-BREAK-001` | graph algorithm row lacks a deterministic CGSE tie-break rule | specify a deterministic CGSE tie-break policy in graph algorithm registry |
 | `ERR-GRAPH-MISSING-COMPLEXITY-WITNESS-001` | graph algorithm row lacks declared complexity witness operations | declare dominant operation complexity witness in graph algorithm registry |

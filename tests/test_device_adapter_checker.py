@@ -94,7 +94,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_DIGEST_MISMATCH, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_DIGEST_MISMATCH})
 
     def test_04_generation_mismatch_fails(self) -> None:
         data = self.load_json()
@@ -103,7 +103,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_GENERATION_MISMATCH, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_GENERATION_MISMATCH, ERR_ADAPTER_DIGEST_MISMATCH})
 
     def test_05_missing_generation_fails(self) -> None:
         data = self.load_json()
@@ -112,7 +112,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_GENERATION_MISMATCH, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_CORRUPT_FILE, ERR_ADAPTER_GENERATION_MISMATCH})
 
     def test_06_corrupt_json_fails(self) -> None:
         p = self.fake_root / "architecture/device_adapters.json"
@@ -120,7 +120,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_CORRUPT_FILE, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_CORRUPT_FILE})
 
     def test_07_missing_json_file_fails(self) -> None:
         p = self.fake_root / "architecture/device_adapters.json"
@@ -128,7 +128,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_CORRUPT_FILE, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_CORRUPT_FILE})
 
     def test_08_missing_markdown_file_fails(self) -> None:
         p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
@@ -136,7 +136,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_CORRUPT_FILE, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_CORRUPT_FILE})
 
     def test_09_stable_id_missing_from_baseline_fails(self) -> None:
         data = self.load_json()
@@ -145,7 +145,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_STABLE_ID_REUSED, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_STABLE_ID_REUSED, ERR_ADAPTER_DIGEST_MISMATCH, ERR_ADAPTER_REGISTRY_DRIFT})
 
     def test_10_unbaseline_adapter_id_added_fails(self) -> None:
         data = self.load_json()
@@ -161,7 +161,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_STABLE_ID_REUSED, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_STABLE_ID_REUSED, ERR_ADAPTER_DIGEST_MISMATCH, ERR_ADAPTER_REGISTRY_DRIFT})
 
     def test_11_duplicate_adapter_id_fails(self) -> None:
         data = self.load_json()
@@ -170,7 +170,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_STABLE_ID_REUSED, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_STABLE_ID_REUSED, ERR_ADAPTER_CORRUPT_FILE})
 
     def test_12_tombstone_resurrection_fails(self) -> None:
         data = self.load_json()
@@ -179,7 +179,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_STABLE_ID_REUSED, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_STABLE_ID_REUSED, ERR_ADAPTER_CORRUPT_FILE})
 
     def test_13_missing_or_empty_row_field_fails(self) -> None:
         data = self.load_json()
@@ -188,7 +188,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_SEMANTIC_INVARIANT, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_SEMANTIC_INVARIANT, ERR_ADAPTER_DIGEST_MISMATCH, ERR_ADAPTER_REGISTRY_DRIFT})
 
     def test_14_row_generation_mismatch_fails(self) -> None:
         data = self.load_json()
@@ -197,7 +197,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_GENERATION_MISMATCH, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_GENERATION_MISMATCH, ERR_ADAPTER_SEMANTIC_INVARIANT, ERR_ADAPTER_DIGEST_MISMATCH})
 
     def test_15_invalid_tier_fails(self) -> None:
         data = self.load_json()
@@ -206,7 +206,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_INVALID_TIER, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_INVALID_TIER, ERR_ADAPTER_SEMANTIC_INVARIANT, ERR_ADAPTER_DIGEST_MISMATCH, ERR_ADAPTER_REGISTRY_DRIFT})
 
     def test_16_t3_promotion_to_t1_violation_fails(self) -> None:
         data = self.load_json()
@@ -217,7 +217,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_INVALID_TIER, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_INVALID_TIER, ERR_ADAPTER_SEMANTIC_INVARIANT, ERR_ADAPTER_DIGEST_MISMATCH, ERR_ADAPTER_REGISTRY_DRIFT})
 
     def test_17_invalid_gate_format_fails(self) -> None:
         data = self.load_json()
@@ -226,7 +226,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_SEMANTIC_INVARIANT, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_SEMANTIC_INVARIANT, ERR_ADAPTER_DIGEST_MISMATCH, ERR_ADAPTER_REGISTRY_DRIFT})
 
     def test_18_markdown_cell_drift_fails(self) -> None:
         md_p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
@@ -237,7 +237,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_REGISTRY_DRIFT, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_REGISTRY_DRIFT})
 
     def test_19_planted_bypass_surface_tamper_fails(self) -> None:
         data = self.load_json()
@@ -246,7 +246,7 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         res = validate_device_adapter_registry(self.fake_root)
         self.assertFalse(res.passed)
         codes = [e.code for e in res.errors]
-        self.assertIn(ERR_ADAPTER_DIGEST_MISMATCH, codes)
+        self.assertEqual(set(codes), {ERR_ADAPTER_DIGEST_MISMATCH, ERR_ADAPTER_REGISTRY_DRIFT, ERR_ADAPTER_SEMANTIC_INVARIANT})
 
     def test_20_cli_main_entrypoint(self) -> None:
         # Test CLI returns 0 on root
@@ -276,6 +276,160 @@ class DeviceAdapterRegistryCheckerTests(unittest.TestCase):
         )
         self.assertEqual(proc3.returncode, 1)
         self.assertIn("FAIL", proc3.stdout)
+
+    def test_21_mutant_p1_killing_pinned_digest_mismatch(self) -> None:
+        """Kills mutant P1: pinned-digest check disabled."""
+        data = self.load_json()
+        data["adapters"][0]["surface"] = "New Surface Valid Hash"
+        computed = compute_canonical_adapter_digest(data)
+        data["registryDigest"] = computed
+        self.write_json(data)
+
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertIn(ERR_ADAPTER_DIGEST_MISMATCH, codes)
+        self.assertTrue(any("pinned baseline freeze digest" in e.message for e in res.errors))
+
+    def test_22_mutant_p3_killing_generation_equals_current(self) -> None:
+        """Kills mutant P3: generation == CURRENT_GENERATION check disabled."""
+        data = self.load_json()
+        data["generation"] = "gen:fss1:adapters-v2-registered"
+        self.write_json(data)
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertIn(ERR_ADAPTER_GENERATION_MISMATCH, codes)
+        self.assertTrue(any("expected 'gen:fss1:adapters-v1'" in e.message for e in res.errors))
+
+    def test_23_mutant_p4_killing_baseline_field_check(self) -> None:
+        """Kills mutant P4: baseline field invariant check disabled."""
+        data = self.load_json()
+        data["adapters"][0]["tier"] = "T1"  # AOSU baseline is T3
+        self.write_json(data)
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any("Baseline row field 'tier' modified without generation bump" in e.message for e in res.errors))
+
+    def test_24_mutant_p11_killing_markdown_extra_row(self) -> None:
+        """Kills mutant P11: markdown extra row check disabled."""
+        md_p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
+        content = md_p.read_text(encoding="utf-8")
+        extra_row = "| `ADP-EXTRA-001` | extra surface | T1 | specified | `GATE-010` |\n"
+        md_p.write_text(content + extra_row, encoding="utf-8")
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertEqual(set(codes), {ERR_ADAPTER_REGISTRY_DRIFT})
+        self.assertTrue(any("Markdown contains adapter 'ADP-EXTRA-001' not in active JSON adapters" in e.message for e in res.errors))
+
+    def test_25_mutant_p13_killing_gate_format(self) -> None:
+        """Kills mutant P13: gate format regex check disabled."""
+        data = self.load_json()
+        data["adapters"][0]["promotionGate"] = "GATEWAY-01"
+        self.write_json(data)
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any("invalid promotion gate format" in e.message for e in res.errors))
+
+    def test_26_mutant_p14_killing_empty_field(self) -> None:
+        """Kills mutant P14: empty field validation disabled."""
+        data = self.load_json()
+        data["adapters"][0]["surface"] = "   "
+        self.write_json(data)
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any("missing or empty field 'surface'" in e.message for e in res.errors))
+
+    def test_27_unknown_top_level_key_rejected(self) -> None:
+        """Rejects unknown top-level keys in JSON."""
+        data = self.load_json()
+        data["extraTopLevel"] = {"credentialMethod": "basic_auth", "discovery": "subnet-scan"}
+        self.write_json(data)
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any("Unknown top-level key: 'extraTopLevel'" in e.message for e in res.errors))
+
+    def test_28_unknown_row_key_rejected(self) -> None:
+        """Rejects unknown row keys in adapters."""
+        data = self.load_json()
+        data["adapters"][0]["bogusKey"] = 1
+        self.write_json(data)
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertTrue(any("Unknown row key in adapter" in e.message for e in res.errors))
+
+    def test_29_markdown_duplicate_row_first_fails(self) -> None:
+        """Rejects duplicate adapter rows in markdown even when placed first."""
+        md_p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
+        lines = md_p.read_text(encoding="utf-8").splitlines()
+        dup_row = "| `ADP-REPLAY-001` | tampered replay | T0 | specified | `GATE-010` |"
+        new_lines = []
+        for line in lines:
+            if line.startswith("| `ADP-REPLAY-001`"):
+                new_lines.append(dup_row)
+            new_lines.append(line)
+        md_p.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertEqual(set(codes), {ERR_ADAPTER_REGISTRY_DRIFT})
+        self.assertTrue(any("Duplicate adapter ID in markdown mirror: 'ADP-REPLAY-001'" in e.message for e in res.errors))
+
+    def test_30_markdown_malformed_columns_fails(self) -> None:
+        """Rejects short rows (fewer than 5 columns) and extra columns in markdown table."""
+        md_p = self.fake_root / "registries/DEVICE_ADAPTERS.md"
+        content = md_p.read_text(encoding="utf-8")
+        # Short row
+        short_md = content + "\n| `ADP-BADSHORT-001` | short | T1 | `GATE-010` |\n"
+        md_p.write_text(short_md, encoding="utf-8")
+        res = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        codes = [e.code for e in res.errors]
+        self.assertEqual(set(codes), {ERR_ADAPTER_REGISTRY_DRIFT})
+        self.assertTrue(any("invalid column count 4" in e.message for e in res.errors))
+
+        # Extra column
+        extra_md = content + "\n| `ADP-BADEXTRA-001` | extra | T1 | specified | `GATE-010` | surplus |\n"
+        md_p.write_text(extra_md, encoding="utf-8")
+        res2 = validate_device_adapter_registry(self.fake_root)
+        self.assertFalse(res2.passed)
+        codes2 = [e.code for e in res2.errors]
+        self.assertEqual(set(codes2), {ERR_ADAPTER_REGISTRY_DRIFT})
+        self.assertTrue(any("invalid column count 6" in e.message for e in res2.errors))
+
+    def test_31_string_list_ordering_sensitivity(self) -> None:
+        """Verifies that list ordering is preserved and visible to the digest."""
+        payload1 = {
+            "schema": "fss.device_adapters.v1",
+            "asOf": "2026-08-31",
+            "semanticProtocol": "fss/1",
+            "generation": "gen:fss1:adapters-v1",
+            "adapters": [
+                {
+                    "id": "ADP-AOSU-P1MAX-LAB-001",
+                    "surface": "AOSU P1 Max owner-auth lab",
+                    "tier": "T3",
+                    "currentState": "research target",
+                    "promotionGate": "GATE-090",
+                    "generation": "gen:fss1:adapters-v1",
+                }
+            ],
+            "tombstones": [],
+        }
+        d1 = compute_canonical_adapter_digest(payload1)
+        payload2 = dict(payload1)
+        payload2["adapters"] = list(payload1["adapters"])
+        payload2["adapters"].append({
+            "id": "ADP-FILE-001",
+            "surface": "bounded media import",
+            "tier": "T0/T4",
+            "currentState": "specified",
+            "promotionGate": "GATE-010",
+            "generation": "gen:fss1:adapters-v1",
+        })
+        d2 = compute_canonical_adapter_digest(payload2)
+        self.assertNotEqual(d1, d2)
 
 
 if __name__ == "__main__":

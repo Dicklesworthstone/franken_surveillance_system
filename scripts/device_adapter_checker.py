@@ -30,6 +30,7 @@ ERR_ADAPTER_CORRUPT_FILE = "ERR-ADAPTER-CORRUPT-FILE-001"
 ERR_ADAPTER_DIGEST_MISMATCH = "ERR-ADAPTER-DIGEST-MISMATCH-001"
 ERR_ADAPTER_GENERATION_MISMATCH = "ERR-ADAPTER-GENERATION-MISMATCH-001"
 ERR_ADAPTER_INVALID_TIER = "ERR-ADAPTER-INVALID-TIER-001"
+ERR_ADAPTER_REPLAY_DIVERGED = "ERR-ADAPTER-REPLAY-DIVERGED-001"
 
 DEVICE_ADAPTERS_JSON_PATH = "architecture/device_adapters.json"
 DEVICE_ADAPTERS_MD_PATH = "registries/DEVICE_ADAPTERS.md"
@@ -37,6 +38,27 @@ DEVICE_ADAPTERS_MD_PATH = "registries/DEVICE_ADAPTERS.md"
 CURRENT_GENERATION = "gen:fss1:adapters-v1"
 SCHEMA_DEVICE_ADAPTERS_V1 = "fss.device_adapters.v1"
 SEMANTIC_PROTOCOL_V1 = "fss/1"
+
+ALLOWED_TOP_LEVEL_KEYS = {
+    "schema",
+    "asOf",
+    "semanticProtocol",
+    "generation",
+    "registryDigest",
+    "adapters",
+    "tombstones",
+}
+
+ALLOWED_ROW_KEYS = {
+    "id",
+    "surface",
+    "tier",
+    "currentState",
+    "promotionGate",
+    "generation",
+}
+
+ALLOWED_TOMBSTONE_KEYS = {"id"}
 
 # Expected canonical freeze digests pinned per registry generation (SWARM RULE)
 EXPECTED_FREEZE_DIGESTS: dict[str, str] = {
@@ -172,8 +194,6 @@ def canonicalize_value(val: Any) -> Any:
     if isinstance(val, dict):
         return {k: canonicalize_value(v) for k, v in sorted(val.items())}
     elif isinstance(val, list):
-        if all(isinstance(x, str) for x in val):
-            return sorted(val)
         return [canonicalize_value(x) for x in val]
     return val
 
@@ -182,8 +202,12 @@ def compute_canonical_adapter_digest(data: dict[str, Any]) -> str:
     """Computes SHA-256 digest of canonically serialized device adapter registry payload.
 
     Binds top-level schema, generation, semanticProtocol, asOf, sorted rows,
-    and tombstones. Fails closed with ValueError on empty or invalid metadata.
+    and tombstones. Fails closed with ValueError on unknown keys, empty or invalid metadata.
     """
+    for k in data:
+        if k not in ALLOWED_TOP_LEVEL_KEYS:
+            raise ValueError(f"Unknown top-level key: {k}")
+
     schema = data.get("schema")
     generation = data.get("generation")
     semantic_protocol = data.get("semanticProtocol")
@@ -204,6 +228,9 @@ def compute_canonical_adapter_digest(data: dict[str, Any]) -> str:
     for adp in adapters:
         if not isinstance(adp, dict):
             raise ValueError("Adapter entry must be an object")
+        for k in adp:
+            if k not in ALLOWED_ROW_KEYS:
+                raise ValueError(f"Unknown row key in adapter: {k}")
         aid = adp.get("id")
         if not aid or not isinstance(aid, str) or not aid.strip():
             raise ValueError("Adapter entry must have a non-empty string 'id'")
@@ -219,6 +246,9 @@ def compute_canonical_adapter_digest(data: dict[str, Any]) -> str:
     for tomb in tombstones:
         if not isinstance(tomb, dict):
             raise ValueError("Tombstone entry must be an object")
+        for k in tomb:
+            if k not in ALLOWED_TOMBSTONE_KEYS:
+                raise ValueError(f"Unknown key in tombstone: {k}")
         tid = tomb.get("id")
         if not tid or not isinstance(tid, str) or not tid.strip():
             raise ValueError("Tombstone entry must have a non-empty string 'id'")
@@ -251,22 +281,59 @@ def compute_canonical_adapter_digest(data: dict[str, Any]) -> str:
 
 def extract_markdown_device_adapters(
     md_path: Path,
-) -> dict[str, tuple[str, str, str, str]]:
-    """Extracts device adapters from markdown table: {id: (surface, tier, current_state, promotion_gate)}."""
+) -> tuple[dict[str, tuple[str, str, str, str]], list[tuple[str, str]]]:
+    """Extracts device adapters from markdown table: {id: (surface, tier, current_state, promotion_gate)}.
+
+    Returns (rows, errors) where errors is a list of (target, message).
+    """
     rows: dict[str, tuple[str, str, str, str]] = {}
+    errors: list[tuple[str, str]] = []
     lines = md_path.read_text(encoding="utf-8").splitlines()
-    for line in lines:
+    in_table = False
+    for line_num, line in enumerate(lines, start=1):
         stripped = line.strip()
-        if stripped.startswith("| `ADP-"):
-            parts = [p.strip() for p in stripped.strip("|").split("|")]
-            if len(parts) >= 5:
-                aid = parts[0].replace("`", "").strip()
-                surface = parts[1].strip()
-                tier = parts[2].strip()
-                current_state = parts[3].strip()
-                promotion_gate = parts[4].replace("`", "").strip()
-                rows[aid] = (surface, tier, current_state, promotion_gate)
-    return rows
+        if not stripped.startswith("|"):
+            if in_table and stripped:
+                in_table = False
+            continue
+
+        if "---" in stripped:
+            continue
+        if "ID" in stripped and "Surface" in stripped:
+            in_table = True
+            continue
+
+        in_table = True
+        parts = [p.strip() for p in stripped.strip("|").split("|")]
+        if len(parts) != 5:
+            errors.append((
+                f"line {line_num}",
+                f"Markdown table row has invalid column count {len(parts)} (expected 5): '{line}'",
+            ))
+            continue
+
+        aid = parts[0].replace("`", "").strip()
+        if not aid.startswith("ADP-"):
+            errors.append((
+                f"line {line_num}",
+                f"Markdown table row has invalid adapter ID format: '{aid}'",
+            ))
+            continue
+
+        if aid in rows:
+            errors.append((
+                f"#{aid}",
+                f"Duplicate adapter ID in markdown mirror: '{aid}'",
+            ))
+            continue
+
+        surface = parts[1].strip()
+        tier = parts[2].strip()
+        current_state = parts[3].strip()
+        promotion_gate = parts[4].replace("`", "").strip()
+        rows[aid] = (surface, tier, current_state, promotion_gate)
+
+    return rows, errors
 
 
 def validate_device_adapter_registry(
@@ -315,6 +382,15 @@ def validate_device_adapter_registry(
             "Device adapter registry root must be a JSON object",
         )
         return result
+
+    for k in data:
+        if k not in ALLOWED_TOP_LEVEL_KEYS:
+            result.add_error(
+                ERR_ADAPTER_SEMANTIC_INVARIANT,
+                DEVICE_ADAPTERS_JSON_PATH,
+                f"#/{k}",
+                f"Unknown top-level key: '{k}'",
+            )
 
     # 3. Top-level metadata checks
     for field_name in ("schema", "asOf", "semanticProtocol", "generation", "registryDigest"):
@@ -422,6 +498,14 @@ def validate_device_adapter_registry(
                 "Adapter entry must be an object",
             )
             continue
+        for k in adp:
+            if k not in ALLOWED_ROW_KEYS:
+                result.add_error(
+                    ERR_ADAPTER_SEMANTIC_INVARIANT,
+                    DEVICE_ADAPTERS_JSON_PATH,
+                    f"#/adapters/{idx}/{k}",
+                    f"Unknown row key in adapter: '{k}'",
+                )
         aid = adp.get("id")
         if not isinstance(aid, str) or not aid.strip():
             result.add_error(
@@ -451,6 +535,14 @@ def validate_device_adapter_registry(
                 "Tombstone entry must be an object",
             )
             continue
+        for k in tomb:
+            if k not in ALLOWED_TOMBSTONE_KEYS:
+                result.add_error(
+                    ERR_ADAPTER_SEMANTIC_INVARIANT,
+                    DEVICE_ADAPTERS_JSON_PATH,
+                    f"#/tombstones/{idx}/{k}",
+                    f"Unknown key in tombstone: '{k}'",
+                )
         tid = tomb.get("id")
         if not isinstance(tid, str) or not tid.strip():
             result.add_error(
@@ -558,7 +650,7 @@ def validate_device_adapter_registry(
 
     # 9. Markdown mirror consistency
     try:
-        md_adapters = extract_markdown_device_adapters(md_path)
+        md_adapters, md_errors = extract_markdown_device_adapters(md_path)
     except Exception as exc:
         result.add_error(
             ERR_ADAPTER_CORRUPT_FILE,
@@ -567,6 +659,14 @@ def validate_device_adapter_registry(
             f"Failed to extract adapters from markdown: {exc}",
         )
         return result
+
+    for target, msg in md_errors:
+        result.add_error(
+            ERR_ADAPTER_REGISTRY_DRIFT,
+            DEVICE_ADAPTERS_MD_PATH,
+            target,
+            msg,
+        )
 
     # Check that all active JSON adapters match markdown
     for aid, adp in active_adapters.items():
