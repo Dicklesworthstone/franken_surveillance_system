@@ -106,6 +106,7 @@ fn sample_operation_receipt() -> Result<OperationReceipt, Box<dyn Error>> {
         updated_at: TimestampNs(1_700_000_000_000_000_000),
         result_digest: None,
         error_code: None,
+        indeterminate_reason: None,
     })
 }
 
@@ -1028,5 +1029,55 @@ fn test_review_562_finding_1_three_valued_lookup_status() -> Result<(), Box<dyn 
         "Indeterminate failure lookup must yield IndeterminateLookup error, not UnverifiedReceipt"
     );
 
+    Ok(())
+}
+
+/// fss-deir9: the indeterminate reason rides in the error-code flag byte, so a receipt without one
+/// keeps the exact canonical bytes it had before the field existed, and every shape round-trips.
+#[test]
+fn operation_receipt_reason_tag_keeps_legacy_bytes_and_round_trips() -> Result<(), Box<dyn Error>> {
+    use fss_core::{
+        CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
+        IndeterminateEffectReason,
+    };
+
+    let base = sample_operation_receipt()?;
+    let recorded = IndeterminateEffectReason::Recorded("provider_timeout".to_owned());
+    let shapes = [
+        (None, None),
+        (Some("provider_timeout"), None),
+        (None, Some(IndeterminateEffectReason::Unrecorded)),
+        (Some("provider_timeout"), Some(recorded)),
+    ];
+    for (error_code, reason) in shapes {
+        let mut receipt = base.clone();
+        receipt.error_code = error_code.map(str::to_owned);
+        receipt.indeterminate_reason = reason;
+        let mut encoder = CanonicalEncoder::new();
+        receipt.encode_canonical(&mut encoder);
+        let bytes = encoder.finish();
+        let mut decoder = CanonicalDecoder::new(&bytes);
+        let decoded = OperationReceipt::decode_canonical(&mut decoder)?;
+        assert_eq!(decoded, receipt, "round trip of {error_code:?}");
+        if receipt.indeterminate_reason.is_none() {
+            // The layout before the reason existed: the error code behind a plain bool flag.
+            let mut legacy = CanonicalEncoder::new();
+            receipt.intent.encode_canonical(&mut legacy);
+            legacy.text(receipt.state.as_str());
+            receipt.authority.encode_canonical(&mut legacy);
+            receipt.prepared_at.encode_canonical(&mut legacy);
+            legacy.bool(false);
+            receipt.updated_at.encode_canonical(&mut legacy);
+            legacy.bool(false);
+            match &receipt.error_code {
+                Some(code) => {
+                    legacy.bool(true);
+                    legacy.text(code);
+                }
+                None => legacy.bool(false),
+            }
+            assert_eq!(bytes, legacy.finish(), "legacy bytes of {error_code:?}");
+        }
+    }
     Ok(())
 }

@@ -581,6 +581,12 @@ fn reconciled_verified_receipt(
         .clone();
     assert_eq!(reconciled.state, EffectState::Verified);
     assert_eq!(reconciled.error_code.as_deref(), Some("provider_timeout"));
+    assert_eq!(
+        reconciled.indeterminate_reason,
+        Some(fss_core::IndeterminateEffectReason::Recorded(
+            "provider_timeout".to_owned()
+        ))
+    );
     Ok(reconciled)
 }
 
@@ -1196,5 +1202,383 @@ fn terminal_outcome_flip_of_one_operation_is_a_contradiction() -> Result<(), Box
     );
     delta.validate()?;
     harness.cleanup();
+    Ok(())
+}
+
+// fss-deir9 re-review: the guard accepts exactly the receipts the effect journal produces, and the
+// journal refuses the payload a state may not carry.
+
+type GuardVerdict = Result<(), ReferenceError>;
+
+/// A fresh harness, journal, and prepared alert plan named `name`.
+fn prepared_journal(
+    name: &str,
+) -> Result<(GuardHarness, EffectJournal, ReferenceAlertPlan), Box<dyn Error>> {
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+    Ok((harness, journal, plan))
+}
+
+/// Compiles a situation bound to the receipt `build` produces from the prepared plan and returns
+/// the guard's verdict.
+fn guard_verdict<F>(name: &str, build: F) -> Result<GuardVerdict, Box<dyn Error>>
+where
+    F: FnOnce(&mut EffectJournal, &ReferenceAlertPlan) -> ReceiptResult,
+{
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+    let operation_receipt = build(&mut journal, &plan)?;
+    let mut projection_request = request(
+        &decision,
+        &receipt,
+        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+    )?;
+    projection_request.alert_plan = Some(&plan);
+    let verdict = compile_reference_situation_with_operation_receipt(
+        projection_request,
+        &operation_receipt,
+        &harness.authority,
+    )
+    .map(|_| ());
+    harness.cleanup();
+    Ok(verdict)
+}
+
+fn assert_integrity_refusal(verdict: &GuardVerdict, context: &str) {
+    assert!(
+        matches!(
+            verdict,
+            Err(ReferenceError::InvalidSpec(
+                "situation_operation_receipt_integrity"
+            ))
+        ),
+        "{context}: {verdict:?}"
+    );
+}
+
+fn committed_receipt(journal: &mut EffectJournal, plan: &ReferenceAlertPlan) -> ReceiptResult {
+    Ok(journal
+        .transition(
+            &plan.intent.operation_id,
+            EffectState::Committed,
+            TimestampNs(101),
+            None,
+            None,
+        )?
+        .clone())
+}
+
+/// Committed, adapter-accepted, observed with `observation`, then verified: no indeterminate
+/// episode, so the receipt carries no error code.
+fn verified_without_indeterminate(
+    journal: &mut EffectJournal,
+    plan: &ReferenceAlertPlan,
+    observation: fss_core::ContentDigest,
+) -> ReceiptResult {
+    let operation_id = &plan.intent.operation_id;
+    let _ = journal.transition(
+        operation_id,
+        EffectState::Committed,
+        TimestampNs(101),
+        None,
+        None,
+    )?;
+    let _ = journal.transition(
+        operation_id,
+        EffectState::AdapterAccepted,
+        TimestampNs(102),
+        None,
+        None,
+    )?;
+    let _ = journal.transition(
+        operation_id,
+        EffectState::Observed,
+        TimestampNs(103),
+        Some(observation),
+        None,
+    )?;
+    Ok(journal
+        .reconcile_verified(operation_id, observation, TimestampNs(104))?
+        .clone())
+}
+
+/// A cancellation of the prepared operation with a proof digest, as the journal records it.
+fn cancelled_receipt(journal: &mut EffectJournal, plan: &ReferenceAlertPlan) -> ReceiptResult {
+    Ok(journal
+        .transition(
+            &plan.intent.operation_id,
+            EffectState::Cancelled,
+            TimestampNs(101),
+            Some(fss_core::ContentDigest::sha256(
+                b"situation-guard-cancellation",
+            )),
+            None,
+        )?
+        .clone())
+}
+
+#[test]
+fn verified_receipt_with_a_hand_set_error_code_is_refused() -> Result<(), Box<dyn Error>> {
+    let verdict = guard_verdict("verified-forged-code", |journal, plan| {
+        let mut verified = verified_without_indeterminate(
+            journal,
+            plan,
+            fss_core::ContentDigest::sha256(b"verified-forged-code"),
+        )?;
+        assert_eq!(verified.error_code, None);
+        verified.error_code = Some("provider_rejected_forged".to_owned());
+        Ok(verified)
+    })?;
+    assert_integrity_refusal(&verdict, "verified with a hand-set error code");
+    let control = guard_verdict("verified-clean", |journal, plan| {
+        verified_without_indeterminate(
+            journal,
+            plan,
+            fss_core::ContentDigest::sha256(b"verified-clean"),
+        )
+    })?;
+    assert!(
+        control.is_ok(),
+        "the journal's verified receipt: {control:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn failed_receipt_relabelled_verified_is_refused() -> Result<(), Box<dyn Error>> {
+    let verdict = guard_verdict("failed-relabelled", |journal, plan| {
+        let operation_id = &plan.intent.operation_id;
+        let _ = committed_receipt(journal, plan)?;
+        let mut failed = journal
+            .transition(
+                operation_id,
+                EffectState::Failed,
+                TimestampNs(102),
+                Some(fss_core::ContentDigest::sha256(b"failed-relabelled")),
+                Some("provider_rejected".to_owned()),
+            )?
+            .clone();
+        failed.state = EffectState::Verified;
+        Ok(failed)
+    })?;
+    assert_integrity_refusal(&verdict, "a failed receipt relabelled verified");
+    Ok(())
+}
+
+#[test]
+fn journal_refuses_a_new_error_code_on_an_observed_receipt() -> Result<(), Box<dyn Error>> {
+    let (harness, mut journal, plan) = prepared_journal("observed-new-code")?;
+    let operation_id = &plan.intent.operation_id;
+    let observation = fss_core::ContentDigest::sha256(b"observed-new-code");
+    let _ = committed_receipt(&mut journal, &plan)?;
+    let _ = journal.transition(
+        operation_id,
+        EffectState::AdapterAccepted,
+        TimestampNs(102),
+        None,
+        None,
+    )?;
+    let validated = journal.validate_transition(
+        operation_id,
+        EffectState::Observed,
+        TimestampNs(103),
+        Some(observation),
+        Some("junk"),
+    );
+    assert!(
+        matches!(
+            validated,
+            Err(fss_core::ContractError::InvalidEffectTransition)
+        ),
+        "validate_transition: {validated:?}"
+    );
+    let refused = journal.transition(
+        operation_id,
+        EffectState::Observed,
+        TimestampNs(103),
+        Some(observation),
+        Some("junk".to_owned()),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(fss_core::ContractError::InvalidEffectTransition)
+        ),
+        "transition: {refused:?}"
+    );
+    let observed = journal.transition(
+        operation_id,
+        EffectState::Observed,
+        TimestampNs(103),
+        Some(observation),
+        None,
+    )?;
+    assert_eq!(observed.error_code, None);
+    harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn failed_receipt_with_an_empty_reason_is_refused() -> Result<(), Box<dyn Error>> {
+    let verdict = guard_verdict("failed-empty-reason", |journal, plan| {
+        let proof = fss_core::ContentDigest::sha256(b"failed-empty-reason");
+        let mut failed = committed_receipt(journal, plan)?;
+        let refused = journal.transition(
+            &plan.intent.operation_id,
+            EffectState::Failed,
+            TimestampNs(102),
+            Some(proof),
+            Some(String::new()),
+        );
+        assert!(
+            matches!(refused, Err(fss_core::ContractError::EvidenceRequired)),
+            "journal: {refused:?}"
+        );
+        failed.state = EffectState::Failed;
+        failed.updated_at = TimestampNs(102);
+        failed.result_digest = Some(proof);
+        failed.error_code = Some(String::new());
+        Ok(failed)
+    })?;
+    assert_integrity_refusal(&verdict, "a failed receipt with an empty reason");
+    Ok(())
+}
+
+#[test]
+fn indeterminate_receipt_with_an_empty_reason_is_refused() -> Result<(), Box<dyn Error>> {
+    let verdict = guard_verdict("indeterminate-empty-reason", |journal, plan| {
+        let mut indeterminate = committed_receipt(journal, plan)?;
+        indeterminate.state = EffectState::Indeterminate;
+        indeterminate.updated_at = TimestampNs(102);
+        indeterminate.error_code = Some(String::new());
+        Ok(indeterminate)
+    })?;
+    assert_integrity_refusal(&verdict, "an indeterminate receipt with an empty reason");
+    Ok(())
+}
+
+#[test]
+fn journal_refuses_a_result_or_an_error_on_commit_and_acceptance() -> Result<(), Box<dyn Error>> {
+    let (harness, mut journal, plan) = prepared_journal("commit-payload")?;
+    let operation_id = &plan.intent.operation_id;
+    let digest = fss_core::ContentDigest::sha256(b"commit-payload");
+    let cases: [(&str, Option<fss_core::ContentDigest>, Option<&str>); 2] = [
+        ("with an error", None, Some("x")),
+        ("with a result", Some(digest), None),
+    ];
+    for (next, now) in [
+        (EffectState::Committed, TimestampNs(101)),
+        (EffectState::AdapterAccepted, TimestampNs(102)),
+    ] {
+        for (label, result_digest, error_code) in cases {
+            let validated =
+                journal.validate_transition(operation_id, next, now, result_digest, error_code);
+            assert!(
+                matches!(
+                    validated,
+                    Err(fss_core::ContractError::InvalidEffectTransition)
+                ),
+                "validate {} {label}: {validated:?}",
+                next.as_str()
+            );
+            let refused = journal.transition(
+                operation_id,
+                next,
+                now,
+                result_digest,
+                error_code.map(str::to_owned),
+            );
+            assert!(
+                matches!(
+                    refused,
+                    Err(fss_core::ContractError::InvalidEffectTransition)
+                ),
+                "transition {} {label}: {refused:?}",
+                next.as_str()
+            );
+        }
+        let _ = journal.transition(operation_id, next, now, None, None)?;
+    }
+    harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn committed_receipt_carrying_a_result_or_an_error_is_refused() -> Result<(), Box<dyn Error>> {
+    let digest = fss_core::ContentDigest::sha256(b"committed-carrying");
+    let cases: [(&str, Option<fss_core::ContentDigest>, Option<&str>); 2] = [
+        ("committed-carrying-error", None, Some("x")),
+        ("committed-carrying-result", Some(digest), None),
+    ];
+    for (name, result_digest, error_code) in cases {
+        let verdict = guard_verdict(name, move |journal, plan| {
+            let mut committed = committed_receipt(journal, plan)?;
+            committed.result_digest = result_digest;
+            committed.error_code = error_code.map(str::to_owned);
+            Ok(committed)
+        })?;
+        assert_integrity_refusal(&verdict, name);
+    }
+    Ok(())
+}
+
+#[test]
+fn cancelled_receipt_that_was_committed_is_refused() -> Result<(), Box<dyn Error>> {
+    let verdict = guard_verdict("cancelled-committed", |journal, plan| {
+        let mut cancelled = cancelled_receipt(journal, plan)?;
+        cancelled.committed_at = Some(cancelled.updated_at);
+        Ok(cancelled)
+    })?;
+    assert_integrity_refusal(&verdict, "a cancelled receipt with a commit time");
+    let control = guard_verdict("cancelled-clean", cancelled_receipt)?;
+    assert!(
+        control.is_ok(),
+        "the journal's cancelled receipt: {control:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn cancelled_receipt_without_elapsed_time_is_refused() -> Result<(), Box<dyn Error>> {
+    let verdict = guard_verdict("cancelled-no-time", |journal, plan| {
+        let mut cancelled = journal
+            .operation(&plan.intent.operation_id)
+            .ok_or(fss_core::ContractError::NotFound)?
+            .clone();
+        cancelled.state = EffectState::Cancelled;
+        cancelled.result_digest = Some(fss_core::ContentDigest::sha256(b"cancelled-no-time"));
+        assert_eq!(cancelled.updated_at, cancelled.prepared_at);
+        Ok(cancelled)
+    })?;
+    assert_integrity_refusal(&verdict, "a cancelled receipt with no elapsed time");
+    Ok(())
+}
+
+#[test]
+fn journal_and_guard_refuse_an_empty_cancellation_reason() -> Result<(), Box<dyn Error>> {
+    let (harness, mut journal, plan) = prepared_journal("cancelled-empty-reason")?;
+    let proof = fss_core::ContentDigest::sha256(b"cancelled-empty-reason");
+    let refused = journal.transition(
+        &plan.intent.operation_id,
+        EffectState::Cancelled,
+        TimestampNs(101),
+        Some(proof),
+        Some(String::new()),
+    );
+    assert!(
+        matches!(refused, Err(fss_core::ContractError::EvidenceRequired)),
+        "journal: {refused:?}"
+    );
+    harness.cleanup();
+    let verdict = guard_verdict("cancelled-empty-reason-guard", |journal, plan| {
+        let mut cancelled = cancelled_receipt(journal, plan)?;
+        cancelled.error_code = Some(String::new());
+        Ok(cancelled)
+    })?;
+    assert_integrity_refusal(&verdict, "a cancelled receipt with an empty reason");
     Ok(())
 }

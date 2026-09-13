@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, ContentDigest, ContractError, EffectState,
-    KnowledgeCell, KnowledgeState, KnowledgeStateBasis, OperationReceipt, ProvenanceClass,
-    ReconciliationBasis,
+    IndeterminateEffectReason, KnowledgeCell, KnowledgeState, KnowledgeStateBasis,
+    OperationReceipt, ProvenanceClass, ReconciliationBasis,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -190,17 +190,27 @@ fn validate_operation_receipt(
                 && receipt.result_digest.is_none()
                 && receipt.error_code.is_none()
         }
-        // Reconciliation keeps the indeterminate reason as provenance
-        // (`EffectJournal::reconcile_verified`), so an observed or verified receipt may carry one.
         EffectState::Observed | EffectState::Verified => {
-            receipt.committed_at.is_some() && receipt.result_digest.is_some()
+            receipt.committed_at.is_some()
+                && receipt.result_digest.is_some()
+                && carries_only_an_inherited_reason(receipt)
         }
-        // The journal cancels only a prepared operation and only with a cancellation proof digest;
-        // a reason is optional (`EffectJournal::transition`).
-        EffectState::Cancelled => receipt.committed_at.is_none() && receipt.result_digest.is_some(),
-        EffectState::Failed => receipt.result_digest.is_some() && receipt.error_code.is_some(),
+        // The journal cancels only a prepared operation, strictly later than its preparation, and
+        // only with a cancellation proof digest; a reason is optional but never empty.
+        EffectState::Cancelled => {
+            receipt.committed_at.is_none()
+                && receipt.updated_at > receipt.prepared_at
+                && receipt.result_digest.is_some()
+                && receipt
+                    .error_code
+                    .as_deref()
+                    .is_none_or(|reason| !reason.is_empty())
+        }
+        EffectState::Failed => {
+            receipt.result_digest.is_some() && names_a_reason(receipt.error_code.as_deref())
+        }
         EffectState::Indeterminate => {
-            receipt.committed_at.is_some() && receipt.error_code.is_some()
+            receipt.committed_at.is_some() && indeterminate_reason_is_consistent(receipt)
         }
     };
     if !structurally_valid {
@@ -209,6 +219,38 @@ fn validate_operation_receipt(
         ));
     }
     Ok(())
+}
+
+/// Returns whether `code` names a non-empty reason, as the effect journal requires.
+fn names_a_reason(code: Option<&str>) -> bool {
+    code.is_some_and(|reason| !reason.is_empty())
+}
+
+/// An observed or verified receipt may carry an error code only as the reason recorded when the
+/// operation entered `indeterminate`, which reconciliation keeps as provenance
+/// (`EffectJournal::reconcile_verified`); the journal never attaches a new one (fss-deir9).
+fn carries_only_an_inherited_reason(receipt: &OperationReceipt) -> bool {
+    match &receipt.error_code {
+        None => true,
+        Some(code) => matches!(
+            &receipt.indeterminate_reason,
+            Some(IndeterminateEffectReason::Recorded(reason)) if reason == code
+        ),
+    }
+}
+
+/// An indeterminate receipt records the non-empty reason it names, or is a legacy entry whose
+/// missing reason replay made explicitly unrecorded (fss-deir9).
+fn indeterminate_reason_is_consistent(receipt: &OperationReceipt) -> bool {
+    match &receipt.indeterminate_reason {
+        Some(IndeterminateEffectReason::Recorded(reason)) => {
+            names_a_reason(Some(reason)) && receipt.error_code.as_deref() == Some(reason.as_str())
+        }
+        Some(IndeterminateEffectReason::Unrecorded) => {
+            receipt.error_code.as_deref().is_none_or(str::is_empty)
+        }
+        None => false,
+    }
 }
 
 fn annotate_operation_receipt(
