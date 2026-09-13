@@ -1647,3 +1647,83 @@ fn absent_effect_becoming_unproved_known_with_terminal_hypothesis_is_not_termina
     }
     Ok(())
 }
+
+// fss-deir9 re-review: G3 (a removed proved effect) and G2 (the proof-root trust boundary).
+
+#[test]
+fn proved_effect_removed_is_an_effect_change_and_coverage_loss() -> Result<(), Box<dyn Error>> {
+    let delta = effect_transition_delta(Some(KnowledgeState::Known), None, keep_effect_evidence)?;
+    let expected_change = format!(
+        "effect uncertainty added: proved effect {EFFECT_CLAIM} disappeared from the result frame"
+    );
+    let expected_coverage =
+        format!("proved effect {EFFECT_CLAIM} disappeared from the result frame");
+    assert!(delta.silence_certificate.is_none(), "{:?}", delta.classes);
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{:?}",
+        delta.classes
+    );
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::EffectUncertainty),
+        "{:?}",
+        delta.classes
+    );
+    assert!(
+        delta.effect_uncertainty_changes.contains(&expected_change),
+        "missing {expected_change:?} in {:?}",
+        delta.effect_uncertainty_changes
+    );
+    assert!(delta.classes.contains(&MeaningfulDeltaClass::CoverageLoss));
+    assert!(
+        delta.coverage_changes.contains(&expected_coverage),
+        "missing {expected_coverage:?} in {:?}",
+        delta.coverage_changes
+    );
+    // The existing premise path still reports the loss as an invalidated assumption.
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::PlanInvalidation)
+    );
+    assert_eq!(delta.priority, DeltaPriority::Critical);
+    delta.validate()?;
+    Ok(())
+}
+
+/// Pins the current proof-root trust boundary (fss-deir9 G2, not yet closed).
+///
+/// `ReferenceSituation` has public fields and `project_reference_situation` is public, while
+/// `ReferenceSituationPublication::verify` only checks that the publication is self-consistent.
+/// So a caller that builds a situation by hand can make any digest a proof root, and a `known`
+/// effect citing it clears the proof bar. The only binding of an effect's evidence to retained
+/// material is `verify_outcome_body` on the compile path. This fixture does exactly that: its
+/// effect evidence is an arbitrary digest that no receipt produced. When proof roots are bound
+/// to verified receipts, this test must flip to assert refusal.
+#[test]
+fn hand_built_proof_roots_are_trusted_by_projection_and_classification()
+-> Result<(), Box<dyn Error>> {
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.effect_state = None;
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = basis_variant.clone();
+    result_variant.sequence = 2;
+    result_variant.effect_state = Some(KnowledgeState::Known);
+    let result = publication(&result_variant)?;
+    let arbitrary = ContentDigest::sha256(b"effect-outcome");
+    assert!(result.situation.proof_roots.contains(&arbitrary));
+    result.verify()?;
+    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+    assert!(
+        delta
+            .classes
+            .contains(&MeaningfulDeltaClass::TerminalTransition),
+        "the hand-built proof root is currently trusted: {:?}",
+        delta.classes
+    );
+    Ok(())
+}

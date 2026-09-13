@@ -4,7 +4,8 @@ use std::collections::BTreeSet;
 
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CanonicalEncode, ContentDigest, ContractError,
-    EffectState, KnowledgeCell, KnowledgeState, OperationReceipt, ProvenanceClass,
+    EffectState, KnowledgeCell, KnowledgeState, KnowledgeStateBasis, OperationReceipt,
+    ProvenanceClass, ReconciliationBasis,
 };
 use fss_ledger::DurableReferenceLedger;
 
@@ -217,6 +218,7 @@ fn annotate_operation_receipt(
 ) -> Result<(), ReferenceError> {
     let digest: ContentDigest = operation_receipt.receipt_digest();
     let operation_id = operation_receipt.intent.operation_id.as_str();
+    let knowledge_state = local_effect_knowledge_state(operation_receipt.state);
     situation.proof_roots.insert(digest);
     situation
         .capsule
@@ -230,13 +232,15 @@ fn annotate_operation_receipt(
                 "The exact local effect journal receipt records state {}.",
                 operation_receipt.state.as_str()
             ),
-            knowledge_state: KnowledgeState::Known,
+            knowledge_state,
             provenance: ProvenanceClass::Derived,
             hypothesis: None,
             evidence: vec![digest],
             contradictions: Vec::new(),
             valid_until: None,
-            state_basis: None,
+            state_basis: (knowledge_state == KnowledgeState::Indeterminate).then(|| {
+                KnowledgeStateBasis::Reconciliation(ReconciliationBasis::occurred_or_not(digest))
+            }),
         }
         .validated()?,
     );
@@ -245,6 +249,28 @@ fn annotate_operation_receipt(
         operation_receipt.state.as_str()
     ));
     Ok(())
+}
+
+/// Knowledge state of the `claim:effect:*:local-state` cell for a local receipt in `state`.
+///
+/// The cell records the LOCAL journal state, not a proved external outcome, and it lives in the
+/// effect-claim namespace, so its knowledge state must say what that local state proves about the
+/// effect (fss-deir9). Only a terminal local state is a proved terminal postcondition and may be
+/// `known` (KSTATE-001). `prepared` has not crossed the boundary, so the outcome is simply not
+/// established (KSTATE-003). Every dispatched non-terminal state may already have produced the
+/// external effect, so it keeps both reconciliation branches open (KSTATE-008). The match is
+/// exhaustive so a new operation state must be classified here rather than defaulting to `known`.
+const fn local_effect_knowledge_state(state: EffectState) -> KnowledgeState {
+    match state {
+        EffectState::Verified | EffectState::Failed | EffectState::Cancelled => {
+            KnowledgeState::Known
+        }
+        EffectState::Prepared => KnowledgeState::Unknown,
+        EffectState::Committed
+        | EffectState::AdapterAccepted
+        | EffectState::Observed
+        | EffectState::Indeterminate => KnowledgeState::Indeterminate,
+    }
 }
 
 fn replace_commit_with_status(

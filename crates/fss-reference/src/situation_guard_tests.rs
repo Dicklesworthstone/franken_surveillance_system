@@ -340,3 +340,195 @@ fn committed_receipt_exposes_status_instead_of_commit() -> Result<(), Box<dyn Er
     harness.cleanup();
     Ok(())
 }
+
+// fss-deir9 G1: the local-state cell records the local journal state, not a proved external
+// outcome, so a non-terminal local receipt is never a terminal effect.
+
+fn guard_projection_spec() -> Result<crate::ReferenceProjectionSpec, Box<dyn Error>> {
+    Ok(crate::ReferenceProjectionSpec {
+        view_id: "AVIEW-001".to_owned(),
+        available_resources: fss_core::BudgetVector::builder()
+            .latency_ms(10_000)
+            .tokens(50_000)
+            .bytes(2_000_000)
+            .model_calls(10)
+            .cpu_millis(10_000)
+            .accelerator_millis(10_000)
+            .energy_millijoules(1_000_000)
+            .network_bytes(1_000_000)
+            .storage_operations(10_000)
+            .privacy_exposure(10.0)
+            .operator_attention_seconds(1_000.0)
+            .build()?,
+        reserved_resources: fss_core::BudgetVector::builder()
+            .latency_ms(100)
+            .tokens(100)
+            .bytes(1_000)
+            .storage_operations(1)
+            .build()?,
+        pressure: fss_core::ResourcePressure::Nominal,
+        degraded_dimensions: std::collections::BTreeSet::new(),
+        target_tokens: 25_000,
+    })
+}
+
+/// Drives the plan's operation through legal journal transitions into `state`.
+fn receipt_in_state(
+    journal: &mut EffectJournal,
+    plan: &ReferenceAlertPlan,
+    state: EffectState,
+) -> Result<fss_core::OperationReceipt, Box<dyn Error>> {
+    let observed = fss_core::ContentDigest::sha256(b"situation-guard-observation");
+    let committed = (EffectState::Committed, None, None);
+    let accepted = (EffectState::AdapterAccepted, None, None);
+    let observation = (EffectState::Observed, Some(observed), None);
+    let steps: Vec<(EffectState, Option<fss_core::ContentDigest>, Option<String>)> = match state {
+        EffectState::Prepared => Vec::new(),
+        EffectState::Committed => vec![committed],
+        EffectState::AdapterAccepted => vec![committed, accepted],
+        EffectState::Observed => vec![committed, accepted, observation],
+        EffectState::Verified => vec![
+            committed,
+            accepted,
+            observation,
+            (EffectState::Verified, Some(observed), None),
+        ],
+        EffectState::Failed => vec![
+            committed,
+            (
+                EffectState::Failed,
+                Some(observed),
+                Some("provider_rejected".to_owned()),
+            ),
+        ],
+        EffectState::Indeterminate => vec![
+            committed,
+            (
+                EffectState::Indeterminate,
+                None,
+                Some("provider_timeout".to_owned()),
+            ),
+        ],
+        EffectState::Cancelled => {
+            return Err("a cancelled receipt carries a result digest the guard refuses".into());
+        }
+    };
+    let mut now = 100;
+    for (next, digest, error) in steps {
+        now += 1;
+        let _ = journal.transition(
+            &plan.intent.operation_id,
+            next,
+            TimestampNs(now),
+            digest,
+            error,
+        )?;
+    }
+    Ok(journal
+        .operation(&plan.intent.operation_id)
+        .ok_or(fss_core::ContractError::NotFound)?
+        .clone())
+}
+
+/// Compares the plan-only publication with the publication bound to a local receipt in `state`
+/// and no canonical outcome.
+fn local_receipt_delta(state: EffectState) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>> {
+    let name = format!("local-{}", state.as_str().replace('_', "-"));
+    let mut harness = GuardHarness::new(&name)?;
+    let (decision, receipt) = harness.corroborated(&name)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, &name)?;
+    let operation_receipt = receipt_in_state(&mut journal, &plan, state)?;
+    assert_eq!(operation_receipt.state, state);
+    let capabilities = ["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE];
+
+    let mut basis_request = request(&decision, &receipt, &capabilities)?;
+    basis_request.alert_plan = Some(&plan);
+    let basis = crate::project_reference_situation(
+        compile_reference_situation(basis_request, &harness.authority)?,
+        &guard_projection_spec()?,
+    )?;
+    let mut result_request = request(&decision, &receipt, &capabilities)?;
+    result_request.alert_plan = Some(&plan);
+    let result = crate::project_reference_situation(
+        compile_reference_situation_with_operation_receipt(
+            result_request,
+            &operation_receipt,
+            &harness.authority,
+        )?,
+        &guard_projection_spec()?,
+    )?;
+    let delta = crate::classify_reference_meaningful_delta(&basis, &result)?;
+    harness.cleanup();
+    Ok(delta)
+}
+
+/// The reviewer's probe, extended to every operation state the guard accepts short of a terminal
+/// one: the local receipt is effect uncertainty and never a terminal transition.
+#[test]
+fn non_terminal_local_receipt_without_outcome_is_effect_uncertainty_not_terminal()
+-> Result<(), Box<dyn Error>> {
+    for state in [
+        EffectState::Prepared,
+        EffectState::Committed,
+        EffectState::AdapterAccepted,
+        EffectState::Observed,
+        EffectState::Indeterminate,
+    ] {
+        let delta = local_receipt_delta(state)?;
+        assert!(
+            !delta
+                .classes
+                .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition),
+            "{} local receipt without an outcome is not terminal: {:?}",
+            state.as_str(),
+            delta.classes
+        );
+        assert!(
+            delta
+                .classes
+                .contains(&fss_core::MeaningfulDeltaClass::EffectUncertainty),
+            "{} local receipt without an outcome is effect uncertainty: {:?}",
+            state.as_str(),
+            delta.classes
+        );
+        assert!(
+            delta
+                .effect_uncertainty_changes
+                .iter()
+                .any(|change| change.contains(":local-state")),
+            "{} local receipt must name the local-state claim: {:?}",
+            state.as_str(),
+            delta.effect_uncertainty_changes
+        );
+        delta.validate()?;
+    }
+    Ok(())
+}
+
+/// Control: a terminal local receipt is a proved terminal postcondition.
+#[test]
+fn terminal_local_receipt_is_a_terminal_effect() -> Result<(), Box<dyn Error>> {
+    for state in [EffectState::Verified, EffectState::Failed] {
+        let delta = local_receipt_delta(state)?;
+        assert!(
+            delta
+                .classes
+                .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition),
+            "{} local receipt is terminal: {:?}",
+            state.as_str(),
+            delta.classes
+        );
+        assert!(
+            !delta
+                .effect_uncertainty_changes
+                .iter()
+                .any(|change| change.contains(":local-state")),
+            "{} local receipt carries no local-state uncertainty: {:?}",
+            state.as_str(),
+            delta.effect_uncertainty_changes
+        );
+        delta.validate()?;
+    }
+    Ok(())
+}

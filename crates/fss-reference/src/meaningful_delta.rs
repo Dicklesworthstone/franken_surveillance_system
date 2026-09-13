@@ -377,15 +377,28 @@ pub fn classify_reference_meaningful_delta(
     // An effect cell that disappears from the result without a proved outcome in the basis leaves
     // its outcome unproved, whatever state it was in, so it is reported as effect uncertainty and
     // lost coverage, never silence (fss-deir9). A basis-indeterminate cell was classified above.
+    // A proved effect that disappears takes its retained proof out of the frame, so it is typed as
+    // an effect change and lost coverage, not only as an invalidated premise (fss-deir9).
     for prior in &basis_frame.knowledge_cells {
-        if unproved_effect(prior, basis_bar)
-            && !basis_indeterminate.contains(prior.claim_id.as_str())
-            && !result_frame
+        if !is_effect_claim(prior)
+            || basis_indeterminate.contains(prior.claim_id.as_str())
+            || result_frame
                 .knowledge_cells
                 .iter()
                 .any(|cell| cell.claim_id == prior.claim_id)
         {
-            let claim_id = &prior.claim_id;
+            continue;
+        }
+        let claim_id = &prior.claim_id;
+        if basis_bar.proves(prior) {
+            effect_uncertainty_changes.push(format!(
+                "effect uncertainty added: proved effect {claim_id} disappeared from the result frame"
+            ));
+            classes.insert(MeaningfulDeltaClass::CoverageLoss);
+            coverage_changes.push(format!(
+                "proved effect {claim_id} disappeared from the result frame"
+            ));
+        } else {
             let state = prior.knowledge_state.as_str();
             effect_uncertainty_changes.push(format!(
                 "effect uncertainty remains: effect {claim_id} disappeared from the result frame without a proved outcome"
