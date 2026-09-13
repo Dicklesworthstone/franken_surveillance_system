@@ -5936,6 +5936,36 @@ class TestRound5Slo(unittest.TestCase):
         self.assertEqual(self.run_detect({"generation": padded}, bundle={"generation": padded}), (False, [self.GEN_UNBOUND]))
 
 
+class TestRound5ExactTextSurrogates(unittest.TestCase):
+    """A lone surrogate is not text (probe p15 fuzz: a bounded_model assumption statement "\\ud800"
+    verified). Exact text refuses it wherever the bounded_model evidence requires text."""
+
+    ASSUMPTIONS = "ERR-CLAIM-ASSUMPTIONS-MISSING-001"
+    EXPRESSION = "ERR-CLAIM-BOUND-EXPRESSION-UNBOUND-001"
+
+    def run_bound(self, **kwargs: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_class_bundle(root, build_bound_fixture(root, **kwargs), BOUND_CLAIM_ID)
+            return ok, error_code_set(findings)
+
+    def test_exact_text_refuses_lone_surrogates(self) -> None:
+        for text in ("\ud800", "\udfff", "each PUT is atomic \udcff", "\ud83d"):
+            with self.subTest(text=text):
+                self.assertIsNone(cpb._exact_text(text))
+        self.assertEqual(cpb._exact_text("each PUT is atomic é ≤ 1"), "each PUT is atomic é ≤ 1")
+
+    def test_assumption_statement_that_is_not_text_fails(self) -> None:
+        for statement in ("\ud800", "each object-store PUT is atomic \udfff"):
+            with self.subTest(statement=statement):
+                assumptions = [dict(a) for a in BOUND_ASSUMPTIONS]
+                assumptions[0]["statement"] = statement
+                self.assertEqual(self.run_bound(bundle={"assumptions": assumptions}), (False, [self.ASSUMPTIONS]))
+
+    def test_bound_expression_that_is_not_text_fails(self) -> None:
+        self.assertEqual(self.run_bound(bound={"expression": BOUND_EXPRESSION + " \ud800"}), (False, [self.EXPRESSION]))
+
+
 if __name__ == "__main__":
     unittest.main()
 
