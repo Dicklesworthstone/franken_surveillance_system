@@ -4939,7 +4939,7 @@ class TestRound3ProofFailClosedAndCounts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             root = build_fixture_root(Path(tmpdir))
             first = seal(build_bound_fixture(root))
-            second = seal({**{k: v for k, v in first.items() if k != "content_digest"}, "note": "a second, distinct bundle"})
+            second = seal({**{k: v for k, v in first.items() if k != "content_digest"}, "bundle_id": "BUNDLE-BOUND-INGEST-002"})  # round 5: an allowed field, not an unknown one
             self.assertNotEqual(first["content_digest"], second["content_digest"])
             write_json(root / BOUND_BUNDLE_REL, first)
             write_json(root / second_rel, second)
@@ -5525,6 +5525,225 @@ class TestRound4SloCoherence(unittest.TestCase):
                 self.assertEqual(_code(name), code)
                 self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
                 self.assertEqual(errors_md.count(f"| `{code}` |"), 1)
+
+
+# ---------------------------------------------------------------------------
+# Round-5 review, 30.87.2: exact field sets, exact schema, encoding-safe CLI (probes p13-p15)
+# ---------------------------------------------------------------------------
+
+FIELD_UNKNOWN = "ERR-CLAIM-EVIDENCE-FIELD-UNKNOWN-001"
+SCHEMA_INVALID = "ERR-CLAIM-PROOF-BUNDLE-SCHEMA-INVALID-001"
+
+
+def run_bytes_cli(args: list[bytes], env: dict | None = None) -> subprocess.CompletedProcess:
+    """Runs the CLI with raw argv bytes and captures raw output bytes (no decoding in the harness)."""
+    cmd = [sys.executable.encode(), b"-B", str(ROOT / "scripts/claim_proof_bundle_checker.py").encode(), *args]
+    return subprocess.run(cmd, capture_output=True, cwd=str(ROOT), env=env, timeout=600)
+
+
+def promoted_slo_root(tmp: Path, measurement: dict | None = None, bundle: dict | None = None) -> Path:
+    """A fixture root whose SLOS.md row promotes SLO-DETECT-001 citing a (perturbed) slo bundle."""
+    root = build_fixture_root(tmp)
+    write_slo_bundle(root, build_slo_fixture(root, measurement=measurement, bundle=bundle))
+    promote_slos_row(root, SLO_CLAIM_ID, SLO_BUNDLE_REL)
+    return root
+
+
+class TestRound5AllowlistsAndOutput(unittest.TestCase):
+    """Round-5 30.87.2 findings (root-cause directive, F1) as planted tests with exact id sets."""
+
+    PROVER = "ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001"
+    RECEIPT = "ERR-CLAIM-PROOF-CHECK-RECEIPT-INVALID-001"
+
+    def run_bound(self, bundle: dict | None = None, mutate=None):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_bound_fixture(root, bundle=bundle)
+            if mutate is not None:
+                mutate(data)
+            ok, findings, _ = verify_class_bundle(root, data, BOUND_CLAIM_ID)
+            return ok, error_code_set(findings)
+
+    def run_proof(self, **kwargs: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_class_bundle(root, build_proof_fixture(root, **kwargs), PROOF_CLAIM_ID)
+            return ok, error_code_set(findings)
+
+    def run_slo(self, bundle: dict | None = None, mutate=None):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_slo_fixture(root, bundle=bundle)
+            if mutate is not None:
+                mutate(data)
+            ok, findings, _ = verify_slo_bundle(root, data)
+            return ok, error_code_set(findings)
+
+    # Controls ----------------------------------------------------------------------------
+
+    def test_complete_fixtures_carry_only_known_fields(self) -> None:
+        self.assertEqual(self.run_bound(), (True, []))
+        self.assertEqual(self.run_slo(), (True, []))
+        self.assertEqual(self.run_proof(), (False, [self.PROVER]))
+
+    # Exact schema and bundle_id ---------------------------------------------------------------
+
+    def test_bundle_schema_must_be_exactly_fss_proof_bundle_v1(self) -> None:
+        for schema in (0, "latest", None, [], "fss.proof_bundle.v2", "FSS.PROOF_BUNDLE.V1", "fss.proof_bundle.v1 ",
+                       " fss.proof_bundle.v1", "fss.proof_bundle.v1​", "\ud800", _DROP):
+            with self.subTest(schema=schema):
+                self.assertEqual(self.run_bound(bundle={"schema": schema}), (False, [SCHEMA_INVALID]))
+        for schema in (0, "latest"):
+            with self.subTest(slo_schema=schema):
+                self.assertEqual(self.run_slo(bundle={"schema": schema}), (False, [SCHEMA_INVALID]))
+
+    def test_bundle_id_when_present_is_an_exact_token(self) -> None:
+        for bundle_id in ([], 1.5, None, "", "a b", "\ud800", "​", "BUNDLE X"):
+            with self.subTest(bundle_id=bundle_id):
+                self.assertEqual(self.run_bound(bundle={"bundle_id": bundle_id}), (False, [SCHEMA_INVALID]))
+        self.assertEqual(self.run_bound(bundle={"bundle_id": _DROP}), (True, []))
+
+    # Bundle top level, artifact entries, assumptions ------------------------------------------
+
+    def test_unknown_bundle_fields_are_findings(self) -> None:
+        for key in ("notes", "Bound", "bound ", " bound", "claim_id​", "\ud800", "CLAIM_ID", "claimid", "Schema",
+                    "bundleId", "statistic", "percentile_rank", "summary"):
+            with self.subTest(key=key):
+                self.assertEqual(self.run_bound(bundle={key: 1}), (False, [FIELD_UNKNOWN]))
+
+    def test_bundle_fields_are_those_of_its_class(self) -> None:
+        self.assertEqual(self.run_slo(bundle={"bound": {"value": 1}}), (False, [FIELD_UNKNOWN]))
+        self.assertEqual(self.run_slo(bundle={"theorem": {}}), (False, [FIELD_UNKNOWN]))
+        self.assertEqual(self.run_slo(bundle={"assumptions": []}), (False, [FIELD_UNKNOWN]))
+        self.assertEqual(self.run_bound(bundle={"theorem": {}}), (False, [FIELD_UNKNOWN]))
+        self.assertEqual(self.run_proof(bundle={"bound": {}}), (False, [FIELD_UNKNOWN]))
+
+    def test_unknown_artifact_entry_fields_are_findings(self) -> None:
+        for key in ("Path", "sha256", "digest ", "role​", "size", "media_type", "\ud800"):
+            with self.subTest(key=key):
+                def plant(data: dict, key: str = key) -> None:
+                    data["artifacts"][0][key] = "x"
+                self.assertEqual(self.run_bound(mutate=plant), (False, [FIELD_UNKNOWN]))
+        def plant_slo(data: dict) -> None:
+            data["artifacts"][0]["note"] = "x"
+        self.assertEqual(self.run_slo(mutate=plant_slo), (False, [FIELD_UNKNOWN]))
+
+    def test_unknown_assumption_fields_are_findings(self) -> None:
+        assumptions = [dict(a) for a in BOUND_ASSUMPTIONS]
+        assumptions[0]["note"] = "x"
+        self.assertEqual(self.run_bound(bundle={"assumptions": assumptions}), (False, [FIELD_UNKNOWN]))
+        proof_assumptions = [
+            {"id": "ASSUME-PUT-ATOMIC", "statement": "each object-store PUT is atomic per object", "Statement": "none"},
+            {"id": "ASSUME-FAIR-SCHEDULER", "statement": "the publisher is weakly fair"},
+        ]
+        self.assertEqual(self.run_proof(bundle={"assumptions": proof_assumptions}), (False, [FIELD_UNKNOWN]))
+
+    # Proof evidence documents ----------------------------------------------------------------
+
+    def test_unknown_proof_document_fields_are_findings(self) -> None:
+        theorem = {"claim_id": PROOF_CLAIM_ID, "name": PROOF_THEOREM_NAME, "statement": PROOF_THEOREM}
+        source = {"path": PROOF_MODEL_SOURCE_REL, "digest": compute_sha256(PROOF_MODEL_SOURCE_BYTES)}
+        for label, kwargs in (
+            ("theorem", {"bundle": {"theorem": {**theorem, "proof": "trivial"}}}),
+            ("theorem case-variant key", {"bundle": {"theorem": {**theorem, "Name": "Other"}}}),
+            ("toolchain", {"bundle": {"toolchain_identity": {"checker": "tlaps", "version": "1.5.0", "flags": "--skip"}}}),
+            ("formal model reference", {"bundle": {"formal_model": {"model_id": PROOF_MODEL_ID, "generation": PROOF_GENERATION, "source": "x"}}}),
+            ("receipt", {"receipt": {"status_detail": "x"}}),
+            ("receipt case-variant key", {"receipt": {"Status": "failed"}}),
+            ("receipt nested lookalike", {"receipt": {"summary": {"status": "failed"}}}),
+            ("model manifest", {"model": {"notes": "x"}}),
+            ("model source", {"model": {"source": {**source, "size": 1}}}),
+        ):
+            with self.subTest(case=label):
+                self.assertEqual(self.run_proof(**kwargs), (False, [FIELD_UNKNOWN]))
+
+    def test_receipt_status_of_any_json_type_is_a_finding_not_a_crash(self) -> None:
+        for status in ([], {}, ["passed"], {"passed": True}, 1, None, "Passed"):
+            with self.subTest(status=status):
+                self.assertEqual(self.run_proof(receipt={"status": status}), (False, [self.RECEIPT]))
+
+    # F1: encoding-safe text output ----------------------------------------------------------------
+
+    def assert_clean_failure(self, result: subprocess.CompletedProcess, expected: bytes | None = None) -> None:
+        self.assertEqual(result.returncode, 1, (result.stdout[-300:], result.stderr[-600:]))
+        self.assertNotIn(b"Traceback", result.stderr)
+        self.assertIn(b"[FAIL]", result.stdout)
+        if expected is not None:
+            self.assertIn(expected, result.stdout)
+
+    def test_text_cli_escapes_lone_surrogates_from_evidence(self) -> None:
+        for label, kwargs, escaped in (
+            ("measurement operation_id", {"measurement": {"operation_id": "\ud800"}}, b"\\ud800"),
+            ("measurement slo_id", {"measurement": {"slo_id": "\udfff"}}, b"\\udfff"),
+            ("bundle generation", {"bundle": {"generation": "\ud800"}}, b"\\ud800"),
+            ("artifact path", {"bundle": {"artifacts": [{"role": "measurement_artifact", "path": "\ud800", "digest": "sha256:" + "0" * 64}]}}, b"\\ud800"),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                root = promoted_slo_root(Path(tmpdir), **kwargs)
+                result = run_bytes_cli([b"--root", str(root).encode(), b"--as-of", b"2026-09-02T00:00:00Z"])
+                self.assert_clean_failure(result, escaped)
+
+    def test_text_cli_escapes_undecodable_argv_bytes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = promoted_slo_root(Path(tmpdir))
+            for label, args in (
+                ("--bundle", [b"--root", str(root).encode(), b"--bundle", b"x\xff.json"]),
+                ("--claims", [b"--root", str(root).encode(), b"--claims", b"x\xff.json"]),
+                ("--root", [b"--root", b"/nonexistent\xff"]),
+            ):
+                with self.subTest(arg=label):
+                    self.assert_clean_failure(run_bytes_cli(args + [b"--as-of", b"2026-09-02T00:00:00Z"]), b"\\udcff")
+
+    def test_text_cli_under_an_ascii_output_encoding(self) -> None:
+        env = dict(os.environ, PYTHONIOENCODING="ascii")
+        for label, measurement in (
+            ("finding text with a non-ASCII comparator", {"statistic": "p50"}),
+            ("surrogate and non-ASCII evidence", {"statistic": "\ud800", "operation_id": "é\ud800"}),
+        ):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmpdir:
+                root = promoted_slo_root(Path(tmpdir), measurement=measurement)
+                result = run_bytes_cli([b"--root", str(root).encode(), b"--as-of", b"2026-09-02T00:00:00Z"], env=env)
+                self.assert_clean_failure(result)
+                result.stdout.decode("ascii")  # the whole report is ASCII: nothing unencodable leaked
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = promoted_slo_root(Path(tmpdir), measurement={"statistic": "p50"})
+            result = run_bytes_cli([b"--root", str(root).encode(), b"--as-of", b"2026-09-02T00:00:00Z"], env=env)
+            self.assertIn(b"\\u2264", result.stdout)  # the SLO target's comparator, escaped
+
+    def test_round5_proof_ids_are_registered(self) -> None:
+        errors_md = (ROOT / "registries/ERRORS.md").read_text(encoding="utf-8")
+        for name, code in (("ERR_EVIDENCE_FIELD_UNKNOWN", FIELD_UNKNOWN), ("ERR_BUNDLE_SCHEMA_INVALID", SCHEMA_INVALID)):
+            with self.subTest(code=code):
+                self.assertEqual(_code(name), code)
+                self.assertIn(code, cpb.DIAGNOSTIC_REGISTRY)
+                self.assertEqual(errors_md.count(f"| `{code}` |"), 1)
+
+
+class TestRound5ObjectSize(unittest.TestCase):
+    """sizeBytes belongs to the registered object shape (schemas/evidence_bundle.v1.json), so an
+    artifact entry may declare it; it is then checked, never ignored."""
+
+    def run_size(self, size: object = None, exact: bool = False):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            data = build_bound_fixture(root)
+            entry = data["artifacts"][0]
+            entry["sizeBytes"] = len((root / entry["path"]).read_bytes()) if exact else size
+            ok, findings, _ = verify_class_bundle(root, data, BOUND_CLAIM_ID)
+            return ok, error_code_set(findings)
+
+    def test_the_exact_size_of_the_retained_bytes_passes(self) -> None:
+        self.assertEqual(self.run_size(exact=True), (True, []))
+
+    def test_a_declared_size_other_than_the_retained_bytes_fails(self) -> None:
+        for size in (0, 1, 10**30):
+            with self.subTest(size=size):
+                self.assertEqual(self.run_size(size), (False, [ERR_BUNDLE_DIGEST_MISMATCH]))
+
+    def test_a_declared_size_must_be_a_non_negative_integer(self) -> None:
+        for size in (-1, 1.5, 2.0, True, "3", None, []):
+            with self.subTest(size=size):
+                self.assertEqual(self.run_size(size), (False, [ERR_UNREADABLE_INPUT]))
 
 
 if __name__ == "__main__":
