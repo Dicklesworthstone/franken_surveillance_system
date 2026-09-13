@@ -1,0 +1,132 @@
+{
+  "schema": "fss.mjpeg_fixture_manifest.v1",
+  "fixtures": [
+    {
+      "name": "mjpeg_clean_3frames.mjpeg",
+      "variant": "clean",
+      "frame_count": 3,
+      "file_sha256": "5d0ad1de84dd83b354310d873ec1f1f8d02557b33b4420f3838673679d7591e7",
+      "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec",
+      "file_size": 2510,
+      "frames": [
+        {
+          "index": 0,
+          "source_fixture": "rgb_64x48_colorbars_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec"
+        },
+        {
+          "index": 1,
+          "source_fixture": "rgb_64x48_gradient_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "e1df75b36cf6d9abb066776a93dd2ffedf3f1906f10a87ccf145fff035a3e4e7"
+        },
+        {
+          "index": 2,
+          "source_fixture": "rgb_64x48_flat_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "e351f16f0312947d1c0b41f959bf3c1f27c96b96eedeca003fcabd30e4c65d40"
+        }
+      ]
+    },
+    {
+      "name": "mjpeg_truncated_last.mjpeg",
+      "variant": "truncated_last",
+      "frame_count": 3,
+      "file_sha256": "30dbae06f430b40692571579e39fb2f5293b0c8d172524496f8874386fef5e03",
+      "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec",
+      "file_size": 2482,
+      "frames": [
+        {
+          "index": 0,
+          "source_fixture": "rgb_64x48_colorbars_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec"
+        },
+        {
+          "index": 1,
+          "source_fixture": "rgb_64x48_gradient_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "e1df75b36cf6d9abb066776a93dd2ffedf3f1906f10a87ccf145fff035a3e4e7"
+        },
+        {
+          "index": 2,
+          "source_fixture": "rgb_64x48_flat_420_truncated",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "e351f16f0312947d1c0b41f959bf3c1f27c96b96eedeca003fcabd30e4c65d40"
+        }
+      ]
+    },
+    {
+      "name": "mjpeg_garbage_between_frames.mjpeg",
+      "variant": "garbage_between_frames",
+      "frame_count": 3,
+      "file_sha256": "86235d316103beb4451ad27e9a4c2221fcd3df5071d0ced1923c2b0512806a31",
+      "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec",
+      "file_size": 2563,
+      "frames": [
+        {
+          "index": 0,
+          "source_fixture": "rgb_64x48_colorbars_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec"
+        },
+        {
+          "index": 1,
+          "source_fixture": "rgb_64x48_gradient_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "e1df75b36cf6d9abb066776a93dd2ffedf3f1906f10a87ccf145fff035a3e4e7"
+        },
+        {
+          "index": 2,
+          "source_fixture": "rgb_64x48_flat_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "e351f16f0312947d1c0b41f959bf3c1f27c96b96eedeca003fcabd30e4c65d40"
+        }
+      ]
+    },
+    {
+      "name": "mjpeg_zero_length.mjpeg",
+      "variant": "zero_length",
+      "frame_count": 0,
+      "file_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_pixel_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "file_size": 0,
+      "frames": [
+      ]
+    },
+    {
+      "name": "mjpeg_dimension_change.mjpeg",
+      "variant": "dimension_change",
+      "frame_count": 2,
+      "file_sha256": "26f5302e153ffe294b812e7e7e36ef7af0d1d32d8f27ba6391409d18315f7750",
+      "source_pixel_sha256": "520f64a8420e39eec9cbee78ea334866f13d8a045d716e1d58adef72d23aa17b",
+      "file_size": 1528,
+      "frames": [
+        {
+          "index": 0,
+          "source_fixture": "rgb_16x16_flat_444",
+          "width": 16,
+          "height": 16,
+          "source_pixel_sha256": "520f64a8420e39eec9cbee78ea334866f13d8a045d716e1d58adef72d23aa17b"
+        },
+        {
+          "index": 1,
+          "source_fixture": "rgb_64x48_colorbars_420",
+          "width": 64,
+          "height": 48,
+          "source_pixel_sha256": "5ac82eba950d3b33d8d4eeded0f1fa7e235bc5f7d4e2fd3fc8fa3c91fb4c12ec"
+        }
+      ]
+    }
+  ]
+}

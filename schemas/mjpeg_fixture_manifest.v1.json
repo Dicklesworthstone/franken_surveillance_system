@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://franken-surveillance-system.invalid/schemas/mjpeg_fixture_manifest.v1.json",
+  "title": "MJPEG Fixture Manifest v1",
+  "description": "Test suite manifest for deterministic MJPEG stream fixtures.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "fixtures"
+  ],
+  "properties": {
+    "schema": {
+      "const": "fss.mjpeg_fixture_manifest.v1"
+    },
+    "fixtures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "variant",
+          "frame_count",
+          "file_sha256",
+          "source_pixel_sha256",
+          "file_size",
+          "frames"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "variant": {
+            "type": "string"
+          },
+          "frame_count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "file_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "source_pixel_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "file_size": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "frames": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "index",
+                "source_fixture",
+                "width",
+                "height",
+                "source_pixel_sha256"
+              ],
+              "properties": {
+                "index": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "source_fixture": {
+                  "type": "string"
+                },
+                "width": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "height": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "source_pixel_sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -96,7 +96,7 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(res.operations_count, 14)
         self.assertEqual(res.views_count, 8)
         self.assertEqual(res.resources_count, 15)
-        self.assertEqual(res.schemas_count, 73)
+        self.assertEqual(res.schemas_count, 75)
         self.assertEqual(res.capabilities_count, 12)
         self.assertEqual(res.errors_count, 256)
         self.assertEqual(
@@ -588,7 +588,7 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(payload["operations_count"], 14)
         self.assertEqual(payload["views_count"], 8)
         self.assertEqual(payload["resources_count"], 15)
-        self.assertEqual(payload["schemas_count"], 73)
+        self.assertEqual(payload["schemas_count"], 75)
         self.assertEqual(payload["capabilities_count"], 12)
         self.assertEqual(payload["errors_count"], 256)
         self.assertEqual(payload["errors"], [])
