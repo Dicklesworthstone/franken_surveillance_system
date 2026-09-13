@@ -157,6 +157,11 @@ impl SemanticHandle {
         Ok(())
     }
 
+    /// Extracts the H0 identity representation for this semantic handle.
+    pub fn to_h0_identity(&self) -> Result<H0Identity, HydrationError> {
+        H0Identity::from_semantic_handle(self)
+    }
+
     /// Returns the maximum published hydration level.
     #[must_use]
     pub fn maximum_level(&self) -> Option<HydrationLevel> {

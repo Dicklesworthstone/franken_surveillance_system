@@ -76,17 +76,17 @@ pub use contract::{
     RuntimeOutcome,
 };
 pub use contract_basis::{
-    check_basis_freshness, check_compatibility, decode_canonical_binary, encode_canonical_binary,
-    negotiate_basis, reference_contract_basis, refuse_stale_anchor, validate_contract_basis,
-    BasisCompatibility, CompatibilityResult, ContractBasisError, ContractBasisRefusal,
-    RegistryDigestSet, StaleBasisReason, CANONICAL_ONTOLOGY_GENERATION_ID,
-    CANONICAL_PRODUCER_RELEASE_ID, CANONICAL_SEMANTIC_PROTOCOL, CONTRACT_BASIS_FORMAT_VERSION,
-    CONTRACT_BASIS_MAGIC, MAX_CONTRACT_BASIS_BINARY_BYTES, MIN_CONTRACT_BASIS_BINARY_BYTES,
-    REFERENCE_CAPABILITY_REGISTRY_DIGEST, REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST,
-    REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST, REFERENCE_CONTRACT_BASIS_GENERATION,
-    REFERENCE_COST_REGISTRY_DIGEST, REFERENCE_ERROR_REGISTRY_DIGEST,
-    REFERENCE_OPERATION_REGISTRY_DIGEST, REFERENCE_SCHEMA_CATALOG_DIGEST,
-    REFERENCE_VIEW_REGISTRY_DIGEST, SCHEMA_CONTRACT_BASIS,
+    BasisCompatibility, CANONICAL_ONTOLOGY_GENERATION_ID, CANONICAL_PRODUCER_RELEASE_ID,
+    CANONICAL_SEMANTIC_PROTOCOL, CONTRACT_BASIS_FORMAT_VERSION, CONTRACT_BASIS_MAGIC,
+    CompatibilityResult, ContractBasisError, ContractBasisRefusal, MAX_CONTRACT_BASIS_BINARY_BYTES,
+    MIN_CONTRACT_BASIS_BINARY_BYTES, REFERENCE_CAPABILITY_REGISTRY_DIGEST,
+    REFERENCE_CONTRACT_BASIS_CANONICAL_DIGEST, REFERENCE_CONTRACT_BASIS_FREEZE_DIGEST,
+    REFERENCE_CONTRACT_BASIS_GENERATION, REFERENCE_COST_REGISTRY_DIGEST,
+    REFERENCE_ERROR_REGISTRY_DIGEST, REFERENCE_OPERATION_REGISTRY_DIGEST,
+    REFERENCE_SCHEMA_CATALOG_DIGEST, REFERENCE_VIEW_REGISTRY_DIGEST, RegistryDigestSet,
+    SCHEMA_CONTRACT_BASIS, StaleBasisReason, check_basis_freshness, check_compatibility,
+    decode_canonical_binary, encode_canonical_binary, negotiate_basis, reference_contract_basis,
+    refuse_stale_anchor, validate_contract_basis,
 };
 pub use delta::{DeltaPriority, MeaningfulDelta, MeaningfulDeltaClass, SilenceCertificate};
 pub use digest::{ContentDigest, DigestAlgorithm, Sha256Hasher, sha256};
@@ -121,6 +121,7 @@ pub use evidence::{
     SensorCapsule, SensorSourceBytesSpec,
 };
 pub use hydration::{
+    H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0Identity, H0IdentityParams,
     HYDRATION_VIEW_ID, HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel,
     HydrationPurpose, HydrationReceipt, HydrationReceiptSpec, HydrationRequest,
     HydrationRequestSpec, HydrationResponse, LaboratoryAccess, SemanticHandle, SemanticHandleSpec,
