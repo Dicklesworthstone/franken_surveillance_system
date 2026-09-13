@@ -38,6 +38,7 @@ struct Variant {
     created_at: Option<TimestampNs>,
     pressure: ResourcePressure,
     degraded_dimensions: BTreeSet<String>,
+    extra_cells: Vec<KnowledgeCell>,
 }
 
 impl Variant {
@@ -67,6 +68,7 @@ impl Variant {
             created_at: None,
             pressure: ResourcePressure::Nominal,
             degraded_dimensions: BTreeSet::new(),
+            extra_cells: Vec::new(),
         })
     }
 }
@@ -219,6 +221,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             )?,
         });
     }
+    knowledge_cells.extend(variant.extra_cells.clone());
     let next = affordances
         .iter()
         .map(|affordance| affordance.affordance_id.clone())
@@ -259,6 +262,11 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
     // Situation compilation retains a published outcome's proof object as a proof root, so the
     // fixture retains the effect evidence too unless a test withholds it.
     let mut proof_roots = BTreeSet::from([evidence]);
+    for cell in &variant.extra_cells {
+        for ev in &cell.evidence {
+            proof_roots.insert(*ev);
+        }
+    }
     if variant.effect_state.is_some() && variant.effect_evidence && variant.effect_evidence_retained
     {
         proof_roots.insert(ContentDigest::sha256(b"effect-outcome"));
@@ -3109,5 +3117,55 @@ fn a_discharge_is_judged_as_the_journal_stood_at_the_results_root() -> Result<()
         );
     }
     fixture.cleanup();
+    Ok(())
+}
+
+#[test]
+fn compute_meaningful_delta_refuses_evidence_laundering_between_basis_and_result()
+-> Result<(), Box<dyn Error>> {
+    let shared_evidence = ContentDigest::sha256(b"counterfactual_prediction_evidence_001");
+
+    let mut v1 = Variant::baseline()?;
+    v1.sequence = 1;
+    v1.extra_cells.push(KnowledgeCell {
+        claim_id: "claim:fire:predicted_spread".to_owned(),
+        statement: "Model predicts fire expansion".to_owned(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![shared_evidence],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    });
+    let first = publication(&v1)?;
+
+    let mut v2 = Variant::baseline()?;
+    v2.sequence = 2;
+    v2.predecessor = Some(first.publication_digest);
+    v2.extra_cells.push(KnowledgeCell {
+        claim_id: "claim:fire:observed_spread".to_owned(),
+        statement: "Physical observation of fire expansion".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![shared_evidence],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    });
+    let second = publication(&v2)?;
+
+    let res = classify_reference_meaningful_delta(&first, &second);
+    assert!(
+        matches!(
+            res,
+            Err(crate::ReferenceError::Contract(
+                fss_core::ContractError::EvidenceLaunderingDetected
+            ))
+        ),
+        "classify_reference_meaningful_delta must refuse laundering predicted evidence into observed across frames: {res:?}"
+    );
+
     Ok(())
 }

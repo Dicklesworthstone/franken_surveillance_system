@@ -1829,12 +1829,12 @@ fn sealed_publication_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Pinned v4 seal digest of the fixed compiled publication below.
+/// Pinned v6 seal digest of the fixed compiled publication below.
 const GOLDEN_SEAL_DIGEST: &str =
-    "sha256:55b2921d6e89eb02eda3fe24b46725f083692145c8ea7ca62d8a7231121cb319";
-/// Pinned v4 publication digest of the fixed compiled publication below.
+    "sha256:d8ead9a323506e641dd4d97226393c1cd4fe42cdc173c9e8eb4eb9d9c574a1ed";
+/// Pinned v5 publication digest of the fixed compiled publication below.
 const GOLDEN_PUBLICATION_DIGEST: &str =
-    "sha256:d1a22aa792a0a8488b831142b86f5498f49ccd8c3aed854c1c15fc064efad16e";
+    "sha256:6fc353116e4df3ebd37a28f924b44c30c285ca5856c5d543b6a51edc92d6196e";
 
 /// Review round 4 F5: the seal digest and the v2 publication digest of a fixed compiled
 /// publication are pinned, so any change to either encoding has to change these goldens on purpose.
@@ -1962,12 +1962,12 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Pinned v4 seal digest of the fixed compiled publication with effect bindings below.
+/// Pinned v6 seal digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:eb7992350021104d36d2fd2ee06056abf8cd1f3a9767a93eb5e850e0aa754399";
-/// Pinned v4 publication digest of the fixed compiled publication with effect bindings below.
+    "sha256:2dd82f8e7855af0a0b13a2d9af92891e065826aa38c9898abdfe4c24272d130a";
+/// Pinned v5 publication digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:d89b3b6f85119053783faa8d1f8ed9dd2e9f8621bd564c7e2e042d52d0a0b7a8";
+    "sha256:8ee1205c591ed1922a9e2d3684d97ff96b84c000be4d45a503dd82d7447c7a0b";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.

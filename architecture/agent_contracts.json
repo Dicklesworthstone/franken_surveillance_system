@@ -1,6 +1,6 @@
 {
   "schema": "fss.agent_contracts.v1",
-  "asOf": "2026-08-31",
+  "asOf": "2026-09-13",
   "semanticProtocol": "fss/1",
   "constitutionalDocument": "AGENT_COGNITION_AND_CONTROL.md",
   "controlPlaneDocument": "AGENT_COGNITIVE_CONTROL_PLANE.md",
@@ -123,6 +123,34 @@
       "meaning": "A rule, threshold, capability, or privacy decision from an exact policy generation."
     }
   ],
+  "mayLaunderEvidenceInto": {
+    "observed": [],
+    "derived": [
+      "observed"
+    ],
+    "predicted": [
+      "observed",
+      "derived",
+      "remembered",
+      "operator_asserted",
+      "vendor_claimed",
+      "policy"
+    ],
+    "remembered": [
+      "observed",
+      "derived",
+      "operator_asserted",
+      "policy"
+    ],
+    "operator_asserted": [],
+    "vendor_claimed": [
+      "observed",
+      "derived",
+      "operator_asserted",
+      "policy"
+    ],
+    "policy": []
+  },
   "hypothesisDispositions": [
     "live",
     "supported",
@@ -325,5 +353,17 @@
     ],
     "compositionRule": "a SituationCapsule is composed only from capability-projected facets pinned to one compatible version universe; the compositor may select and connect facts but may not redefine a facet owner’s semantics",
     "forbidden": "subsystem-specific free-form agent replies, hidden ambient reads, unversioned side chronologies, or direct effect authority in a facet"
-  }
+  },
+  "drifts": [
+    {
+      "row": "PROV-003",
+      "name": "predicted",
+      "targetField": "knowledge_state",
+      "registryText": "Counterfactual or forward prediction under an explicit branch/model and assumptions.",
+      "constitutionalAuthority": "AGENT_COGNITION_AND_CONTROL.md §8.2: counterfactual or future expectation, never current truth",
+      "reconciledInvariant": "Predicted provenance strictly forbids KnowledgeState::Known (Err(ContractError::PredictedKnownForbidden))",
+      "status": "reconciled_with_constitution",
+      "reason": "The normative PROV-003 row description defines predicted as forward/counterfactual expectation but does not inline epistemic compatibility constraints. Constitution §8.2 governs and establishes that predictions are never current truth, requiring fail-closed refusal when paired with known."
+    }
+  ]
 }

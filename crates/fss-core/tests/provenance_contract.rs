@@ -10,14 +10,16 @@
 //! - Effect authorization: Observed + Known authorizes irreversible effects; non-authorizing provenance
 //!   classes (predicted, remembered, vendor_claimed) are rejected even with Known epistemic state.
 
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::str::FromStr;
 
 use fss_core::{
     BeliefInterval, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
     ContentDigest, ContractError, DerivedBelief, DerivedBeliefParams, Generation, KnowledgeCell,
-    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, PrivacyGeneration, ProvenanceClass,
-    ReconciliationBasis, RedactionMarker, RedactionReason, StaleBasis, TimestampNs,
+    KnowledgeState, KnowledgeStateBasis, LedgerAnchor, PrivacyGeneration,
+    ProvenanceClass, ReconciliationBasis, RedactionMarker, RedactionReason, SituationFrame,
+    StaleBasis, TimestampNs, WorldEnvelope,
 };
 
 #[test]
@@ -60,8 +62,10 @@ fn test_observed_parse_and_resolution() -> Result<(), Box<dyn Error>> {
     let from_str_name = ProvenanceClass::from_str("observed")?;
     assert_eq!(from_str_name, ProvenanceClass::Observed);
 
-    let from_str_id = ProvenanceClass::from_str("PROV-001")?;
-    assert_eq!(from_str_id, ProvenanceClass::Observed);
+    assert_eq!(
+        ProvenanceClass::from_str("PROV-001"),
+        Err(ContractError::InvalidIdentifier)
+    );
 
     // Rejection of unknown / malformed identities
     assert_eq!(
@@ -407,8 +411,10 @@ fn test_derived_parse_and_resolution() -> Result<(), Box<dyn Error>> {
     let from_str_name = ProvenanceClass::from_str("derived")?;
     assert_eq!(from_str_name, ProvenanceClass::Derived);
 
-    let from_str_id = ProvenanceClass::from_str("PROV-002")?;
-    assert_eq!(from_str_id, ProvenanceClass::Derived);
+    assert_eq!(
+        ProvenanceClass::from_str("PROV-002"),
+        Err(ContractError::InvalidIdentifier)
+    );
 
     // Rejection of invalid variants
     assert_eq!(
@@ -773,8 +779,10 @@ fn test_predicted_parse_and_resolution() -> Result<(), Box<dyn Error>> {
     let from_str_name = ProvenanceClass::from_str("predicted")?;
     assert_eq!(from_str_name, ProvenanceClass::Predicted);
 
-    let from_str_id = ProvenanceClass::from_str("PROV-003")?;
-    assert_eq!(from_str_id, ProvenanceClass::Predicted);
+    assert_eq!(
+        ProvenanceClass::from_str("PROV-003"),
+        Err(ContractError::InvalidIdentifier)
+    );
 
     // Rejection of invalid / malformed variants (fail closed)
     assert_eq!(
@@ -877,6 +885,19 @@ fn test_predicted_orthogonality_across_epistemic_states() -> Result<(), Box<dyn 
             state_basis: basis_for(state)?,
         };
 
+        if state == KnowledgeState::Known {
+            assert_eq!(
+                cell.validate(),
+                Err(ContractError::PredictedKnownForbidden),
+                "Constitution §8.2: Predicted cell must refuse KnowledgeState::Known"
+            );
+            assert_eq!(
+                cell.validated(),
+                Err(ContractError::PredictedKnownForbidden)
+            );
+            continue;
+        }
+
         assert!(
             cell.validate().is_ok(),
             "Validation failed for predicted cell in state {}",
@@ -918,7 +939,15 @@ fn test_predicted_cannot_authorize_irreversible_effects_even_when_known(
         state_basis: None,
     };
 
-    assert!(predicted_known_cell.validate().is_ok());
+    assert_eq!(
+        predicted_known_cell.validate(),
+        Err(ContractError::PredictedKnownForbidden),
+        "Predicted cell claiming Known state must be refused per Constitution §8.2"
+    );
+    assert_eq!(
+        predicted_known_cell.clone().validated(),
+        Err(ContractError::PredictedKnownForbidden)
+    );
     assert!(predicted_known_cell.is_predicted());
     assert_eq!(predicted_known_cell.knowledge_state, KnowledgeState::Known);
 
@@ -997,12 +1026,26 @@ fn test_predicted_vlm_shortcut_prohibition() -> Result<(), Box<dyn Error>> {
         state_basis: None,
     };
 
-    assert!(vlm_cell.validate().is_ok());
-    assert!(vlm_cell.is_predicted());
+    // Per PROV-003 and Constitution §8.2, a VLM prediction cannot claim Known
+    assert_eq!(
+        vlm_cell.validate(),
+        Err(ContractError::PredictedKnownForbidden),
+        "VLM prediction claiming Known state must be refused"
+    );
+    assert_eq!(
+        vlm_cell.clone().validated(),
+        Err(ContractError::PredictedKnownForbidden)
+    );
 
-    // Fails closed: VLM prediction cannot authorize lockdown or other irreversible effect
+    // Even when legitimately Estimated, VLM prediction fails closed: cannot authorize irreversible effect
+    let vlm_estimated = KnowledgeCell {
+        knowledge_state: KnowledgeState::Estimated,
+        ..vlm_cell
+    };
+    assert!(vlm_estimated.validate().is_ok());
+    assert!(vlm_estimated.is_predicted());
     assert!(
-        !vlm_cell.is_irreversible_effect_premise(now),
+        !vlm_estimated.is_irreversible_effect_premise(now),
         "VLM prediction directly triggering an effect is strictly prohibited"
     );
 
@@ -1107,8 +1150,10 @@ fn test_remembered_parse_and_resolution() -> Result<(), Box<dyn Error>> {
     let from_str_name = ProvenanceClass::from_str("remembered")?;
     assert_eq!(from_str_name, ProvenanceClass::Remembered);
 
-    let from_str_id = ProvenanceClass::from_str("PROV-004")?;
-    assert_eq!(from_str_id, ProvenanceClass::Remembered);
+    assert_eq!(
+        ProvenanceClass::from_str("PROV-004"),
+        Err(ContractError::InvalidIdentifier)
+    );
 
     // Rejection of invalid / malformed variants (fail closed)
     assert_eq!(
@@ -1461,8 +1506,10 @@ fn test_operator_asserted_parse_and_resolution() -> Result<(), Box<dyn Error>> {
     let from_str_name = ProvenanceClass::from_str("operator_asserted")?;
     assert_eq!(from_str_name, ProvenanceClass::OperatorAsserted);
 
-    let from_str_id = ProvenanceClass::from_str("PROV-005")?;
-    assert_eq!(from_str_id, ProvenanceClass::OperatorAsserted);
+    assert_eq!(
+        ProvenanceClass::from_str("PROV-005"),
+        Err(ContractError::InvalidIdentifier)
+    );
 
     // Rejection of invalid / malformed variants (fail closed)
     assert_eq!(
@@ -1801,8 +1848,10 @@ fn test_vendor_claimed_parse_and_resolution() -> Result<(), Box<dyn Error>> {
     let from_str_name = ProvenanceClass::from_str("vendor_claimed")?;
     assert_eq!(from_str_name, ProvenanceClass::VendorClaimed);
 
-    let from_str_id = ProvenanceClass::from_str("PROV-006")?;
-    assert_eq!(from_str_id, ProvenanceClass::VendorClaimed);
+    assert_eq!(
+        ProvenanceClass::from_str("PROV-006"),
+        Err(ContractError::InvalidIdentifier)
+    );
 
     // Rejection of invalid / malformed variants (fail closed)
     assert_eq!(
@@ -2237,5 +2286,243 @@ fn test_non_asserting_cells_stay_valid_without_evidence() -> Result<(), Box<dyn 
     assert!(contradicted_unknown.is_observed());
     assert!(contradicted_unknown.evidence.is_empty());
     assert!(!contradicted_unknown.is_irreversible_effect_premise(now));
+    Ok(())
+}
+
+#[test]
+fn test_predicted_known_forbidden() -> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(b"predicted_evidence_root_001");
+
+    // Predicted + Known is strictly refused per PROV-003, AGENTS.md, and Constitution §8.2
+    let cell_predicted_known = KnowledgeCell {
+        claim_id: "claim:future:event:001".to_string(),
+        statement: "A future prediction claimed as known truth".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    };
+    assert_eq!(
+        cell_predicted_known.validate(),
+        Err(ContractError::PredictedKnownForbidden)
+    );
+    assert_eq!(
+        cell_predicted_known.validated(),
+        Err(ContractError::PredictedKnownForbidden)
+    );
+
+    // Predicted with Estimated is valid
+    let cell_predicted_estimated = KnowledgeCell {
+        claim_id: "claim:future:event:002".to_string(),
+        statement: "A future prediction estimated with bounded model uncertainty".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    };
+    assert!(cell_predicted_estimated.validate().is_ok());
+
+    Ok(())
+}
+
+#[test]
+fn test_canonical_decode_and_from_str_strictly_refuse_ids() -> Result<(), Box<dyn Error>> {
+    for prov in [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ] {
+        // Canonical decode accepts exact schema name
+        let mut enc = CanonicalEncoder::new();
+        enc.text(prov.as_str());
+        let bytes = enc.finish();
+        let mut dec = CanonicalDecoder::new(&bytes);
+        assert_eq!(ProvenanceClass::decode_canonical(&mut dec)?, prov);
+
+        // Canonical decode strictly refuses stable IDs
+        let mut enc_id = CanonicalEncoder::new();
+        enc_id.text(prov.id());
+        let bytes_id = enc_id.finish();
+        let mut dec_id = CanonicalDecoder::new(&bytes_id);
+        assert_eq!(
+            ProvenanceClass::decode_canonical(&mut dec_id),
+            Err(ContractError::InvalidIdentifier)
+        );
+
+        // FromStr accepts exact schema name
+        assert_eq!(ProvenanceClass::from_str(prov.as_str())?, prov);
+
+        // FromStr strictly refuses stable IDs
+        assert_eq!(
+            ProvenanceClass::from_str(prov.id()),
+            Err(ContractError::InvalidIdentifier)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn test_may_launder_evidence_into_matrix() -> Result<(), Box<dyn Error>> {
+    let classes = [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ];
+
+    for source in classes {
+        for target in classes {
+            let result = source.may_launder_evidence_into(target);
+            match source {
+                ProvenanceClass::Predicted => {
+                    assert_eq!(
+                        result,
+                        target != ProvenanceClass::Predicted,
+                        "Predicted into non-Predicted must constitute laundering"
+                    );
+                }
+                ProvenanceClass::Derived => {
+                    assert_eq!(
+                        result,
+                        target == ProvenanceClass::Observed,
+                        "Derived into Observed must constitute laundering (Constitution §8.3)"
+                    );
+                }
+                ProvenanceClass::Remembered => {
+                    assert_eq!(
+                        result,
+                        matches!(
+                            target,
+                            ProvenanceClass::Observed
+                                | ProvenanceClass::Derived
+                                | ProvenanceClass::OperatorAsserted
+                                | ProvenanceClass::Policy
+                        ),
+                        "Remembered laundering into authorizing/live classes must be refused"
+                    );
+                }
+                ProvenanceClass::VendorClaimed => {
+                    assert_eq!(
+                        result,
+                        matches!(
+                            target,
+                            ProvenanceClass::Observed
+                                | ProvenanceClass::Derived
+                                | ProvenanceClass::OperatorAsserted
+                                | ProvenanceClass::Policy
+                        ),
+                        "VendorClaimed laundering into independent/authorizing classes must be refused"
+                    );
+                }
+                ProvenanceClass::Observed
+                | ProvenanceClass::OperatorAsserted
+                | ProvenanceClass::Policy => {
+                    assert!(!result, "{source} should not constitute laundering into {target}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn test_situation_frame_laundering_between_cells_rejected() -> Result<(), Box<dyn Error>> {
+    let anchor = LedgerAnchor::genesis("site:test");
+    let shared_digest = ContentDigest::sha256(b"shared_reused_evidence_digest_001");
+
+    let cell_predicted = KnowledgeCell {
+        claim_id: "claim:model:future:1".to_string(),
+        statement: "Prediction from model".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![shared_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    };
+
+    let cell_observed = KnowledgeCell {
+        claim_id: "claim:sensor:live:1".to_string(),
+        statement: "Live sensor observation".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![shared_digest],
+        contradictions: vec![],
+        valid_until: None,
+        state_basis: None,
+    };
+
+    let frame = SituationFrame {
+        frame_id: "frame:001".to_string(),
+        objective_id: "obj:001".to_string(),
+        anchor: anchor.clone(),
+        world_envelope: WorldEnvelope {
+            envelope_id: "env:001".to_string(),
+            objective_id: "obj:001".to_string(),
+            anchor: anchor.clone(),
+            nominal_claim_ids: BTreeSet::new(),
+            certified_core_claim_ids: BTreeSet::new(),
+            alternatives: vec![],
+            adversarial_residuals: vec![],
+            common_invariants: BTreeSet::new(),
+            coverage_boundary_handles: BTreeSet::new(),
+        },
+        knowledge_cells: vec![cell_predicted, cell_observed],
+        now: vec![],
+        changed: vec![],
+        why: vec![],
+        unknown: vec![],
+        at_risk: vec![],
+        next: vec![],
+        evidence_handles: BTreeSet::new(),
+    };
+
+    assert_eq!(
+        frame.validate(),
+        Err(ContractError::EvidenceLaunderingDetected),
+        "Frame must refuse cells laundering predicted evidence into observed"
+    );
+
+    Ok(())
+}
+
+
+#[test]
+fn test_wire_code_roundtrip() -> Result<(), Box<dyn Error>> {
+    for (code, expected) in [
+        (1, ProvenanceClass::Observed),
+        (2, ProvenanceClass::Derived),
+        (3, ProvenanceClass::Predicted),
+        (4, ProvenanceClass::Remembered),
+        (5, ProvenanceClass::OperatorAsserted),
+        (6, ProvenanceClass::VendorClaimed),
+        (7, ProvenanceClass::Policy),
+    ] {
+        assert_eq!(expected.to_code(), code);
+        assert_eq!(ProvenanceClass::from_code(code)?, expected);
+    }
+    assert_eq!(
+        ProvenanceClass::from_code(0),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_code(8),
+        Err(ContractError::InvalidIdentifier)
+    );
     Ok(())
 }

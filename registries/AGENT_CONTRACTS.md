@@ -42,6 +42,8 @@ Knowledge-state permission is deliberately split. An estimate may support specul
 | `PROV-006` | `vendor_claimed` | Metadata or state asserted by a device/vendor boundary and not treated as independent physical truth. |
 | `PROV-007` | `policy` | A rule, threshold, capability, or privacy decision from an exact policy generation. |
 
+*Note on PROV-001 effect evidence*: Local effect journal receipts recorded by execution guards are classified as `observed` under PROV-001 because they constitute direct canonical effect evidence of local runtime state, distinguishing them from cognitive derivations and allowing effect reconciliation.
+
 ## Hypothesis dispositions
 
 `live` · `supported` · `disfavored` · `refuted` · `resolved` · `superseded`
@@ -173,3 +175,14 @@ fss://session/{session}/handoff/{root}
 fss://experience/{capsule}
 fss://doctor/{bundle}
 ```
+
+## Registry drifts
+
+- Row: `PROV-003` (`predicted`)
+  - Target field: `knowledge_state` compatibility (`known`)
+  - Registry text: "Counterfactual or forward prediction under an explicit branch/model and assumptions."
+  - Constitutional authority: `AGENT_COGNITION_AND_CONTROL.md` §8.2: "counterfactual or future expectation, never current truth"
+  - Reconciled invariant: `Predicted` provenance strictly forbids `KnowledgeState::Known` (`Err(ContractError::PredictedKnownForbidden)`)
+  - Status: `reconciled_with_constitution`
+  - Reason: The normative PROV-003 row description defines predicted as forward/counterfactual expectation but does not inline epistemic compatibility constraints. Constitution §8.2 governs and establishes that predictions are never current truth, requiring fail-closed refusal when paired with `known`.
+

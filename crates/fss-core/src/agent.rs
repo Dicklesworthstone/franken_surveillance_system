@@ -1,6 +1,6 @@
 //! Agent-facing situation, possible-world, affordance, and handoff contracts.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::{
@@ -457,6 +457,11 @@ impl KnowledgeCell {
     /// `indeterminate`, `not_applicable`) stay valid without evidence, so an honest unknown is
     /// never refused for lacking the support it reports it does not have.
     pub fn validate(&self) -> Result<(), ContractError> {
+        if self.provenance == ProvenanceClass::Predicted
+            && self.knowledge_state == KnowledgeState::Known
+        {
+            return Err(ContractError::PredictedKnownForbidden);
+        }
         if matches!(
             self.provenance,
             ProvenanceClass::Observed | ProvenanceClass::Derived
@@ -475,6 +480,21 @@ impl KnowledgeCell {
             (Some(_), Some(error)) => Err(error),
             (Some(_), None) => Err(ContractError::KnowledgeStateBasisMismatch),
         }
+    }
+
+    /// Verifies that evidence from `prior` is not being laundered into `self` (or vice-versa)
+    /// across incompatible provenance classes without fresh live observation (AGENTS.md, Constitution §8.3).
+    pub fn verify_no_evidence_laundering(
+        &self,
+        prior: &KnowledgeCell,
+    ) -> Result<(), ContractError> {
+        if (prior.provenance.may_launder_evidence_into(self.provenance)
+            || self.provenance.may_launder_evidence_into(prior.provenance))
+            && self.evidence.iter().any(|e| prior.evidence.contains(e))
+        {
+            return Err(ContractError::EvidenceLaunderingDetected);
+        }
+        Ok(())
     }
 
     /// Consumes and returns the cell only when [`Self::validate`] accepts it.
@@ -944,10 +964,32 @@ impl SituationFrame {
         {
             return Err(ContractError::StaleAnchor);
         }
-        for cell in &self.knowledge_cells {
+        self.world_envelope.validate()?;
+
+        let mut digest_provenances: BTreeMap<&ContentDigest, Vec<ProvenanceClass>> = BTreeMap::new();
+        for (i, cell) in self.knowledge_cells.iter().enumerate() {
             cell.validate()?;
+            for digest in &cell.evidence {
+                if let Some(priors) = digest_provenances.get(digest) {
+                    for &prior in priors {
+                        if prior.may_launder_evidence_into(cell.provenance)
+                            || cell.provenance.may_launder_evidence_into(prior)
+                        {
+                            return Err(ContractError::EvidenceLaunderingDetected);
+                        }
+                    }
+                }
+                digest_provenances
+                    .entry(digest)
+                    .or_default()
+                    .push(cell.provenance);
+            }
+            for prior in &self.knowledge_cells[..i] {
+                cell.verify_no_evidence_laundering(prior)?;
+                prior.verify_no_evidence_laundering(cell)?;
+            }
         }
-        self.world_envelope.validate()
+        Ok(())
     }
 
     /// Returns the frame fingerprint.
