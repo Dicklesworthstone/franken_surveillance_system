@@ -196,6 +196,17 @@ def read_input_bytes(path: Path, rel: str, root: Path, *, allow_empty: bool = Fa
     refused too.
     """
     limit = MAX_INPUT_FILE_BYTES
+    # Lexical containment: no ``..`` component, and the path (resolved without following symlinks, which
+    # are refused below) must stay under the repository root. Defensive: no data path reaches it today.
+    if ".." in path.parts:
+        return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} contains a '..' path component; authority inputs are named by a direct path under the repository")]
+    try:
+        root_resolved = os.path.realpath(root)
+        candidate = os.path.normpath(path if path.is_absolute() else os.path.join(root_resolved, path))
+        if os.path.commonpath([candidate, root_resolved]) != root_resolved:
+            return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"{rel} resolves outside the repository root; authority inputs must live inside it")]
+    except (ValueError, OSError) as exc:
+        return None, [issue(ERR_DEP_CORRUPT_FILE, rel, "#", f"could not locate {rel} within the repository root: {exc}")]
     try:
         try:
             st = os.lstat(path)

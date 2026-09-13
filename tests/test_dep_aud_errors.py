@@ -176,7 +176,7 @@ members = ["crates/fss-missing"]
         (self.root / "Cargo.toml").write_text(root_cargo, encoding="utf-8")
         findings: list[Finding] = []
         manifests, members, member_map = dependency_audit.expand_workspace_members(
-            self.root, dependency_audit.load_toml(self.root / "Cargo.toml"), findings
+            self.root, dependency_audit.load_toml(self.root / "Cargo.toml", self.root), findings
         )
         f010 = [f for f in findings if f.code == "DEP-AUD-010"]
         self.assertEqual(len(f010), 1)

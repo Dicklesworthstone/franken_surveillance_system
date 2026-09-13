@@ -368,6 +368,13 @@ DIAGNOSTIC_REGISTRY: dict[str, DiagnosticDef] = {
         trigger="a crate recorded under an open owner decision in dependency_allowlist.toml [pending_owner_decisions] is declared in a manifest or present in Cargo.lock or resolved metadata",
         remediation="keep the crate out of every manifest and Cargo.lock until the owner decision (for example fss-ndxis) is recorded; it is neither admitted nor rejected meanwhile",
     ),
+    "DEP-AUD-048": DiagnosticDef(
+        code="DEP-AUD-048",
+        severity="error",
+        owner="security-policy",
+        trigger="a [patch] or [replace] entry in a Cargo manifest or .cargo/config points at a path outside the repository or at a git source",
+        remediation="remove the out-of-repo or git [patch]/[replace] entry; the frozen closed universe admits only in-repository path sources and the pinned registry",
+    ),
 }
 
 
@@ -2337,6 +2344,71 @@ def audit_dependency_classes(
     }
 
 
+def manifest_source_override_audit(findings: list["Finding"], root: Path = ROOT, manifests: list[Path] | None = None) -> None:
+    """Refuse [patch]/[replace] entries (Cargo manifests and .cargo/config) that point outside the repo or at a git source.
+
+    A ``[patch]``/``[replace]`` table can silently swap a crate's real source for an out-of-tree path or a
+    git checkout, defeating the frozen closed universe, and cargo metadata may still succeed. This check is
+    independent of metadata: it reads the root and member manifests and every ``.cargo/config[.toml]``
+    beside them (through the bounded reader) and refuses, with DEP-AUD-048, any entry carrying a ``git``
+    source or a ``path`` that resolves outside the repository root.
+    """
+    manifest_paths = list(manifests) if manifests is not None else [root / "Cargo.toml"]
+    config_paths: list[Path] = []
+    seen: set[Path] = set()
+    for manifest in manifest_paths:
+        for name in ("config.toml", "config"):
+            config = manifest.parent / ".cargo" / name
+            if config not in seen and (config.is_file() or config.is_symlink()):
+                seen.add(config)
+                config_paths.append(config)
+
+    def spec_problem(spec: Any) -> str | None:
+        if not isinstance(spec, dict):
+            return None
+        if "git" in spec:
+            return f"names a git source {spec.get('git')!r}"
+        target = spec.get("path")
+        if not isinstance(target, str):
+            return None
+        resolved = os.path.normpath(os.path.join(str(base_dir), target))
+        try:
+            if os.path.commonpath([resolved, os.path.realpath(root)]) == os.path.realpath(root):
+                return None
+        except ValueError:
+            pass
+        return f"points at {target!r}, which resolves outside the repository"
+
+    def scan_patch_replace(data: dict[str, Any], rel: str) -> None:
+        replace = data.get("replace")
+        if isinstance(replace, dict):
+            for name, spec in replace.items():
+                problem = spec_problem(spec)
+                if problem is not None:
+                    add(findings, "error", "DEP-AUD-048", rel, f"[replace] entry {name!r} {problem}; the frozen closed universe forbids out-of-repo and git dependency sources", root=root, params={"manifest": rel, "table": "replace", "entry": str(name)})
+        patch = data.get("patch")
+        if isinstance(patch, dict):
+            for registry, entries in patch.items():
+                if not isinstance(entries, dict):
+                    continue
+                for name, spec in entries.items():
+                    problem = spec_problem(spec)
+                    if problem is not None:
+                        add(findings, "error", "DEP-AUD-048", rel, f"[patch.{registry}] entry {name!r} {problem}; the frozen closed universe forbids out-of-repo and git dependency sources", root=root, params={"manifest": rel, "table": f"patch.{registry}", "entry": str(name)})
+
+    for manifest in manifest_paths + config_paths:
+        if not (manifest.is_file() or manifest.is_symlink()):
+            continue
+        base_dir = manifest.parent
+        rel = sanitize_path(manifest, root)
+        try:
+            data = load_toml(manifest, root)
+        except ValueError as exc:
+            add(findings, "error", "DEP-AUD-011", manifest, f"cannot parse {rel} for [patch]/[replace] review: {exc}", root=root, params={"manifest": rel, "error": str(exc)})
+            continue
+        scan_patch_replace(data, rel)
+
+
 def audit_workspace(
     root: Path = ROOT,
     policy_path: Path = ALLOWLIST,
@@ -2416,6 +2488,7 @@ def audit_workspace(
     direct = enumerate_dependencies(root, manifests, member_names, member_map, policy, findings)
     source_census = rust_source_audit(findings, root=root, manifests=manifests)
     serde_durable_bytes_audit(findings, root=root, direct_rows=direct, manifests=manifests, policy=policy)
+    manifest_source_override_audit(findings, root=root, manifests=manifests)
 
     ref_targets: list[TargetRoot] = []
     for tr_dict in source_census.get("targetRoots", []):

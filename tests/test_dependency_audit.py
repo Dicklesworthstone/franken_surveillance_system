@@ -1575,5 +1575,109 @@ class AuditFatalExitIsCoded(unittest.TestCase):
         self.assertIn("DEP-AUD-046", dependency_audit.DIAGNOSTIC_REGISTRY)
 
 
+class ManifestSourceOverrideAudit(unittest.TestCase):
+    """Round-4 (final) item 5 of fss-x4a.30.88.1: [patch]/[replace] out-of-repo or git sources (DEP-AUD-048)."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.outside = self.root.parent / (self.root.name + "-outside")
+        (self.outside / "serde" / "src").mkdir(parents=True, exist_ok=True)
+        (self.outside / "serde" / "Cargo.toml").write_text('[package]\nname = "serde"\nversion = "1.0.0"\nedition = "2024"\n', encoding="utf-8")
+        (self.root / "crates" / "fss-a" / "src").mkdir(parents=True)
+        (self.root / "crates" / "fss-a" / "Cargo.toml").write_text('[package]\nname = "fss-a"\nversion = "0.0.1"\nedition = "2024"\n', encoding="utf-8")
+        (self.root / "vendor-serde" / "src").mkdir(parents=True)
+        (self.root / "vendor-serde" / "Cargo.toml").write_text('[package]\nname = "serde"\nversion = "1.0.0"\nedition = "2024"\n', encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+        shutil.rmtree(self.outside, ignore_errors=True)
+
+    def _write_root(self, body: str) -> None:
+        (self.root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/fss-a"]\n' + body, encoding="utf-8")
+
+    def audit(self, manifests: list[str] | None = None) -> list[tuple[str, str]]:
+        findings: list[Any] = []
+        paths = [self.root / m for m in (manifests or ["Cargo.toml"])]
+        dependency_audit.manifest_source_override_audit(findings, root=self.root, manifests=paths)
+        return sorted((f.code, f.params.get("table", "")) for f in findings)
+
+    def test_out_of_repo_and_git_patch_replace_are_refused(self) -> None:
+        MV = "DEP-AUD-048"
+        self._write_root(f'\n[patch.crates-io]\nserde = {{ path = "{self.outside / "serde"}" }}\n')
+        self.assertEqual(self.audit(), [(MV, "patch.crates-io")])
+        self._write_root(f'\n[replace]\n"serde:1.0.0" = {{ path = "{self.outside / "serde"}" }}\n')
+        self.assertEqual(self.audit(), [(MV, "replace")])
+        self._write_root('\n[patch.crates-io]\nfoo = { git = "https://example.invalid/foo.git" }\n')
+        self.assertEqual(self.audit(), [(MV, "patch.crates-io")])
+        # a member manifest [patch] that redirects a member name to an outside copy
+        (self.root / "crates" / "fss-a" / "Cargo.toml").write_text('[package]\nname = "fss-a"\nversion = "0.0.1"\nedition = "2024"\n' + f'\n[patch.crates-io]\nfss-tensor = {{ git = "https://example.invalid/t.git" }}\n', encoding="utf-8")
+        self._write_root("")
+        self.assertEqual(self.audit(["Cargo.toml", "crates/fss-a/Cargo.toml"]), [(MV, "patch.crates-io")])
+
+    def test_cargo_config_patch_is_scanned(self) -> None:
+        self._write_root("")
+        cargo_dir = self.root / ".cargo"
+        cargo_dir.mkdir()
+        (cargo_dir / "config.toml").write_text(f'[patch.crates-io]\nserde = {{ path = "{self.outside / "serde"}" }}\n', encoding="utf-8")
+        self.assertEqual(self.audit(), [("DEP-AUD-048", "patch.crates-io")])
+
+    def test_in_repo_path_and_registry_patch_are_allowed(self) -> None:
+        self._write_root('\n[patch.crates-io]\nserde = { path = "vendor-serde" }\n[replace]\n"other:1.0.0" = { version = "1.0.1" }\n')
+        self.assertEqual(self.audit(), [])
+
+    def test_override_audit_runs_in_the_full_audit_workspace(self) -> None:
+        """End-to-end: a bad [patch] fails audit_workspace itself, not only the standalone function."""
+        root = self.root
+        make_clean_policy(root)
+        (root / "rust-toolchain.toml").write_text('[toolchain]\nchannel = "nightly-2026-08-31"\n', encoding="utf-8")
+        (root / "Cargo.lock").write_text("version = 3\n", encoding="utf-8")
+        (root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = ["crates/fss-a"]\n' + f'\n[patch.crates-io]\nserde = {{ path = "{self.outside / "serde"}" }}\n', encoding="utf-8")
+        report, rc = dependency_audit.audit_workspace(root, root / "architecture/dependency_allowlist.toml")
+        self.assertEqual(rc, 1, report.get("findings"))
+        self.assertIn("DEP-AUD-048", [f["code"] for f in report["findings"]])
+
+    def test_live_repository_has_no_source_overrides(self) -> None:
+        findings: list[Any] = []
+        root_cargo = dependency_audit.load_toml(ROOT / "Cargo.toml", ROOT)
+        manifests, _names, _map = dependency_audit.expand_workspace_members(ROOT, root_cargo, findings)
+        findings = []
+        dependency_audit.manifest_source_override_audit(findings, root=ROOT, manifests=manifests)
+        self.assertEqual([f.code for f in findings], [])
+
+
+class SharedReaderContainment(unittest.TestCase):
+    """Round-4 (final) item 6 of fss-x4a.30.88.1: the bounded reader rejects '..' and out-of-root paths."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        (self.root / "architecture").mkdir()
+        (self.root / "architecture" / "ok.json").write_text('{"a": 1}\n', encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self.tmp.cleanup()
+
+    def test_dotdot_and_out_of_root_paths_are_refused(self) -> None:
+        import dependency_authority as authority
+        data, problems = authority.read_input_bytes(self.root / "architecture" / "ok.json", "architecture/ok.json", self.root)
+        self.assertIsNotNone(data, problems)
+        # a lexical .. component
+        data, problems = authority.read_input_bytes(self.root / "architecture" / ".." / "architecture" / "ok.json", "architecture/../architecture/ok.json", self.root)
+        self.assertIsNone(data)
+        self.assertEqual([(p.code, "'..'" in p.message) for p in problems], [(authority.ERR_DEP_CORRUPT_FILE, True)])
+        # an absolute path outside the root
+        outside = Path(self.tmp.name).parent / (self.root.name + "-x.json")
+        outside.write_text('{"a": 1}\n', encoding="utf-8")
+        self.addCleanup(outside.unlink)
+        data, problems = authority.read_input_bytes(outside, "x.json", self.root)
+        self.assertIsNone(data)
+        self.assertEqual([(p.code, "outside the repository root" in p.message) for p in problems], [(authority.ERR_DEP_CORRUPT_FILE, True)])
+        # a relative path that escapes via ..
+        data, problems = authority.read_input_bytes(Path("../x.json"), "../x.json", self.root)
+        self.assertIsNone(data)
+        self.assertTrue(problems and problems[0].code == authority.ERR_DEP_CORRUPT_FILE)
+
+
 if __name__ == "__main__":
     unittest.main()

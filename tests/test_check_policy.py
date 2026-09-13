@@ -190,6 +190,22 @@ outside = { path = "../../../outside" }
         check_policy.cargo_policy(make_clean_policy_dict())
         self.assertTrue(any("escapes the frozen repository/sibling closure" in err or "DEP-AUD-012" in err for err in check_policy.errors))
 
+    def test_cargo_policy_out_of_repo_patch_fails(self) -> None:
+        """Round-4 item 5: the policy lane runs manifest_source_override_audit (DEP-AUD-048)."""
+        outside = self.root.parent / (self.root.name + "-patchsrc")
+        (outside / "serde" / "src").mkdir(parents=True, exist_ok=True)
+        (outside / "serde" / "Cargo.toml").write_text('[package]\nname = "serde"\nversion = "1.0.0"\nedition = "2024"\n', encoding="utf-8")
+        self.addCleanup(shutil.rmtree, outside, True)
+        root_cargo = (
+            '[workspace]\nresolver = "3"\nmembers = ["crates/crate-a"]\n\n'
+            '[workspace.lints.rust]\nunsafe_code = "forbid"\n\n'
+            f'[patch.crates-io]\nserde = {{ path = "{outside / "serde"}" }}\n'
+        )
+        (self.root / "Cargo.toml").write_text(root_cargo, encoding="utf-8")
+        make_valid_crate(self.root / "crates" / "crate-a", "crate-a")
+        check_policy.cargo_policy(make_clean_policy_dict())
+        self.assertTrue(any("DEP-AUD-048" in err for err in check_policy.errors), check_policy.errors)
+
     def test_cargo_policy_git_unpinned_fails(self) -> None:
         root_cargo = """[workspace]
 resolver = "3"
