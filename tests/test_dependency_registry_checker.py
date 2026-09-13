@@ -1608,5 +1608,31 @@ class TestConstitutionClassCoverage(AuthorityCase):
         self.assertEqual([(e.file_path, e.target) for e in result.errors if e.code == I], [(IMPORTS, "#/imports")])
 
 
+class TestStrictMarkdownMirror(AuthorityCase):
+    """Bypass-harness rows e10a-e10c: registries/DEPENDENCIES.md must equal its deterministic rendering."""
+
+    def test_anything_outside_the_rendering_is_drift(self) -> None:
+        base = self.text(MD)
+        self.assertCodes(set())
+        for label, text in {
+            "e10a html comment row": base + "<!--\n| `DEP-ROGUE-001` | `DEP-CLASS-F3` | Rogue |\n-->\n",
+            "e10b fenced row": base + "```\n| `DEP-ROGUE-002` | `DEP-CLASS-F3` | Rogue |\n```\n",
+            "e10c homoglyph id in a comment": base + "<!-- | `DEP\u2010ROGUE\u2010003` | admitted | -->\n",
+            "plain prose": base + "\nEditorial note.\n",
+        }.items():
+            with self.subTest(label):
+                self.write(MD, text)
+                result = self.assertCodes({R})
+                targets = [e.target for e in result.errors]
+                if label.startswith(("e10a", "e10b")):
+                    # the ASCII rogue id is also caught by the rogue-id scan at its line
+                    self.assertEqual(sorted(targets), ["#/rendering", "line/26"])
+                else:
+                    self.assertEqual(targets, ["#/rendering"])  # the former bypasses: only the rendering check sees them
+        # CRLF was already refused (LF-only rule, then no parsable table); it stays exactly that.
+        self.write(MD, base.replace("\n", "\r\n"))
+        self.assertCodes({R, C})
+
+
 if __name__ == "__main__":
     unittest.main()
