@@ -4733,8 +4733,8 @@ class TestBoundedReviewB1toB4(unittest.TestCase):
     def test_B3_dimensionally_inconsistent_formulas_fail(self) -> None:
         dimension, recompute = _code("ERR_BOUND_DIMENSION_MISMATCH"), _code("ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE")
         for label, case, expected in (
-            ("probe: ms + frames", bound_case("D_decode + Q_max", FIXTURE_INPUTS, 48.0, 48.0), [dimension]),
-            ("result in ms squared", bound_case("D_decode * D_frame", FIXTURE_INPUTS, 400.0, 400.0), [dimension]),
+            ("probe: ms + frames", bound_case("D_decode + Q_max", {k: FIXTURE_INPUTS[k] for k in ("D_decode", "Q_max")}, 48.0, 48.0), [dimension]),
+            ("result in ms squared", bound_case("D_decode * D_frame", {k: FIXTURE_INPUTS[k] for k in ("D_decode", "D_frame")}, 400.0, 400.0), [dimension]),
             ("a constant names no input", bound_case("120", FIXTURE_INPUTS, 120.0, 120.0), [recompute]),
         ):
             with self.subTest(case=label):
@@ -5095,6 +5095,81 @@ class TestRound3StaticPreFilter(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr[-400:])
                 self.assertLess(elapsed, 30.0)
                 self.assertIsInstance(json.loads(result.stdout), list)
+
+
+# ---------------------------------------------------------------------------
+# Round-3 re-review, 30.87.3 (probes p5_gen_bound.py, p7_dos.py, p8_e2e.py case A)
+# ---------------------------------------------------------------------------
+
+DEEP_FORMULA = "(" + "-" * 490 + "D_decode)+Q_max"
+
+
+class TestRound3BoundedModel(unittest.TestCase):
+    """Round-3 bounded_model findings as planted tests with exact finding-id sets."""
+
+    RECOMPUTE = _code("ERR_BOUND_DERIVATION_NOT_RECOMPUTABLE")
+
+    def run_bound(self, **kwargs: object):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_class_bundle(root, build_bound_fixture(root, **kwargs), BOUND_CLAIM_ID)
+            return ok, error_code_set(findings)
+
+    def deep_case(self) -> dict:
+        expression = "L_ingest <= " + DEEP_FORMULA
+        return {"bound": {"expression": expression, "value": 48.0},
+                "derivation": {"expression": expression, "derived_value": 48.0, "formula": DEEP_FORMULA}}
+
+    def test_deep_formula_is_a_finding_not_a_recursion_error(self) -> None:
+        self.assertEqual(self.run_bound(**self.deep_case()), (False, [self.RECOMPUTE]))
+        with self.assertRaises(cpb._FormulaError):
+            cpb._check_formula_dimensions(DEEP_FORMULA, {"D_decode": "ms", "Q_max": "frames"}, "ms")
+        with self.assertRaises(cpb._FormulaError):
+            cpb._check_formula_dimensions("-" * 505 + "a", {"a": "ms"}, "frames")
+        with self.assertRaises(cpb._FormulaError):
+            cpb._evaluate_formula("-" * 505 + "a", {"a": 1.0})
+
+    def test_deep_formula_through_the_audit_is_a_finding(self) -> None:
+        rel = "proof_bundles/deep_bound.bundle.json"
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            write_json(root / rel, seal(build_bound_fixture(root, **self.deep_case())))
+            append_readme_table(root, class_table(f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{rel}` | {BOUND_GENERATION} |"))
+            ok, findings, summary = audit_with(root, CLAIM_ROW_CLASSES)
+            self.assertFalse(ok)
+            self.assertEqual(error_code_set(findings), [self.RECOMPUTE])
+            self.assertEqual(summary["verified_bundles_count"], 0)
+
+    def test_distinct_count_units_are_distinct_dimensions(self) -> None:
+        def counts(formula: str, inputs: dict) -> dict:
+            case = bound_case(formula, inputs, 10.0, 10.0)
+            case["bound"]["units"] = "frames"
+            case["derivation"]["units"] = "frames"
+            return case
+        frames_and_tasks = {"Q_max": {"value": 8, "units": "frames"}, "N_tasks": {"value": 2, "units": "tasks"}}
+        self.assertEqual(self.run_bound(**counts("Q_max + N_tasks", frames_and_tasks)), (False, [_code("ERR_BOUND_DIMENSION_MISMATCH")]))
+        frames_only = {"Q_max": {"value": 8, "units": "frames"}, "Q_extra": {"value": 2, "units": "frames"}}
+        self.assertEqual(self.run_bound(**counts("Q_max + Q_extra", frames_only)), (True, []))
+
+    def test_generation_cell_is_compared_byte_for_byte(self) -> None:
+        unbound = _code("ERR_CLAIM_GENERATION_UNBOUND")
+        for cell, expected, passed in (
+            (BOUND_GENERATION, [], 1),
+            (f"`{BOUND_GENERATION}`", [unbound], 0),
+            (f"**{BOUND_GENERATION}**", [unbound], 0),
+            (BOUND_GENERATION + NBSP, [unbound], 0),
+            ("gen:fss1:bound​-ingest-v1", [unbound], 0),
+        ):
+            with self.subTest(cell=cell), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                write_json(root / BOUND_BUNDLE_REL, seal(build_bound_fixture(root)))
+                findings, stats = scan_with_stats(root, class_table(f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{BOUND_BUNDLE_REL}` | {cell} |"))
+                self.assertEqual(error_code_set(findings), expected, [f"{f.code}: {f.message}" for f in findings])
+                self.assertEqual(stats["bundles_passed"], passed)
+
+    def test_unused_derivation_input_is_refused(self) -> None:
+        inputs = {**FIXTURE_INPUTS, "Junk": {"value": 1.0, "units": "ms"}}
+        self.assertEqual(self.run_bound(derivation={"inputs": inputs}), (False, [self.RECOMPUTE]))
 
 if __name__ == "__main__":
     unittest.main()
