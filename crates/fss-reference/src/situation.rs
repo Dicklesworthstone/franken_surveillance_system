@@ -15,6 +15,7 @@ use fss_core::{EventId, OperationId};
 use fss_ledger::DurableReferenceLedger;
 use fss_object::ObjectManifest;
 
+use crate::situation_sections::ReferencePublicationLineage;
 use crate::{
     ReferenceAlertOutcomeReceipt, ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt,
     ReferencePolicyAction, ReferencePolicyDecision, alert::validate_reference_alert_plan,
@@ -53,6 +54,9 @@ pub struct ReferenceSituationRequest<'a> {
     /// It is sealed with the situation, so a meaningful delta can require its result to descend
     /// from its basis (fss-mnlz1).
     pub predecessor_publication: Option<ContentDigest>,
+    /// Durable publication lineage a predecessor is checked against: compile refuses a predecessor
+    /// that is not the latest recorded publication of this subject (fss-mnlz1).
+    pub lineage: Option<&'a ReferencePublicationLineage>,
     /// Canonical policy decision being projected.
     pub decision: &'a ReferencePolicyDecision,
     /// Authority receipt for the event revision.
@@ -174,6 +178,8 @@ pub struct ReferenceSituation {
     subject: Option<SituationSubject>,
     /// The predecessor publication a compile path sealed with the situation, when it continues one.
     predecessor: Option<ContentDigest>,
+    /// Root of the durable effect journal a compile path compiled against, when it did.
+    journal_root: Option<ContentDigest>,
 }
 
 impl ReferenceSituation {
@@ -191,6 +197,7 @@ impl ReferenceSituation {
             seal: None,
             subject: None,
             predecessor: None,
+            journal_root: None,
         }
     }
 
@@ -283,6 +290,18 @@ impl ReferenceSituation {
         self.predecessor
     }
 
+    /// Records the durable effect journal root a compile path compiled against; sealing covers it
+    /// (fss-mnlz1).
+    pub(crate) fn set_journal_root(&mut self, journal_root: ContentDigest) {
+        self.journal_root = Some(journal_root);
+    }
+
+    /// Returns the sealed durable effect journal root, when a compile path compiled against one.
+    #[must_use]
+    pub fn journal_root(&self) -> Option<ContentDigest> {
+        self.journal_root
+    }
+
     /// Returns whether both situations carry a sealed subject and it is the same one.
     pub(crate) fn same_subject(&self, other: &Self) -> bool {
         self.subject.is_some() && self.subject == other.subject
@@ -319,7 +338,7 @@ impl ReferenceSituation {
             .capsule
             .validated_digest("fss.reference_effect_binding_capsule.v1")?;
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.reference_effect_binding_seal.v3");
+        encoder.text("fss.reference_effect_binding_seal.v4");
         encoder.digest(capsule);
         // The lineage: what the situation is about and which publication it continues.
         match &self.subject {
@@ -334,6 +353,13 @@ impl ReferenceSituation {
             Some(predecessor) => {
                 encoder.bool(true);
                 encoder.digest(predecessor);
+            }
+            None => encoder.bool(false),
+        }
+        match self.journal_root {
+            Some(journal_root) => {
+                encoder.bool(true);
+                encoder.digest(journal_root);
             }
             None => encoder.bool(false),
         }
@@ -1264,6 +1290,20 @@ fn validate_request(
             }
         }
         (None, None) => {}
+    }
+    // fss-mnlz1: a predecessor must be the latest recorded publication of this subject in the
+    // durable lineage, never an unknown digest, another subject's publication, or a stale one.
+    if let Some(predecessor) = request.predecessor_publication {
+        let lineage = request.lineage.ok_or(ReferenceError::InvalidSpec(
+            "situation_predecessor_unverified",
+        ))?;
+        if lineage.latest(&request.decision.event.event_id, &request.objective_id)?
+            != Some(predecessor)
+        {
+            return Err(ReferenceError::InvalidSpec(
+                "situation_predecessor_not_latest",
+            ));
+        }
     }
     Ok(())
 }

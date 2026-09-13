@@ -12,7 +12,7 @@ use fss_core::{
 
 use crate::{
     ReferenceProjectionSpec, ReferenceSituation, classify_reference_meaningful_delta,
-    classify_reference_meaningful_delta_with_open_obligations, project_reference_situation,
+    classify_reference_meaningful_delta_in_lineage, project_reference_situation,
 };
 
 #[derive(Clone, Debug)]
@@ -430,11 +430,7 @@ fn effect_terminalization_preserves_uncertainty_transition() -> Result<(), Box<d
     result_variant.effect_state = Some(KnowledgeState::Known);
     result_variant.obligations.clear();
     let result = successor_of(&basis, &result_variant)?;
-    let delta = classify_reference_meaningful_delta_with_open_obligations(
-        &basis,
-        &result,
-        &BTreeSet::new(),
-    )?;
+    let delta = bound_delta(&basis, &result)?;
 
     assert!(
         delta
@@ -630,7 +626,7 @@ fn indeterminate_effect_delta(
     result_variant.effect_state = successor;
     configure(&mut result_variant);
     let result = successor_of(&basis, &result_variant)?;
-    Ok(classify_reference_meaningful_delta(&basis, &result)?)
+    bound_delta(&basis, &result)
 }
 
 const fn keep_effect_evidence(_: &mut Variant) {}
@@ -1044,7 +1040,7 @@ fn effect_transition_delta(
     result_variant.effect_state = current;
     configure(&mut result_variant);
     let result = successor_of(&basis, &result_variant)?;
-    Ok(classify_reference_meaningful_delta(&basis, &result)?)
+    bound_delta(&basis, &result)
 }
 
 const fn drop_effect_evidence(variant: &mut Variant) {
@@ -1219,19 +1215,20 @@ fn indeterminate_effect_laundered_through_unknown_never_terminalizes() -> Result
     let first = publication(&first)?;
     let second = successor_of(&first, &second)?;
     let third = successor_of(&second, &third)?;
+    let store = recorded(&[&first, &second, &third])?;
 
     // Step one keeps the indeterminate effect open.
-    let step_one = classify_reference_meaningful_delta(&first, &second)?;
+    let step_one = bound(&store, &first, &second)?;
     assert_effect_unresolved(
         &step_one,
         &became(KnowledgeState::Unknown),
         Some(&degraded_to(KnowledgeState::Unknown)),
     )?;
     // Step two cannot see the indeterminate history, so it must refuse on the premise bar alone.
-    let step_two = classify_reference_meaningful_delta(&second, &third)?;
+    let step_two = bound(&store, &second, &third)?;
     assert_unproved_known_effect_not_terminal(&step_two, "laundering step unknown->known")?;
     // The end-to-end comparison agrees with the stepwise one.
-    let end_to_end = classify_reference_meaningful_delta(&first, &third)?;
+    let end_to_end = bound(&store, &first, &third)?;
     assert_effect_unresolved(
         &end_to_end,
         &became(KnowledgeState::Known),
@@ -1347,10 +1344,13 @@ fn parked_effect_deltas(
     let first = publication(&first)?;
     let second = successor_of(&first, &second)?;
     let third = successor_of(&second, &third)?;
-    Ok((
-        classify_reference_meaningful_delta(&first, &second)?,
-        classify_reference_meaningful_delta(&second, &third)?,
-    ))
+    let store = recorded(&[&first, &second, &third])?;
+    let deltas = (
+        bound(&store, &first, &second)?,
+        bound(&store, &second, &third)?,
+    );
+    store.cleanup();
+    Ok(deltas)
 }
 
 #[test]
@@ -1403,7 +1403,7 @@ fn unproved_effect_stays_effect_uncertainty_in_every_delta() -> Result<(), Box<d
         let mut result_variant = basis_variant.clone();
         result_variant.sequence = 2;
         let result = successor_of(&basis, &result_variant)?;
-        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+        let delta = bound_delta(&basis, &result)?;
         assert_unproved_effect_still_reported(
             &delta,
             state,
@@ -1504,7 +1504,7 @@ fn unestablished_effect_removed_is_effect_uncertainty_not_silence() -> Result<()
         result_variant.sequence = 2;
         result_variant.effect_state = None;
         let result = successor_of(&basis, &result_variant)?;
-        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+        let delta = bound_delta(&basis, &result)?;
         assert_unproved_effect_removal_reported(
             &delta,
             prior,
@@ -1528,21 +1528,22 @@ fn indeterminate_effect_laundered_through_unknown_then_dropped_is_never_silent()
     let first = publication(&first)?;
     let second = successor_of(&first, &second)?;
     let third = successor_of(&second, &third)?;
+    let store = recorded(&[&first, &second, &third])?;
 
-    let step_one = classify_reference_meaningful_delta(&first, &second)?;
+    let step_one = bound(&store, &first, &second)?;
     assert_effect_unresolved(
         &step_one,
         &became(KnowledgeState::Unknown),
         Some(&degraded_to(KnowledgeState::Unknown)),
     )?;
     // Step two cannot see the indeterminate history; the unproved basis cell alone must report it.
-    let step_two = classify_reference_meaningful_delta(&second, &third)?;
+    let step_two = bound(&store, &second, &third)?;
     assert_unproved_effect_removal_reported(
         &step_two,
         KnowledgeState::Unknown,
         "laundering step unknown->absent",
     )?;
-    let end_to_end = classify_reference_meaningful_delta(&first, &third)?;
+    let end_to_end = bound(&store, &first, &third)?;
     assert_effect_unresolved(
         &end_to_end,
         &format!(
@@ -1881,7 +1882,7 @@ fn proved_effect_whose_typed_outcome_flips_is_a_contradiction() -> Result<(), Bo
     result_variant.sequence = 2;
     result_variant.effect_terminal_state = fss_core::EffectState::Failed;
     let result = successor_of(&basis, &result_variant)?;
-    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+    let delta = bound_delta(&basis, &result)?;
     let expected = "effect outcome contradicted: operation meaningful-delta was proved succeeded and is now proved failed";
     assert!(delta.silence_certificate.is_none(), "{:?}", delta.classes);
     assert!(
@@ -2399,7 +2400,7 @@ fn effect_statement_free_text_never_terminalizes() -> Result<(), Box<dyn Error>>
         result_variant.sequence = 2;
         result_variant.effect_statement = Some(statement.to_owned());
         let result = successor_of(&basis, &result_variant)?;
-        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+        let delta = bound_delta(&basis, &result)?;
         assert!(
             !delta
                 .classes
@@ -2427,13 +2428,13 @@ fn effect_statement_free_text_never_terminalizes() -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-/// Round 5 N2 and fss-mnlz1: an obligation discharge is terminal only between sealed
-/// publications where the result continues the basis, and only once the durable journal no longer
-/// holds the obligation open. An unsealed result reports the removal but no terminal transition;
-/// the continuing sealed discharge is refused without the journal's open obligations and while the
-/// obligation is still open, and otherwise is terminal, critical, and refuses to coalesce.
+/// Round 5 N2 and fss-mnlz1: an obligation discharge is never terminal without the durable effect
+/// journal. An unsealed result, the plain classifier, and the lineage-bound classifier without a
+/// journal all report the removal, never as a terminal transition and never as an error. The
+/// journal-bound terminal discharge is pinned against a real durable journal in the guard tests
+/// (`durable_discharge_is_terminal_once_the_journal_closes_it`).
 #[test]
-fn obligation_discharge_is_terminal_only_between_sealed_publications() -> Result<(), Box<dyn Error>>
+fn obligation_discharge_is_never_terminal_without_the_durable_journal() -> Result<(), Box<dyn Error>>
 {
     let obligation = ObligationId::parse("obligation:meaningful-delta")?;
     let mut basis_variant = Variant::baseline()?;
@@ -2445,85 +2446,35 @@ fn obligation_discharge_is_terminal_only_between_sealed_publications() -> Result
     let sealed = successor_of(&basis, &result_variant)?;
     let unsealed = unsealed_copy(&sealed, |_| {})?;
     let removed = format!("obligation removed: {obligation}");
-
-    let delta = classify_reference_meaningful_delta(&basis, &unsealed)?;
-    assert!(
-        delta.classes.contains(&MeaningfulDeltaClass::Obligation),
-        "{:?}",
-        delta.classes
-    );
-    assert!(delta.obligation_changes.contains(&removed), "{delta:?}");
-    assert!(
-        !delta
-            .classes
-            .contains(&MeaningfulDeltaClass::TerminalTransition),
-        "{:?}",
-        delta.classes
-    );
-    delta.validate()?;
-
-    let without_journal = classify_reference_meaningful_delta(&basis, &sealed);
-    assert!(
-        matches!(
-            without_journal,
-            Err(crate::ReferenceError::InvalidSpec(
-                "meaningful_delta_open_obligations_required"
-            ))
+    let store = recorded(&[&basis, &sealed])?;
+    for (label, delta) in [
+        ("unsealed", bound(&store, &basis, &unsealed)?),
+        (
+            "plain",
+            classify_reference_meaningful_delta(&basis, &sealed)?,
         ),
-        "{:?}",
-        without_journal.map(|delta| delta.classes)
-    );
-    let still_open = classify_reference_meaningful_delta_with_open_obligations(
-        &basis,
-        &sealed,
-        &BTreeSet::from([obligation.clone()]),
-    );
-    assert!(
-        matches!(
-            still_open,
-            Err(crate::ReferenceError::InvalidSpec(
-                "meaningful_delta_obligation_still_open"
-            ))
-        ),
-        "{:?}",
-        still_open.map(|delta| delta.classes)
-    );
-
-    let delta = classify_reference_meaningful_delta_with_open_obligations(
-        &basis,
-        &sealed,
-        &BTreeSet::new(),
-    )?;
-    for class in [
-        MeaningfulDeltaClass::Obligation,
-        MeaningfulDeltaClass::TerminalTransition,
+        ("bound without journal", bound(&store, &basis, &sealed)?),
     ] {
         assert!(
-            delta.classes.contains(&class),
-            "{class:?}: {:?}",
+            delta.classes.contains(&MeaningfulDeltaClass::Obligation),
+            "{label}: {:?}",
             delta.classes
         );
+        assert!(
+            delta.obligation_changes.contains(&removed),
+            "{label}: {delta:?}"
+        );
+        assert!(
+            !delta
+                .classes
+                .contains(&MeaningfulDeltaClass::TerminalTransition),
+            "{label}: {:?}",
+            delta.classes
+        );
+        assert!(delta.silence_certificate.is_none(), "{label}");
+        delta.validate()?;
     }
-    assert!(delta.obligation_changes.contains(&removed), "{delta:?}");
-    assert!(delta.is_non_coalescible());
-    assert_eq!(delta.priority, DeltaPriority::Critical);
-    let mut next_variant = result_variant.clone();
-    next_variant.sequence = 3;
-    next_variant.pressure = ResourcePressure::Elevated;
-    let next =
-        classify_reference_meaningful_delta(&sealed, &successor_of(&sealed, &next_variant)?)?;
-    assert!(!delta.can_coalesce_with(&next)?);
-    assert!(
-        delta
-            .coalesce(
-                &next,
-                "delta:coalesced",
-                "continuation:coalesced",
-                ContentDigest::sha256(b"coalesced"),
-            )
-            .is_err()
-    );
-    delta.validate()?;
+    store.cleanup();
     Ok(())
 }
 
@@ -2533,6 +2484,7 @@ fn obligation_discharge_is_terminal_only_between_sealed_publications() -> Result
 #[test]
 fn unsealed_publications_never_terminalize_any_name() -> Result<(), Box<dyn Error>> {
     let basis = publication(&Variant::baseline()?)?;
+    let store = recorded(&[&basis])?;
     for claim_id in [
         "claim:efffekkt:x",
         "claim:ef-fe-kt:x",
@@ -2546,7 +2498,7 @@ fn unsealed_publications_never_terminalize_any_name() -> Result<(), Box<dyn Erro
         let result =
             publication_with_self_rooted_cell(claim_id, Some(HypothesisDisposition::Resolved))?;
         assert!(!result.situation.is_sealed());
-        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+        let delta = bound(&store, &basis, &result)?;
         assert!(
             !delta
                 .classes
@@ -2577,7 +2529,7 @@ fn sealed_event_hypothesis_terminal_is_non_coalescible() -> Result<(), Box<dyn E
         Some(basis.publication_digest),
     )?;
     assert!(result.situation.is_sealed());
-    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+    let delta = bound_delta(&basis, &result)?;
     assert!(
         delta
             .classes
@@ -2620,7 +2572,9 @@ fn unsealed_basis_cannot_fake_an_obligation_discharge() -> Result<(), Box<dyn Er
     result_variant.sequence = 2;
     let result = publication(&result_variant)?;
     assert!(result.situation.is_sealed());
-    let delta = classify_reference_meaningful_delta(&basis, &result)?;
+    let store = recorded(&[&result])?;
+    let delta = bound(&store, &basis, &result)?;
+    store.cleanup();
     assert!(
         delta
             .obligation_changes
@@ -2654,9 +2608,11 @@ fn effect_terminalization_needs_a_sealed_basis() -> Result<(), Box<dyn Error>> {
             .classes
             .contains(&MeaningfulDeltaClass::TerminalTransition)
     };
-    let delta = classify_reference_meaningful_delta(&sealed_basis, &result)?;
+    let store = recorded(&[&sealed_basis, &result])?;
+    let delta = bound(&store, &sealed_basis, &result)?;
     assert!(terminal(&delta), "{:?}", delta.classes);
-    let delta = classify_reference_meaningful_delta(&unsealed_basis, &result)?;
+    let delta = bound(&store, &unsealed_basis, &result)?;
+    store.cleanup();
     assert!(!terminal(&delta), "{:?}", delta.classes);
     delta.validate()?;
     Ok(())
@@ -2713,12 +2669,14 @@ fn mission_terminalization_needs_both_publications_sealed() -> Result<(), Box<dy
             publication_with_cell("claim:mission:meaningful-delta", None, false, None)?,
         ),
     ] {
-        let delta = classify_reference_meaningful_delta(&basis, &sealed)?;
+        let delta = bound_delta(&basis, &sealed)?;
         assert!(terminal(&delta), "{label} sealed: {:?}", delta.classes);
         assert!(delta.is_non_coalescible(), "{label}");
         assert_eq!(delta.priority, DeltaPriority::Critical, "{label}");
         delta.validate()?;
-        let delta = classify_reference_meaningful_delta(&basis, &unsealed)?;
+        let store = recorded(&[&basis])?;
+        let delta = bound(&store, &basis, &unsealed)?;
+        store.cleanup();
         assert!(!terminal(&delta), "{label} unsealed: {:?}", delta.classes);
         assert!(
             delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
@@ -2741,9 +2699,10 @@ fn successor_of(
     publication(&variant)
 }
 
-/// fss-mnlz1: a proved effect is terminal only when the result continues the basis. The same
-/// sealed publications classify as terminal when chained, and report the change without a terminal
-/// transition when the result names no predecessor or another one.
+/// fss-mnlz1: a proved effect is terminal only when the durable lineage records the result as the
+/// basis's successor. The chained, recorded pair is terminal; a result naming no predecessor or
+/// another one, which the lineage cannot record after the basis, reports the change without a
+/// terminal transition.
 #[test]
 fn effect_terminalization_needs_the_result_to_continue_the_basis() -> Result<(), Box<dyn Error>> {
     let basis = publication(&Variant::baseline()?)?;
@@ -2756,12 +2715,13 @@ fn effect_terminalization_needs_the_result_to_continue_the_basis() -> Result<(),
             .contains(&MeaningfulDeltaClass::TerminalTransition)
     };
     let chained = successor_of(&basis, &result_variant)?;
-    let delta = classify_reference_meaningful_delta(&basis, &chained)?;
+    let delta = bound_delta(&basis, &chained)?;
     assert!(terminal(&delta), "{:?}", delta.classes);
+    let store = recorded(&[&basis])?;
     for predecessor in [None, Some(ContentDigest::sha256(b"another-publication"))] {
         let mut variant = result_variant.clone();
         variant.predecessor = predecessor;
-        let delta = classify_reference_meaningful_delta(&basis, &publication(&variant)?)?;
+        let delta = bound(&store, &basis, &publication(&variant)?)?;
         assert!(!terminal(&delta), "{predecessor:?}: {:?}", delta.classes);
         assert!(
             delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
@@ -2770,5 +2730,103 @@ fn effect_terminalization_needs_the_result_to_continue_the_basis() -> Result<(),
         );
         delta.validate()?;
     }
+    store.cleanup();
+    Ok(())
+}
+
+/// A durable publication lineage under a fresh temporary path, removed by [`Self::cleanup`].
+pub(crate) struct FixtureLineage {
+    pub(crate) lineage: crate::ReferencePublicationLineage,
+    path: std::path::PathBuf,
+}
+
+impl FixtureLineage {
+    /// Opens an empty lineage whose path is unique to this process, thread and instant.
+    pub(crate) fn new() -> Result<Self, Box<dyn Error>> {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let thread = format!("{:?}", std::thread::current().id())
+            .chars()
+            .filter(char::is_ascii_alphanumeric)
+            .collect::<String>();
+        let path = std::env::temp_dir().join(format!(
+            "fss-reference-lineage-{}-{thread}-{nanos}.journal",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let lineage = crate::ReferencePublicationLineage::open(
+            &path,
+            "site:reference:lineage",
+            fss_ledger::IncompleteTailPolicy::Reject,
+        )?;
+        Ok(Self { lineage, path })
+    }
+
+    /// Removes the lineage file.
+    pub(crate) fn cleanup(self) {
+        let path = self.path.clone();
+        drop(self);
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// A fresh lineage with `chain` recorded in order.
+fn recorded(
+    chain: &[&crate::ReferenceSituationPublication],
+) -> Result<FixtureLineage, Box<dyn Error>> {
+    let mut store = FixtureLineage::new()?;
+    for publication in chain {
+        store.lineage.record(publication)?;
+    }
+    Ok(store)
+}
+
+/// Classifies `basis` to `result` bound to `store` and no journal.
+fn bound(
+    store: &FixtureLineage,
+    basis: &crate::ReferenceSituationPublication,
+    result: &crate::ReferenceSituationPublication,
+) -> Result<fss_core::MeaningfulDelta, crate::ReferenceError> {
+    classify_reference_meaningful_delta_in_lineage(basis, result, &store.lineage, None)
+}
+
+/// Records `basis` and `result` in a fresh lineage and classifies the pair bound to it.
+fn bound_delta(
+    basis: &crate::ReferenceSituationPublication,
+    result: &crate::ReferenceSituationPublication,
+) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>> {
+    let store = recorded(&[basis, result])?;
+    let delta = bound(&store, basis, result);
+    store.cleanup();
+    Ok(delta?)
+}
+
+/// fss-mnlz1 M4: without the durable stores the plain classifier reports exactly the changes the
+/// lineage-bound classifier reports, minus the terminal transition: never an error, never silence.
+#[test]
+fn plain_classify_reports_terminal_changes_as_non_terminal() -> Result<(), Box<dyn Error>> {
+    let obligation = ObligationId::parse("obligation:meaningful-delta")?;
+    let mut basis_variant = Variant::baseline()?;
+    basis_variant.effect_state = Some(KnowledgeState::Indeterminate);
+    basis_variant.obligations = vec![obligation];
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = basis_variant.clone();
+    result_variant.sequence = 2;
+    result_variant.effect_state = Some(KnowledgeState::Known);
+    result_variant.obligations.clear();
+    let result = successor_of(&basis, &result_variant)?;
+    let bound_classes = bound_delta(&basis, &result)?.classes;
+    assert!(
+        bound_classes.contains(&MeaningfulDeltaClass::TerminalTransition),
+        "{bound_classes:?}"
+    );
+    let plain = classify_reference_meaningful_delta(&basis, &result)?;
+    let mut expected = bound_classes.clone();
+    expected.remove(&MeaningfulDeltaClass::TerminalTransition);
+    assert_eq!(plain.classes, expected);
+    assert!(plain.silence_certificate.is_none());
+    assert!(plain.classes.contains(&MeaningfulDeltaClass::Obligation));
+    plain.validate()?;
     Ok(())
 }

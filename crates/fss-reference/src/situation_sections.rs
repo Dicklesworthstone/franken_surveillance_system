@@ -11,7 +11,11 @@ use fss_core::{
     SemanticCompressionReceipt, SemanticContextPack, SemanticContextPackPublishParams, TimestampNs,
     reference_token_count,
 };
-use fss_ledger::DurableReferenceLedger;
+use std::fmt;
+use std::path::Path;
+
+use fss_core::{BatchId, CaptureInterval, EventId, EvidenceDelta, LedgerAnchor, ObjectId, Plane};
+use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 
 use crate::{
     ReferenceError,
@@ -199,7 +203,7 @@ impl ReferenceSituationPublication {
     /// an invalid capsule has no decision fingerprint.
     pub fn computed_digest(&self) -> Result<ContentDigest, ReferenceError> {
         let mut encoder = CanonicalEncoder::new();
-        encoder.text("fss.reference_situation_publication.v3");
+        encoder.text("fss.reference_situation_publication.v4");
         encoder.digest(self.situation.capsule.decision_fingerprint()?);
         // The publication commits to the compile path's seal, so a sealed publication and the same
         // capsule rebuilt unsealed never share a digest (fss-6sph6).
@@ -379,6 +383,162 @@ pub fn project_reference_situation(
     publication.publication_digest = publication.computed_digest()?;
     publication.verify()?;
     Ok(publication)
+}
+
+/// Semantic family of the durable publication lineage records.
+const LINEAGE_FAMILY: &str = "situation_publication_lineage";
+
+/// Durable record of which sealed publication continues which, one lineage per subject
+/// (fss-mnlz1).
+///
+/// It is its own durable ledger, one object per subject (event and objective) whose payload is the
+/// subject's latest recorded publication and whose record witnesses that publication's sealed
+/// predecessor. A publication is recorded only if its sealed predecessor is the subject's latest
+/// (or it starts the subject's lineage), so no publication ever has two recorded successors, and
+/// only the lineage-bound classifier may report a terminal transition.
+pub struct ReferencePublicationLineage {
+    ledger: DurableReferenceLedger,
+}
+
+impl fmt::Debug for ReferencePublicationLineage {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReferencePublicationLineage")
+            .field("commitment", &self.ledger.journal_root())
+            .finish()
+    }
+}
+
+impl ReferencePublicationLineage {
+    /// Opens, verifies and replays the durable lineage at `path`.
+    ///
+    /// An incomplete trailing record (a crash mid-record) is refused under
+    /// [`IncompleteTailPolicy::Reject`] and dropped whole under [`IncompleteTailPolicy::Truncate`],
+    /// so a successor is either recorded completely or not at all.
+    pub fn open(
+        path: impl AsRef<Path>,
+        site_lineage: impl Into<String>,
+        tail_policy: IncompleteTailPolicy,
+    ) -> Result<Self, ReferenceError> {
+        let ledger = DurableReferenceLedger::open(path, site_lineage, tail_policy)
+            .map_err(|error| ReferenceError::Publication(error.into()))?;
+        Ok(Self { ledger })
+    }
+
+    /// Durable commitment to the whole recorded lineage.
+    #[must_use]
+    pub fn commitment(&self) -> ContentDigest {
+        self.ledger.journal_root()
+    }
+
+    /// Returns the latest recorded publication of the subject `event_id` and `objective_id`.
+    pub fn latest(
+        &self,
+        event_id: &EventId,
+        objective_id: &str,
+    ) -> Result<Option<ContentDigest>, ReferenceError> {
+        let object_id = lineage_object_id(event_id, objective_id)?;
+        Ok(self
+            .ledger
+            .current()
+            .objects
+            .get(&object_id)
+            .map(|revision| revision.payload_digest))
+    }
+
+    /// Records `publication` as the latest publication of its subject.
+    ///
+    /// Refuses an unsealed publication or one without a sealed subject, a publication whose sealed
+    /// predecessor is not the subject's latest recorded publication (a second successor, a stale
+    /// or unknown predecessor), and a publication naming no predecessor once the subject has a
+    /// lineage. Recording the subject's latest publication again is a no-op.
+    pub fn record(
+        &mut self,
+        publication: &ReferenceSituationPublication,
+    ) -> Result<LedgerAnchor, ReferenceError> {
+        publication.verify()?;
+        let situation = &publication.situation;
+        let (event_id, objective_id) = situation
+            .subject()
+            .filter(|_| situation.is_sealed())
+            .ok_or(ReferenceError::InvalidSpec("lineage_unsealed_publication"))?;
+        let object_id = lineage_object_id(event_id, objective_id)?;
+        let digest = publication.publication_digest;
+        let predecessor = situation.predecessor_publication();
+        let (prior_generation, new_generation) =
+            match (self.ledger.current().objects.get(&object_id), predecessor) {
+                (Some(latest), _) if latest.payload_digest == digest => {
+                    return Ok(self.ledger.current().anchor.clone());
+                }
+                (Some(latest), Some(predecessor)) if predecessor == latest.payload_digest => (
+                    Some(latest.generation),
+                    latest
+                        .generation
+                        .checked_add(1)
+                        .ok_or(ContractError::ArithmeticOverflow)?,
+                ),
+                (Some(_), _) => {
+                    return Err(ReferenceError::InvalidSpec(
+                        "lineage_predecessor_not_latest",
+                    ));
+                }
+                (None, None) => (None, 1),
+                (None, Some(_)) => {
+                    return Err(ReferenceError::InvalidSpec("lineage_predecessor_unknown"));
+                }
+            };
+        let created_at = situation.capsule.created_at;
+        let delta = EvidenceDelta {
+            delta_id: format!("delta:situation-lineage:{digest}"),
+            family: LINEAGE_FAMILY.to_owned(),
+            object_id,
+            prior_generation,
+            new_generation,
+            validity: CaptureInterval::new(created_at, created_at)?,
+            plane: Plane::Cognition,
+            payload_digest: digest,
+            witness_digest: predecessor,
+            operation_id: None,
+        };
+        let batch = self
+            .ledger
+            .prepare_batch(
+                BatchId::parse(format!("batch:situation-lineage:{digest}"))?,
+                vec![delta],
+                [digest],
+            )
+            .map_err(|error| ReferenceError::Publication(error.into()))?;
+        let snapshot = self
+            .ledger
+            .append(batch)
+            .map_err(|error| ReferenceError::Publication(error.into()))?;
+        Ok(snapshot.anchor.clone())
+    }
+
+    /// Returns whether `result` is recorded as the successor of `basis`.
+    pub(crate) fn records_successor(&self, basis: ContentDigest, result: ContentDigest) -> bool {
+        self.ledger
+            .batches()
+            .iter()
+            .flat_map(|batch| batch.deltas.iter())
+            .any(|delta| {
+                delta.family == LINEAGE_FAMILY
+                    && delta.payload_digest == result
+                    && delta.witness_digest == Some(basis)
+            })
+    }
+}
+
+/// The lineage object of one subject (event and objective).
+fn lineage_object_id(event_id: &EventId, objective_id: &str) -> Result<ObjectId, ReferenceError> {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.reference_publication_lineage_subject.v1");
+    encoder.text(event_id.as_str());
+    encoder.text(objective_id);
+    let subject = ContentDigest::sha256(&encoder.finish());
+    Ok(ObjectId::parse(format!(
+        "object:situation-lineage:{subject}"
+    ))?)
 }
 
 /// Seals a handoff rooted in the complete resource/control/context/compression publication.

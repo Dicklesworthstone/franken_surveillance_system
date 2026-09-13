@@ -117,7 +117,7 @@ pub use extrinsics::{
 };
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
 pub use meaningful_delta::{
-    classify_reference_meaningful_delta, classify_reference_meaningful_delta_with_open_obligations,
+    classify_reference_meaningful_delta, classify_reference_meaningful_delta_in_lineage,
 };
 pub use model::{
     ADR_0004_ID, ADR_0004_TITLE, CorroboratedModelFinding, CorroborationStatus,
@@ -152,8 +152,8 @@ pub use situation_guard::{
     compile_reference_situation_with_operation_receipt, seal_reference_handoff,
 };
 pub use situation_sections::{
-    RedundancyRecord, ReferenceProjectionSpec, ReferenceSituationPublication,
-    compile_reference_situation_publication,
+    RedundancyRecord, ReferenceProjectionSpec, ReferencePublicationLineage,
+    ReferenceSituationPublication, compile_reference_situation_publication,
     compile_reference_situation_publication_with_operation_receipt, project_reference_situation,
     seal_reference_publication_handoff,
 };

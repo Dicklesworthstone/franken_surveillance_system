@@ -120,7 +120,21 @@ pub fn compile_reference_situation_with_operation_receipt(
 /// A transient-only obligation is rejected with [`ReferenceError::InvalidSpec("transient_obligation_rejected")`].
 /// If the operation has already been dispatched or is indeterminate (e.g. across restart),
 /// the commit affordance is replaced with the reconcile affordance [`EFFECT_RECONCILE_AFFORDANCE`].
+///
+/// The situation seals the durable journal root it was compiled against, so a journal-bound
+/// meaningful delta checks the real journal rather than a caller-supplied set (fss-mnlz1).
 pub fn compile_reference_situation_with_durable_journal(
+    request: ReferenceSituationRequest<'_>,
+    durable_journal: &DurableEffectJournal,
+    authority: &DurableReferenceLedger,
+) -> Result<ReferenceSituation, ReferenceError> {
+    let mut situation = compile_against_durable_journal(request, durable_journal, authority)?;
+    situation.set_journal_root(durable_journal.last_root());
+    situation.seal_effect_bindings()?;
+    Ok(situation)
+}
+
+fn compile_against_durable_journal(
     request: ReferenceSituationRequest<'_>,
     durable_journal: &DurableEffectJournal,
     authority: &DurableReferenceLedger,

@@ -22,13 +22,14 @@ use fss_reference::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
     ReferenceAlertPlan, ReferenceAlertProvider, ReferenceError, ReferenceEventReceipt,
     ReferenceModelObservation, ReferencePolicyDecision, ReferenceProjectionSpec,
-    ReferenceProviderBehavior, ReferenceSituation, ReferenceSituationPublication,
-    ReferenceSituationRequest, VirtualCameraSpec, classify_reference_meaningful_delta,
-    classify_reference_meaningful_delta_with_open_obligations, compile_reference_situation,
-    compile_reference_situation_with_operation_receipt, dispatch_reference_alert,
-    evaluate_unknown_presence, execute_mock_model, observe_reference_alert,
-    prepare_reference_alert, project_reference_situation, publish_reference_alert_outcome,
-    publish_reference_event, run_reference_capture, verify_reference_alert,
+    ReferenceProviderBehavior, ReferencePublicationLineage, ReferenceSituation,
+    ReferenceSituationPublication, ReferenceSituationRequest, VirtualCameraSpec,
+    classify_reference_meaningful_delta, classify_reference_meaningful_delta_in_lineage,
+    compile_reference_situation, compile_reference_situation_with_operation_receipt,
+    dispatch_reference_alert, evaluate_unknown_presence, execute_mock_model,
+    observe_reference_alert, prepare_reference_alert, project_reference_situation,
+    publish_reference_alert_outcome, publish_reference_event, run_reference_capture,
+    verify_reference_alert,
 };
 
 #[derive(Clone, Debug)]
@@ -319,6 +320,7 @@ fn test_request<'a>(
         contract_basis: test_basis(),
         previous_anchor: None,
         predecessor_publication: None,
+        lineage: None,
         created_at: TimestampNs(1_000),
         decision,
         event_receipt,
@@ -550,7 +552,7 @@ fn test_f4_hand_built_event_hypothesis_is_never_terminal() -> Result<(), Box<dyn
 
     let pub1 = publication(&v1)?;
     let pub2 = publication(&v2)?;
-    let delta1 = classify_reference_meaningful_delta(&pub1, &pub2)?;
+    let delta1 = classify_bound(&pub1, &pub2)?;
 
     assert!(
         delta1.classes.contains(&MeaningfulDeltaClass::Hypothesis),
@@ -585,7 +587,7 @@ fn test_f4_hand_built_obligation_discharge_is_never_terminal() -> Result<(), Box
 
     let pub1 = publication(&v1)?;
     let pub2 = publication(&v2)?;
-    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+    let delta = classify_bound(&pub1, &pub2)?;
     assert!(
         delta.classes.contains(&MeaningfulDeltaClass::Obligation),
         "{:?}",
@@ -687,7 +689,7 @@ fn test_f4_hand_built_mission_closure_is_never_terminal() -> Result<(), Box<dyn 
 
     let pub1 = publication(&v1)?;
     let pub2 = publication(&v2)?;
-    let delta = classify_reference_meaningful_delta(&pub1, &pub2)?;
+    let delta = classify_bound(&pub1, &pub2)?;
 
     assert!(
         delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
@@ -902,7 +904,7 @@ fn test_planted_negatives_free_text_statements_do_not_spoof_terminal_transition(
 
     let pub2_base = publication(&v2_base)?;
     let pub2_spoof = publication(&v2_spoof)?;
-    let delta2 = classify_reference_meaningful_delta(&pub2_base, &pub2_spoof)?;
+    let delta2 = classify_bound(&pub2_base, &pub2_spoof)?;
 
     assert!(
         !delta2
@@ -925,7 +927,7 @@ fn test_planted_negatives_free_text_statements_do_not_spoof_terminal_transition(
 
     let pub3_base = publication(&v3_base)?;
     let pub3_spoof = publication(&v3_spoof)?;
-    let delta3 = classify_reference_meaningful_delta(&pub3_base, &pub3_spoof)?;
+    let delta3 = classify_bound(&pub3_base, &pub3_spoof)?;
 
     assert!(
         !delta3
@@ -961,8 +963,7 @@ fn test_hand_built_typed_terminal_states_never_terminalize() -> Result<(), Box<d
     v1_term.premise_hypothesis = Some(HypothesisDisposition::Refuted);
     v1_term.premise_statement = "Neutral event entry #42 recorded.".to_owned();
 
-    let delta_event =
-        classify_reference_meaningful_delta(&publication(&v1_base)?, &publication(&v1_term)?)?;
+    let delta_event = classify_bound(&publication(&v1_base)?, &publication(&v1_term)?)?;
     assert!(
         delta_event
             .classes
@@ -990,8 +991,7 @@ fn test_hand_built_typed_terminal_states_never_terminalize() -> Result<(), Box<d
     v3_term.mission_state = Some(MissionLifecycleState::Closed);
     v3_term.mission_statement = "Routine system heartbeat checkpoint.".to_owned();
 
-    let delta_mission =
-        classify_reference_meaningful_delta(&publication(&v3_base)?, &publication(&v3_term)?)?;
+    let delta_mission = classify_bound(&publication(&v3_base)?, &publication(&v3_term)?)?;
     assert!(
         delta_mission
             .classes
@@ -1171,6 +1171,17 @@ fn test_f4_real_situation_f2_terminal_effect_transition_non_coalescible()
     let situation1 =
         compile_reference_situation_with_operation_receipt(req1, &op_receipt, &harness.authority)?;
     let pub1 = project_reference_situation(situation1, &test_spec(10_000)?)?;
+    let lineage_path = std::env::temp_dir().join(format!(
+        "fss-reference-invariants-lineage-{}.journal",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&lineage_path);
+    let mut lineage = ReferencePublicationLineage::open(
+        &lineage_path,
+        "site:meaningful-delta:lineage",
+        IncompleteTailPolicy::Reject,
+    )?;
+    lineage.record(&pub1)?;
     pub1.verify()?;
 
     // Dispatch and publish verified outcome
@@ -1211,24 +1222,15 @@ fn test_f4_real_situation_f2_terminal_effect_transition_non_coalescible()
     )?;
     req2.alert_outcome = Some(&outcome);
     req2.predecessor_publication = Some(pub1.publication_digest);
+    req2.lineage = Some(&lineage);
     let situation2 = compile_reference_situation(req2, &harness.authority)?;
     let pub2 = project_reference_situation(situation2, &test_spec(10_000)?)?;
     pub2.verify()?;
 
-    // The verified outcome continues the prepared publication, and the journal no longer holds the
-    // alert obligation open (fss-mnlz1).
-    let open_obligations: BTreeSet<ObligationId> = journal
-        .obligations()
-        .filter(|obligation| {
-            matches!(
-                obligation.state,
-                fss_core::ObligationState::Pending | fss_core::ObligationState::Indeterminate
-            )
-        })
-        .map(|obligation| obligation.obligation_id.clone())
-        .collect();
-    let delta =
-        classify_reference_meaningful_delta_with_open_obligations(&pub1, &pub2, &open_obligations)?;
+    // The verified outcome continues the prepared publication as the durable lineage records it
+    // (fss-mnlz1).
+    lineage.record(&pub2)?;
+    let delta = classify_reference_meaningful_delta_in_lineage(&pub1, &pub2, &lineage, None)?;
     assert!(
         delta
             .classes
@@ -1251,6 +1253,7 @@ fn test_f4_real_situation_f2_terminal_effect_transition_non_coalescible()
     )?;
     req3.alert_outcome = Some(&outcome);
     req3.predecessor_publication = Some(pub2.publication_digest);
+    req3.lineage = Some(&lineage);
     let situation3 = compile_reference_situation(req3, &harness.authority)?;
     let pub3 = project_reference_situation(situation3, &spec3)?;
     pub3.verify()?;
@@ -1267,6 +1270,8 @@ fn test_f4_real_situation_f2_terminal_effect_transition_non_coalescible()
         "Coalescing terminal effect transition must return Err!"
     );
     delta.validate()?;
+    drop(lineage);
+    let _ = fs::remove_file(&lineage_path);
     harness.cleanup();
     Ok(())
 }
@@ -2264,4 +2269,34 @@ fn test_harness_proves_no_silent_append_to_stale_journal() -> Result<(), Box<dyn
         "Harness cleanup must remove run directory"
     );
     Ok(())
+}
+
+/// Classifies through the lineage-bound classifier with an empty durable lineage: hand-built
+/// publications are never recorded, so this exercises the bound classifier's rules rather than
+/// only the plain classifier's refusal to report terminal transitions (fss-mnlz1).
+fn classify_bound(
+    basis: &ReferenceSituationPublication,
+    result: &ReferenceSituationPublication,
+) -> Result<fss_core::MeaningfulDelta, Box<dyn Error>> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_nanos();
+    let thread = format!("{:?}", std::thread::current().id())
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .collect::<String>();
+    let path = std::env::temp_dir().join(format!(
+        "fss-reference-invariants-bound-{}-{thread}-{nanos}.journal",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&path);
+    let lineage = ReferencePublicationLineage::open(
+        &path,
+        "site:meaningful-delta:lineage",
+        IncompleteTailPolicy::Reject,
+    )?;
+    let delta = classify_reference_meaningful_delta_in_lineage(basis, result, &lineage, None);
+    drop(lineage);
+    let _ = fs::remove_file(&path);
+    Ok(delta?)
 }

@@ -315,6 +315,7 @@ fn test_request<'a>(
         contract_basis: test_basis(),
         previous_anchor: None,
         predecessor_publication: None,
+        lineage: None,
         decision,
         event_receipt,
         alert_plan,

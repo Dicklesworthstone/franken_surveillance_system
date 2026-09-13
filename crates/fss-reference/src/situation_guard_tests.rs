@@ -132,6 +132,7 @@ fn request<'a>(
         ),
         previous_anchor: None,
         predecessor_publication: None,
+        lineage: None,
         decision,
         event_receipt: receipt,
         alert_plan: None,
@@ -466,6 +467,9 @@ where
     let mut result_request = request(&decision, &receipt, &capabilities)?;
     result_request.alert_plan = Some(&plan);
     result_request.predecessor_publication = Some(basis.publication_digest);
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    store.lineage.record(&basis)?;
+    result_request.lineage = Some(&store.lineage);
     let result = crate::project_reference_situation(
         compile_reference_situation_with_operation_receipt(
             result_request,
@@ -474,7 +478,14 @@ where
         )?,
         &guard_projection_spec()?,
     )?;
-    let delta = crate::classify_reference_meaningful_delta(&basis, &result)?;
+    store.lineage.record(&result)?;
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
+        &basis,
+        &result,
+        &store.lineage,
+        None,
+    )?;
+    store.cleanup();
     harness.cleanup();
     Ok(delta)
 }
@@ -929,7 +940,10 @@ fn guarded_situation_after(
     plan: &ReferenceAlertPlan,
     operation_receipt: Option<&fss_core::OperationReceipt>,
     outcome: Option<&crate::ReferenceAlertOutcomeReceipt>,
-    predecessor: Option<&crate::ReferenceSituationPublication>,
+    continues: Option<(
+        &crate::ReferenceSituationPublication,
+        &crate::ReferencePublicationLineage,
+    )>,
 ) -> Result<crate::ReferenceSituation, Box<dyn Error>> {
     let mut compile_request = request(
         decision,
@@ -939,7 +953,8 @@ fn guarded_situation_after(
     compile_request.alert_plan = Some(plan);
     compile_request.alert_outcome = outcome;
     compile_request.predecessor_publication =
-        predecessor.map(|predecessor| predecessor.publication_digest);
+        continues.map(|(predecessor, _)| predecessor.publication_digest);
+    compile_request.lineage = continues.map(|(_, lineage)| lineage);
     Ok(match operation_receipt {
         Some(operation_receipt) => compile_reference_situation_with_operation_receipt(
             compile_request,
@@ -977,8 +992,6 @@ struct Lifecycle {
     dispatched_situation: crate::ReferenceSituation,
     verified_receipt: fss_core::OperationReceipt,
     outcome: crate::ReferenceAlertOutcomeReceipt,
-    /// Obligations the journal still holds open once the outcome is published.
-    open_obligations: std::collections::BTreeSet<ObligationId>,
 }
 
 impl Lifecycle {
@@ -1045,7 +1058,6 @@ impl Lifecycle {
             &mut harness.authority,
             &provider,
         )?;
-        let open_obligations = open_obligations(&journal);
         Ok(Self {
             harness,
             decision,
@@ -1056,7 +1068,6 @@ impl Lifecycle {
             dispatched_situation,
             verified_receipt,
             outcome,
-            open_obligations,
         })
     }
 
@@ -1081,6 +1092,7 @@ impl Lifecycle {
         &self,
         with_receipt: bool,
         predecessor: &crate::ReferenceSituationPublication,
+        lineage: &crate::ReferencePublicationLineage,
     ) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
         Ok(crate::project_reference_situation(
             guarded_situation_after(
@@ -1090,7 +1102,7 @@ impl Lifecycle {
                 &self.plan,
                 with_receipt.then_some(&self.verified_receipt),
                 Some(&self.outcome),
-                Some(predecessor),
+                Some((predecessor, lineage)),
             )?,
             &guard_projection_spec()?,
         )?)
@@ -1122,11 +1134,15 @@ fn mentions_local_state(changes: &[String]) -> bool {
 fn dropping_a_cell_of_a_still_proved_operation_is_not_an_alarm() -> Result<(), Box<dyn Error>> {
     let lifecycle = Lifecycle::new("f1-drop")?;
     let basis = lifecycle.verified(true)?;
-    let result = lifecycle.verified_after(false, &basis)?;
-    let delta = crate::classify_reference_meaningful_delta_with_open_obligations(
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    store.lineage.record(&basis)?;
+    let result = lifecycle.verified_after(false, &basis, &store.lineage)?;
+    store.lineage.record(&result)?;
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
         &basis,
         &result,
-        &lifecycle.open_obligations,
+        &store.lineage,
+        None,
     )?;
     // Both sides stay `Partial` for reasons unrelated to the effect, so coverage loss is judged by
     // what it names, not by its class.
@@ -1143,6 +1159,7 @@ fn dropping_a_cell_of_a_still_proved_operation_is_not_an_alarm() -> Result<(), B
     );
     assert!(!mentions_local_state(&delta.coverage_changes), "{delta:?}");
     delta.validate()?;
+    store.cleanup();
     lifecycle.harness.cleanup();
     Ok(())
 }
@@ -1153,11 +1170,15 @@ fn dropping_a_cell_of_a_still_proved_operation_is_not_an_alarm() -> Result<(), B
 fn adding_a_cell_to_an_already_proved_operation_is_not_terminal() -> Result<(), Box<dyn Error>> {
     let lifecycle = Lifecycle::new("f1-add")?;
     let basis = lifecycle.verified(false)?;
-    let result = lifecycle.verified_after(true, &basis)?;
-    let delta = crate::classify_reference_meaningful_delta_with_open_obligations(
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    store.lineage.record(&basis)?;
+    let result = lifecycle.verified_after(true, &basis, &store.lineage)?;
+    store.lineage.record(&result)?;
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
         &basis,
         &result,
-        &lifecycle.open_obligations,
+        &store.lineage,
+        None,
     )?;
     for class in [
         fss_core::MeaningfulDeltaClass::TerminalTransition,
@@ -1166,6 +1187,7 @@ fn adding_a_cell_to_an_already_proved_operation_is_not_terminal() -> Result<(), 
         assert!(!delta.classes.contains(&class), "{class:?} in {:?}", delta);
     }
     delta.validate()?;
+    store.cleanup();
     lifecycle.harness.cleanup();
     Ok(())
 }
@@ -1176,10 +1198,15 @@ fn adding_a_cell_to_an_already_proved_operation_is_not_terminal() -> Result<(), 
 fn proved_outcome_resolves_the_indeterminate_local_cell_it_supersedes() -> Result<(), Box<dyn Error>>
 {
     let lifecycle = Lifecycle::new("f1-resolve")?;
-    let delta = crate::classify_reference_meaningful_delta_with_open_obligations(
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    store.lineage.record(&lifecycle.dispatched)?;
+    let result = lifecycle.verified_after(false, &lifecycle.dispatched, &store.lineage)?;
+    store.lineage.record(&result)?;
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
         &lifecycle.dispatched,
-        &lifecycle.verified_after(false, &lifecycle.dispatched)?,
-        &lifecycle.open_obligations,
+        &result,
+        &store.lineage,
+        None,
     )?;
     assert!(
         delta
@@ -1202,6 +1229,7 @@ fn proved_outcome_resolves_the_indeterminate_local_cell_it_supersedes() -> Resul
     );
     assert!(!mentions_local_state(&delta.coverage_changes), "{delta:?}");
     delta.validate()?;
+    store.cleanup();
     lifecycle.harness.cleanup();
     Ok(())
 }
@@ -1211,10 +1239,15 @@ fn proved_outcome_resolves_the_indeterminate_local_cell_it_supersedes() -> Resul
 #[test]
 fn proved_outcome_supersedes_the_unproved_local_cell() -> Result<(), Box<dyn Error>> {
     let lifecycle = Lifecycle::new("f1-supersede")?;
-    let delta = crate::classify_reference_meaningful_delta_with_open_obligations(
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    store.lineage.record(&lifecycle.prepared)?;
+    let result = lifecycle.verified_after(false, &lifecycle.prepared, &store.lineage)?;
+    store.lineage.record(&result)?;
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
         &lifecycle.prepared,
-        &lifecycle.verified_after(false, &lifecycle.prepared)?,
-        &lifecycle.open_obligations,
+        &result,
+        &store.lineage,
+        None,
     )?;
     assert!(
         delta
@@ -1228,6 +1261,7 @@ fn proved_outcome_supersedes_the_unproved_local_cell() -> Result<(), Box<dyn Err
     );
     assert!(!mentions_local_state(&delta.coverage_changes), "{delta:?}");
     delta.validate()?;
+    store.cleanup();
     lifecycle.harness.cleanup();
     Ok(())
 }
@@ -1259,6 +1293,8 @@ fn terminal_outcome_flip_of_one_operation_is_a_contradiction() -> Result<(), Box
     let verified = receipt_in_state(&mut verified_journal, &plan, EffectState::Verified)?;
     let failed = receipt_in_state(&mut failed_journal, &plan, EffectState::Failed)?;
     let basis = guarded_publication(&harness, &decision, &receipt, &plan, Some(&verified), None)?;
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    store.lineage.record(&basis)?;
     let result = crate::project_reference_situation(
         guarded_situation_after(
             &harness,
@@ -1267,11 +1303,18 @@ fn terminal_outcome_flip_of_one_operation_is_a_contradiction() -> Result<(), Box
             &plan,
             Some(&failed),
             None,
-            Some(&basis),
+            Some((&basis, &store.lineage)),
         )?,
         &guard_projection_spec()?,
     )?;
-    let delta = crate::classify_reference_meaningful_delta(&basis, &result)?;
+    store.lineage.record(&result)?;
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
+        &basis,
+        &result,
+        &store.lineage,
+        None,
+    )?;
+    store.cleanup();
     let expected = format!(
         "effect outcome contradicted: operation {} was proved succeeded and is now proved failed",
         plan.intent.operation_id.as_str()
@@ -1709,7 +1752,15 @@ fn unsealed_rebuild_never_discharges_compiled_obligations() -> Result<(), Box<dy
         strip_effect_cells(capsule);
         capsule.obligations.clear();
     })?;
-    let delta = crate::classify_reference_meaningful_delta(dispatched, &cleared)?;
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    store.lineage.record(dispatched)?;
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
+        dispatched,
+        &cleared,
+        &store.lineage,
+        None,
+    )?;
+    store.cleanup();
     assert!(
         delta
             .classes
@@ -1799,12 +1850,12 @@ fn sealed_publication_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Pinned seal digest of the fixed compiled publication below.
+/// Pinned v4 seal digest of the fixed compiled publication below.
 const GOLDEN_SEAL_DIGEST: &str =
-    "sha256:e76c1f015d1c91e9defb0b9c5b34fd12eeb6dbfdb59f38387e030c2a8b4c4c24";
+    "sha256:d89efb43a65ee022d0b813a38b5a1a9d92fb5a3fad4ea8a7b5a9b2d48330677a";
 /// Pinned v2 publication digest of the fixed compiled publication below.
 const GOLDEN_PUBLICATION_DIGEST: &str =
-    "sha256:007f5c18757dea6fde98a07da4a4d7c55f9820fb484328d4a5d8a00a11dd7091";
+    "sha256:367f241958136aba4323261b86e43dfef9a23fdc50ef35eac2b7fae51a071b99";
 
 /// Review round 4 F5: the seal digest and the v2 publication digest of a fixed compiled
 /// publication are pinned, so any change to either encoding has to change these goldens on purpose.
@@ -1932,12 +1983,12 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-/// Pinned seal digest of the fixed compiled publication with effect bindings below.
+/// Pinned v4 seal digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:9a3c7ec42c9130d4262418bf6e857fc40b3226e726f3b174f8db04a25f71d57f";
+    "sha256:1b668e08a2d1b28280cc1e629e305e11ca2e4f068faf410f12631f28a094cd62";
 /// Pinned v2 publication digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:97629a1fd4bdeb36e24aeee5e5a858d0f45bd929a82f319658a486d492beb7f0";
+    "sha256:298ade5f1eb36dce7c2654b7cf01762302406f7e21684ab1c0553dfbd86fcfcd";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.
@@ -1975,27 +2026,14 @@ fn bound_compiled_publication_digests_are_pinned() -> Result<(), Box<dyn Error>>
     Ok(())
 }
 
-/// The obligations `journal` still holds open: pending, or with an unresolved external outcome.
-fn open_obligations(journal: &EffectJournal) -> std::collections::BTreeSet<ObligationId> {
-    journal
-        .obligations()
-        .filter(|obligation| {
-            matches!(
-                obligation.state,
-                fss_core::ObligationState::Pending | fss_core::ObligationState::Indeterminate
-            )
-        })
-        .map(|obligation| obligation.obligation_id.clone())
-        .collect()
-}
-
 /// Compiles and projects the situation of `decision` with no alert plan, continuing `predecessor`
-/// when one is given.
+/// as recorded in `lineage` when one is given.
 fn planless_publication(
     harness: &GuardHarness,
     decision: &ReferencePolicyDecision,
     receipt: &ReferenceEventReceipt,
     predecessor: Option<&crate::ReferenceSituationPublication>,
+    lineage: Option<&crate::ReferencePublicationLineage>,
 ) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
     let mut compile_request = request(
         decision,
@@ -2004,123 +2042,225 @@ fn planless_publication(
     )?;
     compile_request.predecessor_publication =
         predecessor.map(|predecessor| predecessor.publication_digest);
+    compile_request.lineage = lineage;
     Ok(crate::project_reference_situation(
         compile_reference_situation(compile_request, &harness.authority)?,
         &guard_projection_spec()?,
     )?)
 }
 
-/// fss-mnlz1 R5-1: the same event compiled with its alert plan and then without it gives two sealed
-/// publications of the same subject. When the second continues the first it drops the plan's
-/// obligation while the durable journal still holds it open, so classification refuses without
-/// the journal's open obligations and refuses with them; only a journal that no longer holds it
-/// open lets the discharge through. Unchained, or for another event of the same mission, the
-/// removal is reported but never as a terminal transition.
+/// A durable effect journal at a fresh temporary path, for the journal-bound tests.
+fn durable_journal(
+    name: &str,
+) -> Result<(crate::DurableEffectJournal, std::path::PathBuf), Box<dyn Error>> {
+    let path = std::env::temp_dir().join(format!(
+        "fss-reference-guard-journal-{}-{name}.journal",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&path);
+    let journal =
+        crate::DurableEffectJournal::open(&path, fss_ledger::IncompleteTailPolicy::Reject)?;
+    Ok((journal, path))
+}
+
+/// Prepares the alert plan for `decision` in the durable journal (the obligation opens there).
+fn durable_prepare(
+    journal: &mut crate::DurableEffectJournal,
+    harness: &GuardHarness,
+    decision: &ReferencePolicyDecision,
+    receipt: &ReferenceEventReceipt,
+    name: &str,
+) -> Result<ReferenceAlertPlan, Box<dyn Error>> {
+    Ok(journal.prepare_alert(PrepareAlertParams {
+        decision,
+        event_receipt: receipt,
+        authority: &harness.authority,
+        operation_id: OperationId::parse(format!("operation:situation-guard:{name}"))?,
+        idempotency_key: IdempotencyKey::parse(format!("idempotency:situation-guard:{name}"))?,
+        obligation_id: ObligationId::parse(format!("obligation:situation-guard:{name}"))?,
+        channel: "operator:oncall".to_owned(),
+        now: TimestampNs(100),
+    })?)
+}
+
+/// Compiles against the durable journal (sealing its root) and projects.
+fn durable_publication(
+    harness: &GuardHarness,
+    journal: &crate::DurableEffectJournal,
+    decision: &ReferencePolicyDecision,
+    receipt: &ReferenceEventReceipt,
+    plan: Option<&ReferenceAlertPlan>,
+    outcome: Option<&crate::ReferenceAlertOutcomeReceipt>,
+    continues: Option<(
+        &crate::ReferenceSituationPublication,
+        &crate::ReferencePublicationLineage,
+    )>,
+) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+    let mut compile_request = request(
+        decision,
+        receipt,
+        &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+    )?;
+    compile_request.alert_plan = plan;
+    compile_request.alert_outcome = outcome;
+    compile_request.predecessor_publication =
+        continues.map(|(predecessor, _)| predecessor.publication_digest);
+    compile_request.lineage = continues.map(|(_, lineage)| lineage);
+    Ok(crate::project_reference_situation(
+        crate::compile_reference_situation_with_durable_journal(
+            compile_request,
+            journal,
+            &harness.authority,
+        )?,
+        &guard_projection_spec()?,
+    )?)
+}
+
+/// fss-mnlz1 M1 and R5-1: the same event compiled with its alert plan and then without it, against
+/// the real durable journal, chained in the lineage. The durable journal still holds the plan's
+/// obligation open, so the journal-bound classifier refuses the discharge with the real journal and
+/// refuses an empty substitute journal whose root the result never sealed. Without a journal, and
+/// through the plain classifier, the removal is reported but never as terminal.
 #[test]
 fn obligation_removal_is_refused_while_the_journal_holds_it_open() -> Result<(), Box<dyn Error>> {
     let name = "r51-open";
     let mut harness = GuardHarness::new(name)?;
     let (decision, receipt) = harness.corroborated(name)?;
-    let mut journal = EffectJournal::new();
-    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
-    let with_plan = guarded_publication(&harness, &decision, &receipt, &plan, None, None)?;
-    assert!(
-        with_plan
-            .situation
-            .capsule
-            .obligations
-            .contains(&plan.obligation_id)
+    let (mut journal, journal_path) = durable_journal(name)?;
+    let plan = durable_prepare(&mut journal, &harness, &decision, &receipt, name)?;
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    let with_plan = durable_publication(
+        &harness,
+        &journal,
+        &decision,
+        &receipt,
+        Some(&plan),
+        None,
+        None,
+    )?;
+    assert_eq!(
+        with_plan.situation.journal_root(),
+        Some(journal.last_root())
     );
-    let open = open_obligations(&journal);
-    assert!(open.contains(&plan.obligation_id), "{open:?}");
+    store.lineage.record(&with_plan)?;
+    let without_plan = durable_publication(
+        &harness,
+        &journal,
+        &decision,
+        &receipt,
+        None,
+        None,
+        Some((&with_plan, &store.lineage)),
+    )?;
+    store.lineage.record(&without_plan)?;
+    let removed = format!("obligation removed: {}", plan.obligation_id);
     let terminal = |delta: &fss_core::MeaningfulDelta| {
         delta
             .classes
             .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition)
     };
-    let removal_reported = |delta: &fss_core::MeaningfulDelta| {
-        delta
-            .obligation_changes
-            .contains(&format!("obligation removed: {}", plan.obligation_id))
-    };
 
-    let chained = planless_publication(&harness, &decision, &receipt, Some(&with_plan))?;
-    let without_journal = crate::classify_reference_meaningful_delta(&with_plan, &chained);
-    assert!(
-        matches!(
-            without_journal,
-            Err(ReferenceError::InvalidSpec(
-                "meaningful_delta_open_obligations_required"
-            ))
-        ),
-        "{:?}",
-        without_journal.map(|delta| delta.classes)
-    );
-    let still_open = crate::classify_reference_meaningful_delta_with_open_obligations(
-        &with_plan, &chained, &open,
+    let open = crate::classify_reference_meaningful_delta_in_lineage(
+        &with_plan,
+        &without_plan,
+        &store.lineage,
+        Some(&journal),
     );
     assert!(
         matches!(
-            still_open,
+            open,
             Err(ReferenceError::InvalidSpec(
                 "meaningful_delta_obligation_still_open"
             ))
         ),
         "{:?}",
-        still_open.map(|delta| delta.classes)
+        open.map(|delta| delta.classes)
     );
-    let discharged = crate::classify_reference_meaningful_delta_with_open_obligations(
+    let (substitute, substitute_path) = durable_journal("r51-substitute")?;
+    let substituted = crate::classify_reference_meaningful_delta_in_lineage(
         &with_plan,
-        &chained,
-        &std::collections::BTreeSet::new(),
-    )?;
-    assert!(terminal(&discharged), "{:?}", discharged.classes);
-
-    let unchained = planless_publication(&harness, &decision, &receipt, None)?;
-    let delta = crate::classify_reference_meaningful_delta(&with_plan, &unchained)?;
-    assert!(!terminal(&delta), "unchained: {:?}", delta.classes);
-    assert!(removal_reported(&delta), "unchained: {delta:?}");
-    delta.validate()?;
-
-    let (other_decision, other_receipt) = harness.corroborated("r51-other")?;
-    let other_event =
-        planless_publication(&harness, &other_decision, &other_receipt, Some(&with_plan))?;
-    assert_eq!(
-        other_event.situation.predecessor_publication(),
-        Some(with_plan.publication_digest)
+        &without_plan,
+        &store.lineage,
+        Some(&substitute),
     );
-    let delta = crate::classify_reference_meaningful_delta(&with_plan, &other_event)?;
-    assert!(!terminal(&delta), "cross-event: {:?}", delta.classes);
-    assert!(removal_reported(&delta), "cross-event: {delta:?}");
-    delta.validate()?;
+    assert!(
+        matches!(
+            substituted,
+            Err(ReferenceError::InvalidSpec(
+                "meaningful_delta_journal_root_mismatch"
+            ))
+        ),
+        "{:?}",
+        substituted.map(|delta| delta.classes)
+    );
+    for (label, delta) in [
+        (
+            "bound without journal",
+            crate::classify_reference_meaningful_delta_in_lineage(
+                &with_plan,
+                &without_plan,
+                &store.lineage,
+                None,
+            )?,
+        ),
+        (
+            "plain",
+            crate::classify_reference_meaningful_delta(&with_plan, &without_plan)?,
+        ),
+    ] {
+        assert!(!terminal(&delta), "{label}: {:?}", delta.classes);
+        assert!(
+            delta.obligation_changes.contains(&removed),
+            "{label}: {delta:?}"
+        );
+        assert!(delta.silence_certificate.is_none(), "{label}");
+        delta.validate()?;
+    }
+    drop(substitute);
+    let _ = fs::remove_file(substitute_path);
+    drop(journal);
+    let _ = fs::remove_file(journal_path);
+    store.cleanup();
     harness.cleanup();
     Ok(())
 }
 
-/// fss-mnlz1 R5-3: a stale basis cannot replay a terminal transition. The dispatched publication,
-/// its verified successor, and a later successor of that: the first step is terminal, the second is
-/// not (the effect was already proved), and the stale dispatched basis against the later successor
-/// reports the change without a terminal transition, because the later one does not continue it.
+/// fss-mnlz1 R5-3 and M2: a stale basis cannot replay a terminal transition, and a publication has
+/// one successor. The dispatched publication, its verified successor, and a later successor of that
+/// are recorded in order: the first step is terminal, the second is not (the effect was already
+/// proved), and the stale dispatched basis against the later successor is not terminal, because the
+/// lineage records no such succession.
 #[test]
 fn stale_basis_replay_never_re_terminalizes() -> Result<(), Box<dyn Error>> {
     let lifecycle = Lifecycle::new("r53-stale")?;
-    let open = &lifecycle.open_obligations;
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
     let first = &lifecycle.dispatched;
-    let second = lifecycle.verified_after(false, first)?;
-    let third = lifecycle.verified_after(false, &second)?;
+    store.lineage.record(first)?;
+    let second = lifecycle.verified_after(false, first, &store.lineage)?;
+    store.lineage.record(&second)?;
+    let third = lifecycle.verified_after(true, &second, &store.lineage)?;
+    store.lineage.record(&third)?;
     let terminal = |delta: &fss_core::MeaningfulDelta| {
         delta
             .classes
             .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition)
     };
-    let classify = |basis, result| {
-        crate::classify_reference_meaningful_delta_with_open_obligations(basis, result, open)
-    };
-    let step = classify(first, &second)?;
+    let step = crate::classify_reference_meaningful_delta_in_lineage(
+        first,
+        &second,
+        &store.lineage,
+        None,
+    )?;
     assert!(terminal(&step), "first step: {:?}", step.classes);
-    let step = classify(&second, &third)?;
+    let step = crate::classify_reference_meaningful_delta_in_lineage(
+        &second,
+        &third,
+        &store.lineage,
+        None,
+    )?;
     assert!(!terminal(&step), "second step: {:?}", step.classes);
-    let replay = classify(first, &third)?;
+    let replay =
+        crate::classify_reference_meaningful_delta_in_lineage(first, &third, &store.lineage, None)?;
     assert!(!terminal(&replay), "stale replay: {:?}", replay.classes);
     assert!(
         replay
@@ -2130,6 +2270,281 @@ fn stale_basis_replay_never_re_terminalizes() -> Result<(), Box<dyn Error>> {
         replay.classes
     );
     replay.validate()?;
+    store.cleanup();
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// Returns whether `result` failed with exactly `expected`.
+fn refused_boxed<T>(result: &Result<T, Box<dyn Error>>, expected: &ReferenceError) -> bool {
+    result.as_ref().err().is_some_and(|error| {
+        error
+            .downcast_ref::<ReferenceError>()
+            .is_some_and(|actual| actual.to_string() == expected.to_string())
+    })
+}
+
+/// fss-mnlz1 M2 (the reviewer's two-children probe): two different successors of the dispatched
+/// publication both compile while it is the latest, but the lineage records only the first; the
+/// second is refused at record time, a third can no longer compile against the superseded
+/// predecessor, and only the recorded child is a terminal successor.
+#[test]
+fn a_publication_has_one_successor() -> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("mnlz1-children")?;
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    let parent = &lifecycle.dispatched;
+    store.lineage.record(parent)?;
+    let first_child = lifecycle.verified_after(true, parent, &store.lineage)?;
+    let second_child = lifecycle.verified_after(false, parent, &store.lineage)?;
+    store.lineage.record(&first_child)?;
+    let recorded = store.lineage.record(&second_child).map(|_| ());
+    assert!(
+        refused_with(
+            &recorded,
+            &ReferenceError::InvalidSpec("lineage_predecessor_not_latest")
+        ),
+        "{recorded:?}"
+    );
+    let third_child = lifecycle.verified_after(false, parent, &store.lineage);
+    assert!(
+        refused_boxed(
+            &third_child,
+            &ReferenceError::InvalidSpec("situation_predecessor_not_latest")
+        ),
+        "{:?}",
+        third_child.map(|publication| publication.publication_digest)
+    );
+    let terminal = |delta: &fss_core::MeaningfulDelta| {
+        delta
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::TerminalTransition)
+    };
+    let first = crate::classify_reference_meaningful_delta_in_lineage(
+        parent,
+        &first_child,
+        &store.lineage,
+        None,
+    )?;
+    assert!(terminal(&first), "{:?}", first.classes);
+    let second = crate::classify_reference_meaningful_delta_in_lineage(
+        parent,
+        &second_child,
+        &store.lineage,
+        None,
+    )?;
+    assert!(!terminal(&second), "{:?}", second.classes);
+    second.validate()?;
+    store.cleanup();
+    lifecycle.harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 M3: compile validates a predecessor against the durable lineage. A made-up digest and
+/// another event's publication are refused as not the latest publication of this subject, and a
+/// predecessor given without a lineage is refused as unverified.
+#[test]
+fn a_predecessor_must_be_the_subjects_latest_recorded_publication() -> Result<(), Box<dyn Error>> {
+    let name = "mnlz1-predecessor";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let (other_decision, other_receipt) = harness.corroborated("mnlz1-other-event")?;
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    let genesis = planless_publication(&harness, &decision, &receipt, None, None)?;
+    store.lineage.record(&genesis)?;
+    let other = planless_publication(&harness, &other_decision, &other_receipt, None, None)?;
+    store.lineage.record(&other)?;
+
+    let compile = |predecessor: fss_core::ContentDigest,
+                   lineage: Option<&crate::ReferencePublicationLineage>|
+     -> Result<crate::ReferenceSituation, ReferenceError> {
+        let mut compile_request = request(
+            &decision,
+            &receipt,
+            &["capability:alert.commit", CAPABILITY_EFFECT_RECONCILE],
+        )?;
+        compile_request.predecessor_publication = Some(predecessor);
+        compile_request.lineage = lineage;
+        compile_reference_situation(compile_request, &harness.authority)
+    };
+    let not_latest = ReferenceError::InvalidSpec("situation_predecessor_not_latest");
+    let junk = compile(
+        fss_core::ContentDigest::sha256(b"zz6-junk-predecessor"),
+        Some(&store.lineage),
+    )
+    .map(|_| ());
+    assert!(refused_with(&junk, &not_latest), "{junk:?}");
+    let cross_event = compile(other.publication_digest, Some(&store.lineage)).map(|_| ());
+    assert!(refused_with(&cross_event, &not_latest), "{cross_event:?}");
+    let unverified = compile(genesis.publication_digest, None).map(|_| ());
+    assert!(
+        refused_with(
+            &unverified,
+            &ReferenceError::InvalidSpec("situation_predecessor_unverified")
+        ),
+        "{unverified:?}"
+    );
+    compile(genesis.publication_digest, Some(&store.lineage))?;
+    store.cleanup();
+    harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1 M1 positive control: once the durable journal closes the obligation (the alert is
+/// dispatched, verified and its outcome published), the verified publication continuing the
+/// prepared one discharges it as a terminal, critical transition that refuses to coalesce,
+/// checked against the real journal whose root it sealed.
+#[test]
+fn durable_discharge_is_terminal_once_the_journal_closes_it() -> Result<(), Box<dyn Error>> {
+    let name = "mnlz1-discharge";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let (mut journal, journal_path) = durable_journal(name)?;
+    let plan = durable_prepare(&mut journal, &harness, &decision, &receipt, name)?;
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    let prepared = durable_publication(
+        &harness,
+        &journal,
+        &decision,
+        &receipt,
+        Some(&plan),
+        None,
+        None,
+    )?;
+    store.lineage.record(&prepared)?;
+    let mut provider = crate::ReferenceAlertProvider::with_provider_id(format!(
+        "provider:test:situation-guard:{name}"
+    ));
+    let _ = journal.dispatch_alert(
+        &plan,
+        crate::ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut provider,
+    )?;
+    let provider_receipt = provider
+        .lookup(&plan.intent)?
+        .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+    let _ = journal.observe_alert(
+        &plan,
+        provider_receipt.receipt_digest(),
+        TimestampNs(103),
+        &provider,
+    )?;
+    let _ = journal.verify_alert(&plan, TimestampNs(104), &provider)?;
+    let outcome = journal.publish_alert_outcome(
+        &plan,
+        &mut harness.objects,
+        &mut harness.authority,
+        &provider,
+    )?;
+    let verified = durable_publication(
+        &harness,
+        &journal,
+        &decision,
+        &receipt,
+        Some(&plan),
+        Some(&outcome),
+        Some((&prepared, &store.lineage)),
+    )?;
+    store.lineage.record(&verified)?;
+    assert!(
+        !verified
+            .situation
+            .capsule
+            .obligations
+            .contains(&plan.obligation_id)
+    );
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
+        &prepared,
+        &verified,
+        &store.lineage,
+        Some(&journal),
+    )?;
+    for class in [
+        fss_core::MeaningfulDeltaClass::Obligation,
+        fss_core::MeaningfulDeltaClass::TerminalTransition,
+    ] {
+        assert!(
+            delta.classes.contains(&class),
+            "{class:?}: {:?}",
+            delta.classes
+        );
+    }
+    assert_eq!(delta.priority, fss_core::DeltaPriority::Critical);
+    assert!(delta.is_non_coalescible());
+    let next = crate::classify_reference_meaningful_delta(&verified, &verified)?;
+    assert!(!delta.can_coalesce_with(&next)?);
+    assert!(
+        delta
+            .coalesce(
+                &next,
+                "delta:coalesced",
+                "continuation:coalesced",
+                fss_core::ContentDigest::sha256(b"coalesced"),
+            )
+            .is_err()
+    );
+    delta.validate()?;
+    drop(journal);
+    let _ = fs::remove_file(journal_path);
+    store.cleanup();
+    harness.cleanup();
+    Ok(())
+}
+
+/// fss-mnlz1: the lineage fails closed on a crash mid-record and replays deterministically. A
+/// successor torn halfway through its record is refused on reopen under `Reject`; under `Truncate`
+/// only the complete prefix replays, so the successor is absent (never half-recorded), every reopen
+/// yields the same commitment, and the successor can then be recorded again.
+#[test]
+fn lineage_fails_closed_on_a_torn_record_and_replays_deterministically()
+-> Result<(), Box<dyn Error>> {
+    let lifecycle = Lifecycle::new("mnlz1-torn")?;
+    let parent = &lifecycle.dispatched;
+    let path = std::env::temp_dir().join(format!(
+        "fss-reference-lineage-torn-{}.journal",
+        std::process::id()
+    ));
+    let _ = fs::remove_file(&path);
+    let site = "site:reference:lineage";
+    let open = |policy| crate::ReferencePublicationLineage::open(&path, site, policy);
+    let subject = parent
+        .situation
+        .subject()
+        .map(|(event, objective)| (event.clone(), objective.to_owned()))
+        .ok_or(ReferenceError::InvalidSpec("missing_subject"))?;
+
+    let mut lineage = open(fss_ledger::IncompleteTailPolicy::Reject)?;
+    lineage.record(parent)?;
+    let child = lifecycle.verified_after(true, parent, &lineage)?;
+    let committed = fs::metadata(&path)?.len();
+    let genesis_commitment = lineage.commitment();
+    lineage.record(&child)?;
+    drop(lineage);
+    let full = fs::metadata(&path)?.len();
+    assert!(full > committed + 1);
+    fs::OpenOptions::new()
+        .write(true)
+        .open(&path)?
+        .set_len(committed + (full - committed) / 2)?;
+
+    assert!(open(fss_ledger::IncompleteTailPolicy::Reject).is_err());
+    let replayed = open(fss_ledger::IncompleteTailPolicy::Truncate)?;
+    assert_eq!(
+        replayed.latest(&subject.0, &subject.1)?,
+        Some(parent.publication_digest)
+    );
+    assert_eq!(replayed.commitment(), genesis_commitment);
+    drop(replayed);
+    let mut again = open(fss_ledger::IncompleteTailPolicy::Reject)?;
+    assert_eq!(again.commitment(), genesis_commitment);
+    again.record(&child)?;
+    assert_eq!(
+        again.latest(&subject.0, &subject.1)?,
+        Some(child.publication_digest)
+    );
+    drop(again);
+    let _ = fs::remove_file(&path);
     lifecycle.harness.cleanup();
     Ok(())
 }

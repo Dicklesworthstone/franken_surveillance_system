@@ -161,6 +161,7 @@ fn request<'a>(
         contract_basis: basis(),
         previous_anchor: None,
         predecessor_publication: None,
+        lineage: None,
         decision,
         event_receipt,
         alert_plan: None,
@@ -1357,20 +1358,39 @@ fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dy
         )?,
         &spec,
     )?;
+    let mut store = crate::meaningful_delta_tests::FixtureLineage::new()?;
+    store.lineage.record(&basis)?;
+    // The lineage refuses another event's publication as a predecessor at compile time.
     let mut rejected_request = request(
         &rejected,
         &rejected_receipt,
         capabilities(&["capability:evidence.query", "capability:session.wait"]),
     )?;
     rejected_request.predecessor_publication = Some(basis.publication_digest);
+    rejected_request.lineage = Some(&store.lineage);
+    let chained = compile_reference_situation(rejected_request, &harness.authority);
+    assert!(
+        matches!(
+            chained,
+            Err(ReferenceError::InvalidSpec(
+                "situation_predecessor_not_latest"
+            ))
+        ),
+        "{:?}",
+        chained.map(|situation| situation.capsule.capsule_id)
+    );
     let result = crate::project_reference_situation(
-        compile_reference_situation(rejected_request, &harness.authority)?,
+        compile_reference_situation(
+            request(
+                &rejected,
+                &rejected_receipt,
+                capabilities(&["capability:evidence.query", "capability:session.wait"]),
+            )?,
+            &harness.authority,
+        )?,
         &spec,
     )?;
-    assert_eq!(
-        result.situation.predecessor_publication(),
-        Some(basis.publication_digest)
-    );
+    store.lineage.record(&result)?;
     assert!(
         result
             .situation
@@ -1383,7 +1403,12 @@ fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dy
         result.situation.capsule.frame.knowledge_cells
     );
     assert_ne!(basis.situation.subject(), result.situation.subject());
-    let delta = crate::classify_reference_meaningful_delta(&basis, &result)?;
+    let delta = crate::classify_reference_meaningful_delta_in_lineage(
+        &basis,
+        &result,
+        &store.lineage,
+        None,
+    )?;
     assert!(
         !delta
             .classes
@@ -1399,6 +1424,7 @@ fn another_events_rejection_never_terminalizes_this_event() -> Result<(), Box<dy
         delta.classes
     );
     delta.validate()?;
+    store.cleanup();
     harness.cleanup();
     Ok(())
 }
