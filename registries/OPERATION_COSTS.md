@@ -1,8 +1,8 @@
 # Operation cost registry
 
 Machine source: `architecture/operation_cost_registry.toml`.
-Generation: `gen:fss1:operation-cost-v1`.
-Registry digest: `sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe527ccf83b9`.
+Generation: `gen:fss1:operation-cost-v2`.
+Registry digest: `sha256:c86017d6a6674322613e8b88eb6c3ba994df2c9d071cb8b7045ea31c0f37bc3b`.
 
 | Cost ID | Unit | Mandatory semantic work | Key variables | Proof owner | Proof reference |
 |---|---|---|---|---|---|
@@ -31,7 +31,7 @@ Registry digest: `sha256:c885c834fe3d492076090e551c5988d6ed363bcf3a2432c41e67fe5
 | `COST-CHECKPOINT-001` | checkpoint | freeze anchor, materialize state, seal replay tail, verify, publish root | state bytes, delta count, indexes | `crates/fss-ledger` | `crates/fss-ledger/tests/ledger_oracle_contract.rs::differential_oracle_matches_durable_journal_batch_by_batch_and_after_restart` |
 | `COST-RELEASE-001` | release_matrix | clean snapshot, resolve sibling closure, run lanes, build targets, package, sign, upload, download verify, publish root | targets, lanes, test time, artifact bytes | `crates/fss-publication` | `crates/fss-publication/tests/replay_bundle_contract.rs::test_replay_bundle_roundtrip_bit_identical_state_root` |
 | `COST-ORIENT-001` | orientation | pin anchor, restore or create workspace, construct situation frame, construct world envelope, compute meaningful delta, select knowledge cells, construct control envelope, construct affordance frontier, compress with receipt, emit situation capsule | ledger rows, delta count, graph operations, search candidates, tokens, evidence handles | `crates/fss-reference` | `crates/fss-reference/tests/situation_invariants_contract.rs::test_f3_hard_clamps_included_in_context_pack` |
-| `COST-FOLLOW-001` | delta_delivery | validate cursor, consume authority deltas, classify decision impact, coalesce safe updates, preserve nondroppable updates, emit continuation | delta count, subscribers, classification work, output tokens | `crates/fss-reference` | `crates/fss-reference/tests/meaningful_delta_invariants.rs::test_coalescing_preserves_terminal_and_invalidation_deltas` |
+| `COST-FOLLOW-001` | delta_delivery | validate cursor, consume authority deltas, classify decision impact, coalesce safe updates, preserve nondroppable updates, emit continuation | delta count, subscribers, classification work, output tokens | `crates/fss-reference` | `crates/fss-reference/tests/meaningful_delta_invariants.rs::test_coalescing_preserves_plan_invalidation_deltas` |
 | `COST-CONTEXT-001` | context_pack | pin frame, apply capability privacy projection, score decision relevance, select submodular items, record omissions, emit compression receipt, publish pack | candidate items, evidence edges, tokens, hydration bytes, graph operations | `crates/fss-core` | `crates/fss-core/tests/context_expansion_binding_contract.rs::exact_slot_bindings_validate_against_descriptor_catalog` |
 | `COST-INVESTIGATE-001` | case_revision | pin case and anchor, refresh hypotheses, attach support and contradiction, predict observations, rank discriminating probes, apply stop rule, publish revision | hypotheses, evidence edges, candidate probes, model calls, graph operations, tokens | `drift:DRIFT-014` | `drift:DRIFT-014` |
 | `COST-AFFORDANCE-001` | affordance_frontier | enumerate registered operations, filter authority privacy safety, estimate value cost risk, remove dominated, sensitivity check, canonical order | candidate actions, preconditions, policy rules, counterfactuals | `drift:DRIFT-015` | `drift:DRIFT-015` |
