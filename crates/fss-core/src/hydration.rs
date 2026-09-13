@@ -27,10 +27,16 @@ mod request;
 
 pub use artifact::HydrationArtifact;
 pub use error::HydrationError;
-pub use h0::{H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0Identity, H0IdentityParams};
+pub use h0::{
+    H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0_SEMANTIC_OWNER, H0Identity,
+    H0IdentityParams, is_valid_h0_screened_field,
+};
 pub use handle::{SemanticHandle, SemanticHandleSpec};
 pub use receipt::{HydrationReceipt, HydrationReceiptSpec, HydrationResponse};
 pub use request::{HydrationRequest, HydrationRequestSpec};
+
+/// Normative semantic owner declared in `architecture/semantic_hydration.json`.
+pub const SEMANTIC_HYDRATION_OWNER: &str = "fss-agent-core";
 
 /// Progressive hydration level for one immutable semantic subject.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -103,14 +109,13 @@ impl HydrationLevel {
         }
     }
 
-    /// Returns the owning subsystem for this hydration level if registered.
+    /// Returns the owning subsystem for this hydration level.
+    ///
+    /// Per `architecture/semantic_hydration.json`, `semantic_owner` is `"fss-agent-core"`
+    /// for the entire hydration ladder (`H0`..=`H4`).
     #[must_use]
-    pub const fn owner(self) -> Option<&'static str> {
-        match self {
-            Self::H0 => Some("fss-core"),
-            Self::H1 => Some("fss-situation/fss-context-pack"),
-            Self::H2 | Self::H3 | Self::H4 => None,
-        }
+    pub const fn owner(self) -> &'static str {
+        SEMANTIC_HYDRATION_OWNER
     }
 
     /// Returns the monotone ladder ordinal.
@@ -369,6 +374,11 @@ pub(crate) fn valid_text(value: &str) -> bool {
                 || ('\u{0080}'..='\u{009F}').contains(&c)
                 || ('\u{202A}'..='\u{202E}').contains(&c)
                 || ('\u{2066}'..='\u{2069}').contains(&c)
+                || ('\u{200B}'..='\u{200F}').contains(&c)
+                || c == '\u{2028}'
+                || c == '\u{2029}'
+                || c == '\u{061C}'
+                || c == '\u{FEFF}'
         })
 }
 
@@ -454,7 +464,10 @@ pub(crate) fn encode_text_set(values: &BTreeSet<String>, encoder: &mut Canonical
 pub(crate) fn decode_text_set(
     decoder: &mut CanonicalDecoder<'_>,
 ) -> Result<BTreeSet<String>, HydrationError> {
-    let count_u64 = decoder.u64().map_err(|_| HydrationError::Truncated)?;
+    let count_u64 = decoder.u64().map_err(|err| match err {
+        ContractError::InvalidDigest => HydrationError::Truncated,
+        other => HydrationError::Contract(other),
+    })?;
     let count = usize::try_from(count_u64).map_err(|_| HydrationError::CapacityExceeded)?;
     if count > MAX_REQUEST_SET_ITEMS {
         return Err(HydrationError::CapacityExceeded);
@@ -465,7 +478,10 @@ pub(crate) fn decode_text_set(
     let mut set = BTreeSet::new();
     let mut prev: Option<&str> = None;
     for _ in 0..count {
-        let text = decoder.text().map_err(|_| HydrationError::Truncated)?;
+        let text = decoder.text().map_err(|err| match err {
+            ContractError::InvalidDigest => HydrationError::Truncated,
+            other => HydrationError::Contract(other),
+        })?;
         if text.trim().is_empty() || !valid_text(text) {
             return Err(HydrationError::Contract(ContractError::InvalidIdentifier));
         }

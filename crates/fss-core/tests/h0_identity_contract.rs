@@ -18,9 +18,10 @@ use std::error::Error;
 use fss_core::{
     BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
     CaptureInterval, Completeness, ContentDigest, ContractBasis, ContractBasisRegistryBytes,
-    ContractError, DigestAlgorithm, H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA, H0Identity,
-    H0IdentityParams, HandleAvailability, HydrationError, HydrationLevel, LedgerAnchor,
-    SemanticHandle, SemanticHandleSpec, TimestampNs,
+    ContractError, DigestAlgorithm, H0_CONTENT, H0_LEVEL_ID, H0_LEVEL_NAME, H0_SCHEMA,
+    H0_SEMANTIC_OWNER, H0Identity, H0IdentityParams, HandleAvailability, HydrationError,
+    HydrationLevel, LedgerAnchor, SEMANTIC_HYDRATION_OWNER, SemanticHandle, SemanticHandleSpec,
+    TimestampNs, is_valid_h0_screened_field,
 };
 
 fn sample_basis() -> ContractBasis {
@@ -121,18 +122,16 @@ fn test_h0_normative_constants_and_properties() -> Result<(), Box<dyn Error>> {
     assert_eq!(level.level_id(), "H0");
     assert_eq!(level.level_name(), "identity");
     assert_eq!(level.content(), H0_CONTENT);
-    assert_eq!(level.owner(), Some("fss-core"));
+    assert_eq!(level.owner(), SEMANTIC_HYDRATION_OWNER);
     assert_eq!(level.ordinal(), 0);
 
-    // Verify registered crate owners: H0 and H1 assigned, H2-H4 unassigned (Item 7)
-    assert_eq!(HydrationLevel::H0.owner(), Some("fss-core"));
-    assert_eq!(
-        HydrationLevel::H1.owner(),
-        Some("fss-situation/fss-context-pack")
-    );
-    assert_eq!(HydrationLevel::H2.owner(), None);
-    assert_eq!(HydrationLevel::H3.owner(), None);
-    assert_eq!(HydrationLevel::H4.owner(), None);
+    // Verify crate owners: all levels return fss-agent-core per architecture/semantic_hydration.json
+    assert_eq!(HydrationLevel::H0.owner(), "fss-agent-core");
+    assert_eq!(HydrationLevel::H1.owner(), "fss-agent-core");
+    assert_eq!(HydrationLevel::H2.owner(), "fss-agent-core");
+    assert_eq!(HydrationLevel::H3.owner(), "fss-agent-core");
+    assert_eq!(HydrationLevel::H4.owner(), "fss-agent-core");
+    assert_eq!(H0_SEMANTIC_OWNER, "fss-agent-core");
 
     // 4. FromStr exact resolution (Item 2: exact match only, no aliases, no trim)
     assert_eq!("H0".parse::<HydrationLevel>()?, HydrationLevel::H0);
@@ -347,11 +346,7 @@ fn test_h0_planted_negative_validation_failures() -> Result<(), Box<dyn Error>> 
         "RAW_BYTES",
         "decoded frame",
         "decoded_frame",
-        "payload_stream",
         "payload stream",
-        "unredacted_media",
-        "model_weights",
-        "vlm_features",
         "raw_payload",
         "decoded_image",
         "full_resolution_media",
@@ -488,9 +483,9 @@ fn test_h0_planted_negative_validation_failures() -> Result<(), Box<dyn Error>> 
         HydrationError::Contract(ContractError::ProhibitedEvidencePromotion)
     );
 
-    // Allowed false-positive test: "straw_bytes_metric" must NOT be treated as prohibited
+    // Allowed valid spatial_scope test
     let mut p_allowed = base.clone();
-    p_allowed.spatial_scope = Some("zone:straw_bytes_metric".to_string());
+    p_allowed.spatial_scope = Some("zone:safe_metric_01".to_string());
     let digest_allowed = H0Identity::compute_identity_digest(
         &p_allowed.subject_id,
         p_allowed.subject_digest,
@@ -503,6 +498,27 @@ fn test_h0_planted_negative_validation_failures() -> Result<(), Box<dyn Error>> 
     p_allowed.handle_id = format!("semantic-handle:{digest_allowed}");
     let allowed_res = H0Identity::new(p_allowed);
     assert!(allowed_res.is_ok());
+
+    // Decision 2(c): harmless name "straw_bytes_metric" pinned to fail closed (stripped contains rawbytes)
+    let mut p_straw = base.clone();
+    p_straw.spatial_scope = Some("zone:straw_bytes_metric".to_string());
+    let digest_straw = H0Identity::compute_identity_digest(
+        &p_straw.subject_id,
+        p_straw.subject_digest,
+        &p_straw.semantic_type,
+        &p_straw.source_id,
+        p_straw.capture_interval,
+        p_straw.spatial_scope.as_deref(),
+        p_straw.applied_transform.as_deref(),
+    )?;
+    p_straw.handle_id = format!("semantic-handle:{digest_straw}");
+    let Err(err) = H0Identity::new(p_straw) else {
+        return Err("expected straw_bytes_metric to fail closed".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::ProhibitedEvidencePromotion)
+    );
 
     // 2. Zero subject digest
     let mut p_zero = base.clone();
@@ -1396,5 +1412,591 @@ fn test_h0_golden_digest_and_canonical_bytes() -> Result<(), Box<dyn Error>> {
     assert_eq!(bytes_digest, golden_digest);
     assert_eq!(id_digest, golden_digest);
 
+    Ok(())
+}
+
+#[test]
+fn test_h0_screened_fields_grammar_and_prohibited_roots_for_all_six_fields()
+-> Result<(), Box<dyn Error>> {
+    let base = sample_h0_params()?;
+
+    // Review bypass vectors to screen across all 6 fields (Decision 2):
+    // (a) Non-ASCII bytes: Greek α/ο, fullwidth, Latin ɑ, zero-width space, soft hyphen
+    // (b) Exact ASCII token grammar: [A-Za-z0-9_.:/-]{1,256} with no leading or trailing separator
+    // (c) Prohibited roots: rawbytes, rawpayload, decodedimage, decodedframe, fullresolution,
+    //     originalencoded, objectbytes, pixelbuffer, keyframe
+    // (d) Harmless names pinned as fail-closed: keyframe_index, straw_bytes_metric
+    let test_cases = [
+        // Greek homoglyphs
+        ("evidence_rαwbytes", "Greek alpha bypass"),
+        ("α", "isolated Greek alpha"),
+        ("keyfrοme", "Greek omicron bypass"),
+        ("ο", "isolated Greek omicron"),
+        // Fullwidth
+        ("\u{FF52}awbytes", "fullwidth Latin r bypass"),
+        ("\u{FF41}", "isolated fullwidth a"),
+        // Latin phonetic / IPA
+        ("r\u{0251}wbytes", "Latin alpha ɑ bypass"),
+        ("\u{0251}", "isolated Latin alpha ɑ"),
+        // Zero-width space & invisible formatters
+        ("raw\u{200B}bytes", "zero-width space bypass"),
+        ("\u{200B}", "isolated zero-width space"),
+        // Soft hyphen
+        ("raw\u{00AD}bytes", "soft hyphen bypass"),
+        ("\u{00AD}", "isolated soft hyphen"),
+        // Prohibited root variants
+        ("rawbytesstream", "rawbytes prefix with suffix"),
+        ("RawBytesStream", "mixed-case rawbytes"),
+        ("raw_bytes2", "separator-separated raw_bytes2"),
+        ("fullresolutionmedia", "fullresolution root substring"),
+        ("pixelbuffers", "pixelbuffer root plural"),
+        ("decodedframes", "decodedframe root plural"),
+        ("keyframes", "keyframe root plural"),
+        // Harmless names pinned as fail-closed:
+        // keyframe_index contains prohibited root "keyframe". Fails closed.
+        (
+            "keyframe_index",
+            "harmless name containing keyframe root fails closed",
+        ),
+        // straw_bytes_metric after stripping separators becomes "strawbytesmetric"
+        // which contains prohibited root "rawbytes" (st + rawbytes + metric). Fails closed.
+        (
+            "straw_bytes_metric",
+            "harmless name containing stripped rawbytes root fails closed",
+        ),
+        // Leading / trailing separators
+        ("_foo", "leading underscore separator"),
+        ("foo_", "trailing underscore separator"),
+        (":bar", "leading colon separator"),
+        ("bar:", "trailing colon separator"),
+        ("-baz", "leading hyphen separator"),
+        ("baz-", "trailing hyphen separator"),
+        (".qux", "leading dot separator"),
+        ("qux.", "trailing dot separator"),
+        ("/test", "leading slash separator"),
+        ("test/", "trailing slash separator"),
+    ];
+
+    // Verify is_valid_h0_screened_field rejects every single test case
+    for &(input, description) in &test_cases {
+        assert!(
+            !is_valid_h0_screened_field(input),
+            "is_valid_h0_screened_field must reject {description} ({input:?})"
+        );
+    }
+
+    // Now test EACH of the six screened fields:
+    // 1. subject_id
+    // 2. source_id
+    // 3. privacy_class
+    // 4. spatial_scope
+    // 5. applied_transform
+    // 6. semantic_type
+    for &(input, description) in &test_cases {
+        // 1. subject_id
+        let mut p = base.clone();
+        p.subject_id = input.to_string();
+        if let Ok(digest) = H0Identity::compute_identity_digest(
+            &p.subject_id,
+            p.subject_digest,
+            &p.semantic_type,
+            &p.source_id,
+            p.capture_interval,
+            p.spatial_scope.as_deref(),
+            p.applied_transform.as_deref(),
+        ) {
+            p.handle_id = format!("semantic-handle:{digest}");
+        }
+        assert!(
+            H0Identity::new(p).is_err(),
+            "subject_id must reject {description}"
+        );
+
+        // 2. source_id
+        let mut p = base.clone();
+        p.source_id = input.to_string();
+        if let Ok(digest) = H0Identity::compute_identity_digest(
+            &p.subject_id,
+            p.subject_digest,
+            &p.semantic_type,
+            &p.source_id,
+            p.capture_interval,
+            p.spatial_scope.as_deref(),
+            p.applied_transform.as_deref(),
+        ) {
+            p.handle_id = format!("semantic-handle:{digest}");
+        }
+        assert!(
+            H0Identity::new(p).is_err(),
+            "source_id must reject {description}"
+        );
+
+        // 3. privacy_class
+        let mut p = base.clone();
+        p.privacy_class = input.to_string();
+        assert!(
+            H0Identity::new(p).is_err(),
+            "privacy_class must reject {description}"
+        );
+
+        // 4. spatial_scope
+        let mut p = base.clone();
+        p.spatial_scope = Some(input.to_string());
+        if let Ok(digest) = H0Identity::compute_identity_digest(
+            &p.subject_id,
+            p.subject_digest,
+            &p.semantic_type,
+            &p.source_id,
+            p.capture_interval,
+            p.spatial_scope.as_deref(),
+            p.applied_transform.as_deref(),
+        ) {
+            p.handle_id = format!("semantic-handle:{digest}");
+        }
+        assert!(
+            H0Identity::new(p).is_err(),
+            "spatial_scope must reject {description}"
+        );
+
+        // 5. applied_transform
+        let mut p = base.clone();
+        p.applied_transform = Some(input.to_string());
+        if let Ok(digest) = H0Identity::compute_identity_digest(
+            &p.subject_id,
+            p.subject_digest,
+            &p.semantic_type,
+            &p.source_id,
+            p.capture_interval,
+            p.spatial_scope.as_deref(),
+            p.applied_transform.as_deref(),
+        ) {
+            p.handle_id = format!("semantic-handle:{digest}");
+        }
+        assert!(
+            H0Identity::new(p).is_err(),
+            "applied_transform must reject {description}"
+        );
+
+        // 6. semantic_type
+        let mut p = base.clone();
+        p.semantic_type = input.to_string();
+        if let Ok(digest) = H0Identity::compute_identity_digest(
+            &p.subject_id,
+            p.subject_digest,
+            &p.semantic_type,
+            &p.source_id,
+            p.capture_interval,
+            p.spatial_scope.as_deref(),
+            p.applied_transform.as_deref(),
+        ) {
+            p.handle_id = format!("semantic-handle:{digest}");
+        }
+        assert!(
+            H0Identity::new(p).is_err(),
+            "semantic_type must reject {description}"
+        );
+    }
+
+    Ok(())
+}
+
+fn encode_h0_with_step_override(
+    identity: &H0Identity,
+    target_step: &str,
+    write_override: impl FnOnce(&mut CanonicalEncoder),
+) -> Result<Vec<u8>, Box<dyn Error>> {
+    let mut encoder = CanonicalEncoder::new();
+    let steps = [
+        "schema",
+        "handle_id",
+        "subject_id",
+        "subject_digest",
+        "semantic_type",
+        "source_id",
+        "capture_interval",
+        "spatial_scope",
+        "applied_transform",
+        "availability",
+        "estimated_cost",
+        "anchor",
+        "contract_basis",
+        "required_capabilities",
+        "privacy_class",
+        "published_at",
+        "retention_until",
+    ];
+
+    let mut write_override = Some(write_override);
+    for step in steps {
+        if step == target_step {
+            if let Some(op) = write_override.take() {
+                op(&mut encoder);
+            }
+        } else {
+            match step {
+                "schema" => encoder.text(H0_SCHEMA),
+                "handle_id" => encoder.text(identity.handle_id()),
+                "subject_id" => encoder.text(identity.subject_id()),
+                "subject_digest" => encoder.digest(identity.subject_digest()),
+                "semantic_type" => encoder.text(identity.semantic_type()),
+                "source_id" => encoder.text(identity.source_id()),
+                "capture_interval" => {
+                    if let Some(ci) = identity.capture_interval() {
+                        encoder.bool(true);
+                        ci.encode_canonical(&mut encoder);
+                    } else {
+                        encoder.bool(false);
+                    }
+                }
+                "spatial_scope" => {
+                    if let Some(scope) = identity.spatial_scope() {
+                        encoder.bool(true);
+                        encoder.text(scope);
+                    } else {
+                        encoder.bool(false);
+                    }
+                }
+                "applied_transform" => {
+                    if let Some(transform) = identity.applied_transform() {
+                        encoder.bool(true);
+                        encoder.text(transform);
+                    } else {
+                        encoder.bool(false);
+                    }
+                }
+                "availability" => identity.availability().encode_canonical(&mut encoder),
+                "estimated_cost" => identity.estimated_cost().encode_canonical(&mut encoder),
+                "anchor" => identity.anchor().encode_canonical(&mut encoder),
+                "contract_basis" => identity.contract_basis().encode_canonical(&mut encoder),
+                "required_capabilities" => {
+                    encoder.u64(identity.required_capabilities().len() as u64);
+                    for cap in identity.required_capabilities() {
+                        encoder.text(cap);
+                    }
+                }
+                "privacy_class" => encoder.text(identity.privacy_class()),
+                "published_at" => identity.published_at().encode_canonical(&mut encoder),
+                "retention_until" => identity.retention_until().encode_canonical(&mut encoder),
+                _ => {}
+            }
+        }
+    }
+    Ok(encoder.finish_checked()?)
+}
+
+#[test]
+fn test_h0_decode_canonical_typed_errors_per_field() -> Result<(), Box<dyn Error>> {
+    let identity = H0Identity::new(sample_h0_params()?)?;
+
+    // Helper to write invalid UTF-8 bytes to an encoder
+    let write_invalid_utf8 = |encoder: &mut CanonicalEncoder| {
+        encoder.bytes(&[0xFF, 0xFF, 0xFF, 0xFF]);
+    };
+
+    let decode_err = |bytes: &[u8]| -> Result<HydrationError, Box<dyn Error>> {
+        let mut dec = CanonicalDecoder::new(bytes);
+        match H0Identity::decode_canonical(&mut dec) {
+            Err(err) => Ok(err),
+            Ok(_) => Err("expected decode error, got Ok".into()),
+        }
+    };
+
+    // 1. schema: invalid text -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "schema", write_invalid_utf8)?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 2. handle_id: invalid UTF-8 -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "handle_id", write_invalid_utf8)?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 3. subject_id: invalid UTF-8 -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "subject_id", write_invalid_utf8)?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 4. subject_digest: unsupported algo tag 99 -> UnsupportedDigestAlgorithm
+    let bytes = encode_h0_with_step_override(&identity, "subject_digest", |encoder| {
+        encoder.tag(99);
+        encoder.bytes(&[0x42u8; 32]);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::UnsupportedDigestAlgorithm)
+    );
+
+    // 5. semantic_type: invalid UTF-8 -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "semantic_type", write_invalid_utf8)?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 6. source_id: invalid UTF-8 -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "source_id", write_invalid_utf8)?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 7. capture_interval:
+    // (a) invalid bool tag (tag 2) -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "capture_interval", |encoder| {
+        encoder.tag(2);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // (b) inverted interval (earliest 200 > latest 100) -> InvertedTimeInterval
+    let bytes = encode_h0_with_step_override(&identity, "capture_interval", |encoder| {
+        encoder.bool(true);
+        TimestampNs(200).encode_canonical(encoder);
+        TimestampNs(100).encode_canonical(encoder);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvertedTimeInterval)
+    );
+
+    // 8. spatial_scope:
+    // (a) invalid bool tag (tag 2) -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "spatial_scope", |encoder| {
+        encoder.tag(2);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // (b) invalid UTF-8 -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "spatial_scope", |encoder| {
+        encoder.bool(true);
+        write_invalid_utf8(encoder);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 9. applied_transform:
+    // (a) invalid bool tag (tag 2) -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "applied_transform", |encoder| {
+        encoder.tag(2);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // (b) invalid UTF-8 -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "applied_transform", |encoder| {
+        encoder.bool(true);
+        write_invalid_utf8(encoder);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 10. availability: invalid text variant -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "availability", |encoder| {
+        encoder.text("invalid_availability_state");
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 11. estimated_cost: invalid budget with negative zero privacy exposure -> InvalidBudget
+    let bytes = encode_h0_with_step_override(&identity, "estimated_cost", |encoder| {
+        encoder.u64(10); // latency_ms
+        encoder.u64(20); // tokens
+        encoder.u64(256); // bytes
+        encoder.u32(1); // model_calls
+        encoder.u64(5); // cpu_millis
+        encoder.u64(0); // accelerator_millis
+        encoder.u64(0); // energy_millijoules
+        encoder.u64(0); // network_bytes
+        encoder.u64(0); // storage_operations
+        encoder.u64(0x8000_0000_0000_0000); // privacy_bits (rejected negative zero IEEE-754)
+        encoder.u64(0); // attention_bits
+    })?;
+    let err = decode_err(&bytes)?;
+    match err {
+        HydrationError::Contract(ContractError::InvalidBudget(_)) => {}
+        other => return Err(format!("expected InvalidBudget, got {other:?}").into()),
+    }
+
+    // 12. anchor: invalid UTF-8 in site_lineage -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "anchor", |encoder| {
+        write_invalid_utf8(encoder); // site_lineage text
+        encoder.u64(1);
+        encoder.u64(1);
+        encoder.u64(1);
+        encoder.u64(1);
+        encoder.u64(1);
+        encoder.u64(1);
+        encoder.digest(ContentDigest::sha256(b"state-root"));
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 13. contract_basis: invalid UTF-8 in semantic_protocol -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "contract_basis", |encoder| {
+        write_invalid_utf8(encoder); // semantic_protocol text
+        encoder.digest(ContentDigest::sha256(b"schema"));
+        encoder.text("ontology:test");
+        encoder.digest(ContentDigest::sha256(b"operations"));
+        encoder.digest(ContentDigest::sha256(b"views"));
+        encoder.digest(ContentDigest::sha256(b"capabilities"));
+        encoder.digest(ContentDigest::sha256(b"errors"));
+        encoder.digest(ContentDigest::sha256(b"costs"));
+        encoder.text("producer:test");
+        encoder.bool(false);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 14. required_capabilities (decode_text_set): invalid UTF-8 in capability text -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "required_capabilities", |encoder| {
+        encoder.u64(1); // count = 1
+        write_invalid_utf8(encoder);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 15. privacy_class: invalid UTF-8 -> InvalidIdentifier
+    let bytes = encode_h0_with_step_override(&identity, "privacy_class", write_invalid_utf8)?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    // 16. published_at / retention_until: retention_until <= published_at -> InvertedTimeInterval
+    let bytes = encode_h0_with_step_override(&identity, "retention_until", |encoder| {
+        // write retention_until earlier than published_at
+        TimestampNs(500).encode_canonical(encoder);
+    })?;
+    let err = decode_err(&bytes)?;
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvertedTimeInterval)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_contract_basis_validate_ontology_and_producer_release_id() -> Result<(), Box<dyn Error>> {
+    let basis = sample_basis();
+    assert!(basis.validate().is_ok());
+
+    // 1. Empty ontology_generation_id -> InvalidIdentifier (mutant M4d kill)
+    let mut empty_ont = basis.clone();
+    empty_ont.ontology_generation_id = String::new();
+    assert_eq!(empty_ont.validate(), Err(ContractError::InvalidIdentifier));
+
+    // 2. Whitespace-only ontology_generation_id -> InvalidIdentifier (mutant M4d kill)
+    let mut ws_ont = basis.clone();
+    ws_ont.ontology_generation_id = "   \t\n ".to_string();
+    assert_eq!(ws_ont.validate(), Err(ContractError::InvalidIdentifier));
+
+    // 3. Control character in ontology_generation_id -> InvalidIdentifier
+    let mut ctrl_ont = basis.clone();
+    ctrl_ont.ontology_generation_id = "ontology\x00generation".to_string();
+    assert_eq!(ctrl_ont.validate(), Err(ContractError::InvalidIdentifier));
+
+    // 4. Empty producer_release_id -> InvalidIdentifier
+    let mut empty_prod = basis.clone();
+    empty_prod.producer_release_id = String::new();
+    assert_eq!(empty_prod.validate(), Err(ContractError::InvalidIdentifier));
+
+    // 5. Whitespace-only producer_release_id -> InvalidIdentifier
+    let mut ws_prod = basis.clone();
+    ws_prod.producer_release_id = "   \t\n ".to_string();
+    assert_eq!(ws_prod.validate(), Err(ContractError::InvalidIdentifier));
+
+    // 6. Control character in producer_release_id -> InvalidIdentifier
+    let mut ctrl_prod = basis.clone();
+    ctrl_prod.producer_release_id = "release\x00id".to_string();
+    assert_eq!(ctrl_prod.validate(), Err(ContractError::InvalidIdentifier));
+
+    // 7. Verify that H0Identity::new rejects invalid basis through basis.validate()
+    let mut p_bad_ont = sample_h0_params()?;
+    p_bad_ont.contract_basis.ontology_generation_id = "   ".to_string();
+    let Err(err) = H0Identity::new(p_bad_ont) else {
+        return Err("expected error on empty ontology_generation_id".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    let mut p_bad_prod = sample_h0_params()?;
+    p_bad_prod.contract_basis.producer_release_id = "   ".to_string();
+    let Err(err) = H0Identity::new(p_bad_prod) else {
+        return Err("expected error on empty producer_release_id".into());
+    };
+    assert_eq!(
+        err,
+        HydrationError::Contract(ContractError::InvalidIdentifier)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_hydration_level_owner_pinned_and_matches_registry() -> Result<(), Box<dyn Error>> {
+    let registry_str = include_str!("../../../architecture/semantic_hydration.json");
+    let mut extracted_owner = None;
+    for line in registry_str.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("\"semantic_owner\":") {
+            let val = rest.trim().trim_matches(',').trim().trim_matches('"');
+            extracted_owner = Some(val);
+            break;
+        }
+    }
+    let Some(registry_owner) = extracted_owner else {
+        return Err("semantic_owner present in architecture/semantic_hydration.json".into());
+    };
+    assert_eq!(registry_owner, "fss-agent-core");
+    assert_eq!(SEMANTIC_HYDRATION_OWNER, registry_owner);
+    assert_eq!(H0_SEMANTIC_OWNER, registry_owner);
+    for level in HydrationLevel::ALL {
+        assert_eq!(level.owner(), registry_owner);
+    }
     Ok(())
 }

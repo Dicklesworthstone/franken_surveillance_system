@@ -115,7 +115,11 @@ impl ContractBasis {
 
     /// Validates that required identity invariants are satisfied.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.producer_release_id.is_empty() || self.ontology_generation_id.is_empty() {
+        if self.producer_release_id.trim().is_empty()
+            || self.ontology_generation_id.trim().is_empty()
+            || !crate::hydration::valid_text(&self.producer_release_id)
+            || !crate::hydration::valid_text(&self.ontology_generation_id)
+        {
             return Err(ContractError::InvalidIdentifier);
         }
         Ok(())
