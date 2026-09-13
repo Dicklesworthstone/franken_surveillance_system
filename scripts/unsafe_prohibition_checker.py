@@ -23,6 +23,7 @@ Fail-closed verification invariants:
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import os
 import re
@@ -109,6 +110,46 @@ def sanitize_path(path: Path | str, root: Path) -> str:
         return str(rel).replace("\\", "/")
     except ValueError:
         return str(path).replace("\\", "/")
+
+
+def load_registered_crate_topology(root: Path) -> set[str]:
+    """Loads all crate names registered in architecture/crate_topology.json if present."""
+    topo_path = root / "architecture/crate_topology.json"
+    if not topo_path.is_file():
+        return set()
+    try:
+        data = json.loads(topo_path.read_text(encoding="utf-8"))
+        return {
+            c["name"]
+            for layer in data.get("layers", [])
+            for c in layer.get("crates", [])
+            if isinstance(c, dict) and "name" in c
+        }
+    except Exception:
+        return set()
+
+
+def is_fixture_or_test_path(path: Path | str) -> bool:
+    """Returns True if the path is located inside a fixture or test directory."""
+    parts = Path(path).parts
+    return any(
+        part in {"fixtures", "fixture", "test_fixtures", "tests"}
+        or part.startswith("test_")
+        for part in parts
+    )
+
+
+def is_excluded_by_workspace(rel_path: str, workspace_excludes: list[str]) -> bool:
+    """Returns True if the relative path matches any workspace.exclude pattern."""
+    norm_path = rel_path.replace("\\", "/")
+    parent_path = str(Path(norm_path).parent).replace("\\", "/")
+    for pattern in workspace_excludes:
+        clean_pat = pattern.strip().replace("\\", "/").rstrip("/")
+        if fnmatch.fnmatch(norm_path, clean_pat) or fnmatch.fnmatch(norm_path, clean_pat + "/*"):
+            return True
+        if fnmatch.fnmatch(parent_path, clean_pat) or fnmatch.fnmatch(parent_path, clean_pat + "/*"):
+            return True
+    return False
 
 
 def strip_rust_comments_and_strings(src: str) -> str:
@@ -311,6 +352,8 @@ def check_manifest_lints(
     root_cargo_toml = workspace_root / "Cargo.toml"
     workspace_forbids_unsafe = False
     has_workspace_table = False
+    workspace_excludes: list[str] = []
+    registered_topology_crates = load_registered_crate_topology(root)
 
     if not root_cargo_toml.is_file():
         findings.append(
@@ -326,14 +369,16 @@ def check_manifest_lints(
         try:
             root_data = tomllib.loads(root_cargo_toml.read_text(encoding="utf-8"))
             has_workspace_table = "workspace" in root_data
+            ws_table = root_data.get("workspace", {}) if isinstance(root_data, dict) else {}
             ws_unsafe_lint = (
-                root_data.get("workspace", {})
-                .get("lints", {})
+                ws_table.get("lints", {})
                 .get("rust", {})
                 .get("unsafe_code")
             )
             workspace_forbids_unsafe = ws_unsafe_lint == "forbid"
-        except (OSError, tomllib.TOMLDecodeError) as exc:
+            ws_ex = ws_table.get("exclude", []) if isinstance(ws_table, dict) else []
+            workspace_excludes = [str(e) for e in ws_ex] if isinstance(ws_ex, list) else []
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
             findings.append(
                 UnsafeFinding(
                     code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
@@ -381,7 +426,7 @@ def check_manifest_lints(
 
         try:
             pkg_toml = tomllib.loads(manifest_path.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as exc:
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
             findings.append(
                 UnsafeFinding(
                     code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
@@ -458,7 +503,7 @@ def check_manifest_lints(
         rel_manifest = sanitize_path(disk_manifest, root)
         try:
             m_data = tomllib.loads(disk_manifest.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError) as exc:
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
             findings.append(
                 UnsafeFinding(
                     code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
@@ -475,21 +520,44 @@ def check_manifest_lints(
 
         pkg_name = m_data.get("package", {}).get("name", disk_manifest.parent.name)
 
-        # In a Cargo workspace, every crate on disk must be declared in workspace.members
+        is_excluded = is_excluded_by_workspace(rel_manifest, workspace_excludes)
+        is_fixture = is_fixture_or_test_path(disk_manifest)
+        is_in_registered_topology = pkg_name in registered_topology_crates
+
+        lints_section = m_data.get("lints", {})
+        crate_explicit_unsafe = lints_section.get("rust", {}).get("unsafe_code")
+        crate_workspace_lints = lints_section.get("workspace") is True
+
+        is_forbid_compliant = (
+            crate_explicit_unsafe == "forbid"
+            or (crate_workspace_lints and workspace_forbids_unsafe)
+        )
+
+        # Decide whether to flag as unregistered:
+        # Excluded and fixture crates that ARE forbid-compliant must NOT be flagged as unregistered.
+        # But an unlisted crate outside workspace members that is NOT in workspace.exclude,
+        # NOT in fixture/test dirs, and NOT in registered crate topology MUST be flagged.
         if has_workspace_table or workspace_members:
-            findings.append(
-                UnsafeFinding(
-                    code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
-                    file=rel_manifest,
-                    location="manifest",
-                    message=(
-                        f"Unregistered crate '{pkg_name}' at '{rel_manifest}' is not declared in "
-                        f"workspace members in '{sanitize_path(root_cargo_toml, root)}'"
-                    ),
-                    remediation=DIAGNOSTIC_REGISTRY[ERR_MANIFEST_LINT_NOT_FORBIDDEN]["remediation"],
-                    params={"crate": pkg_name},
+            if is_excluded or is_fixture:
+                # Excluded/fixture crate: do not flag as unregistered.
+                pass
+            elif is_in_registered_topology and is_forbid_compliant:
+                # In registered crate topology and forbid-compliant.
+                pass
+            else:
+                findings.append(
+                    UnsafeFinding(
+                        code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
+                        file=rel_manifest,
+                        location="manifest",
+                        message=(
+                            f"Unregistered crate '{pkg_name}' at '{rel_manifest}' is not declared in "
+                            f"workspace members in '{sanitize_path(root_cargo_toml, root)}'"
+                        ),
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_MANIFEST_LINT_NOT_FORBIDDEN]["remediation"],
+                        params={"crate": pkg_name},
+                    )
                 )
-            )
 
         lints_section = m_data.get("lints", {})
         crate_explicit_unsafe = lints_section.get("rust", {}).get("unsafe_code")
@@ -792,9 +860,19 @@ def check_target_roots(
             continue
         if pkg_dir in known_pkg_dirs:
             continue
+        rel_manifest = sanitize_path(disk_manifest, root)
         try:
             m_data = tomllib.loads(disk_manifest.read_text(encoding="utf-8"))
-        except (OSError, tomllib.TOMLDecodeError):
+        except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as exc:
+            findings.append(
+                UnsafeFinding(
+                    code=ERR_TARGET_ROOT_MISSING_FORBID,
+                    file=rel_manifest,
+                    location="manifest",
+                    message=f"Discovered manifest '{rel_manifest}' is unparseable: {exc}",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_TARGET_ROOT_MISSING_FORBID]["remediation"],
+                )
+            )
             continue
         if "package" not in m_data:
             continue
@@ -874,7 +952,7 @@ def check_target_roots(
 
         try:
             raw_text = src_path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             findings.append(
                 UnsafeFinding(
                     code=ERR_TARGET_ROOT_MISSING_FORBID,
@@ -923,7 +1001,7 @@ def check_rust_source_file(rs_path: Path, root: Path) -> list[UnsafeFinding]:
 
     try:
         raw_text = rs_path.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         findings.append(
             UnsafeFinding(
                 code=ERR_UNSAFE_CONSTRUCT_DETECTED,

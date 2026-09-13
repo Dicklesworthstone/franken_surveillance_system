@@ -255,8 +255,7 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
             self.assertTrue(any("lacks unconditional #![forbid(unsafe_code)]" in f.message for f in findings))
 
     def test_planted_bin_root_missing_forbid_fails(self) -> None:
@@ -268,8 +267,7 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_planted_test_root_missing_forbid_fails(self) -> None:
         """test target missing #![forbid(unsafe_code)] fails with ERR_TARGET_ROOT_MISSING_FORBID."""
@@ -282,8 +280,7 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_planted_example_root_missing_forbid_fails(self) -> None:
         """example target missing #![forbid(unsafe_code)] fails with ERR_TARGET_ROOT_MISSING_FORBID."""
@@ -296,8 +293,7 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_planted_bench_root_missing_forbid_fails(self) -> None:
         """bench target missing #![forbid(unsafe_code)] fails with ERR_TARGET_ROOT_MISSING_FORBID."""
@@ -310,8 +306,7 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_planted_build_script_missing_forbid_fails(self) -> None:
         """build script (build.rs) missing #![forbid(unsafe_code)] fails with ERR_TARGET_ROOT_MISSING_FORBID."""
@@ -322,8 +317,7 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_planted_commented_out_forbid_fails(self) -> None:
         """Target with // #![forbid(unsafe_code)] inside a comment fails with ERR_TARGET_ROOT_MISSING_FORBID."""
@@ -336,8 +330,7 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_planted_outer_attribute_forbid_fails(self) -> None:
         """Target with outer #[forbid(unsafe_code)] instead of inner #! fails with ERR_TARGET_ROOT_MISSING_FORBID."""
@@ -350,8 +343,7 @@ class TestPlantedNegativeTargetRootsMissingForbid(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_autoexamples_false_still_checks_example_for_forbid(self) -> None:
         """Example file missing forbid is checked even when autoexamples = false."""
@@ -379,8 +371,7 @@ unsafe_code = "forbid"
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_autotests_false_still_checks_test_for_forbid(self) -> None:
         """Test file missing forbid is checked even when autotests = false."""
@@ -408,8 +399,7 @@ unsafe_code = "forbid"
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_build_helper_missing_forbid_fails(self) -> None:
         """Build helper file under build/ missing forbid is detected and rejected."""
@@ -423,8 +413,7 @@ unsafe_code = "forbid"
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
 
     def test_planted_unregistered_crate_missing_forbid_fails(self) -> None:
         """An unregistered crate on disk missing #![forbid(unsafe_code)] fails fail-closed."""
@@ -475,11 +464,16 @@ edition = "2024"
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
             self.assertFalse(is_valid, "Unregistered crate missing forbid must fail audit")
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
-            self.assertTrue(
-                any("unregistered" in f.file or "unregistered" in f.params.get("crate", "") for f in findings)
+            self.assertEqual(
+                {f.code for f in findings},
+                {ERR_MANIFEST_LINT_NOT_FORBIDDEN, ERR_TARGET_ROOT_MISSING_FORBID},
             )
+            self.assertEqual(len(findings), 3)
+            manifest_findings = [f for f in findings if f.code == ERR_MANIFEST_LINT_NOT_FORBIDDEN]
+            self.assertEqual(len(manifest_findings), 2)
+            target_findings = [f for f in findings if f.code == ERR_TARGET_ROOT_MISSING_FORBID]
+            self.assertEqual(len(target_findings), 1)
+            self.assertEqual(target_findings[0].file, "crates/unregistered/src/lib.rs")
 
 
 
@@ -497,8 +491,7 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_ATTRIBUTE_PERMITTED})
 
     def test_planted_outer_allow_unsafe_code_fails(self) -> None:
         """#[allow(unsafe_code)] on a fn or block fails with ERR_UNSAFE_ATTRIBUTE_PERMITTED."""
@@ -512,8 +505,7 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_ATTRIBUTE_PERMITTED})
 
     def test_planted_warn_unsafe_code_fails(self) -> None:
         """#[warn(unsafe_code)] fails with ERR_UNSAFE_ATTRIBUTE_PERMITTED."""
@@ -527,8 +519,7 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_ATTRIBUTE_PERMITTED})
 
     def test_planted_expect_unsafe_code_fails(self) -> None:
         """#![expect(unsafe_code)] fails with ERR_UNSAFE_ATTRIBUTE_PERMITTED."""
@@ -542,8 +533,7 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_ATTRIBUTE_PERMITTED})
 
     def test_planted_multi_lint_allow_unsafe_code_fails(self) -> None:
         """#[allow(unused, unsafe_code, dead_code)] fails with ERR_UNSAFE_ATTRIBUTE_PERMITTED."""
@@ -557,8 +547,7 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_ATTRIBUTE_PERMITTED})
 
     def test_planted_cfg_attr_allow_unsafe_code_fails(self) -> None:
         """#[cfg_attr(..., allow(unsafe_code))] must be detected and rejected."""
@@ -571,8 +560,7 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
             )
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid, "cfg_attr allowing unsafe_code was not detected")
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_ATTRIBUTE_PERMITTED})
 
     def test_planted_cfg_attr_inner_allow_unsafe_code_fails(self) -> None:
         """#![cfg_attr(..., allow(unsafe_code))] inner attribute must be detected and rejected."""
@@ -585,8 +573,7 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
             )
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid, "inner cfg_attr allowing unsafe_code was not detected")
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_ATTRIBUTE_PERMITTED})
 
     def test_planted_multiline_allow_unsafe_code_fails(self) -> None:
         """Multiline #[allow(...)] must be detected and rejected."""
@@ -599,8 +586,7 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
             )
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid, "Multiline allow(unsafe_code) was not detected")
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_ATTRIBUTE_PERMITTED})
 
     def test_planted_multiline_cfg_attr_fails(self) -> None:
         """Multiline #[cfg_attr(..., allow(...))] must be detected and rejected."""
@@ -613,8 +599,7 @@ class TestPlantedNegativeUnsafePermittingAttributes(unittest.TestCase):
             )
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid, "Multiline cfg_attr allowing unsafe_code was not detected")
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_ATTRIBUTE_PERMITTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_ATTRIBUTE_PERMITTED})
 
 
 
@@ -633,8 +618,7 @@ class TestPlantedNegativeUnsafeConstructs(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_CONSTRUCT_DETECTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_CONSTRUCT_DETECTED})
             self.assertTrue(any("unsafe block" in f.message for f in findings))
 
     def test_planted_unsafe_fn_fails(self) -> None:
@@ -649,8 +633,7 @@ class TestPlantedNegativeUnsafeConstructs(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_CONSTRUCT_DETECTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_CONSTRUCT_DETECTED})
             self.assertTrue(any("unsafe function" in f.message for f in findings))
 
     def test_planted_unsafe_impl_fails(self) -> None:
@@ -665,8 +648,7 @@ class TestPlantedNegativeUnsafeConstructs(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_CONSTRUCT_DETECTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_CONSTRUCT_DETECTED})
             self.assertTrue(any("unsafe impl" in f.message for f in findings))
 
     def test_planted_unsafe_trait_fails(self) -> None:
@@ -681,8 +663,7 @@ class TestPlantedNegativeUnsafeConstructs(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_CONSTRUCT_DETECTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_CONSTRUCT_DETECTED})
             self.assertTrue(any("unsafe trait" in f.message for f in findings))
 
     def test_planted_unsafe_extern_block_fails(self) -> None:
@@ -697,8 +678,7 @@ class TestPlantedNegativeUnsafeConstructs(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_CONSTRUCT_DETECTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_CONSTRUCT_DETECTED})
 
     def test_string_continuation_preserves_line_number(self) -> None:
         """String continuation \\ must not alter line count in stripped source."""
@@ -720,8 +700,7 @@ class TestPlantedNegativeUnsafeConstructs(unittest.TestCase):
             (script_dir / "helper.rs").write_text("unsafe fn evil() {}\n", encoding="utf-8")
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_UNSAFE_CONSTRUCT_DETECTED, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_CONSTRUCT_DETECTED})
 
 
 
@@ -747,8 +726,7 @@ edition = "2024"
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_MANIFEST_LINT_NOT_FORBIDDEN, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_MANIFEST_LINT_NOT_FORBIDDEN})
 
     def test_planted_crate_explicit_allow_unsafe_code_fails(self) -> None:
         """Crate declaring [lints.rust] unsafe_code = 'allow' fails with ERR_MANIFEST_LINT_NOT_FORBIDDEN."""
@@ -772,8 +750,7 @@ unsafe_code = "allow"
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_MANIFEST_LINT_NOT_FORBIDDEN, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_MANIFEST_LINT_NOT_FORBIDDEN})
 
     def test_planted_crate_explicit_warn_unsafe_code_fails(self) -> None:
         """Crate declaring [lints.rust] unsafe_code = 'warn' fails with ERR_MANIFEST_LINT_NOT_FORBIDDEN."""
@@ -797,8 +774,7 @@ unsafe_code = "warn"
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_MANIFEST_LINT_NOT_FORBIDDEN, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_MANIFEST_LINT_NOT_FORBIDDEN})
 
     def test_planted_workspace_inherit_without_workspace_forbid_fails(self) -> None:
         """Crate with [lints] workspace=true when workspace doesn't forbid unsafe fails."""
@@ -833,8 +809,7 @@ workspace = true
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_MANIFEST_LINT_NOT_FORBIDDEN, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_MANIFEST_LINT_NOT_FORBIDDEN})
 
     def test_planted_unregistered_crate_manifest_not_forbidden_fails(self) -> None:
         """An unregistered crate not declared in workspace.members fails manifest lint audit."""
@@ -888,11 +863,11 @@ unsafe_code = "forbid"
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
             self.assertFalse(is_valid, "Unregistered crate in workspace must fail audit")
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_MANIFEST_LINT_NOT_FORBIDDEN, codes)
-            self.assertTrue(
-                any("unregistered" in f.message.lower() or "not declared" in f.message.lower() for f in findings)
-            )
+            self.assertEqual({f.code for f in findings}, {ERR_MANIFEST_LINT_NOT_FORBIDDEN})
+            self.assertEqual(len(findings), 1)
+            self.assertEqual(findings[0].file, "crates/unregistered/Cargo.toml")
+            self.assertEqual(findings[0].location, "manifest")
+            self.assertEqual(findings[0].params.get("crate"), "unregistered")
 
 
 class TestPlantedNegativeMetadataUnreadable(unittest.TestCase):
@@ -907,8 +882,7 @@ class TestPlantedNegativeMetadataUnreadable(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_METADATA_UNREADABLE, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_METADATA_UNREADABLE})
 
     def test_planted_missing_cargo_toml_fails(self) -> None:
         """Missing Cargo.toml fails with ERR_METADATA_UNREADABLE."""
@@ -918,8 +892,7 @@ class TestPlantedNegativeMetadataUnreadable(unittest.TestCase):
 
             is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
             self.assertFalse(is_valid)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_METADATA_UNREADABLE, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_METADATA_UNREADABLE})
 
     def test_empty_metadata_fails_closed(self) -> None:
         """Degenerate empty metadata dict must not pass verification."""
@@ -930,8 +903,7 @@ class TestPlantedNegativeMetadataUnreadable(unittest.TestCase):
             )
             self.assertFalse(is_valid, "Empty metadata must fail closed")
             self.assertGreater(len(findings), 0)
-            codes = [f.code for f in findings]
-            self.assertIn(ERR_METADATA_UNREADABLE, codes)
+            self.assertEqual({f.code for f in findings}, {ERR_METADATA_UNREADABLE})
 
 
     def test_cli_fails_on_corrupt_manifest_arg(self) -> None:
@@ -952,6 +924,424 @@ class TestPlantedNegativeMetadataUnreadable(unittest.TestCase):
             self.assertIn(ERR_METADATA_UNREADABLE, result.stdout)
         finally:
             Path(f_path).unlink(missing_ok=True)
+
+
+class TestInvalidUtf8Handling(unittest.TestCase):
+    """Verifies that invalid UTF-8 in Cargo.toml and Rust source files produces registered findings rather than crashing."""
+
+    def test_invalid_utf8_stray_cargo_toml_emits_registered_finding(self) -> None:
+        """A stray Cargo.toml with invalid UTF-8 bytes must not crash with UnicodeDecodeError and must emit registered findings."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/valid"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            valid_dir = tmp_root / "crates" / "valid"
+            (valid_dir / "src").mkdir(parents=True)
+            (valid_dir / "Cargo.toml").write_text(
+                """[package]
+name = "valid"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (valid_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn valid() {}\n", encoding="utf-8"
+            )
+
+            # Stray Cargo.toml with non-UTF-8 bytes
+            stray_dir = tmp_root / "crates" / "stray"
+            stray_dir.mkdir(parents=True)
+            (stray_dir / "Cargo.toml").write_bytes(b"[package]\nname = \xff\xfe\ninvalid_utf8")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Invalid UTF-8 Cargo.toml must fail audit")
+            self.assertEqual(
+                {f.code for f in findings},
+                {ERR_MANIFEST_LINT_NOT_FORBIDDEN, ERR_TARGET_ROOT_MISSING_FORBID},
+            )
+            self.assertTrue(any("unparseable" in f.message for f in findings))
+
+    def test_invalid_utf8_rust_source_file_emits_registered_finding(self) -> None:
+        """A Rust source file with invalid UTF-8 bytes must not crash with UnicodeDecodeError and must emit registered findings."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            manifest = create_minimal_valid_crate(tmp_root)
+            # Write invalid UTF-8 to a secondary rust source file
+            (tmp_root / "src" / "invalid.rs").write_bytes(b"// comment\n\xff\xfe\npub fn f() {}\n")
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=manifest)
+            self.assertFalse(is_valid, "Invalid UTF-8 .rs file must fail audit")
+            self.assertEqual({f.code for f in findings}, {ERR_UNSAFE_CONSTRUCT_DETECTED})
+            self.assertTrue(any("Could not read source file" in f.message for f in findings))
+
+
+class TestExcludedAndFixtureCrates(unittest.TestCase):
+    """Verifies that forbid-compliant excluded and fixture crates pass while non-compliant ones fail closed."""
+
+    def test_forbid_compliant_excluded_crate_passes(self) -> None:
+        """An explicitly excluded crate that forbids unsafe code must pass without being flagged as unregistered."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/valid"]
+exclude = ["crates/excluded"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            valid_dir = tmp_root / "crates" / "valid"
+            (valid_dir / "src").mkdir(parents=True)
+            (valid_dir / "Cargo.toml").write_text(
+                """[package]
+name = "valid"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (valid_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn valid() {}\n", encoding="utf-8"
+            )
+
+            # Excluded crate with forbid
+            ex_dir = tmp_root / "crates" / "excluded"
+            (ex_dir / "src").mkdir(parents=True)
+            (ex_dir / "Cargo.toml").write_text(
+                """[package]
+name = "excluded-helper"
+version = "0.1.0"
+edition = "2024"
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            (ex_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn helper() {}\n", encoding="utf-8"
+            )
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Forbid-compliant excluded crate must pass: {[f.message for f in findings]}")
+            self.assertEqual(len(findings), 0)
+
+    def test_excluded_crate_missing_forbid_fails_closed(self) -> None:
+        """An explicitly excluded crate missing forbid must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/valid"]
+exclude = ["crates/excluded"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            valid_dir = tmp_root / "crates" / "valid"
+            (valid_dir / "src").mkdir(parents=True)
+            (valid_dir / "Cargo.toml").write_text(
+                """[package]
+name = "valid"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (valid_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn valid() {}\n", encoding="utf-8"
+            )
+
+            # Excluded crate missing forbid
+            ex_dir = tmp_root / "crates" / "excluded"
+            (ex_dir / "src").mkdir(parents=True)
+            (ex_dir / "Cargo.toml").write_text(
+                """[package]
+name = "excluded-helper"
+version = "0.1.0"
+edition = "2024"
+""",
+                encoding="utf-8",
+            )
+            (ex_dir / "src" / "lib.rs").write_text(
+                "pub fn missing_forbid() {}\n", encoding="utf-8"
+            )
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Excluded crate missing forbid must fail")
+            self.assertEqual(
+                {f.code for f in findings},
+                {ERR_MANIFEST_LINT_NOT_FORBIDDEN, ERR_TARGET_ROOT_MISSING_FORBID},
+            )
+
+    def test_forbid_compliant_fixture_crate_passes(self) -> None:
+        """A test fixture crate outside workspace members that forbids unsafe code must pass."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/valid"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            valid_dir = tmp_root / "crates" / "valid"
+            (valid_dir / "src").mkdir(parents=True)
+            (valid_dir / "Cargo.toml").write_text(
+                """[package]
+name = "valid"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (valid_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn valid() {}\n", encoding="utf-8"
+            )
+
+            # Fixture crate under tests/fixtures/
+            fixture_dir = tmp_root / "tests" / "fixtures" / "sample"
+            (fixture_dir / "src").mkdir(parents=True)
+            (fixture_dir / "Cargo.toml").write_text(
+                """[package]
+name = "sample-fixture"
+version = "0.1.0"
+edition = "2024"
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            (fixture_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn fixture_fn() {}\n", encoding="utf-8"
+            )
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Forbid-compliant fixture crate must pass: {[f.message for f in findings]}")
+            self.assertEqual(len(findings), 0)
+
+    def test_fixture_crate_missing_forbid_fails_closed(self) -> None:
+        """A test fixture crate missing forbid must fail closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/valid"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            valid_dir = tmp_root / "crates" / "valid"
+            (valid_dir / "src").mkdir(parents=True)
+            (valid_dir / "Cargo.toml").write_text(
+                """[package]
+name = "valid"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (valid_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn valid() {}\n", encoding="utf-8"
+            )
+
+            # Fixture crate missing forbid
+            fixture_dir = tmp_root / "tests" / "fixtures" / "sample"
+            (fixture_dir / "src").mkdir(parents=True)
+            (fixture_dir / "Cargo.toml").write_text(
+                """[package]
+name = "sample-fixture"
+version = "0.1.0"
+edition = "2024"
+""",
+                encoding="utf-8",
+            )
+            (fixture_dir / "src" / "lib.rs").write_text(
+                "pub fn missing_forbid() {}\n", encoding="utf-8"
+            )
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Fixture crate missing forbid must fail")
+            self.assertEqual(
+                {f.code for f in findings},
+                {ERR_MANIFEST_LINT_NOT_FORBIDDEN, ERR_TARGET_ROOT_MISSING_FORBID},
+            )
+
+
+class TestSurvivingMutantsKillers(unittest.TestCase):
+    """Targeted tests killing mutants M2b (custom target paths) and M3a (crate_count pin)."""
+
+    def test_planted_custom_target_path_missing_forbid_kills_m2b(self) -> None:
+        """Mutant M2b killer: target with a custom path (e.g. [[test]] or build=) missing forbid must fail."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/custom_target_pkg"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            pkg_dir = tmp_root / "crates" / "custom_target_pkg"
+            (pkg_dir / "src").mkdir(parents=True)
+            (pkg_dir / "custom_tests").mkdir(parents=True)
+            (pkg_dir / "Cargo.toml").write_text(
+                """[package]
+name = "custom_target_pkg"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[[test]]
+name = "my_custom_integration_test"
+path = "custom_tests/integration.rs"
+""",
+                encoding="utf-8",
+            )
+            (pkg_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8"
+            )
+            # Custom test target root MISSING #![forbid(unsafe_code)]
+            (pkg_dir / "custom_tests" / "integration.rs").write_text(
+                "#[test]\nfn test_something() {}\n", encoding="utf-8"
+            )
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Custom target path missing forbid must be caught by checker")
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
+            self.assertEqual(len(findings), 1)
+            self.assertIn("custom_tests/integration.rs", findings[0].file)
+
+    def test_planted_custom_build_script_path_missing_forbid_kills_m2b(self) -> None:
+        """Mutant M2b killer: custom build script path (build = 'custom_build/build.rs') missing forbid must fail."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/custom_build_pkg"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            pkg_dir = tmp_root / "crates" / "custom_build_pkg"
+            (pkg_dir / "src").mkdir(parents=True)
+            (pkg_dir / "custom_build").mkdir(parents=True)
+            (pkg_dir / "Cargo.toml").write_text(
+                """[package]
+name = "custom_build_pkg"
+version = "0.1.0"
+edition = "2024"
+build = "custom_build/build.rs"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (pkg_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8"
+            )
+            (pkg_dir / "custom_build" / "build.rs").write_text(
+                "fn main() {}\n", encoding="utf-8"
+            )
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Custom build script target missing forbid must fail")
+            self.assertEqual({f.code for f in findings}, {ERR_TARGET_ROOT_MISSING_FORBID})
+            self.assertEqual(len(findings), 1)
+            self.assertIn("custom_build/build.rs", findings[0].file)
+
+    def test_synthetic_workspace_crate_count_not_pinned_kills_m3a(self) -> None:
+        """Mutant M3a killer: synthetic workspace with 2 crates must report crate_count == 2, not hard-coded 9."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/alpha", "crates/beta"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            for cname in ["alpha", "beta"]:
+                cdir = tmp_root / "crates" / cname
+                (cdir / "src").mkdir(parents=True)
+                (cdir / "Cargo.toml").write_text(
+                    f"""[package]
+name = "{cname}"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                    encoding="utf-8",
+                )
+                (cdir / "src" / "lib.rs").write_text(
+                    f"#![forbid(unsafe_code)]\npub fn f_{cname}() {{}}\n", encoding="utf-8"
+                )
+
+            is_valid, findings, summary = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertTrue(is_valid, f"Synthetic workspace must pass: {[f.message for f in findings]}")
+            self.assertEqual(len(findings), 0)
+            self.assertEqual(summary["crate_count"], 2)
+            self.assertEqual(summary["workspace_members_count"], 2)
+            self.assertNotEqual(summary["crate_count"], 9, "crate_count must be dynamically derived, not pinned to 9")
 
 
 if __name__ == "__main__":
