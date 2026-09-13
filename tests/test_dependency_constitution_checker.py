@@ -1523,5 +1523,97 @@ class TestRoundThreeConstitutionFindings(ConstitutionCase):
         self.assertEqual(self.toolchain(), [])
 
 
+class TestRoundFourConstitutionFindings(ConstitutionCase):
+    """Round-4 (final) findings 1-4 of fss-x4a.30.88.16 (exps3.py rows n2b, n2c, n3a-e, n4a, n4c, n4d)."""
+
+    toolchain = TestDependencyConstitutionChecker.toolchain
+    uf = TestRoundTwoConstitutionFindings.uf
+    put = TestRoundTwoConstitutionFindings.put
+
+    # --- 1: RUSTUP_TOOLCHAIN and CARGO_UNSTABLE_* in env files and config [env] ---------------
+
+    def test_rustup_toolchain_and_cargo_unstable_env_files(self) -> None:
+        self.put(".envrc", "export RUSTUP_TOOLCHAIN=nightly-2026-09-10\nexport CARGO_UNSTABLE_BUILD_STD=std\nexport FSS_LOG=info\n")
+        self.put(".env", "CARGO_UNSTABLE_BUILD_STD=std\n# RUSTUP_TOOLCHAIN=commented\n")
+        U, I2 = ERR_DEP_UNSTABLE_FEATURE, ERR_DEP_CONST_INVARIANT
+        self.assertEqual(self.uf(), sorted([(I2, ".envrc", "line/1"), (U, ".envrc", "line/2"), (U, ".env", "line/1")]))
+
+    def test_cargo_unstable_and_rustup_toolchain_in_config_env(self) -> None:
+        self.put(".cargo/config.toml", '[env]\nRUSTUP_TOOLCHAIN = "nightly-2026-09-10"\nCARGO_UNSTABLE_BUILD_STD = "std"\nFSS_LOG = "info"\n')
+        U, I2 = ERR_DEP_UNSTABLE_FEATURE, ERR_DEP_CONST_INVARIANT
+        self.assertEqual(self.uf(), sorted([(I2, ".cargo/config.toml", "#/env.RUSTUP_TOOLCHAIN"), (U, ".cargo/config.toml", "#/env.CARGO_UNSTABLE_BUILD_STD")]))
+
+    # --- 2: literal toolchain overrides in scripts --------------------------------------------
+
+    def test_literal_toolchain_overrides_in_scripts(self) -> None:
+        self.put("scripts/a.sh", "#!/bin/sh\ncargo +nightly-2026-09-10 build\n")
+        self.put("scripts/b.sh", "#!/bin/sh\nrustup run nightly-2026-09-10 cargo build\n")
+        self.put("scripts/c.sh", "#!/bin/sh\nrustup override set nightly-2026-09-10\n")
+        self.put("Makefile", "nightly:\n\tcargo +nightly-2026-09-10 build\n")
+        I2 = ERR_DEP_CONST_INVARIANT
+        self.assertEqual(self.uf(), sorted([(I2, "scripts/a.sh", "line/2"), (I2, "scripts/b.sh", "line/2"), (I2, "scripts/c.sh", "line/2"), (I2, "Makefile", "line/2")]))
+
+    def test_pinned_channel_and_variable_toolchains_are_allowed(self) -> None:
+        channel = REQUIRED_RUST_CHANNEL
+        self.put("scripts/ok.sh", f'#!/bin/sh\ntc="{channel}"\nrustup run "$tc" cargo build --locked --offline\nrustup run --install "$tc" cargo build\ncargo +{channel} build\nrustup override set {channel}\n')
+        self.assertEqual(self.uf(), [])
+
+    def test_override_string_helper(self) -> None:
+        channel = REQUIRED_RUST_CHANNEL
+        self.assertIsNone(dependency_constitution_checker._override_toolchain_problem('rustup run "$tc" cargo build', channel))
+        self.assertIsNone(dependency_constitution_checker._override_toolchain_problem(f"cargo +{channel} build", channel))
+        self.assertIsNotNone(dependency_constitution_checker._override_toolchain_problem("cargo +nightly-2020-01-01 build", channel))
+
+    # --- 3: doctests from included markdown, doc-attribute strings, and the ignore exemption ----
+
+    def test_doctests_from_included_markdown_and_doc_strings(self) -> None:
+        self.put("crates/fss-core/src/lib.rs", '#![doc = include_str!("../DOCS.md")]\n#[doc = "```\\n#![feature(attr_string)]\\nfn f() {}\\n```"]\npub fn f() {}\n')
+        self.put("crates/fss-core/DOCS.md", "# Docs\n\n```rust\n#![feature(included_md)]\nfn f() -> ! { loop {} }\n```\n")
+        U = ERR_DEP_UNSTABLE_FEATURE
+        self.assertEqual(self.uf(), sorted([(U, "crates/fss-core/DOCS.md", "line/4"), (U, "crates/fss-core/src/lib.rs", "line/2")]))
+
+    def test_ignore_and_text_blocks_are_not_doctests(self) -> None:
+        body = "\n".join([
+            "/// ```rust,ignore",
+            "/// #![feature(ignored)]",
+            "/// ```",
+            "/// ```text",
+            "/// #![feature(texty)]",
+            "/// ```",
+            "/// ```ignore",
+            "/// #![feature(bare_ignore)]",
+            "/// ```",
+            "/// ```no_run",
+            "/// #![feature(compiled)]",
+            "/// ```",
+            "pub fn f() {}",
+            "",
+        ])
+        self.put("crates/fss-core/src/lib.rs", body)
+        self.assertEqual(self.uf(), [(ERR_DEP_UNSTABLE_FEATURE, "crates/fss-core/src/lib.rs", "line/11")])
+
+    def test_included_markdown_ignore_block_is_exempt(self) -> None:
+        self.put("crates/fss-core/src/lib.rs", '#![doc = include_str!("../DOCS.md")]\npub fn f() {}\n')
+        self.put("crates/fss-core/DOCS.md", "```rust,ignore\n#![feature(ignored)]\n```\n\n```rust\n#![feature(live)]\n```\n")
+        self.assertEqual(self.uf(), [(ERR_DEP_UNSTABLE_FEATURE, "crates/fss-core/DOCS.md", "line/6")])
+
+    # --- 4: extensionless shell scripts ---------------------------------------------------------
+
+    def test_extensionless_shell_scripts_are_scanned(self) -> None:
+        self.put("scripts/nightly", "#!/bin/sh\ncargo build -Zbuild-std\n")
+        self.put("scripts/envwrap", "#!/usr/bin/env bash\nexport RUSTFLAGS=-Zcrate-attr=feature(x)\n")
+        self.put("scripts/notashell", "#!/usr/bin/env python3\nprint('cargo build -Zbuild-std')\n")
+        self.put("LICENSE", "cargo build -Zbuild-std is only text here\n")
+        U = ERR_DEP_UNSTABLE_FEATURE
+        self.assertEqual(self.uf(), sorted([(U, "scripts/nightly", "line/2"), (U, "scripts/envwrap", "line/2")]))
+
+    def test_round_four_bypasses_fail_the_entry_point(self) -> None:
+        self.put(".envrc", "export RUSTUP_TOOLCHAIN=nightly-2026-09-10\n")
+        with patch("subprocess.run", side_effect=self.fake_run()):
+            result = validate_dependency_constitution(self.tmp_root)
+        self.assertEqual(codes(result), {ERR_DEP_CONST_INVARIANT})
+        self.assertEqual([(e.file_path, e.target) for e in result.errors], [(".envrc", "line/1")])
+
+
 if __name__ == "__main__":
     unittest.main()
