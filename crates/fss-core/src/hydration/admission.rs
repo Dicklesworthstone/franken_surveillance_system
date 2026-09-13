@@ -79,6 +79,12 @@ impl HydrationRequest {
         self.validate_for(handle, now)?;
         artifact.verify()?;
         let level = artifact.level;
+        if level == HydrationLevel::H4
+            && (now >= handle.retention_until
+                || handle.availability_at(now) == HandleAvailability::Expired)
+        {
+            return Err(ContractError::LaboratoryExpansionExpired.into());
+        }
         if handle.availability_at(now) != HandleAvailability::Available
             || !handle.levels.contains(&level)
             || level > self.requested_level
@@ -112,6 +118,48 @@ impl HydrationRequest {
                 }
             };
             if !permitted {
+                return Err(HydrationError::LaboratoryGrantRequired);
+            }
+
+            // Decode H4 expansion from canonical payload
+            let expansion = H4LaboratoryExpansion::from_canonical_bytes(&artifact.payload)
+                .map_err(HydrationError::Contract)?;
+            expansion.validate()?;
+            if expansion.computed_digest() != expansion.expansion_digest() {
+                return Err(ContractError::DigestMismatch.into());
+            }
+
+            // Bind expansion to this handle and request
+            if expansion.handle_id() != handle.handle_id {
+                return Err(ContractError::LaboratoryExpansionHandleMismatch.into());
+            }
+            if expansion.subject_id() != handle.subject_id {
+                return Err(ContractError::LaboratoryExpansionSubjectMismatch.into());
+            }
+            if expansion.subject_digest() != handle.subject_digest {
+                return Err(ContractError::DigestMismatch.into());
+            }
+            if expansion.anchor() != &handle.anchor {
+                return Err(ContractError::LaboratoryExpansionAnchorMismatch.into());
+            }
+            if expansion.contract_basis() != &handle.contract_basis {
+                return Err(ContractError::LaboratoryExpansionBasisMismatch.into());
+            }
+            if expansion.retention_until() != handle.retention_until {
+                return Err(ContractError::LaboratoryExpansionRetentionMismatch.into());
+            }
+            if now >= expansion.retention_until() {
+                return Err(ContractError::LaboratoryExpansionExpired.into());
+            }
+            if expansion.applied_transform() != handle.applied_transform.as_deref() {
+                return Err(ContractError::DigestMismatch.into());
+            }
+            if expansion.laboratory_access() != handle.laboratory_access {
+                return Err(HydrationError::LaboratoryGrantRequired);
+            }
+            if handle.laboratory_access == LaboratoryAccess::QualificationOnly
+                && expansion.purpose() != HydrationPurpose::Qualification
+            {
                 return Err(HydrationError::LaboratoryGrantRequired);
             }
         }

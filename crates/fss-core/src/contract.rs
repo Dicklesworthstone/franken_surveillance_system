@@ -2755,6 +2755,18 @@ pub enum ContractError {
     LaboratoryExpansionShapeMalformed,
     /// Access to H4 laboratory expansion requires qualification or an explicit debugging grant (AGT-H4).
     LaboratoryGrantRequired,
+    /// An H4 laboratory expansion handle identifier disagrees with the bound handle (AGT-H4).
+    LaboratoryExpansionHandleMismatch,
+    /// An H4 laboratory expansion subject identifier disagrees with the bound handle (AGT-H4).
+    LaboratoryExpansionSubjectMismatch,
+    /// An H4 laboratory expansion anchor disagrees with the bound handle (AGT-H4).
+    LaboratoryExpansionAnchorMismatch,
+    /// An H4 laboratory expansion contract basis disagrees with the bound handle (AGT-H4).
+    LaboratoryExpansionBasisMismatch,
+    /// An H4 laboratory expansion retention deadline disagrees with the bound handle (AGT-H4).
+    LaboratoryExpansionRetentionMismatch,
+    /// An H4 laboratory expansion was presented past its retention deadline (AGT-H4).
+    LaboratoryExpansionExpired,
 }
 
 impl ContractError {
@@ -2815,6 +2827,12 @@ impl ContractError {
             Self::LaboratoryExpansionToleranceMismatch => "laboratory_expansion_tolerance_mismatch",
             Self::LaboratoryExpansionShapeMalformed => "laboratory_expansion_shape_malformed",
             Self::LaboratoryGrantRequired => "laboratory_grant_required",
+            Self::LaboratoryExpansionHandleMismatch => "laboratory_expansion_handle_mismatch",
+            Self::LaboratoryExpansionSubjectMismatch => "laboratory_expansion_subject_mismatch",
+            Self::LaboratoryExpansionAnchorMismatch => "laboratory_expansion_anchor_mismatch",
+            Self::LaboratoryExpansionBasisMismatch => "laboratory_expansion_basis_mismatch",
+            Self::LaboratoryExpansionRetentionMismatch => "laboratory_expansion_retention_mismatch",
+            Self::LaboratoryExpansionExpired => "laboratory_expansion_expired",
         }
     }
 }
