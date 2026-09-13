@@ -122,6 +122,8 @@ ERR_SLO_WINDOW_INVALID = "ERR-CLAIM-SLO-WINDOW-INVALID-001"
 ERR_SLO_MEASUREMENT_NOT_PASSED = "ERR-CLAIM-SLO-MEASUREMENT-NOT-PASSED-001"
 ERR_SLO_ENVIRONMENT_UNRETAINED = "ERR-CLAIM-SLO-ENVIRONMENT-UNRETAINED-001"
 ERR_SLO_REGISTRY_INVALID = "ERR-CLAIM-SLO-REGISTRY-INVALID-001"
+ERR_SLO_STATISTIC_MISMATCH = "ERR-CLAIM-SLO-STATISTIC-MISMATCH-001"
+ERR_SLO_CONJUNCT_INCOHERENT = "ERR-CLAIM-SLO-CONJUNCT-INCOHERENT-001"
 ERR_CLAIM_CLASS_UNRESOLVED = "ERR-CLAIM-CLASS-UNRESOLVED-001"
 
 DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
@@ -297,6 +299,14 @@ DIAGNOSTIC_REGISTRY: dict[str, dict[str, str]] = {
         "trigger": "An 'slo' measurement validity window is missing, unparseable, zone-less, empty, finished before it started, or lies in the future",
         "remediation": "Retain a zone-qualified ISO-8601 measurement window that ended before the evaluation instant",
     },
+    ERR_SLO_STATISTIC_MISMATCH: {
+        "trigger": "An 'slo' measurement's declared 'statistic' is not exactly the statistic its SLO target names (missing, different, not byte-exact, declared for a target that names none, or shadowed by a statistic-like field)",
+        "remediation": "Declare the single canonical 'statistic' exactly as the SLO target names it (e.g. 'p95'), or none when the target names no statistic",
+    },
+    ERR_SLO_CONJUNCT_INCOHERENT: {
+        "trigger": "The measurements behind one 'slo' claim come from different operations, or their validity windows share no common instant",
+        "remediation": "Measure every conjunct of the SLO target on the same operation within overlapping validity windows",
+    },
     ERR_SLO_MEASUREMENT_NOT_PASSED: {
         "trigger": "An 'slo' measurement status is missing or anything other than 'passed'",
         "remediation": "Re-run the measurement; a failed, partial, or unlabelled run never supports an slo claim",
@@ -459,6 +469,10 @@ SLO_MAX_AGE_RANGE_DAYS = (1, 36500)
 #   CLAUSE  := COMPARATOR NUMBER UNIT        (UNIT: slo_validate.REGISTERED_UNITS; '%' may be glued)
 # A target with no comparator character declares no threshold. Anything else is unbound.
 SLO_TARGET_STATISTICS: frozenset[str] = frozenset({"p50", "p90", "p95", "p99", "p99.9"})
+# The single canonical field naming the statistic a measurement reports, and the statistic-like
+# names that may never stand beside or instead of it.
+SLO_STATISTIC_FIELD = "statistic"
+SLO_STATISTIC_ALIASES: frozenset[str] = frozenset({"percentile", "quantile", "stat", "aggregate", "aggregation"})
 SLO_TARGET_COMPARATORS: dict[str, str] = {"≤": "<=", "<": "<", "≥": ">=", ">": ">"}
 SLO_TARGET_SUBJECT_PHRASES: frozenset[tuple[str, ...]] = frozenset({
     (),
@@ -1561,6 +1575,89 @@ def _slo_freshness_bound(
     return timedelta(days=min(row[SLO_MAX_AGE_FIELD] for _, row in rows))
 
 
+def _slo_target_statistic(row_target: str) -> str | None:
+    """The statistic an SLO target names: its leading token when that is a registered statistic
+    ('p95 first event hypothesis <= 1.5 s ...' -> 'p95'); None when the target names none."""
+    tokens = _slo_target_tokens(row_target)
+    return tokens[0] if tokens and tokens[0] in SLO_TARGET_STATISTICS else None
+
+
+def _check_slo_statistic(
+    meas: dict[str, Any],
+    statistic: str | None,
+    claim_id: str,
+    row_target: str,
+    path_str: str,
+    loc: str,
+    params: dict[str, Any],
+    findings: list[ClaimFinding],
+) -> None:
+    """The measured statistic is exactly the one the SLO target names (review round 4, B15/B16): a
+    p95 target needs a measurement declaring statistic 'p95' byte for byte; a target naming no
+    statistic takes a measurement declaring none. Missing, different, or aliased fails closed."""
+    def mismatch(message: str) -> None:
+        findings.append(_finding(ERR_SLO_STATISTIC_MISMATCH, path_str, f"{loc}.{SLO_STATISTIC_FIELD}", message,
+                                 {**params, "target_statistic": statistic}))
+
+    aliases = sorted(k for k in meas if k != SLO_STATISTIC_FIELD and (
+        k.lower() in SLO_STATISTIC_ALIASES or k.lower().startswith(SLO_STATISTIC_FIELD)))
+    if aliases:
+        mismatch(f"Measurement declares statistic-like field(s) {aliases}; the statistic is the single canonical '{SLO_STATISTIC_FIELD}'")
+        return
+    if SLO_STATISTIC_FIELD not in meas:
+        if statistic is not None:
+            mismatch(f"Measurement declares no '{SLO_STATISTIC_FIELD}'; SLO '{claim_id}' target '{row_target}' is a {statistic} target")
+        return
+    declared = meas[SLO_STATISTIC_FIELD]
+    if statistic is None:
+        mismatch(f"Measurement declares statistic {declared!r}, but SLO '{claim_id}' target '{row_target}' names no statistic")
+    elif _exact_token(declared) != statistic:
+        mismatch(f"Measurement statistic {declared!r} is not exactly {statistic!r}, the statistic SLO '{claim_id}' target '{row_target}' names")
+
+
+def _check_slo_conjunct_coherence(
+    measurements: list[tuple[str, dict[str, Any]]],
+    claim_id: str,
+    path_str: str,
+    params: dict[str, Any],
+    findings: list[ClaimFinding],
+) -> None:
+    """Every measurement behind one slo claim describes the same operation at the same time (review
+    round 4, B5/B14). They name one operation_id, and their validity windows share a common instant:
+    the latest start is strictly before the earliest finish. Overlap is the conservative rule. It
+    needs no numeric bound, and a conjunctive target ('<= 800 tokens and <= 250 ms') asserts both
+    conjuncts of the same behaviour at once, which windows at disjoint times cannot show. Generation,
+    environment and cost generation are already pinned per measurement to the bundle's generation,
+    the retained manifest and the registry, so they are shared by construction."""
+    if len(measurements) < 2:
+        return
+    operations = sorted({op for _, meas in measurements if (op := _nonempty_str(meas.get("operation_id"))) is not None})
+    if len(operations) > 1:
+        findings.append(_finding(
+            ERR_SLO_CONJUNCT_INCOHERENT, path_str, "artifacts",
+            f"Measurements of SLO '{claim_id}' come from different operations {operations}; every conjunct is measured on one operation",
+            {**params, "operations": operations},
+        ))
+    windows: list[tuple[datetime, datetime]] = []
+    for _, meas in measurements:
+        window = meas.get("measurement_window")
+        if not isinstance(window, dict):
+            return  # reported per measurement as ERR-CLAIM-SLO-WINDOW-INVALID-001
+        started, finished = _parse_instant(window.get("started_at")), _parse_instant(window.get("finished_at"))
+        if started is None or finished is None or finished <= started:
+            return  # reported per measurement as ERR-CLAIM-SLO-WINDOW-INVALID-001
+        windows.append((started, finished))
+    latest_start = max(started for started, _ in windows)
+    earliest_finish = min(finished for _, finished in windows)
+    if latest_start >= earliest_finish:
+        findings.append(_finding(
+            ERR_SLO_CONJUNCT_INCOHERENT, path_str, "artifacts",
+            f"Measurement windows of SLO '{claim_id}' share no common instant (latest start {latest_start.isoformat()} "
+            f"is not before earliest finish {earliest_finish.isoformat()}); conjuncts measured at disjoint times do not jointly support the target",
+            {**params, "latest_start": latest_start.isoformat(), "earliest_finish": earliest_finish.isoformat()},
+        ))
+
+
 def _verify_slo_claim_evidence(
     bundle_data: dict[str, Any],
     root: Path,
@@ -1580,6 +1677,9 @@ def _verify_slo_claim_evidence(
     - a real validity window (ISO-8601, ordered, not future, not older than the operation-cost row's
       measurement_max_age_days; an unset bound fails closed)
       evaluated against the injected ``now``;
+    - coherent conjuncts: every measurement names the same operation and all validity windows share
+      a common instant;
+    - the exact statistic the target names ('p95' for a p95 target; none when it names none);
     - exactly one canonical numeric ``actual`` compared, unrounded, against the target and
       comparator of the authoritative SLO row; the measurement can neither restate nor override them.
     """
@@ -1644,6 +1744,7 @@ def _verify_slo_claim_evidence(
     max_age: timedelta | None = None
     if cost_registry is not None:
         max_age = _slo_freshness_bound(cost_registry, claim_id, path_str, measurements[0][0], params, findings)
+    statistic = _slo_target_statistic(row_target) if thresholds else None
     measured: dict[int, list[str]] = {}
     for loc, meas in measurements:
         index = None
@@ -1651,6 +1752,7 @@ def _verify_slo_claim_evidence(
             index = _match_measurement_threshold(thresholds, row_target, claim_id, meas, path_str, loc, params, findings)
             if index is not None:
                 measured.setdefault(index, []).append(loc)
+            _check_slo_statistic(meas, statistic, claim_id, row_target, path_str, loc, params, findings)
         _verify_slo_measurement(
             meas, loc, thresholds[index] if index is not None else None, claim_id, params, path_str,
             cost_registry, bundle_generation, env_digest, max_age, now, findings,
@@ -1670,6 +1772,7 @@ def _verify_slo_claim_evidence(
                 f"Conjunct {conjunct} of SLO '{claim_id}' is measured {len(locs)} times ({locs}); exactly one measurement per conjunct",
                 {**params, "conjunct": conjunct},
             ))
+    _check_slo_conjunct_coherence(measurements, claim_id, path_str, params, findings)
 
 
 def _verify_slo_measurement(
