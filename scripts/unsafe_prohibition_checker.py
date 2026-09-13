@@ -286,6 +286,18 @@ def run_cargo_metadata(
         return None, f"cargo metadata output is invalid JSON: {exc}"
 
 
+def discover_disk_manifests(root: Path) -> list[Path]:
+    """Discovers all Cargo.toml manifest files under root, excluding excluded directories."""
+    manifests: list[Path] = []
+    if not root.is_dir():
+        return manifests
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in EXCLUDED_DIR_NAMES]
+        if "Cargo.toml" in filenames:
+            manifests.append(Path(dirpath) / "Cargo.toml")
+    return sorted(manifests)
+
+
 def check_manifest_lints(
     workspace_root: Path,
     packages: list[dict[str, Any]],
@@ -298,6 +310,7 @@ def check_manifest_lints(
     # Check workspace root Cargo.toml
     root_cargo_toml = workspace_root / "Cargo.toml"
     workspace_forbids_unsafe = False
+    has_workspace_table = False
 
     if not root_cargo_toml.is_file():
         findings.append(
@@ -312,6 +325,7 @@ def check_manifest_lints(
     else:
         try:
             root_data = tomllib.loads(root_cargo_toml.read_text(encoding="utf-8"))
+            has_workspace_table = "workspace" in root_data
             ws_unsafe_lint = (
                 root_data.get("workspace", {})
                 .get("lints", {})
@@ -330,6 +344,8 @@ def check_manifest_lints(
                 )
             )
 
+    known_manifest_paths: set[Path] = set()
+
     # Check each workspace member package
     for pkg in packages:
         pkg_id = pkg.get("id", "")
@@ -338,11 +354,16 @@ def check_manifest_lints(
         if not manifest_path_str:
             continue
 
+        manifest_path = Path(manifest_path_str)
+        try:
+            known_manifest_paths.add(manifest_path.resolve())
+        except OSError:
+            pass
+
         # Only verify workspace members
         if workspace_members and pkg_id not in workspace_members:
             continue
 
-        manifest_path = Path(manifest_path_str)
         rel_manifest = sanitize_path(manifest_path, root)
 
         if not manifest_path.is_file():
@@ -374,6 +395,103 @@ def check_manifest_lints(
             continue
 
         lints_section = pkg_toml.get("lints", {})
+        crate_explicit_unsafe = lints_section.get("rust", {}).get("unsafe_code")
+        crate_workspace_lints = lints_section.get("workspace") is True
+
+        if crate_explicit_unsafe is not None:
+            if crate_explicit_unsafe != "forbid":
+                findings.append(
+                    UnsafeFinding(
+                        code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
+                        file=rel_manifest,
+                        location="[lints.rust].unsafe_code",
+                        message=(
+                            f"Package '{pkg_name}' declares lints.rust.unsafe_code = '{crate_explicit_unsafe}'; "
+                            f"must be 'forbid'"
+                        ),
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_MANIFEST_LINT_NOT_FORBIDDEN]["remediation"],
+                        params={"crate": pkg_name, "actual": crate_explicit_unsafe},
+                    )
+                )
+        elif crate_workspace_lints:
+            if not workspace_forbids_unsafe:
+                findings.append(
+                    UnsafeFinding(
+                        code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
+                        file=rel_manifest,
+                        location="[lints].workspace",
+                        message=(
+                            f"Package '{pkg_name}' inherits workspace lints, but workspace root "
+                            f"Cargo.toml does not declare workspace.lints.rust.unsafe_code = 'forbid'"
+                        ),
+                        remediation=DIAGNOSTIC_REGISTRY[ERR_MANIFEST_LINT_NOT_FORBIDDEN]["remediation"],
+                        params={"crate": pkg_name},
+                    )
+                )
+        else:
+            findings.append(
+                UnsafeFinding(
+                    code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
+                    file=rel_manifest,
+                    location="[lints]",
+                    message=(
+                        f"Package '{pkg_name}' manifest does not forbid unsafe_code. "
+                        f"Must declare [lints] workspace = true or [lints.rust] unsafe_code = 'forbid'"
+                    ),
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_MANIFEST_LINT_NOT_FORBIDDEN]["remediation"],
+                    params={"crate": pkg_name},
+                )
+            )
+
+    # Check for any unlisted / unregistered crate manifests discovered on disk
+    disk_manifests = discover_disk_manifests(root)
+    for disk_manifest in disk_manifests:
+        try:
+            resolved_manifest = disk_manifest.resolve()
+        except OSError:
+            continue
+        if root_cargo_toml.is_file() and resolved_manifest == root_cargo_toml.resolve():
+            continue
+        if resolved_manifest in known_manifest_paths:
+            continue
+
+        rel_manifest = sanitize_path(disk_manifest, root)
+        try:
+            m_data = tomllib.loads(disk_manifest.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            findings.append(
+                UnsafeFinding(
+                    code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
+                    file=rel_manifest,
+                    location="manifest",
+                    message=f"Discovered manifest '{rel_manifest}' is unparseable: {exc}",
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_MANIFEST_LINT_NOT_FORBIDDEN]["remediation"],
+                )
+            )
+            continue
+
+        if "package" not in m_data:
+            continue
+
+        pkg_name = m_data.get("package", {}).get("name", disk_manifest.parent.name)
+
+        # In a Cargo workspace, every crate on disk must be declared in workspace.members
+        if has_workspace_table or workspace_members:
+            findings.append(
+                UnsafeFinding(
+                    code=ERR_MANIFEST_LINT_NOT_FORBIDDEN,
+                    file=rel_manifest,
+                    location="manifest",
+                    message=(
+                        f"Unregistered crate '{pkg_name}' at '{rel_manifest}' is not declared in "
+                        f"workspace members in '{sanitize_path(root_cargo_toml, root)}'"
+                    ),
+                    remediation=DIAGNOSTIC_REGISTRY[ERR_MANIFEST_LINT_NOT_FORBIDDEN]["remediation"],
+                    params={"crate": pkg_name},
+                )
+            )
+
+        lints_section = m_data.get("lints", {})
         crate_explicit_unsafe = lints_section.get("rust", {}).get("unsafe_code")
         crate_workspace_lints = lints_section.get("workspace") is True
 
@@ -490,6 +608,129 @@ def is_unsafe_permitting_attribute(content: str) -> bool:
     return False
 
 
+def _collect_directory_targets(
+    pkg_dir: Path,
+    pkg_name: str,
+    root: Path,
+    seen_target_paths: set[Path],
+) -> list[dict[str, Any]]:
+    """Inspects package directory for target files that might be omitted from cargo metadata."""
+    targets: list[dict[str, Any]] = []
+    if not pkg_dir.is_dir():
+        return targets
+
+    # tests/
+    test_dir = pkg_dir / "tests"
+    if test_dir.is_dir():
+        for p in sorted(test_dir.iterdir()):
+            if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
+                seen_target_paths.add(p.resolve())
+                targets.append({
+                    "crate": pkg_name,
+                    "target_name": p.stem,
+                    "kinds": ["test"],
+                    "src_path": sanitize_path(p, root),
+                    "path": p.resolve(),
+                })
+            elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
+                main_p = (p / "main.rs").resolve()
+                seen_target_paths.add(main_p)
+                targets.append({
+                    "crate": pkg_name,
+                    "target_name": p.name,
+                    "kinds": ["test"],
+                    "src_path": sanitize_path(main_p, root),
+                    "path": main_p,
+                })
+
+    # examples/
+    ex_dir = pkg_dir / "examples"
+    if ex_dir.is_dir():
+        for p in sorted(ex_dir.iterdir()):
+            if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
+                seen_target_paths.add(p.resolve())
+                targets.append({
+                    "crate": pkg_name,
+                    "target_name": p.stem,
+                    "kinds": ["example"],
+                    "src_path": sanitize_path(p, root),
+                    "path": p.resolve(),
+                })
+            elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
+                main_p = (p / "main.rs").resolve()
+                seen_target_paths.add(main_p)
+                targets.append({
+                    "crate": pkg_name,
+                    "target_name": p.name,
+                    "kinds": ["example"],
+                    "src_path": sanitize_path(main_p, root),
+                    "path": main_p,
+                })
+
+    # benches/
+    bench_dir = pkg_dir / "benches"
+    if bench_dir.is_dir():
+        for p in sorted(bench_dir.iterdir()):
+            if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
+                seen_target_paths.add(p.resolve())
+                targets.append({
+                    "crate": pkg_name,
+                    "target_name": p.stem,
+                    "kinds": ["bench"],
+                    "src_path": sanitize_path(p, root),
+                    "path": p.resolve(),
+                })
+            elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
+                main_p = (p / "main.rs").resolve()
+                seen_target_paths.add(main_p)
+                targets.append({
+                    "crate": pkg_name,
+                    "target_name": p.name,
+                    "kinds": ["bench"],
+                    "src_path": sanitize_path(main_p, root),
+                    "path": main_p,
+                })
+
+    # build.rs
+    build_rs = pkg_dir / "build.rs"
+    if build_rs.is_file() and build_rs.resolve() not in seen_target_paths:
+        seen_target_paths.add(build_rs.resolve())
+        targets.append({
+            "crate": pkg_name,
+            "target_name": f"{pkg_name}-build",
+            "kinds": ["custom-build"],
+            "src_path": sanitize_path(build_rs, root),
+            "path": build_rs.resolve(),
+        })
+
+    # build helper directories (e.g. build/, build_helper/, build_helpers/)
+    for helper_name in ("build", "build_helper", "build_helpers"):
+        helper_dir = pkg_dir / helper_name
+        if helper_dir.is_dir():
+            for p in sorted(helper_dir.iterdir()):
+                if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
+                    seen_target_paths.add(p.resolve())
+                    targets.append({
+                        "crate": pkg_name,
+                        "target_name": p.stem,
+                        "kinds": ["build-helper"],
+                        "src_path": sanitize_path(p, root),
+                        "path": p.resolve(),
+                    })
+                elif p.is_dir() and (p / "mod.rs").is_file() and (p / "mod.rs").resolve() not in seen_target_paths:
+                    mod_p = (p / "mod.rs").resolve()
+                    seen_target_paths.add(mod_p)
+                    targets.append({
+                        "crate": pkg_name,
+                        "target_name": p.name,
+                        "kinds": ["build-helper"],
+                        "src_path": sanitize_path(mod_p, root),
+                        "path": mod_p,
+                    })
+
+    return targets
+
+
 def check_target_roots(
     packages: list[dict[str, Any]],
     workspace_members: set[str],
@@ -499,10 +740,18 @@ def check_target_roots(
     findings: list[UnsafeFinding] = []
     enumerated_targets: list[dict[str, Any]] = []
     seen_target_paths: set[Path] = set()
+    known_pkg_dirs: set[Path] = set()
 
     for pkg in packages:
         pkg_id = pkg.get("id", "")
         pkg_name = pkg.get("name", "unknown")
+        manifest_str = pkg.get("manifest_path")
+        if manifest_str:
+            try:
+                known_pkg_dirs.add(Path(manifest_str).parent.resolve())
+            except OSError:
+                pass
+
         if workspace_members and pkg_id not in workspace_members:
             continue
 
@@ -528,118 +777,80 @@ def check_target_roots(
 
         # Also inspect package directory for target files that might be omitted from cargo metadata
         # (e.g. autotests = false, autoexamples = false, autobenches = false, or build helpers)
-        manifest_str = pkg.get("manifest_path")
         if manifest_str:
             pkg_dir = Path(manifest_str).parent
-            if pkg_dir.is_dir():
-                # tests/
-                test_dir = pkg_dir / "tests"
-                if test_dir.is_dir():
-                    for p in sorted(test_dir.iterdir()):
-                        if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
-                            seen_target_paths.add(p.resolve())
-                            enumerated_targets.append({
-                                "crate": pkg_name,
-                                "target_name": p.stem,
-                                "kinds": ["test"],
-                                "src_path": sanitize_path(p, root),
-                                "path": p.resolve(),
-                            })
-                        elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
-                            main_p = (p / "main.rs").resolve()
-                            seen_target_paths.add(main_p)
-                            enumerated_targets.append({
-                                "crate": pkg_name,
-                                "target_name": p.name,
-                                "kinds": ["test"],
-                                "src_path": sanitize_path(main_p, root),
-                                "path": main_p,
-                            })
+            enumerated_targets.extend(
+                _collect_directory_targets(pkg_dir, pkg_name, root, seen_target_paths)
+            )
 
-                # examples/
-                ex_dir = pkg_dir / "examples"
-                if ex_dir.is_dir():
-                    for p in sorted(ex_dir.iterdir()):
-                        if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
-                            seen_target_paths.add(p.resolve())
-                            enumerated_targets.append({
-                                "crate": pkg_name,
-                                "target_name": p.stem,
-                                "kinds": ["example"],
-                                "src_path": sanitize_path(p, root),
-                                "path": p.resolve(),
-                            })
-                        elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
-                            main_p = (p / "main.rs").resolve()
-                            seen_target_paths.add(main_p)
-                            enumerated_targets.append({
-                                "crate": pkg_name,
-                                "target_name": p.name,
-                                "kinds": ["example"],
-                                "src_path": sanitize_path(main_p, root),
-                                "path": main_p,
-                            })
+    # Also inspect any unlisted / unregistered crate directories on disk
+    disk_manifests = discover_disk_manifests(root)
+    for disk_manifest in disk_manifests:
+        try:
+            pkg_dir = disk_manifest.parent.resolve()
+        except OSError:
+            continue
+        if pkg_dir in known_pkg_dirs:
+            continue
+        try:
+            m_data = tomllib.loads(disk_manifest.read_text(encoding="utf-8"))
+        except (OSError, tomllib.TOMLDecodeError):
+            continue
+        if "package" not in m_data:
+            continue
 
-                # benches/
-                bench_dir = pkg_dir / "benches"
-                if bench_dir.is_dir():
-                    for p in sorted(bench_dir.iterdir()):
-                        if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
-                            seen_target_paths.add(p.resolve())
-                            enumerated_targets.append({
-                                "crate": pkg_name,
-                                "target_name": p.stem,
-                                "kinds": ["bench"],
-                                "src_path": sanitize_path(p, root),
-                                "path": p.resolve(),
-                            })
-                        elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
-                            main_p = (p / "main.rs").resolve()
-                            seen_target_paths.add(main_p)
-                            enumerated_targets.append({
-                                "crate": pkg_name,
-                                "target_name": p.name,
-                                "kinds": ["bench"],
-                                "src_path": sanitize_path(main_p, root),
-                                "path": main_p,
-                            })
+        pkg_name = m_data.get("package", {}).get("name", disk_manifest.parent.name)
 
-                # build.rs
-                build_rs = pkg_dir / "build.rs"
-                if build_rs.is_file() and build_rs.resolve() not in seen_target_paths:
-                    seen_target_paths.add(build_rs.resolve())
+        # Check standard entrypoints for unlisted crates: src/lib.rs, src/main.rs, src/bin/
+        src_lib = disk_manifest.parent / "src" / "lib.rs"
+        if src_lib.is_file() and src_lib.resolve() not in seen_target_paths:
+            seen_target_paths.add(src_lib.resolve())
+            enumerated_targets.append({
+                "crate": pkg_name,
+                "target_name": pkg_name,
+                "kinds": ["lib"],
+                "src_path": sanitize_path(src_lib, root),
+                "path": src_lib.resolve(),
+            })
+
+        src_main = disk_manifest.parent / "src" / "main.rs"
+        if src_main.is_file() and src_main.resolve() not in seen_target_paths:
+            seen_target_paths.add(src_main.resolve())
+            enumerated_targets.append({
+                "crate": pkg_name,
+                "target_name": pkg_name,
+                "kinds": ["bin"],
+                "src_path": sanitize_path(src_main, root),
+                "path": src_main.resolve(),
+            })
+
+        bin_dir = disk_manifest.parent / "src" / "bin"
+        if bin_dir.is_dir():
+            for p in sorted(bin_dir.iterdir()):
+                if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
+                    seen_target_paths.add(p.resolve())
                     enumerated_targets.append({
                         "crate": pkg_name,
-                        "target_name": f"{pkg_name}-build",
-                        "kinds": ["custom-build"],
-                        "src_path": sanitize_path(build_rs, root),
-                        "path": build_rs.resolve(),
+                        "target_name": p.stem,
+                        "kinds": ["bin"],
+                        "src_path": sanitize_path(p, root),
+                        "path": p.resolve(),
+                    })
+                elif p.is_dir() and (p / "main.rs").is_file() and (p / "main.rs").resolve() not in seen_target_paths:
+                    main_p = (p / "main.rs").resolve()
+                    seen_target_paths.add(main_p)
+                    enumerated_targets.append({
+                        "crate": pkg_name,
+                        "target_name": p.name,
+                        "kinds": ["bin"],
+                        "src_path": sanitize_path(main_p, root),
+                        "path": main_p,
                     })
 
-                # build helper directories (e.g. build/, build_helper/, build_helpers/)
-                for helper_name in ("build", "build_helper", "build_helpers"):
-                    helper_dir = pkg_dir / helper_name
-                    if helper_dir.is_dir():
-                        for p in sorted(helper_dir.iterdir()):
-                            if p.is_file() and p.suffix == ".rs" and p.resolve() not in seen_target_paths:
-                                seen_target_paths.add(p.resolve())
-                                enumerated_targets.append({
-                                    "crate": pkg_name,
-                                    "target_name": p.stem,
-                                    "kinds": ["build-helper"],
-                                    "src_path": sanitize_path(p, root),
-                                    "path": p.resolve(),
-                                })
-                            elif p.is_dir() and (p / "mod.rs").is_file() and (p / "mod.rs").resolve() not in seen_target_paths:
-                                mod_p = (p / "mod.rs").resolve()
-                                seen_target_paths.add(mod_p)
-                                enumerated_targets.append({
-                                    "crate": pkg_name,
-                                    "target_name": p.name,
-                                    "kinds": ["build-helper"],
-                                    "src_path": sanitize_path(mod_p, root),
-                                    "path": mod_p,
-                                })
+        # Collect tests, examples, benches, build.rs, build_helpers
+        enumerated_targets.extend(
+            _collect_directory_targets(disk_manifest.parent, pkg_name, root, seen_target_paths)
+        )
 
     for target_info in enumerated_targets:
         src_path: Path = target_info["path"]

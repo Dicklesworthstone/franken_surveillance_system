@@ -31,6 +31,7 @@ import json
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from pathlib import Path
 
@@ -85,7 +86,45 @@ class TestUnsafeProhibitionPositiveControls(unittest.TestCase):
         self.assertEqual(summary["status"], "pass")
         self.assertEqual(summary["error_count"], 0)
         self.assertGreaterEqual(summary["target_count"], 50)
-        self.assertEqual(summary["crate_count"], 6)
+
+        # Derive expected crate count from workspace members / registered crate topology
+        manifest_data = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))
+        workspace_members = manifest_data.get("workspace", {}).get("members", [])
+        expected_crate_count = len(workspace_members)
+
+        topo_data = json.loads((ROOT / "architecture/crate_topology.json").read_text(encoding="utf-8"))
+        registered_crates = {
+            c["name"]: c
+            for layer in topo_data.get("layers", [])
+            for c in layer.get("crates", [])
+        }
+        for member in workspace_members:
+            crate_name = Path(member).name
+            self.assertIn(
+                crate_name,
+                registered_crates,
+                f"Workspace member '{crate_name}' must be declared in crate_topology.json",
+            )
+            self.assertEqual(
+                registered_crates[crate_name].get("unsafe"),
+                "forbid",
+                f"Crate '{crate_name}' in crate_topology.json must declare unsafe=forbid",
+            )
+
+        # Ensure crates on disk under crates/ match registered workspace members
+        crates_dir = ROOT / "crates"
+        disk_crates = {
+            p.name for p in crates_dir.iterdir() if p.is_dir() and (p / "Cargo.toml").is_file()
+        }
+        self.assertEqual(
+            len(disk_crates),
+            expected_crate_count,
+            f"Disk crates count {len(disk_crates)} does not match expected {expected_crate_count}",
+        )
+
+        self.assertGreaterEqual(expected_crate_count, 6)
+        self.assertEqual(summary["crate_count"], expected_crate_count)
+        self.assertEqual(summary["workspace_members_count"], expected_crate_count)
         self.assertGreaterEqual(summary["rust_file_count"], 150)
 
     def test_cli_real_repo_passes(self) -> None:
@@ -386,6 +425,61 @@ unsafe_code = "forbid"
             self.assertFalse(is_valid)
             codes = [f.code for f in findings]
             self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+
+    def test_planted_unregistered_crate_missing_forbid_fails(self) -> None:
+        """An unregistered crate on disk missing #![forbid(unsafe_code)] fails fail-closed."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/valid"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            valid_dir = tmp_root / "crates" / "valid"
+            (valid_dir / "src").mkdir(parents=True)
+            (valid_dir / "Cargo.toml").write_text(
+                """[package]
+name = "valid"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (valid_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn valid() {}\n", encoding="utf-8"
+            )
+
+            # Plant an unregistered crate without #![forbid(unsafe_code)]
+            unreg_dir = tmp_root / "crates" / "unregistered"
+            (unreg_dir / "src").mkdir(parents=True)
+            (unreg_dir / "Cargo.toml").write_text(
+                """[package]
+name = "unregistered"
+version = "0.1.0"
+edition = "2024"
+""",
+                encoding="utf-8",
+            )
+            (unreg_dir / "src" / "lib.rs").write_text(
+                "pub fn missing_forbid() {}\n", encoding="utf-8"
+            )
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Unregistered crate missing forbid must fail audit")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_TARGET_ROOT_MISSING_FORBID, codes)
+            self.assertTrue(
+                any("unregistered" in f.file or "unregistered" in f.params.get("crate", "") for f in findings)
+            )
 
 
 
@@ -741,6 +835,64 @@ workspace = true
             self.assertFalse(is_valid)
             codes = [f.code for f in findings]
             self.assertIn(ERR_MANIFEST_LINT_NOT_FORBIDDEN, codes)
+
+    def test_planted_unregistered_crate_manifest_not_forbidden_fails(self) -> None:
+        """An unregistered crate not declared in workspace.members fails manifest lint audit."""
+        with tempfile.TemporaryDirectory() as td:
+            tmp_root = Path(td)
+            root_manifest = tmp_root / "Cargo.toml"
+            root_manifest.write_text(
+                """[workspace]
+resolver = "3"
+members = ["crates/valid"]
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            valid_dir = tmp_root / "crates" / "valid"
+            (valid_dir / "src").mkdir(parents=True)
+            (valid_dir / "Cargo.toml").write_text(
+                """[package]
+name = "valid"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+""",
+                encoding="utf-8",
+            )
+            (valid_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn valid() {}\n", encoding="utf-8"
+            )
+
+            # Plant an unregistered crate even if it declares explicit forbid
+            unreg_dir = tmp_root / "crates" / "unregistered"
+            (unreg_dir / "src").mkdir(parents=True)
+            (unreg_dir / "Cargo.toml").write_text(
+                """[package]
+name = "unregistered"
+version = "0.1.0"
+edition = "2024"
+
+[lints.rust]
+unsafe_code = "forbid"
+""",
+                encoding="utf-8",
+            )
+            (unreg_dir / "src" / "lib.rs").write_text(
+                "#![forbid(unsafe_code)]\npub fn ok() {}\n", encoding="utf-8"
+            )
+
+            is_valid, findings, _ = audit_unsafe_prohibition(root=tmp_root, manifest_path=root_manifest)
+            self.assertFalse(is_valid, "Unregistered crate in workspace must fail audit")
+            codes = [f.code for f in findings]
+            self.assertIn(ERR_MANIFEST_LINT_NOT_FORBIDDEN, codes)
+            self.assertTrue(
+                any("unregistered" in f.message.lower() or "not declared" in f.message.lower() for f in findings)
+            )
 
 
 class TestPlantedNegativeMetadataUnreadable(unittest.TestCase):
