@@ -1,7 +1,7 @@
 {
   "schema": "fss.dependencies.v2",
   "generation": "gen:fss1:dependencies-v2",
-  "freezeDigest": "sha256:ebbd4c884de0b3e54fe147eced73327ef69cf26018405de44827c8e4935481fb",
+  "freezeDigest": "sha256:51cdeb2f41e92f6627c83285777af1c1c3a8fd7f4cae34d4dec2906b57fb75a7",
   "sourceDocument": "registries/DEPENDENCIES.md",
   "constitution": "architecture/dependency_constitution.json",
   "policy": "architecture/dependency_allowlist.toml",
@@ -10,6 +10,10 @@
     {
       "id": "DEP-OWNED-001",
       "constitutionClass": "DEP-CLASS-F2",
+      "constitutionClasses": [
+        "DEP-CLASS-F2",
+        "DEP-CLASS-F1"
+      ],
       "class": "Owned runtime and Franken-suite families",
       "rule": "admitted after per-mechanism integration gate",
       "scope": "Production",
@@ -31,6 +35,9 @@
     {
       "id": "DEP-FUND-001",
       "constitutionClass": "DEP-CLASS-F3",
+      "constitutionClasses": [
+        "DEP-CLASS-F3"
+      ],
       "class": "serde / serde_json",
       "rule": "control-plane schemas only; never durable bytes or authority",
       "scope": "Production subject to audit",
@@ -52,6 +59,9 @@
     {
       "id": "DEP-LAB-001",
       "constitutionClass": "DEP-CLASS-F4",
+      "constitutionClasses": [
+        "DEP-CLASS-F4"
+      ],
       "class": "Pinned codec/model/vendor/reference executables",
       "rule": "sealed fixture/oracle lanes only; no production invocation path and absent from release closure",
       "scope": "Development/migration only",
@@ -72,6 +82,9 @@
     {
       "id": "DEP-ORACLE-001",
       "constitutionClass": "DEP-CLASS-F4",
+      "constitutionClasses": [
+        "DEP-CLASS-F4"
+      ],
       "class": "Python/reference ecosystems",
       "rule": "held-out conformance and lab fixtures only; absent from release closure",
       "scope": "Development only",
@@ -92,6 +105,9 @@
     {
       "id": "DEP-EXCEPTION-001",
       "constitutionClass": "DEP-CLASS-F3",
+      "constitutionClasses": [
+        "DEP-CLASS-F3"
+      ],
       "class": "Any other external crate",
       "rule": "requires DEP record, ADR, source/feature census, semantic owner, substitute prohibition, and removal plan",
       "scope": "Not admitted",

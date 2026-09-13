@@ -85,6 +85,7 @@ META_FIELDS: tuple[str, ...] = ("schema", "generation", "freezeDigest", "sourceD
 ROW_COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("id", "ID", "code"),
     ("constitutionClass", "Constitution Class", "code"),
+    ("constitutionClasses", "Constitution Classes", "code-list"),
     ("class", "Class", "text"),
     ("rule", "Rule", "text"),
     ("scope", "Scope", "code"),

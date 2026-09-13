@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import copy
 import json
+import tomllib
 import shutil
 import subprocess
 import sys
@@ -75,6 +76,10 @@ AUTHORITY_FILES = (
     "architecture/local_qualification.toml",
     "architecture/release_qualification.json",
     "docs/DEPENDENCY_CONSTITUTION.md",
+    "DEPENDENCY_CONSTITUTION.md",
+    "architecture/crate_topology.json",
+    "Cargo.toml",
+    "Cargo.lock",
     "rust-toolchain.toml",
     "registries/ERRORS.md",
 )
@@ -127,7 +132,9 @@ def pkg(name: str, *, member: bool = False, edition: str | None = None, links: s
     return {
         "name": name, "id": pkg_id, "version": "0.0.1" if member else version, "source": None if member else REGISTRY,
         "edition": edition or ("2024" if member else "2021"), "links": links, "targets": targets,
-        "manifest_path": f"/ws/{name}/Cargo.toml",
+        # Members live where the real workspace declares them, so the topology and
+        # [workspace].members checks of finding j see a declared, explicit member.
+        "manifest_path": f"{ROOT}/crates/{name}/Cargo.toml" if member else f"/registry/{name}-{version}/Cargo.toml",
     }
 
 
@@ -207,7 +214,8 @@ class ConstitutionCase(unittest.TestCase):
                     raise cargo_payload
                 if isinstance(cargo_payload, MagicMock):
                     return cargo_payload
-                return completed(cargo_payload)
+                # cargo reports absolute manifest paths under the directory it runs in.
+                return completed(cargo_payload.replace(f"{ROOT}/", f"{kwargs.get('cwd', ROOT)}/"))
             return completed(rustc, rustc_rc)
         return run
 
@@ -543,9 +551,9 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
         self.assertTrue(any("contains hollow or placeholder text" in e.message for e in result.errors))
 
     def test_invalid_utf8_markdown_handled_safely(self) -> None:
-        """Invalid UTF-8 in the mirror fails closed with CORRUPT-FILE."""
+        """Invalid UTF-8 in the mirror fails closed with CORRUPT-FILE (and it now differs from the root copy: CONST-DRIFT)."""
         self.path(MD).write_bytes(b"\xff\xfe# Constitution")
-        self.assertCodes({C})
+        self.assertCodes({C, CD})
 
     def test_markdown_bodies_bind_the_json_meaning(self) -> None:
         """Class sections and the machine table are compared with the JSON value by value, not by keyword."""
@@ -840,8 +848,8 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
             result = validate_dependency_constitution(self.tmp_root, skip_cargo_metadata=False)
         self.assertEqual(codes(result), {EX})
 
-    def test_cannot_run_cargo_reported_as_corrupt_file(self) -> None:
-        """dcf1b4f name kept; code corrected: cargo that cannot run is EXEC-FAILED, never CORRUPT-FILE."""
+    def test_cannot_run_cargo_reported_as_exec_failed_not_corrupt_file(self) -> None:
+        """Formerly test_cannot_run_cargo_reported_as_corrupt_file (dcf1b4f); renamed to what it asserts: cannot-run cargo is EXEC-FAILED, never CORRUPT-FILE."""
         with patch("subprocess.run", side_effect=self.fake_run(cargo=FileNotFoundError("cargo not found"))):
             meta, meta_err = load_real_cargo_metadata(self.tmp_root)
             self.assertIsNone(meta)
@@ -849,8 +857,8 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
             result = validate_dependency_constitution(self.tmp_root, skip_cargo_metadata=False)
         self.assertEqual(codes(result), {EX})
 
-    def test_cannot_run_cargo_reported_as_metadata_violation(self) -> None:
-        """f0a2beb name kept; the f0a2beb body was tautological. Cannot-run is EXEC-FAILED, not METADATA-VIOLATION."""
+    def test_cannot_run_cargo_reported_as_exec_failed_not_metadata_violation(self) -> None:
+        """Formerly test_cannot_run_cargo_reported_as_metadata_violation (f0a2beb, whose body was tautological); renamed to what it asserts: EXEC-FAILED, not METADATA-VIOLATION."""
         with patch("subprocess.run", side_effect=self.fake_run(cargo=OSError("exec format error"))):
             result = validate_dependency_constitution(self.tmp_root, skip_cargo_metadata=False)
         self.assertEqual(codes(result), {EX})
@@ -895,7 +903,7 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
     def test_cargo_metadata_edition_violation_rejected(self) -> None:
         """A member declaring edition '2021' fails closed (edition derived from production.language)."""
         res = dependency_constitution_checker.ValidationResult()
-        mock_metadata = {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2021", "manifest_path": "/path/to/fss-core/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}
+        mock_metadata = {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2021", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}
         validate_cargo_metadata_for_f0(res, mock_metadata, ROOT)
         self.assertEqual(codes(res), {MV})
         self.assertTrue(any("must declare edition '2024'" in e.message for e in res.errors))
@@ -904,7 +912,7 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
     def test_cargo_metadata_native_links_rejected(self) -> None:
         """A member declaring native links fails closed."""
         res = dependency_constitution_checker.ValidationResult()
-        mock_metadata = {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": "/path/to/fss-core/Cargo.toml", "links": "system_c_runtime"}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}
+        mock_metadata = {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": "system_c_runtime"}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}
         validate_cargo_metadata_for_f0(res, mock_metadata, ROOT)
         self.assertEqual(codes(res), {MV})
         self.assertTrue(any("declares native links" in e.message for e in res.errors))
@@ -913,7 +921,7 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
     def test_cargo_metadata_production_language_violation(self) -> None:
         """Workspace metadata declaring a non-Rust production language fails closed."""
         res = dependency_constitution_checker.ValidationResult()
-        mock_metadata = {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": "/path/to/fss-core/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "python"}}}
+        mock_metadata = {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "python"}}}
         validate_cargo_metadata_for_f0(res, mock_metadata, ROOT)
         self.assertEqual(codes(res), {MV})
         self.assertTrue(any("production_language must be 'rust'" in e.message for e in res.errors))
@@ -946,14 +954,14 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
     def test_f0_closure_unadmitted_crate_rejected(self) -> None:
         """libc (unlisted) in the closure fails closed."""
         res = dependency_constitution_checker.ValidationResult()
-        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": "/p/Cargo.toml", "links": None}, {"name": "libc", "id": "libc 0.2.140", "edition": "2021", "manifest_path": "/p/libc/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
+        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None}, {"name": "libc", "id": "libc 0.2.140", "edition": "2021", "manifest_path": "/p/libc/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
         self.assertEqual(codes(res), {MV})
         self.assertTrue(any("Unadmitted external crate 'libc'" in e.message for e in res.errors))
 
     def test_f0_closure_exception_candidate_blake3_rejected(self) -> None:
         """blake3 (exception candidate) is not admitted without a DEP record."""
         res = dependency_constitution_checker.ValidationResult()
-        meta = {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": "/p/Cargo.toml", "links": None}, {"name": "blake3", "id": "blake3 1.5.0", "edition": "2021", "manifest_path": "/p/blake3/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}
+        meta = {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None}, {"name": "blake3", "id": "blake3 1.5.0", "edition": "2021", "manifest_path": "/p/blake3/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}
         validate_cargo_metadata_for_f0(res, meta, ROOT, allow_data={"exception_candidates": {"not_admitted_without_dep_record_adr_and_release_evidence": ["blake3"]}})
         self.assertEqual(codes(res), {MV})
         self.assertTrue(any("Exception candidate 'blake3'" in e.message for e in res.errors))
@@ -961,28 +969,28 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
     def test_f0_closure_custom_build_target_rejected(self) -> None:
         """A custom-build (build.rs) target fails closed."""
         res = dependency_constitution_checker.ValidationResult()
-        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": "/p/Cargo.toml", "links": None, "targets": [{"kind": ["custom-build"], "name": "build-script-build"}]}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
+        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None, "targets": [{"kind": ["custom-build"], "name": "build-script-build"}]}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
         self.assertEqual(codes(res), {MV})
         self.assertTrue(any("declares custom-build" in e.message for e in res.errors))
 
     def test_f0_closure_proc_macro_target_rejected(self) -> None:
         """A proc-macro target fails closed."""
         res = dependency_constitution_checker.ValidationResult()
-        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": "/p/Cargo.toml", "links": None, "targets": [{"kind": ["proc-macro"], "name": "fss-macros"}]}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
+        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None, "targets": [{"kind": ["proc-macro"], "name": "fss-macros"}]}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
         self.assertEqual(codes(res), {MV})
         self.assertTrue(any("declares proc-macro" in e.message for e in res.errors))
 
     def test_non_member_forbidden_crate_in_closure_rejected(self) -> None:
         """tokio in the closure fails closed as a forbidden crate."""
         res = dependency_constitution_checker.ValidationResult()
-        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": "/p/Cargo.toml", "links": None}, {"name": "tokio", "id": "tokio 1.30.0", "edition": "2021", "manifest_path": "/p/tokio/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
+        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None}, {"name": "tokio", "id": "tokio 1.30.0", "edition": "2021", "manifest_path": "/p/tokio/Cargo.toml", "links": None}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
         self.assertEqual(codes(res), {MV})
         self.assertTrue(any("Forbidden crate 'tokio'" in e.message for e in res.errors))
 
     def test_non_member_native_links_in_closure_rejected(self) -> None:
         """A non-member crate declaring native links fails closed."""
         res = dependency_constitution_checker.ValidationResult()
-        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": "/p/Cargo.toml", "links": None}, {"name": "some-c-lib", "id": "some-c-lib 1.0.0", "edition": "2024", "manifest_path": "/p/c/Cargo.toml", "links": "clib"}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
+        validate_cargo_metadata_for_f0(res, {"packages": [{"name": "fss-core", "id": "fss-core 0.0.1", "edition": "2024", "manifest_path": f"{ROOT}/crates/fss-core/Cargo.toml", "links": None}, {"name": "some-c-lib", "id": "some-c-lib 1.0.0", "edition": "2024", "manifest_path": "/p/c/Cargo.toml", "links": "clib"}], "workspace_members": ["fss-core 0.0.1"], "metadata": {"fss": {"production_language": "rust"}}}, ROOT)
         self.assertEqual(codes(res), {MV})
         self.assertTrue(any("Non-member package 'some-c-lib' in closure declares native links" in e.message for e in res.errors))
 
@@ -1012,9 +1020,9 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
             with self.subTest(label):
                 self.assertEqual(self.census(metadata([core] + extra, edges)), sorted(expected))
         members = {
-            "member proc-macro": (pkg("fss-macros", member=True, kinds=("proc-macro",)), [(MV, "#fss-macros/targets/proc-macro")]),
-            "member cdylib": (pkg("fss-dyn", member=True, kinds=("lib",), crate_types=("cdylib",)), [(MV, "#fss-dyn/targets/crate_types")]),
-            "member build.rs": (pkg("fss-build", member=True, kinds=("lib", "custom-build")), [(MV, "#fss-build/targets/custom-build")]),
+            "member proc-macro": (pkg("fss-tensor", member=True, kinds=("proc-macro",)), [(MV, "#fss-tensor/targets/proc-macro")]),
+            "member cdylib": (pkg("fss-model-ir", member=True, kinds=("lib",), crate_types=("cdylib",)), [(MV, "#fss-model-ir/targets/crate_types")]),
+            "member build.rs": (pkg("fss-reference", member=True, kinds=("lib", "custom-build")), [(MV, "#fss-reference/targets/custom-build")]),
         }
         for label, (member, expected) in members.items():
             with self.subTest(label):
@@ -1098,6 +1106,250 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
         self.assertEqual(ERR_DEP_REGISTRY_DRIFT, "ERR-DEP-REGISTRY-DRIFT-001")
         self.assertNotEqual(ERR_DEP_CONST_DRIFT, ERR_DEP_REGISTRY_DRIFT)
         self.assertNotEqual(ERR_DEP_EXEC_FAILED, ERR_DEP_CORRUPT_FILE)
+
+
+class TestRoundTwoConstitutionFindings(ConstitutionCase):
+    """Round-2 review findings i-l of fss-x4a.30.88.16 (exact findings per scenario)."""
+
+    LQ = "architecture/local_qualification.toml"
+    toolchain = TestDependencyConstitutionChecker.toolchain
+
+    def uf(self) -> list[tuple[str, str, str]]:
+        res = dependency_constitution_checker.ValidationResult()
+        scan_unstable_features(self.tmp_root, res)
+        return sorted((e.code, e.file_path, e.target) for e in res.errors)
+
+    def put(self, rel: str, text: str) -> None:
+        self.path(rel).parent.mkdir(parents=True, exist_ok=True)
+        self.write(rel, text)
+
+    # --- i: unstable features -------------------------------------------------------------
+
+    def test_i_cfg_attr_and_spaced_feature_attributes_are_findings(self) -> None:
+        """cfg_attr-wrapped (nested, multi-attribute, multi-line) and spaced #![feature] are refused; lookalikes are not."""
+        self.put("crates/fss-x/src/lib.rs", "\n".join([
+            "#![forbid(unsafe_code)]",
+            "#![cfg_attr(all(), feature(x))]",
+            "#![cfg_attr(unix, cfg_attr(all(), feature(y)))]",
+            "# ! [ feature ( z ) ]",
+            '#![cfg_attr(feature = "std", no_std)]',
+            "#![cfg_attr(all(), forbid(unsafe_code), feature(w))]",
+            '#[cfg(feature = "x")]',
+            "fn f() {}",
+            "// #![cfg_attr(all(), feature(q))]",
+            "#![cfg_attr(",
+            "    all(),",
+            "    feature(multi)",
+            ")]",
+            'pub const S: &str = "#![cfg_attr(all(), feature(s))]";',
+            "",
+        ]))
+        U, f = ERR_DEP_UNSTABLE_FEATURE, "crates/fss-x/src/lib.rs"
+        self.assertEqual(self.uf(), [(U, f, "line/10"), (U, f, "line/2"), (U, f, "line/3"), (U, f, "line/4"), (U, f, "line/6")])
+        self.assertTrue(dependency_constitution_checker.attribute_enables_feature("cfg_attr(any(), feature(a))"))
+        self.assertFalse(dependency_constitution_checker.attribute_enables_feature('cfg_attr(feature = "a", no_std)'))
+        self.assertFalse(dependency_constitution_checker.attribute_enables_feature("featured(a)"))
+
+    def test_i_only_the_workspace_target_dir_is_skipped(self) -> None:
+        """A crate root under src/target/ is scanned; the workspace's own target/ directory is not."""
+        self.put("crates/fss-x/src/target/mod.rs", "#![feature(hidden)]\n")
+        self.put("crates/target/src/lib.rs", "#![feature(hidden_crate)]\n")
+        self.put("target/debug/build/out.rs", "#![feature(generated)]\n")
+        self.assertEqual(self.uf(), [(ERR_DEP_UNSTABLE_FEATURE, "crates/fss-x/src/target/mod.rs", "line/1"), (ERR_DEP_UNSTABLE_FEATURE, "crates/target/src/lib.rs", "line/1")])
+
+    def test_i_cargo_config_rustflags_and_unstable_tables_are_findings(self) -> None:
+        """-Z in .cargo/config[.toml] rustflags/rustdocflags/env (any nesting) and any [unstable] table are refused."""
+        self.put(".cargo/config.toml", "\n".join([
+            "[build]",
+            'rustflags = ["-C", "target-cpu=native", "-Zcrate-attr=feature(x)"]',
+            "[target.x86_64-unknown-linux-gnu]",
+            'rustflags = "-Z crate-attr=feature(y)"',
+            "[env]",
+            'RUSTFLAGS = { value = "-Zshare-generics", force = true }',
+            "[unstable]",
+            'build-std = ["std"]',
+            "",
+        ]))
+        self.put("crates/fss-x/.cargo/config", '[build]\nrustdocflags = ["-Zunstable-options"]\n')
+        self.put("crates/fss-y/.cargo/config.toml", '[build]\nrustflags = ["-C", "opt-level=3"]\n')
+        U, c = ERR_DEP_UNSTABLE_FEATURE, ".cargo/config.toml"
+        self.assertEqual(self.uf(), sorted([(U, c, "#/build.rustflags"), (U, c, "#/target.x86_64-unknown-linux-gnu.rustflags"), (U, c, "#/env.RUSTFLAGS"), (U, c, "#/unstable"), (U, "crates/fss-x/.cargo/config", "#/build.rustdocflags")]))
+        self.put(".cargo/config.toml", "[build\n")
+        self.assertIn((C, ".cargo/config.toml", "#"), self.uf())
+
+    def test_i_manifests_env_files_scripts_and_build_scripts_are_findings(self) -> None:
+        """cargo-features, profile -Z rustflags, RUSTFLAGS in .env/shell files, cargo -Z in shell, and -Z literals in build.rs."""
+        self.put("crates/fss-x/Cargo.toml", 'cargo-features = ["codegen-backend"]\n[package]\nname = "fss-x"\n[profile.release]\nrustflags = ["-Zshare-generics"]\n')
+        self.put(".env", 'RUSTFLAGS="-Zcrate-attr=feature(x)"\n# RUSTFLAGS="-Zcommented"\nCARGO_ENCODED_RUSTFLAGS=-Zfoo\nOTHER="-Zignored-not-a-flag-variable"\n')
+        self.put("scripts/build.sh", '#!/bin/bash\nexport RUSTFLAGS="-C opt-level=3"\nRUSTFLAGS="$RUSTFLAGS -Zcrate-attr=feature(x)" cargo build\ncargo build -Zbuild-std\ncase "$x" in *[!A-Za-z0-9._+-]*) ;; esac\n')
+        self.put("crates/fss-x/build.rs", 'fn main() {\n    println!("cargo:rustc-env=RUSTFLAGS=-Zcrate-attr=feature(x)");\n    println!("cargo:rerun-if-changed=build.rs");\n}\n')
+        U = ERR_DEP_UNSTABLE_FEATURE
+        self.assertEqual(self.uf(), sorted([
+            (U, "crates/fss-x/Cargo.toml", "#/cargo-features"), (U, "crates/fss-x/Cargo.toml", "#/profile/rustflags"),
+            (U, ".env", "line/1"), (U, ".env", "line/3"),
+            (U, "scripts/build.sh", "line/3"), (U, "scripts/build.sh", "line/4"),
+            (U, "crates/fss-x/build.rs", "line/2"),
+        ]))
+
+    def test_i_scan_runs_in_the_entry_point(self) -> None:
+        """A config-level -Z bypass fails the full constitution check, not only the scanner."""
+        self.put(".cargo/config.toml", '[build]\nrustflags = ["-Zcrate-attr=feature(x)"]\n')
+        with patch("subprocess.run", side_effect=self.fake_run()):
+            result = validate_dependency_constitution(self.tmp_root)
+        self.assertEqual(codes(result), {ERR_DEP_UNSTABLE_FEATURE})
+
+    # --- j: workspace members ---------------------------------------------------------------
+
+    def test_j_members_must_be_declared_in_topology_and_explicit(self) -> None:
+        """An implicit or undeclared workspace member is a METADATA-VIOLATION even though cargo lists it."""
+        core = pkg("fss-core", member=True)
+        rogue = pkg("fss-rogue", member=True)
+        undeclared_dir = pkg("fss-api", member=True)
+        nested = dict(pkg("evil", member=True), manifest_path=f"{ROOT}/crates/fss-core/vendor/evil/Cargo.toml")
+        outside = dict(pkg("fss-cli", member=True), manifest_path="/elsewhere/fss-cli/Cargo.toml")
+        self.assertEqual(self.census(metadata([core], {})), [])
+        self.assertEqual(self.census(metadata([core, rogue], {})), [(MV, "#fss-rogue/topology"), (MV, "#fss-rogue/workspace-member")])
+        self.assertEqual(self.census(metadata([core, undeclared_dir], {})), [(MV, "#fss-api/workspace-member")])
+        self.assertEqual(self.census(metadata([core, nested], {})), [(MV, "#evil/topology"), (MV, "#evil/workspace-member")])
+        self.assertEqual(self.census(metadata([core, outside], {})), [(MV, "#fss-cli/workspace-member")])
+
+    def test_j_member_contract_inputs_fail_closed(self) -> None:
+        """A corrupt topology or a root manifest without [workspace].members fails closed."""
+        meta = json.loads(json.dumps(metadata([pkg("fss-core", member=True)], {})).replace(f"{ROOT}/", f"{self.tmp_root}/"))
+        res = dependency_constitution_checker.ValidationResult()
+        validate_cargo_metadata_for_f0(res, meta, self.tmp_root)
+        self.assertEqual(res.errors, [])
+        self.write("architecture/crate_topology.json", "{ not json")
+        res = dependency_constitution_checker.ValidationResult()
+        validate_cargo_metadata_for_f0(res, meta, self.tmp_root)
+        self.assertEqual(sorted((e.code, e.file_path) for e in res.errors), [(C, "architecture/crate_topology.json")])
+        shutil.copy2(ROOT / "architecture/crate_topology.json", self.path("architecture/crate_topology.json"))
+        cargo = self.text("Cargo.toml")
+        start = cargo.index("members = [")
+        self.write("Cargo.toml", cargo[:start] + cargo[cargo.index("]", start) + 1:])
+        res = dependency_constitution_checker.ValidationResult()
+        validate_cargo_metadata_for_f0(res, meta, self.tmp_root)
+        self.assertEqual(sorted((e.code, e.file_path, e.target) for e in res.errors), [(MV, "Cargo.toml", "#/workspace/members")])
+
+    def test_j_implicit_member_fails_the_entry_point(self) -> None:
+        """cargo metadata naming an implicit in-repository member fails validate_dependency_constitution."""
+        payload = json.dumps(metadata([pkg("fss-core", member=True), pkg("fss-rogue", member=True)], {}))
+        with patch("subprocess.run", side_effect=self.fake_run(cargo=payload)):
+            result = validate_dependency_constitution(self.tmp_root)
+        self.assertEqual(sorted((e.code, e.target) for e in result.errors), [(MV, "#fss-rogue/topology"), (MV, "#fss-rogue/workspace-member")])
+
+    # --- k: toolchain identity single-sourced -------------------------------------------------
+
+    def test_k_identity_comes_from_local_qualification(self) -> None:
+        """Editing only local_qualification.toml changes what rustc -Vv must report; no code-side table exists."""
+        self.assertFalse(hasattr(dependency_constitution_checker, "PINNED_TOOLCHAIN_IDENTITIES"))
+        self.assertFalse(hasattr(dependency_constitution_checker, "host_platform_scope"))
+        self.assertEqual(REQUIRED_RUST_CHANNEL, tomllib.loads((ROOT / self.LQ).read_text(encoding="utf-8"))["toolchain"]["channel"])
+        good = self.text(self.LQ)
+        for label, old, new, expected in (
+            ("hash", 'rustc_commit_hash = "90850177249efe0321573c569aec5d12b257f8d6"', 'rustc_commit_hash = "' + "ab" * 20 + '"', [(I, "#/rustc/commit-hash")]),
+            ("release", 'rustc_release = "1.100.0-nightly"', 'rustc_release = "1.99.0-nightly"', [(I, "#/rustc/release")]),
+            ("date", 'rustc_commit_date = "2026-08-30"', 'rustc_commit_date = "2026-08-29"', [(I, "#/rustc/commit-date")]),
+            ("channel", 'channel = "nightly-2026-08-31"', 'channel = "nightly-2026-08-30"', [(I, "#/toolchain/channel")]),
+            ("linux triple removed", '"x86_64-unknown-linux-gnu" = "linux-x86_64"\n', "", [(I, "#/rustc/host")]),
+            ("triple mapped to an unregistered scope", '"x86_64-unknown-linux-gnu" = "linux-x86_64"', '"x86_64-unknown-linux-gnu" = "linux-riscv"', [(I, "#/rustc/host")]),
+        ):
+            with self.subTest(label):
+                self.write(self.LQ, good.replace(old, new, 1))
+                self.assertNotEqual(self.text(self.LQ), good)
+                self.assertEqual(self.toolchain(), expected)
+        self.write(self.LQ, good.replace('"aarch64-apple-darwin" = "darwin-arm64"', '"aarch64-apple-darwin" = "darwin-arm64"\n"x86_64-unknown-freebsd" = "linux-x86_64"', 1))
+        self.assertEqual(self.toolchain(rustc=GOOD_RUSTC.replace("x86_64-unknown-linux-gnu", "x86_64-unknown-freebsd")), [])
+
+    def test_k_consistent_bump_needs_only_data(self) -> None:
+        """Moving both rust-toolchain.toml and local_qualification.toml to a new identity passes with no code change."""
+        self.write(TC, self.text(TC).replace("nightly-2026-08-31", "nightly-2026-09-10"))
+        self.write(self.LQ, self.text(self.LQ).replace('channel = "nightly-2026-08-31"', 'channel = "nightly-2026-09-10"').replace("1.100.0-nightly", "1.101.0-nightly").replace("90850177249efe0321573c569aec5d12b257f8d6", "ab" * 20).replace('rustc_commit_date = "2026-08-30"', 'rustc_commit_date = "2026-09-09"'))
+        bumped = GOOD_RUSTC.replace("1.100.0-nightly", "1.101.0-nightly").replace("908501772 2026-08-30", "ababababa 2026-09-09").replace("90850177249efe0321573c569aec5d12b257f8d6", "ab" * 20).replace("commit-date: 2026-08-30", "commit-date: 2026-09-09")
+        self.assertEqual(self.toolchain(rustc=bumped), [])
+        self.assertEqual(self.toolchain(), [(I, "#/rustc/commit-date"), (I, "#/rustc/commit-hash"), (I, "#/rustc/release")])
+
+    def test_k_toolchain_contract_fails_closed(self) -> None:
+        """A missing, mistyped or malformed identity key in local_qualification.toml is refused, never defaulted."""
+        good = self.text(self.LQ)
+        windows = '"x86_64-pc-windows-msvc" = "windows-x86_64"\n'
+        for label, text, expected in (
+            ("no channel", good.replace('channel = "nightly-2026-08-31"\n', "", 1), [(M, "#/toolchain/channel")]),
+            ("no host table", good[:good.index("[toolchain.host_triples]")] + good[good.index(windows) + len(windows):], [(M, "#/toolchain/host_triples")]),
+            ("hash not hex", good.replace("90850177249efe0321573c569aec5d12b257f8d6", "not-a-hash"), [(C, "#/toolchain")]),
+            ("stable channel", good.replace('channel = "nightly-2026-08-31"', 'channel = "stable"', 1), [(I, "#/toolchain/channel")]),
+        ):
+            with self.subTest(label):
+                self.write(self.LQ, text)
+                res = dependency_constitution_checker.ValidationResult()
+                with patch("subprocess.run", side_effect=self.fake_run()):
+                    self.assertIsNone(validate_toolchain_identity(self.tmp_root, res))
+                self.assertEqual(sorted((e.code, e.target) for e in res.errors), expected)
+        self.write(self.LQ, good.replace('channel = "nightly-2026-08-31"', "channel = 5", 1))
+        res = dependency_constitution_checker.ValidationResult()
+        with patch("subprocess.run", side_effect=self.fake_run()):
+            self.assertIsNone(validate_toolchain_identity(self.tmp_root, res))
+        self.assertTrue(res.errors and all(e.file_path == self.LQ for e in res.errors), [(e.code, e.target) for e in res.errors])
+
+    def test_k_check_policy_compares_the_channel(self) -> None:
+        """check-policy refuses a rust-toolchain.toml channel that differs from the accepted channel."""
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("check_policy_k", ROOT / "scripts" / "check-policy.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        constitution = json.loads((ROOT / CJ).read_text(encoding="utf-8"))
+        localq = tomllib.loads((ROOT / self.LQ).read_text(encoding="utf-8"))
+        toolchain = tomllib.loads((ROOT / TC).read_text(encoding="utf-8"))["toolchain"]
+        policy = tomllib.loads((ROOT / AL).read_text(encoding="utf-8"))
+        state = dependency_authority.load_authority(ROOT)
+        module.errors.clear()
+        module.dependency_policy_consistency(constitution, localq, toolchain, policy, state)
+        self.assertEqual(module.errors, [])
+        module.dependency_policy_consistency(constitution, localq, dict(toolchain, channel="nightly-2026-09-01"), policy, state)
+        self.assertEqual(len(module.errors), 1)
+        self.assertIn("differs from the accepted channel", module.errors[0])
+
+    # --- l: the two constitution copies ----------------------------------------------------------
+
+    def test_l_editing_either_copy_alone_is_drift(self) -> None:
+        """The docs copy must be byte-identical to DEPENDENCY_CONSTITUTION.md; editing either alone fails."""
+        root_copy = "DEPENDENCY_CONSTITUTION.md"
+        original = self.text(MD)
+        self.assertEqual(original, self.text(root_copy))
+        self.assertCodes(set())
+        self.write(MD, original + "\nEditorial note.\n")
+        result = self.assertCodes({CD})
+        self.assertEqual([(e.file_path, e.target) for e in result.errors], [(root_copy, "#")])
+        self.write(MD, original)
+        self.write(root_copy, original.replace("# ", "#  ", 1))
+        self.assertCodes({CD})
+        self.write(root_copy, original + "\nEditorial note.\n")
+        self.write(MD, original + "\nEditorial note.\n")
+        self.assertCodes(set())
+        self.path(root_copy).unlink()
+        self.assertCodes({C})
+        self.path(root_copy).symlink_to(self.path(MD))
+        self.assertCodes({C})
+
+    # --- Cargo.lock is read through the bounded reader before cargo runs -------------------------
+
+    def test_oversized_symlinked_or_missing_lock_fails_before_cargo(self) -> None:
+        """An oversized, symlinked or missing Cargo.lock is CORRUPT-FILE and cargo metadata never runs."""
+        lock = self.path("Cargo.lock")
+        real = self.tmp_root / "real.lock"
+        real.write_bytes((ROOT / "Cargo.lock").read_bytes())
+        for label in ("oversized", "symlink", "missing"):
+            with self.subTest(label):
+                lock.unlink(missing_ok=True)
+                if label == "oversized":
+                    lock.write_bytes(b"#" * (dependency_authority.MAX_INPUT_FILE_BYTES + 1))
+                elif label == "symlink":
+                    lock.symlink_to(real)
+                calls: list[Any] = []
+                with patch("subprocess.run", side_effect=self.fake_run(calls=calls)):
+                    result = validate_dependency_constitution(self.tmp_root)
+                self.assertEqual(sorted((e.code, e.file_path) for e in result.errors), [(C, "Cargo.lock")])
+                self.assertEqual([cmd[3] for cmd, _ in calls], ["rustc"])
 
 
 if __name__ == "__main__":

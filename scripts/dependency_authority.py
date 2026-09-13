@@ -86,7 +86,7 @@ AUTHORITY_ERROR_CODES: tuple[str, ...] = (
 # also need a generation bump because each generation has exactly one pinned digest.
 # ---------------------------------------------------------------------------------------------
 BASELINE_DEPENDENCIES_GENERATION = "gen:fss1:dependencies-v2"
-BASELINE_DEPENDENCIES_FREEZE_DIGEST = "sha256:ebbd4c884de0b3e54fe147eced73327ef69cf26018405de44827c8e4935481fb"
+BASELINE_DEPENDENCIES_FREEZE_DIGEST = "sha256:51cdeb2f41e92f6627c83285777af1c1c3a8fd7f4cae34d4dec2906b57fb75a7"
 EXPECTED_DEPENDENCIES_DIGESTS: dict[str, str] = {
     BASELINE_DEPENDENCIES_GENERATION: BASELINE_DEPENDENCIES_FREEZE_DIGEST,
 }
@@ -522,6 +522,7 @@ ADMISSION_QUARANTINE = "non-production-quarantine-only"
 REGISTRY_ROW_SPEC = Obj({
     "id": Str(),
     "constitutionClass": Str(),
+    "constitutionClasses": List(Str()),
     "class": Str(),
     "rule": Str(),
     "scope": Str(),
@@ -1102,6 +1103,29 @@ def load_policy_document(path: Path, root: Path) -> tuple[dict[str, Any] | None,
     return value, problems
 
 
+def _check_row_class(auth: Authority, out: list[DiagnosticError], row: dict[str, Any], class_id: str, field: str,
+                     producers: list[str], scope: Any, lanes: Any) -> None:
+    """Admission consequences of one constitution class a registry row maps to."""
+    registry_rel = DEPENDENCIES_JSON_PATH
+    dep_id = row["id"]
+    klass = auth.classes().get(class_id)
+    if klass is None:
+        if auth.constitution is not None:
+            out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/{field}", f"Dependency {dep_id!r} references unknown constitution class {class_id!r}"))
+        return
+    admission = klass.get("admission")
+    if not is_str(admission):
+        return
+    if admission == ADMISSION_CONSTITUTIONAL:
+        out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/{field}", f"Dependency {dep_id!r} maps to the constitutional language class {class_id!r}; F0 is the Rust language and standard library, not a crate dependency class"))
+    if admission == ADMISSION_QUARANTINE and lanes is not None and "production" in lanes:
+        out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/scope", f"Dependency {dep_id!r} maps to quarantine class {class_id!r} but scope {scope!r} admits production"))
+    if admission == ADMISSION_DEP_RECORD and scope == "Production":
+        out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/scope", f"Dependency {dep_id!r} maps to {class_id!r} (admission {admission!r}) but its scope 'Production' drops the audit condition"))
+    if (admission == ADMISSION_IMPORT_GATE or GATE_ID_RE.fullmatch(admission)) and FRANKEN_IMPORTS_PATH not in producers:
+        out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/producers", f"Dependency {dep_id!r} maps to gated class {class_id!r} but does not name the import-gate registry {FRANKEN_IMPORTS_PATH!r} as a producer"))
+
+
 def _check_crosswalk(auth: Authority) -> None:
     out = auth.issues
     allow = as_dict(auth.allowlist)
@@ -1121,28 +1145,24 @@ def _check_crosswalk(auth: Authority) -> None:
     rows = auth.rows()
     registry_rel = DEPENDENCIES_JSON_PATH
     table_claims: dict[str, list[str]] = {}
+    covered: set[str] = set()
     for row in rows:
         if not is_str(row.get("constitutionClass")):
             out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{row['id']}/constitutionClass", f"Dependency {row['id']!r} has no DEP-CLASS reference; every registry row must map to a constitution class"))
         dep_id = row["id"]
         active = row.get("status") == "active"
-        class_id = row.get("constitutionClass")
-        klass = classes.get(class_id) if is_str(class_id) else None
-        if auth.constitution is not None and is_str(class_id) and klass is None:
-            out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/constitutionClass", f"Dependency {dep_id!r} references unknown constitution class {class_id!r}"))
+        primary = row.get("constitutionClass")
+        listed = row.get("constitutionClasses")
+        row_classes = [c for c in listed if is_str(c)] if isinstance(listed, list) else ([primary] if is_str(primary) else [])
+        if isinstance(listed, list) and is_str(primary) and (not row_classes or row_classes[0] != primary or len(set(row_classes)) != len(row_classes)):
+            out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/constitutionClasses", f"Dependency {dep_id!r} constitutionClasses {listed!r} must be unique class ids led by its primary constitutionClass {primary!r}"))
+        if active:
+            covered.update(row_classes)
         producers = str_list(row.get("producers"))
-        admission = klass.get("admission") if klass else None
         scope = row.get("scope")
         lanes = SCOPE_LANES.get(scope) if is_str(scope) else None
-        if klass is not None and is_str(admission):
-            if admission == ADMISSION_CONSTITUTIONAL:
-                out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/constitutionClass", f"Dependency {dep_id!r} maps to the constitutional language class {class_id!r}; F0 is the Rust language and standard library, not a crate dependency class"))
-            if admission == ADMISSION_QUARANTINE and lanes is not None and "production" in lanes:
-                out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/scope", f"Dependency {dep_id!r} maps to quarantine class {class_id!r} but scope {scope!r} admits production"))
-            if admission == ADMISSION_DEP_RECORD and scope == "Production":
-                out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/scope", f"Dependency {dep_id!r} maps to {class_id!r} (admission {admission!r}) but its scope 'Production' drops the audit condition"))
-            if (admission == ADMISSION_IMPORT_GATE or GATE_ID_RE.fullmatch(admission)) and FRANKEN_IMPORTS_PATH not in producers:
-                out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, f"row/{dep_id}/producers", f"Dependency {dep_id!r} maps to gated class {class_id!r} but does not name the import-gate registry {FRANKEN_IMPORTS_PATH!r} as a producer"))
+        for class_id in dict.fromkeys(row_classes):
+            _check_row_class(auth, out, row, class_id, "constitutionClass" if class_id == primary else "constitutionClasses", producers, scope, lanes)
         for producer in producers:
             path, _, table = producer.partition("#")
             if table and path == ALLOWLIST_TOML_PATH:
@@ -1171,6 +1191,13 @@ def _check_crosswalk(auth: Authority) -> None:
             if is_str(row_id) and (row_id != fundamental_row or row_id not in table_claims.get("pending_owner_decisions", [])):
                 out.append(issue(ERR_DEP_CONST_INVARIANT, ALLOWLIST_TOML_PATH, f"#/pending_owner_decisions/{decision}/registry_row", f"pending decision {decision!r} names registry row {row_id!r}, which is not the active row producing both [fundamental] and [pending_owner_decisions]"))
     if auth.registry is not None and auth.constitution is not None:
+        gates = {r.get("gate") for r in as_dict(auth.imports).get("imports", []) if isinstance(r, dict)} if isinstance(as_dict(auth.imports).get("imports"), list) else None
+        for class_id, klass in classes.items():
+            admission = klass.get("admission")
+            if admission != ADMISSION_CONSTITUTIONAL and class_id not in covered:
+                out.append(issue(ERR_DEP_CONST_INVARIANT, registry_rel, "#/dependencies", f"constitution class {class_id!r} ({klass.get('name')!r}) is not mapped by any active registry row; every non-constitutional class needs one"))
+            if is_str(admission) and GATE_ID_RE.fullmatch(admission) and gates is not None and admission not in gates:
+                out.append(issue(ERR_DEP_CONST_INVARIANT, FRANKEN_IMPORTS_PATH, "#/imports", f"constitution class {class_id!r} is admitted by gate {admission!r}, but no import record in {FRANKEN_IMPORTS_PATH} carries that gate"))
         policy_ref = as_dict(auth.registry).get("policy")
         normative = as_dict(auth.constitution).get("normativePolicy")
         if is_str(policy_ref) and is_str(normative) and policy_ref != normative:
