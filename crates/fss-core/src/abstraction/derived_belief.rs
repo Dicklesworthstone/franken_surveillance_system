@@ -9,7 +9,7 @@
 use crate::belief::BeliefInterval;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
-use crate::{ContentDigest, Generation, KnowledgeCell, LedgerAnchor, StaleBasis};
+use crate::{ContentDigest, Generation, KnowledgeCell, KnowledgeStateBasis, LedgerAnchor, StaleBasis};
 
 use super::AgentAbstractionLayer;
 
@@ -517,25 +517,50 @@ impl DerivedBelief {
     ///
     /// This is the boundary where a derived belief reaches agent-facing knowledge. It
     /// re-validates every invariant (so a derived belief can never yield an irreversible-effect
-    /// premise: `known` is refused) and enforces [`DerivedBelief::validate_anchor_freshness`]
-    /// against `current`. The emitted cell must itself pass [`KnowledgeCell::validate`]; its
-    /// error is propagated, so no invalid cell ever leaves this boundary.
+    /// premise: `known` is refused) and evaluates anchor freshness against `current`.
+    ///
+    /// Per KSTATE-005 and AGENTS.md:
+    /// - When `current` equals `self.anchor`, the emitted cell preserves `self.knowledge_state`.
+    /// - When `self.anchor` is strictly older than `current` on the same site lineage (anchor drift),
+    ///   the emitted cell is labelled [`KnowledgeState::Stale`] carrying
+    ///   [`KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor)`]. This stale cell can NEVER serve
+    ///   as an irreversible-effect premise.
+    /// - Forked anchors, different site lineages, or future anchors are refused with
+    ///   [`ContractError::DerivedBeliefAnchorMismatch`].
+    /// - An invalid `current` anchor (e.g. all-zero state root) is refused with
+    ///   [`ContractError::DerivedBeliefMissingAnchor`].
+    ///
+    /// The emitted cell must itself pass [`KnowledgeCell::validate`]; its error is propagated,
+    /// so no invalid cell ever leaves this boundary.
     pub fn to_knowledge_cell(
         &self,
         current: &LedgerAnchor,
     ) -> Result<KnowledgeCell, ContractError> {
         self.validate()?;
-        self.validate_anchor_freshness(current)?;
+        if !anchor_names_canonical_state(current) {
+            return Err(ContractError::DerivedBeliefMissingAnchor);
+        }
+        let older = StaleBasis::OlderAnchor {
+            valid_at: Box::new(self.anchor.clone()),
+            current: Box::new(current.clone()),
+        };
+        let (knowledge_state, state_basis) = if self.anchor == *current {
+            (self.knowledge_state, None)
+        } else if older.validate().is_ok() {
+            (KnowledgeState::Stale, Some(KnowledgeStateBasis::Stale(older)))
+        } else {
+            return Err(ContractError::DerivedBeliefAnchorMismatch);
+        };
         KnowledgeCell {
             claim_id: self.belief_id.clone(),
             statement: self.statement.clone(),
-            knowledge_state: self.knowledge_state,
+            knowledge_state,
             provenance: self.provenance,
             hypothesis: None,
             evidence: self.supporting_evidence.clone(),
             contradictions: self.contradictions.clone(),
             valid_until: None,
-            state_basis: None,
+            state_basis,
         }
         .validated()
     }
@@ -783,5 +808,88 @@ mod tests {
             encoder.finish_checked(),
             Err(ContractError::ArithmeticOverflow)
         );
+    }
+
+    #[test]
+    fn to_knowledge_cell_emits_stale_cell_on_anchor_drift_and_refuses_mismatches() -> TestResult {
+        let belief = DerivedBelief::new(sealed_params()?)?;
+        let pinned = belief.anchor.clone();
+        let now = TimestampNs(1_000_000_000);
+
+        // 1. Same anchor: preserves belief knowledge_state, no state basis
+        let fresh_cell = belief.to_knowledge_cell(&pinned)?;
+        assert_eq!(fresh_cell.knowledge_state, belief.knowledge_state);
+        assert_eq!(fresh_cell.provenance, ProvenanceClass::Derived);
+        assert_eq!(fresh_cell.state_basis, None);
+        assert!(!fresh_cell.is_irreversible_effect_premise(now));
+        assert_eq!(fresh_cell.validate(), Ok(()));
+
+        // 2. Anchor drift: strictly newer commit sequence in same epoch -> Stale cell with OlderAnchor basis
+        let mut newer_sequence = pinned.clone();
+        newer_sequence.commit_sequence += 1;
+        let stale_seq_cell = belief.to_knowledge_cell(&newer_sequence)?;
+        assert_eq!(stale_seq_cell.knowledge_state, KnowledgeState::Stale);
+        assert_eq!(stale_seq_cell.provenance, ProvenanceClass::Derived);
+        assert_eq!(
+            stale_seq_cell.state_basis,
+            Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+                valid_at: Box::new(pinned.clone()),
+                current: Box::new(newer_sequence.clone()),
+            }))
+        );
+        assert!(!stale_seq_cell.is_irreversible_effect_premise(now));
+        assert_eq!(stale_seq_cell.validate(), Ok(()));
+
+        // 3. Anchor drift: strictly newer epoch -> Stale cell with OlderAnchor basis
+        let mut newer_epoch = pinned.clone();
+        newer_epoch.ledger_epoch += 1;
+        newer_epoch.commit_sequence = 0;
+        let stale_epoch_cell = belief.to_knowledge_cell(&newer_epoch)?;
+        assert_eq!(stale_epoch_cell.knowledge_state, KnowledgeState::Stale);
+        assert_eq!(
+            stale_epoch_cell.state_basis,
+            Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+                valid_at: Box::new(pinned.clone()),
+                current: Box::new(newer_epoch.clone()),
+            }))
+        );
+        assert!(!stale_epoch_cell.is_irreversible_effect_premise(now));
+        assert_eq!(stale_epoch_cell.validate(), Ok(()));
+
+        // 4. Forked anchor: same epoch/seq but different state root -> refused
+        let mut forked = pinned.clone();
+        forked.state_root = ContentDigest::sha256(b"divergent_state_root");
+        assert_eq!(
+            belief.to_knowledge_cell(&forked),
+            Err(ContractError::DerivedBeliefAnchorMismatch)
+        );
+
+        // 5. Other lineage: different site lineage -> refused
+        let mut other_site = pinned.clone();
+        other_site.site_lineage = "site:other:lineage".into();
+        assert_eq!(
+            belief.to_knowledge_cell(&other_site),
+            Err(ContractError::DerivedBeliefAnchorMismatch)
+        );
+
+        // 6. Future anchor: current is in the past relative to belief anchor -> refused
+        let mut older_current = pinned.clone();
+        older_current.commit_sequence = pinned.commit_sequence.saturating_sub(1);
+        if older_current.commit_sequence < pinned.commit_sequence {
+            assert_eq!(
+                belief.to_knowledge_cell(&older_current),
+                Err(ContractError::DerivedBeliefAnchorMismatch)
+            );
+        }
+
+        // 7. Missing anchor: all-zero state root -> refused
+        let mut zero_root = pinned;
+        zero_root.state_root = zero_digest();
+        assert_eq!(
+            belief.to_knowledge_cell(&zero_root),
+            Err(ContractError::DerivedBeliefMissingAnchor)
+        );
+
+        Ok(())
     }
 }
