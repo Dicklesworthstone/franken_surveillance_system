@@ -412,6 +412,46 @@ impl OmissionReason {
             }),
         }
     }
+    /// Parses from canonical string representation returning a [`ContractError`].
+    pub fn parse_canonical(s: &str) -> Result<Self, ContractError> {
+        match s {
+            "none" => Ok(Self::None),
+            "privacy_redaction" => Ok(Self::PrivacyRedaction),
+            "resource_pressure" => Ok(Self::ResourcePressure),
+            "retention_policy" => Ok(Self::RetentionPolicy),
+            "capability_filtered" => Ok(Self::CapabilityFiltered),
+            "transient_preview_only" => Ok(Self::TransientPreviewOnly),
+            "upstream_missing" => Ok(Self::UpstreamMissing),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
+impl core::fmt::Display for OmissionReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl core::str::FromStr for OmissionReason {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse_canonical(s)
+    }
+}
+
+impl CanonicalEncode for OmissionReason {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for OmissionReason {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        Self::parse_canonical(text)
+    }
 }
 
 /// Source custody status binding exact source bytes to content-addressed storage.

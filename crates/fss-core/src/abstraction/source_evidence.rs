@@ -4,12 +4,124 @@
 //! Authority plane types:
 //! - [`SourceEvidenceRecord`]
 //! - [`SourceEvidenceParams`]
+//! - [`SourceEvidenceClassification`]
+
+use core::fmt;
+use core::str::FromStr;
 
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
+use crate::evidence::SensorCapsule;
+use crate::ids::validate_id;
+use crate::sensor_capsule::{OmissionReason, SourceCustody};
 use crate::{ContentDigest, Generation, KnowledgeCell, LedgerAnchor};
 
 use super::AgentAbstractionLayer;
+
+/// Canonical classification of source evidence (AGT-LAYER-002, INV-003).
+///
+/// Under constitutional invariant INV-003, decode buffers, model inference outputs,
+/// and derived cognitions can NEVER be promoted into source evidence.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum SourceEvidenceClassification {
+    /// Raw network packets (e.g. PCAP, wire frames).
+    RawWirePackets,
+    /// Unmodified source payload file on disk/blob storage.
+    SourcePayloadFile,
+    /// Direct physical sensor hardware reading.
+    PhysicalSensorMeasurement,
+    /// Immutable sensor capsule with integrity proofs.
+    SensorCapsule,
+    /// Cryptographic continuity witness / hash chain link.
+    ContinuityWitness,
+    /// Decoded frame pixel buffer (PROHIBITED from source promotion).
+    DecodedFrameBuffer,
+    /// Model inference output / bounding box / embeddings (PROHIBITED from source promotion).
+    ModelInferenceOutput,
+    /// Derived cognition / belief (PROHIBITED from source promotion).
+    DerivedCognition,
+}
+
+impl SourceEvidenceClassification {
+    /// Returns true if this classification is permitted as authoritative source evidence.
+    #[must_use]
+    pub const fn is_permitted(&self) -> bool {
+        matches!(
+            self,
+            Self::RawWirePackets
+                | Self::SourcePayloadFile
+                | Self::PhysicalSensorMeasurement
+                | Self::SensorCapsule
+                | Self::ContinuityWitness
+        )
+    }
+
+    /// Returns true if this classification is prohibited from being promoted to source evidence.
+    #[must_use]
+    pub const fn is_prohibited(&self) -> bool {
+        !self.is_permitted()
+    }
+
+    /// Canonical string identifier for this classification.
+    #[must_use]
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::RawWirePackets => "raw_wire_packets",
+            Self::SourcePayloadFile => "source_payload_file",
+            Self::PhysicalSensorMeasurement => "physical_sensor_measurement",
+            Self::SensorCapsule => "sensor_capsule",
+            Self::ContinuityWitness => "continuity_witness",
+            Self::DecodedFrameBuffer => "decoded_frame_buffer",
+            Self::ModelInferenceOutput => "model_inference_output",
+            Self::DerivedCognition => "derived_cognition",
+        }
+    }
+
+    /// Parses from an exact canonical string token.
+    ///
+    /// Accepts only exact canonical tokens. Tokens with leading/trailing whitespace,
+    /// non-matching case, or substring variations are rejected with [`ContractError::InvalidIdentifier`].
+    pub fn parse(s: &str) -> Result<Self, ContractError> {
+        match s {
+            "raw_wire_packets" => Ok(Self::RawWirePackets),
+            "source_payload_file" => Ok(Self::SourcePayloadFile),
+            "physical_sensor_measurement" => Ok(Self::PhysicalSensorMeasurement),
+            "sensor_capsule" => Ok(Self::SensorCapsule),
+            "continuity_witness" => Ok(Self::ContinuityWitness),
+            "decoded_frame_buffer" => Ok(Self::DecodedFrameBuffer),
+            "model_inference_output" => Ok(Self::ModelInferenceOutput),
+            "derived_cognition" => Ok(Self::DerivedCognition),
+            _ => Err(ContractError::InvalidIdentifier),
+        }
+    }
+}
+
+impl fmt::Display for SourceEvidenceClassification {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for SourceEvidenceClassification {
+    type Err = ContractError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::parse(s)
+    }
+}
+
+impl CanonicalEncode for SourceEvidenceClassification {
+    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+        encoder.text(self.as_str());
+    }
+}
+
+impl CanonicalDecode for SourceEvidenceClassification {
+    fn decode_canonical(decoder: &mut CanonicalDecoder<'_>) -> Result<Self, ContractError> {
+        let text = decoder.text()?;
+        Self::parse(text)
+    }
+}
 
 /// An authoritative source evidence record (AGT-LAYER-002, INV-003).
 ///
@@ -27,12 +139,16 @@ pub struct SourceEvidenceRecord {
     pub statement: String,
     /// Epistemic provenance: strictly `ProvenanceClass::Observed`.
     pub provenance: ProvenanceClass,
-    /// Exact source byte content digest (required unless `retention_forbidden_reason` is set per INV-003).
-    pub source_bytes_digest: Option<ContentDigest>,
+    /// Strongly typed evidence classification.
+    pub classification: SourceEvidenceClassification,
+    /// Source custody status binding exact source bytes to storage.
+    pub custody: SourceCustody,
+    /// Explicit omission reason if source bytes were omitted (INV-003).
+    pub omission: Option<OmissionReason>,
+    /// Immutable sensor capsule with integrity proofs, if available.
+    pub capsule: Option<SensorCapsule>,
     /// Continuity witness digest proving unbroken stream/timing continuity.
     pub continuity_witness: Option<ContentDigest>,
-    /// Explicit justification if source bytes could not be retained (INV-003 exemption).
-    pub retention_forbidden_reason: Option<String>,
 }
 
 /// Parameters for constructing a [`SourceEvidenceRecord`].
@@ -48,12 +164,16 @@ pub struct SourceEvidenceParams {
     pub statement: String,
     /// Provenance class (must be `Observed`).
     pub provenance: ProvenanceClass,
-    /// Content digest of source bytes.
-    pub source_bytes_digest: Option<ContentDigest>,
+    /// Strongly typed evidence classification.
+    pub classification: SourceEvidenceClassification,
+    /// Source custody status.
+    pub custody: SourceCustody,
+    /// Explicit omission reason if source bytes are omitted.
+    pub omission: Option<OmissionReason>,
+    /// Immutable sensor capsule, if available.
+    pub capsule: Option<SensorCapsule>,
     /// Continuity witness digest.
     pub continuity_witness: Option<ContentDigest>,
-    /// Reason why retention was forbidden, if applicable.
-    pub retention_forbidden_reason: Option<String>,
 }
 
 impl SourceEvidenceRecord {
@@ -65,9 +185,11 @@ impl SourceEvidenceRecord {
             generation: params.generation,
             statement: params.statement,
             provenance: params.provenance,
-            source_bytes_digest: params.source_bytes_digest,
+            classification: params.classification,
+            custody: params.custody,
+            omission: params.omission,
+            capsule: params.capsule,
             continuity_witness: params.continuity_witness,
-            retention_forbidden_reason: params.retention_forbidden_reason,
         };
         record.validate()?;
         Ok(record)
@@ -75,38 +197,75 @@ impl SourceEvidenceRecord {
 
     /// Validates constitutional invariants for this source evidence record (INV-003).
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.evidence_id.is_empty() || self.evidence_id.len() > 128 {
-            return Err(ContractError::InvalidIdentifier);
-        }
-        if self.statement.is_empty() || self.statement.len() > 512 {
-            return Err(ContractError::InvalidIdentifier);
-        }
+        validate_id(&self.evidence_id)?;
         if self.anchor.site_lineage.is_empty() {
-            return Err(ContractError::InvalidIdentifier);
+            return Err(ContractError::SourceEvidenceMissingAnchor);
         }
         if self.generation.0 == 0 {
             return Err(ContractError::GenerationConflict);
         }
+        if self.statement.is_empty() || self.statement.len() > 512 {
+            return Err(ContractError::InvalidIdentifier);
+        }
         // Constitutional Prohibition: "Cannot promote decode or model output into source evidence."
-        // Provenance MUST be Observed; Derived, ModelInference, etc. are strictly prohibited.
+        // Provenance MUST be Observed; Derived, Predicted, etc. are strictly prohibited.
         if self.provenance != ProvenanceClass::Observed {
             return Err(ContractError::ProhibitedEvidencePromotion);
         }
-        // Prohibition check against statement text claiming decode or model outputs
-        let lower = self.statement.to_lowercase();
-        if lower.contains("decoded frame")
-            || lower.contains("model output")
-            || lower.contains("vlm inference")
-            || lower.contains("bounding box")
-            || lower.contains("model prediction")
-        {
+        // Typed classification check: Cannot promote decode buffer or model output
+        if self.classification.is_prohibited() {
             return Err(ContractError::ProhibitedEvidencePromotion);
         }
+
         // Invariant INV-003: Every retained observation names exact source bytes
         // or records why source retention was forbidden.
-        if self.source_bytes_digest.is_none() && self.retention_forbidden_reason.is_none() {
-            return Err(ContractError::EvidenceRequired);
+        match &self.custody {
+            SourceCustody::Retained {
+                source_digest,
+                source_bytes,
+                storage_handle,
+            } => {
+                if storage_handle.trim().is_empty() {
+                    return Err(ContractError::SourceEvidenceEmptyStorageHandle);
+                }
+                if *source_bytes == 0 {
+                    return Err(ContractError::EvidenceRequired);
+                }
+                if source_digest.bytes() == [0u8; 32] {
+                    return Err(ContractError::InvalidDigest);
+                }
+                if self.omission.is_some() {
+                    return Err(ContractError::SourceEvidenceRetainedWithOmission);
+                }
+                if let Some(capsule) = &self.capsule {
+                    if capsule.source_digest != *source_digest {
+                        return Err(ContractError::DigestMismatch);
+                    }
+                    if capsule.source_bytes != *source_bytes {
+                        return Err(ContractError::SourceEvidenceByteCountMismatch);
+                    }
+                }
+            }
+            SourceCustody::NotRetained => {
+                // Must record a valid typed omission reason, and it cannot be None
+                match self.omission {
+                    Some(reason) if reason != OmissionReason::None => {}
+                    _ => return Err(ContractError::SourceEvidenceOmissionRequired),
+                }
+                if let Some(capsule) = &self.capsule {
+                    if capsule.source_bytes > 0 || capsule.source_digest.bytes() != [0u8; 32] {
+                        return Err(ContractError::SourceEvidenceNotRetainedWithCapsuleBytes);
+                    }
+                }
+            }
         }
+
+        if let Some(witness) = self.continuity_witness {
+            if witness.bytes() == [0u8; 32] {
+                return Err(ContractError::InvalidDigest);
+            }
+        }
+
         Ok(())
     }
 
@@ -135,17 +294,42 @@ impl SourceEvidenceRecord {
     }
 
     /// Converts this source evidence record into a canonical [`KnowledgeCell`].
+    ///
+    /// Truthful knowledge state derivation:
+    /// - For `Retained` custody: `KnowledgeState::Known`, binding exact source digests.
+    /// - For `NotRetained` custody: `KnowledgeState::NotObservable` if upstream missing,
+    ///   or `KnowledgeState::Unknown` otherwise, with empty evidence (no manufactured evidence roots).
     #[must_use]
     pub fn to_knowledge_cell(&self) -> KnowledgeCell {
-        let evidence = if let Some(digest) = self.source_bytes_digest {
-            vec![digest]
-        } else {
-            vec![]
+        let (knowledge_state, evidence) = match &self.custody {
+            SourceCustody::Retained { source_digest, .. } => {
+                let mut ev = vec![*source_digest];
+                if let Some(capsule) = &self.capsule {
+                    let meta_digest = capsule.metadata_digest();
+                    if !ev.contains(&meta_digest) {
+                        ev.push(meta_digest);
+                    }
+                }
+                if let Some(witness) = self.continuity_witness {
+                    if !ev.contains(&witness) {
+                        ev.push(witness);
+                    }
+                }
+                (KnowledgeState::Known, ev)
+            }
+            SourceCustody::NotRetained => {
+                let state = match self.omission {
+                    Some(OmissionReason::UpstreamMissing) => KnowledgeState::NotObservable,
+                    _ => KnowledgeState::Unknown,
+                };
+                (state, Vec::new())
+            }
         };
+
         KnowledgeCell {
             claim_id: self.evidence_id.clone(),
             statement: self.statement.clone(),
-            knowledge_state: KnowledgeState::Known,
+            knowledge_state,
             provenance: self.provenance,
             hypothesis: None,
             evidence,
@@ -162,27 +346,29 @@ impl CanonicalEncode for SourceEvidenceRecord {
         self.anchor.encode_canonical(encoder);
         encoder.u64(self.generation.0);
         encoder.text(&self.statement);
-        encoder.tag(crate::pricing::provenance_class_to_u8(self.provenance));
-        match self.source_bytes_digest {
-            Some(digest) => {
-                encoder.u8(1);
-                encoder.digest(digest);
+        self.provenance.encode_canonical(encoder);
+        self.classification.encode_canonical(encoder);
+        self.custody.encode_canonical(encoder);
+        match self.omission {
+            Some(reason) => {
+                encoder.bool(true);
+                reason.encode_canonical(encoder);
             }
-            None => encoder.u8(0),
+            None => encoder.bool(false),
+        }
+        match &self.capsule {
+            Some(capsule) => {
+                encoder.bool(true);
+                capsule.encode_canonical(encoder);
+            }
+            None => encoder.bool(false),
         }
         match self.continuity_witness {
             Some(witness) => {
-                encoder.u8(1);
+                encoder.bool(true);
                 encoder.digest(witness);
             }
-            None => encoder.u8(0),
-        }
-        match &self.retention_forbidden_reason {
-            Some(reason) => {
-                encoder.u8(1);
-                encoder.text(reason);
-            }
-            None => encoder.u8(0),
+            None => encoder.bool(false),
         }
     }
 }
@@ -193,24 +379,26 @@ impl CanonicalDecode for SourceEvidenceRecord {
         let anchor = LedgerAnchor::decode_canonical(decoder)?;
         let generation = Generation(decoder.u64()?);
         let statement = decoder.text()?.to_owned();
-        let provenance = crate::pricing::provenance_class_from_u8(decoder.tag()?)?;
-        let has_source = decoder.u8()?;
-        let source_bytes_digest = match has_source {
-            0 => None,
-            1 => Some(decoder.digest()?),
-            other => return Err(ContractError::UnknownEntryTag(other)),
+        let provenance = ProvenanceClass::decode_canonical(decoder)?;
+        let classification = SourceEvidenceClassification::decode_canonical(decoder)?;
+        let custody = SourceCustody::decode_canonical(decoder)?;
+        let has_omission = decoder.bool()?;
+        let omission = if has_omission {
+            Some(OmissionReason::decode_canonical(decoder)?)
+        } else {
+            None
         };
-        let has_continuity = decoder.u8()?;
-        let continuity_witness = match has_continuity {
-            0 => None,
-            1 => Some(decoder.digest()?),
-            other => return Err(ContractError::UnknownEntryTag(other)),
+        let has_capsule = decoder.bool()?;
+        let capsule = if has_capsule {
+            Some(SensorCapsule::decode_canonical(decoder)?)
+        } else {
+            None
         };
-        let has_reason = decoder.u8()?;
-        let retention_forbidden_reason = match has_reason {
-            0 => None,
-            1 => Some(decoder.text()?.to_owned()),
-            other => return Err(ContractError::UnknownEntryTag(other)),
+        let has_continuity = decoder.bool()?;
+        let continuity_witness = if has_continuity {
+            Some(decoder.digest()?)
+        } else {
+            None
         };
 
         let record = Self {
@@ -219,9 +407,11 @@ impl CanonicalDecode for SourceEvidenceRecord {
             generation,
             statement,
             provenance,
-            source_bytes_digest,
+            classification,
+            custody,
+            omission,
+            capsule,
             continuity_witness,
-            retention_forbidden_reason,
         };
         record.validate()?;
         Ok(record)

@@ -13,15 +13,16 @@ use fss_core::region::{
     ContextAuthority, QuiescenceProof, RegionId, RegionKind, RegionState, RootAuthoritySpec,
 };
 use fss_core::{
-    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION, AgentAbstractionLayer,
-    BudgetVector, CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder,
+    evaluate_negative_read, AgentAbstractionLayer, BudgetVector, CanonicalDecode,
+    CanonicalDecoder, CanonicalEncode, CanonicalEncoder, CapsuleId, CaptureInterval, ClockBasis,
     Completeness, ContentDigest, ContractError, CoverageContinuity, CoverageStopReason,
     CoverageWitness, DerivedBelief, DerivedBeliefParams, Generation, KnowledgeState, LedgerAnchor,
-    NegativeReadClaim, NegativeReadOutcome, ObligationId, OperationId, Plane, ProvenanceClass,
-    RUNTIME_AUTHORITY_DOMAIN, RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord,
-    RuntimeAuthorityParams, RuntimeAuthorityRecord, RuntimeGrant, SourceCustody,
-    SourceEvidenceParams, SourceEvidenceRecord, TimestampNs, WorldFact, WorldFactKind,
-    evaluate_negative_read,
+    NegativeReadClaim, NegativeReadOutcome, ObligationId, OmissionReason, OperationId, Plane,
+    ProvenanceClass, RUNTIME_AUTHORITY_DOMAIN, RuntimeAuthorityAndCustody,
+    RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams, RuntimeAuthorityRecord, RuntimeGrant,
+    SensorCapsule, SensorId, SourceCustody, SourceEvidenceClassification, SourceEvidenceParams,
+    SourceEvidenceRecord, StreamId, TimestampNs, WorldFact, WorldFactKind,
+    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
 };
 
 #[test]
@@ -1201,11 +1202,31 @@ fn test_source_evidence_row_properties() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn make_test_sensor_capsule(source_digest: ContentDigest, source_bytes: u64) -> SensorCapsule {
+    SensorCapsule {
+        capsule_id: CapsuleId::parse("cap:001").unwrap(),
+        sensor_id: SensorId::parse("sensor:cam01").unwrap(),
+        stream_id: StreamId::parse("stream:front_gate").unwrap(),
+        sequence: 42,
+        capture: CaptureInterval {
+            earliest: TimestampNs(1_700_000_000_000_000_000),
+            latest: TimestampNs(1_700_000_005_000_000_000),
+        },
+        receive_time: TimestampNs(1_700_000_006_000_000_000),
+        clock_basis: ClockBasis::HostMonotonic,
+        source_digest,
+        source_bytes,
+        frame_count: 30,
+        gap_before: false,
+    }
+}
+
 #[test]
 fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>> {
     let anchor = LedgerAnchor::genesis("camera.sensor.front_gate");
     let source_digest = ContentDigest::sha256(b"raw-h264-nalu-data");
     let continuity_digest = ContentDigest::sha256(b"rtcp-continuity-witness-sequence-42");
+    let capsule = make_test_sensor_capsule(source_digest, 1024);
 
     let record = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:packet:front_gate:0042".to_string(),
@@ -1213,18 +1234,36 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
         generation: Generation(1),
         statement: "Raw H.264 capture packets from front gate optical sensor".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 1024,
+            storage_handle: "cas://sha256/raw-h264".to_string(),
+        },
+        omission: None,
+        capsule: Some(capsule.clone()),
         continuity_witness: Some(continuity_digest),
-        retention_forbidden_reason: None,
     })?;
 
     assert_eq!(record.evidence_id, "source:packet:front_gate:0042");
     assert_eq!(record.anchor, anchor);
     assert_eq!(record.generation, Generation(1));
     assert_eq!(record.provenance, ProvenanceClass::Observed);
-    assert_eq!(record.source_bytes_digest, Some(source_digest));
+    assert_eq!(
+        record.classification,
+        SourceEvidenceClassification::RawWirePackets
+    );
+    assert_eq!(
+        record.custody,
+        SourceCustody::Retained {
+            source_digest,
+            source_bytes: 1024,
+            storage_handle: "cas://sha256/raw-h264".to_string(),
+        }
+    );
+    assert_eq!(record.omission, None);
+    assert_eq!(record.capsule, Some(capsule.clone()));
     assert_eq!(record.continuity_witness, Some(continuity_digest));
-    assert_eq!(record.retention_forbidden_reason, None);
     assert_eq!(record.layer(), AgentAbstractionLayer::SourceEvidence);
     assert_eq!(record.plane(), Plane::Authority);
     assert!(record.may_claim_authority());
@@ -1234,7 +1273,11 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
     assert_eq!(kcell.claim_id, "source:packet:front_gate:0042");
     assert_eq!(kcell.knowledge_state, KnowledgeState::Known);
     assert_eq!(kcell.provenance, ProvenanceClass::Observed);
-    assert_eq!(kcell.evidence, vec![source_digest]);
+    assert_eq!(
+        kcell.evidence,
+        vec![source_digest, capsule.metadata_digest(), continuity_digest]
+    );
+    assert!(kcell.validate().is_ok());
 
     Ok(())
 }
@@ -1248,22 +1291,42 @@ fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box
         evidence_id: "source:packet:restricted:0099".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
-        statement: "Physical sensor reading where raw video retention is legally forbidden"
-            .to_string(),
+        statement:
+            "Physical sensor reading where raw video retention is legally forbidden"
+                .to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: None,
+        classification: SourceEvidenceClassification::PhysicalSensorMeasurement,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::PrivacyRedaction),
+        capsule: None,
         continuity_witness: Some(continuity_digest),
-        retention_forbidden_reason: Some(
-            "Statutory privacy retention prohibition on private quarters (INV-003)".to_string(),
-        ),
     })?;
 
-    assert_eq!(record.source_bytes_digest, None);
-    assert!(record.retention_forbidden_reason.is_some());
+    assert_eq!(record.custody, SourceCustody::NotRetained);
+    assert_eq!(record.omission, Some(OmissionReason::PrivacyRedaction));
 
     let kcell = record.to_knowledge_cell();
     assert!(kcell.evidence.is_empty());
-    assert_eq!(kcell.knowledge_state, KnowledgeState::Known);
+    assert_eq!(kcell.knowledge_state, KnowledgeState::Unknown);
+    assert!(kcell.validate().is_ok());
+
+    // Also test upstream missing maps to NotObservable
+    let record_upstream = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:packet:restricted:0100".to_string(),
+        anchor,
+        generation: Generation(1),
+        statement: "Upstream sensor dropout".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::UpstreamMissing),
+        capsule: None,
+        continuity_witness: None,
+    })?;
+    let kcell_upstream = record_upstream.to_knowledge_cell();
+    assert!(kcell_upstream.evidence.is_empty());
+    assert_eq!(kcell_upstream.knowledge_state, KnowledgeState::NotObservable);
+    assert!(kcell_upstream.validate().is_ok());
 
     Ok(())
 }
@@ -1272,186 +1335,433 @@ fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box
 fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>> {
     let anchor = LedgerAnchor::genesis("camera.sensor.cam01");
     let source_digest = ContentDigest::sha256(b"raw-packet-bytes");
+    let valid_custody = SourceCustody::Retained {
+        source_digest,
+        source_bytes: 1024,
+        storage_handle: "cas://sha256/raw-packet".to_string(),
+    };
 
-    // 1. Empty ID rejected
+    // 1. Empty ID rejected with InvalidIdentifier
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
         statement: "Valid statement".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "invalid_identifier" => {}
-        Err(err) => return Err(format!("expected invalid_identifier, got: {err}").into()),
-        Ok(_) => return Err("expected error, got Ok".into()),
-    }
+    assert_eq!(res.unwrap_err(), ContractError::InvalidIdentifier);
 
-    // 2. Empty anchor site lineage rejected
+    // E8: Path traversal /../ in ID rejected with InvalidIdentifier
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:packet/../cam01".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Valid statement".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(res.unwrap_err(), ContractError::InvalidIdentifier);
+
+    // E8: Newline in ID rejected with InvalidIdentifier
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:packet\ncam01".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Valid statement".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(res.unwrap_err(), ContractError::InvalidIdentifier);
+
+    // 2. Empty anchor site lineage rejected with SourceEvidenceMissingAnchor
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: LedgerAnchor::genesis(""),
         generation: Generation(1),
         statement: "Valid statement".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "invalid_identifier" => {}
-        Err(err) => return Err(format!("expected invalid_identifier, got: {err}").into()),
-        Ok(_) => return Err("expected error, got Ok".into()),
-    }
+    assert_eq!(res.unwrap_err(), ContractError::SourceEvidenceMissingAnchor);
 
-    // 3. Zero generation rejected
+    // 3. Zero generation rejected with GenerationConflict
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
         generation: Generation(0),
         statement: "Valid statement".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "generation_conflict" => {}
-        Err(err) => return Err(format!("expected generation_conflict, got: {err}").into()),
-        Ok(_) => return Err("expected error, got Ok".into()),
-    }
+    assert_eq!(res.unwrap_err(), ContractError::GenerationConflict);
 
-    // 4. Empty statement rejected
+    // 4. Empty statement rejected with InvalidIdentifier
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
         statement: "".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "invalid_identifier" => {}
-        Err(err) => return Err(format!("expected invalid_identifier, got: {err}").into()),
-        Ok(_) => return Err("expected error, got Ok".into()),
-    }
+    assert_eq!(res.unwrap_err(), ContractError::InvalidIdentifier);
 
-    // 5. INV-003 violation: neither source bytes nor retention reason
+    // 5. INV-003 violation: NotRetained without omission reason
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
         statement: "Missing both source and retention exemption".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: None,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: SourceCustody::NotRetained,
+        omission: None,
+        capsule: None,
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "evidence_required" => {}
-        Err(err) => return Err(format!("expected evidence_required, got: {err}").into()),
-        Ok(_) => return Err("expected error, got Ok".into()),
-    }
+    assert_eq!(res.unwrap_err(), ContractError::SourceEvidenceOmissionRequired);
 
-    // 6. Prohibited promotion: decoded frame in statement
+    // NotRetained with omission Some(OmissionReason::None) rejected with SourceEvidenceOmissionRequired
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
-        statement: "Decoded frame RGB pixels from camera".to_string(),
+        statement: "Missing valid retention exemption reason".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::None),
+        capsule: None,
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => {
-            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
-        }
-        Ok(_) => return Err("expected error, got Ok".into()),
-    }
+    assert_eq!(res.unwrap_err(), ContractError::SourceEvidenceOmissionRequired);
 
-    // 7. Prohibited promotion: model output in statement
+    // E1: NotRetained with omission reason but capsule with bytes > 0 rejected with SourceEvidenceNotRetainedWithCapsuleBytes
+    let cap_with_bytes = make_test_sensor_capsule(source_digest, 1024);
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
-        statement: "Model output detections".to_string(),
+        statement: "NotRetained but capsule has bytes".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::ResourcePressure),
+        capsule: Some(cap_with_bytes),
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => {
-            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
-        }
-        Ok(_) => return Err("expected error, got Ok".into()),
-    }
+    assert_eq!(
+        res.unwrap_err(),
+        ContractError::SourceEvidenceNotRetainedWithCapsuleBytes
+    );
 
-    // 8. Prohibited promotion: VLM inference in statement
+    // E2: Retained with an omission reason rejected with SourceEvidenceRetainedWithOmission
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
-        statement: "VLM inference summary of scene".to_string(),
+        statement: "Retained with omission reason".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: Some(OmissionReason::PrivacyRedaction),
+        capsule: None,
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => {
-            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
-        }
-        Ok(_) => return Err("expected error, got Ok".into()),
+    assert_eq!(
+        res.unwrap_err(),
+        ContractError::SourceEvidenceRetainedWithOmission
+    );
+
+    // E10: Retained with Some(OmissionReason::None) rejected with SourceEvidenceRetainedWithOmission
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Retained with Some(OmissionReason::None)".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: Some(OmissionReason::None),
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(
+        res.unwrap_err(),
+        ContractError::SourceEvidenceRetainedWithOmission
+    );
+
+    // E3: Custody source_bytes != capsule source_bytes (1024 vs 99) rejected with SourceEvidenceByteCountMismatch
+    let cap_mismatch_bytes = make_test_sensor_capsule(source_digest, 99);
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Custody bytes mismatch capsule bytes".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 1024,
+            storage_handle: "cas://sha256/raw-packet".to_string(),
+        },
+        omission: None,
+        capsule: Some(cap_mismatch_bytes),
+        continuity_witness: None,
+    });
+    assert_eq!(
+        res.unwrap_err(),
+        ContractError::SourceEvidenceByteCountMismatch
+    );
+
+    // Digest mismatch: Custody source_digest != capsule source_digest rejected with DigestMismatch
+    let different_digest = ContentDigest::sha256(b"different-source-digest");
+    let cap_different_digest = make_test_sensor_capsule(different_digest, 1024);
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Custody digest mismatch capsule digest".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SensorCapsule,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 1024,
+            storage_handle: "cas://sha256/raw-packet".to_string(),
+        },
+        omission: None,
+        capsule: Some(cap_different_digest),
+        continuity_witness: None,
+    });
+    assert_eq!(res.unwrap_err(), ContractError::DigestMismatch);
+
+    // E7: Retained with empty storage handle rejected with SourceEvidenceEmptyStorageHandle
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Empty storage handle".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 1024,
+            storage_handle: "".to_string(),
+        },
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(
+        res.unwrap_err(),
+        ContractError::SourceEvidenceEmptyStorageHandle
+    );
+
+    // E7: Retained with whitespace-only storage handle rejected with SourceEvidenceEmptyStorageHandle
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement: "Whitespace storage handle".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 1024,
+            storage_handle: "   \t\n  ".to_string(),
+        },
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert_eq!(
+        res.unwrap_err(),
+        ContractError::SourceEvidenceEmptyStorageHandle
+    );
+
+    // E5: Classification parse refuses keyword heuristic bypasses
+    assert_eq!(
+        SourceEvidenceClassification::parse("decoded_frame_pcap"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        SourceEvidenceClassification::parse("model-output file"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        SourceEvidenceClassification::parse("rgb-pixels from sensor"),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // E6: Classification parse refuses non-canonical tokens including whitespace/casing
+    assert_eq!(
+        SourceEvidenceClassification::parse(" RAW_WIRE_PACKETS "),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        SourceEvidenceClassification::parse("raw_wire_packets_extra"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        SourceEvidenceClassification::parse(""),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // E5/E6: Canonical decoder refuses non-canonical classification tokens
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("decoded_frame_pcap");
+    let bytes = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    assert_eq!(
+        SourceEvidenceClassification::decode_canonical(&mut decoder),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text(" RAW_WIRE_PACKETS ");
+    let bytes = encoder.finish();
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    assert_eq!(
+        SourceEvidenceClassification::decode_canonical(&mut decoder),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    // Prohibited classifications return ProhibitedEvidencePromotion
+    let prohibited_kinds = [
+        SourceEvidenceClassification::DecodedFrameBuffer,
+        SourceEvidenceClassification::ModelInferenceOutput,
+        SourceEvidenceClassification::DerivedCognition,
+    ];
+    for prohibited in prohibited_kinds {
+        assert!(prohibited.is_prohibited());
+        assert!(!prohibited.is_permitted());
+        let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+            evidence_id: "source:001".to_string(),
+            anchor: anchor.clone(),
+            generation: Generation(1),
+            statement: "Valid statement".to_string(),
+            provenance: ProvenanceClass::Observed,
+            classification: prohibited,
+            custody: valid_custody.clone(),
+            omission: None,
+            capsule: None,
+            continuity_witness: None,
+        });
+        assert_eq!(res.unwrap_err(), ContractError::ProhibitedEvidencePromotion);
+>>>>>>> cbe279d (fix(core): resolve review findings for AGT-LAYER-002 source_evidence [fss-x4a.30.82.2])
     }
 
-    // 9. Prohibited promotion: non-Observed provenance (Derived)
+    // Statement field does NOT check keyword denylists; classification is typed.
+    // "Decoded-frame RGB pixels from YOLO" succeeds when classification is permitted.
+    let res = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:001".to_string(),
+        anchor: anchor.clone(),
+        generation: Generation(1),
+        statement:
+            "Decoded-frame RGB pixels from YOLO (legacy text with permitted typed classification)"
+                .to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
+        continuity_witness: None,
+    });
+    assert!(res.is_ok());
+
+    // Non-Observed provenance (Derived, Predicted) rejected with ProhibitedEvidencePromotion
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
         statement: "Valid statement".to_string(),
         provenance: ProvenanceClass::Derived,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody.clone(),
+        omission: None,
+        capsule: None,
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => {
-            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
-        }
-        Ok(_) => return Err("expected error, got Ok".into()),
-    }
+    assert_eq!(res.unwrap_err(), ContractError::ProhibitedEvidencePromotion);
 
-    // 10. Prohibited promotion: non-Observed provenance (Predicted)
     let res = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:001".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
         statement: "Valid statement".to_string(),
         provenance: ProvenanceClass::Predicted,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: valid_custody,
+        omission: None,
+        capsule: None,
         continuity_witness: None,
-        retention_forbidden_reason: None,
     });
-    match res {
-        Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => {
-            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
+    assert_eq!(res.unwrap_err(), ContractError::ProhibitedEvidencePromotion);
+
+    Ok(())
+}
+
+#[test]
+fn test_clock_basis_and_sensor_capsule_canonical_codecs() -> Result<(), Box<dyn Error>> {
+    // ClockBasis::parse succeeds on canonical strings
+    assert_eq!(
+        ClockBasis::parse("utc_disciplined")?,
+        ClockBasis::UtcDisciplined
+    );
+    assert_eq!(
+        ClockBasis::parse("device_monotonic")?,
+        ClockBasis::DeviceMonotonic
+    );
+    assert_eq!(
+        ClockBasis::parse("host_monotonic")?,
+        ClockBasis::HostMonotonic
+    );
+    assert_eq!(ClockBasis::parse("estimated")?, ClockBasis::Estimated);
+
+    // ClockBasis::parse refuses unknown clock basis names with typed error
+    match ClockBasis::parse("atomic_clock_v2") {
+        Err(ContractError::UnknownClockBasisName(name)) => {
+            assert_eq!(name, "atomic_clock_v2");
         }
-        Ok(_) => return Err("expected error, got Ok".into()),
+        other => return Err(format!("expected UnknownClockBasisName, got {other:?}").into()),
     }
+
+    // SensorCapsule CanonicalEncode and CanonicalDecode roundtrip
+    let digest = ContentDigest::sha256(b"sensor-capsule-test-bytes");
+    let capsule = make_test_sensor_capsule(digest, 2048);
+
+    let mut encoder = CanonicalEncoder::new();
+    capsule.encode_canonical(&mut encoder);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let decoded = SensorCapsule::decode_canonical(&mut decoder)?;
+    assert_eq!(decoded, capsule);
 
     Ok(())
 }
@@ -1461,6 +1771,7 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
     let anchor = LedgerAnchor::genesis("camera.sensor.dock_bay");
     let source_digest = ContentDigest::sha256(b"dock-bay-payload-bytes");
     let continuity_digest = ContentDigest::sha256(b"dock-bay-continuity");
+    let capsule = make_test_sensor_capsule(source_digest, 4096);
 
     let record = SourceEvidenceRecord::new(SourceEvidenceParams {
         evidence_id: "source:packet:dock_bay:0128".to_string(),
@@ -1468,9 +1779,15 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
         generation: Generation(3),
         statement: "Dock bay source packets with continuity witness".to_string(),
         provenance: ProvenanceClass::Observed,
-        source_bytes_digest: Some(source_digest),
+        classification: SourceEvidenceClassification::RawWirePackets,
+        custody: SourceCustody::Retained {
+            source_digest,
+            source_bytes: 4096,
+            storage_handle: "cas://dock-bay/packets".to_string(),
+        },
+        omission: None,
+        capsule: Some(capsule),
         continuity_witness: Some(continuity_digest),
-        retention_forbidden_reason: None,
     })?;
 
     let mut encoder = CanonicalEncoder::new();
@@ -1486,12 +1803,33 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
     assert_eq!(decoded.generation, record.generation);
     assert_eq!(decoded.statement, record.statement);
     assert_eq!(decoded.provenance, record.provenance);
-    assert_eq!(decoded.source_bytes_digest, record.source_bytes_digest);
+    assert_eq!(decoded.classification, record.classification);
+    assert_eq!(decoded.custody, record.custody);
+    assert_eq!(decoded.omission, record.omission);
+    assert_eq!(decoded.capsule, record.capsule);
     assert_eq!(decoded.continuity_witness, record.continuity_witness);
-    assert_eq!(
-        decoded.retention_forbidden_reason,
-        record.retention_forbidden_reason
-    );
+
+    // Roundtrip for NotRetained record
+    let not_retained_record = SourceEvidenceRecord::new(SourceEvidenceParams {
+        evidence_id: "source:omitted:dock_bay:0129".to_string(),
+        anchor: LedgerAnchor::genesis("camera.sensor.dock_bay"),
+        generation: Generation(3),
+        statement: "Omitted dock bay frame".to_string(),
+        provenance: ProvenanceClass::Observed,
+        classification: SourceEvidenceClassification::SourcePayloadFile,
+        custody: SourceCustody::NotRetained,
+        omission: Some(OmissionReason::TransientPreviewOnly),
+        capsule: None,
+        continuity_witness: None,
+    })?;
+
+    let mut encoder = CanonicalEncoder::new();
+    not_retained_record.encode_canonical(&mut encoder);
+    let bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&bytes);
+    let decoded_not_retained = SourceEvidenceRecord::decode_canonical(&mut decoder)?;
+    assert_eq!(decoded_not_retained, not_retained_record);
 
     Ok(())
 }
