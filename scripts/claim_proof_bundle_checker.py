@@ -75,6 +75,7 @@ import os
 import re
 import stat
 import sys
+import tempfile
 import tomllib
 import unicodedata
 from dataclasses import asdict, dataclass, field
@@ -994,8 +995,8 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
     # its plain json.loads keeps the last value (review round 8, F1: {"status": "tombstoned",
     # "status": "active"} would un-tombstone an identifier), and its bytes are hashed. After the index
     # is built every file is read and hashed again: a file that changed, appeared, or disappeared in
-    # between leaves the index unavailable (review round 9, N3). A change that is reverted before the
-    # re-read is not visible to any reader outside stable_id_audit; that module is not editable here.
+    # between leaves the index unavailable (review round 9, N3). The index itself is built from a
+    # private snapshot of exactly those bytes (review round 10, W3), so no swap on disk reaches it.
     def files_read_by_index() -> list[Path]:
         return sorted(
             p
@@ -1006,6 +1007,7 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
 
     read_by_index = files_read_by_index()
     snapshot: dict[Path, str] = {}
+    pre_read: dict[Path, bytes] = {}
     for index_path in read_by_index:
         shown = sanitize_path(index_path, root)
         try:
@@ -1013,6 +1015,7 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
         except OSError as exc:
             return unavailable(f"'{shown}' could not be read as a regular file within the byte cap: {exc}", error=str(exc))
         snapshot[index_path] = compute_sha256(raw)
+        pre_read[index_path] = raw
         if index_path.suffix != ".json":
             continue
         try:
@@ -1022,9 +1025,17 @@ def load_tombstone_index(root: Path) -> tuple[set[str], list[ClaimFinding]]:
             return set(), [_duplicate_key_finding(shown, "file", f"Registry '{shown}' (read by the stable-ID tombstone index)", exc.key)] + unusable
         except (UnicodeDecodeError, ValueError, RecursionError) as exc:
             return unavailable(f"'{shown}' cannot be read as JSON: {exc}", error=str(exc))
+    # stable_id_audit reads the tree it is given; it is given a private copy (mode 0700, removed
+    # afterwards) holding exactly the bytes read and parsed above, at the same relative paths.
     try:
-        index = stable_id_audit._load_repository_index(root)
-    except (stable_id_audit.AuditError, OSError, UnicodeDecodeError) as exc:
+        with tempfile.TemporaryDirectory(prefix="fss-stable-id-index-") as private:
+            private_root = Path(private)
+            for index_path, raw in pre_read.items():
+                target = private_root / index_path.relative_to(root)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(raw)
+            index = stable_id_audit._load_repository_index(private_root)
+    except (stable_id_audit.AuditError, OSError, UnicodeDecodeError, ValueError) as exc:
         return unavailable(f"repository stable-ID index could not be built: {exc}", error=str(exc))
     if files_read_by_index() != read_by_index:
         return unavailable("the set of files the stable-ID index reads changed while it was built")
@@ -1366,19 +1377,24 @@ def _translate_pattern(pattern: str) -> str | None:
     re.search, or None when pattern uses a construct whose meaning this checker does not reproduce
     exactly: a "(?" group, any escape of a letter or digit (\d, \w, \s, \b, backreferences, \x, \u,
     ...), '.' outside a class (ECMA-262 excludes more line terminators), a negated or nested class,
-    a quantifier brace not of the form {n}, {n,}, or {n,m}, or ^ / $ anywhere but the very start and
-    end. A final $ becomes \Z (ECMA-262 $ never matches before a trailing newline)."""
+    a quantifier brace not of the form {n}, {n,}, or {n,m}, a quantifier directly followed by '+'
+    (a*+, a{2}+, a?+: Python possessive quantifiers, ECMA-262 syntax errors; review round 10, W4),
+    or ^ / $ anywhere but the very start and end. A final $ becomes \Z (ECMA-262 $ never matches
+    before a trailing newline)."""
     out: list[str] = []
     in_class = False
+    after_quantifier = False
     i = 0
     n = len(pattern)
     while i < n:
         ch = pattern[i]
+        was_in_class = in_class
         if ch == "\\":
             if i + 1 >= n or pattern[i + 1].isalnum():
                 return None
             out.append(pattern[i:i + 2])
             i += 2
+            after_quantifier = False
             continue
         if in_class:
             if ch == "[":
@@ -1401,6 +1417,7 @@ def _translate_pattern(pattern: str) -> str | None:
                 return None
             out.append(quantifier.group())
             i = quantifier.end()
+            after_quantifier = True
             continue
         elif ch == ".":
             return None
@@ -1413,7 +1430,10 @@ def _translate_pattern(pattern: str) -> str | None:
                 return None
             out.append(r"\Z")
         else:
+            if ch == "+" and after_quantifier:
+                return None  # a possessive quantifier: Python syntax, an ECMA-262 syntax error (W4)
             out.append(ch)
+        after_quantifier = not was_in_class and ch in "*+?"
         i += 1
     if in_class:
         return None
@@ -1428,8 +1448,11 @@ def _translate_pattern(pattern: str) -> str | None:
 def _schema_interpretation_problems(schema: Any) -> list[str]:
     """Every form in the schema that this checker does not fully implement: an unknown keyword, a
     keyword value of an unexpected form, tuple-form or boolean items, or a pattern it cannot
-    translate exactly. Walked with an explicit stack; run before, and independently of, any
+    translate exactly, or nesting deeper than MAX_JSON_DEPTH (the evaluator recurses along the schema;
+    review round 10, W2). Walked with an explicit stack; run before, and independently of, any
     filtering of instance violations (review round 9, N1)."""
+    if _json_depth_exceeds(schema):  # the evaluator recurses along the schema (review round 10, W2)
+        return [f"# nests deeper than {MAX_JSON_DEPTH} levels; a schema that deep is not interpreted"]
     problems: list[str] = []
     stack: list[tuple[Any, str]] = [(schema, "#")]
     while stack:
