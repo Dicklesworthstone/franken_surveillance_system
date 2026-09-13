@@ -9,6 +9,10 @@ mod wire;
 mod interval;
 mod tracking;
 mod track_motion;
+mod navigation;
+
+pub use navigation::{MAX_NAVIGATION_TRIANGLES, MovementClass, NavigationError, NavigationProfile,
+    RouteOutcome, RouteQuery, RouteSearch, SupportLocation, SupportNetwork, SurfaceRoute};
 
 pub use interval::{Bounds3, Interval};
 pub use tracking::{ContactHypothesis, ContactObservation, ContactProjection, ProjectionError,
