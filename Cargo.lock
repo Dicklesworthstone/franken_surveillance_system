@@ -65,6 +65,7 @@ dependencies = [
  "fss-object",
  "fss-packet",
  "fss-publication",
+ "fss-tensor",
 ]
 
 [[package]]
