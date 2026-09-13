@@ -396,3 +396,6 @@ fn source_bytes(b: &mut Vec<u8>, source: ForegroundSource) {
     for n in source.image.dimensions { b.extend_from_slice(&n.to_le_bytes()); }
     for n in [source.camera, source.clock, source.capture[0], source.capture[1]] { integer(b, n); }
 }
+
+/// Source rectification, masked model crops and explicit contact-result preparation.
+pub mod pipeline;

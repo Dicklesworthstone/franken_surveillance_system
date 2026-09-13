@@ -78,3 +78,89 @@ compiler is available in this authoring environment. Native tests, field accurac
 false-positive/false-negative calibration and full video integration remain NOT_RUN.
 The method can miss camouflaged objects or objects already in the references and
 can propose shadows/weather/reflections as foreground; later evidence is required.
+
+## Decoded-frame and model-crop composition
+
+`foreground::pipeline::RectifiedBackground` retains the existing native rectifier's
+original source receipts as well as the frozen background. Its `detect_luma` path
+accepts a `RawGrayFrame`, the exact admitted `RectificationPlan`, capture metadata
+and foreground policy. It executes native lens/range/stride correction and actual
+pixel comparison together, returning the corrected frame and full foreground report.
+No supplied bounding boxes or query-to-target associations enter that operation.
+The same path works for decoded recorded or live frames; it does not itself decode
+compressed video, open a device, or schedule a service.
+
+`RectifiedForeground::crop` prepares exact bounded context crops for the next model
+stage. It returns full-range pixels, a current allowed mask, and a separate exact
+component-membership mask. Pixels behind privacy exclusions remain zero AND denied.
+Permitted pixels whose BACKGROUND is unknown can still be useful model context, so
+background uncertainty is not incorrectly used as a privacy mask. Crop origin and
+shape give an exact translation back to the full undistorted pixel-edge image.
+All masks, source exposure, foreground report and crop contents remain linked.
+
+`ForegroundCrop::prepare_contact` accepts an explicit external contact-model or
+annotation record, its crop-local coordinate interval, and its visible-contact
+claim. It checks coordinates and the entire selected mask rectangle, requires
+intersection with the selected component, translates the coordinates, and prepares
+the existing `UnassignedContact` payload. The attached preparation record retains
+full-image source/capture, report and crop identities. A record hash is not proof
+that contact is actually visible; this stage cannot authenticate or independently
+qualify the upstream model. It never infers feet from the bottom of a change blob.
+A genuine contact outside the changed component needs a separate supported proposal
+rather than being silently reassigned here. Components touching unknown/image edges
+retain that warning in their source report.
+
+These are unassigned contact PROPOSALS, not track mutations. The owner must resolve
+content identities into the existing admitted camera/image handles, preserve the
+contact record, and use the existing association/adjudication path. The method has
+no default visible-contact flag, model class, walking-speed prior or threat policy.
+Crops with two objects and merged blobs still need the upstream model to distinguish
+them; a foreground component is not a one-to-one physical-target guarantee.
+
+## Read-only file replay
+
+The `foreground_frames` example consumes a bounded manifest and actual decoded,
+full-range, already-pinhole `.gray` frames. It uses the numerical detector directly;
+for raw distorted frames use the composed `RectifiedBackground` library interface.
+The manifest is an owner-run development harness, not a new registered fss/1 API.
+All pixel/mask paths are confined beneath the manifest directory and checked against
+independently supplied SHA-256 values. No file is modified or uploaded.
+
+First line: `FSS_FOREGROUND_FRAMES_1`. Required `key=value` settings are `width`,
+`height`, `camera`, `clock`, `calibration`, `image_domain`, `valid_from`, `valid_until`,
+`selection_evidence`, `maximum_spread`, `minimum_change`, `minimum_area`,
+`maximum_regions`, `widespread_per_mille`, and `work_units`. Hash settings are nonzero
+64-character lowercase SHA-256. Camera/clock are owner-resolved nonzero integers;
+validity/capture values are integer nanoseconds on that declared clock. Other values
+are the explicitly documented detector bounds, not inferred settings for a camera.
+
+Frame rows are eight whitespace-separated fields:
+
+```
+reference|query exposure_sha256 earliest_ns latest_ns pixels_path pixels_sha256 mask_path mask_sha256
+```
+
+Require 3-31 reference rows before queries, at least one query, and at most 128 total
+frame rows. Paths cannot contain whitespace or escape through symlinks. Arrays must
+have exactly width*height bytes; masks contain 0/1. Comments begin with `#`. The
+64-KiB manifest and every input file have explicit read bounds. A query prints its
+actual report identity and component geometry only after that frame succeeds. A
+later bad frame makes the process fail; a `complete` record appears only after all
+queries succeed. This completion means replay completion, not qualified surveillance.
+
+```
+cargo run --locked --offline -p fss-twin --example foreground_frames -- /private/property/frames.txt
+cargo test --locked --offline -p fss-twin --test foreground_pipeline_contract
+python3 -B scripts/test_foreground_frames.py
+```
+
+The replay driver creates real synthetic files and executes the Rust example twice,
+checks the independent report golden, stopped foreground, complete masks, and a
+corrupted final input without a false completion record. Missing Cargo returns
+`NOT_RUN` with exit code 3; it never prints a substituted successful Rust transcript.
+In this authoring environment the driver actually returned NOT_RUN for that reason.
+Six additional authored Rust integration tests exercise the actual rectifier-to-
+region-to-crop/contact composition, mask holes, unknown context, stale generations,
+video-range/padded input and cancelled/invalid crops. Together there are twenty
+new Rust contracts; they have not executed. Native compilation, semantic detection,
+contact quality, real surveillance footage and runtime qualification remain open.
