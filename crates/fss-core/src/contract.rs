@@ -398,6 +398,12 @@ impl ProvenanceClass {
     pub const fn is_remembered(self) -> bool {
         matches!(self, Self::Remembered)
     }
+
+    /// Returns whether this provenance class represents human/operator assertions (PROV-005).
+    #[must_use]
+    pub const fn is_operator_asserted(self) -> bool {
+        matches!(self, Self::OperatorAsserted)
+    }
 }
 
 impl CanonicalEncode for ProvenanceClass {

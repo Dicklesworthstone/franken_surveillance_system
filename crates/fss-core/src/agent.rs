@@ -497,6 +497,12 @@ impl KnowledgeCell {
         self.provenance == ProvenanceClass::Remembered
     }
 
+    /// Returns whether this knowledge cell has operator_asserted provenance (PROV-005).
+    #[must_use]
+    pub fn is_operator_asserted(&self) -> bool {
+        self.provenance == ProvenanceClass::OperatorAsserted
+    }
+
     /// Returns whether this knowledge cell is an estimated proposition.
     #[must_use]
     pub fn is_estimated(&self) -> bool {

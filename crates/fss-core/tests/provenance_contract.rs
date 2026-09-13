@@ -1414,3 +1414,342 @@ fn test_remembered_distinction_from_all_other_provenance_classes() -> Result<(),
 
     Ok(())
 }
+
+#[test]
+fn test_operator_asserted_contract_row_properties() -> Result<(), Box<dyn Error>> {
+    let prov = ProvenanceClass::OperatorAsserted;
+
+    // 1. Exact normative stable ID
+    assert_eq!(prov.id(), "PROV-005");
+
+    // 2. Exact normative schema spelling
+    assert_eq!(prov.as_str(), "operator_asserted");
+    assert_eq!(format!("{prov}"), "operator_asserted");
+
+    // 3. Exact normative meaning
+    assert_eq!(
+        prov.meaning(),
+        "A human/operator assertion with identity, time, scope, and later corroboration status."
+    );
+
+    // 4. Predicate helper methods
+    assert!(prov.is_operator_asserted());
+    assert!(!prov.is_observed());
+    assert!(!prov.is_derived());
+    assert!(!prov.is_predicted());
+    assert!(!prov.is_remembered());
+
+    // 5. Constitutional effect authorization rule (INV-069):
+    // Authorized human operator assertions MAY authorize irreversible effects when Known + witnessed.
+    assert!(prov.may_authorize_irreversible_effect());
+
+    Ok(())
+}
+
+#[test]
+fn test_operator_asserted_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = ProvenanceClass::from_id("PROV-005")?;
+    assert_eq!(from_id, ProvenanceClass::OperatorAsserted);
+
+    // Parse from schema name
+    let from_name = ProvenanceClass::from_name("operator_asserted")?;
+    assert_eq!(from_name, ProvenanceClass::OperatorAsserted);
+
+    // Parse via FromStr
+    let from_str_name = ProvenanceClass::from_str("operator_asserted")?;
+    assert_eq!(from_str_name, ProvenanceClass::OperatorAsserted);
+
+    let from_str_id = ProvenanceClass::from_str("PROV-005")?;
+    assert_eq!(from_str_id, ProvenanceClass::OperatorAsserted);
+
+    // Rejection of invalid / malformed variants (fail closed)
+    assert_eq!(
+        ProvenanceClass::from_id("PROV-0050"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_id("PROV-5"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("operator"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("OPERATOR_ASSERTED"),
+        Err(ContractError::InvalidIdentifier)
+    );
+    assert_eq!(
+        ProvenanceClass::from_name("asserted"),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_operator_asserted_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
+    let prov = ProvenanceClass::OperatorAsserted;
+
+    let mut encoder = CanonicalEncoder::new();
+    prov.encode_canonical(&mut encoder);
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    let decoded = ProvenanceClass::decode_canonical(&mut decoder)?;
+
+    assert_eq!(decoded, prov);
+    assert_eq!(decoded.id(), "PROV-005");
+    assert_eq!(decoded.as_str(), "operator_asserted");
+
+    Ok(())
+}
+
+#[test]
+fn test_operator_asserted_orthogonality_across_epistemic_states() -> Result<(), Box<dyn Error>> {
+    let operator_sig_digest = ContentDigest::sha256(b"operator_assertion_signature_token");
+
+    let basis_for = |state: KnowledgeState| -> Result<Option<KnowledgeStateBasis>, ContractError> {
+        Ok(match state {
+            KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+                reason: RedactionReason::PrivacyProjection,
+                privacy_generation: PrivacyGeneration::parse("privacy:projection:v1")?,
+            })),
+            KnowledgeState::Stale => {
+                let mut older = LedgerAnchor::genesis("site:provenance-test");
+                older.commit_sequence = 1;
+                let mut current = LedgerAnchor::genesis("site:provenance-test");
+                current.commit_sequence = 8;
+                Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+                    valid_at: Box::new(older),
+                    current: Box::new(current),
+                }))
+            }
+            KnowledgeState::Indeterminate => {
+                Some(KnowledgeStateBasis::Reconciliation(ReconciliationBasis {
+                    unresolved_outcome_root: ContentDigest::sha256(b"unresolved_operator_instruction"),
+                    branches: std::collections::BTreeSet::from([
+                        fss_core::ReconciliationBranch::Occurred,
+                        fss_core::ReconciliationBranch::NotOccurred,
+                    ]),
+                }))
+            }
+            _ => None,
+        })
+    };
+
+    let all_states = [
+        KnowledgeState::Known,
+        KnowledgeState::Estimated,
+        KnowledgeState::Unknown,
+        KnowledgeState::Conflicted,
+        KnowledgeState::Stale,
+        KnowledgeState::NotObservable,
+        KnowledgeState::Redacted,
+        KnowledgeState::Indeterminate,
+        KnowledgeState::NotApplicable,
+    ];
+
+    for state in all_states {
+        let cell = KnowledgeCell {
+            claim_id: format!("claim:operator:{}", state.as_str()),
+            statement: format!("Testing operator_asserted orthogonality for {}", state.as_str()),
+            knowledge_state: state,
+            provenance: ProvenanceClass::OperatorAsserted,
+            hypothesis: None,
+            evidence: vec![operator_sig_digest],
+            contradictions: vec![],
+            valid_until: None,
+            state_basis: basis_for(state)?,
+        };
+
+        assert!(
+            cell.validate().is_ok(),
+            "Validation failed for operator_asserted cell in state {}",
+            state.as_str()
+        );
+
+        // Provenance remains OperatorAsserted regardless of epistemic state
+        assert_eq!(cell.provenance, ProvenanceClass::OperatorAsserted);
+        assert!(cell.is_operator_asserted());
+        assert_eq!(cell.provenance.id(), "PROV-005");
+        assert_eq!(cell.provenance.as_str(), "operator_asserted");
+
+        // Epistemic state and provenance are strictly distinct
+        assert_ne!(cell.provenance.as_str(), state.as_str());
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_operator_asserted_effect_premise_authorization_positive_and_negative(
+) -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let operator_signature = ContentDigest::sha256(b"signed_operator_emergency_halt_authorization");
+
+    // Positive case: Known + OperatorAsserted + Signed Evidence + No Contradictions + Unexpired
+    let valid_operator_cell = KnowledgeCell {
+        claim_id: "claim:operator:emergency_halt:zone_d".to_string(),
+        statement: "Operator #402 authorizes emergency power isolation for Zone D".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::OperatorAsserted,
+        hypothesis: None,
+        evidence: vec![operator_signature],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    assert!(valid_operator_cell.validate().is_ok());
+    assert!(valid_operator_cell.is_operator_asserted());
+    assert!(valid_operator_cell.is_irreversible_effect_premise(now));
+
+    // Negative case 1: Missing evidence (unsigned / unanchored assertion) fails closed
+    let mut no_evidence = valid_operator_cell.clone();
+    no_evidence.evidence.clear();
+    assert!(!no_evidence.is_irreversible_effect_premise(now));
+
+    // Negative case 2: Tentative / Estimated assertion cannot authorize irreversible effect
+    let mut estimated_cell = valid_operator_cell.clone();
+    estimated_cell.knowledge_state = KnowledgeState::Estimated;
+    assert!(!estimated_cell.is_irreversible_effect_premise(now));
+
+    // Negative case 3: Expired operator lease / override cannot authorize effect
+    let mut expired_cell = valid_operator_cell.clone();
+    expired_cell.valid_until = Some(TimestampNs(500_000_000));
+    assert!(!expired_cell.is_irreversible_effect_premise(now));
+
+    // Negative case 4: Contradictions present invalidate authorization
+    let mut conflicted_cell = valid_operator_cell.clone();
+    conflicted_cell
+        .contradictions
+        .push(ContentDigest::sha256(b"contradicting_occupancy_signal"));
+    assert!(!conflicted_cell.is_irreversible_effect_premise(now));
+
+    Ok(())
+}
+
+#[test]
+fn test_operator_asserted_contradiction_and_corroboration_dynamics() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let operator_claim_digest = ContentDigest::sha256(b"operator_clearance_attestation_ticket");
+    let contradictory_sensor_digest = ContentDigest::sha256(b"radar_detects_personnel_in_hazard_zone");
+
+    // 1. Initial operator assertion: Area is clear
+    let operator_assertion = KnowledgeCell {
+        claim_id: "claim:safety:zone_b:clearance".to_string(),
+        statement: "Operator asserts Zone B is clear of all personnel".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::OperatorAsserted,
+        hypothesis: None,
+        evidence: vec![operator_claim_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(1_500_000_000)),
+        state_basis: None,
+    };
+
+    assert!(operator_assertion.validate().is_ok());
+    assert!(operator_assertion.is_operator_asserted());
+    assert!(operator_assertion.is_irreversible_effect_premise(now));
+
+    // 2. Later corroboration / contradiction status:
+    // Physical radar detects personnel in the zone, producing a contradiction
+    let mut contradicted_cell = operator_assertion.clone();
+    contradicted_cell.contradictions.push(contradictory_sensor_digest);
+
+    // Contradiction immediately revokes effect authorization (fail closed)
+    assert!(!contradicted_cell.is_irreversible_effect_premise(now));
+
+    // 3. Epistemic state transition to Conflicted
+    let mut conflicted_cell = contradicted_cell.clone();
+    conflicted_cell.knowledge_state = KnowledgeState::Conflicted;
+    assert!(conflicted_cell.validate().is_ok());
+    assert!(conflicted_cell.is_conflicted());
+    assert!(conflicted_cell.is_operator_asserted());
+    assert!(!conflicted_cell.is_irreversible_effect_premise(now));
+
+    Ok(())
+}
+
+#[test]
+fn test_operator_asserted_audit_identity_and_scope() -> Result<(), Box<dyn Error>> {
+    let operator_cert = ContentDigest::sha256(b"x509_cert:operator:alice_wright:badge_9921");
+
+    let cell = KnowledgeCell {
+        claim_id: "claim:op:alice_wright:substation_override".to_string(),
+        statement: "Operator Alice Wright (Badge #9921) asserts manual generator disconnect".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::OperatorAsserted,
+        hypothesis: None,
+        evidence: vec![operator_cert],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(3_000_000_000)),
+        state_basis: None,
+    };
+
+    assert!(cell.validate().is_ok());
+    let validated = cell.validated()?;
+    assert!(validated.is_operator_asserted());
+    assert_eq!(validated.provenance.id(), "PROV-005");
+    assert_eq!(validated.provenance.as_str(), "operator_asserted");
+    assert_eq!(format!("{}", validated.provenance), "operator_asserted");
+
+    Ok(())
+}
+
+#[test]
+fn test_operator_asserted_distinction_from_all_other_provenance_classes(
+) -> Result<(), Box<dyn Error>> {
+    let all_provenances = [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ];
+
+    let op_asserted = ProvenanceClass::OperatorAsserted;
+
+    for prov in all_provenances {
+        if prov != op_asserted {
+            // IDs are strictly distinct
+            assert_ne!(op_asserted.id(), prov.id());
+            // Schema names are strictly distinct
+            assert_ne!(op_asserted.as_str(), prov.as_str());
+            // Meanings are strictly distinct
+            assert_ne!(op_asserted.meaning(), prov.meaning());
+        }
+    }
+
+    // Effect authorization partition check
+    let authorizing_classes: Vec<ProvenanceClass> = all_provenances
+        .iter()
+        .copied()
+        .filter(|p| p.may_authorize_irreversible_effect())
+        .collect();
+
+    let non_authorizing_classes: Vec<ProvenanceClass> = all_provenances
+        .iter()
+        .copied()
+        .filter(|p| !p.may_authorize_irreversible_effect())
+        .collect();
+
+    // OperatorAsserted is in the authorizing partition
+    assert!(authorizing_classes.contains(&ProvenanceClass::OperatorAsserted));
+    assert!(authorizing_classes.contains(&ProvenanceClass::Observed));
+    assert!(authorizing_classes.contains(&ProvenanceClass::Derived));
+    assert!(authorizing_classes.contains(&ProvenanceClass::Policy));
+    assert_eq!(authorizing_classes.len(), 4);
+
+    // Non-authorizing partition
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Predicted));
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::Remembered));
+    assert!(non_authorizing_classes.contains(&ProvenanceClass::VendorClaimed));
+    assert_eq!(non_authorizing_classes.len(), 3);
+
+    Ok(())
+}
