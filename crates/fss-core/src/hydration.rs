@@ -20,6 +20,7 @@ pub const HYDRATION_VIEW_ID: &str = "AVIEW-HYDRATION";
 mod admission;
 mod artifact;
 mod error;
+pub mod h1;
 pub mod h2;
 mod handle;
 mod receipt;
@@ -27,6 +28,7 @@ mod request;
 
 pub use artifact::HydrationArtifact;
 pub use error::HydrationError;
+pub use h1::*;
 pub use h2::*;
 pub use handle::{SemanticHandle, SemanticHandleSpec};
 pub use receipt::{HydrationReceipt, HydrationReceiptSpec, HydrationResponse};

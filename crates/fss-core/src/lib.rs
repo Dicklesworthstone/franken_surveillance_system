@@ -122,12 +122,14 @@ pub use evidence::{
 };
 pub use hydration::{
     AudioFeaturesArtifact, BoundingBox, CropArtifact, DecisionArtifactKind,
-    GraphNeighborhoodArtifact, H2_CONTENT, H2_LEVEL_ID, H2_LEVEL_NAME, H2_OWNER, H2_SCHEMA,
-    H2DecisionArtifact, H2DecisionArtifactParams, HYDRATION_VIEW_ID, HandleAvailability,
-    HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose, HydrationReceipt,
-    HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec, HydrationResponse,
-    KeyframeArtifact, LaboratoryAccess, RedactedRegion, SemanticHandle, SemanticHandleSpec,
-    TrajectoryArtifact, TrajectoryWaypoint,
+    GraphNeighborhoodArtifact, H1_CONTENT, H1_LEVEL_ID, H1_LEVEL_NAME, H1_OWNER, H1_SCHEMA,
+    H1ContentSpec, H1SemanticSynopsis, H1SynopsisParams, H2_CONTENT, H2_LEVEL_ID, H2_LEVEL_NAME,
+    H2_OWNER, H2_SCHEMA, H2DecisionArtifact, H2DecisionArtifactParams, HYDRATION_VIEW_ID,
+    HandleAvailability, HydrationArtifact, HydrationError, HydrationLevel, HydrationPurpose,
+    HydrationReceipt, HydrationReceiptSpec, HydrationRequest, HydrationRequestSpec,
+    HydrationResponse, KeyframeArtifact, LaboratoryAccess, RedactedRegion, SemanticHandle,
+    SemanticHandleSpec, SynopsisClassification, SynopsisQuality, TrajectoryArtifact,
+    TrajectoryWaypoint,
 };
 pub use identity::{
     AdapterCapabilities, AdapterIdentity, AdapterKind, CredentialMethod, DeviceCapabilities,
