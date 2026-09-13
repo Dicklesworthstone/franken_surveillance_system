@@ -526,7 +526,16 @@ impl KnowledgeCell {
         self.knowledge_state.may_support_planning()
     }
 
-    /// Returns the cell digest.
+    /// Returns the component digest of this cell's canonical encoding.
+    ///
+    /// Unlike [`SituationFrame::frame_digest`] and [`SituationCapsule::decision_fingerprint`],
+    /// this digest is computed without [`Self::validate`]. It is a component hash that is
+    /// deliberately defined for a cell that validation refuses, so refusal reporting and change
+    /// comparison can still name such a cell. It never binds a withheld statement (the encoding
+    /// substitutes [`REDACTED_STATEMENT_MARKER`]), so it is not a statement oracle.
+    ///
+    /// A digest from this method is therefore not evidence that the cell is valid: a frame or
+    /// capsule carrying a refused cell has no frame digest and no decision fingerprint.
     #[must_use]
     pub fn cell_digest(&self) -> ContentDigest {
         self.canonical_digest("fss.agent_knowledge_cell.v1")
@@ -845,15 +854,39 @@ pub struct SituationFrame {
 }
 
 impl SituationFrame {
-    /// Returns the frame fingerprint.
-    #[must_use]
-    pub fn frame_digest(&self) -> ContentDigest {
-        self.canonical_digest("fss.agent_situation_frame.v1")
+    /// Validates the frame's own invariants.
+    ///
+    /// The frame anchor and objective must match its world envelope, every knowledge cell must
+    /// pass [`KnowledgeCell::validate`], and the world envelope must validate. Checks that need
+    /// the enclosing capsule (its anchor and affordance frontier) live in
+    /// [`SituationCapsule::validate`].
+    pub fn validate(&self) -> Result<(), ContractError> {
+        if self.anchor != self.world_envelope.anchor
+            || self.objective_id != self.world_envelope.objective_id
+        {
+            return Err(ContractError::StaleAnchor);
+        }
+        for cell in &self.knowledge_cells {
+            cell.validate()?;
+        }
+        self.world_envelope.validate()
     }
-}
 
-impl CanonicalEncode for SituationFrame {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+    /// Returns the frame fingerprint.
+    ///
+    /// The frame is validated first: a frame refused by [`Self::validate`] (for example one
+    /// carrying a basisless stale cell) has no fingerprint. `SituationFrame` deliberately does
+    /// not implement [`CanonicalEncode`], so this is the only public way to hash a frame.
+    pub fn frame_digest(&self) -> Result<ContentDigest, ContractError> {
+        self.validate()?;
+        Ok(domain_separated_digest(
+            "fss.agent_situation_frame.v1",
+            |encoder| self.encode_fields(encoder),
+        ))
+    }
+
+    /// Appends the frame's canonical representation. Callers validate first.
+    fn encode_fields(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(&self.frame_id);
         encoder.text(&self.objective_id);
         self.anchor.encode_canonical(encoder);
@@ -978,18 +1011,13 @@ impl SituationCapsule {
     /// A cell refused by [`KnowledgeCell::validate`] refuses the whole capsule with that cell's
     /// typed error, so it can never reach the decision fingerprint or a context pack.
     pub fn validate(&self) -> Result<(), ContractError> {
-        if self.anchor != self.frame.anchor
-            || self.anchor != self.frame.world_envelope.anchor
-            || self.frame.objective_id != self.frame.world_envelope.objective_id
-        {
+        if self.anchor != self.frame.anchor {
             return Err(ContractError::StaleAnchor);
         }
         // Every carried cell must hold the typed basis its state names (KSTATE-005/007/008);
-        // a capsule is never a way around the per-cell refusal.
-        for cell in &self.frame.knowledge_cells {
-            cell.validate()?;
-        }
-        self.frame.world_envelope.validate()?;
+        // a capsule is never a way around the per-cell refusal. The frame check also refuses an
+        // envelope anchor or objective that diverges from the frame, before any cell check.
+        self.frame.validate()?;
         for affordance in &self.affordances {
             affordance.validate_against(&self.frame.world_envelope)?;
         }
@@ -1012,16 +1040,23 @@ impl SituationCapsule {
     /// Returns the decision fingerprint used for replay comparison.
     ///
     /// The capsule is validated first: a capsule refused by [`Self::validate`] has no
-    /// fingerprint, so an invalid capsule (for example one whose frame carries a basisless stale
-    /// cell) can never be hashed into a replay, projection, or handoff root.
+    /// fingerprint. `SituationCapsule` deliberately does not implement [`CanonicalEncode`], so
+    /// `canonical_bytes`, `try_canonical_bytes`, and `canonical_digest` are unavailable for it
+    /// and this method is the only public way to hash a capsule. An invalid capsule (for
+    /// example one whose frame carries a basisless stale cell) therefore can never be hashed
+    /// into a replay, projection, or handoff root.
     pub fn decision_fingerprint(&self) -> Result<ContentDigest, ContractError> {
         self.validate()?;
-        Ok(self.canonical_digest("fss.situation_capsule.v1"))
+        Ok(domain_separated_digest(
+            "fss.situation_capsule.v1",
+            |encoder| {
+                self.encode_fields(encoder);
+            },
+        ))
     }
-}
 
-impl CanonicalEncode for SituationCapsule {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+    /// Appends the capsule's canonical representation. Callers validate first.
+    fn encode_fields(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(&self.capsule_id);
         encoder.u64(self.revision);
         self.contract_basis.encode_canonical(encoder);
@@ -1036,7 +1071,7 @@ impl CanonicalEncode for SituationCapsule {
             }
             None => encoder.bool(false),
         }
-        self.frame.encode_canonical(encoder);
+        self.frame.encode_fields(encoder);
         let mut obligations = self.obligations.clone();
         obligations.sort();
         encoder.u64(obligations.len() as u64);
@@ -1237,6 +1272,19 @@ fn completeness_code(value: Completeness) -> u8 {
     }
 }
 
+/// Computes the same domain-separated digest as [`CanonicalEncode::canonical_digest`] for a
+/// value whose canonical encoding is private because it must be validated before hashing.
+fn domain_separated_digest(
+    domain: &str,
+    encode: impl FnOnce(&mut CanonicalEncoder),
+) -> ContentDigest {
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("fss.canonical.v1");
+    encoder.text(domain);
+    encode(&mut encoder);
+    ContentDigest::sha256(&encoder.finish())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1273,5 +1321,173 @@ mod tests {
         })?;
         assert!(capsule.child_roots.contains(&situation_root));
         capsule.verify()
+    }
+
+    fn known_cell() -> KnowledgeCell {
+        KnowledgeCell {
+            claim_id: "claim:door".to_owned(),
+            statement: "The door is closed.".to_owned(),
+            knowledge_state: KnowledgeState::Known,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![ContentDigest::sha256(b"door-evidence")],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        }
+    }
+
+    /// A stale cell with no typed stale basis: refused with `StaleBasisRequired`.
+    fn basisless_stale_cell() -> KnowledgeCell {
+        KnowledgeCell {
+            claim_id: "claim:gate".to_owned(),
+            statement: "The gate was closed at the last observation.".to_owned(),
+            knowledge_state: KnowledgeState::Stale,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![ContentDigest::sha256(b"gate-evidence")],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: None,
+        }
+    }
+
+    fn capsule() -> Result<SituationCapsule, ContractError> {
+        let anchor = LedgerAnchor::genesis("site:one");
+        let world_envelope = WorldEnvelope {
+            envelope_id: "world-envelope:one".to_owned(),
+            objective_id: "objective:one".to_owned(),
+            anchor: anchor.clone(),
+            nominal_claim_ids: BTreeSet::from(["claim:door".to_owned()]),
+            certified_core_claim_ids: BTreeSet::new(),
+            alternatives: Vec::new(),
+            adversarial_residuals: Vec::new(),
+            common_invariants: BTreeSet::new(),
+            coverage_boundary_handles: BTreeSet::new(),
+        };
+        let frame = SituationFrame {
+            frame_id: "frame:one".to_owned(),
+            objective_id: "objective:one".to_owned(),
+            anchor: anchor.clone(),
+            world_envelope,
+            knowledge_cells: vec![known_cell()],
+            now: vec!["The door is closed.".to_owned()],
+            changed: Vec::new(),
+            why: Vec::new(),
+            unknown: Vec::new(),
+            at_risk: Vec::new(),
+            next: Vec::new(),
+            evidence_handles: BTreeSet::new(),
+        };
+        let capsule = SituationCapsule {
+            capsule_id: "situation:one".to_owned(),
+            revision: 1,
+            contract_basis: basis(),
+            mission_id: MissionId::parse("mission:one")?,
+            session_id: SessionId::parse("session:one")?,
+            principal_id: PrincipalId::parse("principal:one")?,
+            anchor,
+            previous_anchor: None,
+            frame,
+            obligations: Vec::new(),
+            affordances: Vec::new(),
+            completeness: Completeness::Partial,
+            created_at: TimestampNs(10),
+            mission_state: None,
+        };
+        capsule.validate()?;
+        Ok(capsule)
+    }
+
+    #[test]
+    fn decision_fingerprint_refuses_capsule_with_basisless_stale_cell() -> Result<(), ContractError>
+    {
+        let valid = capsule()?;
+        let fingerprint = valid.decision_fingerprint()?;
+
+        let mut invalid = valid.clone();
+        invalid.frame.knowledge_cells.push(basisless_stale_cell());
+        assert_eq!(invalid.validate(), Err(ContractError::StaleBasisRequired));
+        assert_eq!(
+            invalid.decision_fingerprint(),
+            Err(ContractError::StaleBasisRequired)
+        );
+
+        // The refusal is not a side effect of the fixture: the valid capsule still fingerprints
+        // to the same root.
+        assert_eq!(valid.decision_fingerprint(), Ok(fingerprint));
+        Ok(())
+    }
+
+    #[test]
+    fn frame_digest_refuses_invalid_frame() -> Result<(), ContractError> {
+        let valid = capsule()?.frame;
+        let digest = valid.frame_digest()?;
+
+        let mut basisless = valid.clone();
+        basisless.knowledge_cells.push(basisless_stale_cell());
+        assert_eq!(basisless.validate(), Err(ContractError::StaleBasisRequired));
+        assert_eq!(
+            basisless.frame_digest(),
+            Err(ContractError::StaleBasisRequired)
+        );
+
+        let mut drifted = valid.clone();
+        drifted.world_envelope.objective_id = "objective:other".to_owned();
+        assert_eq!(drifted.frame_digest(), Err(ContractError::StaleAnchor));
+
+        assert_eq!(valid.frame_digest(), Ok(digest));
+        Ok(())
+    }
+
+    /// Pins the documented `cell_digest` exemption: the component digest is defined for a cell
+    /// that validation refuses, binds its refused state, and withholds a redacted statement,
+    /// while every frame or capsule carrying that cell refuses to hash.
+    #[test]
+    fn cell_digest_is_an_unvalidated_component_digest() -> Result<(), ContractError> {
+        let refused = basisless_stale_cell();
+        assert_eq!(refused.validate(), Err(ContractError::StaleBasisRequired));
+        assert_eq!(
+            refused.cell_digest(),
+            refused.canonical_digest("fss.agent_knowledge_cell.v1")
+        );
+
+        let mut relabelled = refused.clone();
+        relabelled.knowledge_state = KnowledgeState::Known;
+        relabelled.validate()?;
+        assert_ne!(refused.cell_digest(), relabelled.cell_digest());
+
+        let mut withheld = refused.clone();
+        withheld.knowledge_state = KnowledgeState::Redacted;
+        let mut other_statement = withheld.clone();
+        other_statement.statement = "A different withheld statement.".to_owned();
+        assert_eq!(withheld.cell_digest(), other_statement.cell_digest());
+
+        let mut carrying = capsule()?;
+        carrying.frame.knowledge_cells.push(refused);
+        assert_eq!(
+            carrying.frame.frame_digest(),
+            Err(ContractError::StaleBasisRequired)
+        );
+        assert_eq!(
+            carrying.decision_fingerprint(),
+            Err(ContractError::StaleBasisRequired)
+        );
+        Ok(())
+    }
+
+    /// Compiles only while neither `SituationCapsule` nor `SituationFrame` implements
+    /// [`CanonicalEncode`]: with an implementation, both marker impls apply and the `_` below
+    /// is ambiguous. That keeps `canonical_digest`, `canonical_bytes`, and
+    /// `try_canonical_bytes` from hashing an unvalidated capsule or frame.
+    #[test]
+    fn situation_capsule_and_frame_have_no_unvalidated_canonical_encoding() {
+        trait AmbiguousIfCanonical<Marker> {
+            fn probe() {}
+        }
+        impl<T: ?Sized> AmbiguousIfCanonical<()> for T {}
+        impl<T: ?Sized + CanonicalEncode> AmbiguousIfCanonical<u8> for T {}
+        <SituationCapsule as AmbiguousIfCanonical<_>>::probe();
+        <SituationFrame as AmbiguousIfCanonical<_>>::probe();
     }
 }
