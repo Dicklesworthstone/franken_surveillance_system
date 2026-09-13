@@ -26,6 +26,7 @@
     }
   },
   "registered_boundary_modules": [
+    "crates/fss-core/src/abstraction/runtime_authority.rs",
     "crates/fss-core/src/effect.rs",
     "crates/fss-core/src/event.rs",
     "crates/fss-core/src/event_store.rs",
@@ -40,6 +41,7 @@
   "module_declarations": {
     "crates/fss-core/src/abstraction.rs": "support",
     "crates/fss-core/src/abstraction/derived_belief.rs": "cognition",
+    "crates/fss-core/src/abstraction/runtime_authority.rs": "authority",
     "crates/fss-core/src/abstraction/source_evidence.rs": "authority",
     "crates/fss-core/src/abstraction/world_facts.rs": "authority",
     "crates/fss-core/src/acquisition.rs": "authority",

@@ -42,7 +42,9 @@ pub use abstraction::{
     AGENT_ABSTRACTIONS_FREEZE_DIGEST, AGENT_ABSTRACTIONS_GENERATION, AgentAbstractionLayer,
     CANONICAL_LAYERS, DERIVED_BELIEF_DOMAIN, DERIVED_BELIEF_RECEIPT_DOMAIN, DerivationInputs,
     DerivedBelief, DerivedBeliefParams, MAX_DERIVED_BELIEF_CONTRADICTIONS,
-    MAX_DERIVED_BELIEF_EVIDENCE, NegativeReadClaim, NegativeReadOutcome, SourceEvidenceParams,
+    MAX_DERIVED_BELIEF_EVIDENCE, NegativeReadClaim, NegativeReadOutcome, RUNTIME_AUTHORITY_DOMAIN,
+    RuntimeAuthorityAndCustody, RuntimeAuthorityAndCustodyRecord, RuntimeAuthorityParams,
+    RuntimeAuthorityRecord, RuntimeGrant, SourceEvidenceParams,
     SourceEvidenceRecord, WorldFact, WorldFactKind, evaluate_negative_read,
 };
 

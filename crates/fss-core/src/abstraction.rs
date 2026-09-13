@@ -12,10 +12,12 @@ use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, Canon
 use crate::contract::{ContractError, Plane};
 
 pub mod derived_belief;
+pub mod runtime_authority;
 pub mod source_evidence;
 pub mod world_facts;
 
 pub use derived_belief::*;
+pub use runtime_authority::*;
 pub use source_evidence::*;
 pub use world_facts::*;
 
@@ -369,50 +371,15 @@ impl AgentAbstractionLayer {
         matches!(self, Self::RuntimeAuthorityAndCustody)
     }
 
-    /// Returns whether this layer prohibits inferring mission meaning.
-    ///
-    /// AGT-LAYER-001 prohibition: "Cannot infer mission meaning or physical truth."
-    #[must_use]
-    pub const fn prohibits_mission_meaning_inference(self) -> bool {
-        matches!(self, Self::RuntimeAuthorityAndCustody)
-    }
-
-    /// Returns whether this layer prohibits inferring physical truth.
-    ///
-    /// AGT-LAYER-001 prohibition: "Cannot infer mission meaning or physical truth."
-    #[must_use]
-    pub const fn prohibits_physical_truth_inference(self) -> bool {
-        matches!(self, Self::RuntimeAuthorityAndCustody)
-    }
-
-    /// Validates all constitutional and semantic invariants for this abstraction layer.
-    pub fn validate_invariants(&self) -> Result<(), ContractError> {
-        match self {
-            Self::RuntimeAuthorityAndCustody => {
-                if self.plane() != Plane::Authority {
-                    return Err(ContractError::InvalidEffectTransition);
-                }
-                if !self.prohibits_mission_meaning_inference() {
-                    return Err(ContractError::InvalidIdentifier);
-                }
-                if !self.prohibits_physical_truth_inference() {
-                    return Err(ContractError::InvalidIdentifier);
-                }
-                if self.invariant() != "INV-006" {
-                    return Err(ContractError::InvalidIdentifier);
-                }
-            }
-            Self::DerivedBeliefs => {
-                if self.plane() != Plane::Cognition {
-                    return Err(ContractError::DerivedLayerAuthorityForbidden);
-                }
-                if self.invariant() != "INV-069" {
-                    return Err(ContractError::InvalidIdentifier);
-                }
-            }
-            _ => {}
+    /// Validates a concrete [`RuntimeAuthorityAndCustodyRecord`] against this layer's invariants.
+    pub fn validate_runtime_authority(
+        &self,
+        record: &RuntimeAuthorityAndCustodyRecord,
+    ) -> Result<(), ContractError> {
+        if *self != Self::RuntimeAuthorityAndCustody {
+            return Err(ContractError::UnknownAbstractionLayer(self.name().into()));
         }
-        Ok(())
+        record.validate_invariants()
     }
 
     /// Resolves an abstraction layer from its stable identifier (e.g. `AGT-LAYER-004`).
