@@ -680,10 +680,19 @@ impl WorldEnvelope {
         Ok(())
     }
 
-    /// Returns the envelope digest bound into plans and situation frames.
-    #[must_use]
-    pub fn envelope_digest(&self) -> ContentDigest {
-        self.canonical_digest("fss.agent_world_envelope.v1")
+    /// Returns the envelope digest bound into plans, control envelopes, and situation frames.
+    ///
+    /// The envelope is validated first: an envelope refused by [`Self::validate`] (for example
+    /// one whose adversarial residual is unprotected, or whose retained worlds repeat an
+    /// identity) has no digest. `WorldEnvelope` deliberately does not implement
+    /// [`CanonicalEncode`], so this is the only public way to hash an envelope, and a digest from
+    /// it is evidence that the envelope validated.
+    pub fn envelope_digest(&self) -> Result<ContentDigest, ContractError> {
+        self.validate()?;
+        Ok(domain_separated_digest(
+            "fss.agent_world_envelope.v1",
+            |encoder| self.encode_fields(encoder),
+        ))
     }
 
     /// Returns all retained world identities in deterministic order.
@@ -695,10 +704,9 @@ impl WorldEnvelope {
             .map(|world| world.world_id.clone())
             .collect()
     }
-}
 
-impl CanonicalEncode for WorldEnvelope {
-    fn encode_canonical(&self, encoder: &mut CanonicalEncoder) {
+    /// Appends the envelope's canonical representation. Callers validate first.
+    fn encode_fields(&self, encoder: &mut CanonicalEncoder) {
         encoder.text(&self.envelope_id);
         encoder.text(&self.objective_id);
         self.anchor.encode_canonical(encoder);
@@ -890,7 +898,7 @@ impl SituationFrame {
         encoder.text(&self.frame_id);
         encoder.text(&self.objective_id);
         self.anchor.encode_canonical(encoder);
-        self.world_envelope.encode_canonical(encoder);
+        self.world_envelope.encode_fields(encoder);
         let mut cells = self.knowledge_cells.clone();
         cells.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
         encoder.u64(cells.len() as u64);
@@ -1499,5 +1507,76 @@ mod tests {
         impl<T: ?Sized + CanonicalEncode> AmbiguousIfCanonical<u8> for T {}
         <SituationCapsule as AmbiguousIfCanonical<_>>::probe();
         <SituationFrame as AmbiguousIfCanonical<_>>::probe();
+    }
+
+    fn residual_world(world_id: &str) -> PossibleWorld {
+        PossibleWorld {
+            world_id: world_id.to_owned(),
+            description: "An intruder is present behind the door.".to_owned(),
+            claim_ids: BTreeSet::from(["claim:intruder".to_owned()]),
+            evidence: vec![ContentDigest::sha256(b"residual-evidence")],
+            consequence_severity: 9,
+            protected: true,
+        }
+    }
+
+    #[test]
+    fn envelope_digest_refuses_invalid_envelope() -> Result<(), ContractError> {
+        let mut valid = capsule()?.frame.world_envelope;
+        valid
+            .adversarial_residuals
+            .push(residual_world("world:intruder"));
+        valid.validate()?;
+        let digest = valid.envelope_digest()?;
+
+        let mut unprotected = valid.clone();
+        for world in &mut unprotected.adversarial_residuals {
+            world.protected = false;
+        }
+        assert_eq!(unprotected.validate(), Err(ContractError::EvidenceRequired));
+        assert_eq!(
+            unprotected.envelope_digest(),
+            Err(ContractError::EvidenceRequired)
+        );
+
+        let mut duplicated = valid.clone();
+        duplicated
+            .alternatives
+            .push(residual_world("world:intruder"));
+        assert_eq!(
+            duplicated.envelope_digest(),
+            Err(ContractError::EvidenceRequired)
+        );
+
+        let mut evidenceless = valid.clone();
+        for world in &mut evidenceless.adversarial_residuals {
+            world.evidence.clear();
+        }
+        assert_eq!(
+            evidenceless.envelope_digest(),
+            Err(ContractError::EvidenceRequired)
+        );
+
+        // The refusal is not a side effect of the fixture, and the digest still binds the
+        // residual: dropping it changes the digest.
+        assert_eq!(valid.envelope_digest(), Ok(digest));
+        let mut without_residual = valid.clone();
+        without_residual.adversarial_residuals.clear();
+        assert_ne!(without_residual.envelope_digest()?, digest);
+        Ok(())
+    }
+
+    /// Compiles only while `WorldEnvelope` does not implement [`CanonicalEncode`]: with an
+    /// implementation, both marker impls apply and the `_` below is ambiguous. That keeps
+    /// `canonical_digest`, `canonical_bytes`, and `try_canonical_bytes` from hashing an
+    /// unvalidated envelope around [`WorldEnvelope::envelope_digest`].
+    #[test]
+    fn world_envelope_has_no_unvalidated_canonical_encoding() {
+        trait AmbiguousIfCanonical<Marker> {
+            fn probe() {}
+        }
+        impl<T: ?Sized> AmbiguousIfCanonical<()> for T {}
+        impl<T: ?Sized + CanonicalEncode> AmbiguousIfCanonical<u8> for T {}
+        <WorldEnvelope as AmbiguousIfCanonical<_>>::probe();
     }
 }

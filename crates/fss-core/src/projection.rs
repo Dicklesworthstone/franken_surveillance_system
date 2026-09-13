@@ -225,7 +225,7 @@ impl ControlEnvelope {
             blocked_affordance_ids,
             robust_invariants: worlds.common_invariants.clone(),
             branch_conditions: branches.into_values().collect(),
-            envelope_digest: worlds.envelope_digest(),
+            envelope_digest: worlds.envelope_digest()?,
         };
         envelope.validate_against(worlds, affordances)?;
         Ok(envelope)
@@ -324,7 +324,7 @@ impl ControlEnvelope {
             blocked_affordance_ids,
             robust_invariants: worlds.common_invariants.clone(),
             branch_conditions: branches.into_values().collect(),
-            envelope_digest: worlds.envelope_digest(),
+            envelope_digest: worlds.envelope_digest()?,
         })
     }
 }

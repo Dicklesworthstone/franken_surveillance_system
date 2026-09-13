@@ -582,7 +582,7 @@ pub fn compile_reference_situation(
         &knowledge_cells,
         &obligations,
         &affordances,
-    );
+    )?;
     let now = vec![format!(
         "Event {} is {} at authority commit {}.",
         event_name,
@@ -1075,7 +1075,7 @@ fn situation_identity(
     knowledge: &[KnowledgeCell],
     obligations: &[ObligationId],
     affordances: &[ActionAffordance],
-) -> ContentDigest {
+) -> Result<ContentDigest, fss_core::ContractError> {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_situation_compilation.v1");
     request.mission_id.encode_canonical(&mut encoder);
@@ -1092,7 +1092,7 @@ fn situation_identity(
         }
         None => encoder.bool(false),
     }
-    encoder.digest(worlds.envelope_digest());
+    encoder.digest(worlds.envelope_digest()?);
     let mut cells = knowledge.to_vec();
     cells.sort_by(|left, right| left.claim_id.cmp(&right.claim_id));
     encoder.u64(cells.len() as u64);
@@ -1112,7 +1112,7 @@ fn situation_identity(
         affordance.encode_canonical(&mut encoder);
     }
     request.created_at.encode_canonical(&mut encoder);
-    ContentDigest::sha256(&encoder.finish())
+    Ok(ContentDigest::sha256(&encoder.finish()))
 }
 
 fn world_identity(
