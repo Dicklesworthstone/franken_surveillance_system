@@ -19,8 +19,10 @@ use fss_core::{
     ResourcePressure, SensorId, SessionId, SituationCapsule, SituationFrame, TimestampNs,
     WorldEnvelope,
 };
+use fss_core::{DeltaPriority, MeaningfulDeltaClass};
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
 use fss_object::{InMemoryObjectStore, ObjectLimits};
+use fss_reference::classify_reference_meaningful_delta;
 use fss_reference::{
     DeliveryPlan, MockModelScript, MockModelSpec, MockSemanticLabel, PrepareAlertParams,
     ReferenceAlertPlan, ReferenceError, ReferenceEventReceipt, ReferenceModelObservation,
@@ -1076,6 +1078,136 @@ fn test_f2_unavailable_hard_clamp_preserves_unsafe_worlds_and_branch_predicate()
     let pub_res = project_reference_situation(situation, &test_spec(10_000))?;
     pub_res.verify()?;
 
+    harness.cleanup();
+    Ok(())
+}
+
+/// Publishes one decision from `labels`, compiles its situation, and projects it.
+fn labelled_publication(
+    harness: &mut TestHarness,
+    name: &str,
+    labels: &[(MockSemanticLabel, &str)],
+) -> Result<ReferenceSituationPublication, Box<dyn Error>> {
+    let mut observations = Vec::new();
+    for (index, (label, domain)) in labels.iter().enumerate() {
+        observations.push(harness.observation(
+            name,
+            &format!("lane{index}"),
+            90 + index as u64,
+            domain,
+            *label,
+        )?);
+    }
+    let decision = evaluate_unknown_presence(
+        EventId::parse(format!("event:situation-inv:{name}"))?,
+        observations,
+    )?;
+    let receipt = publish_reference_event(&decision, &mut harness.objects, &mut harness.authority)?;
+    let situation = compile_reference_situation(
+        test_request(&decision, &receipt, None, BTreeSet::new())?,
+        &harness.authority,
+    )?;
+    Ok(project_reference_situation(situation, &test_spec(10_000))?)
+}
+
+#[test]
+fn tamper_result_after_person_basis_is_a_critical_contradiction_delta() -> Result<(), Box<dyn Error>>
+{
+    let mut harness = TestHarness::new("tamper-delta")?;
+    let basis = labelled_publication(
+        &mut harness,
+        "tamper-basis",
+        &[(MockSemanticLabel::PersonLike, "power:alpha")],
+    )?;
+    let tampered = labelled_publication(
+        &mut harness,
+        "tamper-result",
+        &[
+            (MockSemanticLabel::PersonLike, "power:alpha"),
+            (MockSemanticLabel::TamperLike, "power:beta"),
+        ],
+    )?;
+    // The tamper risk is typed in the result situation.
+    let frame = &tampered.situation.capsule.frame;
+    assert!(frame.knowledge_cells.iter().any(|cell| {
+        cell.claim_id.ends_with(":sensor-integrity") && !cell.contradictions.is_empty()
+    }));
+    assert!(
+        frame
+            .world_envelope
+            .adversarial_residuals
+            .iter()
+            .any(|world| world.protected && world.world_id.ends_with(":sensor-tamper"))
+    );
+    // A new tamper signal is a contradiction delta: never silence, never coalescible.
+    let delta = classify_reference_meaningful_delta(&basis, &tampered)?;
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::Contradiction),
+        "{:?}",
+        delta.classes
+    );
+    assert!(delta.is_non_coalescible());
+    assert!(
+        delta.priority <= DeltaPriority::Critical,
+        "{:?}",
+        delta.priority
+    );
+    delta.validate()?;
+
+    // Control: an unknown finding in the same position is not a contradiction delta.
+    let unknown = labelled_publication(
+        &mut harness,
+        "unknown-result",
+        &[
+            (MockSemanticLabel::PersonLike, "power:alpha"),
+            (MockSemanticLabel::Unknown, "power:beta"),
+        ],
+    )?;
+    let control = classify_reference_meaningful_delta(&basis, &unknown)?;
+    assert!(
+        !control
+            .classes
+            .contains(&MeaningfulDeltaClass::Contradiction),
+        "{:?}",
+        control.classes
+    );
+    harness.cleanup();
+    Ok(())
+}
+
+#[test]
+fn cleared_tamper_is_reported_as_a_material_change_not_silence() -> Result<(), Box<dyn Error>> {
+    let mut harness = TestHarness::new("tamper-cleared")?;
+    let tampered = labelled_publication(
+        &mut harness,
+        "cleared-basis",
+        &[
+            (MockSemanticLabel::PersonLike, "power:alpha"),
+            (MockSemanticLabel::TamperLike, "power:beta"),
+        ],
+    )?;
+    let clean = labelled_publication(
+        &mut harness,
+        "cleared-result",
+        &[(MockSemanticLabel::PersonLike, "power:alpha")],
+    )?;
+    // Retiring the tamper world is a material change, never silence. It is not a contradiction
+    // delta: that class must be witnessed by a changed result cell, and a retired claim has none.
+    let delta = classify_reference_meaningful_delta(&tampered, &clean)?;
+    assert!(
+        delta.classes.contains(&MeaningfulDeltaClass::MaterialState),
+        "{:?}",
+        delta.classes
+    );
+    assert!(
+        !delta
+            .classes
+            .contains(&MeaningfulDeltaClass::NoMeaningfulChange),
+        "{:?}",
+        delta.classes
+    );
+    assert!(delta.silence_certificate.is_none());
+    delta.validate()?;
     harness.cleanup();
     Ok(())
 }

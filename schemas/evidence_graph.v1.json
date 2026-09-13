@@ -86,6 +86,27 @@
           "supports",
           "relation"
         ],
+        "if": {
+          "properties": {
+            "relation": {
+              "const": "supports"
+            }
+          }
+        },
+        "then": {
+          "properties": {
+            "supports": {
+              "const": true
+            }
+          }
+        },
+        "else": {
+          "properties": {
+            "supports": {
+              "const": false
+            }
+          }
+        },
         "properties": {
           "digest": {
             "$ref": "sensor_capsule.v1.json#/$defs/contentDigest"
@@ -115,7 +136,8 @@
               "supersedes",
               "observed_after",
               "required_by",
-              "explains"
+              "explains",
+              "sensor_tamper"
             ]
           },
           "capsuleDigest": {

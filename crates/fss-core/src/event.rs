@@ -578,6 +578,8 @@ pub enum EventTransitionError {
     },
     /// Evidence is required after initial hypothesis, but none was provided.
     EvidenceRequired,
+    /// A witnessed revision carries evidence but no edge that counts as support for it.
+    SupportingEvidenceRequired,
     /// Revision numbering is not strictly monotonic (expected prior + 1).
     RevisionNotMonotonic {
         /// Expected revision number.
@@ -669,6 +671,12 @@ impl fmt::Display for EventTransitionError {
                     "evidence is required for event states beyond initial hypothesis"
                 )
             }
+            Self::SupportingEvidenceRequired => {
+                write!(
+                    f,
+                    "a witnessed revision requires at least one supporting evidence edge"
+                )
+            }
             Self::RevisionNotMonotonic { expected, actual } => {
                 write!(
                     f,
@@ -740,6 +748,9 @@ impl From<EventDecodeError> for EventTransitionError {
                 }
             }
             EventDecodeError::Contract(ContractError::EvidenceRequired) => Self::EvidenceRequired,
+            EventDecodeError::Contract(ContractError::SupportingEvidenceRequired) => {
+                Self::SupportingEvidenceRequired
+            }
             other => Self::Decode(other),
         }
     }
@@ -834,6 +845,9 @@ pub enum EvidenceEdgeRelation {
     RequiredBy = 7,
     /// Edge provides causal explanation.
     Explains = 8,
+    /// Edge reports a sensor-integrity risk (tamper, replay, cover, dazzle, or disconnect) for
+    /// the evidence source; it neither supports nor contradicts the event itself.
+    SensorTamper = 9,
 }
 
 impl EvidenceEdgeRelation {
@@ -849,6 +863,7 @@ impl EvidenceEdgeRelation {
             Self::ObservedAfter => "observed_after",
             Self::RequiredBy => "required_by",
             Self::Explains => "explains",
+            Self::SensorTamper => "sensor_tamper",
         }
     }
 
@@ -863,6 +878,7 @@ impl EvidenceEdgeRelation {
             "observed_after" => Ok(Self::ObservedAfter),
             "required_by" => Ok(Self::RequiredBy),
             "explains" => Ok(Self::Explains),
+            "sensor_tamper" => Ok(Self::SensorTamper),
             _ => Err(EventDecodeError::NonCanonicalEncoding {
                 detail: format!("unknown evidence edge relation '{s}'"),
             }),
@@ -873,9 +889,10 @@ impl EvidenceEdgeRelation {
     ///
     /// Only `Supports` counts as support for the event and only `Contradicts` counts against it.
     /// Every other relation records lineage, revision, ordering, dependency, invalidation, or
-    /// explanation structure and carries no evidential direction for the event, so it must be
-    /// `supports=false` and counts as neither support nor contradiction. The match is exhaustive
-    /// with no wildcard: a new relation must choose its evidential direction here.
+    /// explanation structure, or (`SensorTamper`) a sensor-integrity risk about the evidence
+    /// source, and carries no evidential direction for the event, so it must be `supports=false`
+    /// and counts as neither support nor contradiction. The match is exhaustive with no wildcard:
+    /// a new relation must choose its evidential direction here.
     #[must_use]
     pub const fn required_supports_flag(self) -> bool {
         match self {
@@ -886,7 +903,8 @@ impl EvidenceEdgeRelation {
             | Self::Supersedes
             | Self::ObservedAfter
             | Self::RequiredBy
-            | Self::Explains => false,
+            | Self::Explains
+            | Self::SensorTamper => false,
         }
     }
 
@@ -907,6 +925,7 @@ impl EvidenceEdgeRelation {
             6 => Ok(Self::ObservedAfter),
             7 => Ok(Self::RequiredBy),
             8 => Ok(Self::Explains),
+            9 => Ok(Self::SensorTamper),
             _ => Err(EventDecodeError::NonCanonicalEncoding {
                 detail: format!("unknown evidence edge relation tag {v}"),
             }),
@@ -1390,6 +1409,14 @@ impl EventEvidence {
     pub fn counts_as_contradiction(&self) -> bool {
         !self.supports && self.relation == EvidenceEdgeRelation::Contradicts
     }
+
+    /// Returns true only for an edge that reports a sensor-integrity risk: a `SensorTamper`
+    /// relation carrying `supports=false`. Such an edge is neutral as evidence for the event but
+    /// must be surfaced as a typed risk, never dropped.
+    #[must_use]
+    pub fn reports_sensor_tamper(&self) -> bool {
+        !self.supports && self.relation == EvidenceEdgeRelation::SensorTamper
+    }
 }
 
 impl CanonicalEncode for EventEvidence {
@@ -1705,9 +1732,25 @@ impl EventHypothesis {
 
     /// Legacy validator returning `ContractError`.
     pub fn validate(&self) -> Result<(), ContractError> {
-        self.verify().map_err(|e| match e {
-            EventDecodeError::Contract(c) => c,
-            _ => ContractError::EvidenceRequired,
+        self.verify().map_err(|error| match error {
+            EventDecodeError::Contract(contract) => contract,
+            // A supports flag that disagrees with its edge relation.
+            EventDecodeError::Contradiction {
+                field: "evidence.supports",
+                ..
+            } => ContractError::EvidenceRelationMismatch,
+            // Structural bounds and field invariants are neither missing evidence nor a relation
+            // mismatch. Exhaustive on purpose: a new decode error must choose its variant here.
+            EventDecodeError::Truncated { .. }
+            | EventDecodeError::UnknownVersion { .. }
+            | EventDecodeError::TrailingBytes { .. }
+            | EventDecodeError::OverLimitLength { .. }
+            | EventDecodeError::NonCanonicalEncoding { .. }
+            | EventDecodeError::SchemaMismatch { .. }
+            | EventDecodeError::JsonError { .. }
+            | EventDecodeError::InvalidUnicodeEscape { .. }
+            | EventDecodeError::Contradiction { .. }
+            | EventDecodeError::OutOfRange { .. } => ContractError::EventRevisionMalformed,
         })
     }
 

@@ -138,11 +138,19 @@ pub fn evaluate_unknown_presence(
                 contradictory += 1;
                 EvidenceEdgeRelation::Contradicts
             }
-            // Unknown and abstention say nothing about presence, and TamperLike is a separate
-            // sensor-integrity risk (tampering can hide a person, not refute one): each is retained
-            // as a neutral derivation edge that holds the event unresolved without contradicting it.
+            // TamperLike is a sensor-integrity risk, not evidence against presence (tampering can
+            // hide a person, not refute one): its own relation, so the situation surfaces it.
             MockModelOutcome::Finding {
-                label: MockSemanticLabel::TamperLike | MockSemanticLabel::Unknown,
+                label: MockSemanticLabel::TamperLike,
+                ..
+            } => {
+                unresolved += 1;
+                EvidenceEdgeRelation::SensorTamper
+            }
+            // Unknown and abstention say nothing about presence: a neutral derivation edge that
+            // holds the event unresolved without contradicting it.
+            MockModelOutcome::Finding {
+                label: MockSemanticLabel::Unknown,
                 ..
             }
             | MockModelOutcome::Abstained { .. } => {
