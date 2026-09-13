@@ -65,17 +65,24 @@ class RobotDocsError(Exception):
 
 
 SECRET_PATTERNS = [
-    re.compile(r"(?i)\bAuthorization:\s*Bearer\s+[A-Za-z0-9._~+/-]+"),
-    re.compile(r"\bsk-proj-[A-Za-z0-9_-]{10,}\b"),
-    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
-    re.compile(r"\bxoxb-[0-9A-Za-z-]{10,}\b"),
+    re.compile(r"(?i)\b(?:Authorization:\s*)?Bearer\s+[A-Za-z0-9._~+/-]{8,}"),
+    re.compile(r"\bsk-ant-[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"\bsk-[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{10,}\b"),
+    re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    re.compile(r"\b(?:xoxb|xoxp|xoxr|xoxa)-[0-9A-Za-z-]{10,}\b"),
+    re.compile(r"\bglpat-[0-9A-Za-z_-]{10,}\b"),
     re.compile(r"\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b"),
     re.compile(r"(?i)\bpassword\s+is\s+[^\s]+"),
-    re.compile(r"""(?i)\b(?:password|api[_-]?key|secret)\s*[:=]\s*["']?[^"'\s]{4,}"""),
-    re.compile(r"""(?i)\btoken\s*[:=]\s*["']?[^"'\s]{8,}"""),
+    re.compile(r"""(?i)\b(?:password|passwd|api[_-]?key|secret_key|secret)\s*(?::(?!:)|=)\s*["']?[^"'\s]{4,}"""),
+    re.compile(r"""(?i)\bclient_secret\s*(?::(?!:)|=)\s*["']?[^"'\s]{4,}"""),
+    re.compile(r"""(?i)\btoken\s*(?::(?!:)|=)\s*["']?[^"'\s]{8,}"""),
+    re.compile(r"(?i)postgres(?:ql)?://[^\s:]+:[^\s@]+@"),
     re.compile(r"\bghp_[A-Za-z0-9]{20,}\b"),
     re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
     re.compile(r"\b(?:gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bnpm_[A-Za-z0-9_]{10,}\b"),
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
     re.compile(r"\.ssh/(?:id_rsa|id_ed25519|id_ecdsa|id_dsa)"),
     re.compile(r"/data/projects/[a-zA-Z0-9._-]+"),
@@ -83,9 +90,10 @@ SECRET_PATTERNS = [
     re.compile(r"/Users/[a-zA-Z0-9._-]+"),
     re.compile(r"/root/[a-zA-Z0-9._-]+"),
     re.compile(r"/root/\.netrc"),
+    re.compile(r"/private/var(?:/[a-zA-Z0-9._-]+)?"),
     re.compile(r"""(?i)[a-z]:\\Users\\[a-zA-Z0-9._-]+"""),
     re.compile(r"""(?i)[a-z]:/Users/[a-zA-Z0-9._-]+"""),
-    re.compile(r"~/[a-zA-Z0-9._-]+"),
+    re.compile(r"""\\\\[a-zA-Z0-9._$-]+\\[a-zA-Z0-9._$-]+"""),
 ]
 
 
@@ -163,7 +171,7 @@ def load_json(path: Path) -> dict[str, Any]:
 
 
 def escape_markdown_cell(val: Any) -> str:
-    """Sanitizes text for safe inclusion in Markdown table cells without HTML/script injection."""
+    """Sanitizes text for safe inclusion in Markdown table cells without HTML/script/link injection."""
     if val is None:
         return ""
     s = str(val).replace("\r\n", " ").replace("\n", " ").replace("\r", " ")
@@ -171,6 +179,8 @@ def escape_markdown_cell(val: Any) -> str:
     s = html.escape(s, quote=False)
     # Neutralize javascript: links
     s = re.sub(r"(?i)javascript\s*:", "javascript&#58;", s)
+    # Neutralize backticks in table cells so they cannot break out of code spans or render live links
+    s = s.replace("`", "'")
     # Escape pipes
     s = s.replace("|", "\\|")
     return s.strip()
@@ -188,12 +198,16 @@ def escape_markdown_inline(val: Any) -> str:
 
 
 def escape_markdown_text(val: Any) -> str:
-    """Sanitizes text for safe inclusion in Markdown body blocks without heading/HTML injection."""
+    """Sanitizes text for safe inclusion in Markdown body blocks without heading/bullet/fence/HTML injection."""
     if val is None:
         return ""
     s = str(val).replace("\r\n", "\n").replace("\r", "\n")
     # Disallow injecting top-level or secondary headings
     s = re.sub(r"(?m)^#{1,6}\s+", "\\# ", s)
+    # Neutralize newlines in purpose and text blocks so they cannot create fake bullets or fences
+    s = s.replace("\n", " ")
+    # Neutralize code fences
+    s = s.replace("```", "'''")
     # Escape raw HTML
     s = html.escape(s, quote=False)
     return s.strip()
@@ -300,6 +314,7 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
     if not fss_cmd_path.is_file():
         raise FileNotFoundError(f"Missing CLI command specification: {fss_cmd_path}")
     content = fss_cmd_path.read_text(encoding="utf-8")
+    scan_for_secrets(content, "crates/fss-cli/src/fss_cmd.rs")
     enum_match = re.search(r"pub enum FssCommand\s*\{([^}]+)\}", content)
     if not enum_match:
         raise RobotDocsError(
@@ -309,6 +324,7 @@ def collect_cli_discovery_endpoints(root: Path) -> dict[str, dict[str, str]]:
         )
     variants = re.findall(r"///\s*(.*?)\n\s*([A-Za-z0-9_]+)", enum_match.group(1))
     var_docs = {name: doc.strip() for doc, name in variants}
+    scan_for_secrets(var_docs, "crates/fss-cli/src/fss_cmd.rs:doc_comments")
 
     endpoints: dict[str, dict[str, str]] = {}
     if "Capabilities" in var_docs:
@@ -346,6 +362,7 @@ def parse_qualification_lanes(root: Path) -> set[str]:
     """Loads registered qualification gate IDs from architecture/release_qualification.json."""
     rel_qual_path = root / "architecture/release_qualification.json"
     data = load_json(rel_qual_path)
+    scan_for_secrets(data, "architecture/release_qualification.json")
     lanes = data.get("lanes")
     if not isinstance(lanes, list):
         raise RobotDocsError(
@@ -448,26 +465,60 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
 
     # Parse tombstones
     fss1_tombstones: set[str] = set()
-    raw_fss1_tombstones = fss1_reg.get("tombstones", [])
-    if isinstance(raw_fss1_tombstones, list):
+    if "tombstones" in fss1_reg:
+        raw_fss1_tombstones = fss1_reg["tombstones"]
+        if not isinstance(raw_fss1_tombstones, list):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"'tombstones' in fss1_public_registry.json must be a list, got {type(raw_fss1_tombstones).__name__}",
+                target="fss1_public_registry.json:tombstones",
+            )
         for item in raw_fss1_tombstones:
             if isinstance(item, dict):
                 tid = item.get("id") or item.get("operation_id")
-                if tid:
-                    fss1_tombstones.add(str(tid))
+                if not tid or not isinstance(tid, str):
+                    raise RobotDocsError(
+                        ERR_ROBOT_DOCS_CORRUPT,
+                        "Tombstone object in fss1_public_registry.json must contain string id or operation_id",
+                        target="fss1_public_registry.json:tombstones",
+                    )
+                fss1_tombstones.add(tid)
             elif isinstance(item, str):
                 fss1_tombstones.add(item)
+            else:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Tombstone item in fss1_public_registry.json must be str or dict, got {type(item).__name__}",
+                    target="fss1_public_registry.json:tombstones",
+                )
 
     caps_tombstones: set[str] = set()
-    raw_caps_tombstones = caps_reg.get("tombstones", [])
-    if isinstance(raw_caps_tombstones, list):
+    if "tombstones" in caps_reg:
+        raw_caps_tombstones = caps_reg["tombstones"]
+        if not isinstance(raw_caps_tombstones, list):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"'tombstones' in capabilities.json must be a list, got {type(raw_caps_tombstones).__name__}",
+                target="capabilities.json:tombstones",
+            )
         for item in raw_caps_tombstones:
             if isinstance(item, dict):
                 tid = item.get("id")
-                if tid:
-                    caps_tombstones.add(str(tid))
+                if not tid or not isinstance(tid, str):
+                    raise RobotDocsError(
+                        ERR_ROBOT_DOCS_CORRUPT,
+                        "Tombstone object in capabilities.json must contain string id",
+                        target="capabilities.json:tombstones",
+                    )
+                caps_tombstones.add(tid)
             elif isinstance(item, str):
                 caps_tombstones.add(item)
+            else:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Tombstone item in capabilities.json must be str or dict, got {type(item).__name__}",
+                    target="capabilities.json:tombstones",
+                )
 
     # Check views for duplicate IDs and type correctness
     seen_views: set[str] = set()
@@ -501,6 +552,13 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                     f"View {v_id} missing required key '{req_k}'",
                     target=f"views.{v_id}.{req_k}",
                 )
+
+        if not isinstance(v["name"], str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"View {v_id} name must be a string, got {type(v['name']).__name__}",
+                target=f"views.{v_id}.name",
+            )
 
         if not isinstance(v["targetTokens"], int) or isinstance(v["targetTokens"], bool):
             raise RobotDocsError(
@@ -565,6 +623,12 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                 raise RobotDocsError(
                     ERR_ROBOT_DOCS_CORRUPT,
                     f"Capability {c_id} missing required key '{req_k}'",
+                    target=f"capabilities.{c_id}.{req_k}",
+                )
+            if not isinstance(cap[req_k], str):
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Capability {c_id} field '{req_k}' must be a string, got {type(cap[req_k]).__name__}",
                     target=f"capabilities.{c_id}.{req_k}",
                 )
         caps_by_id[c_id] = cap
@@ -681,65 +745,168 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                     target=f"operations.{op_id}.{req_k}",
                 )
 
+        if not isinstance(raw_op["name"], str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} name must be a string, got {type(raw_op['name']).__name__}",
+                target=f"operations.{op_id}.name",
+            )
+        if not isinstance(raw_op["effectful"], bool):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} effectful must be a bool, got {type(raw_op['effectful']).__name__}",
+                target=f"operations.{op_id}.effectful",
+            )
+        if not isinstance(raw_op["durable"], bool):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} durable must be a bool, got {type(raw_op['durable']).__name__}",
+                target=f"operations.{op_id}.durable",
+            )
+
+        # Check required fields in fss1_op
+        for fss1_k in [
+            "name", "owner", "status", "responseEnvelope", "responsePayloadSchemas",
+            "requestEnvelope", "requestPayloadSchema", "defaultView", "cliCommand", "mcpToolName"
+        ]:
+            if fss1_k not in fss1_op or fss1_op[fss1_k] is None:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} missing required key '{fss1_k}' in fss1_public_registry.json",
+                    target=f"fss1_public_registry.json:{op_id}.{fss1_k}",
+                )
+
+        if not isinstance(fss1_op["name"], str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} name in fss1 must be a string, got {type(fss1_op['name']).__name__}",
+                target=f"fss1_public_registry.json:{op_id}.name",
+            )
+
+        # Check required fields in cw
+        for cw_k in [
+            "operation_name", "owner", "status", "cli_command", "mcp_tool_name",
+            "library_entry_point", "primary_error_id", "error_identities", "exit_identities"
+        ]:
+            if cw_k not in cw or cw[cw_k] is None:
+                raise RobotDocsError(
+                    ERR_ROBOT_DOCS_CORRUPT,
+                    f"Operation {op_id} missing required key '{cw_k}' in operation_crosswalk.json",
+                    target=f"operation_crosswalk.json:{op_id}.{cw_k}",
+                )
+
+        if not isinstance(cw["operation_name"], str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Operation {op_id} operation_name in crosswalk must be a string, got {type(cw['operation_name']).__name__}",
+                target=f"operation_crosswalk.json:{op_id}.operation_name",
+            )
+
         # Cross-registry field conflict detection (DRIFT)
         # 1. name
-        if raw_op["name"] != fss1_op.get("name"):
+        if raw_op["name"] != fss1_op["name"]:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_DRIFT,
-                f"Operation {op_id} name conflict: agent_operations has {raw_op['name']!r}, fss1 has {fss1_op.get('name')!r}",
+                f"Operation {op_id} name conflict: agent_operations has {raw_op['name']!r}, fss1 has {fss1_op['name']!r}",
                 target=f"operations.{op_id}.name",
             )
-        if cw.get("name") and raw_op["name"] != cw["name"]:
+        if raw_op["name"] != cw["operation_name"]:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_DRIFT,
-                f"Operation {op_id} name conflict: agent_operations has {raw_op['name']!r}, crosswalk has {cw['name']!r}",
+                f"Operation {op_id} name conflict: agent_operations has {raw_op['name']!r}, crosswalk has {cw['operation_name']!r}",
                 target=f"operations.{op_id}.name",
             )
 
-        # 2. cliCommand
-        cli_fss1 = fss1_op.get("cliCommand")
-        cli_cw = cw.get("cli_command")
-        if cli_fss1 is not None and cli_cw is not None and cli_fss1 != cli_cw:
+        # 2. owner
+        if raw_op["owner"] != fss1_op["owner"]:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_DRIFT,
-                f"Operation {op_id} cliCommand conflict: fss1 has {cli_fss1!r}, crosswalk has {cli_cw!r}",
-                target=f"operations.{op_id}.cliCommand",
+                f"Operation {op_id} owner conflict: agent_operations has {raw_op['owner']!r}, fss1 has {fss1_op['owner']!r}",
+                target=f"operations.{op_id}.owner",
             )
-        cli_cmd = cli_cw if cli_cw is not None else (cli_fss1 or "")
-
-        # 3. mcpToolName
-        mcp_fss1 = fss1_op.get("mcpToolName")
-        mcp_cw = cw.get("mcp_tool_name")
-        if mcp_fss1 is not None and mcp_cw is not None and mcp_fss1 != mcp_cw:
+        if raw_op["owner"] != cw["owner"]:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_DRIFT,
-                f"Operation {op_id} mcpToolName conflict: fss1 has {mcp_fss1!r}, crosswalk has {mcp_cw!r}",
-                target=f"operations.{op_id}.mcpToolName",
+                f"Operation {op_id} owner conflict: agent_operations has {raw_op['owner']!r}, crosswalk has {cw['owner']!r}",
+                target=f"operations.{op_id}.owner",
             )
-        mcp_tool = mcp_cw if mcp_cw is not None else (mcp_fss1 or "")
 
-        # 4. defaultView
-        view_fss1 = fss1_op.get("defaultView")
-        if view_fss1 is not None and raw_op["defaultView"] != view_fss1:
+        # 3. status
+        if raw_op["status"] != fss1_op["status"]:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_DRIFT,
-                f"Operation {op_id} defaultView conflict: agent_operations has {raw_op['defaultView']!r}, fss1 has {view_fss1!r}",
+                f"Operation {op_id} status conflict: agent_operations has {raw_op['status']!r}, fss1 has {fss1_op['status']!r}",
+                target=f"operations.{op_id}.status",
+            )
+        if raw_op["status"] != cw["status"]:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} status conflict: agent_operations has {raw_op['status']!r}, crosswalk has {cw['status']!r}",
+                target=f"operations.{op_id}.status",
+            )
+
+        # 4. responseEnvelope (outputSchema in agent_operations)
+        if raw_op["outputSchema"] != fss1_op["responseEnvelope"]:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} responseEnvelope conflict: agent_operations outputSchema has {raw_op['outputSchema']!r}, fss1 has {fss1_op['responseEnvelope']!r}",
+                target=f"operations.{op_id}.responseEnvelope",
+            )
+
+        # 5. responsePayloadSchemas
+        if raw_op["responsePayloadSchemas"] != fss1_op["responsePayloadSchemas"]:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} responsePayloadSchemas conflict: agent_operations has {raw_op['responsePayloadSchemas']!r}, fss1 has {fss1_op['responsePayloadSchemas']!r}",
+                target=f"operations.{op_id}.responsePayloadSchemas",
+            )
+
+        # 6. requestEnvelope (inputSchema in agent_operations)
+        if raw_op["inputSchema"] != fss1_op["requestEnvelope"]:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} requestEnvelope conflict: agent_operations inputSchema has {raw_op['inputSchema']!r}, fss1 has {fss1_op['requestEnvelope']!r}",
+                target=f"operations.{op_id}.requestEnvelope",
+            )
+
+        # 7. defaultView
+        if raw_op["defaultView"] != fss1_op["defaultView"]:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} defaultView conflict: agent_operations has {raw_op['defaultView']!r}, fss1 has {fss1_op['defaultView']!r}",
                 target=f"operations.{op_id}.defaultView",
             )
 
-        # 5. requestPayloadSchema
-        payload_fss1 = fss1_op.get("requestPayloadSchema")
-        if payload_fss1 is not None and raw_op["requestPayloadSchema"] != payload_fss1:
+        # 8. requestPayloadSchema
+        if raw_op["requestPayloadSchema"] != fss1_op["requestPayloadSchema"]:
             raise RobotDocsError(
                 ERR_ROBOT_DOCS_DRIFT,
-                f"Operation {op_id} requestPayloadSchema conflict: agent_operations has {raw_op['requestPayloadSchema']!r}, fss1 has {payload_fss1!r}",
+                f"Operation {op_id} requestPayloadSchema conflict: agent_operations has {raw_op['requestPayloadSchema']!r}, fss1 has {fss1_op['requestPayloadSchema']!r}",
                 target=f"operations.{op_id}.requestPayloadSchema",
             )
 
-        lib_entry = cw.get("library_entry_point", "")
-        primary_err = cw.get("primary_error_id", "")
-        error_ids = cw.get("error_identities", [])
-        exit_ids = cw.get("exit_identities", [])
+        # 9. cliCommand
+        if fss1_op["cliCommand"] != cw["cli_command"]:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} cliCommand conflict: fss1 has {fss1_op['cliCommand']!r}, crosswalk has {cw['cli_command']!r}",
+                target=f"operations.{op_id}.cliCommand",
+            )
+        cli_cmd = cw["cli_command"]
+
+        # 10. mcpToolName
+        if fss1_op["mcpToolName"] != cw["mcp_tool_name"]:
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_DRIFT,
+                f"Operation {op_id} mcpToolName conflict: fss1 has {fss1_op['mcpToolName']!r}, crosswalk has {cw['mcp_tool_name']!r}",
+                target=f"operations.{op_id}.mcpToolName",
+            )
+        mcp_tool = cw["mcp_tool_name"]
+
+        lib_entry = cw["library_entry_point"]
+        primary_err = cw["primary_error_id"]
+        error_ids = cw["error_identities"]
+        exit_ids = cw["exit_identities"]
 
         # Validate view reference
         default_view = raw_op["defaultView"]
@@ -936,6 +1103,13 @@ def collect_robot_docs_model(root: Path) -> dict[str, Any]:
                     f"Resource {res_id} missing required key '{req_k}'",
                     target=f"resources.{res_id}.{req_k}",
                 )
+
+        if not isinstance(raw_res["name"], str):
+            raise RobotDocsError(
+                ERR_ROBOT_DOCS_CORRUPT,
+                f"Resource {res_id} name must be a string, got {type(raw_res['name']).__name__}",
+                target=f"resources.{res_id}.name",
+            )
 
         res_req_env = raw_res["requestEnvelope"]
         res_resp_env = raw_res["responseEnvelope"]
@@ -1259,6 +1433,8 @@ def generate_docs(root: Path) -> tuple[str, str]:
     model = collect_robot_docs_model(root)
     md = generate_robot_docs_markdown(model)
     json_str = generate_robot_docs_json(model)
+    scan_for_secrets(md, "generated:ROBOT_DOCS.md")
+    scan_for_secrets(json_str, "generated:ROBOT_DOCS.json")
     return md, json_str
 
 
@@ -1316,7 +1492,7 @@ def main() -> int:
         print("OK: robot docs are fresh and match machine registries.")
         return 0
 
-    args.output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir.mkdir(parents=True, exist_ok=True)
     md_path.write_text(expected_md, encoding="utf-8")
     json_path.write_text(expected_json, encoding="utf-8")
     print(f"Successfully generated robot docs at {md_path} and {json_path}")
