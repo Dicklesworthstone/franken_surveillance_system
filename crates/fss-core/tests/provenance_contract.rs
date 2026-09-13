@@ -2100,3 +2100,141 @@ fn test_vendor_claimed_distinction_from_all_other_provenance_classes() -> Result
 
     Ok(())
 }
+
+/// Returns the typed basis a knowledge state's registry meaning requires, if any.
+fn required_state_basis(
+    state: KnowledgeState,
+    root: ContentDigest,
+) -> Result<Option<KnowledgeStateBasis>, ContractError> {
+    Ok(match state {
+        KnowledgeState::Redacted => Some(KnowledgeStateBasis::Redaction(RedactionMarker {
+            reason: RedactionReason::PrivacyProjection,
+            privacy_generation: PrivacyGeneration::parse("privacy:projection:v1")?,
+        })),
+        KnowledgeState::Stale => Some(KnowledgeStateBasis::Stale(StaleBasis::OlderGeneration {
+            valid_at: Generation::from_u64(1),
+            current: Generation::from_u64(2),
+        })),
+        KnowledgeState::Indeterminate => Some(KnowledgeStateBasis::Reconciliation(
+            ReconciliationBasis::occurred_or_not(root),
+        )),
+        KnowledgeState::Known
+        | KnowledgeState::Estimated
+        | KnowledgeState::Unknown
+        | KnowledgeState::Conflicted
+        | KnowledgeState::NotObservable
+        | KnowledgeState::NotApplicable => None,
+    })
+}
+
+fn evidence_less_cell(
+    state: KnowledgeState,
+    provenance: ProvenanceClass,
+    contradictions: Vec<ContentDigest>,
+) -> Result<KnowledgeCell, ContractError> {
+    Ok(KnowledgeCell {
+        claim_id: format!(
+            "claim:evidence-less:{}:{}",
+            provenance.as_str(),
+            state.as_str()
+        ),
+        statement: "Evidence-less proposition".to_string(),
+        knowledge_state: state,
+        provenance,
+        hypothesis: None,
+        evidence: vec![],
+        contradictions,
+        valid_until: None,
+        state_basis: required_state_basis(
+            state,
+            ContentDigest::sha256(b"evidence_less_reconciliation_root"),
+        )?,
+    })
+}
+
+/// PROV-001/PROV-002 intent: an observed or derived cell that asserts present support for its
+/// proposition (`known`, `estimated`, `conflicted`) must bind evidence or named inputs.
+#[test]
+fn test_observed_and_derived_asserting_cells_require_evidence() -> Result<(), Box<dyn Error>> {
+    let contradiction = ContentDigest::sha256(b"asserting_cell_contradiction");
+    for provenance in [ProvenanceClass::Observed, ProvenanceClass::Derived] {
+        for state in [
+            KnowledgeState::Known,
+            KnowledgeState::Estimated,
+            KnowledgeState::Conflicted,
+        ] {
+            let contradictions = if state == KnowledgeState::Conflicted {
+                vec![contradiction]
+            } else {
+                vec![]
+            };
+            let cell = evidence_less_cell(state, provenance, contradictions)?;
+            assert_eq!(
+                cell.validate(),
+                Err(ContractError::EvidenceRequired),
+                "{provenance} {state} without evidence must be refused"
+            );
+            let anchored = KnowledgeCell {
+                evidence: vec![ContentDigest::sha256(b"asserting_cell_anchor")],
+                ..cell
+            };
+            assert_eq!(
+                anchored.validate(),
+                Ok(()),
+                "{provenance} {state} with evidence must be accepted"
+            );
+        }
+    }
+    Ok(())
+}
+
+/// An honest unknown (or any state asserting no present support) stays valid without evidence
+/// under every provenance class: knowledge state and provenance stay orthogonal, and a cell is
+/// never refused for lacking the support it reports it does not have.
+#[test]
+fn test_non_asserting_cells_stay_valid_without_evidence() -> Result<(), Box<dyn Error>> {
+    let now = TimestampNs(1_000_000_000);
+    let contradiction = ContentDigest::sha256(b"contradicting_root_only");
+    for provenance in [
+        ProvenanceClass::Observed,
+        ProvenanceClass::Derived,
+        ProvenanceClass::Predicted,
+        ProvenanceClass::Remembered,
+        ProvenanceClass::OperatorAsserted,
+        ProvenanceClass::VendorClaimed,
+        ProvenanceClass::Policy,
+    ] {
+        for state in [
+            KnowledgeState::Unknown,
+            KnowledgeState::Stale,
+            KnowledgeState::NotObservable,
+            KnowledgeState::Redacted,
+            KnowledgeState::Indeterminate,
+            KnowledgeState::NotApplicable,
+        ] {
+            let cell = evidence_less_cell(state, provenance, vec![])?;
+            assert_eq!(
+                cell.validate(),
+                Ok(()),
+                "{provenance} {state} without evidence must stay valid"
+            );
+            assert_eq!(cell.knowledge_state, state);
+            assert_eq!(cell.provenance, provenance);
+            assert!(!cell.is_irreversible_effect_premise(now));
+        }
+    }
+
+    // The physical cell for an event whose revision edges only contradict it: observed,
+    // unknown, no supporting root, one contradicting root.
+    let contradicted_unknown = evidence_less_cell(
+        KnowledgeState::Unknown,
+        ProvenanceClass::Observed,
+        vec![contradiction],
+    )?
+    .validated()?;
+    assert!(contradicted_unknown.is_unknown());
+    assert!(contradicted_unknown.is_observed());
+    assert!(contradicted_unknown.evidence.is_empty());
+    assert!(!contradicted_unknown.is_irreversible_effect_premise(now));
+    Ok(())
+}
