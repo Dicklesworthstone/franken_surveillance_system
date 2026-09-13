@@ -151,6 +151,16 @@ impl CanonicalEncoder {
         self.bytes.extend_from_slice(&value.bytes());
     }
 
+    /// Records an encoding failure for encoders that cannot represent a value.
+    ///
+    /// The first recorded error wins; later writes are ignored and [`Self::finish_checked`]
+    /// returns the error instead of a partial encoding.
+    pub(crate) fn fail(&mut self, error: ContractError) {
+        if self.error.is_none() {
+            self.error = Some(error);
+        }
+    }
+
     /// Returns the accumulated canonical bytes, failing closed to an empty vector if an error occurred.
     #[must_use]
     pub fn finish(self) -> Vec<u8> {

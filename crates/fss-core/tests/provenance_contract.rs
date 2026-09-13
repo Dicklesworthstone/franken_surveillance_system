@@ -689,13 +689,14 @@ fn test_derived_belief_cognition_layer_integration() -> Result<(), Box<dyn Error
         supporting_evidence: vec![input],
         contradictions: vec![],
         derivation_receipt: receipt,
-    };
+    }
+    .with_computed_receipt()?;
 
     let belief = DerivedBelief::new(params.clone())?;
-    assert_eq!(belief.provenance, ProvenanceClass::Derived);
-    assert!(belief.provenance.is_derived());
-    assert_eq!(belief.provenance.id(), "PROV-002");
-    assert_eq!(belief.provenance.as_str(), "derived");
+    assert_eq!(belief.provenance(), ProvenanceClass::Derived);
+    assert!(belief.provenance().is_derived());
+    assert_eq!(belief.provenance().id(), "PROV-002");
+    assert_eq!(belief.provenance().as_str(), "derived");
 
     // Constitutional Hard Gate (AGENTS.md & INV-069):
     // Cognition plane cannot claim authority or authorize effects directly

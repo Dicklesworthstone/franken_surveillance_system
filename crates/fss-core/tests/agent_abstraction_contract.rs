@@ -352,25 +352,28 @@ fn test_derived_belief_construction_and_validation() -> Result<(), Box<dyn Error
     let evidence_root = ContentDigest::sha256(b"evidence_packet_001");
     let receipt = ContentDigest::sha256(b"graph_projection_receipt_v1");
 
-    let belief = DerivedBelief::new(DerivedBeliefParams {
-        belief_id: "belief:track:person:001".into(),
-        anchor: anchor.clone(),
-        generation: Generation(1),
-        statement: "Track 001 classified as person in restricted perimeter".into(),
-        knowledge_state: KnowledgeState::Estimated,
-        provenance: ProvenanceClass::Derived,
-        uncertainty,
-        supporting_evidence: vec![evidence_root],
-        contradictions: vec![],
-        derivation_receipt: receipt,
-    })?;
+    let belief = DerivedBelief::new(
+        DerivedBeliefParams {
+            belief_id: "belief:track:person:001".into(),
+            anchor: anchor.clone(),
+            generation: Generation(1),
+            statement: "Track 001 classified as person in restricted perimeter".into(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance: ProvenanceClass::Derived,
+            uncertainty,
+            supporting_evidence: vec![evidence_root],
+            contradictions: vec![],
+            derivation_receipt: receipt,
+        }
+        .with_computed_receipt()?,
+    )?;
 
     // Properties
-    assert_eq!(belief.belief_id, "belief:track:person:001");
-    assert_eq!(belief.anchor, anchor);
-    assert_eq!(belief.generation, Generation(1));
-    assert_eq!(belief.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(belief.provenance, ProvenanceClass::Derived);
+    assert_eq!(belief.belief_id(), "belief:track:person:001");
+    assert_eq!(belief.anchor(), &anchor);
+    assert_eq!(belief.generation(), Generation(1));
+    assert_eq!(belief.knowledge_state(), KnowledgeState::Estimated);
+    assert_eq!(belief.provenance(), ProvenanceClass::Derived);
     assert_eq!(belief.layer(), AgentAbstractionLayer::DerivedBeliefs);
 
     // Constitutional Hard Gates
@@ -393,20 +396,23 @@ fn test_derived_belief_to_knowledge_cell_hard_gate() -> Result<(), Box<dyn Error
     let receipt = ContentDigest::sha256(b"graph_projection_receipt_v1");
     let now = TimestampNs(1_000_000_000);
 
-    let belief = DerivedBelief::new(DerivedBeliefParams {
-        belief_id: "belief:track:vehicle:002".into(),
-        anchor,
-        generation: Generation(1),
-        statement: "Vehicle track 002 speed estimated at 35km/h".into(),
-        knowledge_state: KnowledgeState::Estimated,
-        provenance: ProvenanceClass::Derived,
-        uncertainty,
-        supporting_evidence: vec![evidence_root],
-        contradictions: vec![],
-        derivation_receipt: receipt,
-    })?;
+    let belief = DerivedBelief::new(
+        DerivedBeliefParams {
+            belief_id: "belief:track:vehicle:002".into(),
+            anchor,
+            generation: Generation(1),
+            statement: "Vehicle track 002 speed estimated at 35km/h".into(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance: ProvenanceClass::Derived,
+            uncertainty,
+            supporting_evidence: vec![evidence_root],
+            contradictions: vec![],
+            derivation_receipt: receipt,
+        }
+        .with_computed_receipt()?,
+    )?;
 
-    let cell = belief.to_knowledge_cell();
+    let cell = belief.to_knowledge_cell(&sample_anchor())?;
 
     // The cell inherits the derived belief's attributes
     assert_eq!(cell.claim_id, "belief:track:vehicle:002");
@@ -577,18 +583,21 @@ fn test_derived_belief_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
     let contradiction_root = ContentDigest::sha256(b"conflicting_track_evidence");
     let receipt = ContentDigest::sha256(b"graph_projection_receipt_v1");
 
-    let belief = DerivedBelief::new(DerivedBeliefParams {
-        belief_id: "belief:track:person:roundtrip_001".into(),
-        anchor,
-        generation: Generation(42),
-        statement: "Person detected in Zone 4 with micro-probability [750000, 920000]".into(),
-        knowledge_state: KnowledgeState::Estimated,
-        provenance: ProvenanceClass::Derived,
-        uncertainty,
-        supporting_evidence: vec![evidence_root],
-        contradictions: vec![contradiction_root],
-        derivation_receipt: receipt,
-    })?;
+    let belief = DerivedBelief::new(
+        DerivedBeliefParams {
+            belief_id: "belief:track:person:roundtrip_001".into(),
+            anchor,
+            generation: Generation(42),
+            statement: "Person detected in Zone 4 with micro-probability [750000, 920000]".into(),
+            knowledge_state: KnowledgeState::Estimated,
+            provenance: ProvenanceClass::Derived,
+            uncertainty,
+            supporting_evidence: vec![evidence_root],
+            contradictions: vec![contradiction_root],
+            derivation_receipt: receipt,
+        }
+        .with_computed_receipt()?,
+    )?;
 
     let mut encoder = CanonicalEncoder::new();
     belief.encode_canonical(&mut encoder);
@@ -598,16 +607,16 @@ fn test_derived_belief_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
     let decoded = DerivedBelief::decode_canonical(&mut decoder)?;
 
     assert_eq!(decoded, belief);
-    assert_eq!(decoded.belief_id, belief.belief_id);
-    assert_eq!(decoded.anchor, belief.anchor);
-    assert_eq!(decoded.generation, belief.generation);
-    assert_eq!(decoded.statement, belief.statement);
-    assert_eq!(decoded.knowledge_state, belief.knowledge_state);
-    assert_eq!(decoded.provenance, belief.provenance);
-    assert_eq!(decoded.uncertainty, belief.uncertainty);
-    assert_eq!(decoded.supporting_evidence, belief.supporting_evidence);
-    assert_eq!(decoded.contradictions, belief.contradictions);
-    assert_eq!(decoded.derivation_receipt, belief.derivation_receipt);
+    assert_eq!(decoded.belief_id(), belief.belief_id());
+    assert_eq!(decoded.anchor(), belief.anchor());
+    assert_eq!(decoded.generation(), belief.generation());
+    assert_eq!(decoded.statement(), belief.statement());
+    assert_eq!(decoded.knowledge_state(), belief.knowledge_state());
+    assert_eq!(decoded.provenance(), belief.provenance());
+    assert_eq!(decoded.uncertainty(), belief.uncertainty());
+    assert_eq!(decoded.supporting_evidence(), belief.supporting_evidence());
+    assert_eq!(decoded.contradictions(), belief.contradictions());
+    assert_eq!(decoded.derivation_receipt(), belief.derivation_receipt());
 
     Ok(())
 }
