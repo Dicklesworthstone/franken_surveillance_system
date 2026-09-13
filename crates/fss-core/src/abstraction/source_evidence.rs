@@ -7,7 +7,7 @@
 
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
-use crate::{ContentDigest, Generation, KnowledgeCell, LedgerAnchor};
+use crate::{ContentDigest, Generation, KnowledgeCell, KnowledgeCellParams, LedgerAnchor};
 
 use super::AgentAbstractionLayer;
 
@@ -142,7 +142,7 @@ impl SourceEvidenceRecord {
         } else {
             vec![]
         };
-        KnowledgeCell {
+        let params = KnowledgeCellParams {
             claim_id: self.evidence_id.clone(),
             statement: self.statement.clone(),
             knowledge_state: KnowledgeState::Known,
@@ -152,7 +152,9 @@ impl SourceEvidenceRecord {
             contradictions: vec![],
             valid_until: None,
             state_basis: None,
-        }
+        };
+        KnowledgeCell::new(params.clone())
+            .unwrap_or_else(|_| KnowledgeCell::new_unvalidated(params))
     }
 }
 

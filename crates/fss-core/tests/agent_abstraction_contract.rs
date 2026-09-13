@@ -9,15 +9,13 @@ use std::str::FromStr;
 
 use fss_core::belief::BeliefInterval;
 use fss_core::{
-    evaluate_negative_read, AgentAbstractionLayer, CanonicalDecode, CanonicalDecoder,
-    CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest, ContractError,
-    CoverageContinuity, CoverageStopReason, CoverageWitness, DerivedBelief,
-    DerivedBeliefParams, Generation, KnowledgeState, LedgerAnchor, NegativeReadClaim,
-    NegativeReadOutcome, Plane, ProvenanceClass, SourceEvidenceParams, SourceEvidenceRecord,
-    TimestampNs, WorldFact, WorldFactKind,
-    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
+    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION, AgentAbstractionLayer,
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, Completeness,
+    ContentDigest, ContractError, CoverageContinuity, CoverageStopReason, CoverageWitness,
+    DerivedBelief, DerivedBeliefParams, Generation, KnowledgeState, LedgerAnchor,
+    NegativeReadClaim, NegativeReadOutcome, Plane, ProvenanceClass, SourceEvidenceParams,
+    SourceEvidenceRecord, TimestampNs, WorldFact, WorldFactKind, evaluate_negative_read,
 };
-
 
 #[test]
 fn test_normative_agent_abstraction_layers_census() -> Result<(), Box<dyn Error>> {
@@ -139,15 +137,24 @@ fn test_runtime_authority_and_custody_parse_and_resolution() -> Result<(), Box<d
 
     // Parse via FromStr with stable ID
     let from_str_id = AgentAbstractionLayer::from_str("AGT-LAYER-001")?;
-    assert_eq!(from_str_id, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
+    assert_eq!(
+        from_str_id,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
 
     // Parse via FromStr with schema name
     let from_str_name = AgentAbstractionLayer::from_str("runtime_authority_and_custody")?;
-    assert_eq!(from_str_name, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
+    assert_eq!(
+        from_str_name,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
 
     // Parse from tower level
     let from_level = AgentAbstractionLayer::from_tower_level(0)?;
-    assert_eq!(from_level, AgentAbstractionLayer::RuntimeAuthorityAndCustody);
+    assert_eq!(
+        from_level,
+        AgentAbstractionLayer::RuntimeAuthorityAndCustody
+    );
 
     Ok(())
 }
@@ -415,10 +422,10 @@ fn test_derived_belief_to_knowledge_cell_hard_gate() -> Result<(), Box<dyn Error
     let cell = belief.to_knowledge_cell(&sample_anchor())?;
 
     // The cell inherits the derived belief's attributes
-    assert_eq!(cell.claim_id, "belief:track:vehicle:002");
-    assert_eq!(cell.knowledge_state, KnowledgeState::Estimated);
-    assert_eq!(cell.provenance, ProvenanceClass::Derived);
-    assert_eq!(cell.evidence.len(), 1);
+    assert_eq!(cell.claim_id(), "belief:track:vehicle:002");
+    assert_eq!(cell.knowledge_state(), KnowledgeState::Estimated);
+    assert_eq!(cell.provenance(), ProvenanceClass::Derived);
+    assert_eq!(cell.evidence().len(), 1);
 
     // Constitutional Hard Gate: A derived proposition can NEVER be an irreversible-effect premise!
     assert!(
@@ -1023,7 +1030,9 @@ fn test_planted_negative_uncertified_coverage_witness_fails() -> Result<(), Box<
         &["zone:north_perimeter"],
         &["zone:north_perimeter"],
     );
-    witness.excluded_domain.insert("zone:north_gate".to_string());
+    witness
+        .excluded_domain
+        .insert("zone:north_gate".to_string());
     let claim = NegativeReadClaim {
         claim_id: "neg_claim:excluded".to_string(),
         query_predicate: "no_unauthorized_intrusion".to_string(),
@@ -1250,7 +1259,10 @@ fn test_negative_read_outcome_decode_invariants() -> Result<(), Box<dyn Error>> 
     anchor.encode_canonical(&mut encoder);
     encoder.u64(1);
     encoder.text("zone:a");
-    encoder.digest(ContentDigest::new(fss_core::DigestAlgorithm::Sha256, [0u8; 32])); // zero digest!
+    encoder.digest(ContentDigest::new(
+        fss_core::DigestAlgorithm::Sha256,
+        [0u8; 32],
+    )); // zero digest!
     encoder.u64(1);
     let bytes = encoder.finish();
 
@@ -1353,10 +1365,10 @@ fn test_source_evidence_record_valid_construction() -> Result<(), Box<dyn Error>
     assert!(!record.may_authorize_effects());
 
     let kcell = record.to_knowledge_cell();
-    assert_eq!(kcell.claim_id, "source:packet:front_gate:0042");
-    assert_eq!(kcell.knowledge_state, KnowledgeState::Known);
-    assert_eq!(kcell.provenance, ProvenanceClass::Observed);
-    assert_eq!(kcell.evidence, vec![source_digest]);
+    assert_eq!(kcell.claim_id(), "source:packet:front_gate:0042");
+    assert_eq!(kcell.knowledge_state(), KnowledgeState::Known);
+    assert_eq!(kcell.provenance(), ProvenanceClass::Observed);
+    assert_eq!(kcell.evidence(), &[source_digest]);
 
     Ok(())
 }
@@ -1370,19 +1382,22 @@ fn test_source_evidence_record_retention_forbidden_exemption() -> Result<(), Box
         evidence_id: "source:packet:restricted:0099".to_string(),
         anchor: anchor.clone(),
         generation: Generation(1),
-        statement: "Physical sensor reading where raw video retention is legally forbidden".to_string(),
+        statement: "Physical sensor reading where raw video retention is legally forbidden"
+            .to_string(),
         provenance: ProvenanceClass::Observed,
         source_bytes_digest: None,
         continuity_witness: Some(continuity_digest),
-        retention_forbidden_reason: Some("Statutory privacy retention prohibition on private quarters (INV-003)".to_string()),
+        retention_forbidden_reason: Some(
+            "Statutory privacy retention prohibition on private quarters (INV-003)".to_string(),
+        ),
     })?;
 
     assert_eq!(record.source_bytes_digest, None);
     assert!(record.retention_forbidden_reason.is_some());
 
     let kcell = record.to_knowledge_cell();
-    assert!(kcell.evidence.is_empty());
-    assert_eq!(kcell.knowledge_state, KnowledgeState::Known);
+    assert!(kcell.evidence().is_empty());
+    assert_eq!(kcell.knowledge_state(), KnowledgeState::Known);
 
     Ok(())
 }
@@ -1490,7 +1505,9 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
     });
     match res {
         Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Err(err) => {
+            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
+        }
         Ok(_) => return Err("expected error, got Ok".into()),
     }
 
@@ -1507,7 +1524,9 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
     });
     match res {
         Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Err(err) => {
+            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
+        }
         Ok(_) => return Err("expected error, got Ok".into()),
     }
 
@@ -1524,7 +1543,9 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
     });
     match res {
         Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Err(err) => {
+            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
+        }
         Ok(_) => return Err("expected error, got Ok".into()),
     }
 
@@ -1541,7 +1562,9 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
     });
     match res {
         Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Err(err) => {
+            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
+        }
         Ok(_) => return Err("expected error, got Ok".into()),
     }
 
@@ -1558,7 +1581,9 @@ fn test_planted_negative_source_evidence_bypasses() -> Result<(), Box<dyn Error>
     });
     match res {
         Err(err) if err.code() == "prohibited_evidence_promotion" => {}
-        Err(err) => return Err(format!("expected prohibited_evidence_promotion, got: {err}").into()),
+        Err(err) => {
+            return Err(format!("expected prohibited_evidence_promotion, got: {err}").into());
+        }
         Ok(_) => return Err("expected error, got Ok".into()),
     }
 
@@ -1597,8 +1622,10 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
     assert_eq!(decoded.provenance, record.provenance);
     assert_eq!(decoded.source_bytes_digest, record.source_bytes_digest);
     assert_eq!(decoded.continuity_witness, record.continuity_witness);
-    assert_eq!(decoded.retention_forbidden_reason, record.retention_forbidden_reason);
+    assert_eq!(
+        decoded.retention_forbidden_reason,
+        record.retention_forbidden_reason
+    );
 
     Ok(())
 }
-

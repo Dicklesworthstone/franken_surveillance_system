@@ -15,10 +15,10 @@ use fss_core::event::EventSupersedeParams;
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, CapsuleId, CaptureInterval, Completeness,
     ContentDigest, ContractBasis, ContractBasisRegistryBytes, ContractError, EffectJournal,
-    EventId, IdempotencyKey, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
-    OperationId, PossibleWorld, PrincipalId, ProbabilityInterval, ProvenanceClass,
-    ResourcePressure, SensorId, SessionId, SituationCapsule, SituationFrame, TimestampNs,
-    WorldEnvelope,
+    EventId, IdempotencyKey, KnowledgeCell, KnowledgeCellParams, KnowledgeState, LedgerAnchor,
+    MissionId, ObligationId, OperationId, PossibleWorld, PrincipalId, ProbabilityInterval,
+    ProvenanceClass, ResourcePressure, SensorId, SessionId, SituationCapsule, SituationFrame,
+    TimestampNs, WorldEnvelope,
 };
 use fss_core::{DeltaPriority, MeaningfulDeltaClass};
 use fss_ledger::{DurableReferenceLedger, IncompleteTailPolicy};
@@ -343,7 +343,7 @@ fn synthetic_situation(
         common_invariants: BTreeSet::from(["invariant:synthetic".to_owned()]),
         coverage_boundary_handles: BTreeSet::from(["fss://coverage/synthetic".to_owned()]),
     };
-    let cell = KnowledgeCell {
+    let cell = KnowledgeCell::new(KnowledgeCellParams {
         claim_id: "claim:presence".to_owned(),
         statement: "Synthetic presence claim.".to_owned(),
         knowledge_state: KnowledgeState::Known,
@@ -353,7 +353,7 @@ fn synthetic_situation(
         contradictions: Vec::new(),
         valid_until: None,
         state_basis: None,
-    };
+    })?;
     let frame = SituationFrame {
         frame_id: "frame:synthetic".to_owned(),
         objective_id: "objective:synthetic".to_owned(),
@@ -816,14 +816,14 @@ fn test_f7_corroborated_envelope_retains_protected_adversarial_residual_and_high
         .frame
         .knowledge_cells
         .iter()
-        .find(|cell| cell.claim_id.ends_with(":unknown-presence"))
+        .find(|cell| cell.claim_id().ends_with(":unknown-presence"))
         .ok_or(ReferenceError::InvalidSpec("missing_physical_cell"))?;
     assert_eq!(
-        indet_physical.knowledge_state,
+        indet_physical.knowledge_state(),
         KnowledgeState::Indeterminate
     );
-    assert!(indet_physical.state_basis.is_some());
-    assert!(indet_physical.contradictions.is_empty());
+    assert!(indet_physical.state_basis().is_some());
+    assert!(indet_physical.contradictions().is_empty());
     let indet_envelope = &indet_situation.capsule.frame.world_envelope;
 
     let unmitigated_world = indet_envelope
@@ -980,15 +980,15 @@ fn test_f1_unknown_knowledge_cell_is_preserved_in_context_pack() -> Result<(), B
         .frame
         .knowledge_cells
         .iter()
-        .find(|c| c.claim_id.contains("absence"))
+        .find(|c| c.claim_id().contains("absence"))
         .ok_or(ReferenceError::InvalidSpec("missing_absence_cell"))?;
     assert_eq!(
-        absence_cell.knowledge_state,
+        absence_cell.knowledge_state(),
         KnowledgeState::Unknown,
         "Absence claim must have KnowledgeState::Unknown"
     );
 
-    let absence_context_id = format!("context:epistemic:{}", absence_cell.claim_id);
+    let absence_context_id = format!("context:epistemic:{}", absence_cell.claim_id());
 
     // Invariant: required_context_item_ids must include the Unknown cell as a critical epistemic boundary
     let required = required_context_item_ids(&situation)?;
@@ -1185,8 +1185,8 @@ fn physical_claim_ids(publication: &ReferenceSituationPublication) -> Vec<String
         .frame
         .knowledge_cells
         .iter()
-        .filter(|cell| cell.claim_id.ends_with(":unknown-presence"))
-        .map(|cell| cell.claim_id.clone())
+        .filter(|cell| cell.claim_id().ends_with(":unknown-presence"))
+        .map(|cell| cell.claim_id().to_owned())
         .collect()
 }
 
@@ -1202,7 +1202,7 @@ fn tamper_result_after_person_basis_is_a_critical_contradiction_delta() -> Resul
     // The tamper risk is typed in the revised situation.
     let frame = &tampered.situation.capsule.frame;
     assert!(frame.knowledge_cells.iter().any(|cell| {
-        cell.claim_id.ends_with(":sensor-integrity") && !cell.contradictions.is_empty()
+        cell.claim_id().ends_with(":sensor-integrity") && !cell.contradictions().is_empty()
     }));
     assert!(
         frame

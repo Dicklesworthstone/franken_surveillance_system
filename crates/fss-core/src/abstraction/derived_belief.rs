@@ -10,7 +10,8 @@ use crate::belief::BeliefInterval;
 use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder};
 use crate::contract::{ContractError, KnowledgeState, Plane, ProvenanceClass};
 use crate::{
-    ContentDigest, Generation, KnowledgeCell, KnowledgeStateBasis, LedgerAnchor, StaleBasis,
+    ContentDigest, Generation, KnowledgeCell, KnowledgeCellParams, KnowledgeStateBasis,
+    LedgerAnchor, StaleBasis,
 };
 
 use super::AgentAbstractionLayer;
@@ -556,7 +557,7 @@ impl DerivedBelief {
         } else {
             return Err(ContractError::DerivedBeliefAnchorMismatch);
         };
-        KnowledgeCell {
+        KnowledgeCell::new(KnowledgeCellParams {
             claim_id: self.belief_id.clone(),
             statement: self.statement.clone(),
             knowledge_state,
@@ -566,8 +567,7 @@ impl DerivedBelief {
             contradictions: self.contradictions.clone(),
             valid_until: None,
             state_basis,
-        }
-        .validated()
+        })
     }
 
     /// Decodes a derived belief and enforces freshness against the caller's current anchor.
@@ -826,9 +826,9 @@ mod tests {
 
         // 1. Same anchor: preserves belief knowledge_state, no state basis
         let fresh_cell = belief.to_knowledge_cell(&pinned)?;
-        assert_eq!(fresh_cell.knowledge_state, belief.knowledge_state);
-        assert_eq!(fresh_cell.provenance, ProvenanceClass::Derived);
-        assert_eq!(fresh_cell.state_basis, None);
+        assert_eq!(fresh_cell.knowledge_state(), belief.knowledge_state);
+        assert_eq!(fresh_cell.provenance(), ProvenanceClass::Derived);
+        assert_eq!(fresh_cell.state_basis(), None);
         assert!(!fresh_cell.is_irreversible_effect_premise(now));
         assert_eq!(fresh_cell.validate(), Ok(()));
 
@@ -836,11 +836,11 @@ mod tests {
         let mut newer_sequence = pinned.clone();
         newer_sequence.commit_sequence += 1;
         let stale_seq_cell = belief.to_knowledge_cell(&newer_sequence)?;
-        assert_eq!(stale_seq_cell.knowledge_state, KnowledgeState::Stale);
-        assert_eq!(stale_seq_cell.provenance, ProvenanceClass::Derived);
+        assert_eq!(stale_seq_cell.knowledge_state(), KnowledgeState::Stale);
+        assert_eq!(stale_seq_cell.provenance(), ProvenanceClass::Derived);
         assert_eq!(
-            stale_seq_cell.state_basis,
-            Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+            stale_seq_cell.state_basis(),
+            Some(&KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
                 valid_at: Box::new(pinned.clone()),
                 current: Box::new(newer_sequence.clone()),
             }))
@@ -853,10 +853,10 @@ mod tests {
         newer_epoch.ledger_epoch += 1;
         newer_epoch.commit_sequence = 0;
         let stale_epoch_cell = belief.to_knowledge_cell(&newer_epoch)?;
-        assert_eq!(stale_epoch_cell.knowledge_state, KnowledgeState::Stale);
+        assert_eq!(stale_epoch_cell.knowledge_state(), KnowledgeState::Stale);
         assert_eq!(
-            stale_epoch_cell.state_basis,
-            Some(KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
+            stale_epoch_cell.state_basis(),
+            Some(&KnowledgeStateBasis::Stale(StaleBasis::OlderAnchor {
                 valid_at: Box::new(pinned.clone()),
                 current: Box::new(newer_epoch.clone()),
             }))

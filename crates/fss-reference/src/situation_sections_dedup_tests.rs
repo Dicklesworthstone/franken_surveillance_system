@@ -22,8 +22,10 @@ fn withholding_cell_on(
     claim_id: &str,
     secret: &str,
 ) -> Result<KnowledgeCell, Box<dyn Error>> {
-    let mut cell = withheld_cell(claim_id, secret, Vec::new())?;
-    cell.knowledge_state = state;
+    let cell = withheld_cell(claim_id, secret, Vec::new())?;
+    let mut params = cell.to_params();
+    params.knowledge_state = state;
+    let cell = KnowledgeCell::new_unvalidated_for_test(params);
     assert!(cell.withholds_statement());
     assert!(
         cell.validate().is_err(),
@@ -92,12 +94,15 @@ fn knowledge_and_not_applicable_lanes_never_deduplicate_on_withheld_statements()
 #[test]
 fn same_disclosed_statement_never_compares_withheld_statements() -> Result<(), Box<dyn Error>> {
     let secret = "SECRET-same-resident";
-    let mut disclosed = withheld_cell("claim:disclosed:1", secret, Vec::new())?;
-    disclosed.knowledge_state = KnowledgeState::Known;
-    disclosed.state_basis = None;
+    let cell = withheld_cell("claim:disclosed:1", secret, Vec::new())?;
+    let mut params = cell.to_params();
+    params.knowledge_state = KnowledgeState::Known;
+    params.state_basis = None;
+    let disclosed = KnowledgeCell::new(params)?;
     assert!(!disclosed.withholds_statement());
-    let mut disclosed_twin = disclosed.clone();
-    disclosed_twin.claim_id = "claim:disclosed:2".to_owned();
+    let mut twin_params = disclosed.to_params();
+    twin_params.claim_id = "claim:disclosed:2".to_owned();
+    let disclosed_twin = KnowledgeCell::new(twin_params)?;
     assert!(
         same_disclosed_statement(&disclosed, &disclosed_twin),
         "equal disclosed statements are duplicates"
@@ -109,11 +114,14 @@ fn same_disclosed_statement_never_compares_withheld_statements() -> Result<(), B
         KnowledgeState::NotApplicable,
         KnowledgeState::Redacted,
     ] {
-        let mut withheld = withheld_cell("claim:withheld:1", secret, Vec::new())?;
-        withheld.knowledge_state = state;
+        let cell = withheld_cell("claim:withheld:1", secret, Vec::new())?;
+        let mut params = cell.to_params();
+        params.knowledge_state = state;
+        let withheld = KnowledgeCell::new_unvalidated_for_test(params);
         assert!(withheld.withholds_statement());
-        let mut withheld_twin = withheld.clone();
-        withheld_twin.claim_id = "claim:withheld:2".to_owned();
+        let mut twin_params = withheld.to_params();
+        twin_params.claim_id = "claim:withheld:2".to_owned();
+        let withheld_twin = KnowledgeCell::new_unvalidated_for_test(twin_params);
         assert!(
             !same_disclosed_statement(&withheld, &withheld_twin),
             "{state:?}: two withheld statements were compared"

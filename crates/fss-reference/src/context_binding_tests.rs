@@ -7,9 +7,9 @@ use fss_core::hydration::{
 use fss_core::{
     ActionAffordance, AffordanceClass, BudgetVector, Completeness, ContentDigest,
     ContextBindingError, ContextExpansionBindingSet, ContractBasis, ContractBasisRegistryBytes,
-    ContractError, HandoffId, KnowledgeCell, KnowledgeState, LedgerAnchor, MissionId, ObligationId,
-    PrincipalId, ProvenanceClass, ResourcePressure, SessionId, SituationCapsule, SituationFrame,
-    TimestampNs, WorldEnvelope,
+    ContractError, HandoffId, KnowledgeCell, KnowledgeCellParams, KnowledgeState, LedgerAnchor,
+    MissionId, ObligationId, PrincipalId, ProvenanceClass, ResourcePressure, SessionId,
+    SituationCapsule, SituationFrame, TimestampNs, WorldEnvelope,
 };
 
 use crate::{
@@ -78,7 +78,7 @@ fn situation() -> Result<ReferenceSituation, ContractError> {
         objective_id: "objective:bound-context".to_owned(),
         anchor: anchor.clone(),
         world_envelope: envelope,
-        knowledge_cells: vec![KnowledgeCell {
+        knowledge_cells: vec![KnowledgeCell::new(KnowledgeCellParams {
             claim_id: "claim:presence".to_owned(),
             statement: "Presence remains unresolved.".to_owned(),
             knowledge_state: KnowledgeState::Conflicted,
@@ -88,7 +88,7 @@ fn situation() -> Result<ReferenceSituation, ContractError> {
             contradictions: vec![ContentDigest::sha256(b"bound-context-contradiction")],
             valid_until: None,
             state_basis: None,
-        }],
+        })?],
         now: vec!["A candidate event remains under investigation.".to_owned()],
         changed: vec!["A contradictory observation arrived.".to_owned()],
         why: vec!["optional explanatory detail ".repeat(400)],
