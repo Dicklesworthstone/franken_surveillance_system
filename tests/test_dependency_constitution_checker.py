@@ -153,6 +153,35 @@ def metadata(packages: list[dict[str, Any]], edges: dict[str, list[tuple[str, st
     }
 
 
+# Members whose crate_topology.json status is not a present status (skeleton/implemented/qualified).
+# This is the owner's pending topology decision on main (fss-packet, and fss-geometry added by the origin
+# merge); check-policy reports the same pair as "not marked present". Update this one line when the owner
+# registers them, never by bumping a member count.
+LIVE_MEMBERS_NOT_MARKED_PRESENT = {"fss-packet", "fss-geometry"}
+PRESENT_TOPOLOGY_STATUSES = {"skeleton", "implemented", "qualified"}
+
+
+def live_workspace_members(root: Path) -> set[str]:
+    """Package names of the root [workspace].members manifests (the live member set, never a count)."""
+    import tomllib as _tomllib
+    members = _tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))["workspace"]["members"]
+    return {_tomllib.loads((root / member / "Cargo.toml").read_text(encoding="utf-8"))["package"]["name"] for member in members}
+
+
+def topology_statuses(root: Path) -> dict[str, str]:
+    import json as _json
+    topology = _json.loads((root / "architecture/crate_topology.json").read_text(encoding="utf-8"))
+    return {crate["name"]: crate.get("status") for layer in topology["layers"] for crate in layer["crates"]}
+
+
+def assert_live_members_match_topology(test: "unittest.TestCase", members: set[str], root: Path) -> None:
+    """Every live member is declared in the topology; the members not marked present are exactly the
+    owner's pending set."""
+    statuses = topology_statuses(root)
+    test.assertEqual(sorted(members - set(statuses)), [], "workspace members undeclared in architecture/crate_topology.json")
+    test.assertEqual({m for m in members if statuses.get(m) not in PRESENT_TOPOLOGY_STATUSES}, LIVE_MEMBERS_NOT_MARKED_PRESENT)
+
+
 class ConstitutionCase(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp_dir = tempfile.TemporaryDirectory()
@@ -238,7 +267,10 @@ class TestDependencyConstitutionChecker(ConstitutionCase):
         res = dependency_constitution_checker.ValidationResult()
         validate_cargo_metadata_for_f0(res, meta, ROOT)
         self.assertEqual(res.errors, [])
-        self.assertEqual(len(meta["workspace_members"]), 9)
+        # The member set is derived from the live Cargo.toml and held to crate_topology.json, never a count.
+        live = live_workspace_members(ROOT)
+        self.assertEqual({p["name"] for p in meta["packages"] if p["id"] in meta["workspace_members"]}, live)
+        assert_live_members_match_topology(self, live, ROOT)
 
     def test_exact_freeze_digest_assertion(self) -> None:
         """Freeze digest matches the exact pinned constant byte-for-byte; no prefix-only matching."""
@@ -1252,7 +1284,7 @@ class TestRoundTwoConstitutionFindings(ConstitutionCase):
             ("date", 'rustc_commit_date = "2026-08-30"', 'rustc_commit_date = "2026-08-29"', [(I, "#/rustc/commit-date")]),
             ("channel", 'channel = "nightly-2026-08-31"', 'channel = "nightly-2026-08-30"', [(I, "#/toolchain/channel")]),
             ("linux triple removed", '"x86_64-unknown-linux-gnu" = "linux-x86_64"\n', "", [(I, "#/rustc/host")]),
-            ("triple mapped to an unregistered scope", '"x86_64-unknown-linux-gnu" = "linux-x86_64"', '"x86_64-unknown-linux-gnu" = "linux-riscv"', [(I, "#/rustc/host")]),
+            ("triple mapped to an unregistered scope", '"x86_64-unknown-linux-gnu" = "linux-x86_64"', '"x86_64-unknown-linux-gnu" = "linux-riscv"', [(I, "#/rustc/host"), (I, "#/toolchain/host_triples/x86_64-unknown-linux-gnu")]),
         ):
             with self.subTest(label):
                 self.write(self.LQ, good.replace(old, new, 1))
@@ -1350,6 +1382,145 @@ class TestRoundTwoConstitutionFindings(ConstitutionCase):
                     result = validate_dependency_constitution(self.tmp_root)
                 self.assertEqual(sorted((e.code, e.file_path) for e in result.errors), [(C, "Cargo.lock")])
                 self.assertEqual([cmd[3] for cmd, _ in calls], ["rustc"])
+
+
+class TestRoundThreeConstitutionFindings(ConstitutionCase):
+    """Round-3 review findings i and k of fss-x4a.30.88.16 (exact findings per scenario)."""
+
+    LQ = "architecture/local_qualification.toml"
+    toolchain = TestDependencyConstitutionChecker.toolchain
+    uf = TestRoundTwoConstitutionFindings.uf
+    put = TestRoundTwoConstitutionFindings.put
+
+    # --- i: unstable features in rustdoc code blocks (doctests are compiled) -------------------
+
+    def test_i_doctest_code_blocks_are_scanned(self) -> None:
+        self.put("crates/fss-x/src/lib.rs", "\n".join([
+            "//! Crate docs.",
+            "//! ```",
+            "//! #![feature(never_type)]",
+            "//! ```",
+            "/// ```rust,no_run",
+            "/// # #![feature(hidden)]",
+            "/// fn f() {}",
+            "/// ```",
+            "/// ```text",
+            "/// #![feature(not_code)]",
+            "/// ```",
+            "/**",
+            " * ```",
+            " * #![cfg_attr(all(), feature(block))]",
+            " * ```",
+            " */",
+            "//// ```",
+            "//// #![feature(not_a_doc_comment)]",
+            "//// ```",
+            "pub fn f() {}",
+            "",
+        ]))
+        self.put("crates/fss-x/src/doc_attr.rs", '#![doc = "#![feature(never_type)] is not used here"]\n')
+        U, f = ERR_DEP_UNSTABLE_FEATURE, "crates/fss-x/src/lib.rs"
+        self.assertEqual(self.uf(), [(U, f, "line/14"), (U, f, "line/3"), (U, f, "line/6")])
+        self.assertEqual([[line for line, _ in block] for block in dependency_constitution_checker.doctest_blocks("/// ~~~\n/// #![feature(x)]\n/// ~~~\n")], [[2]])
+
+    # --- i: cargo config aliases, compiler overrides, include, RUSTC_BOOTSTRAP ---------------------
+
+    def test_i_cargo_config_alias_override_include_and_bootstrap(self) -> None:
+        self.put(".cargo/config.toml", "\n".join([
+            'include = ["extra.cfg"]',
+            "[alias]",
+            'b = "build -Zbuild-std"',
+            'c = ["check", "-Z", "unstable-options"]',
+            'ok = "build --release"',
+            "[build]",
+            'rustc-wrapper = "tools-wrap"',
+            'rustc = "/opt/rustc"',
+            "[target.x86_64-unknown-linux-gnu]",
+            'rustdoc = "/opt/rustdoc"',
+            "[env]",
+            'RUSTC_BOOTSTRAP = "1"',
+            'RUSTC_WRAPPER = "w"',
+            "",
+        ]))
+        U, c = ERR_DEP_UNSTABLE_FEATURE, ".cargo/config.toml"
+        self.assertEqual(self.uf(), sorted([
+            (U, c, "#/include"), (U, c, "#/alias.b"), (U, c, "#/alias.c"), (U, c, "#/env.RUSTC_BOOTSTRAP"),
+            (I, c, "#/build.rustc-wrapper"), (I, c, "#/build.rustc"), (I, c, "#/target.x86_64-unknown-linux-gnu.rustdoc"), (I, c, "#/env.RUSTC_WRAPPER"),
+        ]))
+
+    def test_i_makefile_justfile_and_env_files(self) -> None:
+        self.put("Makefile", "unstable:\n\tcargo build -Zunstable-options\nok:\n\tcargo build --release\n# cargo build -Zcommented\n")
+        self.put("justfile", "build:\n    cargo build -Zunstable-options\n")
+        self.put("tools/build.mk", "all:\n\tRUSTC_BOOTSTRAP=1 cargo build\n")
+        self.put(".envrc", 'export RUSTC_BOOTSTRAP=1\nexport RUSTC_WRAPPER=/opt/wrap\nexport RUSTFLAGS="-Z crate-attr=feature(x)"\nexport FSS_LOG=info\n')
+        U = ERR_DEP_UNSTABLE_FEATURE
+        self.assertEqual(self.uf(), sorted([
+            (U, "Makefile", "line/2"), (U, "justfile", "line/2"), (U, "tools/build.mk", "line/2"),
+            (U, ".envrc", "line/1"), (I, ".envrc", "line/2"), (U, ".envrc", "line/3"),
+        ]))
+
+    def test_i_nested_toolchain_files_are_refused(self) -> None:
+        self.put("crates/fss-core/rust-toolchain.toml", '[toolchain]\nchannel = "nightly-2026-09-10"\n')
+        self.put("crates/fss-x/rust-toolchain", "nightly-2026-09-10\n")
+        self.assertEqual(self.uf(), [(I, "crates/fss-core/rust-toolchain.toml", "#"), (I, "crates/fss-x/rust-toolchain", "#")])
+
+    def test_i_toolchain_bypasses_fail_the_entry_point(self) -> None:
+        self.put("crates/fss-core/rust-toolchain.toml", '[toolchain]\nchannel = "nightly-2026-09-10"\n')
+        self.put(".cargo/config.toml", '[build]\nrustc-wrapper = "tools-wrap"\n')
+        with patch("subprocess.run", side_effect=self.fake_run()):
+            result = validate_dependency_constitution(self.tmp_root)
+        self.assertEqual(sorted((e.file_path, e.target) for e in result.errors), [(".cargo/config.toml", "#/build.rustc-wrapper"), ("crates/fss-core/rust-toolchain.toml", "#")])
+        self.assertEqual(codes(result), {I})
+
+    # --- i-low: member target sources ---------------------------------------------------------------
+
+    def test_i_member_target_sources_must_be_scanned_repository_files(self) -> None:
+        core = pkg("fss-core", member=True)
+
+        def with_bin(src: str) -> dict[str, Any]:
+            return dict(core, targets=[{"kind": ["lib"], "crate_types": ["lib"], "name": "fss_core", "src_path": f"{ROOT}/crates/fss-core/src/lib.rs"},
+                                       {"kind": ["bin"], "crate_types": ["bin"], "name": "fss-core-x", "src_path": src}])
+
+        self.assertEqual(self.census(metadata([with_bin(f"{ROOT}/crates/fss-core/src/bin/x.rs")], {})), [])
+        for label, src in {
+            "unscanned tool directory": f"{ROOT}/.ntm/x.rs",
+            "workspace target directory": f"{ROOT}/target/x.rs",
+            "outside the repository": "/elsewhere/outside_root.rs",
+        }.items():
+            with self.subTest(label):
+                self.assertEqual(self.census(metadata([with_bin(src)], {})), [(MV, "#fss-core/targets/fss-core-x/src_path")])
+
+    def test_i_member_target_source_in_a_git_ignored_path(self) -> None:
+        """Self-contained (independent of the checkout having .git): a repository whose .gitignore covers
+        the target source, decided by git check-ignore."""
+        import shutil as _shutil
+        if _shutil.which("git") is None:
+            self.skipTest("git is not installed")
+        subprocess.run(["git", "init", "-q", str(self.tmp_root)], check=True, capture_output=True)
+        self.write(".gitignore", "/captures/\n")
+        core = pkg("fss-core", member=True)
+
+        def census_with(src: str) -> list[tuple[str, str]]:
+            meta = metadata([dict(core, targets=[{"kind": ["bin"], "crate_types": ["bin"], "name": "fss-core-x", "src_path": src}])], {})
+            meta = json.loads(json.dumps(meta).replace(f"{ROOT}/", f"{self.tmp_root}/"))
+            res = dependency_constitution_checker.ValidationResult()
+            validate_cargo_metadata_for_f0(res, meta, self.tmp_root)
+            return sorted((e.code, e.target) for e in res.errors)
+
+        self.assertEqual(census_with(f"{ROOT}/crates/fss-core/src/bin/x.rs"), [])
+        self.assertEqual(census_with(f"{ROOT}/captures/x.rs"), [(MV, "#fss-core/targets/fss-core-x/src_path")])
+
+    # --- k: every host triple ------------------------------------------------------------------------
+
+    def test_k_every_host_triple_is_validated(self) -> None:
+        """An unregistered scope anywhere in host_triples fails, even when the running host is fine."""
+        good = self.text(self.LQ)
+        self.write(self.LQ, good.replace('"x86_64-pc-windows-msvc" = "windows-x86_64"', '"x86_64-pc-windows-msvc" = "windows-x86_64"\n"riscv64gc-unknown-linux-gnu" = "linux-riscv"', 1))
+        self.assertEqual(self.toolchain(), [(I, "#/toolchain/host_triples/riscv64gc-unknown-linux-gnu")])
+        self.write(self.LQ, good.replace('"aarch64-apple-darwin" = "darwin-arm64"', '"aarch64-apple-darwin" = "darwin-arm65"', 1))
+        self.assertEqual(self.toolchain(), [(I, "#/toolchain/host_triples/aarch64-apple-darwin")])
+        self.write(self.LQ, good)
+        self.assertEqual(self.toolchain(), [])
 
 
 if __name__ == "__main__":
