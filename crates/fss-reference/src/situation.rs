@@ -141,6 +141,12 @@ pub struct ReferenceSituation {
     /// receipt it came from. A proof root alone never proves an effect: any caller can add one to
     /// `proof_roots` (fss-6sph6).
     effect_bindings: BTreeMap<String, EffectCellBinding>,
+    /// Seal over the validated capsule and every binding, taken when compilation finished.
+    ///
+    /// A binding proves its cell only inside the situation it was compiled for, so a bound cell
+    /// transplanted into another capsule, or any later capsule edit (a mission relabel, a restored
+    /// commit affordance beside a terminal proof), breaks the seal (fss-6sph6).
+    effect_seal: Option<ContentDigest>,
 }
 
 impl ReferenceSituation {
@@ -154,6 +160,7 @@ impl ReferenceSituation {
             capsule,
             proof_roots,
             effect_bindings: BTreeMap::new(),
+            effect_seal: None,
         }
     }
 
@@ -216,10 +223,45 @@ impl ReferenceSituation {
         Ok(())
     }
 
+    /// Seals the bindings to the finished capsule. Compile paths call it after their last capsule
+    /// edit; binding another cell afterwards changes the sealed binding set, so it breaks the seal
+    /// until the path seals again.
+    pub(crate) fn seal_effect_bindings(&mut self) -> Result<(), ReferenceError> {
+        self.effect_seal = Some(self.binding_seal()?);
+        Ok(())
+    }
+
+    /// Digest over the validated capsule and every binding, in claim order.
+    fn binding_seal(&self) -> Result<ContentDigest, ReferenceError> {
+        let capsule = self
+            .capsule
+            .validated_digest("fss.reference_effect_binding_capsule.v1")?;
+        let mut encoder = CanonicalEncoder::new();
+        encoder.text("fss.reference_effect_binding_seal.v1");
+        encoder.digest(capsule);
+        encoder.u64(self.effect_bindings.len() as u64);
+        for (claim_id, binding) in &self.effect_bindings {
+            encoder.text(claim_id);
+            encoder.text(binding.kind.claim_suffix());
+            encoder.text(binding.operation_id.as_str());
+            match binding.outcome {
+                Some(outcome) => {
+                    encoder.bool(true);
+                    encoder.text(outcome.as_str());
+                }
+                None => encoder.bool(false),
+            }
+            encoder.digest(binding.cell_digest);
+        }
+        Ok(ContentDigest::sha256(&encoder.finish()))
+    }
+
     /// Revalidates the capsule and returns its deterministic decision fingerprint.
     ///
-    /// Refuses a `known` effect cell that no compile path bound, and a bound effect cell that was
-    /// dropped, duplicated, relabeled, or whose evidence roots were removed from `proof_roots`.
+    /// Refuses a claim identity that reads as a reserved typed namespace without being spelled
+    /// exactly, a `known` effect cell that no compile path bound, a bound effect cell that was
+    /// dropped, duplicated, relabeled, or whose evidence roots were removed from `proof_roots`,
+    /// and bindings whose seal no longer matches the capsule they were compiled for.
     pub fn verify(&self) -> Result<ContentDigest, ReferenceError> {
         self.capsule.validate()?;
         if self.proof_roots.is_empty() {
@@ -231,6 +273,14 @@ impl ReferenceSituation {
 
     fn verify_effect_bindings(&self) -> Result<(), ReferenceError> {
         let cells = &self.capsule.frame.knowledge_cells;
+        if cells
+            .iter()
+            .any(|cell| confusable_reserved_namespace(&cell.claim_id))
+        {
+            return Err(ReferenceError::InvalidSpec(
+                "situation_claim_namespace_confusable",
+            ));
+        }
         for (claim_id, binding) in &self.effect_bindings {
             let mut matching = cells.iter().filter(|cell| &cell.claim_id == claim_id);
             let cell = matching
@@ -265,8 +315,31 @@ impl ReferenceSituation {
                 "situation_effect_known_unbound",
             ));
         }
+        // Bound cells prove their effect only in the capsule they were compiled for.
+        if !self.effect_bindings.is_empty() && self.effect_seal != Some(self.binding_seal()?) {
+            return Err(ReferenceError::InvalidSpec("situation_effect_binding_seal"));
+        }
         Ok(())
     }
+}
+
+/// Claim namespaces whose terminal meaning only typed state carries: an effect through its
+/// binding, an obligation through the capsule's typed obligation set.
+const RESERVED_CLAIM_NAMESPACES: [&str; 2] = ["effect", "obligation"];
+
+/// Returns whether `claim_id` reads as a reserved namespace (ignoring ASCII case and a plural
+/// `s`) without being spelled exactly `claim:{namespace}:`. Such a cell would slip past the typed
+/// rules into a looser one, so it is refused rather than classified (fss-6sph6).
+fn confusable_reserved_namespace(claim_id: &str) -> bool {
+    let folded = claim_id.to_ascii_lowercase();
+    let Some(rest) = folded.strip_prefix("claim:") else {
+        return false;
+    };
+    let namespace = rest.split(':').next().unwrap_or_default();
+    let singular = namespace.strip_suffix('s').unwrap_or(namespace);
+    RESERVED_CLAIM_NAMESPACES.iter().any(|reserved| {
+        singular == *reserved && !claim_id.starts_with(&format!("claim:{reserved}:"))
+    })
 }
 
 /// Compiles one deterministic, conservative situation projection from canonical reference state.
@@ -848,6 +921,7 @@ pub fn compile_reference_situation(
     if let Some((operation_id, state, cell)) = &outcome_cell {
         situation.bind_effect_cell(EffectCellKind::Outcome, operation_id, *state, cell)?;
     }
+    situation.seal_effect_bindings()?;
     Ok(situation)
 }
 

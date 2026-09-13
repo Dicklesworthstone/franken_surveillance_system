@@ -282,6 +282,7 @@ fn publication(variant: &Variant) -> Result<crate::ReferenceSituationPublication
             )?;
         }
     }
+    situation.seal_effect_bindings()?;
     project_reference_situation(
         situation,
         &ReferenceProjectionSpec {
@@ -1643,22 +1644,50 @@ fn refused_with(
 }
 
 /// A bound effect cell whose evidence root is not among the proof roots would publish a proved
-/// effect without its proof as a handoff child, so projection refuses it (fss-6sph6 moved the
-/// fss-deir9 proof-root check from classification to the publication graph).
+/// effect without its proof as a handoff child, whatever the basis carried for the effect. So
+/// projection refuses to publish it, and classification refuses a publication whose retained root
+/// was removed after projection (fss-6sph6 moved the fss-deir9 proof-root check from the proof bar
+/// into verification).
 #[test]
 fn known_effect_whose_evidence_is_not_a_proof_root_is_refused() -> Result<(), Box<dyn Error>> {
     let expected =
         crate::ReferenceError::Contract(fss_core::ContractError::IncompletePublicationGraph);
-    for prior in [None, Some(KnowledgeState::Indeterminate)] {
-        let mut variant = Variant::baseline()?;
-        variant.sequence = 2;
-        variant.effect_state = Some(KnowledgeState::Known);
-        variant.effect_evidence_retained = false;
-        let projected = publication(&variant);
+    for prior in [
+        None,
+        Some(KnowledgeState::Unknown),
+        Some(KnowledgeState::Indeterminate),
+    ] {
+        let mut basis_variant = Variant::baseline()?;
+        basis_variant.effect_state = prior;
+        let basis = publication(&basis_variant)?;
+        let mut result_variant = basis_variant.clone();
+        result_variant.sequence = 2;
+        result_variant.effect_state = Some(KnowledgeState::Known);
+
+        let mut unretained = result_variant.clone();
+        unretained.effect_evidence_retained = false;
+        let projected = publication(&unretained);
         assert!(
             refused_with(&projected, &expected),
             "prior {prior:?}: {:?}",
             projected.map(|publication| publication.publication_digest)
+        );
+
+        let mut result = publication(&result_variant)?;
+        assert!(
+            result
+                .situation
+                .proof_roots
+                .remove(&ContentDigest::sha256(b"effect-outcome"))
+        );
+        let classified = classify_reference_meaningful_delta(&basis, &result);
+        assert!(
+            classified
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.to_string() == expected.to_string()),
+            "prior {prior:?}: {:?}",
+            classified.map(|delta| delta.classes)
         );
     }
     Ok(())
@@ -2000,5 +2029,209 @@ fn evidence_less_known_effect_is_refused_as_observed_and_unproved_as_vendor_clai
     assert!(effect.evidence.is_empty());
     assert_eq!(effect.validate(), Ok(()));
     assert!(!effect.is_irreversible_effect_premise(now));
+    Ok(())
+}
+
+/// A `known` effect cell binds only to a terminal operation state, and a non-`known` one only to a
+/// non-terminal state, under exactly the claim identity of its kind and operation (fss-6sph6).
+#[test]
+fn effect_binding_requires_known_exactly_for_a_terminal_state() -> Result<(), Box<dyn Error>> {
+    use fss_core::EffectState;
+
+    let template = publication(&Variant::baseline()?)?;
+    let operation_id = fss_core::OperationId::parse("meaningful-delta")?;
+    let root = ContentDigest::sha256(b"effect-outcome");
+    let cell = |claim_id: &str, state: KnowledgeState| -> Result<KnowledgeCell, Box<dyn Error>> {
+        Ok(KnowledgeCell {
+            claim_id: claim_id.to_owned(),
+            statement: "The external effect has an explicit typed state.".to_owned(),
+            knowledge_state: state,
+            provenance: ProvenanceClass::Observed,
+            hypothesis: None,
+            evidence: vec![root],
+            contradictions: Vec::new(),
+            valid_until: None,
+            state_basis: fixture_state_basis(state, root)?,
+        })
+    };
+    let fresh = || {
+        ReferenceSituation::new(
+            template.situation.capsule.clone(),
+            template.situation.proof_roots.clone(),
+        )
+    };
+    for (claim_id, cell_state, operation_state) in [
+        (EFFECT_CLAIM, KnowledgeState::Known, EffectState::Committed),
+        (EFFECT_CLAIM, KnowledgeState::Known, EffectState::Prepared),
+        (
+            EFFECT_CLAIM,
+            KnowledgeState::Known,
+            EffectState::Indeterminate,
+        ),
+        (
+            EFFECT_CLAIM,
+            KnowledgeState::Indeterminate,
+            EffectState::Verified,
+        ),
+        (EFFECT_CLAIM, KnowledgeState::Unknown, EffectState::Failed),
+        (
+            EFFECT_CLAIM,
+            KnowledgeState::Unknown,
+            EffectState::Cancelled,
+        ),
+        (
+            "claim:effect:meaningful-delta:local-state",
+            KnowledgeState::Known,
+            EffectState::Verified,
+        ),
+    ] {
+        let mut situation = fresh();
+        let bound = situation.bind_effect_cell(
+            crate::EffectCellKind::Outcome,
+            &operation_id,
+            operation_state,
+            &cell(claim_id, cell_state)?,
+        );
+        assert!(
+            matches!(
+                bound,
+                Err(crate::ReferenceError::InvalidSpec(
+                    "situation_effect_binding"
+                ))
+            ),
+            "{claim_id} {cell_state:?} bound to {operation_state:?}: {bound:?}"
+        );
+        assert_eq!(situation.effect_cell_kind(claim_id), None);
+    }
+    for (cell_state, operation_state) in [
+        (KnowledgeState::Known, EffectState::Verified),
+        (KnowledgeState::Known, EffectState::Failed),
+        (KnowledgeState::Indeterminate, EffectState::Committed),
+        (KnowledgeState::Unknown, EffectState::Prepared),
+    ] {
+        let mut situation = fresh();
+        situation.bind_effect_cell(
+            crate::EffectCellKind::Outcome,
+            &operation_id,
+            operation_state,
+            &cell(EFFECT_CLAIM, cell_state)?,
+        )?;
+        assert_eq!(
+            situation.effect_cell_kind(EFFECT_CLAIM),
+            Some(crate::EffectCellKind::Outcome)
+        );
+    }
+    Ok(())
+}
+
+/// Nominal projection policy for publications re-projected by the review probes below.
+fn nominal_spec() -> Result<ReferenceProjectionSpec, Box<dyn Error>> {
+    Ok(ReferenceProjectionSpec {
+        view_id: "AVIEW-001".to_owned(),
+        available_resources: BudgetVector::builder()
+            .latency_ms(10_000)
+            .tokens(50_000)
+            .bytes(2_000_000)
+            .model_calls(10)
+            .cpu_millis(10_000)
+            .accelerator_millis(10_000)
+            .energy_millijoules(1_000_000)
+            .network_bytes(1_000_000)
+            .storage_operations(10_000)
+            .privacy_exposure(10.0)
+            .operator_attention_seconds(1_000.0)
+            .build()?,
+        reserved_resources: BudgetVector::builder()
+            .latency_ms(100)
+            .tokens(100)
+            .bytes(1_000)
+            .storage_operations(1)
+            .build()?,
+        pressure: ResourcePressure::Nominal,
+        degraded_dimensions: BTreeSet::new(),
+        target_tokens: 25_000,
+    })
+}
+
+/// The successor publication plus one hand-built `known` cell whose evidence the caller rooted
+/// itself (review probe P5).
+fn publication_with_self_rooted_cell(
+    claim_id: &str,
+    hypothesis: Option<HypothesisDisposition>,
+) -> Result<crate::ReferenceSituationPublication, Box<dyn Error>> {
+    let mut variant = Variant::baseline()?;
+    variant.sequence = 2;
+    let template = publication(&variant)?;
+    let mut capsule = template.situation.capsule.clone();
+    let root = ContentDigest::sha256(b"self-asserted");
+    capsule.frame.knowledge_cells.push(KnowledgeCell {
+        claim_id: claim_id.to_owned(),
+        statement: "The external alert was delivered.".to_owned(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis,
+        evidence: vec![root],
+        contradictions: Vec::new(),
+        valid_until: None,
+        state_basis: None,
+    });
+    let mut roots = template.situation.proof_roots.clone();
+    roots.insert(root);
+    Ok(project_reference_situation(
+        ReferenceSituation::new(capsule, roots),
+        &nominal_spec()?,
+    )?)
+}
+
+/// Review probe P5: a hand-built cell whose claim identity reads as the effect or obligation
+/// namespace without being spelled exactly would slip past the typed rules (a capital `Effect`
+/// with a resolved hypothesis reached the event rule's terminal transition), so it is refused.
+#[test]
+fn confusable_reserved_claim_namespaces_are_refused() -> Result<(), Box<dyn Error>> {
+    let expected = crate::ReferenceError::InvalidSpec("situation_claim_namespace_confusable");
+    for (claim_id, hypothesis) in [
+        (
+            "claim:Effect:meaningful-delta:outcome",
+            Some(HypothesisDisposition::Resolved),
+        ),
+        ("claim:effects:meaningful-delta:outcome", None),
+        ("claim:EFFECT:meaningful-delta:outcome", None),
+        ("Claim:effect:meaningful-delta:outcome", None),
+        (
+            "claim:Obligation:meaningful-delta",
+            Some(HypothesisDisposition::Resolved),
+        ),
+        ("claim:obligations:meaningful-delta", None),
+    ] {
+        let projected = publication_with_self_rooted_cell(claim_id, hypothesis);
+        assert!(
+            refused_with(&projected, &expected),
+            "{claim_id}: {:?}",
+            projected.map(|publication| publication.publication_digest)
+        );
+    }
+    Ok(())
+}
+
+/// Review probe P5: an obligation terminalizes only through the typed obligation set, so a
+/// hand-built `claim:obligation:` cell, `known` or resolved, is a reported change and never a
+/// terminal transition.
+#[test]
+fn hand_built_obligation_cell_never_terminalizes() -> Result<(), Box<dyn Error>> {
+    let basis = publication(&Variant::baseline()?)?;
+    for hypothesis in [None, Some(HypothesisDisposition::Resolved)] {
+        let result =
+            publication_with_self_rooted_cell("claim:obligation:meaningful-delta", hypothesis)?;
+        let delta = classify_reference_meaningful_delta(&basis, &result)?;
+        assert!(
+            !delta
+                .classes
+                .contains(&MeaningfulDeltaClass::TerminalTransition),
+            "{hypothesis:?}: {:?}",
+            delta.classes
+        );
+        assert!(delta.silence_certificate.is_none(), "{:?}", delta.classes);
+        delta.validate()?;
+    }
     Ok(())
 }
