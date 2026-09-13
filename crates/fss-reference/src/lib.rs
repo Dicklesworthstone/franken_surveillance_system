@@ -20,6 +20,8 @@ mod encoded_fixture;
 mod error;
 mod extrinsics;
 mod hydration;
+/// Media ingest splitters and frame boundaries.
+pub mod ingest;
 mod meaningful_delta;
 mod model;
 mod outcome;
@@ -116,6 +118,11 @@ pub use extrinsics::{
     ReferenceExtrinsicsSolver, RigidTransform3D, solve_extrinsics,
 };
 pub use hydration::{ReferenceHydrationCatalog, ReferenceHydrationLimits};
+pub use ingest::annexb::{
+    AnnexBAccessUnit, AnnexBError, AnnexBLimits, AnnexBNal, AnnexBScan, CEILING_MAX_NAL_BYTES,
+    DEFAULT_MAX_AUS, DEFAULT_MAX_INPUT_BYTES, DEFAULT_MAX_NAL_BYTES, DEFAULT_MAX_NALS, SourceSpan,
+    split_annexb,
+};
 pub use meaningful_delta::{
     classify_reference_meaningful_delta, classify_reference_meaningful_delta_in_lineage,
 };
