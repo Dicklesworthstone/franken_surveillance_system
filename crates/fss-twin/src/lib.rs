@@ -186,3 +186,6 @@ pub mod localization;
 
 /// Portable localization atlas archives with exact source and mask bindings.
 pub mod atlas_archive;
+
+/// Incremental source-contact sessions over frozen twin and camera generations.
+pub mod stream;
