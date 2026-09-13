@@ -350,8 +350,29 @@ def validate_robot_docs(root: Path, docs_dir: Path | None = None) -> ValidationR
         )
 
     # Verify capabilities match and ordering
-    auth_cap_ids = [c["id"] for c in auth_model["capabilities"]]
-    disk_cap_ids = [c["id"] for c in on_disk_json.get("capabilities", [])]
+    auth_cap_ids = [c["id"] for c in auth_model["capabilities"] if isinstance(c, dict) and "id" in c]
+    disk_capabilities = on_disk_json.get("capabilities")
+    if not isinstance(disk_capabilities, list):
+        result.add_error(
+            ERR_ROBOT_DOCS_CORRUPT,
+            format_rel(json_path),
+            "capabilities",
+            f"On-disk capabilities must be a list, got {type(disk_capabilities).__name__}",
+        )
+        return result
+    disk_cap_ids = []
+    for item in disk_capabilities:
+        if isinstance(item, dict) and isinstance(item.get("id"), str):
+            disk_cap_ids.append(item["id"])
+        else:
+            result.add_error(
+                ERR_ROBOT_DOCS_CORRUPT,
+                format_rel(json_path),
+                "capabilities",
+                "Malformed capability entry in on-disk JSON (must be an object with string id)",
+            )
+            return result
+
     if set(auth_cap_ids) != set(disk_cap_ids):
         missing = sorted(set(auth_cap_ids) - set(disk_cap_ids))
         extra = sorted(set(disk_cap_ids) - set(auth_cap_ids))

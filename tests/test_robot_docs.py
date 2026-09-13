@@ -707,15 +707,17 @@ class RobotDocsContractTests(unittest.TestCase):
         self.assertEqual(set(error_codes), {ERR_ROBOT_DOCS_CORRUPT})
 
     def test_mutant_tombstoned_capability_reference(self) -> None:
-        """Referencing a tombstoned capability triggers exact ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        """Mutant G1: Referencing a registered but tombstoned capability triggers exact ERR-ROBOT-DOCS-UNREGISTERED-001."""
         caps_file = self.fake_root / "architecture/capabilities.json"
         data = json.loads(caps_file.read_text(encoding="utf-8"))
-        data["tombstones"] = ["CAP-TOMB-001"]
+        registered_cap_id = data["capabilities"][0]["id"]
+        data["tombstones"] = [registered_cap_id]
         caps_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
 
         ops_file = self.fake_root / "architecture/agent_operations.json"
         ops_data = json.loads(ops_file.read_text(encoding="utf-8"))
-        ops_data["operations"][0]["requiredCapabilities"].append("CAP-TOMB-001")
+        if registered_cap_id not in ops_data["operations"][0]["requiredCapabilities"]:
+            ops_data["operations"][0]["requiredCapabilities"].append(registered_cap_id)
         ops_file.write_text(json.dumps(ops_data, indent=2), encoding="utf-8")
 
         res = validate_robot_docs(self.fake_root)
@@ -729,6 +731,11 @@ class RobotDocsContractTests(unittest.TestCase):
         ops_data = json.loads(ops_file.read_text(encoding="utf-8"))
         ops_data["operations"][0]["responsePayloadSchemas"].append("fss.unregistered_response.v99")
         ops_file.write_text(json.dumps(ops_data, indent=2), encoding="utf-8")
+
+        fss1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        fss1_data = json.loads(fss1_file.read_text(encoding="utf-8"))
+        fss1_data["operations"][0]["responsePayloadSchemas"].append("fss.unregistered_response.v99")
+        fss1_file.write_text(json.dumps(fss1_data, indent=2), encoding="utf-8")
 
         res = validate_robot_docs(self.fake_root)
         self.assertFalse(res.passed)
@@ -857,6 +864,447 @@ class RobotDocsContractTests(unittest.TestCase):
         error_codes = [e.code for e in res.errors]
         self.assertEqual(set(error_codes), {ERR_ROBOT_DOCS_CORRUPT})
 
+    # --- Item 1: Default path regenerate test ---
+
+    def test_default_regenerate_no_output_dir(self) -> None:
+        """Invoking generate_robot_docs without --output-dir creates docs in repo_root/docs without AttributeError."""
+        with tempfile.TemporaryDirectory() as td:
+            temp_repo = Path(td)
+            shutil.copytree(self.fake_root, temp_repo, dirs_exist_ok=True)
+            docs_dir = temp_repo / "docs"
+            if docs_dir.exists():
+                shutil.rmtree(docs_dir)
+            cmd = [sys.executable, "-B", str(ROOT / "scripts/generate_robot_docs.py"), "--repo-root", str(temp_repo)]
+            proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+            self.assertEqual(proc.returncode, 0, f"STDOUT: {proc.stdout}\nSTDERR: {proc.stderr}")
+            self.assertTrue((docs_dir / "ROBOT_DOCS.md").is_file())
+            self.assertTrue((docs_dir / "ROBOT_DOCS.json").is_file())
+
+    # --- Item 3: Secret & path pattern planted tests ---
+
+    def test_secret_scan_bare_bearer(self) -> None:
+        """Planted bare Bearer token triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["purpose"] = "header is Bearer eyJhbGciOiJIUzI1NiJ9"
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_sk_ant(self) -> None:
+        """Planted sk-ant- token triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "test with sk-ant-api03-abcdef123456789"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_sk_bare(self) -> None:
+        """Planted sk- token triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "test with sk-abcdef12345678901234"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_aiza(self) -> None:
+        """Planted AIza Google API key triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "test with AIzaSyD1234567890abcdef1234567890"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_xoxp(self) -> None:
+        """Planted xoxp- Slack user token triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "test with xoxp-1234567890-1234567890"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_glpat(self) -> None:
+        """Planted glpat- GitLab token triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "test with glpat-12345678901234567890"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_asia(self) -> None:
+        """Planted ASIA AWS temporary credential triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "test with ASIAIOSFODNN7EXAMPLE"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_passwd(self) -> None:
+        """Planted passwd= parameter triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "connect with passwd=secretpassword123"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_postgres_uri(self) -> None:
+        """Planted postgres credential URI triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "db at postgres://app_user:dbpassword@127.0.0.1/prod"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_secret_key(self) -> None:
+        """Planted secret_key= assignment triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "config secret_key=super_secret_val"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_client_secret(self) -> None:
+        """Planted client_secret: assignment triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "client_secret: oauth_secret_12345"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_npm(self) -> None:
+        """Planted npm_ access token triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "registry auth npm_1234567890abcdef"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_unc_path(self) -> None:
+        """Planted UNC path triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = r"mounted at \\company_server\shared_share\folder"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_private_var(self) -> None:
+        """Planted /private/var path triggers ERR-ROBOT-DOCS-SECRET-DETECTED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "logging at /private/var/log/audit.log"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_planted_in_fss_cmd_doc(self) -> None:
+        """Planted secret token in fss_cmd.rs doc comment is detected and refused."""
+        fss_cmd_path = self.fake_root / "crates/fss-cli/src/fss_cmd.rs"
+        content = fss_cmd_path.read_text(encoding="utf-8")
+        planted = content.replace("/// Report capabilities", "/// Report ghp_12345678901234567890 capabilities")
+        self.assertIn("ghp_", planted)
+        fss_cmd_path.write_text(planted, encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_planted_in_release_qualification(self) -> None:
+        """Planted local home path in release_qualification.json is detected and refused."""
+        rel_qual_path = self.fake_root / "architecture/release_qualification.json"
+        data = json.loads(rel_qual_path.read_text(encoding="utf-8"))
+        data["lanes"][0]["description"] = "lane runs on /home/operator/workspace"
+        rel_qual_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_SECRET_DETECTED})
+
+    def test_secret_scan_tilde_second_not_false_positive(self) -> None:
+        """Legitimate frequency phrase '~/second' does not trigger false positive secret detection."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["purpose"] = "throughput target is ~10/second or ~/second"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertNotIn(ERR_ROBOT_DOCS_SECRET_DETECTED, [e.code for e in res.errors])
+
+    # --- Item 5: Malformed on-disk capabilities, non-list tombstones, wrongly typed fields ---
+
+    def test_checker_malformed_on_disk_capabilities(self) -> None:
+        """Malformed on-disk capabilities structure returns typed ERR-ROBOT-DOCS-CORRUPT-001 without crashing."""
+        json_path = self.fake_root / "docs/ROBOT_DOCS.json"
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        data["capabilities"] = "not_a_list_string"
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_ROBOT_DOCS_CORRUPT, {e.code for e in res.errors})
+
+    def test_checker_malformed_capability_entry(self) -> None:
+        """On-disk capabilities containing non-dict or missing id returns typed ERR-ROBOT-DOCS-CORRUPT-001."""
+        json_path = self.fake_root / "docs/ROBOT_DOCS.json"
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        data["capabilities"] = [{"not_an_id": "value"}]
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertIn(ERR_ROBOT_DOCS_CORRUPT, {e.code for e in res.errors})
+
+    def test_non_list_tombstones_in_fss1(self) -> None:
+        """Non-list tombstones field in fss1_public_registry.json triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        fss1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(fss1_file.read_text(encoding="utf-8"))
+        data["tombstones"] = "invalid_non_list_tombstones"
+        fss1_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_CORRUPT})
+
+    def test_non_list_tombstones_in_capabilities(self) -> None:
+        """Non-list tombstones field in capabilities.json triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        caps_file = self.fake_root / "architecture/capabilities.json"
+        data = json.loads(caps_file.read_text(encoding="utf-8"))
+        data["tombstones"] = {"not": "a_list"}
+        caps_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_CORRUPT})
+
+    def test_wrongly_typed_effectful_field(self) -> None:
+        """String effectful: 'yes' in agent_operations.json triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["effectful"] = "yes"
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_CORRUPT})
+
+    def test_wrongly_typed_operation_name(self) -> None:
+        """Integer name in agent_operations.json triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["name"] = 12345
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_CORRUPT})
+
+    def test_wrongly_typed_dict_capability(self) -> None:
+        """Dict capability field in capabilities.json triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        caps_file = self.fake_root / "architecture/capabilities.json"
+        data = json.loads(caps_file.read_text(encoding="utf-8"))
+        data["capabilities"][0]["capability"] = {"nested": "dict_not_string"}
+        caps_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_CORRUPT})
+
+    def test_wrongly_typed_dict_in_required_capabilities(self) -> None:
+        """Dict element inside requiredCapabilities triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["requiredCapabilities"].append({"id": "CAP-001"})
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_CORRUPT})
+
+    # --- Item 6: Crosswalk and fss1 drift checks ---
+
+    def test_crosswalk_operation_name_mismatch(self) -> None:
+        """Mismatch in crosswalk operation_name vs agent_operations triggers ERR-ROBOT-DOCS-DRIFT-001."""
+        cw_file = self.fake_root / "architecture/operation_crosswalk.json"
+        data = json.loads(cw_file.read_text(encoding="utf-8"))
+        data["crosswalk"][0]["operation_name"] = "session.mismatched_name"
+        cw_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_DRIFT})
+
+    def test_crosswalk_missing_operation_name(self) -> None:
+        """Missing operation_name key in crosswalk triggers ERR-ROBOT-DOCS-CORRUPT-001."""
+        cw_file = self.fake_root / "architecture/operation_crosswalk.json"
+        data = json.loads(cw_file.read_text(encoding="utf-8"))
+        del data["crosswalk"][0]["operation_name"]
+        cw_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_CORRUPT})
+
+    def test_crosswalk_owner_mismatch(self) -> None:
+        """Owner conflict between crosswalk and agent_operations triggers ERR-ROBOT-DOCS-DRIFT-001."""
+        cw_file = self.fake_root / "architecture/operation_crosswalk.json"
+        data = json.loads(cw_file.read_text(encoding="utf-8"))
+        data["crosswalk"][0]["owner"] = "different-owner"
+        cw_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_DRIFT})
+
+    def test_crosswalk_status_mismatch(self) -> None:
+        """Status conflict between crosswalk and agent_operations triggers ERR-ROBOT-DOCS-DRIFT-001."""
+        cw_file = self.fake_root / "architecture/operation_crosswalk.json"
+        data = json.loads(cw_file.read_text(encoding="utf-8"))
+        data["crosswalk"][0]["status"] = "experimental"
+        cw_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_DRIFT})
+
+    def test_fss1_response_envelope_mismatch(self) -> None:
+        """responseEnvelope conflict between fss1 and agent_operations triggers ERR-ROBOT-DOCS-DRIFT-001."""
+        fss1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(fss1_file.read_text(encoding="utf-8"))
+        data["operations"][0]["responseEnvelope"] = "fss.different_envelope.v1"
+        fss1_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_DRIFT})
+
+    def test_fss1_response_payload_schemas_mismatch(self) -> None:
+        """responsePayloadSchemas conflict between fss1 and agent_operations triggers ERR-ROBOT-DOCS-DRIFT-001."""
+        fss1_file = self.fake_root / "architecture/fss1_public_registry.json"
+        data = json.loads(fss1_file.read_text(encoding="utf-8"))
+        data["operations"][0]["responsePayloadSchemas"] = ["fss.other_payload.v1"]
+        fss1_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_DRIFT})
+
+    # --- Item 8: Mutants G3-G6, G9, G11-G13, G15, G20 ---
+
+    def test_mutant_g3_unregistered_exit_identity(self) -> None:
+        """Mutant G3: Operation crosswalk referencing unregistered exit identity triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        cw_file = self.fake_root / "architecture/operation_crosswalk.json"
+        data = json.loads(cw_file.read_text(encoding="utf-8"))
+        data["crosswalk"][0]["exit_identities"].append("EXIT-UNREGISTERED-FAKE-999")
+        cw_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_UNREGISTERED})
+
+    def test_mutant_g4_unregistered_retry_class(self) -> None:
+        """Mutant G4: Operation referencing unregistered recovery retry class triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["retryClasses"].append("unregistered_retry_class")
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_UNREGISTERED})
+
+    def test_mutant_g5_unregistered_op_gate(self) -> None:
+        """Mutant G5: Operation referencing unregistered qualification gate triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["gate"] = "QL-FAKE-GATE-999"
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_UNREGISTERED})
+
+    def test_mutant_g6_unregistered_view_gate(self) -> None:
+        """Mutant G6: View referencing unregistered qualification gate triggers ERR-ROBOT-DOCS-UNREGISTERED-001."""
+        views_file = self.fake_root / "architecture/agent_views.json"
+        data = json.loads(views_file.read_text(encoding="utf-8"))
+        data["views"][0]["gate"] = "QL-FAKE-GATE-999"
+        views_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_UNREGISTERED})
+
+    def test_mutant_g11_default_view_drift_single_registry(self) -> None:
+        """Mutant G11: Changing defaultView in only ONE registry triggers ERR-ROBOT-DOCS-DRIFT-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["defaultView"] = "AVIEW-006"
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_DRIFT})
+
+    def test_mutant_g12_request_payload_schema_drift_single_registry(self) -> None:
+        """Mutant G12: Changing requestPayloadSchema in only ONE registry triggers ERR-ROBOT-DOCS-DRIFT-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        data = json.loads(ops_file.read_text(encoding="utf-8"))
+        data["operations"][0]["requestPayloadSchema"] = "fss.agent_handoff_capsule.v1"
+        ops_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_DRIFT})
+
+    def test_mutant_g9_check_mode_compares_json_too(self) -> None:
+        """Mutant G9: Tampering only docs/ROBOT_DOCS.json causes generate_robot_docs.py --check to fail."""
+        json_path = self.fake_root / "docs/ROBOT_DOCS.json"
+        raw = json_path.read_text(encoding="utf-8")
+        json_path.write_text(raw + "\n// tampered\n", encoding="utf-8")
+        proc = subprocess.run(
+            [sys.executable, "-B", str(ROOT / "scripts/generate_robot_docs.py"), "--check", "--repo-root", str(self.fake_root)],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn(ERR_ROBOT_DOCS_STALE, proc.stderr)
+
+    def test_mutant_g13_nan_inf_rejected(self) -> None:
+        """Mutant G13: Inf and NaN values in machine registry JSON trigger ERR-ROBOT-DOCS-CORRUPT-001."""
+        ops_file = self.fake_root / "architecture/agent_operations.json"
+        raw = ops_file.read_text(encoding="utf-8")
+        tampered = raw.replace('"effectful": false,', '"effectful": Infinity,')
+        ops_file.write_text(tampered, encoding="utf-8")
+        res = validate_robot_docs(self.fake_root)
+        self.assertFalse(res.passed)
+        self.assertEqual({e.code for e in res.errors}, {ERR_ROBOT_DOCS_CORRUPT})
+
+    def test_mutant_g15_html_escaping(self) -> None:
+        """Mutant G15: HTML entities and tags are escaped across cells, inline spans, and text."""
+        raw = "<script>alert('xss')</script>&\"'"
+        cell = escape_markdown_cell(raw)
+        self.assertNotIn("<script>", cell)
+        self.assertIn("&lt;script&gt;", cell)
+
+        inline = escape_markdown_inline(raw)
+        self.assertNotIn("<script>", inline)
+        self.assertIn("&lt;script&gt;", inline)
+
+        text = escape_markdown_text(raw)
+        self.assertNotIn("<script>", text)
+        self.assertIn("&lt;script&gt;", text)
+
+    def test_mutant_g20_purpose_escaping(self) -> None:
+        """Mutant G20: Newlines, bullets, and fences in purpose are neutralized into single-line text."""
+        raw_purpose = "purpose with\n- fake bullet\n```bash\necho evil\n```"
+        escaped = escape_markdown_text(raw_purpose)
+        self.assertNotIn("\n", escaped)
+        self.assertNotIn("```", escaped)
+        self.assertIn("'''", escaped)
+
 
 if __name__ == "__main__":
     unittest.main()
+
