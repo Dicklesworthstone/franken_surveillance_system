@@ -15,7 +15,9 @@ Enforces fail-closed verification:
    inputs fail with ERR-CLAIM-PROOF-UNREADABLE-INPUT-001 or ERR-CLAIM-PROOF-EMPTY-INPUT-001.
 6. Unknown claim class fails with ERR-CLAIM-PROOF-INVALID-CLASS-001.
 7. Prohibited claim promotion fails with ERR-CLAIM-PROOF-PROHIBITED-PROMOTION-001.
-8. Positive controls: live repo passes, valid bundles pass, valid artifacts pass, CLI flags work.
+8. Positive controls: the live repository passes; complete slo and bounded_model bundles verify;
+   a complete proof bundle never verifies statically (ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001);
+   valid artifacts pass; CLI flags work.
 """
 
 from __future__ import annotations
@@ -210,6 +212,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             findings, stats = scan_with_stats(root, class_table(f"| `{PROOF_CLAIM_ID}` | proof | verified | `{PROOF_BUNDLE_REL}` | {PROOF_GENERATION} |"))
             # Round 3, decision A: a statically clean proof still needs a prover-run receipt.
             self.assertEqual(error_code_set(findings), [_code("ERR_PROOF_PROVER_RUN_REQUIRED")], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual([f.code for f in findings if f.severity != "error"], [], "a proof refusal must carry no warnings")
             self.assertEqual((stats["promoted"], stats["bundles_checked"], stats["bundles_passed"]), (1, 1, 0))
 
     def test_positive_markdown_row_cites_complete_bounded_model_bundle(self) -> None:
@@ -231,6 +234,7 @@ class TestClaimProofBundlePositiveControls(unittest.TestCase):
             # Round 3, decision A: a statically clean proof still needs a prover-run receipt.
             self.assertFalse(ok)
             self.assertEqual(error_code_set(findings), [_code("ERR_PROOF_PROVER_RUN_REQUIRED")], [f"{f.code}: {f.message}" for f in findings])
+            self.assertEqual([f.code for f in findings if f.severity != "error"], [], "a proof refusal must carry no warnings")
             self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (1, 0))
             self.assertEqual(summary.get("unpromoted_bundles_count", 0), 0)
             # No repository registry binds FORMAL-002 (review item A): the registry-only CLI refuses it.
@@ -3155,6 +3159,7 @@ class TestProofClaimClassRealization(unittest.TestCase):
         is_valid, findings, _ = self._run()
         self.assertFalse(is_valid)
         self.assertEqual(error_code_set(findings), [_code("ERR_PROOF_PROVER_RUN_REQUIRED")], [f.message for f in findings])
+        self.assertEqual([f.code for f in findings if f.severity != "error"], [], "a proof refusal must carry no warnings")
 
     def test_planted_proof_without_formal_artifact_fails(self) -> None:
         self.assertRefused(self._run(omit_roles=("formal_artifact",)), [_code("ERR_PROOF_FORMAL_ARTIFACT_MISSING")])
@@ -3672,7 +3677,7 @@ class TestCrossClassReviewFailOpens(unittest.TestCase):
             self.assertEqual(summary.get("unpromoted_bundles_count"), 1)
             result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("0/1 proof bundles verified", result.stdout)
+            self.assertIn("0/1 claims verified", result.stdout)
             self.assertIn("1 unpromoted", result.stdout)
 
     def test_b_draft_absent_and_unknown_supported_levels_fail(self) -> None:
@@ -4098,7 +4103,7 @@ class TestClassReviewItemsAtoD(unittest.TestCase):
             )
             result = run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-            self.assertIn("0/1 proof bundles verified", result.stdout)
+            self.assertIn("0/1 claims verified", result.stdout)
 
     def test_D_P7_statistical_claim_is_never_verified_from_evidence_names(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -5270,6 +5275,155 @@ class TestRound3Slo(unittest.TestCase):
             setup(root)
             ok, findings, _ = verify_slo_bundle(root, build_slo_fixture(root))
             self.assertEqual((ok, error_code_set(findings)), (False, [_code("ERR_SLO_REGISTRY_INVALID")]))
+
+# ---------------------------------------------------------------------------
+# Round-4 review, 30.87.2: crash freedom, honest counting, coverage (probes p10 C, p11, p12)
+# ---------------------------------------------------------------------------
+
+
+def nested_dict(depth: int) -> object:
+    value: object = 1
+    for _ in range(depth):
+        value = {"g": value}
+    return value
+
+
+def deep_bundle_bytes(key: str, depth: int, as_list: bool = False) -> bytes:
+    inner = (b"[" * depth + b"]" * depth) if as_list else (b'{"g":' * depth + b"1" + b"}" * depth)
+    return b'{"claim_id":"INV-001","' + key.encode() + b'":' + inner + b"}"
+
+
+def cli_on(root: Path) -> subprocess.CompletedProcess:
+    return run_cli("--root", str(root), "--as-of", "2026-09-02T00:00:00Z")
+
+
+class TestRound4CrashFreedomAndHonesty(unittest.TestCase):
+    """Round-4 30.87.2 findings as planted tests: typed findings, never tracebacks."""
+
+    def assert_cli_finding(self, root: Path, code: str) -> None:
+        result = cli_on(root)
+        self.assertEqual(result.returncode, 1, result.stdout[-400:] + result.stderr[-400:])
+        self.assertNotIn("Traceback", result.stderr)
+        self.assertIn(code, result.stdout)
+
+    # Deep JSON --------------------------------------------------------------------
+
+    def test_deep_bundle_is_unreadable_not_a_recursion_error(self) -> None:
+        for key, depth, as_list in (("generation", 1000, False), ("note", 1000, False), ("note", 5000, True), ("environment", 5000, False)):
+            with self.subTest(key=key, depth=depth, as_list=as_list), tempfile.TemporaryDirectory() as tmpdir:
+                root = Path(tmpdir)
+                path = root / "proof_bundles/x.bundle.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(deep_bundle_bytes(key, depth, as_list))
+                ok, findings, _ = verify_proof_bundle(bundle_path=path, root=root, known_classes=_known_classes(), now=FIXED_NOW)
+                self.assertFalse(ok)
+                self.assertEqual(error_code_set(findings), [ERR_UNREADABLE_INPUT])
+
+    def test_deep_bundle_fails_the_cli_without_a_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            rel = "proof_bundles/x.bundle.json"
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(deep_bundle_bytes("generation", 1000))
+            append_readme_table(root, class_table(f"| `INV-001` | invariant | verified | `{rel}` | g1 |"))
+            self.assert_cli_finding(root, ERR_UNREADABLE_INPUT)
+
+    def test_deep_evidence_documents_are_findings(self) -> None:
+        deep = nested_dict(1000)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_slo_bundle(root, build_slo_fixture(root, measurement={"notes": deep}))
+            self.assertEqual((ok, error_code_set(findings)), (False, [ERR_CLAIM_LEVEL_EXCEEDED]))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_class_bundle(root, build_bound_fixture(root, derivation={"notes": deep}), BOUND_CLAIM_ID)
+            self.assertEqual((ok, error_code_set(findings)), (False, [_code("ERR_BOUND_DERIVATION_UNBOUND")]))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_class_bundle(root, build_proof_fixture(root, receipt={"notes": deep}), PROOF_CLAIM_ID)
+            self.assertEqual((ok, error_code_set(findings)), (False, [_code("ERR_PROOF_CHECK_RECEIPT_INVALID")]))
+
+    def test_nan_scan_is_iterative(self) -> None:
+        findings: list = []
+        self.assertTrue(cpb._scan_nan_inf_negative({"x": {"y": [nested_dict(3000), float("nan")]}}, "b", "", findings))
+        self.assertEqual(codes(findings), [ERR_CLAIM_LEVEL_EXCEEDED])
+        findings = []
+        cpb._check_generations({"generation": nested_dict(3000)}, "b", set(), findings)
+        self.assertEqual(findings, [])
+
+    # NUL characters and undecodable registry text -------------------------------------
+
+    def test_nul_in_a_cited_proof_path_is_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            append_readme_table(root, class_table("| `INV-001` | invariant | verified | proof_bundles/a\x00b.bundle.json | g1 |"))
+            self.assert_cli_finding(root, ERR_PROOF_BUNDLE_NOT_FOUND)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            ok, findings, _ = verify_proof_bundle(bundle_path=Path("a\x00b.bundle.json"), root=root, known_classes=_known_classes())
+            self.assertEqual((ok, error_code_set(findings)), (False, [ERR_PROOF_BUNDLE_NOT_FOUND]))
+
+    def test_nul_in_an_artifact_path_is_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            rel = "proof_bundles/x.bundle.json"
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            (root / rel).write_bytes(json.dumps({"claim_id": "INV-001", "artifacts": [{"path": "a\x00b", "digest": "sha256:" + "0" * 64}]}).encode())
+            append_readme_table(root, class_table(f"| `INV-001` | invariant | verified | `{rel}` | g1 |"))
+            self.assert_cli_finding(root, ERR_PROOF_BUNDLE_NOT_FOUND)
+
+    def test_invalid_utf8_in_claims_md_is_a_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            claims_md = root / "registries/CLAIMS.md"
+            claims_md.write_bytes(claims_md.read_bytes() + b"\n\xff\xfe bad\n")
+            self.assert_cli_finding(root, ERR_UNREADABLE_INPUT)
+            findings = audit_claim_kind_registry(root=root, claims_json_path=root / "architecture/claims.json", claims_md_path=claims_md)
+            # The tombstone index is read from the same file, so it is unavailable too (fail closed).
+            self.assertEqual(codes(findings), ["ERR-CLAIM-PROOF-TOMBSTONE-INDEX-UNAVAILABLE-001", ERR_UNREADABLE_INPUT])
+
+    # Honest counting and docs -----------------------------------------------------------
+
+    def test_cli_counts_claims_not_proof_bundles(self) -> None:
+        result = run_cli()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("0/0 claims verified (counted per claim, all classes; 0 unpromoted", result.stdout)
+        self.assertNotIn("proof bundles verified", result.stdout)
+
+    def test_docs_say_proofs_never_verify_statically_and_count_per_claim(self) -> None:
+        self.assertIn("ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001", cpb.__doc__)
+        self.assertIn("counted per claim, not per bundle", cpb.__doc__)
+        self.assertNotIn("a passing fss.proof_check_receipt", cpb._verify_proof_claim_evidence.__doc__)
+        self.assertIn("Nothing here shows that a prover ran", cpb._verify_proof_claim_evidence.__doc__)
+        module_doc = sys.modules[__name__].__doc__ or ""
+        self.assertNotIn("valid bundles pass", module_doc)
+
+    # Coverage pins ------------------------------------------------------------------------
+
+    def test_digest_dedup_counts_uncited_copies_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = build_fixture_root(Path(tmpdir))
+            bundle = seal(build_bound_fixture(root))
+            write_json(root / "qualification-artifacts/bounds/a.bundle.json", bundle)
+            write_json(root / "qualification-artifacts/bounds/b.bundle.json", bundle)
+            _, _, summary = audit_with(root, CLAIM_ROW_CLASSES)
+            self.assertEqual((summary["bundles_checked"], summary["verified_bundles_count"]), (1, 0))
+
+    def test_distinct_claim_ids_citing_one_bundle_are_separate_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            write_json(root / BOUND_BUNDLE_REL, seal(build_bound_fixture(root)))
+            findings, stats = scan_with_stats(root, class_table(
+                f"| `{BOUND_CLAIM_ID}` | bounded_model | verified | `{BOUND_BUNDLE_REL}` | {BOUND_GENERATION} |",
+                f"| `BOUND-OTHER-001` | bounded_model | verified | `{BOUND_BUNDLE_REL}` | {BOUND_GENERATION} |",
+            ))
+            self.assertEqual(error_code_set(findings), sorted([cpb.ERR_CLAIM_BINDING_MISMATCH, _code("ERR_CLAIM_CLASS_UNRESOLVED")]))
+            self.assertEqual((stats["bundles_checked"], stats["bundles_passed"]), (2, 1))
+
+    def test_import_mathlib_is_refused(self) -> None:
+        body = b"import Mathlib.Order.Basic\ntheorem RootLast : True := trivial\n"
+        self.assertEqual(run_formal(LEAN_REL, body, lean=True), (False, [_code("ERR_PROOF_UNSOUND_ESCAPE")]))
+
 
 if __name__ == "__main__":
     unittest.main()

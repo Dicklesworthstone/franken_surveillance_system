@@ -34,11 +34,19 @@ Fail-closed verification invariants:
    its own class: the citing claim's class (for SLO ids, the SLO registry's) governs, and a
    bundle class that disagrees fails. An ``slo`` target and comparator come only from the
    authoritative registries/SLOS.md row (parsed by slo_validate), never from the measurement.
-   A claim row declares its class in a ``Class`` column (the SLO registry governs SLO ids); a
-   promoted bundle whose class no claim row or registry resolves fails closed, and a retained
-   bundle inherits the class of the claim row that cites it.
-9. Counting: only a passing bundle at a promoted level counts as verified; passing unpromoted
-   bundles are reported separately, and 'draft'/'absent' support no readiness level at all.
+   A claim's class comes only from a registry that binds its id (registries/SLOS.md rows for
+   SLO ids, architecture/invariants.json for invariant ids); a promoted bundle whose class no
+   registry resolves fails closed. A ``proof`` bundle that passes every static check is still
+   never verified: static text cannot establish a Lean or TLA+ proof, so it fails closed with
+   ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001 until a prover-run qualification receipt exists.
+9. Counting: verified results are counted per claim, not per bundle. A claim is verified only
+   when every bundle its rows cite passes and at least one citing row's own status is promoted;
+   a passing claim cited only below that is counted as unpromoted. A retained bundle that no row
+   cites is counted once per content digest and is never verified. 'draft'/'absent' support
+   no readiness level at all.
+10. Crash freedom: JSON nested deeper than MAX_JSON_DEPTH levels, a NUL character in any path,
+   and undecodable registry text are typed findings, never tracebacks; every walker over
+   untrusted structure is iterative or depth-capped.
 """
 
 from __future__ import annotations
@@ -583,8 +591,29 @@ def _single_field(data: dict[str, Any], names: tuple[str, ...]) -> tuple[list[st
 def _is_contained(path: Path, root: Path) -> bool:
     try:
         return path.resolve().is_relative_to(root.resolve())
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):  # ValueError: an embedded NUL character
         return False
+
+
+# JSON nested deeper than this is refused at every evidence reader, so no later walk over it
+# (generation scan, NaN scan, canonical digest) can exhaust the interpreter stack.
+MAX_JSON_DEPTH = 128
+
+
+def _json_depth_exceeds(value: Any, limit: int = MAX_JSON_DEPTH) -> bool:
+    """Whether a decoded JSON value nests deeper than limit containers (measured iteratively)."""
+    stack: list[tuple[Any, int]] = [(value, 1)]
+    while stack:
+        node, depth = stack.pop()
+        if isinstance(node, dict):
+            if depth > limit:
+                return True
+            stack.extend((child, depth + 1) for child in node.values())
+        elif isinstance(node, list):
+            if depth > limit:
+                return True
+            stack.extend((child, depth + 1) for child in node)
+    return False
 
 
 def _read_json_document(path: Path, display: str, kind: str) -> tuple[dict[str, Any] | None, list[ClaimFinding]]:
@@ -600,6 +629,12 @@ def _read_json_document(path: Path, display: str, kind: str) -> tuple[dict[str, 
         data = json.loads(raw_bytes.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError) as exc:  # RecursionError: nesting too deep
         return None, [_finding(ERR_UNREADABLE_INPUT, display, "file", f"{label} '{display}' contains invalid JSON: {exc}", {"error": str(exc)})]
+    if _json_depth_exceeds(data):
+        return None, [_finding(
+            ERR_UNREADABLE_INPUT, display, "root",
+            f"{label} '{display}' nests deeper than {MAX_JSON_DEPTH} levels; it is refused rather than walked",
+            {"max_depth": MAX_JSON_DEPTH},
+        )]
     if not isinstance(data, dict):
         return None, [_finding(ERR_UNREADABLE_INPUT, display, "root", f"{label} '{display}' JSON root must be an object")]
     if len(data) == 0:
@@ -823,6 +858,13 @@ def _check_artifacts(data: dict[str, Any], root: Path, path_str: str, findings: 
             if not isinstance(art_path_val, str) or not art_path_val.strip():
                 findings.append(_finding(ERR_UNREADABLE_INPUT, path_str, loc, f"Bundle artifact {loc} locator must be a non-empty string"))
                 continue
+            if "\x00" in art_path_val:
+                findings.append(_finding(
+                    ERR_PROOF_BUNDLE_NOT_FOUND, path_str, loc,
+                    f"Bundle artifact path {art_path_val!r} contains a NUL character; it names no file",
+                    {"artifact": art_path_val},
+                ))
+                continue
             if "://" in art_path_val or art_path_val.lower().startswith("file:"):
                 findings.append(_finding(
                     ERR_PROOF_BUNDLE_NOT_FOUND, path_str, loc,
@@ -898,7 +940,11 @@ def _check_generations(
     tombstones: set[str],
     findings: list[ClaimFinding],
 ) -> None:
-    def walk(val: Any, loc: str, in_generation: bool) -> None:
+    """Walks every value under a generation or environment key iteratively (an explicit stack, no
+    recursion, whatever the nesting depth) for stale, superseded, 'latest', or tombstoned values."""
+    stack: list[tuple[Any, str, bool]] = [(data, "", False)]
+    while stack:
+        val, loc, in_generation = stack.pop()
         if isinstance(val, dict):
             if in_generation:
                 is_stale = val.get("is_stale") or val.get("stale", False)
@@ -910,11 +956,11 @@ def _check_generations(
                         f"Proof bundle explicitly references a stale or superseded generation at {loc}",
                         {"field": loc},
                     ))
-            for key, sub in val.items():
-                walk(sub, f"{loc}.{key}" if loc else str(key), in_generation or _is_generation_key(str(key)))
+            for key, sub in reversed(list(val.items())):
+                stack.append((sub, f"{loc}.{key}" if loc else str(key), in_generation or _is_generation_key(str(key))))
         elif isinstance(val, list):
-            for idx, sub in enumerate(val):
-                walk(sub, f"{loc}[{idx}]", in_generation)
+            for idx in range(len(val) - 1, -1, -1):
+                stack.append((val[idx], f"{loc}[{idx}]", in_generation))
         elif isinstance(val, str) and in_generation:
             if is_latest_generation(val):
                 findings.append(_finding(
@@ -928,8 +974,6 @@ def _check_generations(
                     f"Proof bundle references tombstoned generation in {loc}='{val}'",
                     {"field": loc, "value": val},
                 ))
-
-    walk(data, "", False)
 
 
 def _parse_instant(value: Any) -> datetime | None:
@@ -1318,33 +1362,32 @@ def load_claim_class_bindings(root: Path) -> tuple[dict[str, str | None], list[C
 
 
 def _scan_nan_inf_negative(obj: Any, path_str: str, location: str, findings: list[ClaimFinding]) -> bool:
-    """Scans structures recursively for NaN or Infinity float/string values."""
+    """Scans a structure iteratively (an explicit stack, no recursion, whatever the nesting depth)
+    for NaN or Infinity float/string values; True when any is found."""
     has_error = False
-    if isinstance(obj, float):
-        if math.isnan(obj) or math.isinf(obj):
-            findings.append(_finding(
-                ERR_CLAIM_LEVEL_EXCEEDED, path_str, location,
-                f"Numeric value corrupted by NaN or Infinity: observed {obj!r}",
-            ))
-            return True
-    elif isinstance(obj, str):
-        s_lower = obj.strip().lower()
-        if s_lower in ("nan", "+nan", "-nan", "infinity", "+infinity", "-infinity", "inf", "-inf"):
-            findings.append(_finding(
-                ERR_CLAIM_LEVEL_EXCEEDED, path_str, location,
-                f"Numeric value corrupted by NaN or Infinity string: observed {obj!r}",
-            ))
-            return True
-    elif isinstance(obj, dict):
-        for k, v in obj.items():
-            loc = f"{location}.{k}" if location else str(k)
-            if _scan_nan_inf_negative(v, path_str, loc, findings):
+    stack: list[tuple[Any, str]] = [(obj, location)]
+    while stack:
+        node, loc = stack.pop()
+        if isinstance(node, float):
+            if math.isnan(node) or math.isinf(node):
+                findings.append(_finding(
+                    ERR_CLAIM_LEVEL_EXCEEDED, path_str, loc,
+                    f"Numeric value corrupted by NaN or Infinity: observed {node!r}",
+                ))
                 has_error = True
-    elif isinstance(obj, list):
-        for idx, item in enumerate(obj):
-            loc = f"{location}[{idx}]"
-            if _scan_nan_inf_negative(item, path_str, loc, findings):
+        elif isinstance(node, str):
+            if node.strip().lower() in ("nan", "+nan", "-nan", "infinity", "+infinity", "-infinity", "inf", "-inf"):
+                findings.append(_finding(
+                    ERR_CLAIM_LEVEL_EXCEEDED, path_str, loc,
+                    f"Numeric value corrupted by NaN or Infinity string: observed {node!r}",
+                ))
                 has_error = True
+        elif isinstance(node, dict):
+            for key, value in reversed(list(node.items())):
+                stack.append((value, f"{loc}.{key}" if loc else str(key)))
+        elif isinstance(node, list):
+            for idx in range(len(node) - 1, -1, -1):
+                stack.append((node[idx], f"{loc}[{idx}]"))
     return has_error
 
 
@@ -1478,7 +1521,7 @@ def _open_document_entry(root: Path, entry: dict[str, Any], role: str, schema: s
         return None, f"'{role}' artifact {reason}"
     doc = _json_object(raw)
     if doc is None:
-        return None, f"'{role}' artifact is not a JSON object"
+        return None, f"'{role}' artifact is not a JSON object within {MAX_JSON_DEPTH} levels of nesting"
     if doc.get("schema") != schema:
         return None, f"'{role}' artifact schema {doc.get('schema')!r} is not '{schema}'"
     return doc, ""
@@ -1821,6 +1864,8 @@ def _open_retained_file(root: Path, rel_val: Any, declared_digest: Any) -> tuple
     Returns (bytes, "") or (None, reason). Never trusts a declaration it cannot open."""
     if not isinstance(rel_val, str) or not rel_val.strip():
         return None, "declares no local path"
+    if "\x00" in rel_val:
+        return None, f"{rel_val!r} contains a NUL character; it names no file"
     if "://" in rel_val or rel_val.lower().startswith("file:"):
         return None, f"'{rel_val}' is a non-local URI whose bytes cannot be verified"
     rel = Path(rel_val)
@@ -1848,7 +1893,7 @@ def _json_object(raw: bytes) -> dict[str, Any] | None:
         doc = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError, RecursionError):  # RecursionError: nesting too deep
         return None
-    return doc if isinstance(doc, dict) else None
+    return doc if isinstance(doc, dict) and not _json_depth_exceeds(doc) else None
 
 
 def _open_role_document(
@@ -1866,7 +1911,7 @@ def _open_role_document(
         return None, f"'{role}' artifact {reason}"
     doc = _json_object(raw)
     if doc is None:
-        return None, f"'{role}' artifact is not a JSON object"
+        return None, f"'{role}' artifact is not a JSON object within {MAX_JSON_DEPTH} levels of nesting"
     if doc.get("schema") != schema:
         return None, f"'{role}' artifact schema {doc.get('schema')!r} is not '{schema}'"
     return doc, ""
@@ -2546,9 +2591,10 @@ def _verify_proof_claim_evidence(
     5. Formal artifact: exactly one, on disk, digest-bound, not test code (path markers are
        checked before the suffix), a single case-exact formal suffix, source in that language,
        declaring the named theorem outside comments, with no unproven placeholder.
-    6. Check receipt: a passing fss.proof_check_receipt.v1 bound to the claim, model
-       (id, generation, source digest), theorem (name, statement), toolchain, and formal
-       artifact digest.
+    6. Check receipt: a self-declared fss.proof_check_receipt.v1, checked only for consistency
+       with the claim, model (id, generation, source digest), theorem (name, statement),
+       toolchain, and formal artifact digest. Nothing here shows that a prover ran, so even a
+       consistent receipt leaves the claim unverified (ERR-CLAIM-PROOF-PROVER-RUN-REQUIRED-001).
     """
     claim_id = _bound_claim_id(bundle_data, expected_claim_id)
     params: dict[str, Any] = {"claim_class": "proof", "claim_id": claim_id}
@@ -3365,7 +3411,14 @@ def verify_proof_bundle(
     if naive is not None:
         return False, [naive], None
 
-    # 1. Path checks: traversal refusal, then containment for repository-relative citations.
+    # 1. Path checks: NUL refusal, traversal refusal, then containment for repository-relative citations.
+    if "\x00" in str(bundle_path):
+        findings.append(_finding(
+            ERR_PROOF_BUNDLE_NOT_FOUND, path_str, "path",
+            f"Proof bundle path {str(bundle_path)!r} contains a NUL character; it names no file",
+            {"path": str(bundle_path)},
+        ))
+        return False, findings, None
     if ".." in bundle_path.parts:
         findings.append(_finding(
             ERR_PROOF_BUNDLE_NOT_FOUND, path_str, "path",
@@ -3751,8 +3804,8 @@ def _outcome_key(root: Path, path: Path, data: dict[str, Any] | None, claim_id: 
 
 
 def _record_outcome(table: dict[str, dict[str, Any]], key: str, ok: bool, promoted: bool, resolved: str) -> None:
-    """A bundle is verified only when every check of it passed and some citing row's own status
-    promotes it; a passing bundle cited below that (or by no row) is counted as unpromoted."""
+    """A claim is verified only when every check of every bundle its rows cite passed and some
+    citing row's own status promotes it; one cited below that (or by no row) is unpromoted."""
     outcome = table.setdefault(key, {"ok": True, "promoted": False, "paths": set()})
     outcome["ok"] = outcome["ok"] and ok
     outcome["promoted"] = outcome["promoted"] or promoted
@@ -3763,7 +3816,7 @@ def _citation_key(root: Path, path: Path) -> str:
     target = path if path.is_absolute() else root / path
     try:
         return str(target.resolve())
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):  # ValueError: an embedded NUL character
         return str(target)
 
 
@@ -4371,8 +4424,8 @@ def audit_claim_kind_registry(
     # Parse markdown source
     try:
         md_text = md_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        findings.append(_finding(ERR_UNREADABLE_INPUT, md_str, "file", f"Could not read markdown source '{md_path}': {exc}"))
+    except (OSError, UnicodeDecodeError) as exc:
+        findings.append(_finding(ERR_UNREADABLE_INPUT, md_str, "file", f"Could not read markdown source '{md_path}' as UTF-8 text: {exc}"))
         return findings
 
     tables = parse_markdown_tables(md_text)
@@ -4704,8 +4757,8 @@ def main() -> int:
             print(
                 f"[{tag}] Claim/proof-bundle audit: {summary['claim_rows_evaluated']} claim rows on "
                 f"{len(summary['claim_surfaces_scanned'])} surfaces ({summary['promoted_claim_rows']} promoted), "
-                f"{summary['verified_bundles_count']}/{summary['bundles_checked']} proof bundles verified "
-                f"({summary['unpromoted_bundles_count']} unpromoted, not counted as verified), "
+                f"{summary['verified_bundles_count']}/{summary['bundles_checked']} claims verified "
+                f"(counted per claim, all classes; {summary['unpromoted_bundles_count']} unpromoted, not counted as verified), "
                 f"{summary['receipts_inspected']} qualification receipts inspected "
                 f"({summary['receipts_nonpassing']} non-passing), "
                 f"{summary['authoritative_classes_count']} claim classes, "
