@@ -845,6 +845,19 @@ fn read_ledger_bytes(path: &str) -> Result<Vec<u8>, NegativeEvidenceError> {
     })
 }
 
+/// Resolves every symlink in a ledger path to the real ledger file it names.
+fn resolve_ledger_path(path: &str) -> Result<PathBuf, NegativeEvidenceError> {
+    fs::canonicalize(path).map_err(|err| {
+        if err.kind() == ErrorKind::NotFound {
+            NegativeEvidenceError::LedgerNotFound {
+                path: path.to_owned(),
+            }
+        } else {
+            NegativeEvidenceError::Io(format!("failed to resolve ledger path '{path}': {err}"))
+        }
+    })
+}
+
 fn load_ledger(path: Option<&str>) -> Result<NegativeEvidenceLedger, NegativeEvidenceError> {
     match path {
         Some(file_path) => NegativeEvidenceLedger::decode_canonical(&read_ledger_bytes(file_path)?),
@@ -1172,15 +1185,19 @@ fn append_entry(
     before_publish: PublishHook<'_>,
 ) -> Result<(NegativeEvidenceLedger, NegativeEvidenceEntry, String), NegativeEvidenceError> {
     let entry = build_entry(args)?;
-    let target = Path::new(&args.path);
-    if target.symlink_metadata().is_err() {
-        return Err(NegativeEvidenceError::LedgerNotFound {
-            path: args.path.clone(),
-        });
-    }
-    let _lock = LedgerLock::acquire(target)?;
+    // Resolve symlinks first: the lock, the temp file, the compare-and-swap read, and the rename
+    // all act on the real ledger file, so every alias of a ledger shares one lock and a symlinked
+    // path is never replaced by a regular file.
+    let real_path = resolve_ledger_path(&args.path)?;
+    let real = real_path.to_str().ok_or_else(|| {
+        NegativeEvidenceError::Io(format!(
+            "resolved ledger path '{}' is not valid UTF-8",
+            real_path.display()
+        ))
+    })?;
+    let _lock = LedgerLock::acquire(&real_path)?;
     for _ in 0..MAX_APPEND_ATTEMPTS {
-        let original = read_ledger_bytes(&args.path)?;
+        let original = read_ledger_bytes(real)?;
         let mut ledger = NegativeEvidenceLedger::decode_canonical(&original)?;
         ledger.append(entry.clone())?;
         ledger.verify()?;
@@ -1188,7 +1205,7 @@ fn append_entry(
         let mode = WriteMode::Replace {
             expected: ContentDigest::sha256(&original),
         };
-        match write_ledger_atomically(&args.path, &bytes, mode, before_publish) {
+        match write_ledger_atomically(real, &bytes, mode, before_publish) {
             Ok(()) => {
                 let root_digest = ContentDigest::sha256(&bytes).to_text();
                 return Ok((ledger, entry, root_digest));
@@ -1700,6 +1717,56 @@ mod tests {
             !on_disk.contains("NEG-200"),
             "the refused append wrote nothing"
         );
+        assert_eq!(sidecars(&dir.0)?, Vec::<String>::new());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn publish_replaces_the_ledger_by_rename_never_in_place() -> Result<(), Box<dyn Error>> {
+        use std::os::unix::fs::MetadataExt;
+
+        let dir = TempDir::new("crash-atomic")?;
+        let path = dir.ledger()?;
+        let original = ledger_bytes_with(&path, &[])?;
+        fs::write(&path, &original)?;
+        let original_inode = fs::metadata(&path)?.ino();
+        let replacement = ledger_bytes_with(&path, &["NEG-004"])?;
+        let temp_inode = Cell::new(0u64);
+        let target = PathBuf::from(&path);
+        // Crash point: the temp file is written and synced, nothing is published yet. A crash
+        // here must leave the original ledger, byte-identical and whole, at the ledger path.
+        let at_crash_point = |temp: &Path| {
+            if fs::read(&target)? != original {
+                return Err(std::io::Error::other(
+                    "ledger path modified before publication",
+                ));
+            }
+            if fs::read(temp)? != replacement {
+                return Err(std::io::Error::other(
+                    "temp file not fully written before publication",
+                ));
+            }
+            temp_inode.set(fs::metadata(temp)?.ino());
+            Ok(())
+        };
+        let mode = WriteMode::Replace {
+            expected: ContentDigest::sha256(&original),
+        };
+        write_ledger_atomically(&path, &replacement, mode, &at_crash_point)
+            .map_err(|err| format!("{err:?}"))?;
+        let published = fs::metadata(&path)?;
+        assert_eq!(
+            published.ino(),
+            temp_inode.get(),
+            "the ledger is published by renaming the synced temp file"
+        );
+        assert_ne!(
+            published.ino(),
+            original_inode,
+            "the ledger file is never rewritten in place"
+        );
+        assert_eq!(fs::read(&path)?, replacement);
         assert_eq!(sidecars(&dir.0)?, Vec::<String>::new());
         Ok(())
     }
