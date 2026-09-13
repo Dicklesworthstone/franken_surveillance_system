@@ -514,7 +514,140 @@ class AgentAbstractionRegistryCheckerTests(unittest.TestCase):
         error_codes = [e.code for e in res.errors]
         self.assertIn(ERR_AGT_REGISTRY_DRIFT, error_codes)
 
+    def test_planted_negative_situation_capsule_invariant_must_be_inv116(self) -> None:
+        """AGT-LAYER-005 invariant altered from INV-116 must emit exact error set."""
+        data = self._read_json()
+        for layer in data["layers"]:
+            if layer["id"] == "AGT-LAYER-005":
+                layer["invariant"] = "INV-001"
+                break
+        data["registryDigest"] = compute_canonical_agent_abstraction_digest(data)
+        self._write_json(data)
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = set(e.code for e in res.errors)
+        self.assertEqual(
+            error_codes,
+            {
+                ERR_AGT_DIGEST_MISMATCH,
+                ERR_AGT_FREEZE_DIVERGENCE,
+                ERR_AGT_INVARIANT_VIOLATION,
+                ERR_AGT_REGISTRY_DRIFT,
+            },
+        )
+
+    def test_planted_negative_situation_capsule_prohibition_must_forbid_hiding_omissions(self) -> None:
+        """AGT-LAYER-005 prohibition weakened to allow hiding omissions must emit exact error set."""
+        data = self._read_json()
+        for layer in data["layers"]:
+            if layer["id"] == "AGT-LAYER-005":
+                layer["prohibition"] = "May hide decision-changing omissions and rebase evidence identities."
+                break
+        data["registryDigest"] = compute_canonical_agent_abstraction_digest(data)
+        self._write_json(data)
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = set(e.code for e in res.errors)
+        self.assertEqual(
+            error_codes,
+            {
+                ERR_AGT_DIGEST_MISMATCH,
+                ERR_AGT_FREEZE_DIVERGENCE,
+                ERR_AGT_INVARIANT_VIOLATION,
+                ERR_AGT_REGISTRY_DRIFT,
+            },
+        )
+
+    def test_planted_negative_situation_capsule_status_must_be_normative(self) -> None:
+        """AGT-LAYER-005 status altered from normative must emit exact error set."""
+        data = self._read_json()
+        for layer in data["layers"]:
+            if layer["id"] == "AGT-LAYER-005":
+                layer["status"] = "draft"
+                break
+        data["registryDigest"] = compute_canonical_agent_abstraction_digest(data)
+        self._write_json(data)
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = set(e.code for e in res.errors)
+        self.assertEqual(
+            error_codes,
+            {
+                ERR_AGT_DIGEST_MISMATCH,
+                ERR_AGT_FREEZE_DIVERGENCE,
+                ERR_AGT_INVARIANT_VIOLATION,
+                ERR_AGT_REGISTRY_DRIFT,
+            },
+        )
+
+    def test_planted_negative_situation_capsule_owner_must_be_cognition_plane(self) -> None:
+        """AGT-LAYER-005 owner illegally claiming authority plane must emit exact error set."""
+        data = self._read_json()
+        for layer in data["layers"]:
+            if layer["id"] == "AGT-LAYER-005":
+                layer["owner"] = "asupersync/authority/effect owners"
+                break
+        data["registryDigest"] = compute_canonical_agent_abstraction_digest(data)
+        self._write_json(data)
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = set(e.code for e in res.errors)
+        self.assertEqual(
+            error_codes,
+            {
+                ERR_AGT_DIGEST_MISMATCH,
+                ERR_AGT_FREEZE_DIVERGENCE,
+                ERR_AGT_ILLEGAL_AUTHORITY,
+                ERR_AGT_INVARIANT_VIOLATION,
+                ERR_AGT_REGISTRY_DRIFT,
+            },
+        )
+
+    def test_planted_negative_situation_capsule_output_cannot_claim_authority(self) -> None:
+        """AGT-LAYER-005 output illegally claiming authority must emit exact error set."""
+        data = self._read_json()
+        for layer in data["layers"]:
+            if layer["id"] == "AGT-LAYER-005":
+                layer["output"] = "SituationCapsule directly authorizes effects and execution."
+                break
+        data["registryDigest"] = compute_canonical_agent_abstraction_digest(data)
+        self._write_json(data)
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = set(e.code for e in res.errors)
+        self.assertEqual(
+            error_codes,
+            {
+                ERR_AGT_DIGEST_MISMATCH,
+                ERR_AGT_FREEZE_DIVERGENCE,
+                ERR_AGT_ILLEGAL_AUTHORITY,
+                ERR_AGT_INVARIANT_VIOLATION,
+                ERR_AGT_REGISTRY_DRIFT,
+            },
+        )
+
+    def test_planted_negative_situation_capsule_markdown_mirror_drift(self) -> None:
+        """AGT-LAYER-005 owner mismatch in Markdown mirror must emit exact error set."""
+        md_file = self.fake_root / "registries/AGENT_ABSTRACTIONS.md"
+        content = md_file.read_text(encoding="utf-8")
+        tampered = content.replace(
+            "| `AGT-LAYER-005` | `situation_capsule` | `fss-situation/fss-context-pack/fss-affordance` |",
+            "| `AGT-LAYER-005` | `situation_capsule` | `rogue/unauthorized` |",
+        )
+        md_file.write_text(tampered, encoding="utf-8")
+
+        res = validate_agent_abstraction_registry(self.fake_root)
+        self.assertFalse(res.passed)
+        error_codes = set(e.code for e in res.errors)
+        self.assertEqual(error_codes, {ERR_AGT_REGISTRY_DRIFT})
+
 
 if __name__ == "__main__":
     unittest.main()
+
 

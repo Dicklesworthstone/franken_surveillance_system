@@ -797,6 +797,98 @@ def validate_agent_abstraction_registry(repo_root: Path = ROOT) -> ValidationRes
                 f"Non-authority layer '{lid}' output claims authority or effect authorization: '{row.get('output')}'",
             )
 
+    # Semantic Invariant Enforcement for AGT-LAYER-005: situation_capsule (fss-x4a.30.82.5)
+    # 1. Situation capsule (AGT-LAYER-005) must have invariant INV-116.
+    # 2. Prohibition MUST state: "Cannot hide decision-changing omissions or rebase evidence identities."
+    # 3. Status MUST be "normative".
+    # 4. Owner MUST be "fss-situation/fss-context-pack/fss-affordance".
+    # 5. Question MUST be: "What is the smallest sufficient mission-relative driver view now, what changed, and what can safely be done next?"
+    # 6. Output MUST be: "SituationCapsule containing SituationFrame with WorldEnvelope, MeaningfulDelta, obligations, resource state, categorized control envelope, ContextPack, compression proof, and affordance frontier."
+    # 7. Prohibition check: must strictly forbid hiding decision-changing omissions and rebasing evidence identities.
+    # 8. Output check: must declare SituationCapsule, SituationFrame, WorldEnvelope, and affordance frontier.
+    # 9. Cognition plane check: owner must not claim authority plane.
+    layer_005 = observed_layers.get("AGT-LAYER-005")
+    if layer_005:
+        inv = str(layer_005.get("invariant", "")).strip()
+        if inv != "INV-116":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/invariant",
+                f"AGT-LAYER-005 invariant must be INV-116, got '{inv}'",
+            )
+        prohibition = str(layer_005.get("prohibition", "")).strip()
+        if (
+            "Cannot hide decision-changing omissions" not in prohibition
+            or "rebase evidence identities" not in prohibition
+        ):
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/prohibition",
+                f"AGT-LAYER-005 prohibition must forbid hiding decision-changing omissions and rebasing evidence identities, got '{prohibition}'",
+            )
+        status = str(layer_005.get("status", "")).strip()
+        if status != "normative":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/status",
+                f"AGT-LAYER-005 status must be 'normative', got '{status}'",
+            )
+        owner = str(layer_005.get("owner", "")).strip()
+        if owner != "fss-situation/fss-context-pack/fss-affordance":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/owner",
+                f"AGT-LAYER-005 owner must be 'fss-situation/fss-context-pack/fss-affordance', got '{owner}'",
+            )
+        if "authority" in owner.lower():
+            result.add_error(
+                ERR_AGT_ILLEGAL_AUTHORITY,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/owner",
+                f"AGT-LAYER-005 situation capsule cannot be owned by authority plane: '{owner}'",
+            )
+        question = str(layer_005.get("question", "")).strip()
+        if question != "What is the smallest sufficient mission-relative driver view now, what changed, and what can safely be done next?":
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/question",
+                f"AGT-LAYER-005 question mismatch: got '{question}'",
+            )
+        out = str(layer_005.get("output", "")).strip()
+        expected_output = "SituationCapsule containing SituationFrame with WorldEnvelope, MeaningfulDelta, obligations, resource state, categorized control envelope, ContextPack, compression proof, and affordance frontier."
+        if out != expected_output:
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/output",
+                f"AGT-LAYER-005 output mismatch: expected '{expected_output}', got '{out}'",
+            )
+        out_lower = out.lower()
+        if "authorizes effects" in out_lower or "grant authority" in out_lower:
+            result.add_error(
+                ERR_AGT_ILLEGAL_AUTHORITY,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/output",
+                f"AGT-LAYER-005 output cannot claim effect authorization or grant authority: '{out}'",
+            )
+        if (
+            "situationcapsule" not in out_lower
+            or "situationframe" not in out_lower
+            or "worldenvelope" not in out_lower
+            or "affordance frontier" not in out_lower
+        ):
+            result.add_error(
+                ERR_AGT_INVARIANT_VIOLATION,
+                AGENT_ABSTRACTION_STACK_JSON_PATH,
+                "#/layers/AGT-LAYER-005/output",
+                f"AGT-LAYER-005 output must declare SituationCapsule, SituationFrame, WorldEnvelope, and affordance frontier: '{out}'",
+            )
+
     return result
 
 
