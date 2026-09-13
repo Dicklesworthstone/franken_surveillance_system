@@ -249,6 +249,60 @@ pub enum JpegFinding {
         /// Byte offset of duplicate SOF marker in input.
         offset: usize,
     },
+    /// Non-marker bytes between marker segments inside a frame.
+    GarbageInsideFrame {
+        /// 0-based frame index containing this garbage span.
+        frame_index: usize,
+        /// Start byte offset of garbage data (inclusive).
+        start_offset: usize,
+        /// End byte offset of garbage data (exclusive).
+        end_offset: usize,
+    },
+    /// Stray `0xFF00` byte sequence outside scan data.
+    StrayByteStuffing {
+        /// 0-based frame index containing the stray byte sequence.
+        frame_index: usize,
+        /// Byte offset of the `0xFF` byte.
+        offset: usize,
+    },
+    /// Marker segment declared a length exceeding available remaining stream bytes.
+    MarkerLengthOverflow {
+        /// 0-based frame index containing the overflowing marker segment.
+        frame_index: usize,
+        /// Byte offset of the offending marker prefix.
+        offset: usize,
+        /// Offending marker byte code.
+        marker: u8,
+        /// Declared segment length in bytes.
+        length: usize,
+        /// Available remaining bytes in input buffer.
+        available: usize,
+    },
+    /// Marker segment with declared length shorter than required minimum for the marker type.
+    ShortMarkerSegment {
+        /// 0-based frame index containing the segment.
+        frame_index: usize,
+        /// Marker code byte.
+        marker: u8,
+        /// Byte offset of marker prefix in input.
+        offset: usize,
+        /// Declared segment length in bytes.
+        length: usize,
+    },
+    /// Start of Frame (SOF) marker with declared height of 0 (lines defined by DNL).
+    ZeroHeightSof {
+        /// 0-based frame index containing the SOF.
+        frame_index: usize,
+        /// Byte offset of SOF marker prefix in input.
+        offset: usize,
+    },
+    /// Define Number of Lines (DNL, 0xFFDC) marker encountered (unsupported at decode).
+    DnlMarkerUnsupported {
+        /// 0-based frame index containing the DNL marker.
+        frame_index: usize,
+        /// Byte offset of DNL marker prefix in input.
+        offset: usize,
+    },
 }
 
 impl JpegFinding {
@@ -362,13 +416,31 @@ pub enum JpegSplitError {
         /// Configured maximum dimension in pixels.
         max_dimension: u32,
     },
-    /// Total input buffer size exceeded the configured maximum input limit.
+    /// Input buffer size exceeded the configured maximum input limit.
     InputOversized {
         /// Observed input size in bytes.
         size: usize,
         /// Configured maximum input limit in bytes.
         limit: usize,
     },
+    /// Operational bound exceeded during replay.
+    BoundExceeded(&'static str),
+    /// Budget exhausted during replay.
+    BudgetExhausted {
+        /// Packets requested by the replay bundle.
+        requested: usize,
+        /// Maximum packet budget permitted.
+        limit: usize,
+    },
+    /// Incompatible adapter generation during replay.
+    IncompatibleGeneration {
+        /// Pinned generation expected by the adapter.
+        expected: String,
+        /// Actual generation passed in request.
+        actual: String,
+    },
+    /// Replay state diverged.
+    ReplayDiverged,
     /// Cooperative cancellation was requested during splitting.
     CancellationRequested,
 }
@@ -436,6 +508,24 @@ impl std::fmt::Display for JpegSplitError {
                     size, limit
                 )
             }
+            Self::BoundExceeded(msg) => {
+                write!(f, "replay bound exceeded: {msg}")
+            }
+            Self::BudgetExhausted { requested, limit } => {
+                write!(
+                    f,
+                    "replay budget exhausted: requested {requested}, limit {limit}"
+                )
+            }
+            Self::IncompatibleGeneration { expected, actual } => {
+                write!(
+                    f,
+                    "replay generation incompatible: expected {expected}, actual {actual}"
+                )
+            }
+            Self::ReplayDiverged => {
+                write!(f, "replay state diverged")
+            }
             Self::CancellationRequested => {
                 write!(f, "cancellation requested during JPEG stream split")
             }
@@ -446,8 +536,25 @@ impl std::fmt::Display for JpegSplitError {
 impl std::error::Error for JpegSplitError {}
 
 impl From<ReplayAdapterError> for JpegSplitError {
-    fn from(_err: ReplayAdapterError) -> Self {
-        Self::CancellationRequested
+    fn from(err: ReplayAdapterError) -> Self {
+        match err {
+            ReplayAdapterError::CancellationRequested => Self::CancellationRequested,
+            ReplayAdapterError::BoundExceeded(msg) => Self::BoundExceeded(msg),
+            ReplayAdapterError::BudgetExhausted { requested, limit } => {
+                Self::BudgetExhausted { requested, limit }
+            }
+            ReplayAdapterError::IncompatibleGeneration { expected, actual } => {
+                Self::IncompatibleGeneration { expected, actual }
+            }
+            ReplayAdapterError::ReplayDiverged(_) => Self::ReplayDiverged,
+            ReplayAdapterError::RegistryDrift { .. } => Self::BoundExceeded("registry drift"),
+            ReplayAdapterError::Io(_) => Self::BoundExceeded("i/o error"),
+            ReplayAdapterError::Contract(_) => Self::BoundExceeded("contract violation"),
+            ReplayAdapterError::Bundle(_) => Self::BoundExceeded("replay bundle error"),
+            ReplayAdapterError::Reference(_) => Self::BoundExceeded("reference engine error"),
+            ReplayAdapterError::Ledger(_) => Self::BoundExceeded("ledger journal error"),
+            ReplayAdapterError::DurableLedger(_) => Self::BoundExceeded("durable ledger error"),
+        }
     }
 }
 
@@ -554,7 +661,6 @@ pub fn split_jpeg_stream(
         let mut sof: Option<JpegSofInfo> = None;
         let mut restart_interval: u16 = 0;
         let mut has_eoi = false;
-        let mut is_truncated = false;
         let mut marker_count: usize = 0;
 
         // Marker loop for the current frame
@@ -571,13 +677,20 @@ pub fn split_jpeg_stream(
                 cx_ref.checkpoint("split_jpeg_stream")?;
             }
 
-            // Scan until next 0xFF
+            // Scan until next 0xFF (detecting non-FF bytes between segments inside frame)
+            let garbage_start = current_pos;
             while current_pos < bytes.len() && bytes[current_pos] != 0xFF {
                 current_pos += 1;
             }
+            if current_pos > garbage_start {
+                findings.push(JpegFinding::GarbageInsideFrame {
+                    frame_index,
+                    start_offset: garbage_start,
+                    end_offset: current_pos,
+                });
+            }
 
             if current_pos >= bytes.len() {
-                is_truncated = true;
                 break;
             }
 
@@ -589,7 +702,6 @@ pub fn split_jpeg_stream(
             }
 
             if current_pos >= bytes.len() {
-                is_truncated = true;
                 break;
             }
 
@@ -597,13 +709,16 @@ pub fn split_jpeg_stream(
             current_pos += 1;
 
             if marker_code == 0x00 {
-                // Stray stuffing byte outside ECS, continue scan
+                // Stray stuffing byte outside ECS
+                findings.push(JpegFinding::StrayByteStuffing {
+                    frame_index,
+                    offset: marker_prefix,
+                });
                 continue;
             }
 
             if marker_code == 0xD8 {
                 // New SOI encountered without EOI for current frame: current frame was truncated!
-                is_truncated = true;
                 current_pos = marker_prefix;
                 break;
             }
@@ -611,17 +726,10 @@ pub fn split_jpeg_stream(
             if marker_code == 0xD9 {
                 // EOI marker terminates this frame
                 has_eoi = true;
-                is_truncated = false;
                 break;
             }
 
-            if marker_code == 0x01 || (0xD0..=0xD7).contains(&marker_code) {
-                // Standalone markers without length: TEM (0x01), RST0..RST7 (0xD0..0xD7)
-                marker_count += 1;
-                continue;
-            }
-
-            // Marker with length
+            // Increment marker count and enforce max_marker_segments_per_frame
             marker_count += 1;
             if marker_count > limits.max_marker_segments_per_frame {
                 return Err(JpegSplitError::TooManyMarkerSegments {
@@ -631,13 +739,32 @@ pub fn split_jpeg_stream(
                 });
             }
 
+            if marker_code == 0x01 || (0xD0..=0xD7).contains(&marker_code) {
+                // Standalone markers without length: TEM (0x01), RST0..RST7 (0xD0..0xD7)
+                continue;
+            }
+
+            // Marker with length: check if length field itself (2 bytes) is available
             if current_pos + 2 > bytes.len() {
-                return Err(JpegSplitError::MarkerLengthOverflow {
-                    offset: marker_prefix,
-                    marker: marker_code,
-                    length: 0,
-                    available: bytes.len().saturating_sub(marker_prefix),
-                });
+                let available = bytes.len().saturating_sub(current_pos);
+                if !frames.is_empty() {
+                    findings.push(JpegFinding::MarkerLengthOverflow {
+                        frame_index,
+                        offset: marker_prefix,
+                        marker: marker_code,
+                        length: 0,
+                        available,
+                    });
+                    current_pos = bytes.len();
+                    break;
+                } else {
+                    return Err(JpegSplitError::MarkerLengthOverflow {
+                        offset: marker_prefix,
+                        marker: marker_code,
+                        length: 0,
+                        available,
+                    });
+                }
             }
 
             let declared_length =
@@ -654,12 +781,25 @@ pub fn split_jpeg_stream(
             }
 
             if current_pos + declared_length > bytes.len() {
-                return Err(JpegSplitError::MarkerLengthOverflow {
-                    offset: marker_prefix,
-                    marker: marker_code,
-                    length: declared_length,
-                    available: bytes.len().saturating_sub(current_pos),
-                });
+                let available = bytes.len().saturating_sub(current_pos);
+                if !frames.is_empty() {
+                    findings.push(JpegFinding::MarkerLengthOverflow {
+                        frame_index,
+                        offset: marker_prefix,
+                        marker: marker_code,
+                        length: declared_length,
+                        available,
+                    });
+                    current_pos = bytes.len();
+                    break;
+                } else {
+                    return Err(JpegSplitError::MarkerLengthOverflow {
+                        offset: marker_prefix,
+                        marker: marker_code,
+                        length: declared_length,
+                        available,
+                    });
+                }
             }
 
             let is_sof = matches!(
@@ -668,12 +808,14 @@ pub fn split_jpeg_stream(
             );
 
             if is_sof {
-                if sof.is_some() {
-                    findings.push(JpegFinding::DuplicateSof {
+                if declared_length < 8 {
+                    findings.push(JpegFinding::ShortMarkerSegment {
                         frame_index,
+                        marker: marker_code,
                         offset: marker_prefix,
+                        length: declared_length,
                     });
-                } else if declared_length >= 8 {
+                } else {
                     let precision = bytes[current_pos + 2];
                     let height =
                         u16::from_be_bytes([bytes[current_pos + 3], bytes[current_pos + 4]]);
@@ -681,6 +823,7 @@ pub fn split_jpeg_stream(
                         u16::from_be_bytes([bytes[current_pos + 5], bytes[current_pos + 6]]);
                     let components = bytes[current_pos + 7];
 
+                    // Check dimensions on EVERY SOF before duplicate check
                     if (width as u32) > limits.max_dimension
                         || (height as u32) > limits.max_dimension
                     {
@@ -691,6 +834,13 @@ pub fn split_jpeg_stream(
                         });
                     }
 
+                    if height == 0 {
+                        findings.push(JpegFinding::ZeroHeightSof {
+                            frame_index,
+                            offset: marker_prefix,
+                        });
+                    }
+
                     if components == 0 {
                         findings.push(JpegFinding::ZeroComponents {
                             frame_index,
@@ -698,28 +848,50 @@ pub fn split_jpeg_stream(
                         });
                     }
 
-                    sof = Some(JpegSofInfo {
-                        process: JpegProcess::from_sof_marker(marker_code),
-                        marker: marker_code,
-                        precision,
-                        height,
-                        width,
-                        components,
-                    });
+                    if sof.is_some() {
+                        findings.push(JpegFinding::DuplicateSof {
+                            frame_index,
+                            offset: marker_prefix,
+                        });
+                    } else {
+                        sof = Some(JpegSofInfo {
+                            process: JpegProcess::from_sof_marker(marker_code),
+                            marker: marker_code,
+                            precision,
+                            height,
+                            width,
+                            components,
+                        });
+                    }
                 }
                 current_pos += declared_length;
             } else if marker_code == 0xDD {
                 // DRI (Define Restart Interval)
-                if declared_length >= 4 {
+                if declared_length < 4 {
+                    findings.push(JpegFinding::ShortMarkerSegment {
+                        frame_index,
+                        marker: marker_code,
+                        offset: marker_prefix,
+                        length: declared_length,
+                    });
+                } else {
                     restart_interval =
                         u16::from_be_bytes([bytes[current_pos + 2], bytes[current_pos + 3]]);
                 }
+                current_pos += declared_length;
+            } else if marker_code == 0xDC {
+                // DNL (Define Number of Lines)
+                findings.push(JpegFinding::DnlMarkerUnsupported {
+                    frame_index,
+                    offset: marker_prefix,
+                });
                 current_pos += declared_length;
             } else if marker_code == 0xDA {
                 // SOS (Start of Scan)
                 current_pos += declared_length;
 
                 // Scan Entropy Coded Segment (ECS)
+                let mut next_checkpoint = current_pos.saturating_add(65536);
                 while current_pos < bytes.len() {
                     if current_pos.saturating_sub(frame_start) > limits.max_frame_bytes {
                         return Err(JpegSplitError::FrameTooLarge {
@@ -730,9 +902,10 @@ pub fn split_jpeg_stream(
                     }
 
                     if let Some(cx_ref) = cx
-                        && current_pos % 65536 == 0
+                        && current_pos >= next_checkpoint
                     {
                         cx_ref.checkpoint("split_jpeg_stream")?;
+                        next_checkpoint = current_pos.saturating_add(65536);
                     }
 
                     if bytes[current_pos] != 0xFF {
@@ -748,7 +921,6 @@ pub fn split_jpeg_stream(
                     }
 
                     if current_pos >= bytes.len() {
-                        is_truncated = true;
                         break;
                     }
 
@@ -771,7 +943,6 @@ pub fn split_jpeg_stream(
                 }
 
                 if current_pos >= bytes.len() && !has_eoi {
-                    is_truncated = true;
                     break;
                 }
             } else {
@@ -790,6 +961,7 @@ pub fn split_jpeg_stream(
             });
         }
 
+        let is_truncated = !has_eoi;
         if is_truncated {
             findings.push(JpegFinding::TruncatedFrame {
                 frame_index,
