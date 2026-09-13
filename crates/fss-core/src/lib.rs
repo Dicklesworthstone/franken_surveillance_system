@@ -48,9 +48,10 @@ pub use abstraction::{
 
 pub use agent::{
     ActionAffordance, AffordanceClass, ContractBasis, ContractBasisRegistryBytes, HandoffCapsule,
-    HandoffPublishParams, KnowledgeCell, KnowledgeStateBasis, MissionLifecycleState, PossibleWorld,
-    REDACTED_STATEMENT_MARKER, ReconciliationBasis, ReconciliationBranch, RedactionMarker,
-    RedactionReason, SituationCapsule, SituationFrame, StaleBasis, WorldEnvelope,
+    HandoffPublishParams, KnowledgeCell, KnowledgeCellParams, KnowledgeStateBasis,
+    MissionLifecycleState, PossibleWorld, REDACTED_STATEMENT_MARKER, ReconciliationBasis,
+    ReconciliationBranch, RedactionMarker, RedactionReason, SituationCapsule, SituationFrame,
+    StaleBasis, WorldEnvelope,
 };
 pub use belief::{
     BELIEF_INTERVAL_DOMAIN, BeliefError, BeliefInterval, CONTRADICTION_DOMAIN, Contradiction,

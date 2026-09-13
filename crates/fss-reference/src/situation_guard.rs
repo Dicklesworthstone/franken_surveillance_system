@@ -248,7 +248,7 @@ fn annotate_operation_receipt(
             operation_receipt.state.as_str()
         ),
         knowledge_state,
-        provenance: ProvenanceClass::Derived,
+        provenance: ProvenanceClass::Observed,
         hypothesis: None,
         evidence: vec![digest],
         contradictions: Vec::new(),

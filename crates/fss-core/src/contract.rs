@@ -375,8 +375,8 @@ impl ProvenanceClass {
     #[must_use]
     pub const fn may_authorize_irreversible_effect(self) -> bool {
         match self {
-            Self::Predicted | Self::Remembered | Self::VendorClaimed => false,
-            Self::Observed | Self::Derived | Self::OperatorAsserted | Self::Policy => true,
+            Self::Derived | Self::Predicted | Self::Remembered | Self::VendorClaimed => false,
+            Self::Observed | Self::OperatorAsserted | Self::Policy => true,
         }
     }
 

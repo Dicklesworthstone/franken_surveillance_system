@@ -1964,10 +1964,10 @@ fn sealed_situation_proof_roots_are_exact() -> Result<(), Box<dyn Error>> {
 
 /// Pinned v5 seal digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_SEAL_DIGEST: &str =
-    "sha256:c97902fb75e91dd2b66ed60816bab367440014c2e456b507272457b566f98cbf";
+    "sha256:40e98673d2d6b106e695ae3559d544aa44c8b53a299fb1db5440a3fb9d481ab7";
 /// Pinned v5 publication digest of the fixed compiled publication with effect bindings below.
 const GOLDEN_BOUND_PUBLICATION_DIGEST: &str =
-    "sha256:5d43f8b9226adca45b45cf0f7a75bad18c721200cba663aebb98a3088db31d54";
+    "sha256:b5d866d05ee5790f9a9a935ba3d5a1240dc33bdcbfe81a2640954168876d4de6";
 
 /// Round 5: pins the binding part of the seal encoding. The verified publication, bound to its
 /// outcome and local-state cells, has a pinned seal digest and publication digest.
