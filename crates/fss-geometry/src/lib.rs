@@ -15,6 +15,7 @@ mod linear;
 mod refine;
 mod registration;
 mod motion;
+mod handoff;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -26,6 +27,11 @@ pub use registration::{Correspondence, LandmarkResidual, PoseCandidate, PoseSear
 pub use motion::{ForecastBasis, MAX_FORECAST_NS, MAX_MOTION_ROUTES, MAX_ROUTE_POINTS,
     MotionForecast, MotionHypothesis, MotionKnot, RouteCandidate, RouteEnd, RoutePriors,
     RouteSurface, forecast_routes};
+
+pub use handoff::{BodySamples, CameraAvailability, CameraHandoffForecast, CaptureSchedule,
+    HandoffCamera, HandoffCameraScope, HandoffOptions, ImageRect, MAX_BODY_SAMPLES,
+    MAX_HANDOFF_CAMERAS, NanosecondInterval, NextCameraOutcome, PredictedObservation,
+    RouteBody, RouteHandoff, predict_camera_handoffs};
 
 /// Stable, non-disclosing failures at the numerical boundary.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
