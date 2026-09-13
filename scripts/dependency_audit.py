@@ -2347,7 +2347,13 @@ def audit_workspace(
     findings: list[Finding] = []
     policy, policy_issues = dependency_authority.load_policy_document(policy_path, root)
     if policy is None:
-        fatal_report = {"schema": "fss.dependency_audit.v4", "fatal": "; ".join(f"{e.code} {e.target}: {e.message}" for e in policy_issues)}
+        fatal = "; ".join(f"{e.code} {e.target}: {e.message}" for e in policy_issues)
+        fatal_findings: list[Finding] = []
+        add(fatal_findings, "error", "DEP-AUD-046", policy_path, f"the dependency authority is unusable, so the audit cannot run: {fatal}", root=root,
+            params={"authorityCodes": sorted({e.code for e in policy_issues})})
+        rows = [asdict(f) for f in fatal_findings]
+        fatal_report = {"schema": "fss.dependency_audit.v4", "fatal": fatal, "qualificationStatus": "failed",
+                        "findingCount": len(rows), "errorCount": len(rows), "findings": rows}
         return fatal_report, 2
 
     rules = policy.get("policy") if isinstance(policy.get("policy"), dict) else {}

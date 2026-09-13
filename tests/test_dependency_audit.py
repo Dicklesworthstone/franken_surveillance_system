@@ -1556,5 +1556,24 @@ class QualifyShellQuotingAndRustupInstallTests(unittest.TestCase):
                 self.assertEqual(findings, [])
 
 
+class AuditFatalExitIsCoded(unittest.TestCase):
+    """Round-3 review: the standalone audit's fatal exit (unusable authority) carries a registered code."""
+
+    def test_unusable_allowlist_exits_2_with_dep_aud_046(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            policy = root / "architecture" / "dependency_allowlist.toml"
+            policy.parent.mkdir(parents=True)
+            policy.write_text("[policy]\nclosed_universe = true\n[policy]\nclosed_universe = false\n", encoding="utf-8")
+            (root / "Cargo.toml").write_text('[workspace]\nresolver = "3"\nmembers = []\n', encoding="utf-8")
+            report, rc = dependency_audit.audit_workspace(root, policy)
+        self.assertEqual(rc, 2)
+        self.assertEqual(report["qualificationStatus"], "failed")
+        self.assertEqual([(f["severity"], f["code"]) for f in report["findings"]], [("error", "DEP-AUD-046")])
+        self.assertEqual((report["findingCount"], report["errorCount"]), (1, 1))
+        self.assertIn("ERR-DEP-CORRUPT-FILE-001", report["findings"][0]["params"]["authorityCodes"])
+        self.assertIn("DEP-AUD-046", dependency_audit.DIAGNOSTIC_REGISTRY)
+
+
 if __name__ == "__main__":
     unittest.main()

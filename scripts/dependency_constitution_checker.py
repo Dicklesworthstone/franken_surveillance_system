@@ -396,8 +396,11 @@ def parse_rustc_verbose(stdout: str) -> tuple[dict[str, str] | None, str | None]
     return fields, None
 
 
-def load_toolchain_contract(root: Path, result: ValidationResult) -> dict[str, Any] | None:
-    """The accepted toolchain identity from architecture/local_qualification.toml [toolchain]."""
+def load_toolchain_contract(root: Path, result: ValidationResult, scopes: set[str] | None = None) -> dict[str, Any] | None:
+    """The accepted toolchain identity from architecture/local_qualification.toml [toolchain].
+
+    Every ``[toolchain.host_triples]`` entry, not only the running host, must map to a native_release
+    platform scope of architecture/release_qualification.json (``scopes``)."""
     rel = LOCAL_QUALIFICATION_PATH
     data, _raw, problems = authority.load_toml_document(root / rel, rel, root)
     if data is None:
@@ -426,6 +429,10 @@ def load_toolchain_contract(root: Path, result: ValidationResult) -> dict[str, A
     if not re.fullmatch(r"[0-9a-f]{40}", toolchain["rustc_commit_hash"]) or _date(toolchain["rustc_commit_date"]) is None:
         result.add_error(ERR_DEP_CORRUPT_FILE, rel, "#/toolchain", "accepted rustc commit hash must be 40 hex digits and the commit date an ISO date")
         return None
+    if scopes is not None:
+        for triple, scope in sorted(toolchain["host_triples"].items()):
+            if scope not in scopes:
+                result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"#/toolchain/host_triples/{triple}", f"host triple {triple!r} maps to platform {scope!r}, which is not a native_release scope {sorted(scopes)} of {RELEASE_QUALIFICATION_PATH}")
     return toolchain
 
 
@@ -434,7 +441,8 @@ def validate_toolchain_identity(root: Path, result: ValidationResult) -> str | N
     rel = RUST_TOOLCHAIN_PATH
     if (root / LEGACY_RUST_TOOLCHAIN_PATH).exists():
         result.add_error(ERR_DEP_CONST_INVARIANT, LEGACY_RUST_TOOLCHAIN_PATH, "#", "a legacy rust-toolchain override file exists beside rust-toolchain.toml; rustup would prefer it over the pinned channel")
-    contract = load_toolchain_contract(root, result)
+    scopes = registered_host_scopes(root, result)
+    contract = load_toolchain_contract(root, result, scopes)
     data, _raw, problems = authority.load_toml_document(root / rel, rel, root)
     if data is None:
         result.extend(problems)
@@ -491,7 +499,6 @@ def validate_toolchain_identity(root: Path, result: ValidationResult) -> str | N
     commit_date = _date(fields["commit-date"])
     if commit_date is None or commit_date > channel_date:
         result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/commit-date", f"rustc commit-date {fields['commit-date']!r} is later than the pinned channel date {channel_date}")
-    scopes = registered_host_scopes(root, result)
     scope = contract["host_triples"].get(fields["host"])
     if scope is None:
         result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#/rustc/host", f"rustc host {fields['host']!r} is not an accepted host triple in {LOCAL_QUALIFICATION_PATH} [toolchain.host_triples]")
@@ -537,6 +544,51 @@ def load_real_cargo_metadata(root: Path, channel: str | None = REQUIRED_RUST_CHA
 
 
 DYNAMIC_CRATE_TYPES = frozenset({"cdylib", "dylib", "staticlib"})
+
+
+def _git_ignored(root: Path, rels: list[str], result: ValidationResult) -> set[str]:
+    """The subset of ``rels`` git ignores (untracked and matching an ignore rule); empty outside git."""
+    if not rels or not (root / ".git").exists():
+        return set()
+    try:
+        proc = subprocess.run(["git", "-C", str(root), "check-ignore", "--stdin", "-z"], input="\0".join(rels) + "\0",
+                              capture_output=True, text=True, timeout=TOOLCHAIN_COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired:
+        result.add_error(ERR_DEP_EXEC_FAILED, ".gitignore", "#", f"git check-ignore timed out after {TOOLCHAIN_COMMAND_TIMEOUT_SECONDS}s")
+        return set()
+    except (OSError, ValueError) as exc:
+        result.add_error(ERR_DEP_EXEC_FAILED, ".gitignore", "#", f"git check-ignore could not run: {exc}")
+        return set()
+    if proc.returncode not in (0, 1):
+        result.add_error(ERR_DEP_EXEC_FAILED, ".gitignore", "#", f"git check-ignore failed with exit code {proc.returncode}: {(proc.stderr or '').strip()[:300]}")
+        return set()
+    return {path for path in (proc.stdout or "").split("\0") if path}
+
+
+def _target_source_problem(src: str, root: Path, ignored: set[str]) -> str | None:
+    try:
+        rel = Path(src).resolve().relative_to(root.resolve()).as_posix()
+    except (ValueError, OSError):
+        return f"has its source {src!r} outside the repository, where no scan reaches it"
+    top = rel.split("/", 1)[0]
+    if top in UNSCANNED_TOP_LEVEL_DIRS:
+        return f"has its source {rel!r} in the unscanned directory {top}/"
+    if rel in ignored:
+        return f"has its source {rel!r} in a git-ignored path that is never checked in"
+    return None
+
+
+def _member_target_sources(packages: dict[str, dict[str, Any]], members: set[str], root: Path) -> list[str]:
+    rels: list[str] = []
+    for pkg_id in members:
+        for target in packages.get(pkg_id, {}).get("targets", []) if isinstance(packages.get(pkg_id, {}).get("targets"), list) else []:
+            src = target.get("src_path") if isinstance(target, dict) else None
+            if authority.is_str(src):
+                try:
+                    rels.append(Path(src).resolve().relative_to(root.resolve()).as_posix())
+                except (ValueError, OSError):
+                    continue
+    return sorted(set(rels))
 
 
 def workspace_contract(root: Path, result: ValidationResult) -> tuple[set[str] | None, list[str] | None]:
@@ -681,6 +733,7 @@ def validate_cargo_metadata_for_f0(
         for pkg_id in sorted((production | development) - set(packages)):
             _metadata_violation(result, "#/resolve", f"resolve graph references unknown package id {pkg_id!r}")
 
+    ignored = _git_ignored(root, _member_target_sources(packages, members, root), result)
     for pkg_id, pkg in sorted(packages.items()):
         name = pkg["name"]
         is_member = pkg_id in members
@@ -719,6 +772,11 @@ def validate_cargo_metadata_for_f0(
             _metadata_violation(result, f"#{name}/targets/crate_types", f"Package '{name}' declares dynamic/C-ABI crate types {dynamic} violating DEP-CLASS-F0 (no dynamic loading or C FFI)", manifest)
         links = pkg.get("links")
         if is_member:
+            for target in targets:
+                src = target.get("src_path") if isinstance(target, dict) else None
+                problem = _target_source_problem(src, root, ignored) if authority.is_str(src) else None
+                if problem is not None:
+                    _metadata_violation(result, f"#{name}/targets/{target.get('name')}/src_path", f"workspace member '{name}' target {target.get('name')!r} {problem}", manifest)
             if declared_crates is not None and name not in declared_crates:
                 _metadata_violation(result, f"#{name}/topology", f"workspace member '{name}' is not declared in {CRATE_TOPOLOGY_PATH}", manifest)
             member_dir = _relative_dir(pkg.get("manifest_path"), root)
@@ -759,6 +817,21 @@ RUSTFLAG_KEYS = frozenset({"rustflags", "rustdocflags", "RUSTFLAGS", "RUSTDOCFLA
                            "CARGO_ENCODED_RUSTDOCFLAGS", "CARGO_BUILD_RUSTFLAGS", "CARGO_BUILD_RUSTDOCFLAGS"})
 ENV_RUSTFLAGS_RE = re.compile(r"\b(?:CARGO_ENCODED_RUSTFLAGS|CARGO_ENCODED_RUSTDOCFLAGS|CARGO_BUILD_RUSTFLAGS|CARGO_BUILD_RUSTDOCFLAGS|RUSTFLAGS|RUSTDOCFLAGS)\b.*?(?<![\w-])-Z")
 TOOL_Z_FLAG_RE = re.compile(r"\b(?:cargo|rustc|rustdoc)\b[^#\n]*?(?<![\w-])-Z")
+# Compiler overrides: cargo config keys and environment variables that replace the rustc/rustdoc that
+# rustup runs, so the accepted identity in local_qualification.toml would not be what builds.
+COMPILER_OVERRIDE_KEYS = frozenset({"rustc", "rustc-wrapper", "rustc-workspace-wrapper", "rustdoc"})
+COMPILER_OVERRIDE_ENV = frozenset({"RUSTC", "RUSTC_WRAPPER", "RUSTC_WORKSPACE_WRAPPER", "RUSTDOC", "CARGO_BUILD_RUSTC",
+                                   "CARGO_BUILD_RUSTC_WRAPPER", "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER", "CARGO_BUILD_RUSTDOC"})
+COMPILER_OVERRIDE_ENV_RE = re.compile(r"\b(?:CARGO_BUILD_)?(?:RUSTC|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|RUSTDOC)\s*=")
+BOOTSTRAP_ENV_RE = re.compile(r"\bRUSTC_BOOTSTRAP\s*=")
+TASK_RUNNER_NAMES = frozenset({"Makefile", "makefile", "GNUmakefile", "justfile", "Justfile", ".justfile"})
+SHELL_LIKE_SUFFIXES = frozenset({".sh", ".bash", ".zsh", ".mk", ".just"})
+TOOLCHAIN_FILE_NAMES = frozenset({"rust-toolchain", "rust-toolchain.toml"})
+# rustdoc compiles a fenced block when its info string is empty or made only of these tags.
+RUSTDOC_CODE_TAGS = frozenset({"rust", "ignore", "should_panic", "no_run", "compile_fail", "test_harness", "standalone_crate", "allow_fail"})
+DOC_LINE_RE = re.compile(r"^\s*//[/!](?!/)")
+DOC_BLOCK_RE = re.compile(r"/\*[*!](?![*/])(.*?)\*/", re.S)
+FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})\s*(.*?)\s*$")
 MANIFEST_CARGO_FEATURES_RE = re.compile(r"^\s*cargo-features\s*=", re.MULTILINE)
 MANIFEST_RUSTFLAGS_Z_RE = re.compile(r"^\s*rustflags\s*=.*?(?<![\w-])-Z", re.MULTILINE)
 INNER_ATTRIBUTE_RE = re.compile(r"#\s*!\s*\[")
@@ -851,15 +924,88 @@ def _config_rustflags(node: Any, path: str = "") -> list[tuple[str, str]]:
     return hits
 
 
+def _config_keys(node: Any, keys: frozenset[str], path: str = "") -> list[str]:
+    """Dotted paths of ``keys`` anywhere in a cargo config table, outside [alias] and [env]."""
+    hits: list[str] = []
+    if isinstance(node, dict):
+        for key, value in node.items():
+            here = f"{path}.{key}" if path else key
+            if not path and key in ("alias", "env"):
+                continue
+            if key in keys:
+                hits.append(here)
+            else:
+                hits.extend(_config_keys(value, keys, here))
+    return hits
+
+
+def _is_rustdoc_code(info: str) -> bool:
+    tokens = [token for token in re.split(r"[\s,]+", info.strip().strip("{}").lstrip(".")) if token]
+    return all(token in RUSTDOC_CODE_TAGS or token.startswith("edition") or re.fullmatch(r"E\d{4}", token) for token in tokens)
+
+
+def doctest_blocks(text: str) -> list[list[tuple[int, str]]]:
+    """Rust code blocks of rustdoc comments as lists of (file line, code line).
+
+    Doc comments are ``///``/``//!`` line runs and ``/** */``/``/*! */`` blocks. A fenced block is Rust
+    when rustdoc would compile it (empty info string or only rustdoc tags); hidden ``# `` lines are
+    compiled too, so the marker is removed."""
+    segments: list[list[tuple[int, str]]] = []
+    current: list[tuple[int, str]] = []
+    for number, line in enumerate(text.split("\n"), 1):
+        match = DOC_LINE_RE.match(line)
+        if match:
+            current.append((number, line[match.end():]))
+        elif current:
+            segments.append(current)
+            current = []
+    if current:
+        segments.append(current)
+    for match in DOC_BLOCK_RE.finditer(text):
+        start = text.count("\n", 0, match.start()) + 1
+        segments.append([(start + offset, re.sub(r"^\s*\*?", "", raw, count=1)) for offset, raw in enumerate(match.group(1).split("\n"))])
+    blocks: list[list[tuple[int, str]]] = []
+    for segment in segments:
+        fence: str | None = None
+        rust = False
+        body: list[tuple[int, str]] = []
+        for number, content in segment:
+            fence_match = FENCE_RE.match(content)
+            if fence is None:
+                if fence_match:
+                    fence, rust, body = fence_match.group(1), _is_rustdoc_code(fence_match.group(2)), []
+                continue
+            if fence_match and fence_match.group(1)[0] == fence[0] and len(fence_match.group(1)) >= len(fence) and not fence_match.group(2):
+                if rust:
+                    blocks.append(body)
+                fence = None
+                continue
+            code = content[1:] if content.startswith(" ") else content
+            stripped = code.lstrip()
+            if stripped == "#":
+                code = ""
+            elif stripped.startswith("# "):
+                code = stripped[2:]
+            body.append((number, code))
+        if fence is not None and rust:
+            blocks.append(body)  # an unclosed fence runs to the end of the comment
+    return blocks
+
+
 def scan_unstable_features(root: Path, result: ValidationResult) -> int:
     """Refuses every way of enabling nightly unstable features: no unstable-feature registry exists.
 
     Scanned: ``#![feature(...)]`` and ``#![cfg_attr(<pred>, feature(...))]`` inner attributes in every
     Rust file of the repository (build scripts included; only the workspace's own target/ and tool
-    directories are skipped); ``-Z`` flags in ``.cargo/config[.toml]`` rustflags/env tables and any
-    ``[unstable]`` table; ``cargo-features`` and ``-Z`` profile rustflags in Cargo.toml files; ``-Z`` in
-    RUSTFLAGS-style assignments of checked-in ``.env`` and shell files and in shell invocations of
-    cargo/rustc/rustdoc; and ``-Z`` string literals in build scripts.
+    directories are skipped) and in the rustdoc code blocks of their doc comments (doctests are
+    compiled); ``-Z`` flags in ``.cargo/config[.toml]`` rustflags/env tables and [alias] values, any
+    ``[unstable]`` table or config ``include``; ``cargo-features`` and ``-Z`` profile rustflags in
+    Cargo.toml files; ``-Z`` in RUSTFLAGS-style assignments and ``RUSTC_BOOTSTRAP`` in checked-in env,
+    shell, Makefile and justfile files and cargo/rustc/rustdoc ``-Z`` invocations in the shell-like ones;
+    and ``-Z`` string literals in build scripts. Compiler overrides (cargo config ``rustc``/
+    ``rustc-wrapper``/``rustdoc`` keys, ``RUSTC``/``RUSTC_WRAPPER``/``RUSTDOC`` settings) and nested
+    ``rust-toolchain(.toml)`` files are CONST-INVARIANT: they replace the compiler whose identity
+    local_qualification.toml accepts.
     """
     import dependency_audit  # local import: dependency_audit imports this checker's authority module
 
@@ -885,6 +1031,12 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
             if attribute_enables_feature(content):
                 line = masked.count("\n", 0, offset) + 1
                 emit(rel, f"line/{line}", f"{rel}:{line}: an inner attribute enables an unstable feature")
+        for block in doctest_blocks(text):
+            code_masked, _ = dependency_audit.mask_rust_source("\n".join(code for _number, code in block))
+            for offset, content in inner_attributes(code_masked):
+                if attribute_enables_feature(content):
+                    line = block[code_masked.count("\n", 0, offset)][0]
+                    emit(rel, f"line/{line}", f"{rel}:{line}: a rustdoc code block enables an unstable feature (doctests are compiled)")
         if path.name == "build.rs":
             for literal in literals:
                 if re.search(r"(?<![\w-])-Z", literal.content):
@@ -897,8 +1049,20 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
             continue
         if "unstable" in data:
             emit(rel, "#/unstable", f"{rel} enables cargo [unstable] options")
+        if "include" in data:
+            emit(rel, "#/include", f"{rel} includes further config files (cargo -Zconfig-include); their contents are not vetted")
         for key_path, token in _config_rustflags(data):
             emit(rel, f"#/{key_path}", f"{rel} {key_path} passes the unstable flag {token}")
+        for alias, value in sorted(authority.as_dict(data.get("alias")).items()):
+            for token in _z_tokens(value):
+                emit(rel, f"#/alias.{alias}", f"{rel} alias {alias!r} passes the unstable flag {token}")
+        for key_path in _config_keys(data, COMPILER_OVERRIDE_KEYS):
+            result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"#/{key_path}", f"{rel} {key_path} replaces the compiler rustup runs, so the accepted rustc identity of {LOCAL_QUALIFICATION_PATH} would not be what builds the workspace")
+        for key in sorted(authority.as_dict(data.get("env"))):
+            if key == "RUSTC_BOOTSTRAP":
+                emit(rel, "#/env.RUSTC_BOOTSTRAP", f"{rel} [env] sets RUSTC_BOOTSTRAP, which unlocks unstable features on any compiler")
+            elif key in COMPILER_OVERRIDE_ENV:
+                result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"#/env.{key}", f"{rel} [env] sets {key}, which replaces the compiler whose identity {LOCAL_QUALIFICATION_PATH} accepts")
     for path in repository_files(root, lambda p: p.name == "Cargo.toml"):
         text = read_text(path)
         if text is None:
@@ -908,8 +1072,10 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
             emit(rel, "#/cargo-features", f"{rel} declares unstable cargo-features")
         if MANIFEST_RUSTFLAGS_Z_RE.search(text):
             emit(rel, "#/profile/rustflags", f"{rel} passes an unstable -Z flag in profile rustflags")
-    env_like = lambda p: p.suffix == ".sh" or p.name.startswith(".env") or p.name.endswith(".env")  # noqa: E731
-    for path in repository_files(root, env_like):
+    def shell_like(p: Path) -> bool:
+        return p.suffix in SHELL_LIKE_SUFFIXES or p.name in TASK_RUNNER_NAMES
+
+    for path in repository_files(root, lambda p: shell_like(p) or p.name.startswith(".env") or p.name.endswith(".env")):
         text = read_text(path)
         if text is None:
             continue
@@ -917,8 +1083,15 @@ def scan_unstable_features(root: Path, result: ValidationResult) -> int:
         for number, line in enumerate(text.split("\n"), 1):
             if line.lstrip().startswith("#"):
                 continue
-            if ENV_RUSTFLAGS_RE.search(line) or (path.suffix == ".sh" and TOOL_Z_FLAG_RE.search(line)):
+            if ENV_RUSTFLAGS_RE.search(line) or (shell_like(path) and TOOL_Z_FLAG_RE.search(line)):
                 emit(rel, f"line/{number}", f"{rel}:{number}: sets RUSTFLAGS-style flags or passes cargo/rustc an unstable -Z option")
+            elif BOOTSTRAP_ENV_RE.search(line):
+                emit(rel, f"line/{number}", f"{rel}:{number}: sets RUSTC_BOOTSTRAP, which unlocks unstable features on any compiler")
+            elif COMPILER_OVERRIDE_ENV_RE.search(line):
+                result.add_error(ERR_DEP_CONST_INVARIANT, rel, f"line/{number}", f"{rel}:{number}: overrides the compiler rustup runs, so the accepted rustc identity of {LOCAL_QUALIFICATION_PATH} would not be what builds")
+    for path in repository_files(root, lambda p: p.name in TOOLCHAIN_FILE_NAMES and p.parent != root):
+        rel = path.relative_to(root).as_posix()
+        result.add_error(ERR_DEP_CONST_INVARIANT, rel, "#", f"{rel} overrides the toolchain for its subtree; only the root {RUST_TOOLCHAIN_PATH} pins the accepted channel")
     return len(rust_files)
 
 
