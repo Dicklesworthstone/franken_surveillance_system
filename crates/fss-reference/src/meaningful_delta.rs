@@ -922,6 +922,13 @@ fn completeness_rank(value: Completeness) -> u8 {
     }
 }
 
+/// Canonical content digest for world semantics comparison.
+///
+/// # Precondition
+/// `envelope` must already be validated (via [`WorldEnvelope::validate`]).
+/// This is a private helper only invoked by [`classify_reference_meaningful_delta`]
+/// after both `basis` and `result` publications pass [`ReferenceSituationPublication::verify`],
+/// which structurally guarantees that both envelopes passed [`WorldEnvelope::validate`].
 fn world_semantic_digest(envelope: &WorldEnvelope) -> ContentDigest {
     let mut encoder = CanonicalEncoder::new();
     encoder.text("fss.reference_world_semantics.v1");

@@ -1858,3 +1858,98 @@ fn proved_effect_whose_typed_outcome_flips_is_a_contradiction() -> Result<(), Bo
     delta.validate()?;
     Ok(())
 }
+
+/// fss-ko55q: world_semantic_digest hashes WorldEnvelope fields directly without
+/// re-validating them, relying on classify_reference_meaningful_delta verifying both
+/// publications first. Feeding an invalid envelope into either basis or result must
+/// be refused by the verify() precondition, and a mutation that skips verify() must fail.
+#[test]
+fn classification_refuses_invalid_world_envelope_precondition() -> Result<(), Box<dyn Error>> {
+    let basis_variant = Variant::baseline()?;
+    let basis = publication(&basis_variant)?;
+    let mut result_variant = basis_variant.clone();
+    result_variant.sequence = 2;
+    let mut result = publication(&result_variant)?;
+
+    // Corrupt result envelope so WorldEnvelope::validate fails (unprotected adversarial residual).
+    result
+        .situation
+        .capsule
+        .frame
+        .world_envelope
+        .adversarial_residuals
+        .push(fss_core::PossibleWorld {
+            world_id: "world:invalid:result".to_owned(),
+            description: "Unprotected residual violates envelope invariants.".to_owned(),
+            claim_ids: BTreeSet::from(["claim:premise".to_owned()]),
+            evidence: vec![ContentDigest::sha256(b"ev")],
+            consequence_severity: 0,
+            protected: false,
+        });
+
+    assert!(
+        result
+            .situation
+            .capsule
+            .frame
+            .world_envelope
+            .validate()
+            .is_err(),
+        "sanity check: corrupted envelope must fail WorldEnvelope::validate"
+    );
+
+    let classified_result_invalid = classify_reference_meaningful_delta(&basis, &result);
+    assert!(
+        matches!(
+            classified_result_invalid,
+            Err(crate::ReferenceError::Contract(
+                fss_core::ContractError::EvidenceRequired
+            ))
+        ),
+        "classification must fail when result has invalid envelope; got: {classified_result_invalid:?}"
+    );
+
+    // Corrupt basis envelope so WorldEnvelope::validate fails (empty world_id).
+    let mut invalid_basis = basis.clone();
+    invalid_basis
+        .situation
+        .capsule
+        .frame
+        .world_envelope
+        .alternatives
+        .push(fss_core::PossibleWorld {
+            world_id: String::new(),
+            description: "Empty world_id violates envelope invariants.".to_owned(),
+            claim_ids: BTreeSet::from(["claim:premise".to_owned()]),
+            evidence: vec![ContentDigest::sha256(b"ev")],
+            consequence_severity: 1,
+            protected: true,
+        });
+
+    assert!(
+        invalid_basis
+            .situation
+            .capsule
+            .frame
+            .world_envelope
+            .validate()
+            .is_err(),
+        "sanity check: corrupted basis envelope must fail WorldEnvelope::validate"
+    );
+
+    let valid_result = publication(&result_variant)?;
+    let classified_basis_invalid =
+        classify_reference_meaningful_delta(&invalid_basis, &valid_result);
+    assert!(
+        matches!(
+            classified_basis_invalid,
+            Err(crate::ReferenceError::Contract(
+                fss_core::ContractError::EvidenceRequired
+            ))
+        ),
+        "classification must fail when basis has invalid envelope; got: {classified_basis_invalid:?}"
+    );
+
+    Ok(())
+}
+
