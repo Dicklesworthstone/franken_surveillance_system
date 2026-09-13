@@ -43,7 +43,7 @@ pub const NEGATIVE_EVIDENCE_FORMAT_VERSION: u32 = 1;
 
 /// Pinned freeze digest of the initial canonical binary negative-evidence ledger containing NEG-001, NEG-002, and NEG-003.
 pub const INITIAL_NEGATIVE_EVIDENCE_LEDGER_DIGEST: &str =
-    "sha256:122dc8bb5041a7a30b58e3a895900978d0683a9109ef5c710c7fb0eb97d1c17d";
+    "sha256:a79f59ef08070ea6ba93b06df1a67efabfaaefefa78aaa38c3bbe388f4c1ee8e";
 
 /// Maximum number of negative evidence entries in a single ledger.
 pub const MAX_NEGATIVE_ENTRIES: usize = 1024;
@@ -1038,7 +1038,7 @@ pub fn initial_negative_evidence_ledger() -> Result<NegativeEvidenceLedger, Nega
         measured_result: "Public owner-facing documentation for target proprietary products does not establish a durable ONVIF/RTSP contract.".to_string(),
         decision: NegativeDecision::Reject,
         shared_failure_domains: neg002_domains,
-        revival_condition: "Official local API/profile support or a qualified owner-authorized adapter matrix.".to_string(),
+        revival_condition: "official local API/profile support or a qualified owner-authorized adapter matrix.".to_string(),
         knowledge_state: KnowledgeState::Known,
         provenance_class: ProvenanceClass::Policy,
         disposition: HypothesisDisposition::Refuted,

@@ -407,10 +407,9 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     assert_eq!(neg001.knowledge_state, KnowledgeState::Known);
     assert_eq!(neg001.provenance_class, ProvenanceClass::Policy);
     assert_eq!(neg001.disposition, HypothesisDisposition::Refuted);
-    assert!(
-        neg001
-            .revival_condition
-            .contains("official compatible SDK/product listing")
+    assert_eq!(
+        neg001.revival_condition,
+        "An official compatible SDK/product listing or a repeatable, owner-authorized, supportable capture surface."
     );
     assert!(neg001.coverage_witness.certifies_absence());
 
@@ -420,10 +419,9 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     assert_eq!(neg002.knowledge_state, KnowledgeState::Known);
     assert_eq!(neg002.provenance_class, ProvenanceClass::Policy);
     assert_eq!(neg002.disposition, HypothesisDisposition::Refuted);
-    assert!(
-        neg002
-            .revival_condition
-            .contains("Official local API/profile support")
+    assert_eq!(
+        neg002.revival_condition,
+        "official local API/profile support or a qualified owner-authorized adapter matrix."
     );
     assert!(neg002.coverage_witness.certifies_absence());
 
@@ -433,10 +431,9 @@ fn test_seed_entries_and_golden_fixture() -> Result<(), Box<dyn Error>> {
     assert_eq!(neg003.knowledge_state, KnowledgeState::Known);
     assert_eq!(neg003.provenance_class, ProvenanceClass::Policy);
     assert_eq!(neg003.disposition, HypothesisDisposition::Refuted);
-    assert!(
-        neg003
-            .revival_condition
-            .contains("candidate passes every task, license, cost")
+    assert_eq!(
+        neg003.revival_condition,
+        "A candidate passes every task, license, cost, privacy, and deterministic boundary against the decomposed incumbent under the same workload."
     );
     assert!(neg003.coverage_witness.certifies_absence());
 
