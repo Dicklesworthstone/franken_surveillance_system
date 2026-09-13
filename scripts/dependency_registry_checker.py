@@ -313,6 +313,16 @@ def _compare_markdown(result: ValidationResult, auth: authority.Authority, md_pa
     if md_rows is None or auth.registry is None:
         return
     registry = auth.registry
+    # The mirror is generated: the file must be byte-identical to the deterministic rendering of its own
+    # parsed tables, so comments, fenced blocks, prose, homoglyph identifiers or line-ending changes outside
+    # the tables are drift. Table content against the JSON is compared field by field below.
+    if meta is not None:
+        try:
+            rerendered = render_dependencies_markdown({**meta, "dependencies": md_rows})
+        except (TypeError, AttributeError):
+            rerendered = None  # a malformed cell is already a parse finding
+        if rerendered is not None and text != rerendered:
+            result.add_error(ERR_DEP_REGISTRY_DRIFT, rel, "#/rendering", f"{rel} contains bytes outside its rendered tables; the mirror must be byte-identical to render_dependencies_markdown of its rows")
     if meta is not None:
         for key in META_FIELDS:
             json_value = registry.get(key)
