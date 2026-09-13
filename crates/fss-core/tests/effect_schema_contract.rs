@@ -1081,3 +1081,106 @@ fn operation_receipt_reason_tag_keeps_legacy_bytes_and_round_trips() -> Result<(
     }
     Ok(())
 }
+
+/// fss-deir9: every target state has an explicit transition payload rule, and `validate_transition`
+/// and `transition` agree on it. The exhaustive matches below stop compiling when a state is added,
+/// so a new state must be given its predecessor path and payload rule here too.
+#[test]
+fn every_effect_state_has_an_explicit_transition_payload_rule() -> Result<(), Box<dyn Error>> {
+    let digest = ContentDigest::sha256(b"payload-rule");
+    let every_state = [
+        EffectState::Prepared,
+        EffectState::Committed,
+        EffectState::AdapterAccepted,
+        EffectState::Observed,
+        EffectState::Verified,
+        EffectState::Cancelled,
+        EffectState::Failed,
+        EffectState::Indeterminate,
+    ];
+    for next in every_state {
+        // Legal, payload-correct steps from `prepared` to a state that `next` may follow.
+        let path: &[(EffectState, Option<ContentDigest>, Option<&str>)] = match next {
+            EffectState::Prepared | EffectState::Committed | EffectState::Cancelled => &[],
+            EffectState::AdapterAccepted | EffectState::Failed | EffectState::Indeterminate => {
+                &[(EffectState::Committed, None, None)]
+            }
+            EffectState::Observed => &[
+                (EffectState::Committed, None, None),
+                (EffectState::AdapterAccepted, None, None),
+            ],
+            EffectState::Verified => &[
+                (EffectState::Committed, None, None),
+                (EffectState::AdapterAccepted, None, None),
+                (EffectState::Observed, Some(digest), None),
+            ],
+        };
+        // The (result, error) payload shapes the journal accepts for a transition into `next`.
+        let accepts = |result: bool, error: Option<&str>| match next {
+            EffectState::Prepared => false,
+            EffectState::Committed | EffectState::AdapterAccepted => !result && error.is_none(),
+            EffectState::Observed | EffectState::Verified => result && error.is_none(),
+            EffectState::Cancelled => result && error.is_none_or(|reason| !reason.is_empty()),
+            EffectState::Failed => result && error.is_some_and(|reason| !reason.is_empty()),
+            EffectState::Indeterminate => error.is_some_and(|reason| !reason.is_empty()),
+        };
+        for result in [false, true] {
+            for error in [None, Some(""), Some("payload_rule")] {
+                let intent = sample_intent()?;
+                let operation_id = intent.operation_id.clone();
+                let mut journal = EffectJournal::new();
+                let _ = journal.prepare(
+                    intent,
+                    ObligationId::parse("obligation:payload-rule")?,
+                    "delivery_proved",
+                    TimestampNs(100),
+                )?;
+                let mut now = 100;
+                for &(state, step_digest, step_error) in path {
+                    now += 1;
+                    let _ = journal.transition(
+                        &operation_id,
+                        state,
+                        TimestampNs(now),
+                        step_digest,
+                        step_error.map(str::to_owned),
+                    )?;
+                }
+                now += 1;
+                let result_digest = result.then_some(digest);
+                let expected = accepts(result, error);
+                let validated = journal
+                    .validate_transition(
+                        &operation_id,
+                        next,
+                        TimestampNs(now),
+                        result_digest,
+                        error,
+                    )
+                    .is_ok();
+                assert_eq!(
+                    validated,
+                    expected,
+                    "validate_transition into {} with result={result} error={error:?}",
+                    next.as_str()
+                );
+                let applied = journal
+                    .transition(
+                        &operation_id,
+                        next,
+                        TimestampNs(now),
+                        result_digest,
+                        error.map(str::to_owned),
+                    )
+                    .is_ok();
+                assert_eq!(
+                    applied,
+                    expected,
+                    "transition into {} with result={result} error={error:?}",
+                    next.as_str()
+                );
+            }
+        }
+    }
+    Ok(())
+}
