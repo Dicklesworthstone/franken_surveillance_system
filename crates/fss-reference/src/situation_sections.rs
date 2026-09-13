@@ -506,15 +506,15 @@ pub fn latest_reference_publication(
 struct ReplayedLineage {
     /// The latest publication the lineage records.
     latest: Option<ContentDigest>,
-    /// Every recorded (predecessor, successor) pair.
-    links: BTreeSet<(ContentDigest, ContentDigest)>,
+    /// Every recorded publication with the lineage predecessor it was recorded after (`None` for
+    /// the subject's first entry).
+    entries: BTreeMap<ContentDigest, Option<ContentDigest>>,
 }
 
 /// Replays the lineage object `object_id` of `authority` (see [`ReplayedLineage`]).
 fn replay_lineage(authority: &DurableReferenceLedger, object_id: &ObjectId) -> ReplayedLineage {
     let mut latest = None;
-    let mut recorded = BTreeSet::new();
-    let mut links = BTreeSet::new();
+    let mut entries = BTreeMap::new();
     for delta in authority
         .batches()
         .iter()
@@ -523,17 +523,14 @@ fn replay_lineage(authority: &DurableReferenceLedger, object_id: &ObjectId) -> R
     {
         let extends = delta.family == LINEAGE_FAMILY
             && delta.witness_digest == latest
-            && !recorded.contains(&delta.payload_digest);
+            && !entries.contains_key(&delta.payload_digest);
         if !extends {
             continue;
         }
-        recorded.insert(delta.payload_digest);
-        if let Some(predecessor) = latest {
-            links.insert((predecessor, delta.payload_digest));
-        }
+        entries.insert(delta.payload_digest, latest);
         latest = Some(delta.payload_digest);
     }
-    ReplayedLineage { latest, links }
+    ReplayedLineage { latest, entries }
 }
 
 /// The lineage record of `publication`, continuing `predecessor`, as generation
@@ -573,9 +570,13 @@ pub(crate) fn compiled_against(
     })
 }
 
-/// Returns whether the authority's replayed lineage records `result` as the successor of `basis`
-/// (see [`ReplayedLineage`]): a raw write that does not extend the lineage vouches for nothing
-/// (fss-mnlz1).
+/// Returns whether the authority's replayed lineage vouches for `basis` to `result` as one step
+/// (see [`ReplayedLineage`]): the lineage records `result` right after `basis`, and it recorded
+/// `basis` itself right after the predecessor `basis` sealed (or as the subject's first entry when
+/// it sealed none). A raw write that does not extend the lineage vouches for nothing, and a raw
+/// write that puts a stale publication back at the head of the lineage never makes it a terminal
+/// basis: its sealed predecessor is not the entry it was recorded after, so a step from it could
+/// announce an outcome the lineage already announced (fss-mnlz1).
 pub(crate) fn records_successor(
     authority: &DurableReferenceLedger,
     basis: &ReferenceSituationPublication,
@@ -585,9 +586,12 @@ pub(crate) fn records_successor(
         return Ok(false);
     };
     let object_id = lineage_object_id(event_id, objective_id)?;
-    Ok(replay_lineage(authority, &object_id)
-        .links
-        .contains(&(basis.publication_digest, result.publication_digest)))
+    let lineage = replay_lineage(authority, &object_id);
+    let continues =
+        lineage.entries.get(&result.publication_digest) == Some(&Some(basis.publication_digest));
+    let basis_in_place = lineage.entries.get(&basis.publication_digest)
+        == Some(&basis.situation.predecessor_publication());
+    Ok(continues && basis_in_place)
 }
 
 /// Returns whether `batch` holds only publication lineage records, which change no authority

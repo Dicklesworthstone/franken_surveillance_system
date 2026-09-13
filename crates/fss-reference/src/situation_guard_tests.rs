@@ -3151,3 +3151,168 @@ fn journal_bytes_swapped_under_the_handle_are_refused() -> Result<(), Box<dyn Er
     harness.cleanup();
     Ok(())
 }
+
+/// fss-mnlz1 (the reviewer's six-step replay probe): a raw lineage record that puts a stale sibling
+/// back at the head of the lineage never lets the operation terminalize a second time. (1) The
+/// prepared publication P is recorded; (2) after dispatch, a sibling S is compiled continuing P
+/// while P is latest (the effect still indeterminate); (3) after the outcome is published, the
+/// genuine child L continuing P is compiled and recorded, and P to L is terminal; (4) one raw
+/// lineage record names S with L as witness, so S becomes the latest publication; (5) a genuine
+/// next step G continuing S compiles and records; (6) S to G is not terminal, because S's sealed
+/// predecessor is P but the lineage recorded it after L. The bound S to G delta equals the plain
+/// classifier's exactly, and P to L stays the plain delta plus its terminal transition.
+#[test]
+fn a_raw_record_never_makes_a_stale_sibling_a_terminal_basis() -> Result<(), Box<dyn Error>> {
+    let name = "basis-in-place";
+    let mut harness = GuardHarness::new(name)?;
+    let (decision, receipt) = harness.corroborated(name)?;
+    let mut journal = EffectJournal::new();
+    let plan = prepare(&decision, &receipt, &harness.authority, &mut journal, name)?;
+    let current = |journal: &EffectJournal| {
+        journal
+            .operation(&plan.intent.operation_id)
+            .cloned()
+            .ok_or(fss_core::ContractError::NotFound)
+    };
+    let spec = guard_projection_spec()?;
+
+    // (1) The prepared publication P, recorded.
+    let prepared = crate::project_reference_situation(
+        guarded_situation_after(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&current(&journal)?),
+            None,
+            None,
+        )?,
+        &spec,
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &prepared)?;
+
+    // (2) Dispatched: the sibling S continuing P, compiled while P is latest, not recorded.
+    let mut provider = crate::ReferenceAlertProvider::with_provider_id(format!(
+        "provider:test:situation-guard:{name}"
+    ));
+    let _ = crate::dispatch_reference_alert(
+        &plan,
+        crate::ReferenceProviderBehavior::Deliver,
+        TimestampNs(101),
+        TimestampNs(102),
+        &mut journal,
+        &mut provider,
+    )?;
+    let sibling = crate::project_reference_situation(
+        guarded_situation_after(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&current(&journal)?),
+            None,
+            Some(&prepared),
+        )?,
+        &spec,
+    )?;
+
+    // (3) Observed, verified and published: the genuine child L continuing P, recorded; P to L is
+    // terminal.
+    let provider_receipt = provider
+        .lookup(&plan.intent)?
+        .ok_or(ReferenceError::InvalidSpec("missing_provider_receipt"))?;
+    let _ = crate::observe_reference_alert(
+        &plan,
+        provider_receipt.receipt_digest(),
+        TimestampNs(103),
+        &mut journal,
+        &provider,
+    )?;
+    let _ = crate::verify_reference_alert(&plan, TimestampNs(104), &mut journal, &provider)?;
+    let outcome = crate::publish_reference_alert_outcome(
+        &plan,
+        &journal,
+        &mut harness.objects,
+        &mut harness.authority,
+        &provider,
+    )?;
+    let child = crate::project_reference_situation(
+        guarded_situation_after(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&current(&journal)?),
+            Some(&outcome),
+            Some(&prepared),
+        )?,
+        &spec,
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &child)?;
+    let genuine = crate::classify_reference_meaningful_delta_in_lineage(
+        &prepared,
+        &child,
+        &harness.authority,
+        None,
+    )?;
+    let mut expected = crate::classify_reference_meaningful_delta(&prepared, &child)?.classes;
+    expected.insert(fss_core::MeaningfulDeltaClass::TerminalTransition);
+    assert_eq!(genuine.classes, expected);
+
+    // (4) One raw lineage record names S with L as witness: S becomes the latest publication.
+    append_raw_record(
+        &mut harness.authority,
+        &lineage_object_of(&prepared)?,
+        crate::situation_sections::LINEAGE_FAMILY,
+        sibling.publication_digest,
+        Some(child.publication_digest),
+    )?;
+    assert_eq!(
+        latest_of(&harness.authority, &prepared)?,
+        Some(sibling.publication_digest)
+    );
+
+    // (5) A genuine next step G continuing S compiles and records.
+    let next = crate::project_reference_situation(
+        guarded_situation_after(
+            &harness,
+            &decision,
+            &receipt,
+            &plan,
+            Some(&current(&journal)?),
+            Some(&outcome),
+            Some(&sibling),
+        )?,
+        &spec,
+    )?;
+    crate::record_reference_publication(&mut harness.authority, &next)?;
+
+    // (6) S to G is reported exactly as the plain classifier reports it: never terminal again.
+    let replayed = crate::classify_reference_meaningful_delta_in_lineage(
+        &sibling,
+        &next,
+        &harness.authority,
+        None,
+    )?;
+    let plain = crate::classify_reference_meaningful_delta(&sibling, &next)?;
+    assert_eq!(replayed.classes, plain.classes);
+    assert!(!is_terminal(&replayed), "{:?}", replayed.classes);
+    assert!(
+        replayed
+            .classes
+            .contains(&fss_core::MeaningfulDeltaClass::EffectUncertainty),
+        "{:?}",
+        replayed.classes
+    );
+    replayed.validate()?;
+    // The recorded step P to L stays terminal after the raw record.
+    let still = crate::classify_reference_meaningful_delta_in_lineage(
+        &prepared,
+        &child,
+        &harness.authority,
+        None,
+    )?;
+    assert_eq!(still.classes, expected);
+    harness.cleanup();
+    Ok(())
+}
