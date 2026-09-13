@@ -457,6 +457,11 @@ impl KnowledgeCell {
     /// `indeterminate`, `not_applicable`) stay valid without evidence, so an honest unknown is
     /// never refused for lacking the support it reports it does not have.
     pub fn validate(&self) -> Result<(), ContractError> {
+        if self.provenance == ProvenanceClass::Predicted
+            && self.knowledge_state == KnowledgeState::Known
+        {
+            return Err(ContractError::PredictedKnownForbidden);
+        }
         if matches!(
             self.provenance,
             ProvenanceClass::Observed | ProvenanceClass::Derived
@@ -475,6 +480,19 @@ impl KnowledgeCell {
             (Some(_), Some(error)) => Err(error),
             (Some(_), None) => Err(ContractError::KnowledgeStateBasisMismatch),
         }
+    }
+
+    /// Verifies that this cell does not launder evidence from a weaker provenance cell.
+    ///
+    /// Per Constitution §8.3 and AGENTS.md, confidence is never used to erase the evidence
+    /// class, and the same evidence digest cannot be re-used under a stronger provenance.
+    pub fn verify_no_evidence_laundering(&self, prior: &KnowledgeCell) -> Result<(), ContractError> {
+        if self.provenance.strength() > prior.provenance.strength()
+            && self.evidence.iter().any(|e| prior.evidence.contains(e))
+        {
+            return Err(ContractError::EvidenceLaunderingDetected);
+        }
+        Ok(())
     }
 
     /// Consumes and returns the cell only when [`Self::validate`] accepts it.
@@ -642,7 +660,7 @@ impl CanonicalEncode for KnowledgeCell {
             encoder.text(&self.statement);
         }
         encoder.text(self.knowledge_state.as_str());
-        encoder.u8(provenance_code(self.provenance));
+        self.provenance.encode_canonical(encoder);
         match self.hypothesis {
             Some(value) => {
                 encoder.bool(true);
@@ -1318,18 +1336,6 @@ fn encode_text_vec(values: &[String], encoder: &mut CanonicalEncoder) {
 
 fn encode_budget(value: BudgetVector, encoder: &mut CanonicalEncoder) {
     value.encode_to_canonical(encoder);
-}
-
-fn provenance_code(value: ProvenanceClass) -> u8 {
-    match value {
-        ProvenanceClass::Observed => 1,
-        ProvenanceClass::Derived => 2,
-        ProvenanceClass::Predicted => 3,
-        ProvenanceClass::Remembered => 4,
-        ProvenanceClass::OperatorAsserted => 5,
-        ProvenanceClass::VendorClaimed => 6,
-        ProvenanceClass::Policy => 7,
-    }
 }
 
 fn hypothesis_code(value: HypothesisDisposition) -> u8 {

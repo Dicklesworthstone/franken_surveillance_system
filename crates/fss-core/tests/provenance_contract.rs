@@ -112,6 +112,108 @@ fn test_observed_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
 }
 
 #[test]
+fn test_observed_canonical_decode_rejects_stable_id_strictly_one_to_one() -> Result<(), Box<dyn Error>> {
+    // Canonical encoding is strictly one-to-one: decode_canonical accepts ONLY the schema name "observed"
+    // and refuses stable IDs like "PROV-001".
+    let mut encoder = CanonicalEncoder::new();
+    encoder.text("PROV-001");
+    let encoded_bytes = encoder.finish();
+
+    let mut decoder = CanonicalDecoder::new(&encoded_bytes);
+    assert_eq!(
+        ProvenanceClass::decode_canonical(&mut decoder),
+        Err(ContractError::InvalidIdentifier)
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_knowledge_cell_canonical_encode_uses_provenance_canonical_encoding() -> Result<(), Box<dyn Error>> {
+    let evidence_digest = ContentDigest::sha256(b"canonical_sensor_evidence_anchor_001");
+    let cell = KnowledgeCell {
+        claim_id: "claim:door:open:001".to_string(),
+        statement: "Physical contact sensor observes door open".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![evidence_digest],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    let mut encoder = CanonicalEncoder::new();
+    cell.encode_canonical(&mut encoder);
+    let bytes = encoder.finish();
+
+    // Verify "observed" appears in the canonical encoding bytes
+    assert!(
+        bytes.windows(8).any(|window| window == b"observed"),
+        "KnowledgeCell canonical encoding must encode provenance via its canonical name 'observed'"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_observed_anti_laundering_from_weaker_provenance_rejected() -> Result<(), Box<dyn Error>> {
+    let predicted_evidence = ContentDigest::sha256(b"forward_prediction_model_evidence");
+
+    let predicted_cell = KnowledgeCell {
+        claim_id: "claim:fire:growth".to_string(),
+        statement: "Model predicts fire expansion".to_string(),
+        knowledge_state: KnowledgeState::Estimated,
+        provenance: ProvenanceClass::Predicted,
+        hypothesis: None,
+        evidence: vec![predicted_evidence],
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    // Attempting to launder the predicted evidence into an Observed cell
+    let laundered_observed_cell = KnowledgeCell {
+        claim_id: "claim:fire:growth".to_string(),
+        statement: "Physical observation of fire expansion".to_string(),
+        knowledge_state: KnowledgeState::Known,
+        provenance: ProvenanceClass::Observed,
+        hypothesis: None,
+        evidence: vec![predicted_evidence], // SAME evidence digest from predicted!
+        contradictions: vec![],
+        valid_until: Some(TimestampNs(2_000_000_000)),
+        state_basis: None,
+    };
+
+    // The anti-laundering check strictly refuses the reused evidence
+    assert_eq!(
+        laundered_observed_cell.verify_no_evidence_laundering(&predicted_cell),
+        Err(ContractError::EvidenceLaunderingDetected)
+    );
+
+    // Fresh, distinct live observation evidence passes anti-laundering
+    let live_evidence = ContentDigest::sha256(b"live_telemetry_optical_sensor_frame_99");
+    let legitimate_observed_cell = KnowledgeCell {
+        evidence: vec![live_evidence],
+        ..laundered_observed_cell
+    };
+    assert!(legitimate_observed_cell.verify_no_evidence_laundering(&predicted_cell).is_ok());
+
+    Ok(())
+}
+
+#[test]
+fn test_provenance_class_relative_evidentiary_strength() -> Result<(), Box<dyn Error>> {
+    assert!(ProvenanceClass::Observed.strength() > ProvenanceClass::Derived.strength());
+    assert!(ProvenanceClass::Derived.strength() > ProvenanceClass::Predicted.strength());
+    assert!(ProvenanceClass::Derived.strength() > ProvenanceClass::Remembered.strength());
+    assert!(ProvenanceClass::Derived.strength() > ProvenanceClass::VendorClaimed.strength());
+    assert!(ProvenanceClass::Observed.strength() > ProvenanceClass::OperatorAsserted.strength());
+
+    Ok(())
+}
+
+#[test]
 fn test_observed_requires_source_evidence_anchors_fail_closed() -> Result<(), Box<dyn Error>> {
     let evidence_digest = ContentDigest::sha256(b"canonical_sensor_evidence_anchor_001");
 

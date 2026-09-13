@@ -72,15 +72,7 @@ pub type EvidenceAnchor = LedgerAnchor;
 /// Returns the stable string representation of a [`ProvenanceClass`].
 #[must_use]
 pub const fn provenance_class_as_str(p: ProvenanceClass) -> &'static str {
-    match p {
-        ProvenanceClass::Observed => "observed",
-        ProvenanceClass::Derived => "derived",
-        ProvenanceClass::Predicted => "predicted",
-        ProvenanceClass::Remembered => "remembered",
-        ProvenanceClass::OperatorAsserted => "operator_asserted",
-        ProvenanceClass::VendorClaimed => "vendor_claimed",
-        ProvenanceClass::Policy => "policy",
-    }
+    p.as_str()
 }
 
 /// Returns the stable string representation of a [`HypothesisDisposition`].
@@ -599,16 +591,7 @@ impl CanonicalDecode for NegativeEvidenceEntry {
         let kstate_str = decoder.text()?;
         let knowledge_state = KnowledgeState::from_name(kstate_str)?;
         let prov_str = decoder.text()?;
-        let provenance_class = match prov_str {
-            "observed" => ProvenanceClass::Observed,
-            "derived" => ProvenanceClass::Derived,
-            "predicted" => ProvenanceClass::Predicted,
-            "remembered" => ProvenanceClass::Remembered,
-            "operator_asserted" => ProvenanceClass::OperatorAsserted,
-            "vendor_claimed" => ProvenanceClass::VendorClaimed,
-            "policy" => ProvenanceClass::Policy,
-            _ => return Err(ContractError::InvalidIdentifier),
-        };
+        let provenance_class = ProvenanceClass::from_name(prov_str)?;
         let disp_str = decoder.text()?;
         let disposition = match disp_str {
             "live" => HypothesisDisposition::Live,
