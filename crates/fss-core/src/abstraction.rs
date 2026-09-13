@@ -12,10 +12,12 @@ use crate::canonical::{CanonicalDecode, CanonicalDecoder, CanonicalEncode, Canon
 use crate::contract::{ContractError, Plane};
 
 pub mod derived_belief;
+pub mod situation_capsule;
 pub mod source_evidence;
 pub mod world_facts;
 
 pub use derived_belief::*;
+pub use situation_capsule::*;
 pub use source_evidence::*;
 pub use world_facts::*;
 
@@ -385,6 +387,28 @@ impl AgentAbstractionLayer {
         matches!(self, Self::RuntimeAuthorityAndCustody)
     }
 
+    /// Returns whether this layer is situation capsule (AGT-LAYER-005).
+    #[must_use]
+    pub const fn is_situation_capsule(self) -> bool {
+        matches!(self, Self::SituationCapsule)
+    }
+
+    /// Returns whether this layer prohibits hiding decision-changing omissions.
+    ///
+    /// AGT-LAYER-005 prohibition: "Cannot hide decision-changing omissions or rebase evidence identities."
+    #[must_use]
+    pub const fn prohibits_hiding_decision_changing_omissions(self) -> bool {
+        matches!(self, Self::SituationCapsule)
+    }
+
+    /// Returns whether this layer prohibits rebasing evidence identities.
+    ///
+    /// AGT-LAYER-005 prohibition: "Cannot hide decision-changing omissions or rebase evidence identities."
+    #[must_use]
+    pub const fn prohibits_rebasing_evidence_identities(self) -> bool {
+        matches!(self, Self::SituationCapsule)
+    }
+
     /// Validates all constitutional and semantic invariants for this abstraction layer.
     pub fn validate_invariants(&self) -> Result<(), ContractError> {
         match self {
@@ -410,9 +434,43 @@ impl AgentAbstractionLayer {
                     return Err(ContractError::InvalidIdentifier);
                 }
             }
+            Self::SituationCapsule => {
+                if self.plane() != Plane::Cognition {
+                    return Err(ContractError::DerivedLayerAuthorityForbidden);
+                }
+                if self.may_claim_authority() {
+                    return Err(ContractError::DerivedLayerAuthorityForbidden);
+                }
+                if self.may_authorize_effects() {
+                    return Err(ContractError::DerivedLayerAuthorityForbidden);
+                }
+                if self.invariant() != "INV-116" {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+                if !self.prohibits_hiding_decision_changing_omissions()
+                    || !self.prohibits_rebasing_evidence_identities()
+                {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+                if !self.is_anchor_pinned_rebuildable() {
+                    return Err(ContractError::InvalidIdentifier);
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// Validates a concrete [`SituationCapsulePublication`] against this abstraction layer.
+    pub fn validate_situation_capsule(
+        &self,
+        publication: &SituationCapsulePublication,
+    ) -> Result<(), ContractError> {
+        if !self.is_situation_capsule() {
+            return Err(ContractError::InvalidIdentifier);
+        }
+        self.validate_invariants()?;
+        publication.validate()
     }
 
     /// Resolves an abstraction layer from its stable identifier (e.g. `AGT-LAYER-004`).

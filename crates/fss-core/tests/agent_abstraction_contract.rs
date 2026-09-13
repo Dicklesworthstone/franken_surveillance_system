@@ -9,13 +9,19 @@ use std::str::FromStr;
 
 use fss_core::belief::BeliefInterval;
 use fss_core::{
-    evaluate_negative_read, AgentAbstractionLayer, CanonicalDecode, CanonicalDecoder,
-    CanonicalEncode, CanonicalEncoder, Completeness, ContentDigest, ContractError,
-    CoverageContinuity, CoverageStopReason, CoverageWitness, DerivedBelief,
-    DerivedBeliefParams, Generation, KnowledgeState, LedgerAnchor, NegativeReadClaim,
-    NegativeReadOutcome, Plane, ProvenanceClass, SourceEvidenceParams, SourceEvidenceRecord,
-    TimestampNs, WorldFact, WorldFactKind,
-    AGENT_ABSTRACTION_FREEZE_DIGEST, AGENT_ABSTRACTION_GENERATION,
+    evaluate_negative_read, ActionAffordance, AffordanceClass, AgentAbstractionLayer, BudgetVector,
+    CanonicalDecode, CanonicalDecoder, CanonicalEncode, CanonicalEncoder, Completeness,
+    CompressionCompleteness, CompressionLossClass, CompressionStopReason, CompressionTransform,
+    CompressionTransformKind, ContentDigest, ContextItem, ContractBasis, ContractBasisRegistryBytes,
+    ContractError, ControlEnvelope, CoverageContinuity, CoverageStopReason, CoverageWitness,
+    CriticalPreservation, DerivedBelief, DerivedBeliefParams, ExpansionHandle, Generation,
+    KnowledgeState, LedgerAnchor, MeaningfulDelta, MeaningfulDeltaClass, MissionId,
+    NegativeReadClaim, NegativeReadOutcome, Plane, PossibleWorld, PrincipalId, ProvenanceClass,
+    ResourcePressure, ResourceState, SemanticCompressionReceipt, SemanticContextPack,
+    SemanticContextPackPublishParams, SessionId, SituationCapsule, SituationCapsulePublication,
+    SituationCapsulePublicationParams, SituationFrame, SourceEvidenceParams, SourceEvidenceRecord,
+    TimestampNs, WorldEnvelope, WorldFact, WorldFactKind, AGENT_ABSTRACTION_FREEZE_DIGEST,
+    AGENT_ABSTRACTION_GENERATION,
 };
 
 
@@ -1592,4 +1598,661 @@ fn test_source_evidence_canonical_roundtrip() -> Result<(), Box<dyn Error>> {
 
     Ok(())
 }
+
+
+fn test_contract_basis() -> ContractBasis {
+    ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
+        b"schemas",
+        b"operations",
+        b"views",
+        b"capabilities",
+        b"errors",
+        b"costs",
+        "fss:test:situation",
+    ))
+}
+
+fn test_anchor(seq: u64) -> LedgerAnchor {
+    let mut anchor = LedgerAnchor::genesis("site:situation:primary");
+    anchor.commit_sequence = seq;
+    anchor
+}
+
+fn test_world_envelope(anchor: &LedgerAnchor) -> Result<WorldEnvelope, ContractError> {
+    let mut nominal_claim_ids = BTreeSet::new();
+    nominal_claim_ids.insert("claim:nominal:001".to_string());
+    let mut certified_core_claim_ids = BTreeSet::new();
+    certified_core_claim_ids.insert("claim:core:001".to_string());
+    let mut common_invariants = BTreeSet::new();
+    common_invariants.insert("inv:core:safety".to_string());
+    let mut coverage_boundary_handles = BTreeSet::new();
+    coverage_boundary_handles.insert("coverage:cam01".to_string());
+
+    let mut claim_ids = BTreeSet::new();
+    claim_ids.insert("claim:alt:001".to_string());
+    let alt_world = PossibleWorld {
+        world_id: "world:alt:001".to_string(),
+        description: "Alternative possible world with obstacle".to_string(),
+        claim_ids,
+        evidence: vec![ContentDigest::sha256(b"alt-world-evidence")],
+        consequence_severity: 2,
+        protected: false,
+    };
+
+    let mut residual_claims = BTreeSet::new();
+    residual_claims.insert("claim:residual:001".to_string());
+    let residual_world = PossibleWorld {
+        world_id: "world:residual:001".to_string(),
+        description: "High-loss protected adversarial residual".to_string(),
+        claim_ids: residual_claims,
+        evidence: vec![ContentDigest::sha256(b"residual-world-evidence")],
+        consequence_severity: 10,
+        protected: true,
+    };
+
+    let envelope = WorldEnvelope {
+        envelope_id: "envelope:situation:001".to_string(),
+        objective_id: "objective:docking:001".to_string(),
+        anchor: anchor.clone(),
+        nominal_claim_ids,
+        certified_core_claim_ids,
+        alternatives: vec![alt_world],
+        adversarial_residuals: vec![residual_world],
+        common_invariants,
+        coverage_boundary_handles,
+    };
+    envelope.validate()?;
+    Ok(envelope)
+}
+
+fn test_action_affordances() -> Vec<ActionAffordance> {
+    vec![
+        ActionAffordance {
+            affordance_id: "affordance:wait:001".to_string(),
+            operation: "operation:wait".to_string(),
+            target: "uri:sensor:001".to_string(),
+            rationale: "Wait for sensor convergence".to_string(),
+            class: AffordanceClass::Wait,
+            supported_worlds: BTreeSet::new(),
+            unsafe_worlds: BTreeSet::new(),
+            required_capabilities: BTreeSet::new(),
+            cost: BudgetVector::ZERO,
+            reversible: true,
+            branch_predicate: None,
+        },
+        ActionAffordance {
+            affordance_id: "affordance:probe:001".to_string(),
+            operation: "operation:probe".to_string(),
+            target: "uri:sensor:001".to_string(),
+            rationale: "Probe sensor telemetry".to_string(),
+            class: AffordanceClass::Probe,
+            supported_worlds: BTreeSet::new(),
+            unsafe_worlds: BTreeSet::new(),
+            required_capabilities: BTreeSet::new(),
+            cost: BudgetVector::ZERO,
+            reversible: true,
+            branch_predicate: None,
+        },
+    ]
+}
+
+fn test_situation_frame(
+    anchor: &LedgerAnchor,
+    world_envelope: WorldEnvelope,
+    affordances: &[ActionAffordance],
+) -> Result<SituationFrame, ContractError> {
+    let next: Vec<String> = affordances
+        .iter()
+        .map(|a| a.affordance_id.clone())
+        .collect();
+
+    let mut evidence_handles = BTreeSet::new();
+    evidence_handles.insert("fss://evidence/sensor/001".to_string());
+
+    let frame = SituationFrame {
+        frame_id: "frame:situation:001".to_string(),
+        objective_id: world_envelope.objective_id.clone(),
+        anchor: anchor.clone(),
+        world_envelope,
+        knowledge_cells: Vec::new(),
+        now: vec!["Nominal operation in docking bay.".to_string()],
+        changed: vec!["Sensor 001 online.".to_string()],
+        why: vec!["Telemetry verified.".to_string()],
+        unknown: Vec::new(),
+        at_risk: Vec::new(),
+        next,
+        evidence_handles,
+    };
+    frame.validate()?;
+    Ok(frame)
+}
+
+fn test_pack_and_receipt(
+    anchor: &LedgerAnchor,
+    basis: &ContractBasis,
+) -> Result<(SemanticContextPack, SemanticCompressionReceipt), ContractError> {
+    let pack = SemanticContextPack::publish(SemanticContextPackPublishParams {
+        pack_id: "context-pack:situation:001".to_string(),
+        contract_basis: basis.clone(),
+        mission_id: MissionId::parse("mission:situation:test")?,
+        session_id: SessionId::parse("session:situation:test")?,
+        view_id: "AVIEW-001".to_string(),
+        anchor: anchor.clone(),
+        situation_fingerprint: ContentDigest::sha256(b"situation-frame-fingerprint"),
+        items: vec![ContextItem {
+            item_id: "context:item:001".to_string(),
+            kind: "knowledge".to_string(),
+            epistemic_state: KnowledgeState::Estimated,
+            content: "Docking bay telemetry estimated nominal.".to_string(),
+            basis: BTreeSet::from(["claim:nominal:001".to_string()]),
+            expansion_handles: BTreeSet::from(["slot:telemetry:001".to_string()]),
+        }],
+        compression_receipt_id: "compression:receipt:001".to_string(),
+        continuation: Some("continuation:pack:001".to_string()),
+        created_at: TimestampNs(1_000_000),
+    })?;
+
+    let receipt = SemanticCompressionReceipt {
+        receipt_id: "compression:receipt:001".to_string(),
+        source_anchor: anchor.clone(),
+        view_id: pack.view_id.clone(),
+        target_tokens: pack.token_count + 512,
+        selected_classes: BTreeSet::from(["knowledge".to_string()]),
+        omitted_classes: BTreeSet::from(["knowledge".to_string()]),
+        transforms: vec![CompressionTransform {
+            kind: CompressionTransformKind::Select,
+            scope: "knowledge".to_string(),
+            loss_class: CompressionLossClass::BoundedLoss,
+            details: Some("optional details hydratable on demand".to_string()),
+        }],
+        completeness: vec![CompressionCompleteness {
+            domain: "knowledge".to_string(),
+            state: Completeness::Bounded,
+            omitted_count: 1,
+        }],
+        critical_preservation: CriticalPreservation {
+            known_critical_items: 0,
+            omitted_critical_items: 0,
+            omitted_invalidations: 0,
+            omitted_contradictions: 0,
+        },
+        actual_tokens: pack.token_count,
+        actual_bytes: pack.encoded_bytes(),
+        expansion_handles: vec![ExpansionHandle {
+            handle: "context-expand:knowledge".to_owned(),
+            purpose: "hydrate omitted knowledge".to_owned(),
+            estimated_cost: BudgetVector::ZERO,
+        }],
+        selection_frontier_digest: Some(ContentDigest::sha256(b"frontier")),
+        stop_reason: CompressionStopReason::TargetBudget,
+        output_digest: pack.pack_digest,
+    };
+    receipt.validate()?;
+    receipt.validate_for(&pack)?;
+    Ok((pack, receipt))
+}
+
+fn test_valid_publication_params() -> Result<SituationCapsulePublicationParams, Box<dyn Error>> {
+    let basis = test_contract_basis();
+    let current_anchor = test_anchor(2);
+    let prev_anchor = test_anchor(1);
+    let world_envelope = test_world_envelope(&current_anchor)?;
+    let affordances = test_action_affordances();
+    let frame = test_situation_frame(&current_anchor, world_envelope.clone(), &affordances)?;
+
+    let control_envelope = ControlEnvelope::from_affordances(&world_envelope, &affordances)?;
+
+    let capsule = SituationCapsule {
+        capsule_id: "capsule:situation:001".to_string(),
+        revision: 2,
+        contract_basis: basis.clone(),
+        mission_id: MissionId::parse("mission:situation:test")?,
+        session_id: SessionId::parse("session:situation:test")?,
+        principal_id: PrincipalId::parse("principal:operator:001")?,
+        anchor: current_anchor.clone(),
+        previous_anchor: Some(prev_anchor.clone()),
+        frame,
+        obligations: Vec::new(),
+        affordances,
+        completeness: Completeness::Complete,
+        created_at: TimestampNs(2_000_000),
+        mission_state: None,
+    };
+    capsule.validate()?;
+
+    let delta = MeaningfulDelta {
+        delta_id: "delta:situation:001".to_string(),
+        contract_basis: basis.clone(),
+        session_id: SessionId::parse("session:situation:test")?,
+        basis_frame_id: "frame:situation:prev".to_string(),
+        result_frame_id: "frame:situation:001".to_string(),
+        basis_anchor: prev_anchor,
+        result_anchor: current_anchor.clone(),
+        classes: BTreeSet::from([MeaningfulDeltaClass::MaterialState]),
+        changed_cells: Vec::new(),
+        invalidated_assumptions: Vec::new(),
+        coverage_changes: Vec::new(),
+        obligation_changes: Vec::new(),
+        effect_uncertainty_changes: Vec::new(),
+        coalesced_count: 0,
+        omitted_count: 0,
+        omission_reasons: Vec::new(),
+        priority: fss_core::DeltaPriority::Normal,
+        continuation: "continuation:delta:001".to_string(),
+        selection_witness: ContentDigest::sha256(b"delta-selection-witness"),
+        silence_certificate: None,
+    };
+    delta.validate()?;
+
+    let (context_pack, compression_receipt) = test_pack_and_receipt(&current_anchor, &basis)?;
+
+    let resource_state = ResourceState::new(
+        BudgetVector::ZERO,
+        BudgetVector::ZERO,
+        ResourcePressure::Nominal,
+        Vec::<String>::new(),
+    )?;
+
+    Ok(SituationCapsulePublicationParams {
+        publication_id: "pub:situation:mission01:rev02".to_string(),
+        generation: Generation(1),
+        capsule,
+        meaningful_delta: Some(delta),
+        resource_state,
+        control_envelope,
+        context_pack,
+        compression_receipt,
+    })
+}
+
+#[test]
+fn test_situation_capsule_row_properties() -> Result<(), Box<dyn Error>> {
+    let layer = AgentAbstractionLayer::SituationCapsule;
+
+    // 1. Exact normative stable ID
+    assert_eq!(layer.id(), "AGT-LAYER-005");
+
+    // 2. Exact normative schema name
+    assert_eq!(layer.name(), "situation_capsule");
+    assert_eq!(format!("{layer}"), "situation_capsule");
+
+    // 3. Exact normative owner
+    assert_eq!(layer.owner(), "fss-situation/fss-context-pack/fss-affordance");
+
+    // 4. Exact normative question
+    assert_eq!(
+        layer.agent_question(),
+        "What is the smallest sufficient mission-relative driver view now, what changed, and what can safely be done next?"
+    );
+
+    // 5. Exact normative output
+    assert_eq!(
+        layer.output(),
+        "SituationCapsule containing SituationFrame with WorldEnvelope, MeaningfulDelta, obligations, resource state, categorized control envelope, ContextPack, compression proof, and affordance frontier."
+    );
+
+    // 6. Exact normative prohibition
+    assert_eq!(
+        layer.prohibition(),
+        "Cannot hide decision-changing omissions or rebase evidence identities."
+    );
+
+    // 7. Exact normative invariant
+    assert_eq!(layer.invariant(), "INV-116");
+
+    // 8. Exact normative status
+    assert_eq!(layer.status(), "normative");
+
+    // 9. Semantic plane: Cognition (strictly non-authority, non-effect)
+    assert_eq!(layer.plane(), Plane::Cognition);
+
+    // 10. Tower level: L4 (0-indexed: 4)
+    assert_eq!(layer.tower_level(), 4);
+
+    // 11. Constitutional non-authority gates:
+    assert!(!layer.may_claim_authority());
+    assert!(!layer.may_authorize_effects());
+    assert!(layer.is_anchor_pinned_rebuildable());
+
+    // 12. Helper predicates:
+    assert!(layer.is_situation_capsule());
+    assert!(layer.prohibits_hiding_decision_changing_omissions());
+    assert!(layer.prohibits_rebasing_evidence_identities());
+
+    // 13. Invariant validation passes:
+    layer.validate_invariants()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_situation_capsule_parse_and_resolution() -> Result<(), Box<dyn Error>> {
+    // Parse from stable ID
+    let from_id = AgentAbstractionLayer::from_id("AGT-LAYER-005")?;
+    assert_eq!(from_id, AgentAbstractionLayer::SituationCapsule);
+
+    // Parse from schema name
+    let from_name = AgentAbstractionLayer::from_name("situation_capsule")?;
+    assert_eq!(from_name, AgentAbstractionLayer::SituationCapsule);
+
+    // Parse via FromStr with stable ID
+    let from_str_id = AgentAbstractionLayer::from_str("AGT-LAYER-005")?;
+    assert_eq!(from_str_id, AgentAbstractionLayer::SituationCapsule);
+
+    // Parse via FromStr with schema name
+    let from_str_name = AgentAbstractionLayer::from_str("situation_capsule")?;
+    assert_eq!(from_str_name, AgentAbstractionLayer::SituationCapsule);
+
+    // Parse from tower level
+    let from_level = AgentAbstractionLayer::from_tower_level(4)?;
+    assert_eq!(from_level, AgentAbstractionLayer::SituationCapsule);
+
+    // Unknown ID fails closed
+    let Err(err_id) = AgentAbstractionLayer::from_id("AGT-LAYER-999") else {
+        return Err("expected unknown layer ID to fail".into());
+    };
+    assert_eq!(
+        err_id,
+        ContractError::UnknownAbstractionLayer("AGT-LAYER-999".into())
+    );
+
+    // Unknown name fails closed
+    let Err(err_name) = AgentAbstractionLayer::from_name("unknown_layer") else {
+        return Err("expected unknown layer name to fail".into());
+    };
+    assert_eq!(
+        err_name,
+        ContractError::UnknownAbstractionLayer("unknown_layer".into())
+    );
+
+    // Out of range tower level fails closed
+    let Err(err_level) = AgentAbstractionLayer::from_tower_level(200) else {
+        return Err("expected out of range tower level to fail".into());
+    };
+    assert_eq!(err_level, ContractError::UnknownEntryTag(200));
+
+    Ok(())
+}
+
+#[test]
+fn test_situation_capsule_publication_valid() -> Result<(), Box<dyn Error>> {
+    let params = test_valid_publication_params()?;
+    let publication = SituationCapsulePublication::new(params)?;
+
+    // Properties
+    assert_eq!(publication.publication_id, "pub:situation:mission01:rev02");
+    assert_eq!(publication.generation, Generation(1));
+    assert_eq!(publication.layer(), AgentAbstractionLayer::SituationCapsule);
+    assert_eq!(publication.plane(), Plane::Cognition);
+    assert_eq!(publication.invariant(), "INV-116");
+
+    // Constitutional Hard Gates
+    assert!(!publication.may_claim_authority());
+    assert!(!publication.may_authorize_effects());
+    assert!(publication.is_anchor_pinned());
+    assert!(publication.is_rebuildable());
+    assert!(publication.is_anchor_pinned_rebuildable());
+    assert!(publication.prohibits_hiding_decision_changing_omissions());
+    assert!(publication.prohibits_rebasing_evidence_identities());
+
+    // Validation passes
+    publication.validate()?;
+
+    // Deterministic fingerprint and validated digest
+    let fingerprint = publication.decision_fingerprint()?;
+    assert_ne!(fingerprint.bytes(), [0u8; 32]);
+    let digest = publication.validated_digest("custom.domain.v1")?;
+    assert_ne!(digest.bytes(), [0u8; 32]);
+    assert_ne!(fingerprint, digest);
+
+    // Validate through layer
+    let layer = AgentAbstractionLayer::SituationCapsule;
+    layer.validate_situation_capsule(&publication)?;
+
+    Ok(())
+}
+
+#[test]
+fn test_planted_negative_situation_capsule_bypasses() -> Result<(), Box<dyn Error>> {
+    let layer = AgentAbstractionLayer::SituationCapsule;
+
+    // Planted bypass 1: Cognition layer must NEVER claim authority
+    assert!(!layer.may_claim_authority());
+
+    // Planted bypass 2: Cognition layer must NEVER authorize effects
+    assert!(!layer.may_authorize_effects());
+
+    // Planted bypass 3: Plane must strictly be Cognition, never Authority or Effect
+    assert_ne!(layer.plane(), Plane::Authority);
+    assert_ne!(layer.plane(), Plane::Effect);
+    assert_eq!(layer.plane(), Plane::Cognition);
+
+    // Planted bypass 4: Invariant must strictly be INV-116
+    assert_eq!(layer.invariant(), "INV-116");
+
+    // Planted bypass 5: Must strictly prohibit hiding decision-changing omissions
+    assert!(layer.prohibits_hiding_decision_changing_omissions());
+
+    // Planted bypass 6: Must strictly prohibit rebasing evidence identities
+    assert!(layer.prohibits_rebasing_evidence_identities());
+
+    // Planted bypass 7: Must be anchor-pinned and rebuildable
+    assert!(layer.is_anchor_pinned_rebuildable());
+
+    // Planted bypass 8: Non-SituationCapsule layer calling validate_situation_capsule fails
+    let params = test_valid_publication_params()?;
+    let valid_pub = SituationCapsulePublication::new(params)?;
+    let wrong_layer = AgentAbstractionLayer::DerivedBeliefs;
+    let Err(err_wrong_layer) = wrong_layer.validate_situation_capsule(&valid_pub) else {
+        return Err("expected wrong layer to fail".into());
+    };
+    assert_eq!(err_wrong_layer, ContractError::InvalidIdentifier);
+
+    // Planted bypass 9: Empty publication ID rejected with InvalidIdentifier
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.publication_id = "".to_string();
+    let Err(err_empty_id) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected empty publication ID to fail".into());
+    };
+    assert_eq!(err_empty_id, ContractError::InvalidIdentifier);
+
+    // Planted bypass 10: Publication ID with whitespace rejected with InvalidIdentifier
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.publication_id = "pub:situation with space".to_string();
+    let Err(err_space_id) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected whitespace publication ID to fail".into());
+    };
+    assert_eq!(err_space_id, ContractError::InvalidIdentifier);
+
+    // Planted bypass 11: Generation 0 rejected with GenerationConflict
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.generation = Generation(0);
+    let Err(err_gen0) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected generation 0 to fail".into());
+    };
+    assert_eq!(err_gen0, ContractError::GenerationConflict);
+
+    // Planted bypass 12: Capsule anchor mismatch with frame anchor rejected with StaleAnchor
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.capsule.anchor = test_anchor(99);
+    let Err(err_stale_capsule) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected capsule anchor mismatch to fail".into());
+    };
+    assert_eq!(err_stale_capsule, ContractError::StaleAnchor);
+
+    // Planted bypass 13: Missing meaningful delta when previous anchor is declared rejected with EvidenceRequired
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.meaningful_delta = None;
+    let Err(err_missing_delta) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected missing delta on previous anchor to fail".into());
+    };
+    assert_eq!(err_missing_delta, ContractError::EvidenceRequired);
+
+    // Planted bypass 14: Delta basis anchor mismatch rejected with StaleAnchor
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.basis_anchor = test_anchor(88);
+    }
+    let Err(err_stale_delta_basis) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected stale delta basis to fail".into());
+    };
+    assert_eq!(err_stale_delta_basis, ContractError::StaleAnchor);
+
+    // Planted bypass 15: Delta result anchor mismatch rejected with StaleAnchor
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.result_anchor = test_anchor(88);
+    }
+    let Err(err_stale_delta_result) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected stale delta result to fail".into());
+    };
+    assert_eq!(err_stale_delta_result, ContractError::StaleAnchor);
+
+    // Planted bypass 16: Delta contract basis mismatch rejected with InvalidIdentifier
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.contract_basis = ContractBasis::from_registry_bytes(ContractBasisRegistryBytes::new(
+            b"diff_schemas",
+            b"diff_operations",
+            b"diff_views",
+            b"diff_capabilities",
+            b"diff_errors",
+            b"diff_costs",
+            "fss:diff",
+        ));
+    }
+    let Err(err_basis_mismatch) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected delta basis mismatch to fail".into());
+    };
+    assert_eq!(err_basis_mismatch, ContractError::InvalidIdentifier);
+
+    // Planted bypass 17: Control envelope mismatch against world envelope rejected with DigestMismatch
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.control_envelope.robust_affordance_ids.insert("rogue:affordance".to_string());
+    let Err(err_ctrl_mismatch) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected control envelope mismatch to fail".into());
+    };
+    assert_eq!(err_ctrl_mismatch, ContractError::DigestMismatch);
+
+    // Planted bypass 18: Context pack anchor mismatch rejected with StaleAnchor
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.context_pack.anchor = test_anchor(99);
+    let Err(err_pack_stale) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected context pack anchor mismatch to fail".into());
+    };
+    assert_eq!(err_pack_stale, ContractError::StaleAnchor);
+
+    // Planted bypass 19: Compression receipt anchor mismatch rejected with StaleAnchor
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.compression_receipt.source_anchor = test_anchor(99);
+    let Err(err_receipt_stale) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected compression receipt anchor mismatch to fail".into());
+    };
+    assert_eq!(err_receipt_stale, ContractError::StaleAnchor);
+
+    // Planted bypass 20: Delta with omitted count > 0 but empty omission reasons rejected with EvidenceRequired
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.omitted_count = 5;
+        delta.omission_reasons = Vec::new();
+    }
+    let Err(err_omission_no_reason) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected omission without reasons to fail".into());
+    };
+    assert_eq!(err_omission_no_reason, ContractError::EvidenceRequired);
+
+    // Planted bypass 21: Delta with omitted count > 0 but blank reason rejected with InvalidIdentifier
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.omitted_count = 1;
+        delta.omission_reasons = vec!["   ".to_string()];
+    }
+    let Err(err_blank_reason) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected blank omission reason to fail".into());
+    };
+    assert_eq!(err_blank_reason, ContractError::InvalidIdentifier);
+
+    // Planted bypass 22: Delta with omitted count > 0 but empty continuation rejected with EvidenceRequired
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.omitted_count = 1;
+        delta.omission_reasons = vec!["budget constraints".to_string()];
+        delta.continuation = "  ".to_string();
+    }
+    let Err(err_empty_cont) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected empty continuation to fail".into());
+    };
+    assert_eq!(err_empty_cont, ContractError::EvidenceRequired);
+
+    // Planted bypass 23: Non-coalescible CoverageLoss without coverage_changes rejected with EvidenceRequired
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.classes.insert(MeaningfulDeltaClass::CoverageLoss);
+        delta.coverage_changes = Vec::new();
+    }
+    let Err(err_cov_loss) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected coverage loss without changes to fail".into());
+    };
+    assert_eq!(err_cov_loss, ContractError::EvidenceRequired);
+
+    // Planted bypass 24: Non-coalescible PlanInvalidation without invalidated_assumptions rejected with EvidenceRequired
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.classes.insert(MeaningfulDeltaClass::PlanInvalidation);
+        delta.invalidated_assumptions = Vec::new();
+    }
+    let Err(err_plan_inval) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected plan invalidation without assumptions to fail".into());
+    };
+    assert_eq!(err_plan_inval, ContractError::EvidenceRequired);
+
+    // Planted bypass 25: Non-coalescible Obligation without obligation_changes rejected with EvidenceRequired
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.classes.insert(MeaningfulDeltaClass::Obligation);
+        delta.obligation_changes = Vec::new();
+    }
+    let Err(err_ob_change) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected obligation change without details to fail".into());
+    };
+    assert_eq!(err_ob_change, ContractError::EvidenceRequired);
+
+    // Planted bypass 26: Non-coalescible EffectUncertainty without effect_uncertainty_changes rejected with EvidenceRequired
+    let mut bad_params = test_valid_publication_params()?;
+    if let Some(ref mut delta) = bad_params.meaningful_delta {
+        delta.classes.insert(MeaningfulDeltaClass::EffectUncertainty);
+        delta.effect_uncertainty_changes = Vec::new();
+    }
+    let Err(err_effect_unc) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected effect uncertainty without details to fail".into());
+    };
+    assert_eq!(err_effect_unc, ContractError::EvidenceRequired);
+
+    // Planted bypass 27: Blank handle in frame.evidence_handles rejected with InvalidIdentifier
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.capsule.frame.evidence_handles.insert("  ".to_string());
+    let Err(err_blank_handle) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected blank evidence handle to fail".into());
+    };
+    assert_eq!(err_blank_handle, ContractError::InvalidIdentifier);
+
+    // Planted bypass 28: Blank expansion handle in context pack rejected with EvidenceRequired
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.context_pack.items[0].expansion_handles.insert("".to_string());
+    let Err(err_blank_exp) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected blank expansion handle to fail".into());
+    };
+    assert_eq!(err_blank_exp, ContractError::EvidenceRequired);
+
+    // Planted bypass 29: Frame next affordance not in capsule affordances rejected with NotFound
+    let mut bad_params = test_valid_publication_params()?;
+    bad_params.capsule.frame.next.push("affordance:phantom:001".to_string());
+    let Err(err_missing_aff) = SituationCapsulePublication::new(bad_params) else {
+        return Err("expected phantom affordance to fail".into());
+    };
+    assert_eq!(err_missing_aff, ContractError::NotFound);
+
+    Ok(())
+}
+
 
